@@ -263,8 +263,6 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     # are fenced in test_my_tasks_p1c_tools.py.
     ("my_tasks_calendar_connection", {"provider": "google", "action": "sync"},
      [("GET", "/tasks/calendar/connections")]),
-    ("my_tasks_disconnect_calendar", {"provider": "google"},
-     [("GET", "/tasks/calendar/connections")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),

@@ -1,17 +1,19 @@
-"""P-1c (task 3923): Sync now, the task switch and Disconnect from the chat.
+"""P-1c (task 3923): Sync now and the task switch from the chat.
 
 Spec: ``project-docs/specs/chat_parity.md`` §6.4, the block P-1c.
 
 * ``my_tasks_calendar_connection(provider, action)`` sends Sync now
   (``POST /tasks/calendar/connections/{id}/sync``) or the switch
   (``PATCH /tasks/calendar/connections/{id}`` with ``push_tasks``).
-* ``my_tasks_disconnect_calendar(provider)`` sends
-  ``DELETE /tasks/calendar/connections/{id}``.
+* No tool disconnects. The C-04 eval allows no destructive My Tasks tool, so
+  ``DELETE /tasks/calendar/connections/{id}`` stays parity debt (task 3923).
 
-Each tool reads the list of P-1a first, takes the own row of the provider that
+The tool reads the list of P-1a first, takes the own row of the provider that
 is not disconnected, and shows ONE card. A deny, a closed card or a run with no
-person sends no write. An approve sends exactly one write. No tool takes an id,
-an org or a member: the gateway takes them from the session (R5).
+person sends no write. An approve sends exactly one write. The tool takes no
+id, org or member: the gateway takes them from the session (R5). The tool is
+in the dark pack ``calendar-connections``. The pack itself, its darkness and
+the held chat are in ``tests/unit/test_calendar_connections_pack.py``.
 
 Fakes only: no real calendar, no real connection, no network, no real token.
 ``core._request`` is a recorder, and the card is a stub of
@@ -35,11 +37,11 @@ from acb_skills import egress as eg
 from acb_skills import skill_families as sf
 from skill_my_tasks import core
 
-from tests.unit.test_calendar_day_pack import SLUG
 from tests.unit.test_pack_requests import _chosen
 
-ACT, OFF = "my_tasks_calendar_connection", "my_tasks_disconnect_calendar"
-TOOLS = (ACT, OFF)
+ACT = "my_tasks_calendar_connection"
+SLUG = "calendar-connections"
+DAY = "calendar-day"
 ME = "member@p1c.test"
 CID = "c0ffee00-0000-4000-8000-0000000000c1"
 OLD = "c0ffee00-0000-4000-8000-0000000000d0"
@@ -150,42 +152,31 @@ async def test_an_approved_switch_sends_one_patch(monkeypatch, action, was, want
     assert text.startswith(f"The switch is {'on' if want else 'off'}.")
 
 
-async def test_an_approved_disconnect_sends_one_delete(monkeypatch) -> None:
-    """Mutation: send another verb or path, or a second write -> red."""
-    gw, card = _install(monkeypatch, Gateway(
-        write={"disconnected": True, "removed_entries": 12}))
-    await core.my_tasks_disconnect_calendar("google")
-    assert gw.calls == [("GET", LIST, None), ("DELETE", ONE, None)]
-    assert len(card.cards) == 1
-
-
 # ── 2. A deny, a closed card or a run with no person sends no write ──────────
 
 
 @pytest.mark.parametrize("answer", [False, None, ask_tools.REVISED])
-@pytest.mark.parametrize(("tool", "args"), [
-    (ACT, ("google", "sync")), (ACT, ("google", "show_tasks")), (OFF, ("google",))])
-async def test_no_approve_sends_no_write(monkeypatch, answer, tool, args) -> None:
+@pytest.mark.parametrize("args", [("google", "sync"), ("google", "show_tasks")])
+async def test_no_approve_sends_no_write(monkeypatch, answer, args) -> None:
     """A deny (False), a timeout (None) and a card that a chat message closed
     (REVISED). Mutation: write before the card, or on a falsy answer -> red."""
     gw, card = _install(monkeypatch, Gateway(write={"status": "ok"}), Card(answer))
-    text = await getattr(core, tool)(*args)
+    text = await core.my_tasks_calendar_connection(*args)
     assert gw.writes == []
     assert len(card.cards) == 1
-    assert "Synced" not in text and "Disconnected" not in text
+    assert "Synced" not in text
     assert "The switch is" not in text
 
 
 async def test_a_closed_card_says_so(monkeypatch) -> None:
     """Mutation: answer a closed card as a decline -> red."""
     _install(monkeypatch, Gateway(), Card(ask_tools.REVISED))
-    text = await core.my_tasks_disconnect_calendar("google")
+    text = await core.my_tasks_calendar_connection("google", "sync")
     assert text == ask_tools.card_outcome_text(ask_tools.CLOSED_BY_YOUR_MESSAGE)
 
 
-@pytest.mark.parametrize(("tool", "args"), [
-    (ACT, ("google", "sync")), (ACT, ("google", "hide_tasks")), (OFF, ("google",))])
-async def test_a_run_with_no_person_sends_no_write(monkeypatch, tool, args) -> None:
+@pytest.mark.parametrize("args", [("google", "sync"), ("google", "hide_tasks")])
+async def test_a_run_with_no_person_sends_no_write(monkeypatch, args) -> None:
     """The REAL ``request_confirmation`` under the AUTO-7a mark. Mutation: pass
     ``non_interactive_default="approve"`` and skip the mark -> red."""
     from acb_common.no_person import no_person_scope
@@ -193,16 +184,16 @@ async def test_a_run_with_no_person_sends_no_write(monkeypatch, tool, args) -> N
     gw = Gateway([_row(push_tasks=True)], write={"status": "ok"})
     monkeypatch.setattr(core, "_request", gw)
     with no_person_scope():
-        await getattr(core, tool)(*args)
+        await core.my_tasks_calendar_connection(*args)
     assert gw.writes == []
 
 
 async def test_inside_refuse_cards_no_write(monkeypatch) -> None:
     """A run with no card channel (WS-47 WAC-3). Mutation: approve with no card -> red."""
-    gw = Gateway(write={"disconnected": True, "removed_entries": 1})
+    gw = Gateway(write={"status": "ok"})
     monkeypatch.setattr(core, "_request", gw)
     with ask_tools.refuse_cards():
-        await core.my_tasks_disconnect_calendar("google")
+        await core.my_tasks_calendar_connection("google", "sync")
     assert gw.writes == []
 
 
@@ -217,48 +208,23 @@ async def test_the_card_binds_the_run_member(monkeypatch) -> None:
     assert "non_interactive_default" not in kw  # the deny default stays
 
 
-# ── 3. The counts of Disconnect ──────────────────────────────────────────────
+# ── 3. The flag off, no connection, and a bad argument ───────────────────────
 
 
-async def test_the_disconnect_card_has_the_count_and_the_reply_the_route_count(
-        monkeypatch) -> None:
-    """The card shows the ``entry_count`` of the list read. The reply shows the
-    ``removed_entries`` of the route, which a sync between the two can change.
-    Mutation: put the list count in the reply -> red."""
-    _, card = _install(monkeypatch, Gateway(
-        [_row(entry_count=12)], write={"disconnected": True, "removed_entries": 15}))
-    text = await core.my_tasks_disconnect_calendar("google")
-    shown = _text_of(card.cards[0])
-    assert card.cards[0]["title"] == "Disconnect Google Calendar?"
-    assert "«12» synced events leave Metorite" in shown and f"«{ME}»" in shown
-    assert "Your tasks stay" in shown and "stays until you delete it" in shown
-    assert "15 synced events left Metorite" in text and "12" not in text
-
-
-async def test_a_disconnect_that_did_not_happen_is_not_a_success(monkeypatch) -> None:
-    """Mutation: report success on any 200 -> red."""
-    _install(monkeypatch, Gateway(write={"disconnected": False}))
-    text = await core.my_tasks_disconnect_calendar("google")
-    assert "did not disconnect" in text and "Disconnected" not in text
-
-
-# ── 4. The flag off, no connection, and a bad argument ───────────────────────
-
-
-@pytest.mark.parametrize(("tool", "args"), [(ACT, ("google", "sync")), (OFF, ("outlook",))])
-async def test_a_404_on_the_list_gives_the_off_line_and_no_card(monkeypatch, tool, args) -> None:
+@pytest.mark.parametrize("args", [("google", "sync"), ("outlook", "show_tasks")])
+async def test_a_404_on_the_list_gives_the_off_line_and_no_card(monkeypatch, args) -> None:
     """``CALENDAR_SYNC_READ`` is off. Mutation: let the 404 raise, or show a
     card -> red."""
     gw, card = _install(monkeypatch, Gateway(list_error=404))
-    assert await getattr(core, tool)(*args) == core.CONNECTIONS_OFF
+    assert await core.my_tasks_calendar_connection(*args) == core.CONNECTIONS_OFF
     assert gw.writes == [] and card.cards == []
 
 
-@pytest.mark.parametrize(("tool", "args"), [(ACT, ("outlook", "sync")), (OFF, ("outlook",))])
-async def test_no_connection_of_the_provider_gives_one_line(monkeypatch, tool, args) -> None:
+@pytest.mark.parametrize("args", [("outlook", "sync"), ("outlook", "hide_tasks")])
+async def test_no_connection_of_the_provider_gives_one_line(monkeypatch, args) -> None:
     """Only a Google row exists. Mutation: act on the Google row -> red."""
     gw, card = _install(monkeypatch, Gateway())
-    text = await getattr(core, tool)(*args)
+    text = await core.my_tasks_calendar_connection(*args)
     assert text.startswith("No Outlook calendar is connected.") and "\n" not in text
     assert gw.writes == [] and card.cards == []
 
@@ -267,12 +233,11 @@ async def test_a_disconnected_row_is_never_chosen(monkeypatch) -> None:
     """The old disconnected row comes first. Mutation: take the first row of
     the provider -> the write goes to the old id -> red."""
     rows = [_row(id=OLD, status="disconnected"), _row()]
-    gw, _ = _install(monkeypatch, Gateway(rows, write={"disconnected": True,
-                                                       "removed_entries": 0}))
-    await core.my_tasks_disconnect_calendar("google")
-    assert gw.writes == [("DELETE", ONE, None)]
+    gw, _ = _install(monkeypatch, Gateway(rows, write={"status": "ok"}))
+    await core.my_tasks_calendar_connection("google", "sync")
+    assert gw.writes == [("POST", f"{ONE}/sync", None)]
     gw2, card = _install(monkeypatch, Gateway([_row(id=OLD, status="disconnected")]))
-    await core.my_tasks_disconnect_calendar("google")
+    await core.my_tasks_calendar_connection("google", "sync")
     assert gw2.writes == [] and card.cards == []
 
 
@@ -283,16 +248,18 @@ async def test_an_id_that_is_no_uuid_is_never_sent(monkeypatch) -> None:
     assert gw.writes == [] and card.cards == []
 
 
-@pytest.mark.parametrize(("tool", "args", "line"), [
-    (ACT, ("yahoo", "sync"), core._BAD_PROVIDER),
-    (ACT, ("google", "connect"), core._BAD_ACTION),
-    (ACT, ("google", "disconnect"), core._BAD_ACTION),
-    (OFF, ("icloud",), core._BAD_PROVIDER),
+@pytest.mark.parametrize(("args", "line"), [
+    (("yahoo", "sync"), core._BAD_PROVIDER),
+    (("icloud", "show_tasks"), core._BAD_PROVIDER),
+    (("google", "connect"), core._BAD_ACTION),
+    (("google", "disconnect"), core._BAD_ACTION),
+    (("google", "delete"), core._BAD_ACTION),
 ])
-async def test_an_unknown_provider_or_act_sends_no_request(monkeypatch, tool, args, line) -> None:
-    """Mutation: read the list first, or pass the word on -> red."""
+async def test_an_unknown_provider_or_act_sends_no_request(monkeypatch, args, line) -> None:
+    """The act allow-list has no disconnect (C-04). Mutation: read the list
+    first, pass the word on, or add "disconnect" to the acts -> red."""
     gw, card = _install(monkeypatch, Gateway())
-    assert await getattr(core, tool)(*args) == line
+    assert await core.my_tasks_calendar_connection(*args) == line
     assert gw.calls == [] and card.cards == []
 
 
@@ -304,7 +271,7 @@ async def test_a_switch_already_set_shows_no_card(monkeypatch) -> None:
     assert gw.writes == [] and card.cards == []
 
 
-# ── 5. The answers of the routes, told plainly ───────────────────────────────
+# ── 4. The answers of the routes, told plainly ───────────────────────────────
 
 
 @pytest.mark.parametrize(("status", "words"), [
@@ -343,7 +310,7 @@ async def test_a_write_404_is_one_line(monkeypatch) -> None:
     """The row went, or the flag went off, between the read and the write.
     Mutation: report success -> red."""
     _install(monkeypatch, Gateway(write_error=404))
-    text = await core.my_tasks_disconnect_calendar("google")
+    text = await core.my_tasks_calendar_connection("google", "sync")
     assert text == core._WRITE_GONE and "Nothing changed" in text
 
 
@@ -355,12 +322,12 @@ async def test_a_sync_503_says_nothing_changed(monkeypatch) -> None:
     assert "nothing changed" in text and "Synced" not in text
 
 
-@pytest.mark.parametrize(("tool", "args"), [(ACT, ("google", "sync")), (OFF, ("google",))])
-async def test_another_error_of_the_route_still_raises(monkeypatch, tool, args) -> None:
+@pytest.mark.parametrize("args", [("google", "sync"), ("google", "show_tasks")])
+async def test_another_error_of_the_route_still_raises(monkeypatch, args) -> None:
     """A 500 is a fault, never a success. Mutation: catch every error -> red."""
     _install(monkeypatch, Gateway(write_error=500))
     with pytest.raises(core._GatewayError):
-        await getattr(core, tool)(*args)
+        await core.my_tasks_calendar_connection(*args)
 
 
 async def test_a_switch_that_did_not_change_says_so(monkeypatch) -> None:
@@ -379,21 +346,20 @@ async def test_the_switch_on_promises_no_delivery(monkeypatch) -> None:
     assert "when calendar write-out is on" in text
 
 
-# ── 6. No token and no field outside the allow-list ──────────────────────────
+# ── 5. No token and no field outside the allow-list ──────────────────────────
 
 
-@pytest.mark.parametrize(("tool", "args", "write"), [
-    (ACT, ("google", "sync"), {"status": "ok", "added": 1, "access_token": SECRETS[0]}),
-    (ACT, ("google", "show_tasks"), _row(push_tasks=True)),
-    (ACT, ("google", "hide_tasks"), _row(push_tasks=False)),
-    (OFF, ("google",), {"disconnected": True, "removed_entries": 2,
-                        "refresh_token": SECRETS[1]}),
+@pytest.mark.parametrize(("args", "write"), [
+    (("google", "sync"), {"status": "ok", "added": 1, "access_token": SECRETS[0]}),
+    (("google", "sync"), {"status": "busy", "refresh_token": SECRETS[1]}),
+    (("google", "show_tasks"), _row(push_tasks=True)),
+    (("google", "hide_tasks"), _row(push_tasks=False)),
 ])
-async def test_no_output_shows_a_token(monkeypatch, tool, args, write) -> None:
+async def test_no_output_shows_a_token(monkeypatch, args, write) -> None:
     """The fake body carries tokens. Mutation: print a row or a body -> red."""
     was = args[-1] == "hide_tasks"
     _, card = _install(monkeypatch, Gateway([_row(push_tasks=was)], write=write))
-    text = await getattr(core, tool)(*args)
+    text = await core.my_tasks_calendar_connection(*args)
     shown = text + " " + " ".join(_text_of(c) for c in card.cards)
     for secret in SECRETS:
         assert secret not in shown, secret
@@ -401,83 +367,106 @@ async def test_no_output_shows_a_token(monkeypatch, tool, args, write) -> None:
         assert word not in shown.lower(), word
 
 
-# ── 7. Arguments, risk, the held chat, the pack, and parity ──────────────────
+# ── 6. Arguments, risk, the held chat, the pack, and parity ──────────────────
 
 
-def test_no_tool_takes_an_id_an_org_or_a_member() -> None:
+def test_the_tool_takes_no_id_org_or_member() -> None:
     """R5. Mutation: add ``connection_id``, ``organization_id``,
     ``member_email`` or ``user_email`` -> red."""
     assert set(inspect.signature(core.my_tasks_calendar_connection).parameters) == {
         "provider", "action"}
-    assert set(inspect.signature(core.my_tasks_disconnect_calendar).parameters) == {
-        "provider"}
 
 
-def test_each_tool_is_an_open_world_write() -> None:
-    """Mutation: mark one ``read_only`` or ``open_world=False``, or make
-    Disconnect not destructive -> red."""
-    for name in TOOLS:
-        risk = getattr(skill_my_tasks, name).__tool_risk__
-        assert risk["open_world"] is True and not risk.get("read_only"), name
-    assert skill_my_tasks.my_tasks_disconnect_calendar.__tool_risk__["destructive"] is True
+def test_the_tool_is_an_open_world_write_and_not_destructive() -> None:
+    """The C-04 eval allows no destructive My Tasks tool. Mutation: mark it
+    ``read_only``, ``open_world=False`` or ``destructive`` -> red."""
+    risk = skill_my_tasks.my_tasks_calendar_connection.__tool_risk__
+    assert risk["open_world"] is True and not risk.get("read_only")
+    assert not risk.get("destructive")
+
+
+def test_no_tool_disconnects_a_calendar() -> None:
+    """C-04 (decided on task 3923, 2026-11-25): Disconnect stays out of the
+    chat. Mutation: bring back ``my_tasks_disconnect_calendar`` -> red."""
+    assert not hasattr(skill_my_tasks, "my_tasks_disconnect_calendar")
+    assert not hasattr(core, "my_tasks_disconnect_calendar")
+    assert not [n for n in skill_my_tasks.__all__ if "disconnect" in n]
+    assert "disconnect" not in core._CAL_ACTIONS
 
 
 @pytest.mark.parametrize("orgs", ["", "*"])
-def test_a_held_chat_drops_each_tool(monkeypatch, orgs: str) -> None:
-    """With ``HELD_CARD_WRITES_ORGS`` empty and with it on. Mutation: mark a
+def test_a_held_chat_drops_the_tool(monkeypatch, orgs: str) -> None:
+    """With ``HELD_CARD_WRITES_ORGS`` empty and with it on. Mutation: mark the
     tool ``open_world=False`` or take it out of ``HELD_OFF_PACK_WRITES`` -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", orgs)
-    for name in TOOLS:
-        fn = getattr(skill_my_tasks, name)
-        assert eg.is_egress_tool(fn), name
-        assert name in eg.HELD_OFF_PACK_WRITES[SLUG], name
+    fn = skill_my_tasks.my_tasks_calendar_connection
+    assert eg.is_egress_tool(fn)
+    assert eg.HELD_OFF_PACK_WRITES[SLUG] == frozenset({ACT})
 
 
-def test_the_pack_holds_the_tools_and_the_tasks_assistant_does_not() -> None:
-    """Mutation: drop a tool from the family or from ``PACK_ONLY_TOOLS`` -> red."""
-    assert set(TOOLS) <= set(sf.SKILL_FAMILIES[SLUG]["tools"])
-    assert set(TOOLS) <= set(skill_my_tasks.PACK_ONLY_TOOLS)
-    assert set(TOOLS) <= set(skill_my_tasks.__all__)
+def test_the_new_pack_holds_the_tool_and_calendar_day_does_not() -> None:
+    """The list read stays in ``calendar-day`` as on main. Mutation: put the act
+    in ``calendar-day``, or move the list read out of it -> red."""
+    assert tuple(sf.SKILL_FAMILIES[SLUG]["tools"]) == (ACT,)
+    assert ACT not in sf.SKILL_FAMILIES[DAY]["tools"]
+    assert "my_tasks_list_calendar_connections" in sf.SKILL_FAMILIES[DAY]["tools"]
+    assert ACT in skill_my_tasks.PACK_ONLY_TOOLS and ACT in skill_my_tasks.__all__
 
 
-def test_the_parity_rows_name_the_tools() -> None:
-    """The three rows moved from ``DEBT`` to ``COVERED``, and the calendar
-    ceiling is 1. Mutation: put a row back in ``DEBT`` -> red."""
-    rows = {"POST /api/calendar/connections/{}/sync": ACT,
-            "PATCH /api/calendar/connections/{}": ACT,
-            "DELETE /api/calendar/connections/{}": OFF}
-    for key, tool in rows.items():
-        assert cp.COVERED[key] == tool, key
+def test_the_parity_rows_name_the_tool() -> None:
+    """Two rows moved from ``DEBT`` to ``COVERED``. The DELETE row stays debt
+    (C-04). Mutation: put a row back in ``DEBT``, or cover the DELETE -> red."""
+    for key in ("POST /api/calendar/connections/{}/sync",
+                "PATCH /api/calendar/connections/{}"):
+        assert cp.COVERED[key] == ACT, key
         assert key not in cp.DEBT, key
-    assert cp.DEBT_CEILING["calendar"] == 1
+    delete = "DELETE /api/calendar/connections/{}"
+    assert delete in cp.DEBT and delete not in cp.COVERED
 
 
-# ── 8. Reach: the member's words load the pack, and near words do not ────────
+# ── 7. Reach: the member's words load the pack, and near words do not ────────
+#
+# The pack is dark. ``_chosen`` allows every pack (``EVERY``), so these rows
+# read the pack set of a box whose TOOL_PACKS line names the pack. With no
+# such line, no word loads it (test_calendar_connections_pack.py).
 
 
 @pytest.mark.parametrize("words", [
-    "sync my calendar", "disconnect my calendar", "disconnect my google calendar",
-    "disconnect my outlook calendar", "sync google calendar",
-    "sync my google calendar", "sync my outlook calendar",
-    "show my tasks in google calendar", "show my tasks in outlook",
-    "stop sending my tasks to outlook", "send my tasks to google calendar",
+    "sync google calendar", "sync my google calendar", "sync outlook calendar",
+    "sync my outlook calendar", "show my tasks in google calendar",
+    "show my tasks in outlook", "stop sending my tasks to outlook",
+    "send my tasks to google calendar", "put my tasks in google calendar",
 ])
 def test_the_words_load_the_pack(words: str) -> None:
-    """Before P-1c, only the first two loaded ``calendar-day``. Mutation: drop
-    a word from ``_CALENDAR_DAY_WORDS`` -> red."""
+    """Mutation: drop a word from ``_CALENDAR_CONNECTIONS_WORDS`` -> red."""
     assert SLUG in _chosen(words), words
+
+
+@pytest.mark.parametrize("words", [
+    "what calendars are connected", "which calendars do I have connected",
+    "list my calendar connections",
+])
+def test_the_list_read_words_stay_with_the_day_planner(words: str) -> None:
+    """The list read and its words stay in ``calendar-day`` as on main.
+    Mutation: move the words to the new pack -> red."""
+    chosen = _chosen(words)
+    assert DAY in chosen and SLUG not in chosen, (words, chosen)
 
 
 @pytest.mark.parametrize("words", [
     "connect my outlook mail", "summarise my outlook inbox",
     "create a task to fix the google calendar bug",
     "assign the outlook calendar bug to Ravi", "move the google calendar task to done",
+    "add this to google calendar invite in the email",
     "disconnect the slack integration", "disconnect the google drive integration",
     "sync the crm", "reconnect my email account", "sync my google drive",
     "send an email from outlook", "disconnect", "sync", "outlook",
+    "disconnect my google calendar", "disconnect my outlook calendar",
+    "sync my calendar", "rebuild my day",
 ])
 def test_a_near_word_does_not_load_the_pack(words: str) -> None:
-    """A bare "outlook", "sync" or "disconnect" is no word. Mutation: add one -> red."""
+    """A bare "outlook", "sync" or "disconnect" is no word, and no word asks to
+    disconnect: the pack cannot. Mutation: add one -> red."""
     assert SLUG not in _chosen(words), words

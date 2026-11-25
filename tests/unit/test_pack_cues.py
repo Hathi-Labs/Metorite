@@ -86,6 +86,10 @@ WHEN = {
     "people": (
         "Load for the people directory, your own row, the open work of a colleague, or the "
         "Reach preview."),
+    # P-1c (task 3923): the dark calendar-connections pack of the same owner.
+    "calendar-connections": (
+        "Load to sync a connected Google or Outlook calendar now, or to show or hide "
+        "your tasks in it."),
 }
 
 
