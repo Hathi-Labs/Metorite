@@ -46,6 +46,8 @@ Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; F
 [Code]
 const
   ServiceKey = 'SYSTEM\CurrentControlSet\Services\TallyBridge';
+  GrantOnly = ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX';
+  FILE_ATTRIBUTE_REPARSE_POINT = $400;
 
 // Review finding 1. %ProgramData% lets every user create a folder or a file,
 // and the LocalSystem service trusts what it reads there. PrepareToInstall
@@ -77,41 +79,66 @@ begin
   end;
 end;
 
-// The administrators own every item, explicit rights go, inheritance stops,
-// and only SYSTEM and the administrators may write. Users may read. A fresh
-// install deletes what a user put there before it.
+// True when the path is a junction or a symbolic link (re-review finding).
+function IsReparsePoint(Path: String): Boolean;
+var
+  Find: TFindRec;
+begin
+  Result := False;
+  if FindFirst(Path, Find) then
+  begin
+    try
+      Result := (Find.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
+    finally
+      FindClose(Find);
+    end;
+  end;
+end;
+
+// Only SYSTEM and the administrators may write, and Users may read. A
+// fresh install never follows what a user left at the path: it removes the
+// path (a junction as a link only), makes a new folder, closes it with no
+// /T, and only then deletes any child. An upgrade refuses a folder that is a
+// link, closes the folder first, and then walks its items.
 function ProtectDataDir(Fresh: Boolean): String;
 var
   Dir: String;
 begin
   Result := '';
   Dir := ExpandConstant('{commonappdata}\TallyBridge');
-  if not ForceDirectories(Dir) then
-    Result := 'Could not make the data folder ' + Dir
-  else if not Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') then
-    Result := 'Could not take the ownership of ' + Dir
-  else if not Icacls('"' + Dir + '" /reset /T /C') then
-    Result := 'Could not reset the rights of ' + Dir
-  else if not Icacls('"' + Dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX') then
+  if Fresh or not DirExists(Dir) then
+  begin
+    if FileExists(Dir) then
+      DeleteFile(Dir);
+    if DirExists(Dir) then
+      DelTree(Dir, True, True, True);
+    if not CreateDir(Dir) then
+      Result := 'Could not make a new data folder ' + Dir
+    else if not Icacls('"' + Dir + '"' + GrantOnly) then
+      Result := 'Could not set the rights of ' + Dir
+    else
+      DelTree(Dir + '\*', False, True, True);
+  end
+  else if IsReparsePoint(Dir) then
+    Result := 'The data folder is a link. Delete ' + Dir + ' and run the setup again.'
+  else if not Icacls('"' + Dir + '"' + GrantOnly) then
     Result := 'Could not set the rights of ' + Dir
-  else if Fresh then
-    DelTree(Dir + '\*', False, True, True)
-  // An item made between /reset and /inheritance:r gets the same treatment.
   else if HasChildren(Dir) and not (Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') and Icacls('"' + Dir + '\*" /reset /T /C')) then
     Result := 'Could not reset the rights of the files in ' + Dir;
 end;
 
-// An upgrade stops the service first (net stop waits until it has stopped),
-// so its files are free. Then the data folder is made safe.
+// The data folder is made safe first. Then an upgrade stops the service
+// (net stop waits until it has stopped), so its files are free. A failed
+// protection leaves a running service running.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Code: Integer;
   WasInstalled: Boolean;
 begin
   WasInstalled := RegKeyExists(HKLM, ServiceKey);
-  if WasInstalled then
-    Exec(ExpandConstant('{sys}\net.exe'), 'stop TallyBridge', '', SW_HIDE, ewWaitUntilTerminated, Code);
   Result := ProtectDataDir(not WasInstalled);
+  if (Result = '') and WasInstalled then
+    Exec(ExpandConstant('{sys}\net.exe'), 'stop TallyBridge', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 // The address that the elevated setup-link step wrote. Inno deletes {tmp},

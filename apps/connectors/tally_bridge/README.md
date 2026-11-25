@@ -205,12 +205,12 @@ The build installs only the versions in `uv.lock`, PyInstaller included (the
 is not signed yet, because signing waits for the owner's certificate (brief
 §10 question 8). The installer does these steps in this order:
 
-1. An upgrade stops the running service first.
-2. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. The
-   administrators own each item in it, and the folder gives full control to
-   SYSTEM and the administrators only. If this step fails, the setup stops. Users can read, and cannot create or change a file.
-   A fresh install also deletes any file that was already there. The
-   service runs as LocalSystem and trusts its settings.
+1. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. Only
+   SYSTEM and the administrators can write there, and Users can read. A fresh
+   install removes whatever was at that path, a link too, and makes a new
+   folder. An upgrade refuses a folder that is a link. If this step fails,
+   the setup stops. The service runs as LocalSystem and trusts its settings.
+2. An upgrade then stops the running service.
 3. It installs the service, which starts with Windows.
 4. It sets the restart rule.
 5. It runs `apply-windows`.
