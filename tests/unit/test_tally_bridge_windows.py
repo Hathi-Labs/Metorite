@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -153,18 +154,54 @@ def test_the_data_folder_is_under_programdata():
 
 
 def test_the_signin_task_command_word_for_word():
-    exe = r"C:\Program Files\TallyPrime\tally.exe"
-    assert system.startup_on(exe) == [
+    assert system.startup_on(r"C:\t\task.xml") == [
         "schtasks", "/Create", "/TN", "Tally Bridge - Start TallyPrime",
-        "/TR", f'"{exe}"', "/SC", "ONLOGON", "/RL", "LIMITED", "/F"]
+        "/XML", r"C:\t\task.xml", "/F"]
     assert system.startup_off() == [
         "schtasks", "/Delete", "/TN", "Tally Bridge - Start TallyPrime", "/F"]
+
+
+def test_the_signin_task_runs_for_each_person_who_signs_in():
+    """Review finding 3: no /RU means the task of the admin who installed.
+    The task XML names the Users group, least privilege, any sign-in."""
+    import xml.etree.ElementTree as ET
+
+    exe = r"C:\Program Files\Tally & Co\tally.exe"
+    root = ET.fromstring(system.startup_xml(exe).split("?>", 1)[1])
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    trigger = root.find("t:Triggers/t:LogonTrigger", ns)
+    assert trigger is not None and trigger.find("t:UserId", ns) is None
+    principal = root.find("t:Principals/t:Principal", ns)
+    assert principal.find("t:GroupId", ns).text == "S-1-5-32-545"
+    assert principal.find("t:RunLevel", ns).text == "LeastPrivilege"
+    assert principal.find("t:UserId", ns) is None
+    assert root.find("t:Actions/t:Exec/t:Command", ns).text == exe
+
+
+def test_the_task_xml_is_written_in_utf16_and_deleted_after_the_call(tmp_path):
+    seen = {}
+
+    def runner(argv):
+        path = argv[argv.index("/XML") + 1]
+        with open(path, encoding="utf-16") as fh:
+            seen["text"] = fh.read()
+        seen["path"] = path
+        return 0
+
+    assert system.apply_startup(True, r"C:\TallyPrime\tally.exe", runner) == 0
+    assert "<GroupId>S-1-5-32-545</GroupId>" in seen["text"]
+    assert not os.path.exists(seen["path"])
 
 
 @pytest.mark.parametrize("bad", ["", r"C:\Tally\tally.bat", 'C:\\x".exe', "tally"])
 def test_the_signin_task_refuses_a_path_that_is_not_a_program(bad):
     with pytest.raises(ValueError):
-        system.startup_on(bad)
+        system.startup_xml(bad)
+
+
+def test_the_settings_refuse_a_quote_in_the_tally_path():
+    with pytest.raises(SettingsError):
+        Settings(tally_exe='C:\\x".exe').validate()
 
 
 def test_the_firewall_rule_blocks_tally_and_the_bridge_from_the_network():
@@ -240,7 +277,7 @@ def test_apply_windows_runs_the_signin_task_and_one_firewall_rule(windows_box):
         return 0
 
     assert cli._apply_windows(_args(), runner=runner) == 0
-    assert system.startup_on(r"C:\TallyPrime\tally.exe") in ran
+    assert any(a[:5] == ["schtasks", "/Create", "/TN", system.TASK_NAME, "/XML"] for a in ran)
     assert ran[-2:] == [system.firewall_off(), system.firewall_on()]
 
 
@@ -277,6 +314,20 @@ def test_uninstall_windows_undoes_everything(windows_box, tmp_path):
     assert not (windows_box / stores.SECRETS_FILE).exists()
     assert not (windows_box / stores.COPY_KEY_FILE).exists()
     assert list(copy_dir.iterdir()) == []
+
+
+def test_uninstall_removes_the_task_and_the_rule_when_the_settings_are_damaged(
+        windows_box, capsys):
+    """Review finding 2: a bad settings file must not stop the cleanup."""
+    windows_box.mkdir(parents=True, exist_ok=True)
+    (windows_box / "settings.json").write_text('{"COPY_INTERVAL_MIN": "2"}', encoding="utf-8")
+    _settings, secrets = cli._stores(_args())
+    secrets.set_read_token_sha256(HASH)
+    ran: list[list[str]] = []
+    assert cli._uninstall_windows(_args(), runner=lambda a: ran.append(list(a)) or 0) == 1
+    assert ran[:2] == [system.startup_off(), system.firewall_off()]
+    assert not (windows_box / stores.SECRETS_FILE).exists()
+    assert "by hand" in capsys.readouterr().out
 
 
 # --- Verifier findings: the flags, the entropy, the stop on a raise --------------

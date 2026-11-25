@@ -174,7 +174,7 @@ one is off until the customer turns it on:
 
 | Setting | What it does |
 |---|---|
-| `START_TALLY_AT_SIGNIN` with `TALLY_EXE` | A Task Scheduler task starts TallyPrime when the person signs in. TallyPrime loads the companies of its own start-up setting |
+| `START_TALLY_AT_SIGNIN` with `TALLY_EXE` | A Task Scheduler task starts TallyPrime when any person signs in, as that person. The task names the Users group, so it does not depend on the administrator who installed it. TallyPrime loads the companies of its own start-up setting |
 | `KEEP_AWAKE` | While the bridge runs, it asks Windows not to sleep. It changes no power plan |
 
 Two commands change the machine. Run each one as an administrator:

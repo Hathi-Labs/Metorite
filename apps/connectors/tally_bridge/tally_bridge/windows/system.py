@@ -5,9 +5,12 @@ Each change is a fixed command, built here as a list of words and run by the
 text, and ``Settings.validate`` checks it first (an ``.exe`` path). A test on
 Linux checks each command word for word.
 
-* **Start TallyPrime at sign-in:** a Task Scheduler task that runs at the
-  sign-in of the person at the desk. TallyPrime loads the companies of its
-  own "load companies on start-up" setting.
+* **Start TallyPrime at sign-in:** a Task Scheduler task, made from a task
+  XML, that runs at the sign-in of any person on the machine, as that person
+  (the group of all users, SID S-1-5-32-545, least privilege). So the task works for the
+  person at the desk, not only for the administrator who ran the installer.
+  TallyPrime loads the companies of its own "load companies on start-up"
+  setting.
 * **The firewall rule:** block inbound TCP 9000 (Tally) and 8765 (the
   bridge) from the network. Windows does not filter loopback traffic, so the
   bridge still reaches Tally on 127.0.0.1 (brief section 5.2).
@@ -20,8 +23,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
+from xml.sax.saxutils import escape as xml_escape
 
 TASK_NAME = "Tally Bridge - Start TallyPrime"
 FIREWALL_RULE = "Tally Bridge - block network access"
@@ -53,22 +58,60 @@ def run(argv: Sequence[str]) -> int:  # pragma: no cover - Windows
     return subprocess.run(list(argv), check=False, capture_output=True, env=child_env()).returncode
 
 
-def startup_on(tally_exe: str) -> list[str]:
+#: The well-known SID of the built-in Users group. The task runs for each person
+#: who signs in, as that person.
+USERS_SID = "S-1-5-32-545"
+
+
+def startup_xml(tally_exe: str) -> str:
+    """The task XML of the sign-in task. ``schtasks /XML`` reads it."""
     if not tally_exe or not tally_exe.lower().endswith(".exe") or '"' in tally_exe:
         raise ValueError("The TallyPrime path must be a program path (.exe).")
-    return [
-        "schtasks",
-        "/Create",
-        "/TN",
-        TASK_NAME,
-        "/TR",
-        f'"{tally_exe}"',
-        "/SC",
-        "ONLOGON",
-        "/RL",
-        "LIMITED",
-        "/F",
-    ]
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Starts TallyPrime when a person signs in.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <GroupId>{USERS_SID}</GroupId>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{xml_escape(tally_exe)}</Command>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def startup_on(xml_path: str) -> list[str]:
+    """Make the sign-in task from the file that :func:`startup_xml` wrote."""
+    return ["schtasks", "/Create", "/TN", TASK_NAME, "/XML", xml_path, "/F"]
+
+
+def write_startup_xml(tally_exe: str, folder: str | None = None) -> str:
+    """Write the task XML in UTF-16 (the encoding that ``schtasks`` reads) to
+    a new temporary file, and return its path. The caller deletes it."""
+    text = startup_xml(tally_exe)
+    fd, path = tempfile.mkstemp(prefix="tally-bridge-task-", suffix=".xml", dir=folder)
+    with os.fdopen(fd, "w", encoding="utf-16") as fh:
+        fh.write(text)
+    return path
 
 
 def startup_off() -> list[str]:
@@ -97,7 +140,13 @@ def firewall_off() -> list[str]:
 
 def apply_startup(enabled: bool, tally_exe: str, runner: Runner = run) -> int:
     """Make or remove the sign-in task, to match the setting."""
-    return runner(startup_on(tally_exe) if enabled else startup_off())
+    if not enabled:
+        return runner(startup_off())
+    path = write_startup_xml(tally_exe)
+    try:
+        return runner(startup_on(path))
+    finally:
+        os.unlink(path)
 
 
 class PowerApi(Protocol):
