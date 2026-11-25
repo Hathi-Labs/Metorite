@@ -102,3 +102,34 @@ class DpapiKeyProvider:
         key = Fernet.generate_key()
         _write_atomic(self._path, self._protector.protect(key))
         return key
+
+
+#: TLY-2: the link state (the link credential, the connector id and the
+#: company name), as one DPAPI blob.
+LINK_FILE = "link.bin"
+
+
+class DpapiBlobFile:
+    """Bytes kept with DPAPI at machine scope, written atomically. A blob
+    that cannot be unprotected reads as None, so the program serves nothing
+    (it fails closed)."""
+
+    def __init__(self, path: str | os.PathLike[str], protector: Protector) -> None:
+        self._path = Path(path)
+        self._protector = protector
+
+    def read(self) -> bytes | None:
+        try:
+            raw = self._path.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            return self._protector.unprotect(raw)
+        except ProtectError:
+            return None
+
+    def write(self, data: bytes) -> None:
+        _write_atomic(self._path, self._protector.protect(data))
+
+    def delete(self) -> None:
+        self._path.unlink(missing_ok=True)

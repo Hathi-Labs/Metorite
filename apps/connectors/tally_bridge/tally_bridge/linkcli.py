@@ -1,0 +1,162 @@
+"""The commands of link mode (TLY-2), and the link loop of ``serve``.
+
+    python -m tally_bridge pair --domain example.com   # show a code for the admin
+    python -m tally_bridge confirm-link --company "<the name it showed>"
+    python -m tally_bridge unlink                      # refuse, or disconnect
+
+Rule j (``integrations_console.md`` §3.8.7): after the pairing, the program
+shows the company name that the approval returned, and serves nothing until
+the customer confirms it. ``confirm-link`` needs the customer to type that
+name. ``unlink`` revokes the credential at Metorite and deletes it here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import platform
+import sys
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from tally_bridge import __version__
+from tally_bridge.settings import Settings
+from tally_bridge.transport.link import protocol as p
+from tally_bridge.transport.link.api import LinkApi
+from tally_bridge.transport.link.pairing import pair
+from tally_bridge.transport.link.store import (
+    BlobLinkStore,
+    DevFileLinkStore,
+    LinkState,
+    LinkStore,
+)
+
+log = logging.getLogger("tally_bridge.link")
+
+
+def link_store(args: argparse.Namespace) -> LinkStore | None:
+    """The DPAPI blob on Windows, the DEV ONLY file on a dev box, or None."""
+    if getattr(args, "windows", False):
+        from tally_bridge.windows import stores
+        from tally_bridge.windows.dpapi import DpapiProtector
+
+        return BlobLinkStore(
+            stores.DpapiBlobFile(stores.data_dir() / stores.LINK_FILE, DpapiProtector())
+        )
+    path = getattr(args, "dev_link_file", None)
+    return DevFileLinkStore(path) if path else None
+
+
+def do_pair(
+    args: argparse.Namespace,
+    settings: Settings,
+    store: LinkStore | None,
+    api: LinkApi | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> int:
+    if not settings.link_url:
+        print("Set LINK_URL, the address of Metorite, first.", file=sys.stderr)
+        return 2
+    if store is None:
+        print(
+            "pair needs a link store. Pass --windows, or --dev-link-file (DEV ONLY).",
+            file=sys.stderr,
+        )
+        return 2
+    if not getattr(args, "domain", None):
+        print("pair needs --domain, the company domain, such as example.com.", file=sys.stderr)
+        return 2
+    old = store.load()
+    if old is not None and old.confirmed:
+        print(f"This machine is linked to {old.company_name}. Run `unlink` first.", file=sys.stderr)
+        return 2
+    api = api or LinkApi(settings.link_url)
+
+    def show(code: str) -> None:
+        print("Give this code to an admin of your company. They type it in Metorite:")
+        print(f"    {code}")
+        print("The code ends in 10 minutes. This window waits for the approval.")
+        sys.stdout.flush()
+
+    try:
+        paired = asyncio.run(pair(api, args.domain, platform.node(), __version__, show, sleep))
+    except p.LinkError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    store.save(LinkState(paired.credential, paired.connector_id, paired.company_name))
+    print(f"Approved by: {paired.company_name}")
+    print("Check that this is your company. To accept it, run:")
+    print(f'    confirm-link --company "{paired.company_name}"')
+    print("If you do not know this company, run `unlink`. The program serves nothing until then.")
+    return 0
+
+
+def do_confirm(args: argparse.Namespace, store: LinkStore | None) -> int:
+    state = store.load() if store else None
+    if state is None:
+        print("This machine has no pairing. Run `pair` first.", file=sys.stderr)
+        return 2
+    typed = (getattr(args, "company", None) or "").strip()
+    if typed.casefold() != state.company_name.casefold():
+        print(
+            f"Type the company name that the pairing showed: {state.company_name}", file=sys.stderr
+        )
+        return 2
+    store.save(state.confirm())  # type: ignore[union-attr]
+    print(f"Linked to {state.company_name}. Start or restart the bridge to serve it.")
+    return 0
+
+
+def do_unlink(settings: Settings, store: LinkStore | None, api: LinkApi | None = None) -> int:
+    """Revoke the credential at Metorite, then delete it here. The local
+    delete happens even when Metorite cannot be reached."""
+    state = store.load() if store else None
+    if state is None:
+        print("This machine has no link.")
+        return 0
+    revoked = True
+    if settings.link_url:
+        try:
+            asyncio.run((api or LinkApi(settings.link_url)).revoke(state.credential))
+        except Exception as exc:
+            revoked = False
+            print(
+                f"Metorite could not be reached ({type(exc).__name__}). An admin can "
+                "disconnect the connector there.",
+                file=sys.stderr,
+            )
+    store.delete()  # type: ignore[union-attr]
+    print("Unlinked. The credential is deleted on this machine.")
+    return 0 if revoked else 1
+
+
+def link_loop(
+    settings: Settings,
+    store: LinkStore | None,
+    inner_app: Any,
+    reader: Any,
+) -> Callable[[asyncio.Event], Awaitable[str]] | None:
+    """The link loop for ``serve``, or None when link mode is off or waits
+    for the customer's confirmation (rule j)."""
+    from tally_bridge.transport.link.dispatch import McpDispatcher
+    from tally_bridge.transport.link.runner import run_link
+
+    if not settings.link_url or store is None:
+        return None
+    state = store.load()
+    if state is None:
+        return None
+    if not state.confirmed:
+        log.warning("link mode waits: confirm the company name with `confirm-link` first")
+        return None
+    api = LinkApi(settings.link_url)
+    dispatch = McpDispatcher(inner_app, settings.bind_port)
+
+    async def loop(stop: asyncio.Event) -> str:
+        result = await run_link(api, store, dispatch, reader.is_up, __version__, stop)
+        if result == "revoked":
+            log.warning("Disconnected by your admin. Pair this machine again to reconnect.")
+        return result
+
+    return loop

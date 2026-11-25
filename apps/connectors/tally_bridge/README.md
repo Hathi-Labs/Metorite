@@ -188,6 +188,34 @@ Two commands change the machine. Run each one as an administrator:
 
 The service and the installer follow in TLY-5 PR B.
 
+## Link mode (TLY-2a, rung 2)
+
+In link mode the program calls out to Metorite over HTTPS. The office opens
+no port and runs no tunnel (`integrations_console.md` §3.8, D232). The
+Metorite side (LNK-1 to LNK-3) is not built yet, so the tests run against a
+fake link, `tests/unit/test_tally_bridge_link.py`.
+
+Link mode is off until `LINK_URL` holds the address of Metorite. The setting
+has no default.
+
+1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
+   the company types it in Metorite and approves it. The program then shows
+   the name of the company that approved it.
+2. `confirm-link --company "<that name>"` accepts the company. The program
+   serves nothing before this step (rule j).
+3. `serve` runs the long poll beside the setup page. Each poll says whether
+   TallyPrime is up. Each request runs against the read tools of this
+   process, and only on `/mcp`.
+4. `unlink` revokes the credential at Metorite and deletes it here. Use it
+   to refuse a company that you do not know, or to disconnect. The uninstall
+   runs it too.
+
+On Windows (`--windows`), DPAPI keeps the link credential in
+`%ProgramData%\TallyBridge\link.bin`. On a dev box, `--dev-link-file` keeps it
+in a plain file (DEV ONLY). A disconnect by the admin deletes the credential
+at the next poll. A cut link comes back by itself, after a wait that grows to
+60 s.
+
 ## Fixtures
 
 - `fixtures/synthetic/`: answers that we wrote by hand. Each file name starts

@@ -5,6 +5,9 @@
     python -m tally_bridge setup-link  # a new setup key, and the address that opens the page
     python -m tally_bridge record-requests <folder> --company "<name>" --ledger "<name>"
     python -m tally_bridge delete-copy # delete every local copy (TLY-4)
+    python -m tally_bridge pair --domain <domain>   # link mode (TLY-2): see linkcli.py
+    python -m tally_bridge confirm-link --company "<name>"
+    python -m tally_bridge unlink
 
 On a dev box the settings and the hashes come from the environment
 (``TALLY_BRIDGE_*``), or from two files: ``--settings-file`` (the settings,
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 from typing import Any
@@ -57,10 +61,21 @@ def main(argv: list[str] | None = None) -> int:
             "delete-copy",
             "apply-windows",
             "uninstall-windows",
+            "pair",
+            "confirm-link",
+            "unlink",
         ],
     )
     parser.add_argument("folder", nargs="?", help="record-requests: where to write the requests")
-    parser.add_argument("--company", help="record-requests: the exact Tally company name")
+    parser.add_argument(
+        "--company",
+        help="record-requests: the exact Tally company name; confirm-link: the company"
+        " name that the pairing showed",
+    )
+    parser.add_argument("--domain", help="pair: the company domain, such as example.com")
+    parser.add_argument(
+        "--dev-link-file", help="pair, serve: DEV ONLY, a file that holds the link credential"
+    )
     parser.add_argument("--ledger", help="record-requests: a busy ledger with a known Dr balance")
     parser.add_argument("--settings-file", help="serve, setup-link: the settings file (JSON)")
     parser.add_argument(
@@ -87,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _apply_windows(args)
     if args.command == "uninstall-windows":
         return _uninstall_windows(args)
+    if args.command in ("pair", "confirm-link", "unlink"):
+        return _link_command(args)
 
     if args.command == "version":
         print(__version__)
@@ -187,6 +204,22 @@ def _had_startup(run: Any) -> bool:
     return run(["schtasks", "/Query", "/TN", system.TASK_NAME]) == 0
 
 
+def _link_command(args: argparse.Namespace) -> int:
+    from tally_bridge import linkcli
+
+    store = linkcli.link_store(args)
+    if args.command == "confirm-link":
+        return linkcli.do_confirm(args, store)
+    try:
+        settings = _stores(args)[0].load()
+    except SettingsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.command == "pair":
+        return linkcli.do_pair(args, settings, store)
+    return linkcli.do_unlink(settings, store)
+
+
 def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
     """Undo every change of the program (brief §6.7): the sign-in task, the
     firewall rule, the stored hashes, the copy key and the local copy."""
@@ -202,6 +235,7 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
     settings_store, secrets = _stores(args)
     if isinstance(secrets, stores.DpapiSecretStore):
         secrets.delete()
+    _unlink_quietly(args, settings_store)
     if getattr(args, "windows", False):
         (stores.data_dir() / stores.COPY_KEY_FILE).unlink(missing_ok=True)
     try:
@@ -216,6 +250,21 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
         CopyStore(copy_dir, DevFileKeyProvider("")).delete_all()
     print("Removed the sign-in task, the firewall rule, the stored secrets and the local copy.")
     return 0
+
+
+def _unlink_quietly(args: argparse.Namespace, settings_store: SettingsStore) -> None:
+    """TLY-2 (§3.8.6): an uninstall revokes the link credential while the
+    link is up, and deletes it here in any case."""
+    from tally_bridge import linkcli
+
+    store = linkcli.link_store(args)
+    if store is None or store.load() is None:
+        return
+    try:
+        settings = settings_store.load()
+    except SettingsError:
+        settings = Settings()
+    linkcli.do_unlink(settings, store)
 
 
 def _setup_link(args: argparse.Namespace) -> int:
@@ -262,6 +311,9 @@ def _serve(args: argparse.Namespace) -> int:
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
     app = build_address_app(live, secrets, reader, store, copy)
+    from tally_bridge import linkcli
+
+    link = linkcli.link_loop(settings, linkcli.link_store(args), app.inner, reader)
     server = uvicorn.Server(
         uvicorn.Config(
             app,
@@ -275,7 +327,7 @@ def _serve(args: argparse.Namespace) -> int:
         )
     )
     _awake_while(
-        settings.keep_awake, lambda: asyncio.run(_serve_with_copy(server, reader, copy, live))
+        settings.keep_awake, lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, link))
     )
     return 0
 
@@ -294,16 +346,25 @@ def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:
         awake.stop()
 
 
-async def _serve_with_copy(server: Any, reader: Any, copy: CopyStore | None, live: Any) -> None:
-    """Run the server, and the copy loop beside it when the copy is on."""
+async def _serve_with_copy(
+    server: Any, reader: Any, copy: CopyStore | None, live: Any, link: Any = None
+) -> None:
+    """Run the server, the copy loop beside it when the copy is on, and the
+    link loop when link mode is on and confirmed (TLY-2)."""
     from tally_bridge.localcopy.schedule import run_forever
 
     loop_task = asyncio.create_task(run_forever(reader, copy, live)) if copy else None
+    link_stop = asyncio.Event()
+    link_task = asyncio.create_task(link(link_stop)) if link else None
     try:
         await server.serve()
     finally:
+        link_stop.set()
         if loop_task is not None:
             loop_task.cancel()
+        if link_task is not None:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(link_task, 5)
 
 
 if __name__ == "__main__":
