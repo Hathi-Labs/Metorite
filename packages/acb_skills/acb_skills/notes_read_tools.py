@@ -32,11 +32,10 @@ title come from people. Each result puts that text in ONE ``UntrustedFrame``
 block, and a tool that read meeting text marks the chat as one that read
 outside text (``egress.mark_untrusted_answer``).
 
-**No secret.** Each tool drops a key that names a token, a cookie, a password
-or a screenshot. A URL in a text loses its user name, password, query string
-and fragment, also when it is scheme-relative or sits in quotes or in angle
-brackets. A failed run of a summary shows a fixed text, never the error of a
-provider.
+**What a result shows.** Each tool drops a key that names a token, a cookie, a
+password or a screenshot. The meeting text is the member's own words. It is
+shown as written, inside the untrusted frame. A provider error of a failed run
+is not shown. The run shows a fixed text.
 
 **The pack.** The tools are the pack ``notes``, owned by ``org-admin`` (the
 owner of the dark packs that no agent runs). It is in no ``FOLLOWS`` entry. A
@@ -50,12 +49,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import textwrap
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 
 import httpx
 from acb_common.card_body import one_line
@@ -191,7 +189,7 @@ def _line(value: Any, width: int = MAX_FIELD_CHARS) -> str:
 def _long(value: Any, width: int = MAX_LONG_CHARS) -> str:
     """A long text with its line breaks, with no hidden character, cut at
     *width* characters."""
-    text = _scrub(strip_hidden(str(value)).strip())
+    text = strip_hidden(str(value)).strip()
     if len(text) <= width:
         return text
     cut = textwrap.wrap(text, width, max_lines=1, placeholder="...", replace_whitespace=False,
@@ -225,17 +223,6 @@ def _empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
-#: A URL in free text: with a scheme, or scheme-relative (``//host/x``). A
-#: delimiter such as ``<``, a quote or a bracket ends it.
-_URL_IN_TEXT = re.compile(r"""(?<![\w/:.-])(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//[^\s<>"'`)\]]+""")
-
-
-def _scrub(text: str) -> str:
-    """*text* with each URL in it made safe: no user name, password, query
-    string or fragment. A URL can hold a token in each of them."""
-    return _URL_IN_TEXT.sub(lambda m: _safe_url(m.group(0)), text)
-
-
 def _secret_key(key: Any) -> bool:
     low = str(key).lower()
     return any(word in low for word in _SECRET_WORDS)
@@ -247,7 +234,7 @@ def _fold(value: Any, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return _line(_scrub(value))
+        return _line(value)
     if depth >= MAX_DEPTH:
         return _line(json.dumps(value, ensure_ascii=False, default=str))
     if isinstance(value, dict):
@@ -310,19 +297,6 @@ def _meeting_path(template: str, mid: str) -> str:
     id goes through ``quote`` (the fence of ``chat_parity`` reads the whole
     template in each tool)."""
     return template.replace("{}", quote(mid, safe=""))
-
-
-def _safe_url(raw: Any) -> str:
-    """A URL with no user name, no password, no query string and no fragment: a
-    secret can live in each of them."""
-    if not isinstance(raw, str) or not raw:
-        return ""
-    try:
-        parts = urlsplit(raw.strip())
-    except ValueError:
-        return ""
-    host = parts.netloc.rpartition("@")[2]
-    return _line(urlunsplit((parts.scheme, host, parts.path, "", "")))
 
 
 async def _read_meeting(mid_raw: Any, template: str,
@@ -427,7 +401,7 @@ async def notes_meeting(meeting_id: str, segments_offset: int = 0,
                          paged(attendees, 0, MAX_LIST_ITEMS, default=MAX_LIST_ITEMS,
                                maximum=MAX_LIST_ITEMS).items]
     # The error text of a provider can hold a URL with a token, so a failed run
-    # carries a fixed text.
+    # carries a fixed text. The meeting text is the member's own words.
     body["last_runs"] = [
         {**_pick(r, ("kind", "status", "stage", "created_at", "finished_at")),
          **({"error": _RUN_FAILED} if not _empty(r.get("error")) else {})}

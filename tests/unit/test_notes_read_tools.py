@@ -11,7 +11,7 @@ the module. What is locked, each with its mutation (R7):
 1. Each tool sends its GET route as the member of the run, with its params.
 2. A bad meeting id sends no request. Each path parameter goes through quote.
 3. A shared room and a run with no member send no request.
-4. No text holds a secret: no URL part that can hold one, and no raw error of a run.
+4. A provider error of a failed run is not shown. The meeting text passes as written, in the frame.
 5. Text of other people is framed, and a read of it marks the chat.
 6. A list pages, and a library over the route cap says "at least".
 7. The 6 GET rows are COVERED. The 13 rows that wait for task 3966 are DEBT.
@@ -239,34 +239,22 @@ async def test_a_long_query_sends_nothing(gw) -> None:
 # ── 4. No secret ────────────────────────────────────────────────────────────
 
 
-def test_a_url_loses_userinfo_query_and_fragment() -> None:
-    assert nt._safe_url("https://u:p@h.example.test:8443/a/b?q=1#f") == \
-        "https://h.example.test:8443/a/b"
-    assert nt._safe_url(None) == "" and nt._safe_url("") == ""
+def test_the_module_has_no_url_scrub() -> None:
+    """The scrub was a regex that could not close every shape, so it is gone.
+    Mutation: add ``_scrub`` or ``_safe_url`` back -> red."""
+    assert not hasattr(nt, "_scrub") and not hasattr(nt, "_safe_url")
 
 
-@pytest.mark.parametrize(("raw", "want"), [
-    ("see https://bot:HUNTER2@acc.example.test/signin?token=QTOK#FRAG now",
-     "see https://acc.example.test/signin now"),
-    ("go to //u:p@host.example.test/x?q=SECRETQ", "go to //host.example.test/x"),
-    ("link <https://u:p@h.example.test/a?k=SECRETK> end", "link <https://h.example.test/a> end"),
-    ('say "http://u:p@h.example.test/a?k=SECRETK#f" now', 'say "http://h.example.test/a" now'),
-    ("it said 'https://h.example.test/b?k=SECRETK'.", "it said 'https://h.example.test/b'."),
-    ("a plain a//b path and 5/2 stay", "a plain a//b path and 5/2 stay"),
-])
-def test_scrub_makes_each_url_form_safe(raw, want) -> None:
-    """Scheme, scheme-relative, angle brackets and quotes. Mutation: match only a
-    word with ``://`` -> the scheme-relative and the bracket forms leak -> red."""
-    assert nt._scrub(raw) == want
-
-
-async def test_the_meeting_text_is_scrubbed_of_url_secrets(gw, marks) -> None:
-    gw.detail["segments"][0]["text"] = "open https://u:p@h.example.test/x?t=SEGTOK"
-    gw.detail["summary_md"] = "see <//u:p@h.example.test/y?t=SUMTOK>"
+async def test_the_meeting_text_passes_as_written_inside_the_frame(gw, marks) -> None:
+    """The choice: the text is the member's own words. It is not edited. It sits in
+    the untrusted frame. Mutation: edit the text, or leave the frame -> red."""
+    url = "https://h.example/a?token=T"
+    gw.detail["segments"][0]["text"] = f"open {url} now"
     out = await nt.notes_meeting(MID)
-    text = json.dumps(out)
-    for leak in ("SEGTOK", "SUMTOK", "u:p@"):
-        assert leak not in text, leak
+    block = out["meeting"]
+    assert url in block and block.startswith("<<<MEETING ")
+    assert "<<<END MEETING " in block.split("\n")[-1]
+    assert url not in out["note"] and marks == [1]
 
 
 async def test_a_failed_run_shows_a_fixed_text_never_the_provider_error(gw, marks) -> None:

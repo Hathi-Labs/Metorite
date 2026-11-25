@@ -432,8 +432,8 @@ the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
 GET routes only, as the member. None writes, joins a meeting, starts a bot or
 reaches a person.
 
-A URL in a text loses its user name, password, query string and fragment. A
-failed run of a summary shows a fixed text, never the error of a provider. A
+The meeting text is the member's own words. A result shows it as written, inside
+the untrusted frame. A provider error of a failed run is not shown. A
 library over the route cap says "at least" and never says "last page". The
 pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
 `TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
