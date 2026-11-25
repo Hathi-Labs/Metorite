@@ -80,6 +80,12 @@ class TallyClient:
                         content=envelope,
                         headers={"Content-Type": "text/xml; charset=utf-8"},
                     )
+            except httpx.ConnectTimeout as exc:
+                # No connection at all. On Windows a closed local port does
+                # not refuse at once: the connect retries until it times out.
+                # That is Tally closed, not Tally slow, so the local copy
+                # (TLY-4) answers. Found by the windows-latest job (TLY-5).
+                raise TallyDown from exc
             except httpx.TimeoutException as exc:
                 raise TallyTimeout from exc
             except httpx.HTTPError as exc:

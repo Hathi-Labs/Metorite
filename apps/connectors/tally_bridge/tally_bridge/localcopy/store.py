@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -29,6 +30,8 @@ from tally_bridge.reader.values import Amount
 log = logging.getLogger("tally_bridge.localcopy")
 
 SUFFIX = ".copy"
+#: The temporary file of ``save``: the 32-hex name of ``_path``, then ``.tmp``.
+_OWN_TMP = re.compile(r"[0-9a-f]{32}\.tmp")
 
 
 @dataclass
@@ -167,9 +170,12 @@ class CopyStore:
         for path in self._folder.glob(f"*{SUFFIX}"):
             path.unlink(missing_ok=True)
             gone += 1
-        # A crash between the write and the replace leaves a .tmp file.
+        # A crash between the write and the replace leaves a .tmp file. Only
+        # the store's own: a 32-hex name, as ``_path`` makes it. COPY_DIR is
+        # the customer's choice, so another .tmp there is not ours.
         for path in self._folder.glob("*.tmp"):
-            path.unlink(missing_ok=True)
+            if _OWN_TMP.fullmatch(path.name):
+                path.unlink(missing_ok=True)
         return gone
 
     def keep_only(self, companies: tuple[str, ...] | list[str]) -> int:
