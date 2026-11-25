@@ -467,3 +467,69 @@ def test_a_confirm_from_the_command_line_starts_the_poll_at_the_next_check(monke
         await asyncio.wait_for(runner, 3)
 
     asyncio.run(go())
+
+
+# --- Review round 2 (Opus) ---------------------------------------------------------
+
+
+class _Locked(MemoryLinkStore):
+    """A store that a scanner holds while ``locked`` is True."""
+
+    locked = False
+
+    def load(self):
+        if self.locked:
+            raise OSError("sharing violation")
+        return super().load()
+
+
+def test_an_unlink_on_an_unreadable_store_changes_nothing_and_says_so():
+    """Round 2: before, the unlink said that it worked, stopped the poll, and
+    the 30 s check then started the same link again with no revoke."""
+    link = FakeLink()
+    store = _Locked(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    ctl = _controller(link, store)
+    ctl.dispatch = _echo
+
+    async def go():
+        stop = asyncio.Event()
+        runner = asyncio.create_task(ctl.run(stop))
+        await _until(lambda: len(link.polls) >= 1)
+        store.locked = True
+        _state, note = await ctl.unlink()
+        store.locked = False
+        still_polling = ctl._loop_stop is not None and not ctl._loop_stop.is_set()
+        stop.set()
+        await asyncio.wait_for(runner, 3)
+        return note, still_polling
+
+    note, still_polling = asyncio.run(go())
+    assert note is not None and "cannot be read" in note
+    assert link.revokes == 0 and store.state is not None  # nothing changed
+    assert still_polling  # the unlink did not stop the poll
+
+
+def test_a_confirm_on_an_unreadable_store_says_it_cannot_be_read():
+    store = _Locked(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
+    store.locked = True
+    _, error = _controller(FakeLink(), store).confirm("Acme Traders")
+    store.locked = False
+    assert "cannot be read" in error and store.state.confirmed is False
+
+
+def test_two_pair_requests_at_once_start_one_pairing():
+    """Round 2: the revoke of an old pairing awaited before the task existed,
+    so a second request passed the busy check."""
+    link = FakeLink(pending=10_000)
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-0", "Old Co"))
+    ctl = _controller(link, store)
+
+    async def go():
+        a, b = await asyncio.gather(ctl.pair("example.com"), ctl.pair("example.com"))
+        await ctl.unlink()
+        return a, b
+
+    a, b = asyncio.run(go())
+    errors = [r[1] for r in (a, b)]
+    assert errors.count(None) == 1 and any(e and "runs already" in e for e in errors)
+    assert len(link.starts) == 1

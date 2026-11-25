@@ -77,6 +77,9 @@ class LinkController:
         self._disconnected = False
         self._wake = asyncio.Event()
         self._loop_stop: asyncio.Event | None = None
+        #: True from the first check of ``pair`` until its task exists, so a
+        #: second request cannot start a second pairing in that gap.
+        self._starting = False
 
     # --- What the page may show -------------------------------------------------
 
@@ -119,14 +122,22 @@ class LinkController:
         url = self._link_url()
         if not url:
             return self.state(), "Link mode is off. Set LINK_URL first."
-        if self._pair_task is not None and not self._pair_task.done():
+        if self._starting or (self._pair_task is not None and not self._pair_task.done()):
             return self.state(), "A pairing runs already. Wait for it, or cancel it."
         try:
             old = self._store.load()
-        except Exception:
+        except Exception:  # an unreadable link may be a live one
             return self.state(), UNREADABLE
         if old is not None and old.confirmed:
             return self.state(), f"This machine is linked to {old.company_name}. Unlink first."
+        # Busy from here until the task exists: the revoke below awaits.
+        self._starting = True
+        try:
+            return await self._start_pairing(url, domain, old)
+        finally:
+            self._starting = False
+
+    async def _start_pairing(self, url: str, domain: str, old: LinkState | None) -> Result:
         api = self._api_factory(url)
         if old is not None:  # an unconfirmed pairing: revoke it (§3.8.4 step 11)
             await self._revoke_quietly(api, old.credential)
@@ -159,11 +170,15 @@ class LinkController:
         except TimeoutError:
             self._error = "Metorite did not answer. Try again later."
             self._pair_task.cancel()
+            await asyncio.gather(self._pair_task, return_exceptions=True)
         return self.state(), self._error
 
     def confirm(self, company: str) -> Result:
         """Rule j: the exact company name that the approval returned."""
-        stored = self._load()
+        try:
+            stored = self._store.load()
+        except Exception:
+            return self.state(), UNREADABLE
         if stored is None:
             return self.state(), "This machine has no pairing. Pair it first."
         if company.strip() != stored.company_name:
@@ -178,11 +193,21 @@ class LinkController:
     async def unlink(self) -> Result:
         """Revoke at Metorite, then delete here and stop the poll. The error
         text says when Metorite did not take the revoke."""
+        # A store that cannot be read may hold a live link. Then nothing
+        # changes, and the page says so: an unlink that did nothing must not
+        # look done, and the poll must not start again by itself.
+        try:
+            self._store.load()
+        except Exception:
+            return self.state(), UNREADABLE
         if self._pair_task is not None and not self._pair_task.done():
             self._pair_task.cancel()
             # Wait for the cancel, so the state below is final (no code box).
             await asyncio.gather(self._pair_task, return_exceptions=True)
-        stored = self._load()
+        try:
+            stored = self._store.load()
+        except Exception:
+            return self.state(), UNREADABLE
         revoked = True
         if stored is not None:
             url = self._link_url()
