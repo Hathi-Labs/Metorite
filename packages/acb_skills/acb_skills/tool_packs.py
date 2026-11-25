@@ -1222,8 +1222,8 @@ _STUDIO_DELEGATION_REFUSED = (
 # ── The org-admin pack (PAR-2a, chat_parity.md section 6.3, rung 1) ──────────
 
 #: The rules of the ``org-admin`` pack: the four tools of PAR-2a, the 13 of
-#: PAR-4a (task 3107), the two of PAR-4c (task 3935) and the seven Integrations
-#: tools of PAR-6a (task 3109).
+#: PAR-4a (task 3107), the two of PAR-4c (task 3935), the two seat tools of
+#: PAR-4d (task 3936) and the seven Integrations tools of PAR-6a (task 3109).
 #: Each tool that it names is a tool of this pack. The owner (``org-admin``) has
 #: no persona text in the orchestrator, and it never runs as an agent. The
 #: routes decide each right, so the rules claim none.
@@ -1234,6 +1234,7 @@ Integrations app. Use them yourself. No admin agent exists to hand a task to.
 - list_org_groups, list_roles_and_rights, read_member_access and
   preview_member_removal are reads. Read the short name of a group or a role
   there first. preview_member_removal removes nobody.
+- read_seats reads each plan, its seats in use, its cap and who holds a seat.
 - read_integrations and read_agent_access read the Integrations, and give the
   ids that a change needs. Read first.
 - probe_integration tests a service or an MCP server. discover_api_setup
@@ -1241,7 +1242,7 @@ Integrations app. Use them yourself. No admin agent exists to hand a task to.
 - set_member_roles, set_member_status, answer_access_request,
   create_org_group, edit_org_group, delete_org_group, add_org_group_member,
   remove_org_group_member, create_org_role, delete_org_role,
-  set_member_overrides, rename_org, remove_member, purge_member,
+  set_member_overrides, rename_org, remove_member, purge_member, set_seat,
   revoke_agent_connection, disconnect_integration and set_mcp_server each show
   ONE card. Do not ask in text before it. After it, say in one line what the
   tool returned.
@@ -1253,6 +1254,8 @@ Integrations app. Use them yourself. No admin agent exists to hand a task to.
   read_member_access first, and send the whole new list.
 - A role or an override gives only rights that the member holds. When the
   result names a right that the member does not hold, tell the member.
+- set_seat never buys seats. When a plan is at its cap, tell the member to buy
+  seats on the Billing page. Never start an order.
 - No tool decides an app request. Tell the member to answer it on its card.
 - Each tool acts as the member. When the result says that the member does not
   hold the right, tell the member, and do not try again.
@@ -1279,6 +1282,14 @@ _ORG_ADMIN_WORDS = (
     "remove the member", "purge a member", "purge the member",
     "rename the organisation", "rename our organization", "rename our organisation",
     "organization name", "organisation name",
+    # PAR-4d (task 3936): the seats. A bare "seat" is out: a train, a flight
+    # or a meeting room has seats too, and that turn must not load the admin
+    # tools.
+    "seat assignment", "seat assignments", "assign a seat", "assign seats",
+    "give a seat", "release a seat", "release the seat", "release seats", "free a seat",
+    "free the seat", "org seats", "our seats", "organization seats", "organisation seats",
+    "seats of the organization", "seats of the organisation", "seat count", "seat counts",
+    "seats in use", "seat cap", "holds a seat", "hold a seat",
     # PAR-6a (task 3109): the Integrations app. A bare "connection" is out:
     # the calendar pack uses "calendar connections". A bare "github" is out
     # too: a coding turn ("open a pull request on github") names it, and that
@@ -1520,12 +1531,13 @@ PACKS: dict[str, Pack] = {
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,
     ),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107) adds the
-    # groups, the roles, the overrides and the name of the org. Last, so the cap drops it
+    # groups, the roles, the overrides and the name of the org. PAR-4d (task
+    # 3936) adds the seats. Last, so the cap drops it
     # first. It has no surface, and it is NOT in FOLLOWS: it stays off until the
     # owner adds a TOOL_PACKS line.
     "org-admin": Pack(
         slug="org-admin",
-        when="Load for org members, sign-in requests, groups, roles, overrides or name, or integrations, MCP servers, plugins and GitHub.",
+        when="Load for org members, seats, sign-in requests, groups, roles, overrides or name, or integrations, MCP servers, plugins, GitHub.",
         rules=_ORG_ADMIN_RULES,
         words=_ORG_ADMIN_WORDS,
         delegation_refusal=_ORG_ADMIN_DELEGATION_REFUSED,
