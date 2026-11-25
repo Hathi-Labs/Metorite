@@ -5910,6 +5910,8 @@ async def _inject_mcp_servers(
                 on_unauthorized=_mark_unauthorized_for(str(org)),
                 on_needs_signin=_mark_needs_signin_for(str(org)),
                 failures=failures,
+                # Task 3924, review P2: a first-party name never autoloads a server tool.
+                reserved=reserved,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.

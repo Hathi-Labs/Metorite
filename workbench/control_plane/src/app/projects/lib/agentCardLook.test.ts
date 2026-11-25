@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { agentCardLook, agentPlaceLine } from "./agentCardLook";
+import { agentCardLook, agentPlaceLine, splitPlanProgress } from "./agentCardLook";
 
 const via = "mcp:claude.ai:claude-code";
 
@@ -201,5 +201,59 @@ describe("agentPlaceLine (SW-106)", () => {
     const at = panel.indexOf("data-agent-place");
     expect(at).toBeGreaterThan(0);
     expect(panel.slice(Math.max(0, at - 400), at)).toContain("placeLook.none ? null");
+  });
+});
+
+describe("a plan on the live line (SW-32)", () => {
+  it("shows the step in progress and the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "old thought",
+        plan: { done: 3, total: 7, step: "Write the tests" },
+      }),
+    ).toEqual({ edge: "live", line: "Claude Code · Write the tests · 3 of 7" });
+  });
+
+  it("falls back to the note when no step is in progress, and keeps the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "thinking",
+        plan: { done: 0, total: 2, step: null },
+      }).line,
+    ).toBe("Claude Code · thinking · 0 of 2");
+    expect(
+      agentCardLook("answered", { clientVia: via, plan: { done: 2, total: 2, step: null } }).line,
+    ).toBe("Claude Code · 2 of 2");
+  });
+
+  it("a plan of no step or no plan changes nothing", () => {
+    for (const plan of [null, undefined, { done: 0, total: 0, step: null }]) {
+      expect(agentCardLook("working", { clientVia: via, note: "n", plan }).line).toBe(
+        "Claude Code · n",
+      );
+    }
+  });
+
+  it("only a live run shows the plan: a waiting run keeps its wait", () => {
+    expect(
+      agentCardLook("waiting", {
+        waiting: { on: "ci", until: null },
+        plan: { done: 1, total: 3, step: "x" },
+      }).line,
+    ).toBe("Waiting on CI");
+  });
+});
+
+describe("the count of a plan stays apart from the step (SW-32)", () => {
+  it("splits the head and the count, and leaves other lines whole", () => {
+    expect(
+      splitPlanProgress("Claude Code (lane-invites) · Pull the invite list · 0 of 2", { done: 0, total: 2 }),
+    ).toEqual({ head: "Claude Code (lane-invites) · Pull the invite list", tail: "· 0 of 2" });
+    expect(splitPlanProgress("Claude Code working", { done: 0, total: 2 })).toBeNull();
+    expect(splitPlanProgress("Claude Code · n", null)).toBeNull();
+    expect(splitPlanProgress(null, { done: 1, total: 3 })).toBeNull();
+    expect(splitPlanProgress(" · 1 of 3", { done: 1, total: 3 })).toBeNull();
   });
 });
