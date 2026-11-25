@@ -19,6 +19,22 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
+`KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
+`acb_skills/knowledge_tools.py`: `create_page`, `edit_page`, `create_space`
+and `edit_space`. The Knowledge ceiling goes from 19 to 15. Fences:
+`tests/unit/test_kb_chat_writes.py` and `tests/unit/test_kb_chat_writes_r8.py`.
+
+Each PAR-3 tool shows ONE card with the full text before it saves. A text that
+does not fit whole on one card gets a sentence and no card. A new page is
+always a draft, and no tool publishes (F2). The chat sends no grant. The
+server checks the right, and a 403 comes back as its own sentence.
+
+`edit_page` changes only a draft. For a published page it makes no card and
+no write, and it names `propose_edit`, which needs `KNOWLEDGE_PROPOSALS`. The
+PATCH route takes no base version, so a draft edit can overwrite a change
+that a colleague made while the card waited.
+
 **P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
 `people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
 `people_me`, `people_work` and `reach_preview`. Each tool calls the People
@@ -365,10 +381,10 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Eight ceilings had gone up since P-0 (calendar,
-chat, email, integrations, knowledge, settings, shell, studio), and each one
-names its task now. The CRM wave P-3 had no task, so task 3678 is its task.
-Fence: `tests/unit/test_chat_parity.py`.
+task of the wave of that app. Four ceilings are above P-0 now (calendar,
+chat, settings, studio), and each one names its
+task. The CRM wave P-3 had no task,
+so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
@@ -427,9 +443,11 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Four ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Five ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4. P-5b-1 took people to 13 and
-memory to 4. The total of `DEBT_CEILING` is 342. The "Today" column above does
+memory to 4. PAR-3 took knowledge to 15.
+
+The total of `DEBT_CEILING` is 338. The "Today" column above does
 not show these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice

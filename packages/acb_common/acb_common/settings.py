@@ -663,6 +663,16 @@ class Settings(BaseSettings):
     # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
     # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
     knowledge_proposals: bool = False
+    # PAR-3 (task 3105, chat_parity.md §5 wave P-5). The assistant's own
+    # Knowledge writes, default OFF. ON gives the orchestrator `create_page`,
+    # `edit_page`, `create_space`, `edit_space` and their persona line (with
+    # COMPANY_SEARCH_ENABLED on too). Each one shows the full text on one card
+    # before it saves. A new page is always a draft. No tool publishes. OFF
+    # keeps the four tools out. The routes do not change, because the web
+    # already uses them. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_chat_writes_enabled`. AGENT-SAFE:
+    # it spends nothing. Fence: tests/unit/test_kb_chat_writes.py.
+    knowledge_chat_writes: bool = False
     # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
     # ids whose `search_company` reads with no Knowledge hit write a
     # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
