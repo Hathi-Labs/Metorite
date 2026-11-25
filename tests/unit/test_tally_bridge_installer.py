@@ -181,6 +181,8 @@ def test_the_page_opens_as_the_person_who_signed_in():
     for flag in ("shellexec", "runasoriginaluser", "postinstall", "nowait"):
         assert flag in last
     assert "function SetupUrl" in ISS and r"{tmp}\setup-url.txt" in ISS
+    # Verifier note N1: no address file (the bridge did not start), no step.
+    assert last.endswith("Check: HasSetupUrl") and "function HasSetupUrl: Boolean" in ISS
     assert not any("--open" in ln for ln in _section("Run"))
 
 

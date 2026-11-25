@@ -40,7 +40,7 @@ Filename: "{app}\tally_bridge.exe"; Parameters: "apply-windows --windows"; Flags
 Filename: "{app}\tally_bridge_service.exe"; Parameters: "start"; Flags: runhidden waituntilterminated
 Filename: "{app}\tally_bridge.exe"; Parameters: "setup-link --windows --wait --url-file ""{tmp}\setup-url.txt"""; Flags: runhidden waituntilterminated
 ; The page opens as the person who signed in, never in the administrator's browser.
-Filename: "{code:SetupUrl}"; Flags: shellexec runasoriginaluser postinstall nowait skipifsilent; Description: "Open the setup page"
+Filename: "{code:SetupUrl}"; Flags: shellexec runasoriginaluser postinstall nowait skipifsilent; Description: "Open the setup page"; Check: HasSetupUrl
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonappdata}\TallyBridge"
@@ -53,6 +53,13 @@ Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; F
 [Code]
 // The address that the elevated setup-link step wrote. Inno deletes {tmp},
 // and the address with it, when the setup ends.
+// When the bridge did not start, setup-link wrote no address. The finish
+// page then offers no empty "Open the setup page" step.
+function HasSetupUrl: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{tmp}\setup-url.txt'));
+end;
+
 function SetupUrl(Param: String): String;
 var
   Url: AnsiString;
