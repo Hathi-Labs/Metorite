@@ -100,13 +100,15 @@ not, and Metorite can read the books only while TallyPrime is open.
 4. Click **Save these switches**.
 
 **If the page says that the sign-in task is off.** The connector makes the
-task only when users cannot change TallyPrime. Otherwise the task would run
+task only when users cannot change TallyPrime, its folder or the files in
+it. A link (a junction) in the path of TallyPrime also stops it. Otherwise the task would run
 a changed program for each person who signs in. TallyPrime at
 `C:\TallyPrime` often fails this check. An administrator does one of these:
 
 - Lock the folder. Open a command prompt as an administrator, and run the
-  `icacls` command that the message shows. It gives full control to SYSTEM
-  and the administrators, and only read to users.
+  three `icacls` commands that the message shows, in their order. They give
+  full control to SYSTEM and the administrators, and only read to users.
+  Move the company data out of that folder first, or users cannot save it.
 - Or install TallyPrime under `C:\Program Files`.
 
 Then click **Save these switches** again.
