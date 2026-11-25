@@ -201,8 +201,8 @@ def test_the_installer_needs_an_administrator_and_a_64_bit_windows_10():
     assert "ArchitecturesAllowed=x64compatible" in _section("Setup")
     assert "ArchitecturesInstallIn64BitMode=x64compatible" in _section("Setup")
     dirs = "\n".join(_section("Dirs"))
-    assert r'"{commonappdata}\TallyBridge"' in dirs and "admins-full system-full" in dirs
-    assert "users-" not in dirs
+    assert r'"{commonappdata}\TallyBridge"' in dirs
+    assert "users-" not in dirs and "Permissions" not in dirs
 
 
 def test_the_build_makes_both_programs_and_bundles_the_setup_page():
@@ -217,7 +217,7 @@ def test_the_build_makes_both_programs_and_bundles_the_setup_page():
     assert 'resources.files("tally_bridge.setup").joinpath("static"' in routes
     build = (INSTALLER / "build.ps1").read_text(encoding="utf-8")
     assert r"installer\tally_bridge.spec" in build and r"installer\tally_bridge.iss" in build
-    assert "pywin32" in build and "pyinstaller" in build
+    assert "pyinstaller" in build
 
 
 @pytest.mark.parametrize("name", ["cli_entry.py", "service_entry.py"])
@@ -231,3 +231,54 @@ def test_pywin32_installs_on_windows_only():
     deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     pywin = [d for d in deps["project"]["dependencies"] if d.startswith("pywin32")]
     assert pywin == ["pywin32>=306; sys_platform == 'win32'"]
+
+
+# --- Review fixes: the data folder, the upgrade, the locked build ----------------
+
+
+def _icacls_calls() -> list[str]:
+    body = ISS.split("procedure ProtectDataDir;", 1)[1].split("\nend;", 1)[0]
+    return re.findall(r"Icacls\('\"' \+ Dir \+ '([^']*)'\);", body)
+
+
+def test_the_data_folder_is_for_admins_and_system_only():
+    """Review finding 1: %ProgramData% lets users create files, and the
+    LocalSystem service trusts them. The installer takes the folder back:
+    admins own every item, explicit rights go, inheritance stops, and Users
+    may read only."""
+    assert _icacls_calls() == [
+        '" /setowner *S-1-5-32-544 /T /C',
+        '" /reset /T /C',
+        '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F'
+        ' *S-1-5-32-545:(OI)(CI)RX',
+        '" /setowner *S-1-5-32-544 /T /C',
+        '\\*" /reset /T /C',
+    ]
+    assert "RaiseException" in ISS.split("procedure Icacls", 1)[1].split("\nend;", 1)[0]
+
+
+def test_a_fresh_install_deletes_what_a_user_put_in_the_folder():
+    body = ISS.split("procedure ProtectDataDir;", 1)[1].split("\nend;", 1)[0]
+    assert "if not WasInstalled then\n    DelTree(Dir + '\\*', False, True, True);" in body
+    step = ISS.split("procedure CurStepChanged", 1)[1].split("\nend;", 1)[0]
+    assert "CurStep = ssPostInstall" in step and "ProtectDataDir" in step
+
+
+def test_an_upgrade_stops_the_service_and_keeps_the_settings():
+    prep = ISS.split("function PrepareToInstall", 1)[1].split("\nend;", 1)[0]
+    assert "WasInstalled := RegKeyExists(HKLM, ServiceKey);" in prep
+    assert "'stop TallyBridge'" in prep
+    assert r"'SYSTEM\CurrentControlSet\Services\TallyBridge'" in ISS
+
+
+def test_the_build_installs_only_the_locked_versions():
+    """Review finding 4: no `pip install` of the newest versions. The build
+    syncs the lock, with PyInstaller in a locked group."""
+    build = (INSTALLER / "build.ps1").read_text(encoding="utf-8")
+    assert "uv sync --frozen --group build" in build
+    assert "uv run --frozen --group build pyinstaller" in build
+    assert "pip install" not in build
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["dependency-groups"]["build"] == ["pyinstaller>=6,<7"]
+    lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert '\nname = "pyinstaller"\n' in lock and '\nname = "pywin32"\n' in lock

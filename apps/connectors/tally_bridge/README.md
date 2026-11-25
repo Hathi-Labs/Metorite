@@ -200,18 +200,25 @@ To build the installer on a Windows machine with `uv` and Inno Setup 6:
 powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.1.0
 ```
 
-The output is `dist\TallyBridgeSetup-0.1.0.exe`. It is not signed yet, because
-signing waits for the owner's certificate (brief §10 question 8). The
-installer does these steps in this order:
+The build installs only the versions in `uv.lock`, PyInstaller included (the
+`build` dependency group). The output is `dist\TallyBridgeSetup-0.1.0.exe`. It
+is not signed yet, because signing waits for the owner's certificate (brief
+§10 question 8). The installer does these steps in this order:
 
-1. It installs the service, which starts with Windows.
-2. It sets the restart rule.
-3. It runs `apply-windows`.
-4. It starts the service.
-5. It makes the setup key (`setup-link --wait --url-file`). That step waits
+1. An upgrade stops the running service first.
+2. It takes back `%ProgramData%\TallyBridge`. The administrators own each
+   item in it, and the folder gives full control to SYSTEM and the
+   administrators only. Users can read, and cannot create or change a file.
+   A fresh install also deletes any file that was already there. The
+   service runs as LocalSystem and trusts its settings.
+3. It installs the service, which starts with Windows.
+4. It sets the restart rule.
+5. It runs `apply-windows`.
+6. It starts the service.
+7. It makes the setup key (`setup-link --wait --url-file`). That step waits
    until the service answers, and writes the address to a file in the
    installer's temporary folder.
-6. It opens that address as the person who signed in, never in the
+8. It opens that address as the person who signed in, never in the
    browser of an administrator.
 
 The uninstall stops and removes the service, then runs `uninstall-windows`.
