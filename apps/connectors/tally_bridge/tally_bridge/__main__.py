@@ -5,6 +5,8 @@
     python -m tally_bridge setup-link  # a new setup key, and the address that opens the page
     python -m tally_bridge record-requests <folder> --company "<name>" --ledger "<name>"
     python -m tally_bridge delete-copy # delete every local copy (TLY-4)
+    python -m tally_bridge apply-windows --windows      # TLY-5: sign-in task, firewall
+    python -m tally_bridge uninstall-windows --windows  # TLY-5: undo every change
 
 On a dev box the settings and the hashes come from the environment
 (``TALLY_BRIDGE_*``), or from two files: ``--settings-file`` (the settings,
@@ -68,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--dev-copy-key-file", help="serve, delete-copy: DEV ONLY, the key of the local copy"
+    )
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="setup-link: wait for the bridge, then open the page (the installer)",
     )
     parser.add_argument(
         "--windows",
@@ -226,12 +233,56 @@ def _setup_link(args: argparse.Namespace) -> int:
         )
         return 2
     port = settings_store.load().bind_port
+    url = f"http://127.0.0.1:{port}/setup?k={key}"
+    if getattr(args, "open", False):
+        # The installer: wait for the service to answer, then open the page.
+        if not _wait_up(f"http://127.0.0.1:{port}/health"):
+            print("The bridge did not start. Open this address later:", file=sys.stderr)
+            print(url, file=sys.stderr)
+            return 1
+        import webbrowser
+
+        webbrowser.open(url)
+        return 0
     print("Open this address on this computer (shown once):")
-    print(f"http://127.0.0.1:{port}/setup?k={key}")
+    print(url)
     return 0
 
 
-def _serve(args: argparse.Namespace) -> int:
+def _wait_up(health_url: str, timeout_s: float = 60.0, get: Any = None) -> bool:
+    """True once *health_url* answers 200, within *timeout_s*."""
+    import time
+
+    import httpx
+
+    get = get or (lambda u: httpx.get(u, timeout=2.0).status_code)
+    end = time.monotonic() + timeout_s
+    while True:
+        try:
+            if get(health_url) == 200:
+                return True
+        except httpx.HTTPError:
+            pass
+        if time.monotonic() >= end:
+            return False
+        time.sleep(1.0)
+
+
+def serve_until(stop: Any) -> None:
+    """The service's server (TLY-5 PR B): the product stores of ``--windows``,
+    until *stop* (a ``threading.Event``) is set. Unlike ``serve``, it starts
+    with no token and no setup key yet: the installer starts the service
+    before the customer opens the setup page, and both guards refuse every
+    request until a key exists."""
+    args = argparse.Namespace(
+        windows=True, settings_file=None, dev_secret_file=None, dev_copy_key_file=None
+    )
+    code = _serve(args, stop=stop, need_secret=False)
+    if code != 0:
+        raise RuntimeError(f"The bridge could not start (code {code}).")
+
+
+def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True) -> int:
     import uvicorn
 
     from tally_bridge.transport import build_address_app
@@ -244,7 +295,11 @@ def _serve(args: argparse.Namespace) -> int:
         logging.getLogger("tally_bridge").warning(
             "DEV ONLY: the hashes are in a plain file, not in DPAPI. Never ship this."
         )
-    if secrets.read_token_sha256() is None and secrets.setup_secret_sha256() is None:
+    if (
+        need_secret
+        and secrets.read_token_sha256() is None
+        and secrets.setup_secret_sha256() is None
+    ):
         print(
             "No read token and no setup key. Run `setup-link` or `new-token` first.",
             file=sys.stderr,
@@ -271,7 +326,8 @@ def _serve(args: argparse.Namespace) -> int:
         )
     )
     _awake_while(
-        settings.keep_awake, lambda: asyncio.run(_serve_with_copy(server, reader, copy, live))
+        settings.keep_awake,
+        lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop)),
     )
     return 0
 
@@ -290,16 +346,30 @@ def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:
         awake.stop()
 
 
-async def _serve_with_copy(server: Any, reader: Any, copy: CopyStore | None, live: Any) -> None:
-    """Run the server, and the copy loop beside it when the copy is on."""
+async def _serve_with_copy(
+    server: Any, reader: Any, copy: CopyStore | None, live: Any, stop: Any = None
+) -> None:
+    """Run the server, and the copy loop beside it when the copy is on. With
+    *stop* (a ``threading.Event``), the server ends when it is set: the
+    Windows service sets it on a stop request."""
     from tally_bridge.localcopy.schedule import run_forever
 
     loop_task = asyncio.create_task(run_forever(reader, copy, live)) if copy else None
+    stop_task = asyncio.create_task(_stop_when(stop, server)) if stop is not None else None
     try:
         await server.serve()
     finally:
-        if loop_task is not None:
-            loop_task.cancel()
+        for task in (loop_task, stop_task):
+            if task is not None:
+                task.cancel()
+
+
+async def _stop_when(stop: Any, server: Any) -> None:
+    """Ask *server* to exit once *stop* is set. ``uvicorn.Server`` reads
+    ``should_exit`` in its loop."""
+    while not stop.is_set():
+        await asyncio.sleep(0.2)
+    server.should_exit = True
 
 
 if __name__ == "__main__":

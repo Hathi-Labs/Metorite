@@ -673,18 +673,22 @@ name = "tally-bridge"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "defusedxml" },
     { name = "httpx" },
     { name = "mcp" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "defusedxml", specifier = ">=0.7,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.30,<2" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=306" },
     { name = "starlette", specifier = ">=0.40" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

@@ -1,0 +1,159 @@
+"""TLY-5 PR B: the Windows service and the installer build of the Tally bridge.
+
+The service class needs ``pywin32`` and Windows. Its run loop
+(``ServiceRunner``) is plain Python, and these tests drive it on Linux. The
+installer files are text, so these tests read them: the Inno Setup script must
+run the same restart rule as the code, in an order that works, and the
+uninstall must undo every change (brief §6.7).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import re
+import sys
+import threading
+import time
+import tomllib
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO / "apps" / "connectors" / "tally_bridge"
+INSTALLER = ROOT / "installer"
+sys.path.insert(0, str(ROOT))
+
+from tally_bridge import __main__ as cli  # noqa: E402
+from tally_bridge.windows import service  # noqa: E402
+
+ISS = (INSTALLER / "tally_bridge.iss").read_text(encoding="utf-8")
+
+
+def _section(name: str) -> list[str]:
+    """The lines of one ``[Section]`` of the Inno script, comments left out."""
+    m = re.search(rf"^\[{name}\]\n(.*?)(?=^\[|\Z)", ISS, re.M | re.S)
+    assert m, name
+    return [ln for ln in m.group(1).splitlines() if ln.strip() and not ln.startswith(";")]
+
+
+# --- The service runner ------------------------------------------------------------
+
+
+def test_the_runner_serves_until_stop():
+    started = threading.Event()
+
+    def serve(stop):
+        started.set()
+        stop.wait()
+
+    runner = service.ServiceRunner(serve)
+    runner.start()
+    assert started.wait(2)
+    assert runner.stop(timeout_s=2) is True
+    assert runner.error is None
+
+
+def test_an_error_of_the_server_ends_the_runner_and_is_kept():
+    def serve(stop):
+        raise OSError("port 8765 is in use")
+
+    runner = service.ServiceRunner(serve)
+    runner.start()
+    assert runner.wait(2) is True
+    assert isinstance(runner.error, OSError)
+
+
+def test_a_runner_that_never_started_waits_for_nothing():
+    assert service.ServiceRunner(lambda stop: None).stop(timeout_s=0.1) is True
+
+
+def test_the_recovery_rule_word_for_word():
+    assert service.recovery_commands() == [
+        ["sc", "failure", "TallyBridge", "reset=", "86400", "actions=",
+         "restart/5000/restart/15000/restart/60000"],
+        ["sc", "failureflag", "TallyBridge", "1"],
+    ]
+
+
+class FakeServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0.05)
+
+
+def test_the_stop_event_makes_the_server_exit():
+    stop = threading.Event()
+    server = FakeServer()
+    threading.Timer(0.3, stop.set).start()
+    start = time.monotonic()
+    asyncio.run(cli._serve_with_copy(server, None, None, None, stop))
+    assert server.should_exit and time.monotonic() - start < 3
+
+
+def test_setup_link_waits_for_the_bridge(monkeypatch):
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    answers = iter([500, 500, 200])
+    assert cli._wait_up("http://127.0.0.1:8765/health", get=lambda u: next(answers)) is True
+    assert cli._wait_up("http://127.0.0.1:8765/health", timeout_s=0, get=lambda u: 503) is False
+
+
+# --- The installer -----------------------------------------------------------------
+
+
+def test_the_installer_runs_the_same_recovery_rule_as_the_code():
+    run = "\n".join(_section("Run"))
+    for argv in service.recovery_commands():
+        assert f'Parameters: "{" ".join(argv[1:])}"' in run, argv
+
+
+def test_the_install_steps_run_in_an_order_that_works():
+    steps = [re.search(r'Parameters: "([^"]*)"', ln).group(1) for ln in _section("Run")]
+    order = ["--startup auto install", "failure TallyBridge", "failureflag TallyBridge 1",
+             "apply-windows --windows", "start", "setup-link --windows --open"]
+    found = [next(i for i, s in enumerate(steps) if s.startswith(o)) for o in order]
+    assert found == sorted(found), steps
+    # The page opens last, and the installer does not wait for it.
+    assert "nowait" in _section("Run")[-1] and "postinstall" in _section("Run")[-1]
+
+
+def test_the_uninstall_undoes_every_change():
+    steps = [re.search(r'Parameters: "([^"]*)"', ln).group(1) for ln in _section("UninstallRun")]
+    assert steps == ["stop", "remove", "uninstall-windows --windows"]
+    assert all("RunOnceId" in ln for ln in _section("UninstallRun"))
+
+
+def test_the_installer_needs_an_administrator_and_a_64_bit_windows_10():
+    setup = "\n".join(_section("Setup"))
+    assert "PrivilegesRequired=admin" in setup
+    assert "MinVersion=10.0" in setup and "x64compatible" in setup
+    dirs = "\n".join(_section("Dirs"))
+    assert r'"{commonappdata}\TallyBridge"' in dirs and "admins-full system-full" in dirs
+    assert "users-" not in dirs
+
+
+def test_the_build_makes_both_programs_and_bundles_the_setup_page():
+    spec = (INSTALLER / "tally_bridge.spec").read_text(encoding="utf-8")
+    assert 'name="tally_bridge"' in spec and 'name="tally_bridge_service"' in spec
+    assert "win32timezone" in spec
+    assert (ROOT / "tally_bridge" / "setup" / "static" / "setup.html").exists()
+    build = (INSTALLER / "build.ps1").read_text(encoding="utf-8")
+    assert r"installer\tally_bridge.spec" in build and r"installer\tally_bridge.iss" in build
+    assert "pywin32" in build and "pyinstaller" in build
+
+
+@pytest.mark.parametrize("name", ["cli_entry.py", "service_entry.py"])
+def test_the_entry_scripts_import_on_any_system(name):
+    spec = importlib.util.spec_from_file_location(f"tally_entry_{name[:-3]}", INSTALLER / name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # not run as __main__, so nothing starts
+
+
+def test_pywin32_installs_on_windows_only():
+    deps = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pywin = [d for d in deps["project"]["dependencies"] if d.startswith("pywin32")]
+    assert pywin == ["pywin32>=306; sys_platform == 'win32'"]

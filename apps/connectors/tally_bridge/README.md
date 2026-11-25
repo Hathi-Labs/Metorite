@@ -186,7 +186,32 @@ Two commands change the machine. Run each one as an administrator:
 - `python -m tally_bridge uninstall-windows --windows` removes the task, the
   firewall rule, the stored hashes, the copy key and the local copy.
 
-The service and the installer follow in TLY-5 PR B.
+### The service and the installer (TLY-5 PR B)
+
+The program runs as the Windows service `TallyBridge`. It starts with Windows,
+before anyone signs in. Windows starts it again 5 s, 15 s and 60 s after a
+crash, and the count resets after a day. The service serves with the product
+stores of `--windows`. It starts with no token and no setup key, and both
+guards refuse every request until a key exists.
+
+To build the installer on a Windows machine with `uv` and Inno Setup 6:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.1.0
+```
+
+The output is `dist\TallyBridgeSetup-0.1.0.exe`. It is not signed yet, because
+signing waits for the owner's certificate (brief §10 question 8). The
+installer does these steps in this order:
+
+1. It installs the service, which starts with Windows.
+2. It sets the restart rule.
+3. It runs `apply-windows`.
+4. It starts the service.
+5. It opens the setup page (`setup-link --open`). That step waits until the
+   service answers.
+
+The uninstall stops and removes the service, then runs `uninstall-windows`.
 
 ## Fixtures
 
