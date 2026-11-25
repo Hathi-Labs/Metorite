@@ -139,34 +139,26 @@ def do_unlink(settings: Settings, store: LinkStore | None, api: LinkApi | None =
     return 0 if revoked else 1
 
 
-def link_loop(
-    settings: Settings,
-    store: LinkStore | None,
-    inner_app: Any,
-    reader: Any,
-) -> Callable[[asyncio.Event], Awaitable[str]] | None:
-    """The link loop for ``serve``, or None when link mode is off or waits
-    for the customer's confirmation (rule j)."""
-    from tally_bridge.transport.link.dispatch import McpDispatcher
-    from tally_bridge.transport.link.runner import run_link
+def link_controller(args: argparse.Namespace, live: Any, reader: Any, copy: Any) -> Any:
+    """The link controller of ``serve`` (TLY-2b), or None with no link store.
+    It reads LINK_URL from the live settings, so the page sees a change."""
+    from tally_bridge.transport.link.controller import LinkController
 
-    if not settings.link_url or store is None:
+    store = link_store(args)
+    if store is None:
         return None
-    state = store.load()
-    if state is None:
-        return None
-    if not state.confirmed:
-        log.warning("link mode waits: confirm the company name with `confirm-link` first")
-        return None
-    api = LinkApi(settings.link_url)
-    dispatch = McpDispatcher(inner_app, settings.bind_port)
 
-    async def loop(stop: asyncio.Event) -> str:
-        result = await run_link(api, store, dispatch, reader.is_up, __version__, stop)
-        if result == "revoked":
-            log.warning("Disconnected by your admin. Pair this machine again to reconnect.")
-        elif result == "unlinked":
-            log.warning("The link ended on this machine (unlink, or a new pairing).")
-        return result
+    def copy_at() -> str | None:
+        if copy is None:
+            return None
+        when = copy.oldest_copied_at(live.current.allowed_companies)
+        return when.isoformat(timespec="seconds") if when else None
 
-    return loop
+    return LinkController(
+        store,
+        lambda: live.current.link_url,
+        reader.is_up,
+        __version__,
+        platform.node(),
+        copy_at=copy_at,
+    )

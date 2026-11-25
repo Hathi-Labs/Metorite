@@ -208,6 +208,40 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     return 0 if not failed else 1
 
 
+def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
+    """The callback of the setup page (TLY-2d). It makes the machine match the
+    two switches at once, and returns an error text, or None. Without
+    ``--windows`` (a dev box) it only saves, so it returns None to the caller."""
+    if not windows:
+        return None
+
+    def startup(new: Settings) -> str | None:
+        """The schtasks part. It runs in a worker thread (two processes)."""
+        from tally_bridge.windows import system
+
+        run = runner or system.run
+        wanted = new.start_tally_at_signin or _had_startup(run)
+        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
+            return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        return None
+
+    async def apply(new: Settings) -> str | None:
+        # Keep-awake stays on this thread: the request handlers run on the
+        # thread of ``_awake_while``, which ``SetThreadExecutionState`` binds to.
+        if new.keep_awake:
+            awake.start()
+        else:
+            awake.stop()
+        # schtasks blocks for up to a second, so it runs off the event loop.
+        try:
+            return await asyncio.to_thread(startup, new)
+        except Exception as exc:
+            logging.getLogger("tally_bridge").warning("the sign-in task failed (%s)", exc)
+            return "The switches are saved, but the sign-in task did not change."
+
+    return apply
+
+
 def _had_startup(run: Any) -> bool:
     """True when the sign-in task may exist, so that turning the setting off
     removes it. ``schtasks /Query`` answers 0 for a task that exists."""
@@ -386,14 +420,32 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
         return 2
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
-    app = build_address_app(live, secrets, reader, store, copy)
     from tally_bridge import linkcli
 
-    link = linkcli.link_loop(settings, linkcli.link_store(args), app.inner, reader)
+    controller = linkcli.link_controller(args, live, reader, copy)
+    from tally_bridge.windows.system import KeepAwake
+
+    awake = KeepAwake()
+    app = build_address_app(
+        live,
+        secrets,
+        reader,
+        store,
+        copy,
+        link=controller,
+        on_machine_saved=_machine_applier(getattr(args, "windows", False), awake),
+    )
+    link = None
+    if controller is not None:
+        from tally_bridge.transport.link.dispatch import McpDispatcher
+
+        controller.dispatch = McpDispatcher(app.inner, settings.bind_port)
+        link = controller.run
     server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,
         lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop, link)),
+        awake=awake,
     )
     return 0
 

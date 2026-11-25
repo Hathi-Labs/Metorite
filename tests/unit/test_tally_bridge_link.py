@@ -63,6 +63,8 @@ class FakeLink:
         self.refuse = 0  # answer the next N polls with a 401 that is not a revoke
         self.bad_answer = 0  # answer the next N polls with a bad deadline_s
         self.revoke_on_reply = False  # a reply answers 401 revoked; polls still pass
+        self.hold = 0.0  # seconds that each poll is held before its answer, as Metorite does
+        self.revoke_delay = 0.0  # seconds that a revoke takes, as a network call does
 
     def _auth(self, request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {CREDENTIAL}" and not self.revoked
@@ -97,6 +99,8 @@ class FakeLink:
         if self.bad_answer:
             self.bad_answer -= 1
             return JSONResponse({"requests": [{"id": "x", "method": "POST", "deadline_s": None}]})
+        if self.hold:
+            await asyncio.sleep(self.hold)
         if self.poll_fail:
             self.poll_fail -= 1
             return JSONResponse({"error": "busy"}, status_code=503)
@@ -113,6 +117,8 @@ class FakeLink:
         return JSONResponse({"ok": True})
 
     async def revoke(self, request: Request) -> JSONResponse:
+        if self.revoke_delay:
+            await asyncio.sleep(self.revoke_delay)
         self.revokes += 1
         self.revoked = True
         return JSONResponse({"ok": True})
@@ -278,17 +284,6 @@ def test_pair_refuses_a_machine_that_is_already_linked():
     assert store.state.confirmed is True
 
 
-def test_serve_starts_no_link_loop_before_the_confirmation():
-    settings = Settings(link_url="https://link.test")
-    unconfirmed = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
-    assert linkcli.link_loop(settings, unconfirmed, object(), object()) is None
-    assert linkcli.link_loop(Settings(), _confirmed(), object(), object()) is None
-    assert linkcli.link_loop(settings, _confirmed(), object(), object()) is not None
-
-
-# --- The poll, the reply, revoke and a cut link (§3.8.5, §3.8.6) -----------------
-
-
 def _run(link: FakeLink, store, dispatch=_echo, up=_up, sleep=None, polls: int = 1) -> str:
     """Run the loop until the fake link has seen *polls* polls."""
 
@@ -318,7 +313,7 @@ def test_each_poll_carries_the_tally_state_and_the_version():
         return False
 
     _run(link, _confirmed(), up=down, polls=2)
-    assert link.polls[0] == {"tally": "down", "version": "0.1.0"}
+    assert link.polls[0] == {"tally": "down", "version": "0.1.0", "copy_at": None}
 
 
 def test_a_request_goes_to_the_mcp_layer_and_its_reply_comes_back_by_id():

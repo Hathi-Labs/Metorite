@@ -10,3 +10,4 @@ button { font: inherit; padding: 6px 14px; border: 1px solid var(--accent); colo
 button:disabled { opacity: 0.5; cursor: default; }
 label { display: block; padding: 2px 0; }
 code { word-break: break-all; }
+input[type=text] { font: inherit; width: 100%; max-width: 100%; box-sizing: border-box; padding: 4px 6px; }
