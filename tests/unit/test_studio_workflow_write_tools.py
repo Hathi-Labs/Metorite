@@ -847,8 +847,9 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     # does not join studio-more, and it stays out of FOLLOWS.
     # WS-STU J2d: the share pack comes after this one, and the cap drops it first.
     # TOF-3a F12c: the repair pack sits between this pack and the share pack.
-    # PAR-2a: the org-admin pack of another owner comes last of all.
-    assert sf.pack_slugs()[-6:-1] == ("studio", "studio-more", PACK, "studio-repair",
+    # PAR-2a: the org-admin pack of another owner comes after them. P-5b-1 (task
+    # 3114): the people pack of that owner comes last of all.
+    assert sf.pack_slugs()[-7:-2] == ("studio", "studio-more", PACK, "studio-repair",
                                       "studio-share"), "after studio, so the cap drops it first"
     assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK, "studio-repair",
                                       "studio-share")

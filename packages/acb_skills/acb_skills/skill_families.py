@@ -1117,6 +1117,37 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # P-5b-1 (chat_parity.md section 6.4, task 3114, owner answer OD4 A of
+    # 2026-11-25): four reads of the People app and of the Reach preview. Each
+    # tool calls a route as the member, and the route projects each field by
+    # the right of the member (D-PC-10). The owner is org-admin, which never
+    # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_people_tools.py.
+    "people": {
+        "label": "People directory",
+        "summary": (
+            "Read the people directory, your own row, the open work of a person, and "
+            "what Reach would send you now."
+        ),
+        "description": (
+            "A tool pack: four reads of the People app and of the Reach preview, for the "
+            "main assistant to load when a turn asks about the people of the "
+            "organization. Each tool calls the routes as the member, so the member sees "
+            "only the fields that the People app shows to that member. No tool writes. A "
+            "run loads a pack only where tool packs are on, so until then this switch has "
+            "no effect."
+        ),
+        "tools": (
+            "people_directory",
+            "people_me",
+            "people_work",
+            "reach_preview",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

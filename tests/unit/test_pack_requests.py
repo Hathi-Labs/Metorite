@@ -362,6 +362,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "disconnect_integration": ("disconnect the zoho integration", "remove the plugin weather",
                                "disconnect github"),
     "set_mcp_server": ("turn on always confirm for the MCP server tools-a",),
+    # -- people: four reads of the People app and of Reach (P-5b-1, task 3114) --
+    "people_directory": ("search the people directory for Priya",
+                         "who works here in sales?"),
+    "people_me": ("show my person record", "what does my people profile say?"),
+    "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
+    "reach_preview": ("show me the reach preview", "what would reach send me now?"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
