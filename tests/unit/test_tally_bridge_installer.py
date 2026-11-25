@@ -260,6 +260,9 @@ def test_a_fresh_install_never_follows_what_a_user_left_at_the_path():
     assert at == sorted(at), fresh
     assert "ForceDirectories" not in ISS and "/T" not in fresh
     assert "'Could not make a new data folder '" in fresh
+    # Review advisory: a child that the delete could not remove stops the setup.
+    assert fresh.index("DelTree(Dir + '\\*'") < fresh.index("if HasChildren(Dir) then")
+    assert "'Could not empty the new data folder '" in fresh
 
 
 def test_an_upgrade_refuses_a_link_and_closes_the_folder_before_its_items():
