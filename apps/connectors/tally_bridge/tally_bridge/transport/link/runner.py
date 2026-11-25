@@ -150,7 +150,7 @@ async def run_link(
                     exc,
                     wait,
                 )
-                await sleep(wait * random.uniform(0.8, 1.2))
+                await _until_stop(sleep(wait * random.uniform(0.8, 1.2)), stop)
                 wait = min(wait * 2, BACKOFF_MAX_S)
     finally:
         for task in list(running):
