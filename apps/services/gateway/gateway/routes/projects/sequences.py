@@ -21,15 +21,18 @@ lowers ``last_value``, so a released number is never handed out again.
 **Who may reserve.** A caller who can see the task (``load_visible_task``),
 for a task in the project or in one of its subprojects (``scope_clause``). A
 project the caller cannot see answers 404, as every Projects read does. An
-archived project refuses a new reservation (``assert_not_archived``). An agent
-token cannot reach the route until SW-27b adds it to ``MCP_WRITE_ROUTES``, with
-``projects:write`` and the pin check. The
-organization comes from the bound session, never from the request (R5). An
-agent may name its run, and the run must be a run of that task.
+archived project refuses a new reservation (``assert_not_archived``). An
+outside agent reaches the route through the MCP tool ``reserve_number``
+(SW-27b): the pair is in ``MCP_WRITE_ROUTES``, so ``projects:write``, the nonce
+and the write cap apply, and ``resolve_visibility`` narrows the agent to its
+pins. The organization comes from the bound session, never from the request
+(R5). A caller may name a run, and the run must be a run of that task. The
+route does not check that the run is the caller's own: that is SW-27c's to
+decide, before a mark reads ``run_id`` (task 3894).
 
-Not in this slice: the MCP edge tool (SW-27b), the Needs attention kind and
-the release (SW-27c), the seed of the repo's sequences (SW-27d), and the
-``/next-ticket`` and ``/handoff`` edits (SW-19 and SW-19b).
+Not here: the Needs attention kind and the release (SW-27c), the seed of the
+repo's sequences (SW-27d), and the ``/next-ticket`` and ``/handoff`` edits
+(SW-19 and SW-19b).
 """
 
 from __future__ import annotations

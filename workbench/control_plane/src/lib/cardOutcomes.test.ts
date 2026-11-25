@@ -180,8 +180,9 @@ describe("each receipt draws the member line", () => {
 
   it("in the step trail: a step's result and a sub-step's result", () => {
     const src = read("../components/ThinkingContainer.tsx");
-    expect(src).toContain("capOutput(memberLineOf(String(event.result)), 2000)");
-    expect(src).toContain("capOutput(memberLineOf(String(st.result)), 400)");
+    // Task 3920: each result leaves its data frame out first (`withoutFrame`).
+    expect(src).toContain("capOutput(memberLineOf(withoutFrame(String(event.result))), 2000)");
+    expect(src).toContain("capOutput(memberLineOf(withoutFrame(String(st.result))), 400)");
     expect(src).not.toContain("capOutput(String(st.result)");
   });
 });

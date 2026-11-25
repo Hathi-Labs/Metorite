@@ -356,6 +356,18 @@ and each emit asks it. A
 workflow that listens still needs its org on `WORKFLOW_UNATTENDED_ORGS`. A
 reload applies a change, and the flip stays OWNER-GATE (`enforcement-flip`).
 
+`CRM_MIRROR_AGE_ORGS` turns on the age line of the CRM read tools
+(`crm_platform.md` §18.11.2, CRM-Q30c). For each listed org, a read of one
+module or core entity adds one line when its Zoho mirror is held, not
+available in Zoho, or last read 2 hours ago or more. `*` lists every org, and
+the default is empty. Empty keeps each answer byte for byte, and the tools
+send no request for the age.
+
+Its one reader is `gateway.routes.crm.flags.mirror_age_allowed`.
+`GET /crm/sync/mirror-age` asks it, and the tools ask it through
+`crm_tools.mirror_age_on`. A reload applies a change. A name in the list
+spends nothing, so the flip is `enforcement-flip`.
+
 `CRM_MODULE_FIND_ORGS` turns on `q` across a module of the CRM
 (`crm_platform.md` §18.17, CRM-Q34-7). For each listed org, `q` works on a
 module list and on a module total. It finds each word in the record name, a
@@ -366,6 +378,19 @@ matches the record name only, byte for byte.
 Its one reader is `gateway.routes.crm.flags.module_find_allowed`, and each
 module read asks it. A reload applies a change. A name in the list spends
 nothing, so the flip is `enforcement-flip`.
+
+`CRM_MODULE_REREAD_ORGS` turns on the weekly full read of the generic modules
+of the Zoho mirror (`crm_platform.md` §18.7, task 3869). For each listed org,
+the sync reads each module that a cursor reads (Invoices, Quotes, a custom
+module) again in full once in 7 days. Discovery also queues one full read of a
+module whose stored pick-list values left the current options. `*` lists every
+org, and the default is empty. Empty keeps the read of changes only, byte for
+byte.
+
+Its one reader is `gateway.routes.crm.flags.module_reread_allowed`. The re-read
+rule of the engine and the drift check ask it on each run. A reload applies a
+change. A full read spends Zoho API credits inside the budget of the sync run,
+so the flip is `enforcement-flip`.
 
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
@@ -447,6 +472,19 @@ every org off. Its one reader is
 connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
+
+`HOME_TOOLS_ORGS` gives the chat of each listed org the five Home tools
+(`chat_parity.md` §6.4, PAR-8b, task 3903). They read the Home feed, Needs
+you, the brief, the quick find and the Home settings. They change a Home card,
+a Home setting and the default sidebar, and send a test notification. `*`
+lists every org, and the default is empty. Empty means no chat holds the
+tools, and the tool count does not move.
+
+Its one reader is `acb_skills.home_tools.home_tools_on`. The build of the
+orchestrator asks it at the start of each run, so a reload applies to the next
+run. Any value other than empty is OWNER-GATE, and only the owner flips it.
+The five tools join each request, so the flip takes the trade of the tool cap
+in `chat_parity.md`, PAR-8b facts for the owner.
 
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the

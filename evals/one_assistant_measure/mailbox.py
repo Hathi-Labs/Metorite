@@ -147,6 +147,15 @@ class Mailbox(Gateway):
         #: The draft of the held card that shows now, and each draft sent.
         self.held_for = ""
         self.sent_drafts: list[str] = []
+        #: Task 2874. Each forward that a card sent (held card or plain), the replies that a
+        #: card SENT, the threads marked done, and the drafts that the member discarded on a
+        #: reply card (the browser posts the trash of the card's draft, ``ReplyCardForm``).
+        self.forwards: list[dict[str, Any]] = []
+        self.sent_replies: list[dict[str, Any]] = []
+        self.resolved: list[dict[str, Any]] = []
+        self.trashed: set[str] = set()
+        #: The forward card that shows now (the held card of kind ``forward``).
+        self.held_forward: dict[str, Any] | None = None
         self.now = datetime.now(UTC)
         self.by_id = {m.id: m for m in self.mails}
         self.by_attachment = {a.id: (m, a) for m in self.mails for a in m.attachments}
@@ -195,7 +204,10 @@ class Mailbox(Gateway):
                 return False
         query = _terms(str(p.get("query") or ""))
         if query:
-            text = f"{m.subject} {m.body} {m.sender} {m.address}".lower()
+            # A sent mail is found by its recipients too, as the Sent folder of a mail
+            # client is (the pilot of 2026-11-18 searched Sent for "Priya").
+            sent_to = " ".join(m.to) if m.folder == "sent" else ""
+            text = f"{m.subject} {m.body} {m.sender} {m.address} {sent_to}".lower()
             return any(all(_has(w, text) for w in alt) for alt in query)
         return True
 
@@ -210,7 +222,7 @@ class Mailbox(Gateway):
 
     # ── routes ───────────────────────────────────────────────────────────────
 
-    def _answer_get(self, path: str, p: dict[str, Any]) -> Any:
+    def _answer_get(self, path: str, p: dict[str, Any]) -> Any:  # noqa: C901 - one route table
         if path == "/email/messages":
             return self._list(p)
         if path == "/email/reply-zero":
@@ -229,7 +241,17 @@ class Mailbox(Gateway):
                 if addr in seen or not q or q not in f"{name} {addr}".lower():
                     continue
                 seen.add(addr)
-                out.append({"name": name, "email": addr, "source": src})
+                out.append({"name": name, "email": addr, "source": src, "match": "exact"})
+            if out or not q:
+                return out
+            # The gateway's fallback (``contacts.py``, ``match="closest"``): the same
+            # ``acb_common.name_match`` that ``resolve_person`` uses scores a near spelling.
+            from acb_common.name_match import is_near
+
+            for name, addr, src in people:
+                if addr not in seen and is_near(q, name):
+                    seen.add(addr)
+                    out.append({"name": name, "email": addr, "source": src, "match": "closest"})
             return out
         if path == "/email/drafts/seal":
             saved = self.drafts.get(str(p.get("draft_id") or ""))
@@ -240,6 +262,9 @@ class Mailbox(Gateway):
                     "body_text": "Dear Dr Sagar,\n\nThank you. We accept.\n\nVJ"}
         if path == "/email/recent-reply":
             return {}
+        if path == "/email/reply-card/draft-state":
+            did = str(p.get("draft_id") or "")
+            return {"draft_id": did, "in_drafts": did not in self.trashed}
         m = re.fullmatch(r"/email/messages/([^/]+)(/full-body)?", path)
         if m and m.group(1) in self.drafts:
             saved = self.drafts[m.group(1)]
@@ -307,8 +332,48 @@ class Mailbox(Gateway):
                 "body": str(choice.get("body") or prep["body"]), "to": list(to), "cc": cc,
                 "account_id": mail.account_id if mail else WORK,
             }
+        if action == "send":
+            self.sent_replies.append({"message_id": mid, "to": list(to), "cc": cc,
+                                      "body": str(choice.get("body") or prep["body"])})
+            self._file_sent(mid, prep["subject"], str(choice.get("body") or prep["body"]), to)
         return {"action": action, "draft_id": prep["draft_id"], "to": to, "cc": cc,
                 "subject": prep["subject"], "mailbox": prep["mailbox"]}
+
+    def _file_sent(self, message_id: str, subject: str, body: str, to: Any) -> None:
+        """Put a sent reply in the Sent folder and in its thread, so a later turn finds it.
+
+        Before the pilot of 2026-11-18 a send stayed only in ``sent_replies``. So turn 2 of
+        case 3 searched Sent, found nothing, and doubted the send: a harness fault."""
+        original = self.by_id.get(message_id)
+        mail = Mail(
+            id=f"sent-{len(self.mails) + 1}", sender="VJ", address=ME, subject=subject,
+            body=body, days_ago=0.0, account_id=original.account_id if original else WORK,
+            is_read=True, folder="sent",
+            thread_id=(original.thread_id or original.id) if original else "",
+            to=tuple(str(a) for a in (to or ())))
+        self.mails = (*self.mails, mail)
+        self.by_id[mail.id] = mail
+
+    def trash_draft(self, draft_id: str) -> None:
+        """The member's Discard on a reply card: the browser trashes the card's draft."""
+        self.trashed.add(draft_id)
+
+    def _held_forward_card(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The held card of kind ``forward`` (``held_card._forward_card``): a row for
+        each person, and the note in the context."""
+        mid = str(body.get("message_id") or "")
+        mail = self.by_id.get(mid)
+        subject = mail.subject if mail else "(no subject)"
+        people = [*[str(a) for a in body.get("to") or []], *[str(a) for a in body.get("cc") or []]]
+        self.held_forward = {"message_id": mid, "to": [str(a) for a in body.get("to") or []],
+                             "cc": [str(a) for a in body.get("cc") or []],
+                             "note": str(body.get("note") or ""), "files": []}
+        return {"title": "Forward this email?", "detail": f"To {', '.join(people)}",
+                "context": f"Forwarding the email: {subject}{chr(10)}{chr(10)}Your note above it:"
+                           f"{chr(10)}{body.get('note') or '(no note)'}",
+                "card_id": f"c0ffee01{mid[-6:]:0>24}",
+                "rows": [{"id": f"r-{i}", "label": a, "checked": True}
+                         for i, a in enumerate(people)]}
 
     def _held(self, body: dict[str, Any]) -> dict[str, Any]:
         """The held card of a draft that a reply card saved."""
@@ -337,6 +402,28 @@ class Mailbox(Gateway):
             self.calls.append(("POST", path, body))
             return self._act(dict(body or {}))
         draft = str((body or {}).get("draft_id") or "")
+        if path == "/email/held-card" and (body or {}).get("kind") == "forward":
+            self.calls.append(("POST", path, body))
+            return self._held_forward_card(dict(body))
+        if path == "/email/held-card/act" and self.held_forward is not None:
+            self.calls.append(("POST", path, body))
+            sent, self.held_forward = self.held_forward, None
+            self.forwards.append(sent)
+            return {"ok": True, "action": "forward", "id": f"fw-{len(self.forwards)}", "files": 0,
+                    "to": sent["to"], "cc": sent["cc"], "bcc": []}
+        if path == "/email/forward":
+            self.calls.append(("POST", path, body))
+            self.forwards.append({"message_id": (body or {}).get("message_id"),
+                                  "to": list((body or {}).get("to") or []),
+                                  "cc": list((body or {}).get("cc") or []),
+                                  "note": str((body or {}).get("note") or ""), "files": []})
+            mail = self.by_id.get(str((body or {}).get("message_id") or ""))
+            return {"id": f"fw-{len(self.forwards)}", "attachments": [],
+                    "subject": mail.subject if mail else ""}
+        if path == "/email/reply-zero/resolve":
+            self.calls.append(("POST", path, body))
+            self.resolved.append(dict(body or {}))
+            return {}
         if path == "/email/held-card" and draft in self.drafts:
             self.calls.append(("POST", path, body))
             return self._held(dict(body))
@@ -344,10 +431,13 @@ class Mailbox(Gateway):
             self.calls.append(("POST", path, body))
             saved = self.drafts[self.held_for]
             self.sent_drafts.append(saved["id"])
+            self._file_sent(saved["message_id"], saved["subject"], saved["body"], saved["to"])
             return {"to": saved["to"], "cc": saved["cc"]}
         if path == "/email/drafts/send" and draft in self.drafts:
             self.calls.append(("POST", path, body))
             self.sent_drafts.append(draft)
+            saved = self.drafts[draft]
+            self._file_sent(saved["message_id"], saved["subject"], saved["body"], saved["to"])
             return {}
         return await super().post(path, body)
 
