@@ -49,6 +49,7 @@ from acb_skills.studio_tools import (
     _card,
     _decide,
     _gateway_url,
+    _head,
     _headers,
     _member_text,
     _must_ask,
@@ -250,7 +251,8 @@ def _app_fail(reply: _Reply, **extra: Any) -> dict[str, Any]:
         return _result(False, _sentence(raw), [], status=reply.status, **extra)
     if isinstance(raw, dict):
         error = _tag(raw.get("error"), 60) or "refused"
-        lists = {k: [_member_text(v, MAX_ROW_TEXT) for v in raw[k][:10] if isinstance(v, str)]
+        lists = {k: paged([_member_text(v, MAX_ROW_TEXT) for v in raw[k] if isinstance(v, str)],
+                          0, 10, default=10, maximum=10, noun=k).items
                  for k in ("errors", "warnings") if isinstance(raw.get(k), list)}
         if lists:
             shown = _wfa_frame("APP PROBLEMS", lists, "The block holds the problems that the route found.")
@@ -443,8 +445,9 @@ async def _read_one(slug: str) -> dict[str, Any]:
     body = {**_summary_row(data),
             "created_at": _tag(data.get("created_at"), 40),
             "needs_consent": data.get("needs_consent") is True,
-            "live_scopes": [_member_text(s, MAX_ROW_TEXT) for s in (data.get("live_scopes") or [])
-                            if isinstance(s, str)][:20],
+            "live_scopes": paged([_member_text(s, MAX_ROW_TEXT) for s in (data.get("live_scopes") or [])
+                                  if isinstance(s, str)], 0, 20, default=20, maximum=20,
+                                 noun="scopes").items,
             "manifest": _member_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True,
                                                 default=repr), 2_000)}
     shown = _wfa_frame("CUSTOM APP", body, _APP_NOTE)
@@ -523,7 +526,7 @@ async def _read_file(slug: str, raw_path: Any) -> dict[str, Any]:
     if not 200 <= status < 300:
         return _app_fail(_Reply(status, data))
     cut = len(text) > MAX_FILE_SHOWN
-    shown = _wfa_frame("APP FILE", {"path": rel, "content": text[:MAX_FILE_SHOWN]}, _FILE_NOTE)
+    shown = _wfa_frame("APP FILE", {"path": rel, "content": _head(text, MAX_FILE_SHOWN)}, _FILE_NOTE)
     out = _result(True, [], [], slug=slug, path=rel, chars=len(text), file=shown["block"],
                   note=shown["note"])
     if cut:
@@ -991,11 +994,11 @@ def _published(what: str, slug: str, out: dict[str, Any], asked: dict[str, Any])
     if review == "pending":
         result["next"] = ("An admin must approve this version first. The old version stays "
                           "live until then.")
-    warns = [_member_text(w, MAX_ROW_TEXT) for w in (out.get("warnings") or [])
-             if isinstance(w, str)][:10]
-    if warns:
-        shown = _wfa_frame("APP WARNINGS", warns, "The block holds the warnings of the check.")
-        result.update(warnings=shown["block"], note=shown["note"])
+    warns = paged([_member_text(w, MAX_ROW_TEXT) for w in (out.get("warnings") or [])
+                   if isinstance(w, str)], 0, 10, default=10, maximum=10, noun="warnings")
+    if warns.items:
+        shown = _wfa_frame("APP WARNINGS", warns.items, "The block holds the warnings of the check.")
+        result.update(warnings=shown["block"], note=shown["note"], warning_count=warns.total)
     return result
 
 
