@@ -6,7 +6,7 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
-**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is built, 2026-11-23. SW-27c and SW-27d are open.**
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is built, 2026-11-25. SW-27c1, SW-27c3 and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
@@ -1394,7 +1394,16 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Slices.**
   - **SW-27a** (this row's first slice): migration `477_pm_project_sequences.sql` (473 went to PR 2757) (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/nodes/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
   - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). The owner said yes on 2026-11-23. The pair is in `MCP_WRITE_ROUTES`, so `projects:write`, the nonce and the write cap apply. The route reads the reach of the agent through `resolve_visibility`, so a pinned connection reserves only in its pins. Each call takes a new number, so the tool is not idempotent. Fences: `test_mcp_edge_reserve_r8.py` (R8: two calls at once get two numbers, the pins, a read-only token, a second org) and `test_mcp_edge_coverage.py`.
-  - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task.
+  - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task. The audit of 2026-11-24 cut it into three slices. The owner took all six recommendations on 2026-11-25 (answer eaa5ee55 on task 3894):
+    1. A reservation names only the caller's own run, by the rule of `checks._own_run`: the same member, client, connection and session. The reserve route checks this too (SW-27c1).
+    2. A release follows the Release rule of `agent_runs.may_end_run`: the run's member, an assignee of the task or an org admin. An agent releases only the numbers of its own run.
+    3. A merge marks each `reserved` number of the task used. The number must be reserved at or before the merge. A closed pull request that did not merge marks nothing.
+    4. The chat release comes later. Its route goes in PENDING_OP6 (D-OP-9).
+    5. One MCP tool, `mark_number`, takes `state` `used` or `released`.
+    6. Needs attention shows a reserved number whose task is done or cancelled (`filters.task_closed_sql`). It has no flag, and the owner previews it before the merge.
+  - **SW-27c2** (task 3894): a merge marks the numbers used. `github_sync.apply_pull_request` is the one write path of the webhook, the poll and the lazy read. It calls `mark_reservations_used` in the transaction of the write, for the tasks whose reference moved INTO `merged`. It runs apart from `github_merge.on_merged`, because that rule skips a task that is already done or that a person runs. **Done when:** a merge marks the task's reserved numbers used, with `used_at`. A close with no merge marks nothing. A number reserved after the merge stays reserved. A released number stays released, and another task's number does not move. A second delivery does not change `used_at`. A task that is already done is still marked. No migration, no flag and no UI. Fence: `test_sequence_merge_r8.py` (U1 to U6, four named mutations) and `test_github_merge_r8.py`. STANDARD, built with Opus, because the seam is shared (`github_integration.md` §12.1).
+  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The MCP tool `mark_number`, and the own-run rule at reserve time. It starts after SW-27c2.
+  - **SW-27c3** (task 3939): decisions 2, 4 and 6. The Needs attention kind, and a person's release. Seams: `routes/projects/needs_attention.py`, `needsAttention.ts`, the chat tool `needs_attention`, and `external_agent_access.md` §12.7. SW-26 also plans a kind. It starts after SW-27c1.
   - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
   - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
 - **Non-goals.** No number comes back. No sequence spans two projects or two orgs. Neither table holds a member email.
@@ -2388,7 +2397,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-23 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_check_r8.py` (new) `tests/unit/test_mcp_edge_coverage.py` |
 | SW-24 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_agent_runs_r8.py` |
 | SW-26 | `uv run pytest -q -p no:cacheprovider tests/unit/test_conflict_radar_r8.py` (new) `tests/unit/test_needs_attention_r8.py` |
-| SW-27 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_sequences_r8.py` (new) `tests/unit/test_tenant_coverage.py` |
+| SW-27 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_sequences_r8.py` (new) `tests/unit/test_tenant_coverage.py` `tests/unit/test_mcp_edge_reserve_r8.py` `tests/unit/test_sequence_merge_r8.py` `tests/unit/test_github_merge_r8.py` |
 | SW-28 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py`, and the edge reminder test (new) |
 | SW-29a | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_delegate_r8.py` (new) `tests/unit/test_tenant_coverage.py` |
 | SW-30a | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_delegate_r8.py tests/unit/test_mcp_edge_coverage.py` |
