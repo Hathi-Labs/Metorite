@@ -124,10 +124,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "projects_tree": ("show me all my projects",),
     "render_board": ("show the board for Website Relaunch",),
     "render_tasks": ("show the tasks as a table",),
-    # P-1b (task 3922): "on my calendar" loads calendar-day, and with its 22
-    # tools the core pack steps aside so the loader reaches the owner. That
-    # phrase now sits on my_tasks_schedule, the tool that blocks the time.
-    "set_my_overlay": ("block two hours for the task",),
+    "set_my_overlay": ("block two hours on my calendar for the task",),
     "task_detail": ("show me the details of the task",),
     "update_task": ("change the due date of the task",),
     "vocabulary": ("which statuses can I give a task?",),
@@ -388,8 +385,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_tasks_plan_day": ("rebuild my day",),
     "my_tasks_replan_day": ("I fell behind, fit what's left",),
     "my_tasks_rollover": ("roll over my tasks from yesterday",),
-    "my_tasks_schedule": ("block an hour for the report",
-                          "block two hours on my calendar for the task"),
+    "my_tasks_schedule": ("block an hour for the report",),
     "my_tasks_set_one_thing": ("make the report my one thing for today",),
     "my_tasks_unschedule": ("block an hour, then take that block off",),
     # -- calendar-day settings (CAL-2, task 1676) --

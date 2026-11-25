@@ -82,7 +82,8 @@ SIZES = {"projects": 23, "projects-plan": 26, "projects-structure": 27, "project
          "projects-cycles": 6}
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
 #: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
-OWNER_SLUGS = (*SLUGS, "calendar-day")
+#: P-1b (task 3922): and the ``mail-tasks`` pack, two My Tasks tools.
+OWNER_SLUGS = (*SLUGS, "calendar-day", "mail-tasks")
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -473,17 +474,13 @@ def test_no_email_word_matches_a_projects_turn() -> None:
 
 
 def test_make_a_task_from_this_email_loads_both_packs() -> None:
-    """Mutation: the pack that makes a task is "email"-blind, or an email word
-    is "task"-blind -> one pack is missing -> red.
-
-    P-1b (task 3922): the phrase names a task from a mail, and the tool for it
-    (``my_tasks_capture_from_mail``) is in ``calendar-day``. So that pack comes
-    in, and ``projects`` no longer fits the cap. At the base of production (57)
-    main loaded the email pack alone, so the chat could make no task at all."""
-    for base in (40, 57):
-        choice = tp.choose(
-            _turn(words="Make a task from this email"), allowed=EVERY, base_tools=base)
-        assert choice.slugs == ("email", "calendar-day"), base
+    """Mutation: a Projects word is "email"-blind, or an email word is
+    "task"-blind -> one pack is missing -> red."""
+    choice = tp.choose(
+        _turn(words="Make a task from this email"), allowed=EVERY, base_tools=40)
+    # P-1b (task 3922): the mail task pack joins, and projects stays.
+    # test_my_tasks_p1b_tools.py measures each base from 30 to 59.
+    assert choice.slugs == ("email", "projects", "mail-tasks")
 
 
 # ── 6. The persona, the refusal, the rules ──────────────────────────────────

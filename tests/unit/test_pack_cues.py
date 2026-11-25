@@ -57,6 +57,8 @@ WHEN = {
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
+    # P-1b (task 3922): the task from a mail.
+    "mail-tasks": "Load to make a task from an email, or from a reply that the member sent.",
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
     # so the line says "read and change". STB-6a adds the workflow reads.
     # WS-67 TS-1b: the core builds an app, and studio-more holds the rest.

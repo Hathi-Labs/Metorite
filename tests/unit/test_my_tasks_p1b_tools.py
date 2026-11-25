@@ -17,9 +17,9 @@ The rules that this file fences (R7):
    ``UntrustedFrame`` block, and each answer marks the chat.
 2. The card starts with the mailbox line of RX-1, shows each field that the
    write sends, and binds the run's own member. No click, no write.
-3. A held chat holds the write off: the pack builder leaves it out
-   (``egress.HELD_OFF_PACK_WRITES``), and the tool refuses when the chat turns
-   held in the run. The draft read stays.
+3. A held chat keeps the write behind its ONE card (D169): the write is a held
+   card write (``egress.HELD_CARD_WRITE_TOOLS``). In a held chat it refuses
+   only the AI path, whose card cannot show the fields. The draft read stays.
 4. The write joins the kind ``task.create``, so a hand-off that made a task
    refuses it (``tool_packs._KIND_TOOLS``).
 5. No tool takes an org or a member (R5). The run binding gives the member.
@@ -49,8 +49,9 @@ from acb_skills import tool_packs as tp
 from acb_skills.subagent_contract import annotated_read_only
 from skill_my_tasks import core
 
-from tests.unit.test_calendar_day_pack import SLUG
 from tests.unit.test_pack_requests import _chosen
+
+SLUG = "mail-tasks"
 
 DRAFT, CAPTURE = "my_tasks_draft_from_mail", "my_tasks_capture_from_mail"
 TOOLS = (DRAFT, CAPTURE)
@@ -317,7 +318,9 @@ async def test_the_card_starts_with_the_mailbox_line_and_binds_the_member(env) -
                                           disposition="WAITING", assignee_name="Ravi K")
     card = env["card"].cards[0]
     assert card["context"].splitlines()[0] == mailbox_line(core._MAIL_PLACE)
-    assert "assignee: «Ravi K». Only a person of your people list counts." in card["context"]
+    assert ("assignee: «Ravi K». The task waits on that person only when the person "
+            "is in your people list and on a connected board. Else it goes to your "
+            "inbox as INBOX, with no assignee.") in card["context"]
     assert card["responder"] == ME and card["fenced"] is True
     assert card["non_interactive_default"] == "deny"
 
@@ -361,14 +364,37 @@ async def test_a_task_that_exists_is_no_new_act(env, monkeypatch) -> None:
 # ── 5. The held chat ─────────────────────────────────────────────────────────
 
 
-async def test_a_held_chat_refuses_the_write_before_the_card(env) -> None:
-    """The chat can turn held in the run, after the pack was built. Mutation:
-    drop the ``chat_is_held`` check -> red."""
+async def test_a_held_chat_keeps_the_write_behind_its_card(env) -> None:
+    """D169: a held chat shows the card, and the write runs after the click.
+    Mutation: refuse the write in a held chat -> red."""
     env["held"] = True
-    for kwargs in ({"email_id": EID, "title": "Send the deck"}, {"email_id": EID},
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made(),
+                         "/tasks/capture/from-reply/create": _made()}
+    for kwargs in ({"email_id": EID, "title": "Send the deck"},
                    {"thread_id": THREAD, "title": "Send the deck"}):
         out = await core.my_tasks_capture_from_mail(AID, **kwargs)
-        assert out == core.MAIL_HELD, kwargs
+        assert out.startswith("Made one task from the mail:"), kwargs
+    assert len(env["card"].cards) == 2 and len(env["gw"].calls) == 2
+
+
+async def test_a_held_chat_refuses_the_ai_path_before_the_card(env) -> None:
+    """The card of the AI path cannot show the fields that the AI picks, so in
+    a held chat it is no consent (D169). Mutation: drop the check -> a card and
+    a write -> red."""
+    env["held"] = True
+    out = await core.my_tasks_capture_from_mail(AID, email_id=EID)
+    assert out == core.MAIL_HELD_AI
+    assert env["gw"].calls == [] and env["card"].cards == []
+
+
+async def test_a_held_chat_refuses_a_cut_card(env) -> None:
+    """A card with a hidden tail is no consent in a held chat. Mutation: drop
+    the ``is_cut`` check -> the cut card shows -> red."""
+    env["held"] = True
+    out = await core.my_tasks_capture_from_mail(
+        AID, email_id=EID, title="Send the deck", notes="word " * 390, disposition="NEXT",
+        steps="\n".join("step " + "x" * 190 for _ in range(12)))
+    assert "a card here must show each word that it writes" in out, out
     assert env["gw"].calls == [] and env["card"].cards == []
 
 
@@ -380,21 +406,65 @@ async def test_a_held_chat_keeps_the_draft(env) -> None:
     assert "Title: x" in out and len(env["gw"].calls) == 1
 
 
-def test_the_pack_holds_off_the_write_and_keeps_the_draft(monkeypatch) -> None:
-    """Mutation: drop the write from ``HELD_OFF_PACK_WRITES``, or add the draft
-    -> red. The Tasks assistant holds neither tool, so its list is unchanged."""
+def test_the_write_is_a_held_card_write_and_the_draft_a_read(monkeypatch) -> None:
+    """D169. Mutation: put the write back in ``HELD_OFF_PACK_WRITES``, drop
+    ``card_write``, or change a parameter without its pin -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
     draft, capture = getattr(skill_my_tasks, DRAFT), getattr(skill_my_tasks, CAPTURE)
     assert draft.__tool_risk__["read_only"] is True
-    assert not capture.__tool_risk__.get("read_only")
-    assert capture.__tool_risk__.get("open_world") is False
-    assert eg.is_held_off_pack_write(capture, SLUG)
-    assert not eg.is_held_off_pack_write(draft, SLUG)
+    assert capture.__tool_risk__.get("card_write") is True
+    assert capture.__tool_risk__.get("open_world") is True, "the reply path labels the thread"
+    assert set(inspect.signature(capture).parameters) == eg.HELD_CARD_WRITE_TOOLS[CAPTURE]
+    assert eg.is_held_card_write(capture)
     for name in TOOLS:
-        assert name not in eg._owner_tool_names(), name
+        fn = getattr(skill_my_tasks, name)
+        assert not any(name in names for names in eg.HELD_OFF_PACK_WRITES.values()), name
+        assert not eg.is_held_off_pack_write(fn, SLUG), name
+        assert not eg.is_held_chat_off(fn, owner="orchestrator"), name
         assert name in skill_my_tasks.PACK_ONLY_TOOLS, name
+
+
+async def test_find_draft_and_capture_in_a_held_chat_on_the_real_mark_store(monkeypatch) -> None:
+    """The flow of production, with ``HELD_CARD_WRITES_ORGS=*``: a read of the
+    mail agent marks the chat, the pack builds held, the draft runs, and the
+    write shows ONE card and runs after the click. The real mark store and the
+    real ``chat_is_held`` decide. Mutation: put the write back in
+    ``HELD_OFF_PACK_WRITES``, or refuse it in a held chat -> red."""
+    from acb_common import get_settings
+    from orchestrator import _tool_injection as ti
+
+    from tests.unit._egress_mark_store import install_memory_mark_store
+    from tests.unit.test_tool_packs_choice import _bound, _run_ctx, _tenant
+
+    install_memory_mark_store(monkeypatch)
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+    gw, card = Gateway({
+        "/tasks/capture/from-email/preview": {"draft": {"title": "Pay the invoice"}},
+        "/tasks/capture/from-email/create": _made()}), Card()
+    monkeypatch.setattr(core, "_current_user_email", lambda: ME)
+    monkeypatch.setattr(core, "_request", gw)
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+    ctx = _run_ctx()
+    with _tenant(), _bound(**ctx):
+        assert await eg.chat_is_held() is False, "non-vacuity: the chat starts clear"
+        # A read of the mail agent marks the chat, as the run boundary does.
+        assert await eg.mark_untrusted_session("email-assistant", ctx) is True
+        assert await eg.chat_is_held() is True
+        build = await ti._pack_tools(SLUG, {**_run_ctx(no_egress=True),
+                                            tp.PACK_RUN_KEY: "rk-p1b"}, holds=())
+        assert build.held is True
+        assert {ti._tool_name(t) for t in build.tools} == set(TOOLS)
+        assert not build.dropped
+        drafted = await core.my_tasks_draft_from_mail(AID, email_id=EID)
+        assert "Pay the invoice" in drafted
+        out = await core.my_tasks_capture_from_mail(AID, email_id=EID,
+                                                    title="Pay the invoice")
+    assert out.startswith("Made one task from the mail:"), out
+    assert len(card.cards) == 1
+    assert [p for _m, p, _b in gw.calls] == ["/tasks/capture/from-email/preview",
+                                             "/tasks/capture/from-email/create"]
 
 
 # ── 6. The kind of write, the pack, and parity ───────────────────────────────
@@ -408,10 +478,16 @@ def test_the_write_is_a_task_create() -> None:
 
 
 def test_the_pack_holds_both_tools() -> None:
-    """Mutation: drop a tool from the family -> red. ``test_calendar_day_pack.py``
-    holds the agent's list to the family."""
-    assert set(TOOLS) <= set(sf.SKILL_FAMILIES[SLUG]["tools"])
+    """Mutation: drop a tool from the family or from the agent's build list, or
+    put a tool back in ``calendar-day`` -> red."""
+    from tests.unit.test_calendar_day_pack import TWENTY
+
+    assert tuple(sf.SKILL_FAMILIES[SLUG]["tools"]) == tuple(sorted(TOOLS))
+    assert sf.SKILL_FAMILIES[SLUG]["owner"] == "projects-assistant"
     assert set(TOOLS) <= set(skill_my_tasks.__all__)
+    assert not set(TOOLS) & set(sf.SKILL_FAMILIES["calendar-day"]["tools"])
+    assert len(sf.SKILL_FAMILIES["calendar-day"]["tools"]) == len(TWENTY) == 20
+    assert tp.FOLLOWS[SLUG] == "projects"
 
 
 def test_the_parity_rows_name_the_tools() -> None:
@@ -516,3 +592,123 @@ def test_the_words_load_the_pack(words: str) -> None:
 def test_a_mail_turn_with_no_task_does_not_load_the_pack(words: str) -> None:
     """A bare "email" or "task" is no phrase. Mutation: add one -> red."""
     assert SLUG not in _chosen(words), words
+
+
+# ── 9. What the card says matches what the route does ───────────────────────
+
+
+async def test_a_waiting_task_that_the_route_files_in_the_inbox_says_why(env) -> None:
+    """The route drops a teammate with no connected board and files INBOX.
+    Mutation: drop ``_drift_lines`` -> the answer does not say why -> red."""
+    env["gw"].answers = {"/tasks/capture/from-email/create": {
+        **_made(), "disposition": "INBOX", "assignee_name": None}}
+    out = await core.my_tasks_capture_from_mail(
+        AID, email_id=EID, title="Send the deck", disposition="WAITING",
+        assignee_name="Ravi K")
+    assert ("You asked for WAITING. The task is INBOX: no connected board holds "
+            "that person, so the task stays yours.") in out
+    assert "No assignee was kept" in out
+
+
+async def test_a_task_that_matches_the_card_says_nothing_more(env) -> None:
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
+    out = await core.my_tasks_capture_from_mail(AID, email_id=EID, title="Send the deck",
+                                                disposition="NEXT")
+    assert "You asked for" not in out and "No assignee" not in out
+
+
+async def test_the_reply_card_names_the_label_at_the_provider(env) -> None:
+    """The reply path labels the thread "Task" at the mail provider. Mutation:
+    drop the line -> red."""
+    env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="Send the deck")
+    assert core.MAIL_LABEL_LINE in env["card"].cards[0]["context"].splitlines()
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
+    await core.my_tasks_capture_from_mail(AID, email_id=EID, title="Send the deck")
+    assert core.MAIL_LABEL_LINE not in env["card"].cards[1]["context"]
+
+
+@pytest.mark.parametrize("when", ["20261201", "2026/12/01", "Dec 1 2026", "2026-12-1"])
+async def test_a_date_that_the_route_drops_is_refused(env, when: str) -> None:
+    """``capture_email._parse_dt`` needs a "-" and an ISO value. Mutation: accept
+    any value that Python parses -> "20261201" reaches the card -> red."""
+    out = await core.my_tasks_capture_from_mail(AID, email_id=EID, title="x", due_at=when)
+    assert "due_at is a date" in out and env["card"].cards == []
+
+
+@pytest.mark.parametrize("when", ["2026-12-01", "2026-12-01T09:30", "2026-12-01T09:30:00Z"])
+async def test_a_date_that_the_route_reads_passes(env, when: str) -> None:
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
+    await core.my_tasks_capture_from_mail(AID, email_id=EID, title="x", due_at=when)
+    assert env["gw"].calls[0][2]["draft"]["due_at"] == when
+
+
+async def test_the_card_and_the_write_carry_the_same_text(env) -> None:
+    """The card drops each guillemet. Mutation: keep them in the write -> the
+    write differs from the card -> red."""
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
+    await core.my_tasks_capture_from_mail(
+        AID, email_id=EID, title="Send «the» deck", notes="Ask «Ravi».",
+        next_action="Open «it»", disposition="NEXT", steps="Find «file»")
+    draft = env["gw"].calls[0][2]["draft"]
+    assert draft["title"] == "Send the deck" and draft["notes"] == "Ask Ravi."
+    assert draft["next_action"] == "Open it" and draft["subtasks"] == ["Find file"]
+    card = env["card"].cards[0]["context"]
+    assert "title: «Send the deck»" in card and "notes: «Ask Ravi.»" in card
+
+
+# ── 10. No request of main loses its tool (base 30 to 59) ────────────────────
+
+#: What ``tp.choose`` gave on main (629c0ef69), measured with ``EVERY`` and the
+#: turn of ``test_projects_packs._turn``, for each base from 30 to 59, with
+#: ``HELD_CARD_WRITES_ORGS`` off and on.
+def _main_choice(words: str, base: int, held: str) -> tuple[str, ...]:
+    if words == BLOCK:
+        return ("projects", "calendar-day") if base <= 56 or held else ("calendar-day",)
+    return ("email", "projects") if base <= 56 else ("email",)
+
+
+PLAIN = "Make a task from this email"
+PROJECT = "make a task from this email and assign it to Ravi in the Website project"
+BLOCK = "block two hours on my calendar for the task"
+
+
+@pytest.mark.parametrize("held", ["", "*"])
+@pytest.mark.parametrize("base", range(30, 60))
+def test_no_request_of_main_loses_its_tool(base: int, held: str, monkeypatch) -> None:
+    """The choice of each phrase on the branch, against main.
+
+    * The project phrase and the calendar phrase choose as on main.
+    * The plain phrase always holds the mail task pack. With the switch on, as
+      in production, it keeps ``projects`` too wherever the three packs fit
+      (base 54 and less: 54 + 31 + 23 + 2 = 110). Above that, main held
+      projects only at 55 and 56, and the mail task pack takes its place.
+    * With the switch off, the step-aside keeps the specific pack: the plain
+      phrase holds email and the mail task pack.
+
+    Mutation: drop the lookahead of ``_MAIL_TASK_REF``, or put the tools back in
+    calendar-day -> red."""
+    from acb_common import get_settings
+
+    from tests.unit.test_projects_packs import EVERY, _turn
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", held)
+
+    def got(words: str) -> tuple[str, ...]:
+        return tp.choose(_turn(words=words), allowed=EVERY, base_tools=base).slugs
+
+    assert got(PROJECT) == _main_choice(PROJECT, base, held)
+    assert got(BLOCK) == _main_choice(BLOCK, base, held)
+    plain = got(PLAIN)
+    assert plain[0] == "email" and SLUG in plain
+    if held and base <= 54:
+        assert plain == ("email", "projects", SLUG)
+    else:
+        assert plain == ("email", SLUG)
+
+
+def test_block_two_hours_reaches_set_my_overlay_at_the_base_of_the_requests() -> None:
+    """P3 of the review: the row of ``test_pack_requests`` holds as on main."""
+    from tests.unit.test_pack_requests import holders
+
+    assert holders("set_my_overlay") & set(_chosen(BLOCK))

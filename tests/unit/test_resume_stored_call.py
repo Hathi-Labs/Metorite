@@ -774,9 +774,14 @@ def test_the_four_browser_reads_and_the_card_hold_no_stored_call(
 # ---------------------------------------------------------------------------
 
 def _all_functions() -> dict[str, ast.AsyncFunctionDef]:
-    from tests.unit.test_held_card_writes import CRM_AGENT, _functions, _skill_functions
+    from tests.unit.test_held_card_writes import (
+        CRM_AGENT,
+        MY_TASKS_CORE,
+        _functions,
+        _skill_functions,
+    )
 
-    return {**_skill_functions(), **_functions(CRM_AGENT)}
+    return {**_skill_functions(), **_functions(CRM_AGENT), **_functions(MY_TASKS_CORE)}
 
 
 def _calls(fn: ast.AsyncFunctionDef, names: set[str]) -> list[int]:

@@ -21,7 +21,7 @@ decisions.** §6 sets the order of the work now.
 
 **P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
 task from a mail, or from a reply that the member sent, and makes it after one
-card. Two tools of the `calendar-day` pack pay the six capture rows of mail:
+card. Two tools of the new pack `mail-tasks` pay the six capture rows of mail:
 `my_tasks_draft_from_mail` and `my_tasks_capture_from_mail`. The tasks ceiling
 went from 7 to 1. §6.4 holds the P-1 slices.
 
@@ -627,9 +627,12 @@ P-1 does not take all 14. The table names the owner of each row.
   entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
   it answers in one line. Each proposal changes nothing. The member applies
   a field with the task edit tool. A held chat keeps all three.
-- **P-1b.** Two tools of `skill_my_tasks` join the `calendar-day` pack. The
-  pack needs no new `TOOL_PACKS` line and no new `FOLLOWS` entry. The email
-  pack stays with P-2, so P-1b does not touch it.
+- **P-1b.** Two tools of `skill_my_tasks` are in a new pack, `mail-tasks`,
+  owned by the Projects assistant. The pack follows `projects` (one new
+  `FOLLOWS` entry), so it needs no `TOOL_PACKS` line. The email pack stays with
+  P-2, so P-1b does not touch it. Review round 1 moved the tools out of
+  `calendar-day`: at 22 tools, that pack pushed `projects` out of turns where
+  it fitted on main.
   - `my_tasks_draft_from_mail` reads. It sends `/preview`, `/enhance` or
     `/from-reply/detect`, and makes no task. A held chat keeps it.
   - `my_tasks_capture_from_mail` makes one task after one card. It sends
@@ -639,20 +642,29 @@ P-1 does not take all 14. The table names the owner of each row.
     draft and the similar tasks in one `UntrustedFrame` block, and marks the
     chat. The card starts with the mailbox line of RX-1 and binds the run's
     own member. The tool refuses a field that the route drops with no word.
-  - A held chat holds the write off. `egress.HELD_OFF_PACK_WRITES` leaves it
-    out of the pack, and the tool refuses when the chat turns held in the run.
+  - A held chat keeps the write behind its one card (D169, decided on task
+    3922). The write is on `egress.HELD_CARD_WRITE_TOOLS` with its pinned
+    parameters. In a held chat it refuses the AI path, because that card
+    cannot show the fields, and a cut card.
+  - The card says what the route does with an assignee. The answer says why
+    when the stored task differs from the card. The reply path labels the
+    thread at the mail provider, so the card says so and the tool says
+    `open_world=True`.
   - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
     hand-off that made a task refuses it.
   - `capture_intake(source="email")` of `skill_projects` is a different act.
     It puts a task in the intake queue of a project (`/projects/intake`). It
     reads no mail, and it has no draft, no idempotency per mail and no thread
     tag. So it pays none of the six rows.
-  - "Make a task from this email" now loads `email` and `calendar-day`. On
-    main, at the base of production, the cap left only the email pack.
+  - "Make a task from this email" loads `mail-tasks`. With the held switch
+    on, `projects` stays where the three packs fit (base 54 and less). At the
+    base of production (57) main loaded only the email pack. A turn that names
+    a project, a board or an assignment loads no `mail-tasks`, so it chooses
+    as on main. `test_my_tasks_p1b_tools.py` measures each base from 30 to 59.
 - **Verify P-1b.** Run these commands in the worktree.
 
 ```bash
-timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py -q -p no:cacheprovider
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
 ```
 

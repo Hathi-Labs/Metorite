@@ -1017,9 +1017,9 @@ def test_with_the_flag_on_three_cases_of_the_matrix_drop_a_pack(
     * ``studio_with_email_and_crm_records``: off, email, crm-records and studio,
       109 tools. On, it drops studio-more and the core pack studio, 104 tools.
     * ``calendar_projects_and_calendar_day_sticky_with_email``: off, calendar-day
-      and email, 109 tools. On, ``choose`` drops the sticky pack calendar-day,
+      and email, 107 tools. On, ``choose`` drops the sticky pack calendar-day,
       92 tools. P-1a (task 3112) grew calendar-day, so this case is new since the
-      first build of PAR-8b. P-1b (task 3922) added two tools (107 to 109).
+      first build of PAR-8b.
 
     With the flag off nothing moves. Mutation: expect no drop -> red."""
     import tests.unit.test_studio_split_matrix as matrix
@@ -1039,6 +1039,6 @@ def test_with_the_flag_on_three_cases_of_the_matrix_drop_a_pack(
                                               ["email", "crm-records"],
                                               ["studio-more", "studio"], 109, 104),
         "calendar_projects_and_calendar_day_sticky_with_email": (
-            ["calendar-day", "email"], ["email"], [], 109, 92),
+            ["calendar-day", "email"], ["email"], [], 107, 92),
     }, changed
     assert len(rows[0]) == 16

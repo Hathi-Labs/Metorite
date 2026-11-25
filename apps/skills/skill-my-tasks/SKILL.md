@@ -37,7 +37,7 @@ The fence is `tests/unit/test_skill_task_lens.py`.
 | `my_tasks_list_calendar_connections()` | `GET /tasks/calendar/connections`. It shows no token. A 404 (sync off) gives one line (P-1a) |
 | `my_tasks_suggest_title(item_id, title)`, `my_tasks_enrich(item_id)` | `POST /tasks/items/{id}/suggest-title` and `/enrich`. Proposals only. They write nothing (P-1a) |
 | `my_tasks_draft_from_mail(account_id, ...)` | `POST /tasks/capture/from-email/preview`, `/from-email/enhance` or `/from-reply/detect`. A draft only. It writes nothing, and the mail text is in one frame (P-1b) |
-| `my_tasks_capture_from_mail(account_id, ...)` | `POST /tasks/capture/from-email/create`, `/from-reply/create` or `/from-email`, after one card with the mailbox line. A held chat refuses it (P-1b) |
+| `my_tasks_capture_from_mail(account_id, ...)` | `POST /tasks/capture/from-email/create`, `/from-reply/create` or `/from-email`, after one card with the mailbox line. A held chat keeps it behind the card, and refuses only the AI path (P-1b) |
 
 The tools apply these five rules.
 

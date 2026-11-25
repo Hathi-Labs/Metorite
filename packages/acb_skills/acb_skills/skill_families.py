@@ -804,8 +804,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
             "set the One Thing, block or release time, read or change the calendar settings, keep the day rules, "
-            "list the connected calendars, propose a clearer title or the missing fields of a task, "
-            "and make a task from a mail or from a reply that the member sent."
+            "list the connected calendars, and propose a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -813,17 +812,15 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. Two tools make a task from a mail or from a reply that the member sent (P-1b, task 3922): one drafts it and changes nothing, and one makes it after one card. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "my_tasks_add_day_rule",
-            "my_tasks_capture_from_mail",
             "my_tasks_close_my_day",
             "my_tasks_day_digest",
             "my_tasks_delete_day_rule",
-            "my_tasks_draft_from_mail",
             "my_tasks_edit_day_rule",
             "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
@@ -840,6 +837,33 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_suggest_title",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-1b (task 3922): a task from a mail, for the main chat. The two tools are
+    # My Tasks tools (skill_my_tasks.core), built by the Projects assistant in
+    # `_agent_tools()` only, as the calendar-day tools are. The pack follows
+    # `projects` (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "mail-tasks": {
+        "label": "Tasks from mail",
+        "summary": (
+            "Make a task from an email, or from a reply that the member sent: "
+            "draft it, then make it after one card."
+        ),
+        "description": (
+            "A tool pack: the task from a mail, for the main assistant to load "
+            "when a turn says \"make a task from this email\". One tool drafts "
+            "the task from a mail or from a reply that the member sent, and "
+            "changes nothing. One tool makes the task in the member's own task "
+            "list after one card. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_capture_from_mail",
+            "my_tasks_draft_from_mail",
         ),
         "owner": "projects-assistant",
         "core": False,

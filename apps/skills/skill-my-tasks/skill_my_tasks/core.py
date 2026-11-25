@@ -54,6 +54,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -981,11 +982,13 @@ async def my_tasks_enrich(item_id: str) -> str:
 # Mail text is text that a stranger wrote. So each answer puts the sender, the
 # subject, the draft and the similar tasks in one `UntrustedFrame` block, and
 # each answer marks the chat (`egress.mark_untrusted_answer`). The card starts
-# with the mailbox line of RX-1 (`skill_projects.writes.mailbox_line`). A held
-# chat holds the write off twice: the pack builder leaves it out
-# (`egress.HELD_OFF_PACK_WRITES`), and the tool refuses when the chat turns
-# held in the run (`egress.chat_is_held`). The write joins the kind
-# `task.create` (`tool_packs._KIND_TOOLS`). No tool takes an org or a member:
+# with the mailbox line of RX-1 (`skill_projects.writes.mailbox_line`).
+# A held chat keeps the write behind its ONE card (D169): it is a held card
+# write (`egress.HELD_CARD_WRITE_TOOLS`, `card_write=True`). In a held chat it
+# refuses only the AI path, because that card cannot show the fields, and a
+# cut card. The reply path labels the thread "Task" at the mail provider too,
+# so the tool says `open_world=True`. The tools are in their own pack,
+# `mail-tasks`. The write joins the kind `task.create` (`tool_packs._KIND_TOOLS`). No tool takes an org or a member:
 # the run binding gives the member (R5), and the gateway checks that the
 # mailbox is the member's own. Fence: tests/unit/test_my_tasks_p1b_tools.py.
 
@@ -1022,11 +1025,16 @@ _MAIL_DRAFT_ONLY = (
     "agrees, call my_tasks_capture_from_mail with the fields that the member "
     "wants. It shows the member one card first."
 )
-#: The answer of the write in a held chat.
-MAIL_HELD = (
-    "No task was made. This chat read mail from outside senders, so it makes no "
-    "task from a mail. Tell the member to use Add to Tasks on the mail in the "
-    "Email app."
+#: The answer of the AI path in a held chat. Its card cannot show the fields
+#: that the AI picks, so it is no consent there (D169).
+MAIL_HELD_AI = (
+    "No task was made. This chat read mail from outside senders, so the AI may "
+    "not pick the fields of the task here. Draft the task with "
+    "my_tasks_draft_from_mail, show the draft, and pass its fields with a title."
+)
+#: The one card line of the reply path: the label at the mail provider.
+MAIL_LABEL_LINE = (
+    "label: the thread gets the label Task, in Metorite and at your mail provider."
 )
 #: Where a task from a mail lands, for the mailbox line of the card.
 _MAIL_PLACE = "your own task list"
@@ -1183,15 +1191,30 @@ async def my_tasks_draft_from_mail(
                               _MAIL_DRAFT_ONLY)
 
 
+#: The forms of a date that the route reads (`capture_email._parse_dt` needs a
+#: "-" and an ISO value). "20261201" parses in Python, and the route drops it.
+_MAIL_WHEN = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\S+)?")
+
+
 def _when_refusal(value: str, name: str) -> str | None:
     """Plain words for a date that the route cannot read, or None."""
     if not value:
         return None
     try:
+        if not _MAIL_WHEN.fullmatch(value):
+            raise ValueError(value)
         datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return f"{name} is a date, YYYY-MM-DD, or an ISO 8601 time. Nothing changed."
+        return (f"{name} is a date, YYYY-MM-DD, or a time, YYYY-MM-DDTHH:MM. "
+                "Nothing changed.")
     return None
+
+
+def _same_text(value: str) -> str:
+    """*value* as one line with no guillemets. The card fences each value in
+    guillemets and drops the ones inside, so the write drops them too. Then the
+    card and the write carry the same text."""
+    return " ".join(value.replace("«", "").replace("»", "").split())
 
 
 def _mail_draft(
@@ -1202,7 +1225,8 @@ def _mail_draft(
     """``(draft, None)``: the body of `CaptureDraftModel`, exactly as the card
     shows it. Or ``(None, refusal)``. A field that the route would drop with no
     word is refused here, so the card never shows a field that is not written."""
-    title = " ".join(title.split())
+    title = _same_text(title)
+    notes = notes.replace("«", "").replace("»", "")
     if not title:
         return None, "Pass the title of the task. Nothing changed."
     if len(title) > MAIL_TITLE_MAX:
@@ -1221,7 +1245,7 @@ def _mail_draft(
         return None, "energy is high, medium or low. Nothing changed."
     if time_estimate_mins < 0 or time_estimate_mins > 100000:
         return None, "time_estimate_mins is 0 (none) or a count of minutes. Nothing changed."
-    rows = [" ".join(s.split()) for s in steps.splitlines()]
+    rows = [_same_text(s) for s in steps.splitlines()]
     rows = [s for s in rows if s]
     if len(rows) > MAIL_STEPS_MAX or any(len(s) > MAIL_TITLE_MAX for s in rows):
         return None, (f"Pass at most {MAIL_STEPS_MAX} steps of at most "
@@ -1234,8 +1258,8 @@ def _mail_draft(
         refusal = _when_refusal(value, name)
         if refusal:
             return None, refusal
-    action = " ".join(next_action.split())
-    who = " ".join(assignee_name.split())
+    action = _same_text(next_action)
+    who = _same_text(assignee_name)
     if len(action) > 300 or len(who) > 120:
         return None, ("next_action holds at most 300 characters, and assignee_name "
                       "at most 120. Nothing changed.")
@@ -1260,9 +1284,8 @@ def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
     if draft.get("subtasks"):
         rows.append(("steps", "steps: " + " | ".join(_data(s) for s in draft["subtasks"])))
     if draft.get("assignee_name"):
-        rows.append(("assignee", (
-            f"assignee: {_data(draft['assignee_name'])}. Only a person of your people "
-            "list counts. A WAITING task then waits on that person.")))
+        rows.append(("assignee", f"assignee: {_data(draft['assignee_name'])}. "
+                     + _assignee_rule(draft["disposition"])))
     if draft.get("notes"):
         rows.append(("notes", f"notes: {_data(draft['notes'])}"))
     # A value with a newline can forge a line of the card (`card_body` rule 4).
@@ -1271,19 +1294,31 @@ def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
     return [(key, one_line(line)) for key, line in rows]
 
 
+def _assignee_rule(disposition: str) -> str:
+    """What the write does with an assignee (`capture_email._route_and_persist`).
+
+    The route keeps a name only when it is a person of the people list. A
+    WAITING task goes to that person only when a connected board holds them.
+    Else the route drops the person and files the task in YOUR inbox."""
+    if disposition == "WAITING":
+        return ("The task waits on that person only when the person is in your "
+                "people list and on a connected board. Else it goes to your inbox "
+                "as INBOX, with no assignee.")
+    return "The name stays only when the person is in your people list. The task stays yours."
+
+
 async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> str | None:
     """Show ONE card and wait. None when the member approved. Else the words
-    of the tool: the chat is held, the card did not fit, or the card did
-    nothing (HRD-7).
+    of the tool: the card did not fit, a held chat got a cut card, or the card
+    did nothing (HRD-7).
 
     The first line is the mailbox line of RX-1. The card binds the run's own
-    member (PZ-32), never an input."""
-    from acb_common.card_body import CardWontFit, card_body
+    member (PZ-32), never an input. A held chat keeps this card (D169). A run
+    with no card channel gets no approval, so it writes nothing."""
+    from acb_common.card_body import CardWontFit, card_body, cut_refusal, is_cut
     from acb_skills import ask_tools
     from acb_skills.egress import chat_is_held
 
-    if await chat_is_held():
-        return MAIL_HELD
     try:
         from skill_projects.writes import mailbox_line
     except ImportError:
@@ -1293,6 +1328,8 @@ async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> st
         context = str(card_body(mailbox_line(_MAIL_PLACE), rows))
     except CardWontFit as exc:
         return str(exc)
+    if is_cut(context) and await chat_is_held():
+        return cut_refusal(context)
     answer = await ask_tools.request_confirmation(
         title, detail, context, non_interactive_default="deny", close_on_steer=True,
         responder=_current_user_email() or None, fenced=True)
@@ -1301,8 +1338,33 @@ async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> st
     return ask_tools.card_not_done_text("No task was made.")
 
 
-async def _made(p: dict[str, Any]) -> str:
-    """The answer after a write: the task that the route gave back."""
+async def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+    """The one write of the capture tool: a POST to *path*. The card comes first."""
+    return await _request("POST", path, json=body) or {}
+
+
+def _drift_lines(asked: dict[str, Any] | None, p: dict[str, Any]) -> list[str]:
+    """Why the stored task differs from the card: the route moved the task to
+    the inbox, or kept no assignee. Empty when it matches."""
+    if not asked:
+        return []
+    out: list[str] = []
+    got = str(p.get("disposition") or "INBOX")
+    want = str(asked.get("disposition") or "INBOX")
+    who = str(asked.get("assignee_name") or "")
+    if p.get("created") and got != want:
+        out.append(f"You asked for {want}. The task is {got}: "
+                   + ("no connected board holds that person, so the task stays yours."
+                      if want == "WAITING" and who else "the route filed it there."))
+    if p.get("created") and who and not p.get("assignee_name"):
+        out.append("No assignee was kept: the name is not a person of your people "
+                   "list, or no connected board holds that person.")
+    return out
+
+
+async def _made(p: dict[str, Any], asked: dict[str, Any] | None = None) -> str:
+    """The answer after a write: the task that the route gave back. *asked* is
+    the draft of the card, so the answer says why the stored task differs."""
     from acb_skills.ask_tools import act_ran
 
     item = p.get("item") if isinstance(p.get("item"), dict) else {}
@@ -1318,10 +1380,14 @@ async def _made(p: dict[str, Any]) -> str:
         return await _mail_answer(
             "This mail is already a task. No new task was made:", lines, "")
     act_ran()
-    return await _mail_answer("Made one task from the mail:", lines, "")
+    return await _mail_answer("Made one task from the mail:", lines,
+                              "\n".join(_drift_lines(asked, p)))
 
 
-@_annotate_risk(idempotent=False, open_world=False)
+#: `open_world=True`: the reply path labels the thread at the mail provider.
+#: `card_write=True`: a held chat keeps it behind its card
+#: (`egress.HELD_CARD_WRITE_TOOLS`, D169).
+@_annotate_risk(idempotent=False, open_world=True, card_write=True)
 async def my_tasks_capture_from_mail(
     account_id: str, email_id: str = "", thread_id: str = "", title: str = "",
     notes: str = "", disposition: str = "", next_action: str = "",
@@ -1339,6 +1405,7 @@ async def my_tasks_capture_from_mail(
     too. Use that only when the member asks for it.
 
     For a reply that the member sent, pass account_id, thread_id and a title.
+    The thread then gets the label Task, at the mail provider too.
 
     Args:
         account_id: The id of the member's mailbox (from the mail tools).
@@ -1379,17 +1446,20 @@ async def my_tasks_capture_from_mail(
         if given or time_estimate_mins:
             return ("Pass a title with the other fields. With no title, the AI picks "
                     "every field itself. Nothing changed.")
+        from acb_skills.egress import chat_is_held
+
+        if await chat_is_held():
+            return MAIL_HELD_AI
         stop = await _mail_card(
             "Make a task from this mail with AI?",
             "The AI reads the mail and picks every field.",
             [("how", "fields: the AI picks the title, the disposition, the dates "
                      "and the steps from the mail."),
              ("assignee", "assignee: the AI may name a person of your people list. "
-                          "A WAITING task then waits on that person.")])
+                          + _assignee_rule("WAITING"))])
         if stop:
             return stop
-        p = await _request("POST", _CAPTURE_EMAIL,
-                           json={**ids, "email_id": email_id.strip()}) or {}
+        p = await _post(_CAPTURE_EMAIL, {**ids, "email_id": email_id.strip()})
         return await _made(p)
     if not title.strip():
         return "Pass the title of the task. Nothing changed."
@@ -1403,18 +1473,17 @@ async def my_tasks_capture_from_mail(
                                 _card_rows(draft))
         if stop:
             return stop
-        p = await _request("POST", _CAPTURE_EMAIL_CREATE, json={
-            **ids, "email_id": email_id.strip(), "draft": draft}) or {}
-        return await _made(p)
+        p = await _post(_CAPTURE_EMAIL_CREATE,
+                        {**ids, "email_id": email_id.strip(), "draft": draft})
+        return await _made(p, draft)
     stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
-                            _card_rows(draft))
+                            [*_card_rows(draft), ("label", MAIL_LABEL_LINE)])
     if stop:
         return stop
-    p = await _request("POST", _CAPTURE_REPLY_CREATE, json={
+    p = await _post(_CAPTURE_REPLY_CREATE, {
         **ids, "thread_id": thread_id.strip(), "subject": reply_subject.strip()[:300],
-        "reply_to_message_id": reply_to_message_id.strip() or None,
-        "draft": draft}) or {}
-    return await _made(p)
+        "reply_to_message_id": reply_to_message_id.strip() or None, "draft": draft})
+    return await _made(p, draft)
 
 
 @_annotate_risk(idempotent=True, open_world=False)

@@ -46,8 +46,8 @@ from skill_my_tasks.core import (
     my_tasks_update_calendar_settings,
 )
 
-#: Tools that only the main chat's `calendar-day` pack holds (CAL-2 to CAL-4,
-#: CE-15, P-1a and P-1b).
+#: Tools that only the main chat's packs hold: `calendar-day` (CAL-2 to CAL-4,
+#: CE-15 and P-1a) and `mail-tasks` (P-1b).
 #: They are in ``__all__`` so the pack builder, the card routing and the parity
 #: fences see them. A declarative agent (``orchestrator.declarative``) skips them,
 #: so the Tasks assistant keeps the tools that it has on main. Fence:

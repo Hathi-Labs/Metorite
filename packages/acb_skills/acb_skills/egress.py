@@ -1471,6 +1471,15 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
+    # P-1b (task 3922): a task from a mail, in the member's own task list. It
+    # shows its exact fields on one card first (``skill_my_tasks.core``), with
+    # the mailbox line. In a held chat it refuses the AI path, because that
+    # card cannot show the fields. ``open_world=True``: the reply path labels
+    # the thread at the mail provider.
+    "my_tasks_capture_from_mail": _pin(
+        "account_id email_id thread_id title notes disposition next_action "
+        "assignee_name due_at defer_until context energy time_estimate_mins steps "
+        "reply_subject reply_to_message_id"),
     # The class B tools of projects-bulk.
     "create_tasks": _pin("project_id tasks"),
     "edit_comment": _pin("task_id comment_id body"),
@@ -1743,11 +1752,6 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 #: ``my_tasks_list_events``, ``my_tasks_list_schedule`` and
 #: ``my_tasks_suggest_title``, ``read_only=True``). The two P-1a proposals write
 #: nothing, so mail that the chat read cannot steer a write through them.
-#: P-1b (task 3922) adds two tools, so the pack holds twenty-two. The draft
-#: (``my_tasks_draft_from_mail``, ``read_only=True``) is the ninth read. The
-#: write ``my_tasks_capture_from_mail`` makes a task from a mail after one card.
-#: The mail itself can steer its fields, so a held chat holds it off here, and
-#: the tool refuses too when the chat turns held in the run.
 #: **Why a pack-slug table
 #: and not a bare name.** :func:`is_held_off_write` matches on the bare name
 #: before the owner, so naming these tools through the pack family would also
@@ -1767,8 +1771,6 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # their propose calls store a pending plan on the server, which a later
         # apply replays. Mail that a held chat read could steer that apply.
         "my_tasks_close_my_day", "my_tasks_start_my_day",
-        # P-1b (task 3922): the task from a mail. The draft read stays.
-        "my_tasks_capture_from_mail",
     }),
 }
 
