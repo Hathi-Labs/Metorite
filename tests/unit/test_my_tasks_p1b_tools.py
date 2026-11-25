@@ -172,21 +172,21 @@ async def test_the_reply_write_sends_the_thread_and_no_body(env) -> None:
 
 
 async def test_no_title_sends_the_one_click_door_after_its_own_card(env) -> None:
-    """The AI picks each field. The card says so, and names the teammate risk.
-    Mutation: skip the card, or send the create door -> red."""
+    """The AI picks each field. The card says so, and that the task stays the
+    member's. Mutation: skip the card, or send the create door -> red."""
     env["gw"].answers = {"/tasks/capture/from-email": _made(title="Pay the invoice")}
     out = await core.my_tasks_capture_from_mail(AID, email_id=EID)
     assert env["gw"].calls == [("POST", "/tasks/capture/from-email",
                                 {"account_id": AID, "email_id": EID})]
     card = env["card"].cards[0]
     assert card["title"] == "Make a task from this mail with AI?"
-    assert "the AI may name a person of your people list" in card["context"]
+    assert core._MAIL_AI_OWNER_LINE in card["context"].splitlines()
     assert "Pay the invoice" in out
 
 
 async def test_no_title_with_other_fields_is_refused(env) -> None:
     """Mutation: drop the fields and send the one-click door -> red."""
-    out = await core.my_tasks_capture_from_mail(AID, email_id=EID, assignee_name="Ravi")
+    out = await core.my_tasks_capture_from_mail(AID, email_id=EID, due_at="2026-12-01")
     assert "Pass a title" in out
     assert env["gw"].calls == [] and env["card"].cards == []
 
@@ -315,12 +315,10 @@ async def test_the_card_starts_with_the_mailbox_line_and_binds_the_member(env) -
 
     env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
     await core.my_tasks_capture_from_mail(AID, email_id=EID, title="Send the deck",
-                                          disposition="WAITING", assignee_name="Ravi K")
+                                          disposition="WAITING")
     card = env["card"].cards[0]
     assert card["context"].splitlines()[0] == mailbox_line(core._MAIL_PLACE)
-    assert ("assignee: «Ravi K». The task waits on that person only when the person "
-            "is in your people list and on a connected board. Else it goes to your "
-            "inbox as INBOX, with no assignee.") in card["context"]
+    assert "waits on: the sender of the mail" in card["context"].splitlines()
     assert card["responder"] == ME and card["fenced"] is True
     assert card["non_interactive_default"] == "deny"
 
@@ -597,17 +595,44 @@ def test_a_mail_turn_with_no_task_does_not_load_the_pack(words: str) -> None:
 # ── 9. What the card says matches what the route does ───────────────────────
 
 
-async def test_a_waiting_task_that_the_route_files_in_the_inbox_says_why(env) -> None:
-    """The route drops a teammate with no connected board and files INBOX.
-    Mutation: drop ``_drift_lines`` -> the answer does not say why -> red."""
+@pytest.mark.parametrize("kwargs", [
+    {"email_id": EID, "title": "Send the deck", "disposition": "WAITING"},
+    {"email_id": EID, "title": "Send the deck"},
+    {"thread_id": THREAD, "title": "Send the deck"},
+    {"email_id": EID},
+])
+async def test_an_assignee_is_refused_before_any_card(env, kwargs) -> None:
+    """The store of a capture keeps no assignee (``_PmLens.insert_capture``), so
+    no card may name one. Mutation: drop the ``NO_ASSIGNEE`` refusal -> a card
+    names a person that the store drops -> red."""
+    out = await core.my_tasks_capture_from_mail(AID, assignee_name="Ravi K", **kwargs)
+    assert out == core.NO_ASSIGNEE
+    assert env["gw"].calls == [] and env["card"].cards == []
+
+
+async def test_no_card_names_an_assignee_and_the_write_sends_none(env) -> None:
+    """Mutation: put an assignee row back on a card, or send a name -> red."""
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made(),
+                         "/tasks/capture/from-reply/create": _made(),
+                         "/tasks/capture/from-email": _made()}
+    await core.my_tasks_capture_from_mail(AID, email_id=EID, title="x", disposition="WAITING")
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x", disposition="WAITING")
+    await core.my_tasks_capture_from_mail(AID, email_id=EID)
+    for card in env["card"].cards:
+        assert not any(x.startswith("assignee") for x in card["context"].splitlines())
+    for _m, _p, body in env["gw"].calls:
+        assert not (body.get("draft") or {}).get("assignee_name")
+    assert "waits on: you, the writer of the reply" in env["card"].cards[1]["context"]
+
+
+async def test_a_stored_disposition_that_differs_is_said_with_no_cause(env) -> None:
+    """Mutation: drop ``_drift_lines`` -> the answer hides the difference -> red."""
     env["gw"].answers = {"/tasks/capture/from-email/create": {
-        **_made(), "disposition": "INBOX", "assignee_name": None}}
+        **_made(), "disposition": "INBOX"}}
     out = await core.my_tasks_capture_from_mail(
-        AID, email_id=EID, title="Send the deck", disposition="WAITING",
-        assignee_name="Ravi K")
-    assert ("You asked for WAITING. The task is INBOX: no connected board holds "
-            "that person, so the task stays yours.") in out
-    assert "No assignee was kept" in out
+        AID, email_id=EID, title="Send the deck", disposition="WAITING")
+    assert "You asked for WAITING. The stored task is INBOX. Tell the member." in out
+    assert "board" not in out and "people list" not in out
 
 
 async def test_a_task_that_matches_the_card_says_nothing_more(env) -> None:

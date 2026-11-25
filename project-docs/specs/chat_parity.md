@@ -630,7 +630,10 @@ P-1 does not take all 14. The table names the owner of each row.
 - **P-1b.** Two tools of `skill_my_tasks` are in a new pack, `mail-tasks`,
   owned by the Projects assistant. The pack follows `projects` (one new
   `FOLLOWS` entry), so it needs no `TOOL_PACKS` line. The email pack stays with
-  P-2, so P-1b does not touch it. Review round 1 moved the tools out of
+  P-2, so P-1b does not touch it. The spec asked P-1b to choose the pack with
+  P-2 (task 3111). The choice is `mail-tasks`, a pack of its own, and P-1b
+  changes no file of the email pack. The pull request of P-1b tells P-2 so.
+  Review round 1 moved the tools out of
   `calendar-day`: at 22 tools, that pack pushed `projects` out of turns where
   it fitted on main.
   - `my_tasks_draft_from_mail` reads. It sends `/preview`, `/enhance` or
@@ -646,8 +649,12 @@ P-1 does not take all 14. The table names the owner of each row.
     3922). The write is on `egress.HELD_CARD_WRITE_TOOLS` with its pinned
     parameters. In a held chat it refuses the AI path, because that card
     cannot show the fields, and a cut card.
-  - The card says what the route does with an assignee. The answer says why
-    when the stored task differs from the card. The reply path labels the
+  - The tool keeps no assignee. The store of a capture
+    (`item_lens._PmLens.insert_capture`) reads none, and the board lookup of a
+    delegate reads `task_accounts`, which nothing writes. So the tool refuses
+    `assignee_name` before the card, and no card names a person. A WAITING
+    task waits on the sender of the mail, or on the member for a reply. The
+    answer says so when the stored disposition differs from the card. The reply path labels the
     thread at the mail provider, so the card says so and the tool says
     `open_world=True`. The reply card also shows the thread and the subject
     that the task keeps.
@@ -667,7 +674,7 @@ P-1 does not take all 14. The table names the owner of each row.
 - **Verify P-1b.** Run these commands in the worktree.
 
 ```bash
-timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py -q -p no:cacheprovider
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py tests/unit/test_answer_claims.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
 ```
 

@@ -1063,7 +1063,8 @@ def _draft_lines(draft: dict[str, Any]) -> list[str]:
     if draft.get("notes"):
         lines.append(f"Notes: {_mail_text(draft.get('notes'), 500)}")
     lines.append(f"Disposition: {_mail_text(draft.get('disposition') or 'INBOX', 20)}")
-    for key, label in (("next_action", "Next action"), ("assignee_name", "Assignee"),
+    # No assignee line: this tool keeps no assignee (`NO_ASSIGNEE`).
+    for key, label in (("next_action", "Next action"),
                        ("due_at", "Due"), ("defer_until", "Defer until"),
                        ("context", "Context"), ("energy", "Energy")):
         if draft.get(key):
@@ -1121,7 +1122,7 @@ async def my_tasks_draft_from_mail(
     For a mail, pass account_id and email_id. ai=False gives the quick default
     draft from the subject, and says if the mail is already a task. ai=True lets
     the AI read the mail and its thread, and draft the title, the disposition,
-    a due date and a teammate.
+    and a due date.
 
     For a reply that the member sent, pass account_id, thread_id and
     reply_body (the member's own words of the reply). The AI says if the reply
@@ -1218,7 +1219,7 @@ def _same_text(value: str) -> str:
 
 
 def _mail_draft(
-    title: str, notes: str, disposition: str, next_action: str, assignee_name: str,
+    title: str, notes: str, disposition: str, next_action: str,
     due_at: str, defer_until: str, context: str, energy: str, time_estimate_mins: int,
     steps: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -1259,23 +1260,27 @@ def _mail_draft(
         if refusal:
             return None, refusal
     action = _same_text(next_action)
-    who = _same_text(assignee_name)
-    if len(action) > 300 or len(who) > 120:
-        return None, ("next_action holds at most 300 characters, and assignee_name "
-                      "at most 120. Nothing changed.")
+    if len(action) > 300:
+        return None, "next_action holds at most 300 characters. Nothing changed."
     return {
         "title": title, "notes": notes.strip(), "disposition": disp,
-        "next_action": action, "assignee_name": who,
+        # The route keeps no assignee of a capture, so the tool sends none.
+        "next_action": action, "assignee_name": "",
         "due_at": due_at.strip(), "defer_until": defer_until.strip(), "context": ctx,
         "energy": level, "time_estimate_mins": time_estimate_mins or None,
         "subtasks": rows,
     }, None
 
 
-def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
-    """The rows of the card: each field of *draft* that the write sends."""
+def _card_rows(draft: dict[str, Any], *, reply: bool = False) -> list[tuple[str, str]]:
+    """The rows of the card: each field of *draft* that the write sends. A
+    WAITING task names who it waits on: the route stores the sender of the
+    mail, or the member for a reply of the member (`_route_and_persist`)."""
     rows = [("title", f"title: {_data(draft['title'])}"),
             ("disposition", f"disposition: {draft['disposition']}")]
+    if draft["disposition"] == "WAITING":
+        rows.append(("waits on", "waits on: you, the writer of the reply" if reply
+                     else "waits on: the sender of the mail"))
     for key in ("next_action", "due_at", "defer_until", "context", "energy"):
         if draft.get(key):
             rows.append((key, f"{key.replace('_', ' ')}: {_data(draft[key])}"))
@@ -1283,9 +1288,6 @@ def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
         rows.append(("estimate", f"estimate: {draft['time_estimate_mins']} min"))
     if draft.get("subtasks"):
         rows.append(("steps", "steps: " + " | ".join(_data(s) for s in draft["subtasks"])))
-    if draft.get("assignee_name"):
-        rows.append(("assignee", f"assignee: {_data(draft['assignee_name'])}. "
-                     + _assignee_rule(draft["disposition"])))
     if draft.get("notes"):
         rows.append(("notes", f"notes: {_data(draft['notes'])}"))
     # A value with a newline can forge a line of the card (`card_body` rule 4).
@@ -1294,17 +1296,19 @@ def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
     return [(key, one_line(line)) for key, line in rows]
 
 
-def _assignee_rule(disposition: str) -> str:
-    """What the write does with an assignee (`capture_email._route_and_persist`).
-
-    The route keeps a name only when it is a person of the people list. A
-    WAITING task goes to that person only when a connected board holds them.
-    Else the route drops the person and files the task in YOUR inbox."""
-    if disposition == "WAITING":
-        return ("The task waits on that person only when the person is in your "
-                "people list and on a connected board. Else it goes to your inbox "
-                "as INBOX, with no assignee.")
-    return "The name stays only when the person is in your people list. The task stays yours."
+#: Review round 3. The store of a capture (`item_lens._PmLens.insert_capture`)
+#: never reads an assignee, and the board lookup of a delegate reads
+#: `task_accounts`, which nothing writes. So a name could only ever show on the
+#: card and never land. The tool refuses one before the card.
+NO_ASSIGNEE = (
+    "This tool keeps no assignee, so nothing changed. Make the task without "
+    "assignee_name, then assign it with the Projects task tools."
+)
+#: The card line of the AI path: who the task belongs to after the write.
+_MAIL_AI_OWNER_LINE = (
+    "owner: the task stays yours. This tool keeps no assignee. A WAITING task "
+    "waits on the sender of the mail."
+)
 
 
 async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> str | None:
@@ -1357,22 +1361,15 @@ async def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _drift_lines(asked: dict[str, Any] | None, p: dict[str, Any]) -> list[str]:
-    """Why the stored task differs from the card: the route moved the task to
-    the inbox, or kept no assignee. Empty when it matches."""
-    if not asked:
+    """One line when the stored disposition differs from the card. It names
+    no cause, because the tool cannot see one. Empty when it matches."""
+    if not asked or not p.get("created"):
         return []
-    out: list[str] = []
     got = str(p.get("disposition") or "INBOX")
     want = str(asked.get("disposition") or "INBOX")
-    who = str(asked.get("assignee_name") or "")
-    if p.get("created") and got != want:
-        out.append(f"You asked for {want}. The task is {got}: "
-                   + ("no connected board holds that person, so the task stays yours."
-                      if want == "WAITING" and who else "the route filed it there."))
-    if p.get("created") and who and not p.get("assignee_name"):
-        out.append("No assignee was kept: the name is not a person of your people "
-                   "list, or no connected board holds that person.")
-    return out
+    if got == want:
+        return []
+    return [f"You asked for {want}. The stored task is {got}. Tell the member."]
 
 
 async def _made(p: dict[str, Any], asked: dict[str, Any] | None = None) -> str:
@@ -1383,8 +1380,6 @@ async def _made(p: dict[str, Any], asked: dict[str, Any] | None = None) -> str:
     item = p.get("item") if isinstance(p.get("item"), dict) else {}
     lines = [f"Title: {_mail_text(item.get('title'))}",
              f"Disposition: {_mail_text(p.get('disposition') or 'INBOX', 20)}"]
-    if p.get("assignee_name"):
-        lines.append(f"Assignee: {_mail_text(p.get('assignee_name'), 120)}")
     if p.get("due_at"):
         lines.append(f"Due: {_mail_text(p.get('due_at'), 40)}")
     if item.get("id"):
@@ -1414,8 +1409,9 @@ async def my_tasks_capture_from_mail(
 
     For a mail, pass account_id and email_id. With a title, the task takes the
     fields that you pass (draft them first with my_tasks_draft_from_mail). With
-    no title, the AI reads the mail and picks every field itself, a teammate
-    too. Use that only when the member asks for it.
+    no title, the AI reads the mail and picks every field itself. Use that
+    only when the member asks for it. The task stays the member's: the tool
+    keeps no assignee.
 
     For a reply that the member sent, pass account_id, thread_id and a title.
     The thread then gets the label Task, at the mail provider too.
@@ -1428,8 +1424,8 @@ async def my_tasks_capture_from_mail(
         notes: The notes of the task.
         disposition: INBOX, NEXT, WAITING, CALENDAR or SOMEDAY (default INBOX).
         next_action: The first step.
-        assignee_name: A teammate, by the name in the people list. With WAITING,
-            the task waits on that person.
+        assignee_name: Leave it empty. This tool keeps no assignee, and it
+            refuses a name. Assign the task with the Projects task tools.
         due_at: The due date, YYYY-MM-DD.
         defer_until: The date to show the task again, YYYY-MM-DD.
         context: A context that starts with @, as @computer.
@@ -1449,11 +1445,13 @@ async def my_tasks_capture_from_mail(
         refusal = _uuid_refusal(email_id, "email_id")
         if refusal:
             return refusal
+    if assignee_name.strip():
+        return NO_ASSIGNEE
     ids = {"account_id": account_id.strip()}
     if email_id.strip() and not title.strip():
         given = [name for name, value in (
             ("notes", notes), ("disposition", disposition), ("next_action", next_action),
-            ("assignee_name", assignee_name), ("due_at", due_at),
+            ("due_at", due_at),
             ("defer_until", defer_until), ("context", context), ("energy", energy),
             ("steps", steps)) if value.strip()]
         if given or time_estimate_mins:
@@ -1468,8 +1466,7 @@ async def my_tasks_capture_from_mail(
             "The AI reads the mail and picks every field.",
             [("how", "fields: the AI picks the title, the disposition, the dates "
                      "and the steps from the mail."),
-             ("assignee", "assignee: the AI may name a person of your people list. "
-                          + _assignee_rule("WAITING"))])
+             ("owner", _MAIL_AI_OWNER_LINE)])
         if stop:
             return stop
         p = await _post(_CAPTURE_EMAIL, {**ids, "email_id": email_id.strip()})
@@ -1477,7 +1474,7 @@ async def my_tasks_capture_from_mail(
     if not title.strip():
         return "Pass the title of the task. Nothing changed."
     draft, refusal = _mail_draft(
-        title, notes, disposition, next_action, assignee_name, due_at, defer_until,
+        title, notes, disposition, next_action, due_at, defer_until,
         context, energy, time_estimate_mins, steps)
     if refusal or draft is None:
         return refusal or "Nothing changed."
@@ -1493,7 +1490,7 @@ async def my_tasks_capture_from_mail(
     # and the write carry the same subject.
     subject = _mail_text(_same_text(reply_subject), MAIL_REPLY_SUBJECT_MAX)
     stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
-                            [*_card_rows(draft), _reply_row(thread_id.strip(), subject),
+                            [*_card_rows(draft, reply=True), _reply_row(thread_id.strip(), subject),
                              ("label", MAIL_LABEL_LINE)])
     if stop:
         return stop
