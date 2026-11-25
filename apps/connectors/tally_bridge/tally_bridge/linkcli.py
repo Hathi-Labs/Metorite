@@ -72,6 +72,14 @@ def do_pair(
         print(f"This machine is linked to {old.company_name}. Run `unlink` first.", file=sys.stderr)
         return 2
     api = api or LinkApi(settings.link_url)
+    if old is not None:
+        # §3.8.4 step 11: an unconfirmed pairing that the customer does not
+        # take is revoked, so it does not stay live at Metorite.
+        try:
+            asyncio.run(api.revoke(old.credential))
+        except Exception:
+            print("The old pairing could not be revoked. An admin can remove it.", file=sys.stderr)
+        store.delete()
 
     def show(code: str) -> None:
         print("Give this code to an admin of your company. They type it in Metorite:")
@@ -98,7 +106,7 @@ def do_confirm(args: argparse.Namespace, store: LinkStore | None) -> int:
         print("This machine has no pairing. Run `pair` first.", file=sys.stderr)
         return 2
     typed = (getattr(args, "company", None) or "").strip()
-    if typed.casefold() != state.company_name.casefold():
+    if typed != state.company_name:
         print(
             f"Type the company name that the pairing showed: {state.company_name}", file=sys.stderr
         )

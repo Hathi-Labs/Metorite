@@ -60,9 +60,15 @@ class FakeLink:
         self.revoked = False
         self.revokes = 0
         self.poll_fail = 0  # answer the next N polls with HTTP 503
+        self.refuse = 0  # answer the next N polls with a 401 that is not a revoke
+        self.bad_answer = 0  # answer the next N polls with a bad deadline_s
 
     def _auth(self, request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {CREDENTIAL}" and not self.revoked
+
+    def _refused(self) -> JSONResponse:
+        error = "revoked" if self.revoked else "unauthorized"
+        return JSONResponse({"error": error}, status_code=401)
 
     async def start(self, request: Request) -> JSONResponse:
         self.starts.append(await request.json())
@@ -83,7 +89,13 @@ class FakeLink:
 
     async def link_poll(self, request: Request) -> JSONResponse:
         if not self._auth(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return self._refused()
+        if self.refuse:
+            self.refuse -= 1
+            return JSONResponse({"error": "org_not_allowed"}, status_code=401)
+        if self.bad_answer:
+            self.bad_answer -= 1
+            return JSONResponse({"requests": [{"id": "x", "method": "POST", "deadline_s": None}]})
         if self.poll_fail:
             self.poll_fail -= 1
             return JSONResponse({"error": "busy"}, status_code=503)
@@ -93,7 +105,7 @@ class FakeLink:
 
     async def reply(self, request: Request) -> JSONResponse:
         if not self._auth(request):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return self._refused()
         self.replies.append(await request.json())
         return JSONResponse({"ok": True})
 
@@ -197,12 +209,21 @@ async def _up() -> bool:
 def test_the_link_serves_nothing_before_the_customer_confirms():
     """Rule j (§3.8.7): the fence that the spec names for TLY-2."""
     link = FakeLink()
-    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
+
+    async def run(store):
+        # The stop and the timeout make a missing check fail, never hang.
+        stop = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.2, stop.set)
+        return await asyncio.wait_for(
+            run_link(link.api(), store, _echo, _up, "0.1.0", stop, Sleeps(), min_gap_s=0), 1)
+
+    unconfirmed = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
     with pytest.raises(NotConfirmed):
-        asyncio.run(run_link(link.api(), store, _echo, _up, "0.1.0"))
+        asyncio.run(run(unconfirmed))
     assert link.polls == []
     with pytest.raises(NotConfirmed):
-        asyncio.run(run_link(link.api(), MemoryLinkStore(), _echo, _up, "0.1.0"))
+        asyncio.run(run(MemoryLinkStore()))
+    assert link.polls == []
 
 
 def _args(**kw) -> argparse.Namespace:
@@ -222,7 +243,10 @@ def test_pair_then_confirm_with_the_exact_name_then_serve(capsys):
     assert store.state is not None and store.state.confirmed is False
     assert linkcli.do_confirm(_args(company="Other Co"), store) == 2
     assert store.state.confirmed is False
-    assert linkcli.do_confirm(_args(company="acme traders"), store) == 0
+    # The exact name: another case is a different answer (rule j).
+    assert linkcli.do_confirm(_args(company="acme traders"), store) == 2
+    assert store.state.confirmed is False
+    assert linkcli.do_confirm(_args(company="  Acme Traders "), store) == 0
     assert store.state.confirmed is True
 
 
@@ -276,7 +300,8 @@ def _run(link: FakeLink, store, dispatch=_echo, up=_up, sleep=None, polls: int =
 
         watcher = asyncio.create_task(watch())
         result = await asyncio.wait_for(
-            run_link(link.api(), store, dispatch, up, "0.1.0", stop, sleep or Sleeps()), 5)
+            run_link(link.api(), store, dispatch, up, "0.1.0", stop, sleep or Sleeps(),
+                     min_gap_s=0), 5)
         watcher.cancel()
         return result
 
@@ -334,7 +359,7 @@ def test_a_stop_ends_a_held_poll_at_once():
     """A held poll waits up to 25 s. A service stop must not wait for it."""
 
     async def held(request: Request) -> JSONResponse:
-        await asyncio.sleep(30)
+        await asyncio.sleep(3)  # short, so a missing stop fails and does not hang
         return JSONResponse({"requests": []})
 
     api = LinkApi("https://link.test", transport=httpx.ASGITransport(
@@ -342,10 +367,15 @@ def test_a_stop_ends_a_held_poll_at_once():
 
     async def go():
         stop = asyncio.Event()
-        asyncio.get_running_loop().call_later(0.1, stop.set)
-        return await asyncio.wait_for(run_link(api, _confirmed(), _echo, _up, "0.1.0", stop), 2)
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.1, stop.set)
+        started = loop.time()
+        result = await asyncio.wait_for(
+            run_link(api, _confirmed(), _echo, _up, "0.1.0", stop, Sleeps(), min_gap_s=0), 2)
+        return result, loop.time() - started
 
-    assert asyncio.run(go()) == "stopped"
+    result, took = asyncio.run(go())
+    assert result == "stopped" and took < 1.0
 
 
 def test_the_api_follows_no_redirect():
@@ -389,6 +419,8 @@ def test_the_dispatch_passes_only_the_mcp_headers_both_ways():
 
 @pytest.mark.parametrize(("req", "status"), [
     (_req(method="PUT"), 405),
+    (_req(method="GET"), 405),
+    (_req(method="DELETE"), 405),
     (_req(body="x" * (MAX_BODY_BYTES + 1)), 413),
 ])
 def test_the_dispatch_refuses_a_method_or_a_body_it_does_not_serve(req, status):
@@ -440,7 +472,7 @@ def test_a_real_mcp_initialize_goes_through_the_link():
             watcher = asyncio.create_task(watch())
             await asyncio.wait_for(run_link(link.api(), _confirmed(),
                                             McpDispatcher(guard.inner, 8765), _up, "0.1.0",
-                                            stop, Sleeps()), 10)
+                                            stop, Sleeps(), min_gap_s=0), 10)
             watcher.cancel()
 
     asyncio.run(go())
@@ -483,7 +515,11 @@ def test_the_windows_link_blob_is_protected_and_fails_closed(tmp_path):
     store.save(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
     assert CREDENTIAL.encode() not in path.read_bytes()
     assert store.load().confirmed is True
-    path.write_bytes(b"damaged")
+    # A blob that does not unprotect reads as no link, even when its bytes
+    # hold a whole state (a plain file that a user put there).
+    from tally_bridge.transport.link.store import state_to_bytes
+
+    path.write_bytes(state_to_bytes(LinkState(CREDENTIAL, "conn-9", "Other Co", confirmed=True)))
     assert store.load() is None
     store.delete()
     assert not path.exists()
@@ -504,3 +540,130 @@ def test_link_url_refuses_anything_else(url):
 
 def test_link_mode_is_off_by_default_and_names_no_host():
     assert Settings().link_url == ""
+
+
+# --- Review fixes (Opus diff-reviewer of TLY-2a) ---------------------------------
+
+
+def test_a_401_that_is_not_a_revoke_keeps_the_credential_and_backs_off():
+    """Finding 1: a pause of the org (rule i) answers 401 too. Only
+    {"error": "revoked"} deletes the credential."""
+    link = FakeLink()
+    link.refuse = 2
+    store = _confirmed()
+    sleeps = Sleeps()
+    assert _run(link, store, sleep=sleeps, polls=1) == "stopped"
+    assert store.state is not None and len(sleeps.calls) == 2
+
+
+def test_a_bad_field_in_a_poll_answer_does_not_end_the_link():
+    """Finding 2: a deadline_s of null is a bad answer: log, back off, go on."""
+    link = FakeLink()
+    link.bad_answer = 1
+    sleeps = Sleeps()
+    assert _run(link, _confirmed(), sleep=sleeps, polls=1) == "stopped"
+    assert len(sleeps.calls) == 1 and len(link.polls) >= 1
+
+
+@pytest.mark.parametrize(("raw", "seconds"), [(1e9, 30.0), (-5, 0.0), ("12.5", 12.5)])
+def test_deadline_s_is_clamped_to_30_seconds(raw, seconds):
+    (req,) = p.requests_from({"requests": [{"id": "r", "method": "POST", "deadline_s": raw}]})
+    assert req.deadline_s == seconds
+
+
+@pytest.mark.parametrize("raw", [None, "30s", float("nan")])
+def test_a_deadline_s_that_is_not_a_number_is_a_bad_answer(raw):
+    with pytest.raises(p.LinkError):
+        p.requests_from({"requests": [{"id": "r", "method": "POST", "deadline_s": raw}]})
+
+
+def test_a_poll_answer_with_too_many_requests_is_refused():
+    with pytest.raises(p.LinkError):
+        p.requests_from({"requests": [{"id": str(i)} for i in range(p.MAX_REQUESTS_PER_POLL + 1)]})
+
+
+def test_a_slow_request_does_not_hold_up_the_next_poll():
+    """Finding 3: a connect needs three round trips in 10 s. A slow report of
+    another member must not hold the poll."""
+    link = FakeLink()
+    link.queue = [{"id": "slow", "method": "POST", "body": "{}", "deadline_s": 30}]
+    release = asyncio.Event()
+
+    async def slow(request: p.LinkRequest) -> p.LinkReply:
+        await release.wait()
+        return await _echo(request)
+
+    async def go():
+        stop = asyncio.Event()
+        loop = asyncio.create_task(run_link(link.api(), _confirmed(), slow, _up, "0.1.0", stop,
+                                            Sleeps(), min_gap_s=0))
+        while len(link.polls) < 3:
+            await asyncio.sleep(0.005)
+        assert link.replies == []  # the slow one still runs, and polls go on
+        release.set()
+        while not link.replies:
+            await asyncio.sleep(0.005)
+        stop.set()
+        return await asyncio.wait_for(loop, 2)
+
+    assert asyncio.run(go()) == "stopped"
+    assert [r["id"] for r in link.replies] == ["slow"]
+
+
+def test_an_unlink_stops_a_running_loop_at_the_next_poll():
+    """Finding 5, case A: unlink while serve runs. The loop reads the store
+    again before each poll and stops."""
+    link = FakeLink()
+    store = _confirmed()
+
+    async def go():
+        stop = asyncio.Event()
+        loop = asyncio.create_task(run_link(link.api(), store, _echo, _up, "0.1.0", stop,
+                                            Sleeps(), min_gap_s=0))
+        while not link.polls:
+            await asyncio.sleep(0.005)
+        store.delete()
+        return await asyncio.wait_for(loop, 2)
+
+    assert asyncio.run(go()) == "unlinked"
+
+
+def test_a_revoke_of_an_old_link_keeps_a_new_pairing():
+    """Finding 5, case B: the old loop gets a revoke after a new pairing.
+    It deletes only its own credential."""
+    from tally_bridge.transport.link.runner import _forget
+
+    store = MemoryLinkStore(LinkState("mlc_" + "B" * 43, "conn-2", "Acme Traders"))
+    _forget(store, CREDENTIAL)
+    assert store.state is not None and store.state.connector_id == "conn-2"
+    _forget(store, "mlc_" + "B" * 43)
+    assert store.state is None
+
+
+def test_a_new_pairing_revokes_an_old_unconfirmed_one():
+    """Finding 7: an unconfirmed pairing that the customer does not take is
+    revoked, so it does not stay live at Metorite (§3.8.4 step 11)."""
+    link = FakeLink()
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-0", "Old Co"))
+    assert linkcli.do_pair(_args(domain="example.com"), Settings(link_url="https://link.test"),
+                           store, link.api(), Sleeps()) == 0
+    assert link.revokes == 1 and store.state.connector_id == "conn-1"
+
+
+def test_an_empty_answer_at_once_waits_before_the_next_poll():
+    link = FakeLink()
+
+    async def go():
+        stop = asyncio.Event()
+        asyncio.get_running_loop().call_later(0.25, stop.set)
+        await run_link(link.api(), _confirmed(), _echo, _up, "0.1.0", stop, Sleeps(),
+                       min_gap_s=0.1)
+
+    asyncio.run(go())
+    assert 2 <= len(link.polls) <= 4
+
+
+@pytest.mark.parametrize("url", ["https://:pw@x.test", "https://@x.test"])
+def test_link_url_refuses_any_userinfo(url):
+    with pytest.raises(SettingsError):
+        Settings(link_url=url).validate()

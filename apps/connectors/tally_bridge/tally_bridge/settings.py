@@ -94,7 +94,7 @@ class Settings:
             dev = link.scheme == "http" and link.hostname and _is_loopback(link.hostname)
             if not (link.scheme == "https" or dev) or not link.hostname:
                 raise SettingsError("LINK_URL must be https:// (http:// only on a loopback test).")
-            if link.path not in ("", "/") or link.query or link.fragment or link.username:
+            if link.path not in ("", "/") or link.query or link.fragment or "@" in link.netloc:
                 raise SettingsError(
                     "LINK_URL is a scheme and a host only, such as https://x.example."
                 )

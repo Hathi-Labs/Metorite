@@ -290,6 +290,8 @@ def _serve(args: argparse.Namespace) -> int:
     from tally_bridge.transport import build_address_app
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Link mode (TLY-2): one httpx line per poll and per request is noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     store, secrets = _stores(args)
     settings = store.load()
     open_call_log(settings.log_dir)

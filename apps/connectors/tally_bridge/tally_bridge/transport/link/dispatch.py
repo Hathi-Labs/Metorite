@@ -4,7 +4,9 @@ The request never leaves the process: an in-process ASGI call to the MCP app,
 on ``/mcp`` only. The read token of address mode does not apply here, because
 Metorite checked the link credential at its door (§3.8.5).
 
-- Only ``POST``, ``GET`` and ``DELETE``, the methods of Streamable HTTP.
+- Only ``POST``. The MCP layer runs stateless with JSON answers, so it needs
+  no ``GET`` stream and no ``DELETE`` of a session. A ``GET`` with
+  ``text/event-stream`` would open a stream that never closes.
 - Only the headers of the MCP protocol go in and out. Nothing else, such as a
   cookie or an authorization header, passes.
 - A body larger than the cap, a redirect or an error of the layer becomes an
@@ -19,12 +21,12 @@ import logging
 import httpx
 from starlette.types import ASGIApp
 
-from tally_bridge.transport.link.protocol import LinkReply, LinkRequest
+from tally_bridge.transport.link.protocol import MAX_DEADLINE_S, LinkReply, LinkRequest
 
 log = logging.getLogger("tally_bridge.link")
 
 MCP_PATH = "/mcp"
-METHODS = frozenset({"POST", "GET", "DELETE"})
+METHODS = frozenset({"POST"})
 REQUEST_HEADERS = frozenset(
     {"content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"}
 )
@@ -59,7 +61,7 @@ class McpDispatcher:
                         headers=headers,
                         content=request.body.encode("utf-8"),
                     ),
-                    timeout=max(0.1, request.deadline_s),
+                    timeout=min(max(0.1, request.deadline_s), MAX_DEADLINE_S),
                 )
         except TimeoutError:
             return _error(request.id, 504, "The bridge did not answer in time.")

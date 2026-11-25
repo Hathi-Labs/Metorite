@@ -26,6 +26,11 @@ LINK_REVOKE = "/connectors/link/revoke"
 
 KIND = "tally"
 
+#: §3.8.5 step 7: Metorite fails a request after 30 s.
+MAX_DEADLINE_S = 30.0
+#: The most requests that one poll answer may hand out (§3.8.14).
+MAX_REQUESTS_PER_POLL = 32
+
 #: RFC 8628 §3.5: a poll too soon adds 5 seconds to the interval.
 SLOW_DOWN_STEP_S = 5
 
@@ -40,7 +45,14 @@ class LinkError(Exception):
 
 
 class Revoked(LinkError):
-    """Metorite refused the credential (401): Disconnect, delete or 90 days."""
+    """Metorite revoked the credential: Disconnect, a delete or 90 days with
+    no poll. Only a 401 with ``{"error": "revoked"}`` means this (§3.8.14)."""
+
+
+class Refused(LinkError):
+    """Metorite refused the call for another reason, such as a pause of the
+    org (401 or 403 with no ``revoked``). The program keeps its credential
+    and tries again later."""
 
 
 class PairExpired(LinkError):
@@ -127,6 +139,8 @@ def paired_from(data: object) -> Paired:
 def requests_from(data: object) -> list[LinkRequest]:
     if not isinstance(data, dict) or not isinstance(data.get("requests", []), list):
         raise LinkError("The poll answer is not a JSON object with a list of requests.")
+    if len(data.get("requests", [])) > MAX_REQUESTS_PER_POLL:
+        raise LinkError("The poll answer holds too many requests.")
     out = []
     for item in data.get("requests", []):
         if not isinstance(item, dict) or not isinstance(item.get("id"), str):
@@ -140,7 +154,19 @@ def requests_from(data: object) -> list[LinkRequest]:
                 method=str(item.get("method", "")).upper(),
                 headers={str(k).lower(): str(v) for k, v in headers.items()},
                 body=str(item.get("body", "")),
-                deadline_s=float(item.get("deadline_s", 30.0)),
+                deadline_s=_deadline(item.get("deadline_s", MAX_DEADLINE_S)),
             )
         )
     return out
+
+
+def _deadline(value: object) -> float:
+    """Seconds left at hand-out, clamped to 0 to 30. A value that is not a
+    finite number is an error of the answer."""
+    try:
+        seconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise LinkError("A request of the poll answer has a bad deadline_s.") from exc
+    if seconds != seconds:  # NaN
+        raise LinkError("A request of the poll answer has a bad deadline_s.")
+    return min(max(seconds, 0.0), MAX_DEADLINE_S)

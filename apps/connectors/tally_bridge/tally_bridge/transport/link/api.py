@@ -44,8 +44,13 @@ class LinkApi:
             answer = await client.post(path, json=body or {}, headers=headers)
         if 300 <= answer.status_code < 400:
             raise p.LinkError(f"Metorite answered {path} with a redirect.")
-        if credential and answer.status_code == 401:
-            raise p.Revoked("Disconnected by your admin.")
+        if credential and answer.status_code in (401, 403):
+            # Only {"error": "revoked"} ends the link (§3.8.14). A pause of the
+            # org, a gate or a proxy answers otherwise, and the program keeps
+            # its credential.
+            if answer.status_code == 401 and _error_code(answer) == "revoked":
+                raise p.Revoked("Disconnected by your admin.")
+            raise p.Refused(f"Metorite refused {path} (HTTP {answer.status_code}).")
         return answer
 
     async def pair_start(self, domain: str, machine: str, version: str) -> p.PairStart:
@@ -63,7 +68,7 @@ class LinkApi:
         if answer.status_code == 200:
             return p.paired_from(_json(answer))
         if answer.status_code == 400:
-            error = _json(answer).get("error") if isinstance(_json(answer), dict) else None
+            error = _error_code(answer)
             if error in ("authorization_pending", "slow_down", "expired_token", "access_denied"):
                 return str(error)
         raise p.LinkError(f"The pairing poll answered HTTP {answer.status_code}.")
@@ -94,8 +99,16 @@ class LinkApi:
         """RFC 7009: an unknown credential also gets 200."""
         try:
             await self._post(p.LINK_REVOKE, None, credential=credential)
-        except p.Revoked:
+        except (p.Revoked, p.Refused):
             return
+
+
+def _error_code(answer: httpx.Response) -> str | None:
+    try:
+        data = answer.json()
+    except ValueError:
+        return None
+    return data.get("error") if isinstance(data, dict) else None
 
 
 def _json(answer: httpx.Response) -> Any:

@@ -1059,13 +1059,16 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 |---|---|---|---|
 | `POST /connectors/pair/start` | none | `domain`, `machine`, `version`, `kind` (`tally`) | 200: `device_code` (32 characters or more), `user_code` (8 characters of Crockford base 32, a dash allowed), `expires_in`, `interval` |
 | `POST /connectors/pair/poll` | none | `device_code` | 200: `credential` (`mlc_` and 43 characters), `connector_id`, `company_name`. 400: `error` is `authorization_pending`, `slow_down`, `expired_token` or `access_denied` |
-| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version` | 200: `requests`, a list of `id`, `method`, `headers`, `body` (text) and `deadline_s`. 401 when the credential is revoked |
+| `POST /connectors/link/poll` | `Bearer <credential>` | `tally` (`up` or `down`), `version` | 200: `requests`, a list of at most 32 items. Each item has `id`, `method`, `headers`, `body` (text) and `deadline_s`, the seconds left at hand-out (at most 30). 401 with `{"error": "revoked"}` when the credential is revoked |
 | `POST /connectors/link/reply` | `Bearer <credential>` | `id`, `status`, `headers`, `body` | 200. 404 for an id of another connection or a late reply. The program drops a 404 |
 | `POST /connectors/link/revoke` | `Bearer <credential>` | nothing | 200, also for an unknown credential |
 
+**401 means revoked, and nothing else.** Only a 401 with the body `{"error": "revoked"}` makes the program delete its credential. The door answers a pause of the org (rule i), a closed gate or an error of the lookup with 403 or 503. A 401 with another body gets the same answer. The program then keeps its credential and tries again later.
+
 **What the program does with a request.**
 
-- It runs the request in its own process, on `/mcp` only. Only `POST`, `GET` and `DELETE` pass.
+- It runs the request in its own process, on `/mcp` only, with at most 8 requests at once. It polls again at once, so a slow request does not hold up a connect.
+- Only `POST` passes. The MCP layer runs stateless with JSON answers, so it needs no `GET` stream and no `DELETE`.
 - Only the MCP headers pass, in each direction: `content-type`, `accept`, `mcp-session-id`, `mcp-protocol-version` and `last-event-id`.
 - A body over 1,000,000 bytes, a redirect or a failure of the MCP layer gets an error reply with the same id.
 - A request with no time left gets no reply.
@@ -1073,7 +1076,9 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 **The rest of the behaviour.**
 
 - A poll fails when the network fails or Metorite answers 5xx. The program then waits 1 s, 2 s, 4 s and so on up to 60 s, with 20 % jitter. The first good poll resets the wait.
-- A 401 deletes the credential on the machine and ends the loop.
+- A revoke deletes the credential on the machine and ends the loop. It deletes only a stored credential that is still the same, so a new pairing stays.
+- The program reads its stored state before each poll. An `unlink` or a new pairing ends a running loop at once.
+- An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
 - The time of the last good copy (§3.8.13 point 7) is not in the poll yet. TLY-2b adds it.
 
 ---
@@ -1179,9 +1184,9 @@ Each test fails first, and then passes. The file is
 
 The owner approved §3.8 on task 3653 (D232). A fence file is new, except where the row says "existing". TLY-2 ships in three parts:
 
-- TLY-2a: the link client, against a fake link (§3.8.14).
-- TLY-2b: the pair step of the setup page, and the copy time on each poll.
-- TLY-2c: the setup guide.
+- TLY-2a (task 3663): the link client, against a fake link (§3.8.14).
+- TLY-2b (task 3968): the pair step of the setup page, and the copy time on each poll.
+- TLY-2c (task 3969): the setup guide.
 
 ```
 LNK-0 ─► LNK-1 ─► LNK-2 ─┬─► LNK-3 ─┬─► TLY-2 ─► rung 2 demo (task 3657)
