@@ -5,6 +5,7 @@ The route, the state, the page, and the callback of the entry point.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -46,6 +47,12 @@ class _Reader:
         raise AssertionError
 
 
+def _admin_path(tmp_path, exe: str = EXE) -> None:
+    """What an administrator does: TALLY_EXE in the settings file, which a user
+    cannot write. The page never sets it."""
+    FileSettingsStore(tmp_path / "settings.json").save(Settings(tally_exe=exe))
+
+
 def _client(tmp_path, link=None, on_machine_saved=None) -> TestClient:
     store = FileSettingsStore(tmp_path / "settings.json")
     live = LiveSettings(store.load() if (tmp_path / "settings.json").exists() else Settings())
@@ -67,13 +74,14 @@ def _state(c) -> dict:
     return c.get("/setup/api/state", headers={"X-Setup-Key": KEY}).json()
 
 
-def _body(start=False, exe="", awake=False) -> dict:
-    return {"start_tally_at_signin": start, "tally_exe": exe, "keep_awake": awake}
+def _body(start=False, awake=False) -> dict:
+    return {"start_tally_at_signin": start, "keep_awake": awake}
 
 
 def test_the_start_switch_saves_and_reloads(tmp_path):
+    _admin_path(tmp_path)
     with _client(tmp_path, _Link()) as c:
-        r = _post(c, _body(start=True, exe=EXE))
+        r = _post(c, _body(start=True))
         assert r.status_code == 200 and r.json()["note"] is None
         assert _state(c)["machine"] == {
             "start_tally_at_signin": True,
@@ -86,7 +94,7 @@ def test_the_start_switch_saves_and_reloads(tmp_path):
     with _client(tmp_path, _Link()) as c2:  # a new app over the same store
         assert _state(c2)["machine"]["start_tally_at_signin"] is True
         assert _state(c2)["machine"]["tally_exe"] == EXE
-        assert _post(c2, _body(start=False, exe=EXE)).status_code == 200
+        assert _post(c2, _body(start=False)).status_code == 200
         assert _state(c2)["machine"]["start_tally_at_signin"] is False
     assert FileSettingsStore(tmp_path / "settings.json").load().start_tally_at_signin is False
 
@@ -106,30 +114,42 @@ def test_the_keep_awake_switch_saves_and_reloads(tmp_path):
     assert FileSettingsStore(tmp_path / "settings.json").load().keep_awake is False
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        _body(start=True, exe=""),
-        _body(start=True, exe=r"C:\Tally\tally.bat"),
-        _body(exe=r"C:\Tally\"tally.exe"),
-        _body(exe=r"C:\Tally\notes.txt"),
-    ],
-)
-def test_a_bad_path_gets_400_and_saves_nothing(tmp_path, body):
+def test_the_start_switch_needs_a_path_that_an_administrator_set(tmp_path):
+    """Review P0: the page never sets the path. With no path saved, start is
+    refused, and nothing is saved."""
     with _client(tmp_path, _Link()) as c:
-        r = _post(c, body)
-        assert r.status_code == 400 and "TALLY_EXE" in r.json()["error"]
+        r = _post(c, _body(start=True))
+        assert r.status_code == 409 and "administrator" in r.json()["error"]
         assert _state(c)["machine"]["start_tally_at_signin"] is False
     assert not (tmp_path / "settings.json").exists()
+
+
+@pytest.mark.parametrize("exe", [r"C:\Users\bob\tally.exe", "", r"D:\TallyPrime\tally.exe"])
+def test_the_page_cannot_change_the_path(tmp_path, exe):
+    """Review P0: a person at the page (maybe not an administrator) put their
+    own tally.exe in their profile. The sign-in task would run it for every
+    person who signs in. A body path other than the saved one is refused."""
+    _admin_path(tmp_path)
+    before = (tmp_path / "settings.json").read_text(encoding="utf-8")
+    with _client(tmp_path, _Link()) as c:
+        r = _post(c, {"start_tally_at_signin": True, "tally_exe": exe, "keep_awake": False})
+        assert r.status_code == 403 and "administrator" in r.json()["error"]
+    assert (tmp_path / "settings.json").read_text(encoding="utf-8") == before
+
+
+def test_the_saved_path_may_come_back_unchanged(tmp_path):
+    _admin_path(tmp_path)
+    with _client(tmp_path, _Link()) as c:
+        r = _post(c, {"start_tally_at_signin": True, "tally_exe": EXE, "keep_awake": False})
+    assert r.status_code == 200 and r.json()["machine"]["tally_exe"] == EXE
 
 
 @pytest.mark.parametrize(
     "body",
     [
         [],
-        {"start_tally_at_signin": "yes", "tally_exe": "", "keep_awake": False},
-        {"start_tally_at_signin": False, "tally_exe": 5, "keep_awake": False},
-        {"start_tally_at_signin": False, "tally_exe": "", "keep_awake": 1},
+        {"start_tally_at_signin": "yes", "keep_awake": False},
+        {"start_tally_at_signin": False, "keep_awake": 1},
         {"start_tally_at_signin": False},
     ],
 )
@@ -162,8 +182,9 @@ def test_the_callback_gets_the_new_settings_and_its_error_is_the_note(tmp_path):
         seen.append(new)
         return "No luck."
 
+    _admin_path(tmp_path)
     with _client(tmp_path, _Link(), apply) as c:
-        r = _post(c, _body(start=True, exe=EXE, awake=True))
+        r = _post(c, _body(start=True, awake=True))
     assert r.status_code == 200 and r.json()["note"] == "No luck."
     assert len(seen) == 1
     assert (seen[0].start_tally_at_signin, seen[0].tally_exe, seen[0].keep_awake) == (
@@ -224,7 +245,8 @@ def test_without_windows_there_is_no_callback():
 def test_the_callback_makes_the_task_and_starts_keep_awake():
     awake, runner = _Awake(), _Runner()
     apply = entry._machine_applier(True, awake, runner)
-    assert apply(Settings(start_tally_at_signin=True, tally_exe=EXE, keep_awake=True)) is None
+    settings = Settings(start_tally_at_signin=True, tally_exe=EXE, keep_awake=True)
+    assert asyncio.run(apply(settings)) is None
     assert awake.calls == ["start"]
     assert _has(runner, "/Create")
 
@@ -232,32 +254,69 @@ def test_the_callback_makes_the_task_and_starts_keep_awake():
 def test_the_callback_removes_the_task_and_stops_keep_awake():
     awake, runner = _Awake(), _Runner(task=True)
     apply = entry._machine_applier(True, awake, runner)
-    assert apply(Settings(keep_awake=False)) is None
+    assert asyncio.run(apply(Settings(keep_awake=False))) is None
     assert awake.calls == ["stop"]
     assert _has(runner, "/Delete")
 
 
 def test_the_callback_leaves_the_task_alone_when_none_exists_and_none_is_wanted():
     runner = _Runner(task=False)
-    assert entry._machine_applier(True, _Awake(), runner)(Settings()) is None
+    assert asyncio.run(entry._machine_applier(True, _Awake(), runner)(Settings())) is None
     assert not _has(runner, "/Create") and not _has(runner, "/Delete")
 
 
-def test_a_failed_task_call_says_to_run_as_an_administrator():
+def test_a_failed_task_call_gives_a_note():
     runner = _Runner(fail=True)
     apply = entry._machine_applier(True, _Awake(), runner)
-    note = apply(Settings(start_tally_at_signin=True, tally_exe=EXE))
-    assert note == "Run the setup as an administrator to change the sign-in task."
+    note = asyncio.run(apply(Settings(start_tally_at_signin=True, tally_exe=EXE)))
+    assert note and "sign-in task" in note
 
 
-@pytest.mark.parametrize("exe", [r"C:\\Users\\Public\\evil.exe", r"tally.exe",
-                                 r"\\\\server\\share\\tally.exe", r"C:tally.exe"])
+def test_an_error_of_the_task_call_is_a_note_not_a_500():
+    """Review P2: a runner that raises (a temp file that cannot be written)."""
+
+    def broken(command):
+        raise OSError("disk full")
+
+    apply = entry._machine_applier(True, _Awake(), broken)
+    note = asyncio.run(apply(Settings(start_tally_at_signin=True, tally_exe=EXE)))
+    assert note and "did not change" in note
+
+
+def test_schtasks_runs_off_the_event_loop_and_keep_awake_on_it():
+    """Review P2: schtasks blocks; the loop must stay free. SetThreadExecution-
+    State binds to the calling thread, so keep-awake stays on the loop thread."""
+    import threading
+
+    threads: dict[str, int] = {}
+
+    class Awake(_Awake):
+        def start(self):
+            threads["awake"] = threading.get_ident()
+            return super().start()
+
+    def runner(command):
+        threads["schtasks"] = threading.get_ident()
+        return 1 if "/Query" in command else 0
+
+    async def go():
+        threads["loop"] = threading.get_ident()
+        apply = entry._machine_applier(True, Awake(), runner)
+        await apply(Settings(start_tally_at_signin=True, tally_exe=EXE, keep_awake=True))
+
+    asyncio.run(go())
+    assert threads["awake"] == threads["loop"] != threads["schtasks"]
+
+
+@pytest.mark.parametrize("exe", [r"C:\Users\Public\evil.exe", r"tally.exe",
+                                 r"\\server\share\tally.exe", r"C:tally.exe"])
 def test_the_path_must_be_tallyprime_on_a_drive(exe):
-    """TLY-2d: the page can set the path, and the sign-in task runs it for each
-    person who signs in. So only a full path to tally.exe on a drive passes."""
+    """TLY-2d: an administrator sets the path, and the sign-in task runs it
+    for each person who signs in. So only a full path to tally.exe on a drive
+    letter passes, as a second guard behind the admin-only settings file."""
     from tally_bridge.settings import Settings, SettingsError
 
     with pytest.raises(SettingsError):
         Settings(start_tally_at_signin=True, tally_exe=exe).validate()
     Settings(start_tally_at_signin=True,
-             tally_exe=r"D:\\Apps\\TallyPrime\\TALLY.EXE").validate()
+             tally_exe=r"D:\Apps\TallyPrime\TALLY.EXE").validate()

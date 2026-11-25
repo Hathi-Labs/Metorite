@@ -121,7 +121,7 @@
     $("machine").hidden = !m;
     if (!m) { return; }
     $("machine-start").checked = !!m.start_tally_at_signin;
-    $("machine-exe").value = m.tally_exe || "";
+    $("machine-exe").textContent = m.tally_exe || "not set";
     $("machine-awake").checked = !!m.keep_awake;
   }
 
@@ -130,7 +130,6 @@
     button.disabled = true;
     call("POST", "/setup/api/machine", {
       start_tally_at_signin: $("machine-start").checked,
-      tally_exe: $("machine-exe").value.trim(),
       keep_awake: $("machine-awake").checked
     }).then(function (res) {
       button.disabled = false;

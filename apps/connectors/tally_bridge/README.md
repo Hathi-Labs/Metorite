@@ -241,15 +241,19 @@ your admin, then confirm the company name. The commands below do the same
 from a command line.
 
 The page also has a "Keep it running" section (TLY-2d), and it shows only
-when `LINK_URL` is set. It holds two switches. One starts TallyPrime when a person
-signs in, and it needs the path of `tally.exe`. The other keeps the computer awake while
-the bridge runs. Each switch saves to the settings file, and the page reloads
-its value.
+when `LINK_URL` is set. It holds two switches. One starts TallyPrime when a
+person signs in. The other keeps the computer awake while the bridge runs.
+Each switch saves to the settings file, and the page reloads its value.
 
-With `--windows`, a save also makes or removes the sign-in task and
-turns the keep-awake request on or off at once. When the task call fails, the
-page says to run the setup as an administrator. Test:
-`tests/unit/test_tally_bridge_machine.py`.
+The page shows the path of `tally.exe`, and it never changes it. The sign-in
+task runs that program for each person who signs in, and the person at the
+page may not be an administrator. So an administrator sets `TALLY_EXE` in the
+settings file, which users cannot write. Until then, the start switch is
+refused.
+
+With `--windows`, a save also makes or removes the sign-in task, off the
+event loop, and turns the keep-awake request on or off at once. When the task
+call fails, the page shows a note. Test: `tests/unit/test_tally_bridge_machine.py`.
 
 1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
    the company types it in Metorite and approves it. The program then shows

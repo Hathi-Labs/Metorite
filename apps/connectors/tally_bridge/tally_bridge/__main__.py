@@ -215,20 +215,29 @@ def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
     if not windows:
         return None
 
-    def apply(new: Settings) -> str | None:
+    def startup(new: Settings) -> str | None:
+        """The schtasks part. It runs in a worker thread (two processes)."""
         from tally_bridge.windows import system
 
         run = runner or system.run
-        # The request handlers run on the thread of ``_awake_while``, which is
-        # the thread that ``SetThreadExecutionState`` binds to.
+        wanted = new.start_tally_at_signin or _had_startup(run)
+        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
+            return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        return None
+
+    async def apply(new: Settings) -> str | None:
+        # Keep-awake stays on this thread: the request handlers run on the
+        # thread of ``_awake_while``, which ``SetThreadExecutionState`` binds to.
         if new.keep_awake:
             awake.start()
         else:
             awake.stop()
-        wanted = new.start_tally_at_signin or _had_startup(run)
-        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
-            return "Run the setup as an administrator to change the sign-in task."
-        return None
+        # schtasks blocks for up to a second, so it runs off the event loop.
+        try:
+            return await asyncio.to_thread(startup, new)
+        except Exception as exc:
+            logging.getLogger("tally_bridge").warning("the sign-in task failed (%s)", exc)
+            return "The switches are saved, but the sign-in task did not change."
 
     return apply
 

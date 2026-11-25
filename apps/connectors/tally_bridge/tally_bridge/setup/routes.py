@@ -33,10 +33,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
-import sys
+import inspect
 from collections.abc import Callable
 from importlib import resources
-from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
@@ -59,7 +58,8 @@ from tally_bridge.setup.guard import KEY_HEADER, SECURITY_HEADERS, SetupGuard, r
 
 MAX_COMPANIES = 50
 MAX_NAME = 200
-MAX_PATH = 520
+#: TLY-2d: the page never sets the path of TallyPrime (see ``machine``).
+ADMIN_PATH = "Ask an administrator to set the path of TallyPrime (TALLY_EXE in the settings file)."
 
 
 def _asset(name: str) -> str:
@@ -292,36 +292,36 @@ class _SetupApi:
 
     async def machine(self, request: Request) -> Response:
         """Save the two switches of the setup guide, step 6: start TallyPrime at
-        sign-in (with its path), and keep the computer awake. Dark with link mode."""
+        sign-in, and keep the computer awake. Dark with link mode.
+
+        The path of TallyPrime is NOT set here. The sign-in task runs it for
+        each person who signs in, and the person at this page may not be an
+        administrator. So only an administrator sets TALLY_EXE, in the settings
+        file (which users cannot write). The page shows it, read-only."""
         body, no = await self._link_body(request)
         if no is not None:
             return no
         start = body.get("start_tally_at_signin") if body else None
-        exe = body.get("tally_exe") if body else None
         awake = body.get("keep_awake") if body else None
-        if (
-            not isinstance(start, bool)
-            or not isinstance(awake, bool)
-            or not isinstance(exe, str)
-            or len(exe) > MAX_PATH
-        ):
-            return _json({"error": "Send the two switches and the path of TallyPrime."}, 400)
+        if not isinstance(start, bool) or not isinstance(awake, bool):
+            return _json({"error": "Send the two switches."}, 400)
+        saved = self._live.current
+        if "tally_exe" in body and body["tally_exe"] != saved.tally_exe:
+            return _json({"error": ADMIN_PATH}, 403)
+        if start and not saved.tally_exe:
+            return _json({"error": ADMIN_PATH}, 409)
+        new = dataclasses.replace(saved, start_tally_at_signin=start, keep_awake=awake)
         try:
-            new = dataclasses.replace(
-                self._live.current,
-                start_tally_at_signin=start,
-                tally_exe=exe.strip(),
-                keep_awake=awake,
-            )
             new.validate()
-            # On the customer's machine, the path must be a file that exists.
-            if new.tally_exe and sys.platform == "win32" and not Path(new.tally_exe).is_file():
-                return _json({"error": "TallyPrime is not at that path."}, 400)
             self._store.save(new)
         except SettingsError as exc:
             return _json({"error": str(exc)}, 400)
         self._live.replace(new)
-        note = self._on_machine_saved(new) if self._on_machine_saved is not None else None
+        note = None
+        if self._on_machine_saved is not None:
+            note = self._on_machine_saved(new)
+            if inspect.isawaitable(note):
+                note = await note
         return _json(
             {
                 "machine": {
