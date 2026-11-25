@@ -165,7 +165,7 @@ A member connects an outside agent to Metorite with one URL. The agent signs in 
 The two use cases that started this spec both fit:
 
 1. **A coding agent works project 7.** It lists the coding backlog and claims a task. It moves the status. It records the branch, the commit IDs and the pull request on the task.
-2. **Claude designs a landing page from company context.** It reads the company profile and brand. It reads no project data, because the member did not grant it.
+2. **Claude designs a landing page from company context.** It reads the organization name and slug (D-EA-6). It reads no project data, because the member did not grant it.
 
 ## 2. What we learned from the Personal Agent Proxy
 
