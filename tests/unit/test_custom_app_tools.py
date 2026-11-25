@@ -75,6 +75,11 @@ def _endpoint(method: str, path: str) -> str:
     raise AssertionError(f"no route serves {method} {path}")
 
 
+def _detail(out: dict[str, Any]) -> str:
+    """The text of the route in the ONE frame block of a refusal."""
+    return _block(out["detail"])[2].strip('"')
+
+
 def _app(**over: Any) -> dict[str, Any]:
     body = {"slug": SLUG, "name": "Team expenses", "icon": "", "description": "Track spend.",
             "status": "live", "visibility": "private", "live_version": 2,
@@ -106,6 +111,7 @@ class Gateway:
                         "at": "2026-11-19T09:00:00+00:00", "files_changed": 2}]
         self.after_first: Any = None
         self.reads: dict[str, int] = {}
+        self.force: dict[str, tuple[int, Any]] = {}  # handler name -> (status, body)
 
     def handlers(self) -> list[str]:
         return [c["handler"] for c in self.calls]
@@ -119,6 +125,8 @@ class Gateway:
         handler = _endpoint(method, path)
         self.calls.append({"method": method, "url": url, "path": path, "query": query,
                            "body": body, "headers": dict(headers), "handler": handler})
+        if handler in self.force:
+            return self._r(*self.force[handler])
         if method == "GET":
             self.reads[handler] = self.reads.get(handler, 0) + 1
             if self.reads[handler] == 1 and self.after_first is not None:
@@ -285,9 +293,9 @@ def test_the_copies_of_the_route_rules_equal_the_gateway() -> None:
     assert _common.TABLE_NAME_RE.pattern == ca.TABLE_PATTERN
     assert ca.MAX_FILE_BYTES == _common.MAX_SOURCE_FILE_BYTES
     assert ca.MAX_VALUE_BYTES == _common.MAX_STORAGE_VALUE_BYTES
-    assert ca.ROLES == grants.ROLES
-    for subject in ("ravi@acme.test", "agent:crm-bot", "agents:*"):
-        assert grants.is_valid_subject(subject), subject
+    # The share form of the App Workshop sends role use and an email only.
+    assert ca.ROLES == ("use",) and set(ca.ROLES) <= set(grants.ROLES)
+    assert grants.is_valid_subject("ravi@acme.test")
 
 
 async def test_each_call_carries_the_member_of_the_run_and_no_org(
@@ -348,6 +356,11 @@ async def test_with_no_member_each_tool_refuses_and_calls_nothing(monkeypatch, c
     lambda: ca.custom_app_publish("publish", SLUG, notes="x" * 3000),
     lambda: ca.custom_app_share("add", SLUG, "org"),
     lambda: ca.custom_app_share("add", SLUG, "agent:bad name"),
+    lambda: ca.custom_app_share("add", SLUG, "agents:*"),
+    lambda: ca.custom_app_share("add", SLUG, "agent:crm-bot"),
+    lambda: ca.custom_app_share("remove", SLUG, "agents:*"),
+    lambda: ca.custom_app_share("add", SLUG, "sam@acme.test", "edit"),
+    lambda: ca.custom_app_share("add", SLUG, "sam@acme.test", "own"),
     lambda: ca.custom_app_share("add", SLUG, "sam@acme.test", "admin"),
     lambda: ca.custom_app_share("give", SLUG, "sam@acme.test"),
     lambda: ca.custom_app_data("set", SLUG, "expenses", "k", "{bad"),
@@ -419,7 +432,7 @@ async def test_a_file_read_is_framed_and_a_long_file_says_it_is_cut(gw: Gateway)
     assert out["ok"] and out["chars"] == ca.MAX_FILE_SHOWN + 10 and out["not_shown"]
     assert gw.calls[0]["query"] == "path=big.js"
     missing = await ca.custom_app_read(SLUG, "file", path="nope.js")
-    assert missing["ok"] is False and missing["errors"][0]["message"] == "File not found"
+    assert missing["ok"] is False and _detail(missing) == "File not found"
 
 
 async def test_the_stored_data_reads_a_table_or_one_key(gw: Gateway) -> None:
@@ -503,19 +516,38 @@ async def test_a_share_always_shows_one_card_and_names_the_role(
     gw: Gateway, card: Card, mark: Mark,
 ) -> None:
     mark.held = False
-    out = await ca.custom_app_share("add", SLUG, "agents:*", "edit")
+    out = await ca.custom_app_share("add", SLUG, "sam@acme.test")
     assert out["ok"] and out["decision"] == "approved" and out["shared"] is True
     ctx = card.shown[0]["context"]
-    assert "With: each agent of the organization" in ctx
-    assert "Role: edit, to change the app and publish it." in ctx
+    assert ctx.split("\n")[0] == "Approve to let this person open and use the app. Reject to share nothing."
+    assert "With: «sam@acme.test»" in ctx and "Role: use, to open and use the app." in ctx
     assert gw.writes() == ["upsert_app_grant"]
-    assert gw.calls[-1]["body"] == {"subject": "agents:*", "role": "edit"}
+    assert gw.calls[-1]["body"] == {"subject": "sam@acme.test", "role": "use"}
 
 
-async def test_a_share_change_says_which_role_it_replaces(gw: Gateway, card: Card) -> None:
-    out = await ca.custom_app_share("add", SLUG, "ravi@acme.test", "own")
+@pytest.mark.parametrize("subject,role,words", [
+    ("agents:*", "use", "never with an agent"),
+    ("agent:crm-bot", "use", "never with an agent"),
+    ("sam@acme.test", "edit", "does not give the edit or the own role"),
+    ("sam@acme.test", "own", "does not give the edit or the own role"),
+])
+async def test_a_share_the_workshop_does_not_offer_gets_plain_words_and_no_call(
+    gw: Gateway, card: Card, subject: str, role: str, words: str,
+) -> None:
+    """Review round 1: the share form sends role use with an email only.
+    Mutation: let an agent subject or the edit role through -> a card shows -> red."""
+    out = await ca.custom_app_share("add", SLUG, subject, role)
+    assert out["ok"] is False and words in out["errors"][0]["message"], out
+    assert gw.calls == [] and card.shown == []
+
+
+async def test_a_share_of_a_person_with_a_wider_role_says_it_replaces_it(
+    gw: Gateway, card: Card,
+) -> None:
+    gw.grants[0]["role"] = "edit"
+    out = await ca.custom_app_share("add", SLUG, "ravi@acme.test")
     assert out["ok"]
-    assert "It replaces the role use." in card.shown[0]["context"]
+    assert "It replaces the role edit." in card.shown[0]["context"]
 
 
 async def test_the_end_of_a_share_sends_one_delete_and_an_unknown_one_shows_no_card(
@@ -645,8 +677,55 @@ async def test_a_held_write_sends_nothing_when_the_value_changed(
 
 async def test_a_route_refusal_comes_back_in_its_own_words(gw: Gateway, card: Card) -> None:
     out = await ca.custom_app_publish("publish", "other-app")
-    assert out["ok"] is False and out["errors"][0]["message"] == "App not found"
+    assert out["ok"] is False and _detail(out) == "App not found"
     assert out["status"] == 404 and card.shown == [] and gw.writes() == []
+
+
+async def test_a_string_detail_of_the_route_stays_in_one_frame_with_no_hidden_text(
+    gw: Gateway, card: Card,
+) -> None:
+    """Review round 1: a route detail can echo member text. Mutation: put the
+    detail in the error sentence -> the instruction is outside a frame -> red."""
+    tag = "".join(chr(0xE0000 + ord(c)) for c in "secret")
+    entry = f"Entry {PLANTED}{tag} is not a file. " + "y" * 600
+    gw.force = {"get_app": (422, {"detail": entry})}
+    out = await ca.custom_app_publish("publish", SLUG)
+    assert out["ok"] is False and out["status"] == 422
+    token, label, body = _block(out["detail"])
+    assert label == "APP REFUSAL" and token in out["note"]
+    assert PLANTED in body and PLANTED not in _outside(out, "detail")
+    assert not any(0xE0000 <= ord(c) <= 0xE007F for c in json.dumps(out, ensure_ascii=False))
+    assert len(body) <= ca.MAX_ROW_TEXT + 2
+    assert card.shown == [] and gw.writes() == []
+
+
+@pytest.mark.parametrize("act,handler", [("build", "build_app"), ("sync", "sync_app")])
+async def test_a_held_build_or_sync_sends_nothing_when_the_app_changed(
+    gw: Gateway, card: Card, mark: Mark, act: str, handler: str,
+) -> None:
+    """Review round 1. Mutation: drop the second read -> the POST goes out -> red."""
+    mark.held = True
+
+    def change(g: Gateway, h: str) -> None:
+        if h == "get_app":
+            g.app["updated_at"] = "2026-11-21T10:00:00+00:00"
+    gw.after_first = change
+    out = await ca.custom_app_files(act, SLUG)
+    assert out["ok"] is False and out["errors"][0]["message"] == ca._CHANGED
+    assert gw.writes() == [] and len(card.shown) == 1
+    assert gw.handlers() == ["get_app", "get_app"]
+
+
+async def test_a_long_value_on_the_delete_card_says_it_is_cut(
+    gw: Gateway, card: Card,
+) -> None:
+    gw.data[("expenses", "big", "")] = {"note": "z" * 2_000}
+    out = await ca.custom_app_data("delete", SLUG, "expenses", "big")
+    assert out["ok"]
+    ctx = card.shown[0]["context"]
+    line = next(x for x in ctx.split("\n") if x.startswith("Value now:"))
+    assert "[cut: " in line and "characters in all]" in line
+    assert len(ca._value_text({"note": "z" * 2_000})) <= ca.MAX_VALUE_SHOWN
 
 
 # -- 5. The pack and the parity rows ---------------------------------------------

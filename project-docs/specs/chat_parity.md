@@ -206,9 +206,10 @@ a `TOOL_PACKS` line. Fence: `tests/unit/test_custom_app_tools.py`.
   through the `cc` bridge (`ccBridge.ts`). No member click sends them, and no
   kind of §2 fits. A `runtime` kind would take the apps debt to 0. The tool
   registry of the second route is empty since D52, so each call fails today.
-- **A share reaches agents too.** The route takes an email, `agent:<name>` or
-  `agents:*`. The card names each agent of the organization in plain words, and
-  the chat adds no rule of its own.
+- **A share does what the share form does, and no more.** The App Workshop
+  shares an app with one email address in the role `use`. The route also takes
+  an agent subject and the roles `edit` and `own`, but the page leaves them out
+  on purpose. So the chat refuses them with plain words and no card.
 - **A publish can widen who opens the app.** The card names who can open the
   app after the publish, and who can open it now.
 - **A file write and a value write show no card in a clear chat**, as the App
