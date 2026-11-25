@@ -61,7 +61,7 @@ except ImportError:
     pass
 
 _TOOLS = [*ORG_ADMIN_TOOLS, *ORG_ADMIN_MORE_TOOLS, *ORG_ADMIN_SEAT_TOOLS, *PEOPLE_TOOLS,
-          *INTEGRATIONS_ADMIN_TOOLS, *_CALENDAR_CONNECTION_TOOLS]
+          *_CALENDAR_CONNECTION_TOOLS, *INTEGRATIONS_ADMIN_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
