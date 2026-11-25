@@ -117,7 +117,14 @@ begin
     else if not Icacls('"' + Dir + '"' + GrantOnly) then
       Result := 'Could not set the rights of ' + Dir
     else
+    begin
       DelTree(Dir + '\*', False, True, True);
+      // An item that the delete could not remove (a user's folder that
+      // denies the administrators) stops the setup here, not the service
+      // later.
+      if HasChildren(Dir) then
+        Result := 'Could not empty the new data folder ' + Dir;
+    end;
   end
   else if IsReparsePoint(Dir) then
     Result := 'The data folder is a link. Delete ' + Dir + ' and run the setup again.'
