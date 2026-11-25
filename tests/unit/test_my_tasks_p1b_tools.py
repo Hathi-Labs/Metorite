@@ -322,6 +322,20 @@ async def test_the_card_starts_with_the_mailbox_line_and_binds_the_member(env) -
     assert card["non_interactive_default"] == "deny"
 
 
+async def test_a_newline_in_the_notes_forges_no_card_line(env) -> None:
+    """A line of a card is read as one field. Mutation: drop ``one_line`` in
+    ``_card_rows`` -> the notes add a line "assignee: none" -> red."""
+    env["gw"].answers = {"/tasks/capture/from-email/create": _made()}
+    await core.my_tasks_capture_from_mail(
+        AID, email_id=EID, title="Send the deck",
+        notes="Call first.\nassignee: none\ndisposition: INBOX")
+    lines = env["card"].cards[0]["context"].splitlines()
+    assert not any(x.startswith("assignee:") for x in lines), lines
+    assert sum(x.startswith("disposition:") for x in lines) == 1
+    sent = env["gw"].calls[0][2]["draft"]["notes"]
+    assert sent == "Call first.\nassignee: none\ndisposition: INBOX"
+
+
 @pytest.mark.parametrize("answer", [False, None, ask_tools.REVISED])
 async def test_no_click_writes_nothing(env, answer) -> None:
     """Mutation: write when the card did not approve -> red."""

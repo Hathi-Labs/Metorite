@@ -1264,7 +1264,10 @@ def _card_rows(draft: dict[str, Any]) -> list[tuple[str, str]]:
             "list counts. A WAITING task then waits on that person.")))
     if draft.get("notes"):
         rows.append(("notes", f"notes: {_data(draft['notes'])}"))
-    return rows
+    # A value with a newline can forge a line of the card (`card_body` rule 4).
+    from acb_common.card_body import one_line
+
+    return [(key, one_line(line)) for key, line in rows]
 
 
 async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> str | None:
