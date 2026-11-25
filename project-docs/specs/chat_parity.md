@@ -39,6 +39,10 @@ and `remove_my_absence`. Each write sends a self route of `selfservice.py`
 a person id. Each write shows one card with the exact change: the old and new
 value, the row to add, or the row to remove. It saves only on Approve.
 
+Two limits of the card are known. A long old value shows cut, and the new
+value always shows whole. A credential that came from a CV loses that mark
+when `set_my_credentials` saves it, because the route takes no `source`.
+
 No write sends `email` (OD1 B). P-5b-2 paid five people rows, so the people
 ceiling went from 13 to 8. Fences: `tests/unit/test_people_tools.py` and
 `tests/unit/test_people_tools_r8.py` (R8).

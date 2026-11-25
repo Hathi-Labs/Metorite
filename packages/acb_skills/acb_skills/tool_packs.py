@@ -1323,7 +1323,9 @@ to hand a task to.
   that people_directory gave.
 - reach_preview reads what Reach would send the member now. It sends nothing.
 - update_my_profile changes fields of the member's own record. Send only the
-  fields to change.
+  fields to change. The working hours take only days (weekday numbers 1 to
+  7), start and end (HH:MM). The links take only github, linkedin and
+  website. The emergency contact takes only name, relation and phone.
 - set_my_skills and set_my_credentials replace the whole list of the member's
   own skills or credentials. Read the list first, and send the full list.
 - add_my_absence records one absence of the member. remove_my_absence removes

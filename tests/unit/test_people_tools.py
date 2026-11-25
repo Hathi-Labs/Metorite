@@ -773,7 +773,7 @@ async def test_the_credentials_card_shows_the_full_list_before_and_after(wgw, ca
         "Credentials now (1):",
         "- education: «BSc Physics» by «Leeds», 2010 to 2013",
         "Credentials after (1):",
-        "- certification: «AWS SA» by «Amazon», 2024",
+        "- certification: «AWS SA» by «Amazon», from 2024",
     ]
     assert wgw.writes()[0][2] == {"rows": [
         {"kind": "certification", "title": "AWS SA", "issuer": "Amazon", "year_from": 2024,
@@ -828,7 +828,9 @@ async def test_the_removal_card_shows_the_absence_on_one_line_each(wgw, card) ->
     assert out["ok"] is True and out["absence_id"] == MINE
     shown = card.shown[0]
     assert shown["title"] == "Remove this absence?"
-    assert "Note: «Winter break»" in shown["context"]
+    assert shown["context"].split("\n")[1:] == [
+        f"Absence id: {MINE}", "Dates: 2026-12-24 to 2026-12-31", "Kind: holiday",
+        "Note: «Winter break»"]
     assert [c[:2] for c in wgw.calls] == [
         ("GET", "/people/me/absences"), ("DELETE", f"/people/me/absences/{MINE}")]
 
@@ -861,3 +863,80 @@ def test_a_held_chat_holds_off_each_write_and_keeps_the_reads(monkeypatch) -> No
             assert egress.is_held_off_write(item) is True, fn.__name__
     for fn in (pt.people_directory, pt.people_me, pt.people_work, pt.reach_preview):
         assert egress.is_held_off_write(fn) is False, fn.__name__
+
+
+# ── 8e. Fix round 2: the object keys, exact object text, labelled years ─────
+
+
+@pytest.mark.parametrize(("field", "value", "key"), [
+    ("emergency_contact", {"name": "Sam", "phone_number": "+44 1"}, "phone_number"),
+    ("links", {"site": "x.example"}, "site"),
+    ("working_hours", {"days": [1, 2], "timezone": "UTC"}, "timezone"),
+])
+async def test_an_object_key_that_no_page_reads_is_refused_with_no_card(
+        wgw, card, field, value, key) -> None:
+    """The People app reads only its own keys (``ProfilePanels.tsx``).
+    Mutation: accept any key -> the tool says saved for a key no page
+    shows -> red."""
+    out = await pt.update_my_profile(**{field: value})
+    assert out["ok"] is False and f"No page reads the key {key}." in out["error"], out
+    assert ", ".join(pt.OBJECT_KEYS[field]) in out["error"]
+    assert "Nothing was saved." in out["error"]
+    assert wgw.calls == [] and card.shown == []
+
+
+@pytest.mark.parametrize("hours", [
+    {"days": [0]}, {"days": [8]}, {"days": ["Mon"]}, {"days": [True]}, {"days": []},
+    {"days": 1}, {"start": "9:00"}, {"end": "25:00"}, {"start": "09:60"},
+    {"start": 9},
+])
+async def test_a_bad_day_or_time_is_refused_before_any_request(wgw, card, hours) -> None:
+    """``work_schedule._clean_days`` reads days 1 to 7 and ``_clean_time``
+    reads HH:MM. Mutation: send the value as it came -> red."""
+    out = await pt.update_my_profile(working_hours=hours)
+    assert out["ok"] is False and "HH:MM" in out["error"] and "1 (Monday)" in out["error"]
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_good_hours_are_sent_as_the_card_shows_them(wgw, card) -> None:
+    await pt.update_my_profile(working_hours={"days": [5, 1, 1, 2], "start": "08:30",
+                                              "end": "16:30"})
+    sent = wgw.writes()[0][2]["working_hours"]
+    assert sent == {"days": [1, 2, 5], "start": "08:30", "end": "16:30"}
+    assert ('working_hours: (empty) to «{"days":[1,2,5],"start":"08:30","end":"16:30"}»'
+            in card.shown[0]["context"])
+
+
+@pytest.mark.parametrize("website", ["x  y", "x y", "x\ny", " x y "])
+async def test_an_object_text_is_sent_exactly_as_the_card_shows_it(
+        wgw, card, website) -> None:
+    """F1: the card and the send must not differ in white space. Mutation:
+    send the raw text while the card folds it -> red."""
+    await pt.update_my_profile(links={"website": website, "github": ""})
+    sent = wgw.writes()[0][2]["links"]
+    assert sent == {"website": "x y"}, "an empty text leaves its key out"
+    shown = json.dumps(sent, ensure_ascii=False, separators=(",", ":"))
+    assert f"links: (empty) to «{shown}»" in card.shown[0]["context"]
+
+
+async def test_year_from_and_year_to_draw_different_lines(wgw, card) -> None:
+    """F2. Mutation: draw both years without a label -> one line -> red."""
+    await pt.set_my_credentials([{"kind": "education", "title": "MSc", "year_from": 2020}])
+    await pt.set_my_credentials([{"kind": "education", "title": "MSc", "year_to": 2020}])
+    await pt.set_my_credentials([{"kind": "education", "title": "MSc", "year_from": 2014,
+                                  "year_to": 2018}])
+    lines = [c["context"].split("\n")[-1] for c in card.shown]
+    assert lines == ["- education: «MSc», from 2020", "- education: «MSc», to 2020",
+                     "- education: «MSc», 2014 to 2018"]
+
+
+async def test_the_removal_card_tells_two_equal_absences_apart(wgw, card) -> None:
+    """F3. Two absences with the same dates, kind and note. Mutation: leave
+    the id off the card -> the two cards are equal -> red."""
+    twin = "22222222-3333-4444-8555-666666666666"
+    wgw.absences = [*wgw.absences, {**wgw.absences[0], "id": twin}]
+    wgw.status[("DELETE", f"/people/me/absences/{twin}")] = (200, {"deleted": twin})
+    await pt.remove_my_absence(MINE)
+    await pt.remove_my_absence(twin)
+    one, two = (c["context"] for c in card.shown)
+    assert one != two and f"Absence id: {twin}" in two

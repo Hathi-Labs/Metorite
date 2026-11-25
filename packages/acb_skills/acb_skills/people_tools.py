@@ -146,13 +146,28 @@ _SHORT_TEXT = ("preferred_name", "pronouns", "location", "timezone", "domain", "
 _LONG_TEXT = ("bio", "resume_summary")
 _TEXT_LISTS = ("languages", "interests")
 _OBJECTS = ("working_hours", "links", "emergency_contact")
+#: The keys of each object field: the keys that the People app edits and reads
+#: (``ProfilePanels.tsx`` ``FieldInput``, kinds ``hours``, ``links`` and
+#: ``contact``). A key outside the set is refused, because no page shows it.
+OBJECT_KEYS: dict[str, tuple[str, ...]] = {
+    "working_hours": ("days", "start", "end"),
+    "links": ("github", "linkedin", "website"),
+    "emergency_contact": ("name", "relation", "phone"),
+}
+#: The words of the shape of each object field, for a refusal and the docs.
+OBJECT_SHAPES: dict[str, str] = {
+    "working_hours": ("days is a list of weekday numbers from 1 (Monday) to 7 (Sunday). "
+                      "start and end are times as HH:MM, 24-hour."),
+    "links": "github, linkedin and website are each one line of text.",
+    "emergency_contact": "name, relation and phone are each one line of text.",
+}
+#: A time of ``working_hours``, as ``work_schedule._TIME_RE`` reads it.
+_TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 _NUMBERS = ("years_experience", "max_concurrent_tasks")
 MAX_SHORT_CHARS = 200
 MAX_LONG_CHARS = 2000
 MAX_ITEM_CHARS = 100
 MAX_ITEMS = 50
-#: The longest JSON text of one object field.
-MAX_OBJECT_CHARS = 2000
 #: The highest number of a number field.
 MAX_NUMBER = 1000
 #: The most rows of one skills or credentials list (``person_skills.py``).
@@ -673,19 +688,42 @@ def _list_arg(field: str, raw: Any) -> list[str]:
 
 
 def _object_arg(field: str, raw: Any) -> dict[str, Any] | None:
-    """*raw* as an object, or None for ``{}``, which clears the field."""
+    """*raw* as an object of the keys of :data:`OBJECT_KEYS`, or None for
+    ``{}``, which clears the field. Each text is one line, so the value sent
+    is the value that the card shows. An empty text leaves its key out, as
+    the People app does."""
+    allowed = OBJECT_KEYS[field]
+    why = f"The keys are {', '.join(allowed)}. {OBJECT_SHAPES[field]}"
     if not isinstance(raw, dict):
-        raise _Refused(_W_BAD.format(field=field, why="Send an object."))
+        raise _Refused(_W_BAD.format(field=field, why=f"Send an object. {why}"))
+    unknown = [str(k) for k in raw if k not in allowed]
+    if unknown:
+        raise _Refused(_W_BAD.format(
+            field=field, why=f"No page reads the key {', '.join(unknown)}. {why}"))
     problem = body_hidden_problem(raw)
     if problem is not None:
         raise _Refused(f"{field}: {problem} Nothing was saved.")
-    text = json.dumps(raw, ensure_ascii=False, separators=(",", ":"), default=str)
-    if "«" in text or "»" in text:
-        raise _Refused(_W_FENCE.format(field=field) + " Nothing was saved.")
-    if len(text) > MAX_OBJECT_CHARS:
-        raise _Refused(_W_BAD.format(field=field,
-                                     why=f"Send at most {MAX_OBJECT_CHARS} characters."))
-    return json.loads(text) if raw else None
+    out: dict[str, Any] = {}
+    for key in allowed:
+        if key not in raw or raw[key] is None:
+            continue
+        value = raw[key]
+        if key == "days":
+            if not isinstance(value, list) or not value or any(
+                    isinstance(d, bool) or not isinstance(d, int) or not 1 <= d <= 7
+                    for d in value):
+                raise _Refused(_W_BAD.format(field=f"{field}.days", why=why))
+            out[key] = sorted(set(value))
+            continue
+        if not isinstance(value, str):
+            raise _Refused(_W_BAD.format(field=f"{field}.{key}", why=why))
+        text = _text_arg(f"{field}.{key}", value, MAX_SHORT_CHARS)
+        if not text:
+            continue
+        if key in ("start", "end") and not _TIME.fullmatch(text):
+            raise _Refused(_W_BAD.format(field=f"{field}.{key}", why=why))
+        out[key] = text
+    return out or None
 
 
 def _profile_value(field: str, raw: Any) -> Any:
@@ -783,7 +821,7 @@ async def update_my_profile(
     max_concurrent_tasks: int | None = None, phone: str | None = None,
     emergency_contact: dict[str, Any] | None = None, birthday: str | None = None,
 ) -> dict[str, Any]:
-    """Change fields of your OWN People record after one card. Send only the fields to change: "" or {} or [] clears one. It never changes your email, title, manager or status."""
+    """Change fields of your OWN People record after one card. Send only the fields to change: "" or {} or [] clears one. working_hours takes only days (weekday numbers 1 to 7), start and end (HH:MM). links takes only github, linkedin and website. emergency_contact takes only name, relation and phone. It never changes your email, title, manager or status."""
     given = dict(locals())
     try:
         _member_headers()
@@ -918,9 +956,13 @@ def _credential_line(row: dict[str, Any]) -> str:
     text = f"- {_line(row.get('kind') or 'no kind', 40)}: {_shown(row.get('title'))}"
     if row.get("issuer"):
         text += f" by {_shown(row['issuer'])}"
-    years = [str(row[k]) for k in ("year_from", "year_to") if row.get(k) is not None]
-    if years:
-        text += f", {' to '.join(years)}"
+    start, end = row.get("year_from"), row.get("year_to")
+    if start is not None and end is not None:
+        text += f", {_line(start, 8)} to {_line(end, 8)}"
+    elif start is not None:
+        text += f", from {_line(start, 8)}"
+    elif end is not None:
+        text += f", to {_line(end, 8)}"
     if row.get("detail"):
         text += f", {_shown(row['detail'])}"
     return text
@@ -1004,7 +1046,8 @@ async def set_my_credentials(credentials: list[dict[str, Any]]) -> dict[str, Any
             f"{_count(len(now), 'credential')} now, {len(after)} after. The new list "
             "replaces the whole list.",
             _W_CARD_NOTE + " Approve to save the list after. A row that is not in it is "
-            "removed. Reject to keep the credentials as they are.",
+            "removed, and each row is saved as your own entry, also a row from your CV. "
+            "Reject to keep the credentials as they are.",
             _list_card("Credentials", [_credential_line(r) for r in now],
                        [_credential_line(r) for r in after]))
         if decision != "approved":
@@ -1107,7 +1150,7 @@ async def remove_my_absence(absence_id: str) -> dict[str, Any]:
             f"{_line(row.get('kind') or 'away', 20)}, {_line(row.get('starts_on'), 20)} to "
             f"{_line(row.get('ends_on'), 20)}",
             _W_CARD_NOTE + " Approve to remove this absence. Reject to keep it.",
-            _absence_lines(row))
+            [("id", f"Absence id: {aid}"), *_absence_lines(row)])
         if decision != "approved":
             return _not_saved(decision)
         sent = await _send("DELETE", f"/people/me/absences/{aid}", act="removal")
