@@ -73,8 +73,15 @@ def _internal_token_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "test-internal-token")
 
 
+#: The mode that ``GET /crm/mode`` answers. A test sets "native" to see the
+#: refusal of a reset.
+_MODE = {"mode": "mirror"}
+
+
 def _responder(call: dict) -> Any:
     path, method, body = call["path"], call["method"], call["json"] or {}
+    if method == "GET" and path == "/crm/mode":
+        return dict(_MODE)
     if method == "GET" and path == "/crm/statuses/deal":
         return _DEAL_STAGES
     if method == "GET" and path == "/crm/statuses/lead":
@@ -208,17 +215,93 @@ async def test_a_reset_posts_to_the_reset_route(monkeypatch) -> None:
     cards = approve(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_edit_status("deal", "reset_order")
-    assert [(c["method"], c["path"], c["json"]) for c in calls] == [
+    assert [(c["method"], c["path"], c["json"]) for c in writes(calls)] == [
         ("POST", "/crm/statuses/deal/order/reset", {})]
     assert "Zoho" in cards[0]["title"]
     assert "order of Zoho again" in out
+
+
+async def test_a_lead_reset_says_lead_statuses(monkeypatch) -> None:
+    """F2 of the review: the plural of "lead status". Mutation: "{noun}s" -> red."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_edit_status("lead", "reset order")
+    assert writes(calls)[0]["path"] == "/crm/statuses/lead/order/reset"
+    assert cards[0]["title"] == "Reset the order of the lead statuses to Zoho?"
+    assert out == "The lead statuses are in the order of Zoho again."
+    assert "statuss" not in str(cards) + out
+
+
+async def test_a_lead_no_match_lists_the_lead_statuses(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_edit_status("lead", "change", "Qualified", hidden=True)
+    assert writes(calls) == [] and cards == []
+    assert "The lead statuses are: New." in out and "statuss" not in out
+
+
+async def test_a_reset_in_a_native_crm_is_refused_before_the_card(monkeypatch) -> None:
+    """F3a: the route answers 422 outside Mirror mode. Mutation: drop the mode read -> red."""
+    monkeypatch.setitem(_MODE, "mode", "native")
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_edit_status("deal", "reset_order")
+    assert writes(calls) == [] and cards == []
+    assert [c["path"] for c in calls] == ["/crm/mode"]
+    assert "does not mirror Zoho" in out and "deal stages" in out
 
 
 async def test_a_declined_reset_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await _M.crm_edit_status("lead", "reset order")
-    assert calls == [] and out.startswith("Declined:")
+    assert writes(calls) == [] and out.startswith("Declined:")
+
+
+@pytest.mark.parametrize("call", [
+    lambda: _M.crm_edit_status("deal", "add", "Signed", status_type="won", probability=80),
+    lambda: _M.crm_edit_status("deal", "add", "Gone", status_type="lost", probability="20"),
+    lambda: _M.crm_edit_status("deal", "change", "Closed Won", probability=90),
+    lambda: _M.crm_edit_status("deal", "change", "Proposal", status_type="won", probability=40),
+])
+async def test_a_chance_that_breaks_the_pin_is_refused_before_the_card(
+    call: Any, monkeypatch,
+) -> None:
+    """F3b: D-CRM-10 pins won to 100 and lost to 0, and the route answers 422.
+    Mutation: drop ``_pin_refusal`` -> a card for a write that cannot pass -> red."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await call()
+    assert writes(calls) == [] and cards == []
+    assert "always has a win chance of" in out
+
+
+@pytest.mark.parametrize("value", ["abc", "40.5", True, [1]])
+async def test_a_chance_that_is_no_number_is_refused_in_words(value: Any, monkeypatch) -> None:
+    """F4: a bare ValueError reached the model before. Mutation: int() -> red."""
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_edit_status("deal", "add", "x", probability=value)
+    assert calls == [] and cards == []
+    assert "whole number from 0 to 100" in out
+
+
+async def test_a_chance_with_a_percent_sign_is_read(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_edit_status("deal", "add", "Demo", probability="35%")
+    assert writes(calls)[0]["json"] == {"name": "Demo", "type": "open", "probability": 35}
+
+
+async def test_inner_spaces_do_not_hide_a_name(monkeypatch) -> None:
+    """The nit of the review: "Closed  Won" is "Closed Won". Mutation: strip
+    only the ends in ``_matches_by_name`` -> red."""
+    approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    await _M.crm_edit_status("deal", "change", "Closed  Won", hidden=True)
+    assert [(c["method"], c["path"]) for c in writes(calls)] == [
+        ("PATCH", f"/crm/statuses/deal/{_WON}")]
+    assert _M._matches_by_name([{"name": "Closed   Won "}], "name", "closed won")
 
 
 # ── The refusals that send no request ───────────────────────────────────────
@@ -250,6 +333,7 @@ async def test_an_unknown_kind_sends_no_request(monkeypatch) -> None:
     ({"action": "merge", "name": "Proposal"}, "not an action"),
     ({"action": "add", "name": "x", "status_type": "closed"}, "not a type"),
     ({"action": "add", "name": "x", "probability": 140}, "0 to 100"),
+    ({"action": "add", "name": "x", "probability": "abc"}, "0 to 100"),
     ({"action": "change", "name": "  "}, "Give its name"),
 ])
 async def test_a_bad_argument_sends_no_request(kwargs: dict, words: str, monkeypatch) -> None:

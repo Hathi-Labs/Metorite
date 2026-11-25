@@ -931,13 +931,13 @@ def _matches_by_name(rows: Any, field: str, wanted: str) -> list[dict[str, Any]]
     named. Two lanes with the same spoken name is a question for a human, not
     a coin toss, so the caller refuses and lists them verbatim.
     """
-    target = str(wanted or "").strip().lower()
+    target = " ".join(str(wanted or "").split()).lower()
     if not target:
         return []
     return [
         row for row in rows or []
         if isinstance(row, dict)
-        and str(row.get(field) or "").strip().lower() == target
+        and " ".join(str(row.get(field) or "").split()).lower() == target
     ]
 
 
@@ -2054,11 +2054,23 @@ _NO_DELETE = (
     "picker offers it, or delete it in CRM settings. Nothing was changed."
 )
 
+#: The answer of a reset outside Mirror mode. Only a Zoho mirror has an order
+#: to reset to, and the route answers 422.
+_NO_ZOHO_ORDER = (
+    "This CRM does not mirror Zoho, so the {nouns} have no Zoho order to go "
+    "back to. Nothing was changed. Change the order in CRM settings."
+)
+
 #: The advice after a 409 of Mirror mode on the set-up (CRM-C3).
 _SETUP_MIRROR = (
     "In Mirror mode Zoho owns the set-up. Here you can hide a row, or reset "
     "the stage order to Zoho."
 )
+
+
+def _plural(noun: str) -> str:
+    """The plural of a set-up noun: "deal stages", "lead statuses"."""
+    return noun + ("es" if noun.endswith("s") else "s")
 
 
 def _status_kind(kind: str) -> str:
@@ -2082,7 +2094,7 @@ def _one_name(rows: Any, field: str, wanted: str, noun: str) -> tuple[dict[str, 
     if not found:
         return None, (
             f"There is no {noun} called '{wanted}', so nothing was changed. "
-            f"The {noun}s are: {_name_list(rows, field)}."
+            f"The {_plural(noun)} are: {_name_list(rows, field)}."
         )
     if len(found) > 1:
         return None, (
@@ -2152,30 +2164,59 @@ def _status_changes(
     return payload, lines
 
 
+def _chance(probability: Any) -> int | None:
+    """The win chance as a whole number from 0 to 100, or None when the
+    value is no such number. "40", 40, 40.0 and "40%" are 40."""
+    if isinstance(probability, bool):
+        return None
+    text = str(probability).strip().removesuffix("%").strip()
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if value != int(value) or not 0 <= value <= 100:
+        return None
+    return int(value)
+
+
 def _status_args(
-    action: str, act: str, noun: str, status_type: str | None, probability: int | None,
-) -> tuple[str | None, str]:
-    """The type of a status as the route spells it, and the words of a
-    refusal before any request, or ``""``."""
+    action: str, act: str, noun: str, status_type: str | None, probability: Any,
+) -> tuple[str | None, int | None, str]:
+    """The type of a status as the route spells it, the win chance as a
+    number, and the words of a refusal before any request, or ``""``."""
     if act in ("delete", "remove"):
-        return None, _NO_DELETE.format(noun=noun)
+        return None, None, _NO_DELETE.format(noun=noun)
     if act not in ("add", "change", "reset_order"):
-        return None, (
+        return None, None, (
             f"'{action}' is not an action of this tool. Use action='add', "
             "action='change' or action='reset_order'. Nothing was changed."
         )
     typed = "_".join(str(status_type or "").lower().split()) or None
     if typed is not None and typed not in _STATUS_TYPES:
-        return None, (
+        return None, None, (
             f"'{status_type}' is not a type of {noun}. One of: "
             f"{', '.join(_STATUS_TYPES)}. Nothing was changed."
         )
-    if probability is not None and not 0 <= int(probability) <= 100:
-        return None, (
-            f"A win chance is a percentage from 0 to 100, not {probability}. "
+    chance = None if probability is None else _chance(probability)
+    if probability is not None and chance is None:
+        return None, None, (
+            f"A win chance is a whole number from 0 to 100, not {probability!r}. "
             "Nothing was changed."
         )
-    return typed, ""
+    return typed, chance, ""
+
+
+def _pin_refusal(noun: str, status_type: str, chance: int | None) -> str:
+    """The words of a refusal when a won or a lost type meets a win chance
+    that D-CRM-10 forbids, or "". The route answers that write with 422."""
+    pinned = _PINNED_CHANCE.get(status_type)
+    if pinned is None or chance is None or chance == pinned:
+        return ""
+    return (
+        f"A {status_type} {noun} always has a win chance of {pinned}%, not "
+        f"{chance}%. Leave out the win chance, or use another type. Nothing "
+        "was changed."
+    )
 
 
 def _status_add(
@@ -2210,11 +2251,11 @@ def _status_plan(
     words of a refusal before any card. It reads nothing and writes nothing."""
     if act == "reset_order":
         return {
-            "title": f"Reset the order of the {noun}s to Zoho?",
+            "title": f"Reset the order of the {_plural(noun)} to Zoho?",
             "detail": f"Each {noun} goes back to the order of Zoho",
             "card": {"kind": noun, "order": "the order of Zoho"},
             "body": {}, "id": "",
-            "unchanged": f"The order of the {noun}s did not change.",
+            "unchanged": f"The order of the {_plural(noun)} did not change.",
         }, ""
     if act == "add":
         if _matches_by_name(rows, "name", wanted):
@@ -2222,6 +2263,9 @@ def _status_plan(
                 f"The CRM has a {noun} called '{wanted}' already, so nothing was "
                 "added. Use action='change' to change it."
             )
+        pinned = _pin_refusal(noun, typed or "open", probability)
+        if pinned:
+            return None, pinned
         body, card = _status_add(wanted, typed, probability, hidden, noun)
         return {
             "title": f"Add the {noun} {wanted}?", "detail": f"{wanted} · {card['type']}",
@@ -2235,6 +2279,9 @@ def _status_plan(
     taken = _name_taken(rows, "name", rename, target, noun)
     if taken:
         return None, taken
+    pinned = _pin_refusal(noun, typed or str(target.get("type") or "open"), probability)
+    if pinned:
+        return None, pinned
     payload, lines = _status_changes(target, rename, typed, probability, hidden)
     if not payload:
         return None, f"The {noun} {title} has those values already, so nothing was changed."
@@ -2282,18 +2329,24 @@ async def crm_edit_status(
     slug = _status_kind(kind)
     noun = "deal stage" if slug == "deal" else "lead status"
     act = "_".join(str(action or "").lower().split())
-    typed, refusal = _status_args(action, act, noun, status_type, probability)
+    typed, chance, refusal = _status_args(action, act, noun, status_type, probability)
     if refusal:
         return refusal
     wanted = " ".join(str(name or "").split())
     rows: Any = []
-    if act != "reset_order":
+    if act == "reset_order":
+        # The route answers 422 outside Mirror mode, so ask the mode first,
+        # as the orchestrator does (`GET /crm/mode`).
+        mode = await _get("/crm/mode")
+        if not (isinstance(mode, dict) and mode.get("mode") == "mirror"):
+            return _NO_ZOHO_ORDER.format(nouns=_plural(noun))
+    else:
         if not wanted:
             return f"Which {noun} is meant? Give its name. Nothing was changed."
         # Read first: the card names a real row, and an add never makes a
         # second row that differs only in case.
         rows = await _get(f"/crm/statuses/{slug}")
-    plan, refusal = _status_plan(act, noun, wanted, rows, typed, probability, hidden, new_name)
+    plan, refusal = _status_plan(act, noun, wanted, rows, typed, chance, hidden, new_name)
     if plan is None:
         return refusal
 
@@ -2311,7 +2364,7 @@ async def crm_edit_status(
     try:
         if act == "reset_order":
             await _post(f"/crm/statuses/{slug}/order/reset", {})
-            return f"The {noun}s are in the order of Zoho again."
+            return f"The {_plural(noun)} are in the order of Zoho again."
         if act == "add":
             made = await _post(f"/crm/statuses/{slug}", plan["body"])
             row = made if isinstance(made, dict) else {}
