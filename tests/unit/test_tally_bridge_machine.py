@@ -248,3 +248,16 @@ def test_a_failed_task_call_says_to_run_as_an_administrator():
     apply = entry._machine_applier(True, _Awake(), runner)
     note = apply(Settings(start_tally_at_signin=True, tally_exe=EXE))
     assert note == "Run the setup as an administrator to change the sign-in task."
+
+
+@pytest.mark.parametrize("exe", [r"C:\\Users\\Public\\evil.exe", r"tally.exe",
+                                 r"\\\\server\\share\\tally.exe", r"C:tally.exe"])
+def test_the_path_must_be_tallyprime_on_a_drive(exe):
+    """TLY-2d: the page can set the path, and the sign-in task runs it for each
+    person who signs in. So only a full path to tally.exe on a drive passes."""
+    from tally_bridge.settings import Settings, SettingsError
+
+    with pytest.raises(SettingsError):
+        Settings(start_tally_at_signin=True, tally_exe=exe).validate()
+    Settings(start_tally_at_signin=True,
+             tally_exe=r"D:\\Apps\\TallyPrime\\TALLY.EXE").validate()

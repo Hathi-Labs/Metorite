@@ -33,8 +33,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
+import sys
 from collections.abc import Callable
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
@@ -312,6 +314,9 @@ class _SetupApi:
                 keep_awake=awake,
             )
             new.validate()
+            # On the customer's machine, the path must be a file that exists.
+            if new.tally_exe and sys.platform == "win32" and not Path(new.tally_exe).is_file():
+                return _json({"error": "TallyPrime is not at that path."}, 400)
             self._store.save(new)
         except SettingsError as exc:
             return _json({"error": str(exc)}, 400)
