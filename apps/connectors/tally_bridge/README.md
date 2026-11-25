@@ -186,7 +186,44 @@ Two commands change the machine. Run each one as an administrator:
 - `python -m tally_bridge uninstall-windows --windows` removes the task, the
   firewall rule, the stored hashes, the copy key and the local copy.
 
-The service and the installer follow in TLY-5 PR B.
+### The service and the installer (TLY-5 PR B)
+
+The program runs as the Windows service `TallyBridge`. It starts with Windows,
+before anyone signs in. Windows starts it again 5 s, 15 s and 60 s after a
+crash, and the count resets after a day. The service serves with the product
+stores of `--windows`. It starts with no token and no setup key, and both
+guards refuse every request until a key exists.
+
+To build the installer on a Windows machine with `uv` and Inno Setup 6:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.1.0
+```
+
+The build installs only the versions in `uv.lock`, PyInstaller included (the
+`build` dependency group). The output is `dist\TallyBridgeSetup-0.1.0.exe`. It
+is not signed yet, because signing waits for the owner's certificate (brief
+§10 question 8). The installer does these steps in this order:
+
+1. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. Only
+   SYSTEM and the administrators can write there, and Users can read. A fresh
+   install removes whatever was at that path, a link too, and makes a new
+   folder. An upgrade refuses a folder that is a link. If this step fails,
+   the setup stops. The service runs as LocalSystem and trusts its settings.
+2. An upgrade then stops the running service.
+3. It installs the service, which starts with Windows.
+4. It sets the restart rule.
+5. It runs `apply-windows`.
+6. It starts the service.
+7. It makes the setup key (`setup-link --wait --url-file`). That step waits
+   until the service answers, and writes the address to a file in the
+   installer's temporary folder.
+8. It opens that address as the person who signed in, never in the
+   browser of an administrator.
+
+The uninstall stops and removes the service, then runs `uninstall-windows`.
+It also deletes `%ProgramData%\TallyBridge`. A stop gives open requests 10 s,
+well inside the 30 s that Windows waits.
 
 ## Fixtures
 
