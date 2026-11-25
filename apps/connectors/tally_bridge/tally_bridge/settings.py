@@ -50,6 +50,13 @@ class Settings:
     copy_interval_min: int = 30
     copy_max_age_days: int = 7
     log_dir: str = ""
+    # TLY-5 (integrations_console.md §3.8.13, "Keep Tally reachable"). Each one
+    # is off until the customer turns it on. The Windows module applies them:
+    # a Task Scheduler task that starts TallyPrime at sign-in, and a request
+    # to Windows that the machine does not sleep while the bridge runs.
+    start_tally_at_signin: bool = False
+    tally_exe: str = ""
+    keep_awake: bool = False
 
     def validate(self) -> Settings:
         """Refuse a setting that breaks a rule of the brief. Returns self."""
@@ -66,6 +73,12 @@ class Settings:
             raise SettingsError("CALL_DEADLINE_S must be above 0 and below 30.")
         if not 0 < self.tally_timeout_s <= self.call_deadline_s:
             raise SettingsError("TALLY_TIMEOUT_S must be above 0 and not above CALL_DEADLINE_S.")
+        if self.start_tally_at_signin and not self.tally_exe:
+            raise SettingsError("START_TALLY_AT_SIGNIN needs TALLY_EXE, the path of TallyPrime.")
+        if self.tally_exe and (
+            not self.tally_exe.lower().endswith(".exe") or '"' in self.tally_exe
+        ):
+            raise SettingsError("TALLY_EXE must be the path of a program (.exe), with no quotes.")
         if not 5 <= self.copy_interval_min <= 1440:
             raise SettingsError("COPY_INTERVAL_MIN must be between 5 and 1440.")
         if not 1 <= self.copy_max_age_days <= 90:
@@ -101,6 +114,9 @@ _NAMES: dict[str, tuple[str, type]] = {
     "COPY_DIR": ("copy_dir", str),
     "COPY_INTERVAL_MIN": ("copy_interval_min", int),
     "COPY_MAX_AGE_DAYS": ("copy_max_age_days", int),
+    "START_TALLY_AT_SIGNIN": ("start_tally_at_signin", bool),
+    "TALLY_EXE": ("tally_exe", str),
+    "KEEP_AWAKE": ("keep_awake", bool),
     "LOG_DIR": ("log_dir", str),
 }
 
@@ -119,6 +135,8 @@ def settings_from_mapping(values: Mapping[str, str]) -> Settings:
         try:
             if kind is tuple:
                 kwargs[attr] = tuple(p.strip() for p in raw.split("|") if p.strip())
+            elif kind is bool:
+                kwargs[attr] = _on_off(raw)
             else:
                 kwargs[attr] = kind(raw)
         except ValueError as exc:
@@ -131,8 +149,24 @@ def settings_to_mapping(settings: Settings) -> dict[str, str]:
     out: dict[str, str] = {}
     for name, (attr, kind) in _NAMES.items():
         value = getattr(settings, attr)
-        out[name] = "|".join(value) if kind is tuple else str(value)
+        if kind is tuple:
+            out[name] = "|".join(value)
+        elif kind is bool:
+            out[name] = "true" if value else "false"
+        else:
+            out[name] = str(value)
     return out
+
+
+def _on_off(raw: str) -> bool:
+    """``true``/``false``, ``1``/``0``, ``yes``/``no`` or ``on``/``off``.
+    Anything else is refused, never read as true."""
+    text = raw.strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(raw)
 
 
 class SettingsStore(Protocol):

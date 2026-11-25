@@ -63,7 +63,11 @@ pytestmark = _DB_GATE
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@f12b.test"
 _LIKE = f"%.{TAG}@f12b.test"
-WORDS = "Call Asha on 555 0100"
+#: Task 3965: each marker is a word with a letter past ``f``. A UUID, a
+#: sha256 or a run id holds only ``0-9a-f``, so a random value never holds
+#: one, and the "no input in the row" check cannot fail by chance.
+WORDS = "Call Asha on Quill Zephyr"
+BITS = ("Asha", "Quill", "Zephyr")
 BODY = {"description": "Use this to log a call.", "instructions": "Make a task.",
         "actions": ["tool:create_task"]}
 RUN_KEY = "key-r8-run"
@@ -184,7 +188,7 @@ def test_r8_a_live_failure_lands_under_the_bound_org(world, monkeypatch) -> None
     assert row[:6] == (sid, "live", False, "tool_error", "create_task: RuntimeError", ANA)
     assert row[6].startswith("run-") and row[8] == sr.input_hash(a, WORDS)
     assert row[9] == skill_repair.body_key(BODY)
-    for bit in ("Asha", "555", "0100"):
+    for bit in BITS:
         assert bit not in row[10], bit
     assert _rows(world, b) == [], "org B reads no row of org A"
 
