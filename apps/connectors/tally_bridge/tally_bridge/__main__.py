@@ -48,7 +48,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tally_bridge")
     parser.add_argument(
         "command",
-        choices=["serve", "new-token", "version", "record-requests", "setup-link", "delete-copy"],
+        choices=[
+            "serve",
+            "new-token",
+            "version",
+            "record-requests",
+            "setup-link",
+            "delete-copy",
+            "apply-windows",
+            "uninstall-windows",
+        ],
     )
     parser.add_argument("folder", nargs="?", help="record-requests: where to write the requests")
     parser.add_argument("--company", help="record-requests: the exact Tally company name")
@@ -60,6 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dev-copy-key-file", help="serve, delete-copy: DEV ONLY, the key of the local copy"
     )
+    parser.add_argument(
+        "--windows",
+        action="store_true",
+        help="The product stores of a customer's machine: the settings, the DPAPI hashes"
+        " and the DPAPI copy key under %%ProgramData%%\\TallyBridge (TLY-5)",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "record-requests":
@@ -68,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
         return _setup_link(args)
     if args.command == "delete-copy":
         return _delete_copy(args)
+    if args.command == "apply-windows":
+        return _apply_windows(args)
+    if args.command == "uninstall-windows":
+        return _uninstall_windows(args)
 
     if args.command == "version":
         print(__version__)
@@ -96,6 +115,15 @@ def _record(args: argparse.Namespace) -> int:
 
 
 def _stores(args: argparse.Namespace) -> tuple[SettingsStore, SecretStore]:
+    if getattr(args, "windows", False):
+        from tally_bridge.windows import stores
+        from tally_bridge.windows.dpapi import DpapiProtector
+
+        folder = stores.data_dir()
+        return (
+            FileSettingsStore(folder / "settings.json"),
+            stores.DpapiSecretStore(folder / stores.SECRETS_FILE, DpapiProtector()),
+        )
     settings_file = args.settings_file
     secret_file = args.dev_secret_file
     settings: SettingsStore = (
@@ -110,6 +138,12 @@ def _copy_store(args: argparse.Namespace, settings: Settings) -> CopyStore | Non
     key on Windows. Until then the copy needs the DEV ONLY key file."""
     if not settings.copy_dir:
         return None
+    if getattr(args, "windows", False):
+        from tally_bridge.windows import stores
+        from tally_bridge.windows.dpapi import DpapiProtector
+
+        key = stores.DpapiKeyProvider(stores.data_dir() / stores.COPY_KEY_FILE, DpapiProtector())
+        return CopyStore(settings.copy_dir, key)
     if not args.dev_copy_key_file:
         raise SettingsError("COPY_DIR is set. Pass --dev-copy-key-file (DEV ONLY) for its key.")
     return CopyStore(settings.copy_dir, DevFileKeyProvider(args.dev_copy_key_file))
@@ -124,6 +158,63 @@ def _delete_copy(args: argparse.Namespace) -> int:
     # Deleting needs no key: the files go, readable or not.
     gone = CopyStore(folder, DevFileKeyProvider(args.dev_copy_key_file or "")).delete_all()
     print(f"Deleted {gone} local copies.")
+    return 0
+
+
+def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
+    """Make the machine match the settings (TLY-5): the sign-in task of
+    TallyPrime, and one firewall rule. The installer runs it, and so does a
+    person after a change of the settings."""
+    from tally_bridge.windows import system
+
+    run = runner or system.run
+    settings = _stores(args)[0].load()
+    failed = 0
+    if settings.start_tally_at_signin or _had_startup(run):
+        failed += system.apply_startup(settings.start_tally_at_signin, settings.tally_exe, run) != 0
+    # Delete, then add: one rule, whatever ran before.
+    run(system.firewall_off())
+    failed += run(system.firewall_on()) != 0
+    print("Applied." if not failed else f"{failed} change(s) failed. Run as an administrator.")
+    return 0 if not failed else 1
+
+
+def _had_startup(run: Any) -> bool:
+    """True when the sign-in task may exist, so that turning the setting off
+    removes it. ``schtasks /Query`` answers 0 for a task that exists."""
+    from tally_bridge.windows import system
+
+    return run(["schtasks", "/Query", "/TN", system.TASK_NAME]) == 0
+
+
+def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
+    """Undo every change of the program (brief §6.7): the sign-in task, the
+    firewall rule, the stored hashes, the copy key and the local copy."""
+    from tally_bridge.windows import stores, system
+
+    run = runner or system.run
+    # The machine changes go first, so a damaged settings file cannot leave
+    # the task or the firewall rule behind (review finding 2). Each delete
+    # answers non-zero when there is nothing to delete, so the exit codes say
+    # nothing here.
+    run(system.startup_off())
+    run(system.firewall_off())
+    settings_store, secrets = _stores(args)
+    if isinstance(secrets, stores.DpapiSecretStore):
+        secrets.delete()
+    if getattr(args, "windows", False):
+        (stores.data_dir() / stores.COPY_KEY_FILE).unlink(missing_ok=True)
+    try:
+        copy_dir = settings_store.load().copy_dir
+    except SettingsError as exc:
+        print(
+            f"Removed the sign-in task, the firewall rule and the stored secrets. "
+            f"The settings file is damaged ({exc}), so delete the local copy by hand."
+        )
+        return 1
+    if copy_dir:
+        CopyStore(copy_dir, DevFileKeyProvider("")).delete_all()
+    print("Removed the sign-in task, the firewall rule, the stored secrets and the local copy.")
     return 0
 
 
@@ -183,8 +274,24 @@ def _serve(args: argparse.Namespace) -> int:
             access_log=False,
         )
     )
-    asyncio.run(_serve_with_copy(server, reader, copy, live))
+    _awake_while(
+        settings.keep_awake, lambda: asyncio.run(_serve_with_copy(server, reader, copy, live))
+    )
     return 0
+
+
+def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:
+    """Run *run*, and keep the machine awake meanwhile when the setting is on.
+    The request ends when *run* returns or raises (TLY-5)."""
+    from tally_bridge.windows.system import KeepAwake
+
+    awake = awake or KeepAwake()
+    if keep_awake:
+        awake.start()
+    try:
+        run()
+    finally:
+        awake.stop()
 
 
 async def _serve_with_copy(server: Any, reader: Any, copy: CopyStore | None, live: Any) -> None:
