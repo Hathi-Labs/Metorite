@@ -1186,7 +1186,7 @@ The owner approved §3.8 on task 3653 (D232). A fence file is new, except where 
 
 - TLY-2a (task 3663): the link client, against a fake link (§3.8.14).
 - TLY-2b (task 3968): the pair step of the setup page, and the copy time on each poll.
-- TLY-2c (task 3969): the setup guide.
+- TLY-2c (task 3969): the setup guide, `apps/connectors/tally_bridge/SETUP_GUIDE.md`.
 
 ```
 LNK-0 ─► LNK-1 ─► LNK-2 ─┬─► LNK-3 ─┬─► TLY-2 ─► rung 2 demo (task 3657)
