@@ -236,13 +236,17 @@ fake link, `tests/unit/test_tally_bridge_link.py`.
 Link mode is off until `LINK_URL` holds the address of Metorite. The setting
 has no default.
 
+The setup page has a link step (TLY-2b): type the domain, give the code to
+your admin, then confirm the company name. The commands below do the same
+from a command line.
+
 1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
    the company types it in Metorite and approves it. The program then shows
    the name of the company that approved it.
 2. `confirm-link --company "<that name>"` accepts the company. The program
    serves nothing before this step (rule j).
 3. `serve` runs the long poll beside the setup page. Each poll says whether
-   TallyPrime is up. Each request runs against the read tools of this
+   TallyPrime is up, and the time of the oldest local copy. Each request runs against the read tools of this
    process, and only on `/mcp`.
 4. `unlink` revokes the credential at Metorite and deletes it here. Use it
    to refuse a company that you do not know, or to disconnect. The uninstall

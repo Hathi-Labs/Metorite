@@ -386,10 +386,16 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
         return 2
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
-    app = build_address_app(live, secrets, reader, store, copy)
     from tally_bridge import linkcli
 
-    link = linkcli.link_loop(settings, linkcli.link_store(args), app.inner, reader)
+    controller = linkcli.link_controller(args, live, reader, copy)
+    app = build_address_app(live, secrets, reader, store, copy, link=controller)
+    link = None
+    if controller is not None:
+        from tally_bridge.transport.link.dispatch import McpDispatcher
+
+        controller.dispatch = McpDispatcher(app.inner, settings.bind_port)
+        link = controller.run
     server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,

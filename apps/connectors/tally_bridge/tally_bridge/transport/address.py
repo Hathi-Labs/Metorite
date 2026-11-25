@@ -46,6 +46,7 @@ def build_address_app(
     reader: TallyReader,
     store: SettingsStore | None = None,
     copy: CopyStore | None = None,
+    link: object | None = None,
 ) -> ASGIApp:
     """The app of address mode: ``/mcp``, ``/health`` and the setup page.
 
@@ -82,6 +83,8 @@ def build_address_app(
             reader,
             # TLY-4: a company that leaves the allow-list loses its copy at once.
             on_saved=(lambda new: copy.keep_only(new.allowed_companies)) if copy else None,
+            # TLY-2b: the link controller, for the pair step of the page.
+            link=link,
         )
     )
     guard = BearerGuard(app, secrets)
