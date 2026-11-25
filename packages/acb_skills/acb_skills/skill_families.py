@@ -1130,10 +1130,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "what Reach would send you now."
         ),
         "description": (
-            "A tool pack: four reads of the People app and of the Reach preview, for the "
+            "A tool pack: four reads of the People app and of the Reach preview, and one write of the work schedule of the company, for the "
             "main assistant to load when a turn asks about the people of the "
             "organization. Each tool calls the routes as the member, so the member sees "
-            "only the fields that the People app shows to that member. No tool writes. A "
+            "only the fields that the People app shows to that member. The one write shows a card first. A "
             "run loads a pack only where tool packs are on, so until then this switch has "
             "no effect."
         ),
@@ -1142,6 +1142,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "people_me",
             "people_work",
             "reach_preview",
+            "set_work_schedule",
         ),
         "owner": "org-admin",
         "core": False,

@@ -1473,7 +1473,8 @@ def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
 # -- 10b. The people pack (P-5b-1, chat_parity.md section 6.4, task 3114) ------
 
 #: The four reads of the people pack, in the order of the family.
-PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
+PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview",
+                "set_work_schedule")  # P-5b-4 (task 3945) adds the one write
 
 
 def test_the_people_family_is_a_pack_of_org_admin() -> None:
@@ -1500,7 +1501,9 @@ def test_the_pack_loader_builds_the_people_tools_as_read_only_coroutines() -> No
     assert all(inspect.iscoroutinefunction(fn) for fn in tools)
     for name in PEOPLE_TOOLS:
         hints = get_annotations(name)
-        assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+        # The one write is not read-only, and it says so (P-5b-4).
+        assert hints and hints["read_only"] is (name != "set_work_schedule"), name
+        assert hints["open_world"] is False, name
 
 
 def test_the_people_pack_stays_dark_and_names_only_its_tools() -> None:
@@ -1525,7 +1528,7 @@ def test_no_people_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("people", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(PEOPLE_TOOLS) == 4
+    assert len(tools) == len(PEOPLE_TOOLS) == 5
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

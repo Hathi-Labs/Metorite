@@ -36,6 +36,18 @@ memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
 an outside mail into a WhatsApp turn. The tool marks that chat as one that read
 outside text, so each egress tool and each held write then shows a card first.
 
+**P-5b-4 (task 3945) is BUILT, 2026-11-25, and it ships dark.** The tool
+`set_work_schedule` joins the pack `people`. It changes the work schedule of
+the company (`PUT /api/people/schedule`), which is the org policy and not the
+record of a person. The tool reads `GET /auth/me` first, so a member without
+`admin:members:manage` gets plain words and no card. It sends only the fields
+to change, onto the policy of now, because the route replaces the whole policy.
+It asks the route for a `dry_run`, and ONE card shows the impact that the server
+computed: the hours of the company week before and after, how many people
+move, and up to ten examples. The tool reads the impact again after Approve,
+and it sends nothing when the impact moved. It paid one people row, so the
+people ceiling went from 13 to 12. Fence: `tests/unit/test_people_schedule_tool.py`.
+
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
 `list_members`, `set_member_roles`, `set_member_status` and
@@ -661,7 +673,7 @@ data. The gate column names what the owner does before the slice is live.
 | P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
 | P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
 | P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
-| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
+| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | BUILT, 2026-11-25. Dark in the `people` pack |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
 | P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | To do |
 | Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |

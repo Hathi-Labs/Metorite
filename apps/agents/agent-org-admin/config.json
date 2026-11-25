@@ -56,6 +56,7 @@
     "set_member_overrides",
     "set_member_roles",
     "set_member_status",
-    "set_seat"
+    "set_seat",
+    "set_work_schedule"
   ]
 }
