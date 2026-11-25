@@ -190,10 +190,12 @@ CRM = App(
         # ── field-layout ──
         Route("PUT", "/crm/field-layout/{entity}", "", "B", planned="CRM-M2f", off_door=_SETUP),
         # ── field-rules ──
-        Route("GET", "/crm/field-rules", "", "A", planned="CRM-M2f", off_door=_DOOR_READ),
-        Route("POST", "/crm/field-rules", "", "B", planned="CRM-M2f", off_door=_SETUP),
-        Route("PATCH", "/crm/field-rules/{rule_id}", "", "B",
-              planned="CRM-M2f", off_door=_DECISION),
+        # CRM-M2f (task 3953): the Field map, and a rule made, approved or
+        # rejected on one card.
+        Route("GET", "/crm/field-rules", "crm_field_map", "A", off_door=_DOOR_READ),
+        Route("POST", "/crm/field-rules", "crm_edit_field_rule", "B", off_door=_SETUP),
+        Route("PATCH", "/crm/field-rules/{rule_id}", "crm_edit_field_rule", "B",
+              off_door=_DECISION),
         # ── catalogue ──
         Route("GET", "/crm/catalogue", "crm_list_modules", "A", off_door=_DOOR_READ),
         Route("PUT", "/crm/catalogue/{module}", "", "B", planned="CRM-M2f", off_door=_SETUP),
@@ -250,14 +252,16 @@ CRM = App(
         # ── import ──
         Route("POST", "/crm/import/zoho", "", "C", planned="CRM-M2k", off_door=_CONNECTION),
         # ── mapping ──
-        Route("GET", "/crm/mapping/plans", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
-        Route("GET", "/crm/mapping/plans/{version}", "", "A",
-              planned="CRM-M2i", off_door=_DOOR_READ),
-        Route("POST", "/crm/mapping/plans", "", "B", planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/plans/{version}/approve", "", "C",
-              planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/plans/{version}/restore", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
+        # CRM-M2i (task 3953): the versions of the plan, a draft, an approve
+        # and a restore. Each write shows one card. The preview stays planned.
+        Route("GET", "/crm/mapping/plans", "crm_list_mapping_plans", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/mapping/plans/{version}", "crm_list_mapping_plans", "A",
+              off_door=_DOOR_READ),
+        Route("POST", "/crm/mapping/plans", "crm_draft_mapping_plan", "B", off_door=_DECISION),
+        Route("POST", "/crm/mapping/plans/{version}/approve", "crm_approve_mapping_plan", "C",
+              off_door=_DECISION),
+        Route("POST", "/crm/mapping/plans/{version}/restore", "crm_restore_mapping_plan", "B",
+              off_door=_DECISION),
         Route("POST", "/crm/mapping/preview", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
         # ── notes ──
         Route("GET", "/crm/notes/search", "crm_search_notes", "A", off_door=_DOOR_READ),

@@ -59,6 +59,12 @@
     "crm_get_module_record",
     "crm_search_notes",
     "crm_change_history",
-    "crm_create_pipeline"
+    "crm_create_pipeline",
+    "crm_field_map",
+    "crm_edit_field_rule",
+    "crm_list_mapping_plans",
+    "crm_draft_mapping_plan",
+    "crm_approve_mapping_plan",
+    "crm_restore_mapping_plan"
   ]
 }

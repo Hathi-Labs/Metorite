@@ -71,10 +71,14 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
 /**
  * CRM write tools (`agent-crm`). Each asks the member first. A new pipeline
  * (CRM-M3a) wakes the pipeline read, so an open Deals board shows the switcher.
+ * A field rule or a plan version (CRM-M2f, CRM-M2i) changes the Field map, so
+ * the CRM re-reads.
  */
 const CRM_WRITES: ReadonlySet<string> = new Set([
   "create_lead", "update_deal_status", "log_activity", "convert_lead",
   "crm_update_record", "crm_update_task", "crm_create_pipeline",
+  "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
+  "crm_restore_mapping_plan",
 ]);
 
 /** Knowledge write tools: a proposal lands in the review queue. */

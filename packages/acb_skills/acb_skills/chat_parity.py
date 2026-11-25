@@ -186,7 +186,8 @@ def app_of(path: str) -> str | None:
 WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112, 3922, 3923)),
     "P-2": ("Email", ("email",), (3111, 3919)),
-    "P-3": ("CRM", ("crm",), (3678,)),
+    # P-3 (task 3678): task 3953 built the Field map and the mapping plan (CRM-M2f, CRM-M2i).
+    "P-3": ("CRM", ("crm",), (3678, 3953)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     # P-5b (task 3114) splits into P-5b-1 (3114) and P-5b-2 to P-5b-6 (3943 to 3947).
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
@@ -1287,7 +1288,7 @@ DEBT_CEILING: dict[str, int] = {
     "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
     "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
-    "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
+    "crm": 64,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3953 (CRM-M2f, CRM-M2i) paid the Field map read, a rule add and decide, and the five plan routes with six tools (72 to 64). The preview of the plan stays debt.
     "notes": 51,
     "whatsapp": 25,
     "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).

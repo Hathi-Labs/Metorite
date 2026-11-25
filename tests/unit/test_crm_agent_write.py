@@ -110,7 +110,8 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
                 "convert_lead", "crm_create_pipeline", "crm_update_record",
-                "crm_update_task"]
+                "crm_update_task", "crm_edit_field_rule", "crm_draft_mapping_plan",
+                "crm_approve_mapping_plan", "crm_restore_mapping_plan"]
 
 #: WS-CRM CRM-M3a: the pipelines and the plan that the gateway answers.
 _PIPELINE_ID = str(uuid4())
@@ -150,6 +151,48 @@ def _pipelines(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+#: CRM-M2f and CRM-M2i (task 3953): one field that goes to custom, and the
+#: plan: version 1 superseded, 2 approved, 3 a draft on 2.
+_FIELD_KEY = "Industry_Code"
+_FIELD_MAP = {
+    "entity": "deal", "profile_version": 4, "targets": [],
+    "fields": [{"key": _FIELD_KEY, "label": "Industry code", "type": "text",
+                "targets": ["next_step"]}],
+    "rules": [],
+}
+
+
+def _item(field: str, column: str = "next_step") -> dict[str, Any]:
+    return {"kind": "field", "entity": "deal", "field_api_name": field,
+            "field_type": "text", "target_column": column, "profile_version": 4}
+
+
+_PLANS: dict[str, dict[str, Any]] = {
+    "1": {"version": 1, "state": "superseded", "rules": [_item("Region")]},
+    "2": {"version": 2, "state": "approved", "based_on": 1, "rules": [_item(_FIELD_KEY)]},
+    "3": {"version": 3, "state": "draft", "based_on": 2,
+          "rules": [_item(_FIELD_KEY), _item("Segment", "description")]},
+}
+
+
+def _field_map(call: dict) -> Any:
+    """The Field map and the plan routes of ``_responder`` (task 3953)."""
+    path, method, body = call["path"], call["method"], call["json"] or {}
+    if path == "/crm/field-rules" and method == "GET":
+        return _FIELD_MAP
+    if path == "/crm/field-rules" and method == "POST":
+        return {"id": str(uuid4()), "status": "approved", **body}
+    if path == "/crm/mapping/plans" and method == "GET":
+        return {"approved": 2, "versions": list(_PLANS.values())}
+    if path == "/crm/mapping/plans" and method == "POST":
+        return {"version": 4, "state": "draft", "based_on": 2, "rules": []}
+    if method == "GET":
+        return _PLANS[path.rsplit("/", 1)[-1]]
+    if method == "POST":
+        return {"version": 4, "state": "approved", "based_on": 2, "rules": []}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
 def _responder(call: dict) -> Any:
     """The gateway, as far as these tools can tell.
 
@@ -185,6 +228,8 @@ def _responder(call: dict) -> Any:
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
     if path.startswith("/crm/pipelines"):
         return _pipelines(call)
+    if path.startswith(("/crm/field-rules", "/crm/mapping/plans")):
+        return _field_map(call)
     if method == "PATCH" and path.count("/") == 3:
         return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
                 "first_name": "Ravi", **body}
@@ -222,6 +267,16 @@ _CALLS: dict[str, Any] = {
         {"amount": 300000, "expected_close_date": "2026-12-31"},
     ),
     "crm_update_task": lambda: _M.crm_update_task(_TASK_ID, completed=True),
+    # CRM-M2f and CRM-M2i (task 3953): a field rule and the mapping plan.
+    "crm_edit_field_rule": lambda: _M.crm_edit_field_rule(
+        "add", "deals", "industry code", "next_step",
+    ),
+    "crm_draft_mapping_plan": lambda: _M.crm_draft_mapping_plan(
+        [{"op": "put", "entity": "deals", "field_api_name": "Segment",
+          "target_column": "description"}],
+    ),
+    "crm_approve_mapping_plan": lambda: _M.crm_approve_mapping_plan(3),
+    "crm_restore_mapping_plan": lambda: _M.crm_restore_mapping_plan(1),
 }
 
 #: The one tool that needs nothing from the gateway before it can describe what
@@ -231,7 +286,10 @@ _CALLS: dict[str, Any] = {
 #: ``log_activity`` used to be in here and was moved out under review: its card
 #: named the note but not the record, so a wrong ``record_id`` produced a card
 #: byte-identical to the correct call.
-_NO_PRE_READ = ["create_lead"]
+#:
+#: ``crm_draft_mapping_plan`` (task 3953) joins it: a draft writes no rule,
+#: and its card shows each change as the member gave it.
+_NO_PRE_READ = ["create_lead", "crm_draft_mapping_plan"]
 
 #: What the card must NAME, per tool: the record the write lands on. Not "a
 #: card was shown" — *which record*, in words the approver can check against
@@ -244,6 +302,10 @@ _CARD_MUST_NAME: dict[str, str] = {
     "crm_create_pipeline": "AMC contracts",  # the pipeline being made
     "crm_update_record": "Acme AMC",   # the deal being edited
     "crm_update_task": "Send quote",   # the task being changed (its subject)
+    "crm_edit_field_rule": "Industry code",      # the field being mapped
+    "crm_draft_mapping_plan": "«Segment»",       # the field of the change
+    "crm_approve_mapping_plan": "«Segment»",     # the rule the approve adds
+    "crm_restore_mapping_plan": "«Region»",      # the rule the restore brings back
 }
 
 

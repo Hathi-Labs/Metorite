@@ -1555,6 +1555,12 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
+    # CRM-M2f and CRM-M2i (task 3953): a field rule and the mapping plan. Each
+    # card shows the field and the column of each rule that changes.
+    "crm_edit_field_rule": _pin("action entity field target_column"),
+    "crm_draft_mapping_plan": _pin("changes"),
+    "crm_approve_mapping_plan": _pin("version"),
+    "crm_restore_mapping_plan": _pin("version"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter

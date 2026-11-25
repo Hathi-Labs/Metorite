@@ -80,10 +80,13 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The seven CRM writes. Each says ``open_world=True`` and keeps saying it.
+#: The eleven CRM writes. Each says ``open_world=True`` and keeps saying it.
+#: CRM-M2f and CRM-M2i (task 3953) added a field rule and three plan writes.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
+    "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
+    "crm_restore_mapping_plan",
 })
 
 #: The Projects writes that a held chat does not hold: every class C tool but
