@@ -232,6 +232,9 @@ async def test_counts_reads_the_quick_filter_counts(gw: Gateway) -> None:
         ({"unread_only": True}, "unread_only"),
         ({"sender_category": "Newsletter"}, "sender_category"),
         ({"importance": "high"}, "importance"),
+        # The two filters that main added (to_email, attachment_name) are filters too.
+        ({"to_email": "veena"}, "to_email"),
+        ({"attachment_name": "nda"}, "attachment_name"),
         ({"query": "x", "days": 3}, "query, days"),
         # has_attachments=False means "no attachment", a filter: only None is "not given".
         ({"has_attachments": False}, "has_attachments"),

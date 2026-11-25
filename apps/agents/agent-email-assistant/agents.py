@@ -2008,7 +2008,8 @@ _SEARCH_PAST_PAGE_ONE = (
 #: The filters that ``query_inbox(counts=true)`` cannot apply: the counts
 #: route takes only the mailbox and the folder.
 _COUNTS_FILTERS = ("query", "days", "sender_category", "from_email",
-                   "unread_only", "starred_only", "has_attachments", "importance")
+                   "unread_only", "starred_only", "has_attachments", "importance",
+                   "to_email", "attachment_name")
 
 
 def _mark_free(value: Any, limit: int) -> str:
@@ -2163,7 +2164,8 @@ async def query_inbox(
         given = {"query": query, "days": days, "sender_category": sender_category,
                  "from_email": from_email, "unread_only": unread_only,
                  "starred_only": starred_only, "has_attachments": has_attachments,
-                 "importance": importance}
+                 "importance": importance, "to_email": to_email,
+                 "attachment_name": attachment_name}
         # has_attachments=False is a filter ("no attachment"), as the list path reads it:
         # only None means "not given". For every other key False or 0 means off.
         bad = [

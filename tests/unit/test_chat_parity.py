@@ -686,9 +686,9 @@ def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
         cp.DEBT_CEILING, cp.P0_CEILING, _ceiling_comments(), cp.WAVES) == []
 
 
-def test_seven_ceilings_are_above_p0() -> None:
-    """The owner met eight on 2026-11-13. P-2a (task 3111) took email from 14 to 9,
-    under its baseline of 13, so seven are left. A ceiling may go down, and one that
+def test_five_ceilings_are_above_p0() -> None:
+    """The owner met eight on 2026-11-13. Email, the shell and the integrations are
+    under their baselines now, so five are left. A ceiling may go down, and one that
     goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
     # PAR-8b (task 3903) took the shell below its baseline (16 to 7).
