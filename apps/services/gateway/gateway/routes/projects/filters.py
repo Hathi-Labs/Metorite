@@ -19,6 +19,7 @@ people work around for months instead of reporting.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import UTC, datetime
@@ -1402,7 +1403,7 @@ def agent_state_sql(task_filter: str) -> str:
 SELECT DISTINCT ON (r.task_id) r.task_id, r.id AS run_id, {AGENT_RUN_STATE_SQL} AS state,
        r.client_via, r.member_email, r.status AS run_status, {_AGENT_NOTE_SQL} AS note,
        r.agent_label,
-       r.waiting_on, r.waiting_until,
+       r.waiting_on, r.waiting_until, r.plan,
        COALESCE(r.started_at, r.created_at) AS held_since,
        r.last_activity_at AS held_last,
        {run_idle_s_sql('r')} AS idle_s,
@@ -1526,6 +1527,35 @@ def waiting_of(state: Any, on: Any, until: Any) -> dict[str, Any] | None:
     return {"on": on, "until": wire(until)}
 
 
+#: SW-32 (task 1049). The longest step text on a card line, in characters.
+PLAN_STEP_LINE_MAX = 80
+
+
+def plan_summary_of(plan: Any) -> dict[str, Any] | None:
+    """``{done, total, step}`` of a run plan, else ``None`` for no plan or an
+    empty one (SW-32). ``done`` counts the closed steps, ``completed`` and
+    ``canceled``, so a plan that lost a step can still reach "7 of 7".
+    ``step`` is the first ``inProgress`` step, or ``None``. ONE rule for the
+    card line. The text is the agent's own, so the client draws it as text."""
+    if isinstance(plan, str):
+        try:
+            plan = json.loads(plan)
+        except ValueError:
+            return None
+    if not isinstance(plan, list) or not plan:
+        return None
+    steps = [p for p in plan if isinstance(p, dict)]
+    if not steps:
+        return None
+    current = next((p for p in steps if p.get("status") == "inProgress"), None)
+    text_ = " ".join(str((current or {}).get("content") or "").split())
+    return {
+        "done": sum(1 for p in steps if p.get("status") in ("completed", "canceled")),
+        "total": len(steps),
+        "step": text_[:PLAN_STEP_LINE_MAX] or None,
+    }
+
+
 async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fill each row's ``agent_state``, ``agent_client_via``,
     ``agent_member_email``, ``agent_note`` and ``agent_label`` (SW-7b, the
@@ -1553,8 +1583,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
     """
     for row in rows:
         row.update(agent_state=None, agent_client_via=None, agent_member_email=None,
-                   agent_note=None, agent_label=None, agent_waiting=None, held_by=None,
-                   agent_stranded=None)
+                   agent_note=None, agent_label=None, agent_waiting=None,
+                   agent_plan=None, held_by=None, agent_stranded=None)
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if ids and agent_runs_enabled():
         found = (await db.execute(text(_AGENT_STATE_SQL), {"ids": ids})).fetchall()
@@ -1569,7 +1599,8 @@ async def attach_agent_state(db: Any, rows: list[dict[str, Any]]) -> list[dict[s
                            agent_label=getattr(hit, "agent_label", None),
                            agent_waiting=waiting_of(
                                hit.state, getattr(hit, "waiting_on", None),
-                               getattr(hit, "waiting_until", None)))
+                               getattr(hit, "waiting_until", None)),
+                           agent_plan=plan_summary_of(getattr(hit, "plan", None)))
                 if hit.run_status in AGENT_RUN_OPEN_STATUSES:
                     row["held_by"] = held_by_of(hit)
         await _attach_stranded(db, rows, by_task)
@@ -1688,6 +1719,12 @@ WORKING_STATES: tuple[str, ...] = ("working", "answered", "stale", "waiting")
 #: "Waiting on me". The list filter ``agent_focus`` accepts exactly these.
 AGENT_FOCI: tuple[str, ...] = ("queued", "working", "waiting", "review", "merged")
 
+#: SW-5. The two hold filters of the board, on the same ``agent_focus``
+#: parameter. ``held``: an open run keeps the task. ``free``: none does, by the
+#: ``unheld`` rule. The strip has no button for them, so they stay out of
+#: :data:`AGENT_FOCI`, which the summary counts.
+HOLD_FOCI: tuple[str, ...] = ("held", "free")
+
 #: The one named parameter of :func:`agent_focus_clause`: the lower-cased
 #: address of the SESSION's member. The route binds it, never the request (R11).
 AGENT_FOCUS_ME = "af_me"
@@ -1732,6 +1769,9 @@ def agent_focus_clause(focus: str) -> str:
       task then counts too. It also reads ``agent_runs.listed_question_sql``
       over the task's one open run. So a closed task counts in neither, and a
       typed archive request counts for the run's member only, in both.
+    * ``held`` and ``free`` (SW-5): the lease. ``free`` is :func:`unheld_clause`,
+      the text of the ``unheld`` filter, and ``held`` is its negation. They read
+      no pill state, so the runs flag does not change them.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1739,8 +1779,13 @@ def agent_focus_clause(focus: str) -> str:
     the cards show no pill. The two pull request foci do not read the flag.
     An unknown focus is a ``ValueError``: the route turns it into a 422.
     """
+    if focus == "free":
+        return unheld_clause()
+    if focus == "held":
+        return f"NOT ({unheld_clause()})"
     if focus not in AGENT_FOCI:
-        raise ValueError(f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI)}.")
+        raise ValueError(
+            f"Unknown agent focus '{focus}'. One of: {list(AGENT_FOCI + HOLD_FOCI)}.")
     if focus in _RUN_FOCI and not agent_runs_enabled():
         return "false"
     if focus == "queued":
@@ -1797,10 +1842,11 @@ def agent_filter_clauses(
     clauses: list[str] = []
     params: dict[str, Any] = {}
     if agent_focus is not None:
-        if agent_focus not in AGENT_FOCI:
+        if agent_focus not in AGENT_FOCI + HOLD_FOCI:
             raise HTTPException(
                 status_code=422,
-                detail=f"Unknown agent focus '{agent_focus}'. One of: {list(AGENT_FOCI)}.",
+                detail=(f"Unknown agent focus '{agent_focus}'."
+                        f" One of: {list(AGENT_FOCI + HOLD_FOCI)}."),
             )
         clauses.append(agent_focus_clause(agent_focus))
         params[AGENT_FOCUS_ME] = me.strip().lower()

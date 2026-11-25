@@ -1348,7 +1348,7 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
 
   describe("the browser counts nothing", () => {
     // The check of `capacity.test.ts`, applied to this module.
-    const ARITHMETIC = /\.reduce\(|Math\.|\s[-*/]\s|\+=|-=/;
+    const ARITHMETIC = /\.reduce\(|Math\.|\s[-*/]\s|\+=|-=|[\w)\]]\s\+\s[\w(]/;
 
     function code(text: string): string {
       return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -1365,6 +1365,8 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
     it("would catch a sum if one arrived", () => {
       expect("rows.reduce((n, r) => n + r.overdue, 0)").toMatch(ARITHMETIC);
       expect("const left = total - done;").toMatch(ARITHMETIC);
+      expect("const all = open + overdue;").toMatch(ARITHMETIC);
+      expect("const label = 'Week ' + week;").not.toMatch(ARITHMETIC);
     });
   });
 });

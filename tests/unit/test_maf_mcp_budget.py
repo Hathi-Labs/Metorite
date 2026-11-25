@@ -882,6 +882,11 @@ def test_the_experimental_maf_api_is_pinned() -> None:
             maf_mcp._MCP_PROGRESSIVE_UNLOAD_TOOL_NAME) == _LOADERS
     sig = inspect.signature(maf_mcp.MCPTool._list_progressive_mcp_tools)
     assert list(sig.parameters) == ["self", "ctx"]
+    # Task 3924: the autoload calls MAF's own load with a context over the live
+    # list, and MAF adds the tool to that list in place (``ctx.add_tools``).
+    sig = inspect.signature(maf_mcp.MCPTool._load_progressive_mcp_tool)
+    assert list(sig.parameters) == ["self", "ctx", "tool"]
+    assert "ctx.add_tools(" in inspect.getsource(maf_mcp.MCPTool._load_progressive_mcp_tool)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ExperimentalWarning)
