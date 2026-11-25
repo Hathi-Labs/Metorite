@@ -190,7 +190,7 @@ def _delete_copy(args: argparse.Namespace) -> int:
     return 0
 
 
-def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
+def _apply_windows(args: argparse.Namespace, runner: Any = None, check_folder: Any = None) -> int:
     """Make the machine match the settings (TLY-5): the sign-in task of
     TallyPrime, and one firewall rule. The installer runs it, and so does a
     person after a change of the settings."""
@@ -199,8 +199,19 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     run = runner or system.run
     settings = _stores(args)[0].load()
     failed = 0
+    from tally_bridge.windows.acl import UnsafeTallyFolder
+
     if settings.start_tally_at_signin or _had_startup(run):
-        failed += system.apply_startup(settings.start_tally_at_signin, settings.tally_exe, run) != 0
+        try:
+            failed += (
+                system.apply_startup(
+                    settings.start_tally_at_signin, settings.tally_exe, run, check_folder
+                )
+                != 0
+            )
+        except UnsafeTallyFolder as exc:  # task 3974: the folder is not locked
+            print(str(exc), file=sys.stderr)
+            failed += 1
     # Delete, then add: one rule, whatever ran before.
     run(system.firewall_off())
     failed += run(system.firewall_on()) != 0
@@ -208,7 +219,9 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     return 0 if not failed else 1
 
 
-def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
+def _machine_applier(
+    windows: bool, awake: Any, runner: Any = None, check_folder: Any = None
+) -> Any:
     """The callback of the setup page (TLY-2d). It makes the machine match the
     two switches at once, and returns an error text, or None. Without
     ``--windows`` (a dev box) it only saves, so it returns None to the caller."""
@@ -218,11 +231,18 @@ def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
     def startup(new: Settings) -> str | None:
         """The schtasks part. It runs in a worker thread (two processes)."""
         from tally_bridge.windows import system
+        from tally_bridge.windows.acl import UnsafeTallyFolder
 
         run = runner or system.run
         wanted = new.start_tally_at_signin or _had_startup(run)
-        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
-            return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        try:
+            if wanted and (
+                system.apply_startup(new.start_tally_at_signin, new.tally_exe, run, check_folder)
+                != 0
+            ):
+                return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        except UnsafeTallyFolder as exc:  # task 3974: the folder is not locked
+            return str(exc)
         return None
 
     async def apply(new: Settings) -> str | None:
