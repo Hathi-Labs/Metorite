@@ -521,6 +521,7 @@ def test_two_pair_requests_at_once_start_one_pairing():
     """Round 2: the revoke of an old pairing awaited before the task existed,
     so a second request passed the busy check."""
     link = FakeLink(pending=10_000)
+    link.revoke_delay = 0.05  # the gap: the revoke of the old pairing awaits
     store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-0", "Old Co"))
     ctl = _controller(link, store)
 

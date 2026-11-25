@@ -193,17 +193,13 @@ class LinkController:
     async def unlink(self) -> Result:
         """Revoke at Metorite, then delete here and stop the poll. The error
         text says when Metorite did not take the revoke."""
-        # A store that cannot be read may hold a live link. Then nothing
-        # changes, and the page says so: an unlink that did nothing must not
-        # look done, and the poll must not start again by itself.
-        try:
-            self._store.load()
-        except Exception:
-            return self.state(), UNREADABLE
         if self._pair_task is not None and not self._pair_task.done():
             self._pair_task.cancel()
             # Wait for the cancel, so the state below is final (no code box).
             await asyncio.gather(self._pair_task, return_exceptions=True)
+        # A store that cannot be read may hold a live link. Then nothing more
+        # changes, and the page says so: an unlink that did nothing must not
+        # look done, and the poll must not start again by itself.
         try:
             stored = self._store.load()
         except Exception:

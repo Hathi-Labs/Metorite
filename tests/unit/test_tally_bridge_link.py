@@ -64,6 +64,7 @@ class FakeLink:
         self.bad_answer = 0  # answer the next N polls with a bad deadline_s
         self.revoke_on_reply = False  # a reply answers 401 revoked; polls still pass
         self.hold = 0.0  # seconds that each poll is held before its answer, as Metorite does
+        self.revoke_delay = 0.0  # seconds that a revoke takes, as a network call does
 
     def _auth(self, request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {CREDENTIAL}" and not self.revoked
@@ -116,6 +117,8 @@ class FakeLink:
         return JSONResponse({"ok": True})
 
     async def revoke(self, request: Request) -> JSONResponse:
+        if self.revoke_delay:
+            await asyncio.sleep(self.revoke_delay)
         self.revokes += 1
         self.revoked = True
         return JSONResponse({"ok": True})
