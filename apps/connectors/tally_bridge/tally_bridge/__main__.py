@@ -199,6 +199,7 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None, check_folder: A
     run = runner or system.run
     settings = _stores(args)[0].load()
     failed = 0
+    refused = False
     from tally_bridge.windows.acl import UnsafeTallyFolder
 
     if settings.start_tally_at_signin or _had_startup(run):
@@ -211,12 +212,52 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None, check_folder: A
             )
         except UnsafeTallyFolder as exc:  # task 3974: the folder is not locked
             print(str(exc), file=sys.stderr)
-            failed += 1
+            refused = True
     # Delete, then add: one rule, whatever ran before.
     run(system.firewall_off())
     failed += run(system.firewall_on()) != 0
+    if refused:
+        print("The firewall rule is applied. The sign-in task is off: see the message above.")
+        return 1
     print("Applied." if not failed else f"{failed} change(s) failed. Run as an administrator.")
     return 0 if not failed else 1
+
+
+def _machine_check(windows: bool, check_folder: Any = None) -> Any:
+    """Task 3974: for the setup page, why the sign-in task is off, or None.
+    Without ``--windows`` there is no task, so there is no check."""
+    if not windows:
+        return None
+
+    def problem(settings: Settings) -> str | None:
+        from tally_bridge.windows import acl
+
+        try:
+            (check_folder or acl.check)(settings.tally_exe)
+        except acl.UnsafeTallyFolder as exc:
+            return str(exc)
+        return None
+
+    return problem
+
+
+def _signin_guard_at_start(
+    settings: Settings, runner: Any = None, check_folder: Any = None
+) -> str | None:
+    """Task 3974: at each start of the service, check the TallyPrime folder
+    again. When a user can now change the program (a support person loosened
+    the folder after setup), remove the sign-in task. Returns the message."""
+    if not settings.start_tally_at_signin:
+        return None
+    from tally_bridge.windows import acl, system
+
+    try:
+        (check_folder or acl.check)(settings.tally_exe)
+    except acl.UnsafeTallyFolder as exc:
+        (runner or system.run)(system.startup_off())
+        logging.getLogger("tally_bridge").warning("%s", exc)
+        return str(exc)
+    return None
 
 
 def _machine_applier(
@@ -454,7 +495,10 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
         copy,
         link=controller,
         on_machine_saved=_machine_applier(getattr(args, "windows", False), awake),
+        machine_check=_machine_check(getattr(args, "windows", False)),
     )
+    if getattr(args, "windows", False):
+        _signin_guard_at_start(settings)
     link = None
     if controller is not None:
         from tally_bridge.transport.link.dispatch import McpDispatcher

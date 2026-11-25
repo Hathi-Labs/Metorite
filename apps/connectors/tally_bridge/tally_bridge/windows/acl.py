@@ -34,6 +34,7 @@ closed.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -89,28 +90,53 @@ class Entry:
 class Security:
     owner: str
     entries: tuple[Entry, ...]
+    #: True for a junction or a symbolic link. The read follows a link, so a
+    #: user who can delete the link can put their own folder in its place.
+    reparse: bool = False
+
+
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+#: The one folder beside the program that Windows reads for its DLLs.
+DOT_LOCAL = "tally.exe.local"
 
 
 class UnsafeTallyFolder(Exception):
     """A person who is not an administrator can change the TallyPrime program."""
 
-    def __init__(self, path: str, reason: str) -> None:
+    def __init__(self, path: str, reason: str, folder: str = "", near: bool = True) -> None:
         super().__init__(path, reason)
         self.path = path
         self.reason = reason
+        self.folder = folder or path
+        self.near = near
 
     def __str__(self) -> str:
-        return message(self.path, self.reason)
+        return message(self.path, self.reason, self.folder, self.near)
 
 
-def message(path: str, reason: str) -> str:
-    """The text for the customer: which folder, why, and how to lock it."""
-    folder = path if not path.lower().endswith(".exe") else str(PureWindowsPath(path).parent)
+def message(path: str, reason: str, folder: str, near: bool) -> str:
+    """The text for the customer: which part, why, and the one fix.
+
+    For the program folder, the commands lock it: the administrators own each
+    item, the old rights go, and only SYSTEM and the administrators may write.
+    For a folder above it (often a drive root), locking would spread over the
+    whole drive, so the fix is to install TallyPrime under Program Files."""
+    head = f"The sign-in task is off. {reason}: {path}."
+    if not near:
+        return (
+            f"{head} A user can rename or replace a folder above TallyPrime. "
+            "Install TallyPrime under C:\\Program Files, set TALLY_EXE to it, "
+            "then run apply-windows again."
+        )
     return (
-        f"The sign-in task is off: {reason} ({path}). An administrator can lock "
-        f'the folder with: icacls "{folder}" /inheritance:r /grant:r '
-        f"*{SYSTEM}:(OI)(CI)F *{ADMINISTRATORS}:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX "
-        "Or install TallyPrime under C:\\Program Files. Then run apply-windows again."
+        f"{head} An administrator can lock the folder with three commands. "
+        f'(1) icacls "{folder}" /setowner *{ADMINISTRATORS} /T /C '
+        f'(2) icacls "{folder}" /reset /T /C '
+        f'(3) icacls "{folder}" /inheritance:r /grant:r *{SYSTEM}:(OI)(CI)F '
+        f"*{ADMINISTRATORS}:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX . "
+        "Users can then only read that folder: move the company data out of it "
+        "first. Or install TallyPrime under C:\\Program Files. "
+        "Then run apply-windows again."
     )
 
 
@@ -121,8 +147,10 @@ def chain(tally_exe: str) -> list[str]:
 
 
 def _reason(security: Security, needed: int, near: bool) -> str | None:
+    if security.reparse:
+        return "It is a link (a junction or a symbolic link), and a user can change where it points"
     if security.owner not in TRUSTED:
-        return f"its owner is {security.owner}, not an administrator"
+        return f"Its owner is {security.owner}, not an administrator"
     for entry in security.entries:
         if entry.ace_type in DENY_TYPES or entry.flags & INHERIT_ONLY:
             continue
@@ -134,27 +162,60 @@ def _reason(security: Security, needed: int, near: bool) -> str | None:
     return None
 
 
-def unsafe_component(tally_exe: str, read: Callable[[str], Security]) -> tuple[str, str] | None:
-    """The first part of the path that a user can change, with the reason, or
-    None when only administrators, SYSTEM and TrustedInstaller can."""
-    parts = chain(tally_exe)
-    for index, part in enumerate(parts):
-        near = index <= 1  # the program, and its folder
+def _first(
+    parts: Iterable[str], read: Callable[[str], Security], needed: int, near: bool
+) -> tuple[str, str] | None:
+    for part in parts:
         try:
             security = read(part)
         # The check fails closed on any error: pywin32 raises pywintypes.error
         # (not an OSError), and a missing pywin32 raises ImportError.
         except Exception as exc:
-            return part, f"its rights cannot be read ({exc.__class__.__name__})"
-        reason = _reason(security, NEAR if near else FAR, near)
+            return part, f"Its rights cannot be read ({exc.__class__.__name__})"
+        reason = _reason(security, needed, near)
         if reason is not None:
             return part, reason
     return None
 
 
-def check(tally_exe: str, read: Callable[[str], Security] | None = None) -> None:
+def unsafe_component(
+    tally_exe: str,
+    read: Callable[[str], Security],
+    list_dir: Callable[[str], list[str]] | None = None,
+) -> tuple[str, str, str, bool] | None:
+    """The first part that a user can change: (the part, the reason, the
+    program folder, near), or None when only administrators, SYSTEM and
+    TrustedInstaller can.
+
+    The parts: the program and its folder (near), the folders above (far),
+    and each other file in the program folder and a ``tally.exe.local``
+    folder (near): ``tally.ini`` names what TallyPrime loads at start, and a
+    DLL there loads into it. A subfolder such as the company data is not
+    read: a write there does not change what starts."""
+    parts = chain(tally_exe)
+    folder = parts[1]
+    found = _first(parts[:2], read, NEAR, near=True)
+    if found is not None:
+        return (*found, folder, True)
+    found = _first(parts[2:], read, FAR, near=False)
+    if found is not None:
+        return (*found, folder, False)
+    try:
+        beside = (list_dir or windows_beside)(folder)
+    except Exception as exc:
+        return folder, f"Its files cannot be listed ({exc.__class__.__name__})", folder, True
+    others = [b for b in beside if b.lower() != parts[0].lower()]
+    found = _first(others, read, NEAR, near=True)
+    return (*found, folder, True) if found is not None else None
+
+
+def check(
+    tally_exe: str,
+    read: Callable[[str], Security] | None = None,
+    list_dir: Callable[[str], list[str]] | None = None,
+) -> None:
     """Raise UnsafeTallyFolder when a user can change the program."""
-    found = unsafe_component(tally_exe, read or WindowsAclReader())
+    found = unsafe_component(tally_exe, read or WindowsAclReader(), list_dir)
     if found is not None:
         raise UnsafeTallyFolder(*found)
 
@@ -167,6 +228,8 @@ class WindowsAclReader:  # pragma: no cover - Windows
             raise OSError("the folder rights can be read on Windows only")
         import win32security
 
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+        reparse = bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
         sd = win32security.GetNamedSecurityInfo(
             path,
             win32security.SE_FILE_OBJECT,
@@ -175,14 +238,30 @@ class WindowsAclReader:  # pragma: no cover - Windows
         owner = win32security.ConvertSidToStringSid(sd.GetSecurityDescriptorOwner())
         dacl = sd.GetSecurityDescriptorDacl()
         if dacl is None:  # a NULL DACL gives everyone full control
-            return Security(owner, (Entry(ACCESS_ALLOWED, 0, GENERIC_ALL, "S-1-1-0"),))
+            return Security(owner, (Entry(ACCESS_ALLOWED, 0, GENERIC_ALL, "S-1-1-0"),), reparse)
         entries: list[Entry] = []
         for i in range(dacl.GetAceCount()):
             ace = dacl.GetAce(i)
             (ace_type, flags), mask = ace[0], ace[1]
             sid = ace[-1]
             entries.append(Entry(ace_type, flags, mask, win32security.ConvertSidToStringSid(sid)))
-        return Security(owner, tuple(entries))
+        return Security(owner, tuple(entries), reparse)
+
+
+def windows_beside(folder: str) -> list[str]:  # pragma: no cover - Windows
+    """The files in the program folder, and a ``tally.exe.local`` folder."""
+    if sys.platform != "win32":
+        raise OSError("the program folder can be listed on Windows only")
+    out = []
+    with os.scandir(folder) as found:
+        for item in found:
+            if (
+                item.is_symlink()
+                or item.is_file(follow_symlinks=False)
+                or item.name.lower() == DOT_LOCAL
+            ):
+                out.append(item.path)
+    return out
 
 
 def entries(rows: Iterable[Sequence[object]]) -> tuple[Entry, ...]:

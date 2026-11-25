@@ -87,6 +87,7 @@ def test_the_start_switch_saves_and_reloads(tmp_path):
             "start_tally_at_signin": True,
             "tally_exe": EXE,
             "keep_awake": False,
+            "problem": None,
         }
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert saved["START_TALLY_AT_SIGNIN"] == "true" and saved["TALLY_EXE"] == EXE
