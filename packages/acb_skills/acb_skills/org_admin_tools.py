@@ -184,13 +184,15 @@ def _headers() -> dict[str, str]:
     }
 
 
-async def _send(method: str, path: str, body: Any = None, act: str = "") -> _Reply:
+async def _send(method: str, path: str, body: Any = None, act: str = "",
+                timeout: float = 15.0) -> _Reply:
     """One request as the member. *act* names a write, and a read gives none.
-    Raise :class:`_Refused` with a sentence when the member is missing or the
+    A slow route passes a longer *timeout* in seconds. Raise
+    :class:`_Refused` with a sentence when the member is missing or the
     network fails."""
     headers = _headers()
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(
                 method, f"{_gateway_url()}{path}", headers=headers, json=body)
     except httpx.HTTPError as exc:
@@ -363,9 +365,16 @@ def _find(rows: list[dict[str, Any]], email: str) -> dict[str, Any] | None:
     return next((r for r in rows if str(r.get("email", "")).strip().lower() == email), None)
 
 
-async def _member(email: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """``(row, None)`` for the member *email*, or ``(None, refusal)``."""
-    reply = await _get(MEMBERS_PATH)
+async def _member(email: str, *, include_removed: bool = False,
+                  ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(row, None)`` for the member *email*, or ``(None, refusal)``.
+
+    The route drops a removed member unless the read asks for it. PAR-2a's
+    status change does not ask, so a removed member stays "no member" there.
+    PAR-4c's removal and purge ask, as the Members page does
+    (``rosterView.ts``), so a purge after a removal finds the member."""
+    reply = await _get(f"{MEMBERS_PATH}?include_removed=true" if include_removed
+                       else MEMBERS_PATH)
     if not reply.ok:
         return None, _fail(reply)
     rows = _rows(reply)
