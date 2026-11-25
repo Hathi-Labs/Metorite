@@ -323,3 +323,11 @@ def test_delete_all_removes_only_its_own_temporary_files(tmp_path):
         f.write_bytes(b"x")
     assert CopyStore(folder, MemoryKeyProvider()).delete_all() == 1
     assert not own.exists() and theirs.exists()
+
+
+def test_a_child_command_gets_only_the_windows_variables_it_needs():
+    """test_child_env_seam.py names this file in LOCAL_ALLOWLISTS: each spawn
+    passes env=child_env(), and no secret of the bridge reaches the child."""
+    env = {"SystemRoot": r"C:\Windows", "Path": r"C:\Windows\system32",
+           "TALLY_BRIDGE_READ_TOKEN_SHA256": "a" * 64, "SECRET": "x"}
+    assert system.child_env(env) == {"SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\system32"}
