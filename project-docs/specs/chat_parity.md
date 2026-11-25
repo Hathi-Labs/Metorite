@@ -46,9 +46,14 @@ when `set_my_credentials` saves it, because the route takes no `source`.
 The object fields `working_hours`, `links` and `emergency_contact` merge. The
 tool lays the keys that the member gives over the stored object, and it keeps
 each other stored key. A key given as null leaves. The card shows the stored
-object and the merged object, and the PATCH sends the merged object. The
-profile write and the two list writes read the row again after Approve. They
-save nothing when the row changed while the card waited.
+object and the merged object, and the PATCH sends the merged object. A list
+or an object shows as the exact JSON that the write sends, with each non-ASCII
+character escaped.
+
+The profile write and the two list writes read the row again after Approve.
+They save nothing when the row changed while the card waited. A shift name
+that matches no shift of the organization saves but changes nothing, so the
+answer says so after the save.
 
 No write sends `email` (OD1 B). P-5b-2 paid five people rows, so the people
 ceiling went from 13 to 8. Fences: `tests/unit/test_people_tools.py` and

@@ -821,12 +821,15 @@ def _shown(value: Any) -> str:
     if _empty(value):
         return "(empty)"
     if isinstance(value, (dict, list)):
-        # JSON, so the card is exact: ["English, French"] and
-        # ["English","French"] draw two different lines.
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
-    else:
-        text = str(value)
-    text = one_line(strip_hidden(text)).replace("«", "").replace("»", "")
+        # Exact JSON of the value that the write sends, in the same key order.
+        # ensure_ascii escapes each non-ASCII and control character (a hidden
+        # character, «, », a new line), and a run of spaces stays as it is. So
+        # the text between the « » marks has no raw mark, holds one line, and
+        # json.loads gives back the value sent, byte for byte. A stored value
+        # of a merged object is never cleaned here, so it shows as it is.
+        return "«" + json.dumps(value, ensure_ascii=True, separators=(",", ":"),
+                                default=str) + "»"
+    text = one_line(strip_hidden(str(value))).replace("«", "").replace("»", "")
     return f"«{text}»"
 
 
@@ -919,8 +922,35 @@ async def update_my_profile(
         return _answer(exc)
     if not sent.ok:
         return _write_fail(sent, decision=decision)
-    return {"ok": True, "decision": decision, "saved": sorted(body),
-            "note": "Your People record is saved."}
+    note = "Your People record is saved."
+    shift = (wanted.get("working_hours") or {}).get("shift") \
+        if isinstance(given.get("working_hours"), dict) \
+        and given["working_hours"].get("shift") else None
+    if shift and "working_hours" in body:
+        note += await _shift_note(str(shift))
+    return {"ok": True, "decision": decision, "saved": sorted(body), "note": note}
+
+
+async def _shift_note(shift: str) -> str:
+    """One sentence when the shift name took no effect, else "".
+
+    ``work_schedule._find_shift`` ignores a name that matches no shift of the
+    org policy, and a member cannot read the policy (``GET /people/schedule``
+    needs ``feature:people``), so the tool cannot refuse the name before the
+    card. After the save, it reads the effective schedule of ``GET
+    /people/me`` (``person.schedule.shift``). A failed read adds nothing."""
+    try:
+        person = await _own_row()
+    except _Refused:
+        return ""
+    schedule = person.get("schedule")
+    if not isinstance(schedule, dict):
+        return ""
+    took = str(schedule.get("shift") or "").strip().lower()
+    if took == shift.strip().lower():
+        return ""
+    return (f" The shift name {_shown(shift)} matches no shift of your organisation, so "
+            "your schedule did not change. Ask an admin for the shift names.")
 
 
 def _skill_rows(raw: Any) -> list[dict[str, Any]]:

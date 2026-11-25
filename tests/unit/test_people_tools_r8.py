@@ -497,3 +497,13 @@ def test_d7_a_working_hours_change_merges_over_the_stored_override(world, approv
     assert out["ok"] is True, out
     assert hours() == {"days": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00",
                        "fraction": 0.5}
+
+
+def test_d8_a_shift_name_that_matches_no_shift_is_told_after_the_save(world, approve) -> None:
+    """Fix round 4: the real ``person.schedule.shift`` of GET /people/me
+    shows that an unknown shift took no effect, so the answer says so. The
+    scratch org has no shift named ``nosuchshift`` in its policy."""
+    w = world
+    out = w.act(w.mel, pt.update_my_profile, working_hours={"shift": "nosuchshift"})
+    assert out["ok"] is True, out
+    assert "matches no shift of your organisation" in out["note"], out

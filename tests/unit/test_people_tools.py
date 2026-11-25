@@ -1072,3 +1072,77 @@ async def test_a_long_credential_text_draws_whole(wgw, card) -> None:
                                   "year_from": 2014, "year_to": 2018}])
     line = card.shown[0]["context"].split("\n")[-1]
     assert line == f"- prior_role: «{title}» by «{issuer}», 2014 to 2018"
+
+
+# ── 8g. Fix round 4: exact JSON of merged objects, the shift name ───────────
+
+
+def _card_value(context: str, field: str) -> str:
+    """The new value of *field* on a profile card: the text after " to "."""
+    line = next(x for x in context.split("\n") if x.startswith(f"{field}: "))
+    return line.rsplit(" to ", 1)[1]
+
+
+@pytest.mark.parametrize(("stored_shift", "given"), [
+    ("night  crew", {"start": None, "shift": "night crew"}),
+    ("night​crew", {"start": None, "shift": "nightcrew"}),
+    ("night «crew»", {"start": None, "shift": "night crew"}),
+])
+async def test_a_stored_value_that_differs_from_the_given_one_draws_another_card(
+        wgw, card, stored_shift, given) -> None:
+    """The verifier's three pairs. One call keeps the stored shift, and the
+    other sets a shift that looked the same. Mutation: fold, strip or unmark
+    the JSON of an object on the card -> the two cards are equal -> red."""
+    wgw.person["working_hours"] = {"shift": stored_shift, "start": "09:00"}
+    await pt.update_my_profile(working_hours={"start": None})
+    wgw.person["working_hours"] = {"shift": stored_shift, "start": "09:00"}
+    await pt.update_my_profile(working_hours=given)
+    one, two = (_card_value(c["context"], "working_hours") for c in card.shown)
+    assert one != two
+    bodies = [w[2]["working_hours"] for w in wgw.writes()]
+    assert bodies[0] != bodies[1]
+    for shown, sent in zip((one, two), bodies, strict=True):
+        assert shown.startswith("«") and shown.endswith("»")
+        assert "«" not in shown[1:-1] and "»" not in shown[1:-1]
+        assert json.loads(shown[1:-1]) == sent
+
+
+@pytest.mark.parametrize(("kw", "field"), [
+    ({"working_hours": {"days": [1, 3], "start": "08:00", "hours_per_day": 7.5,
+                        "fraction": 0.5, "shift": "Früh", "timezone": "Asia/Kolkata"}},
+     "working_hours"),
+    ({"links": {"github": "https://github.com/ä", "website": "x  y"}}, "links"),
+    ({"emergency_contact": {"name": "Zoë", "relation": "partner", "phone": "+44 1"}},
+     "emergency_contact"),
+    ({"languages": ["Español", "English, French"]}, "languages"),
+    ({"interests": ["robots"]}, "interests"),
+])
+async def test_each_object_or_list_card_value_parses_back_to_the_sent_value(
+        wgw, card, kw, field) -> None:
+    """Mutation: draw an object or a list with anything but the exact JSON of
+    the body -> json.loads differs -> red."""
+    await pt.update_my_profile(**kw)
+    shown = _card_value(card.shown[0]["context"], field)
+    assert shown[0] == "«" and shown[-1] == "»" and shown[1:-1].isascii(), shown
+    assert json.loads(shown[1:-1]) == wgw.writes()[0][2][field]
+
+
+@pytest.mark.parametrize(("took", "told"), [(None, True), ("Night", False)])
+async def test_a_shift_name_that_takes_no_effect_is_told(wgw, card, took, told) -> None:
+    """Reviewer P2. ``_find_shift`` ignores an unknown shift name, and a member
+    cannot read the policy, so the tool reads the effective schedule after the
+    save. Mutation: drop the read -> the member is not told -> red."""
+    wgw.person["schedule"] = {"shift": took}
+    out = await pt.update_my_profile(working_hours={"shift": "night"})
+    assert out["ok"] is True
+    sentence = ("The shift name «night» matches no shift of your organisation, so your "
+                "schedule did not change. Ask an admin for the shift names.")
+    assert (sentence in out["note"]) is told, out["note"]
+    assert [c[:2] for c in wgw.calls] == [("GET", "/people/me"), ("GET", "/people/me"),
+                                          ("PATCH", "/people/me"), ("GET", "/people/me")]
+
+
+async def test_no_shift_in_the_change_reads_nothing_more(wgw, card) -> None:
+    out = await pt.update_my_profile(working_hours={"end": "18:00"})
+    assert out["note"] == "Your People record is saved."
+    assert [c[:2] for c in wgw.calls][-1] == ("PATCH", "/people/me")
