@@ -82,10 +82,11 @@ WHEN = {
     "org-admin": (
         "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
         "integrations, MCP servers, plugins, GitHub."),
-    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    # P-5b-1 (task 3114): the dark people pack of the same owner. P-5b-2 (task
+    # 3943) added the changes of your own row and your absences.
     "people": (
-        "Load for the people directory, your own row, the open work of a colleague, or the "
-        "Reach preview."),
+        "Load for the people directory, your own row or its changes, your absences, the open "
+        "work of a colleague, or the Reach preview."),
 }
 
 

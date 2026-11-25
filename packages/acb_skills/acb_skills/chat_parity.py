@@ -387,6 +387,14 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/people/{}/work": "people_work",
     "GET /api/me/reach/status": "reach_preview",
     "GET /api/me/reach/preview": "reach_preview",
+    # P-5b-2 (task 3943, OD1 B): five self writes of the people pack. Each tool reads
+    # the member's own id from GET /people/me and sends the id-bearing route as the
+    # member, after one card. The route checks the field class. No tool sends email.
+    "PATCH /api/people/{}": "update_my_profile",
+    "PUT /api/people/{}/skills": "set_my_skills",
+    "PUT /api/people/{}/credentials": "set_my_credentials",
+    "POST /api/people/{}/absences": "add_my_absence",
+    "DELETE /api/people/{}/absences/{}": "remove_my_absence",
     # ── Chat ──
     # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
     # id: it acts on the chat of the run, as the member of the run.
@@ -1082,19 +1090,14 @@ DEBT: dict[str, str] = {
     "POST /api/whatsapp/chats/{}/unsnooze": "P-4",
     "POST /api/whatsapp/saved-replies": "P-4",
     # ── People ──
-    "DELETE /api/people/{}/absences/{}": "P-5",
     "DELETE /api/people/{}/avatar": "P-5",
-    "PATCH /api/people/{}": "P-5",
     "PATCH /api/tasks/people/{}": "P-5",
     "POST /api/me/reach/brief": "P-5",
-    "POST /api/people/{}/absences": "P-5",
     "POST /api/people/{}/avatar": "P-5",
     "POST /api/people/{}/resume": "P-5",
     "POST /api/tasks/people": "P-5",
     "POST /api/tasks/people/{}/resume": "P-5",
     "PUT /api/people/schedule": "P-5",
-    "PUT /api/people/{}/credentials": "P-5",
-    "PUT /api/people/{}/skills": "P-5",
     # ── Memory ──
     "DELETE /api/memory/{}/{}": "P-5",
     "GET /api/memory/{}": "P-5",
@@ -1288,7 +1291,7 @@ DEBT_CEILING: dict[str, int] = {
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,
-    "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
+    "people": 8,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-2 (task 3943) paid the self writes: the profile PATCH, the skills and credentials PUTs, and the absence add and remove (13 to 8).
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).

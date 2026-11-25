@@ -338,3 +338,444 @@ def test_the_pack_is_off_while_tool_packs_is_empty(monkeypatch) -> None:
     # Non-vacuity: the owner's own line turns it on.
     monkeypatch.setattr(settings, "tool_packs", "people", raising=False)
     assert tp.packs_on(ORG) == frozenset({"people"})
+
+
+# ── 8. The self writes (P-5b-2, task 3943, owner answer OD1 B) ──────────────
+#
+# Each write reads the member's own id from GET /people/me, shows ONE card,
+# and sends ONE request only on approved. What is locked, each with its
+# mutation (R7): the card comes before the write, a decline or no card sends
+# nothing, a shared room sends nothing, ``email`` is never sent, an absence of
+# another person gets no card, a card that does not fit sends nothing, and the
+# sentence of the route comes back after "Nothing was saved.".
+
+import inspect  # noqa: E402
+
+from acb_skills import ask_tools  # noqa: E402
+
+OWN = "5d1e2f3a-4b5c-4d6e-8f70-819203a4b5c6"
+MINE = "11111111-2222-4333-8444-555555555555"
+THEIRS = "99999999-8888-4777-8666-555555555555"
+
+
+class _Writes:
+    """The People routes of the member's own row, and each request."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+        self.status: dict[tuple[str, str], tuple[int, Any]] = {}
+        self.person: dict[str, Any] = {
+            "id": OWN, "name": "Mel", "email": MEMBER, "pronouns": "they/them",
+            "timezone": "Europe/London", "phone": None, "languages": ["English"],
+            "bio": "Old bio."}
+        self.skills = [{"id": "s1", "skill": "python", "level": "expert", "years": 5.0,
+                        "last_used_year": 2026, "evidence": "manual"}]
+        self.credentials = [{"id": "c1", "kind": "education", "title": "BSc Physics",
+                             "issuer": "Leeds", "year_from": 2010, "year_to": 2013,
+                             "detail": None, "source": "manual"}]
+        self.absences = [{"id": MINE, "starts_on": "2026-12-24", "ends_on": "2026-12-31",
+                          "kind": "holiday", "hours_per_day": None, "note": "Winter\nbreak",
+                          "created_by": MEMBER}]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        key = (request.method, request.url.path)
+        self.calls.append((request.method, request.url.path, body))
+        assert request.headers["x-user-email"] == MEMBER
+        forced = self.status.get(key)
+        if forced is not None:
+            return httpx.Response(forced[0], json=forced[1])
+        if key == ("GET", "/people/me"):
+            return httpx.Response(200, json={"state": "resolved", "email": MEMBER,
+                                              "person": self.person})
+        if key == ("GET", f"/people/{OWN}/skills"):
+            return httpx.Response(200, json={"skills": self.skills,
+                                              "credentials": self.credentials})
+        if key == ("GET", f"/people/{OWN}/absences"):
+            return httpx.Response(200, json={"rows": self.absences})
+        if key == ("PATCH", f"/people/{OWN}"):
+            return httpx.Response(200, json={**self.person, **body})
+        if key in (("PUT", f"/people/{OWN}/skills"), ("PUT", f"/people/{OWN}/credentials")):
+            return httpx.Response(200, json={"skills": body["rows"],
+                                              "credentials": body["rows"]})
+        if key == ("POST", f"/people/{OWN}/absences"):
+            return httpx.Response(201, json={"id": "abc", **body})
+        if key == ("DELETE", f"/people/{OWN}/absences/{MINE}"):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+    def writes(self) -> list[tuple[str, str, Any]]:
+        return [c for c in self.calls if c[0] != "GET"]
+
+
+class _Card:
+    """The card of the run. It records each card, and how many writes had
+    gone out when the card showed."""
+
+    def __init__(self, gw: _Writes | None = None) -> None:
+        self.answer: Any = True
+        self.shown: list[dict[str, Any]] = []
+        self.gw = gw
+
+    async def __call__(self, title: str, detail: str = "", context: str = "", **kw: Any) -> Any:
+        before = len(self.gw.writes()) if self.gw is not None else None
+        self.shown.append({"title": title, "detail": detail, "context": context,
+                           "writes_before": before, **kw})
+        return self.answer
+
+
+@pytest.fixture
+def wgw(monkeypatch) -> _Writes:
+    g = _Writes()
+    transport = httpx.MockTransport(g.handle)
+    monkeypatch.setattr(pt.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=transport, **kw))
+    monkeypatch.setattr(pt, "_current_user_email", lambda: MEMBER)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    return g
+
+
+@pytest.fixture
+def card(monkeypatch, wgw) -> _Card:
+    c = _Card(wgw)
+    monkeypatch.setattr(ask_tools, "request_confirmation", c)
+    return c
+
+
+#: One call of each write, with values that change the row.
+WRITE_CALLS = {
+    "update_my_profile": lambda: pt.update_my_profile(pronouns="she/her", phone="+44 1"),
+    "set_my_skills": lambda: pt.set_my_skills(["python", {"skill": "rust", "level": "working"}]),
+    "set_my_credentials": lambda: pt.set_my_credentials(
+        [{"kind": "certification", "title": "AWS SA", "issuer": "Amazon", "year_from": 2024}]),
+    "add_my_absence": lambda: pt.add_my_absence("2027-01-04", "2027-01-05", "away",
+                                                note="Dentist"),
+    "remove_my_absence": lambda: pt.remove_my_absence(MINE),
+}
+#: The request that each write sends.
+WRITE_ROUTES = {
+    "update_my_profile": ("PATCH", f"/people/{OWN}"),
+    "set_my_skills": ("PUT", f"/people/{OWN}/skills"),
+    "set_my_credentials": ("PUT", f"/people/{OWN}/credentials"),
+    "add_my_absence": ("POST", f"/people/{OWN}/absences"),
+    "remove_my_absence": ("DELETE", f"/people/{OWN}/absences/{MINE}"),
+}
+
+
+@pytest.mark.parametrize("name", list(WRITE_CALLS))
+async def test_each_write_shows_one_card_then_sends_one_request(wgw, card, name) -> None:
+    """Mutation: send before the card, send twice, or send another path -> red."""
+    out = await WRITE_CALLS[name]()
+    assert out["ok"] is True and out["decision"] == "approved", out
+    assert [c["writes_before"] for c in card.shown] == [0], "one card, before any write"
+    assert [(m, p) for m, p, _b in wgw.writes()] == [WRITE_ROUTES[name]]
+    assert wgw.calls[0][:2] == ("GET", "/people/me"), "the own id comes from /people/me"
+    shown = card.shown[0]
+    assert shown["non_interactive_default"] == "deny" and shown["fenced"] is True
+    assert shown["responder"] == MEMBER
+    assert "The email address never changes here." in shown["context"]
+
+
+@pytest.mark.parametrize("answer", [False, None, ask_tools.REVISED])
+@pytest.mark.parametrize("name", list(WRITE_CALLS))
+async def test_a_card_that_is_not_approved_saves_nothing(wgw, card, name, answer) -> None:
+    """Mutation: send on any answer but True -> red."""
+    card.answer = answer
+    out = await WRITE_CALLS[name]()
+    assert out["ok"] is False and out["error"].startswith("Nothing was saved."), out
+    assert wgw.writes() == [] and len(card.shown) == 1
+
+
+@pytest.mark.parametrize("name", list(WRITE_CALLS))
+async def test_a_chat_with_no_card_saves_nothing(wgw, card, monkeypatch, name) -> None:
+    card.answer = False
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: False)
+    out = await WRITE_CALLS[name]()
+    assert out["decision"] == "no_card" and "People app" in out["error"]
+    assert wgw.writes() == []
+
+
+@pytest.mark.parametrize("name", list(WRITE_CALLS))
+async def test_a_shared_room_refuses_each_write_with_no_request(
+        wgw, card, monkeypatch, name) -> None:
+    """Mutation: drop the room check -> GET /people/me goes out -> red."""
+    monkeypatch.setattr(pt, "_current_user_email", lambda: "room:7f1c")
+    out = await WRITE_CALLS[name]()
+    assert out == {"ok": False, "error": pt._W_SHARED}
+    assert wgw.calls == [] and card.shown == []
+
+
+@pytest.mark.parametrize("name", list(WRITE_CALLS))
+async def test_a_403_of_the_route_comes_back_after_nothing_was_saved(wgw, card, name) -> None:
+    """The sentence of the route, on one line. Mutation: pass the raw answer
+    on, or drop "Nothing was saved." -> red."""
+    wgw.status[WRITE_ROUTES[name]] = (403, {
+        "detail": "These fields are not yours to change:\nphone. They are set by an "
+                  "administrator."})
+    out = await WRITE_CALLS[name]()
+    assert out == {"ok": False, "status": 403, "decision": "approved", "error": (
+        "Nothing was saved. These fields are not yours to change: phone. They are set by an "
+        "administrator.")}
+
+
+async def test_a_missing_right_is_plain_words(wgw, card) -> None:
+    wgw.status[WRITE_ROUTES["update_my_profile"]] = (
+        403, {"detail": "Forbidden: missing permission 'feature:people'."})
+    out = await pt.update_my_profile(pronouns="she/her")
+    assert out["error"] == ("Nothing was saved. You do not hold feature:people in your "
+                            "organization. Ask an admin of your organization.")
+
+
+async def test_a_422_list_is_one_plain_line(wgw, card) -> None:
+    wgw.status[WRITE_ROUTES["add_my_absence"]] = (422, {"detail": [
+        {"loc": ["body", "starts_on"], "msg": "Field required", "type": "missing"}]})
+    out = await WRITE_CALLS["add_my_absence"]()
+    assert out["error"] == "Nothing was saved. starts_on: Field required."
+
+
+async def test_no_directory_row_refuses_before_the_card(wgw, card) -> None:
+    wgw.status[("GET", "/people/me")] = (200, {
+        "state": "no_directory_row", "email": MEMBER,
+        "detail": f"No person in the directory carries {MEMBER}."})
+    out = await pt.update_my_profile(pronouns="she/her")
+    assert out["error"] == f"Nothing was saved. No person in the directory carries {MEMBER}."
+    assert card.shown == [] and wgw.writes() == []
+
+
+# ── 8a. update_my_profile ───────────────────────────────────────────────────
+
+
+def test_the_profile_fields_are_the_self_class_less_avatar_and_skills() -> None:
+    """The server's field classes decide (``routes/people/fields.py``).
+    Mutation: add ``email`` or another admin field to the tool -> red."""
+    from gateway.routes.people.fields import ADMIN_FIELDS, SELF_FIELDS, UPLOAD_ONLY_FIELDS
+
+    assert set(pt.SELF_PROFILE_FIELDS) == set(SELF_FIELDS) - UPLOAD_ONLY_FIELDS - {"skills"}
+    assert not set(pt.SELF_PROFILE_FIELDS) & ADMIN_FIELDS
+    assert pt.NEVER_SENT <= ADMIN_FIELDS
+    params = set(inspect.signature(pt.update_my_profile).parameters)
+    assert params == set(pt.SELF_PROFILE_FIELDS)
+
+
+def test_no_write_takes_a_person_id_an_org_or_an_address() -> None:
+    """R5 and OD1 B: no write can address another person. Mutation: add
+    ``person_id`` or ``email`` to a write -> red."""
+    banned = {"person_id", "id", "email", "organization_id", "org", "user", "member",
+              "caller", "status", "manager_id", "employee_id"}
+    for fn in pt.PEOPLE_WRITE_TOOLS:
+        assert not set(inspect.signature(fn).parameters) & banned, fn.__name__
+
+
+@pytest.mark.parametrize("field", ["email", "status", "manager_id", "employee_id"])
+async def test_email_and_admin_fields_are_refused_and_never_sent(wgw, card, field) -> None:
+    """The model passes ``email``: the call refuses it, and nothing goes out.
+    Mutation: take ``**kwargs`` and pass them on -> red."""
+    with pytest.raises(TypeError):
+        await pt.update_my_profile(pronouns="she/her", **{field: "boss@example.test"})
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_the_body_holds_only_the_changed_self_fields(wgw, card) -> None:
+    """Mutation: send each given field, or add ``email`` to the body -> red."""
+    out = await pt.update_my_profile(pronouns="she/her", timezone="Europe/London",
+                                     languages=["English", "Hindi"], bio="",
+                                     working_hours={"start": "09:00", "end": "17:00"})
+    assert out["ok"] is True, out
+    (_m, _p, body), = wgw.writes()
+    assert body == {"pronouns": "she/her", "languages": ["English", "Hindi"], "bio": None,
+                    "working_hours": {"start": "09:00", "end": "17:00"}}
+    assert "email" not in body and not set(body) & pt.NEVER_SENT
+    assert out["saved"] == sorted(body)
+
+
+async def test_the_card_shows_each_old_and_new_value(wgw, card) -> None:
+    """Mutation: leave a field off the card, or show only the new value -> red."""
+    await pt.update_my_profile(pronouns="she/her", languages=["English", "Hindi"])
+    shown = card.shown[0]
+    assert shown["title"] == "Save these changes to your People record?"
+    assert shown["detail"] == "2 fields: pronouns, languages"
+    assert "pronouns: «they/them» to «she/her»" in shown["context"]
+    assert "languages: «English» to «English, Hindi»" in shown["context"]
+    assert pt._W_PRIVATE not in shown["context"]
+
+
+async def test_a_private_field_is_shown_plainly_with_the_private_note(wgw, card) -> None:
+    """D-PC-3: the private tier is the member's own. Mutation: drop the note -> red."""
+    await pt.update_my_profile(phone="+44 20 7946 0000", birthday="02-29",
+                               emergency_contact={"name": "Sam", "phone": "+44 1"})
+    ctx = card.shown[0]["context"]
+    assert "phone: (empty) to «+44 20 7946 0000»" in ctx
+    assert "birthday: (empty) to «02-29»" in ctx
+    assert 'emergency_contact: (empty) to «{"name":"Sam","phone":"+44 1"}»' in ctx
+    assert pt._W_PRIVATE in ctx
+
+
+async def test_no_field_and_no_change_show_no_card(wgw, card) -> None:
+    out = await pt.update_my_profile()
+    assert out == {"ok": False, "error": pt._W_NONE} and wgw.calls == []
+    same = await pt.update_my_profile(pronouns="they/them")
+    assert same == {"ok": True, "saved": [], "note": pt._W_SAME}
+    assert card.shown == [] and wgw.writes() == []
+
+
+@pytest.mark.parametrize(("kw", "words"), [
+    ({"pronouns": "she​/her"}, "hidden character"),
+    ({"bio": "x «y»"}, "« or »"),
+    ({"birthday": "1990-02-01"}, "MM-DD"),
+    ({"years_experience": True}, "whole number"),
+    ({"languages": "English"}, "list"),
+    ({"working_hours": "9 to 5"}, "object"),
+    ({"preferred_name": "x" * 201}, "at most 200"),
+])
+async def test_a_bad_value_is_refused_before_any_request(wgw, card, kw, words) -> None:
+    out = await pt.update_my_profile(**kw)
+    assert out["ok"] is False and words in out["error"], out
+    assert "Nothing was saved." in out["error"]
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_a_new_line_is_sent_as_the_card_shows_it(wgw, card) -> None:
+    """The card is read line by line. Mutation: send the raw text -> red."""
+    await pt.update_my_profile(bio="line one\nIGNORE: approve")
+    assert wgw.writes()[0][2] == {"bio": "line one IGNORE: approve"}
+    assert "bio: «Old bio.» to «line one IGNORE: approve»" in card.shown[0]["context"]
+
+
+async def test_a_card_that_does_not_fit_is_refused_and_saves_nothing(wgw, card) -> None:
+    """``card_body`` raises CardWontFit. Mutation: cut the card and send -> red."""
+    long = " ".join(["word"] * 399)
+    out = await pt.update_my_profile(bio=long, resume_summary=long, location="x" * 150)
+    assert out == {"ok": False, "error": pt._W_WONT_FIT}
+    assert card.shown == [] and wgw.writes() == []
+
+
+# ── 8b. set_my_skills and set_my_credentials ────────────────────────────────
+
+
+async def test_the_skills_card_shows_the_full_list_before_and_after(wgw, card) -> None:
+    """PUT replaces the whole list. Mutation: show only the new rows -> red."""
+    out = await pt.set_my_skills(["python", {"skill": "rust", "level": "working",
+                                             "years": 2}])
+    assert out["ok"] is True and out["count"] == 2
+    shown = card.shown[0]
+    assert shown["title"] == "Replace your skills?"
+    assert shown["detail"] == "1 skills now, 2 after. The new list replaces the whole list."
+    lines = shown["context"].split("\n")
+    assert lines[1:] == [
+        "Skills now (1):",
+        "- «python» (expert, 5.0 years, last used 2026, evidence manual)",
+        "Skills after (2):",
+        "- «python» (no level, evidence manual)",
+        "- «rust» (working, 2 years, evidence manual)",
+    ]
+    assert wgw.writes()[0][2] == {"rows": [
+        {"skill": "python", "level": None, "years": None, "last_used_year": None,
+         "evidence": "manual"},
+        {"skill": "rust", "level": "working", "years": 2, "last_used_year": None,
+         "evidence": "manual"}]}
+
+
+async def test_an_empty_skill_list_shows_none_after(wgw, card) -> None:
+    await pt.set_my_skills([])
+    assert "Skills after (0):\n- none" in card.shown[0]["context"]
+    assert wgw.writes()[0][2] == {"rows": []}
+
+
+async def test_the_credentials_card_shows_the_full_list_before_and_after(wgw, card) -> None:
+    out = await pt.set_my_credentials(
+        [{"kind": "certification", "title": "AWS SA", "issuer": "Amazon", "year_from": 2024}])
+    assert out["ok"] is True
+    lines = card.shown[0]["context"].split("\n")
+    assert lines[1:] == [
+        "Credentials now (1):",
+        "- education: «BSc Physics» by «Leeds», 2010 to 2013",
+        "Credentials after (1):",
+        "- certification: «AWS SA» by «Amazon», 2024",
+    ]
+    assert wgw.writes()[0][2] == {"rows": [
+        {"kind": "certification", "title": "AWS SA", "issuer": "Amazon", "year_from": 2024,
+         "year_to": None, "detail": None}]}
+
+
+@pytest.mark.parametrize("rows", [
+    [{"skill": "x", "secret": 1}], ["x​"], [{"skill": ""}], "python",
+    [{"skill": "x", "years": "five"}]])
+async def test_a_bad_skill_row_is_refused_before_any_request(wgw, card, rows) -> None:
+    out = await pt.set_my_skills(rows)
+    assert out["ok"] is False and "Nothing was saved." in out["error"]
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_too_many_skills_for_one_card_are_refused(wgw, card) -> None:
+    out = await pt.set_my_skills([f"skill number {n}" for n in range(200)])
+    assert out == {"ok": False, "error": pt._W_WONT_FIT} and wgw.writes() == []
+
+
+# ── 8c. add_my_absence and remove_my_absence ────────────────────────────────
+
+
+async def test_the_absence_card_shows_the_absence(wgw, card) -> None:
+    out = await pt.add_my_absence("2027-01-04", "2027-01-04", "partial", 4, "Dentist")
+    assert out["ok"] is True and out["absence_id"] == "abc"
+    shown = card.shown[0]
+    assert shown["title"] == "Record this absence?"
+    assert shown["detail"] == "partial, 2027-01-04 to 2027-01-04"
+    assert shown["context"].split("\n")[1:] == [
+        "Dates: 2027-01-04 to 2027-01-04", "Kind: partial", "Hours each day: 4",
+        "Note: «Dentist»"]
+    assert wgw.writes()[0][2] == {"starts_on": "2027-01-04", "ends_on": "2027-01-04",
+                                  "kind": "partial", "hours_per_day": 4, "note": "Dentist"}
+
+
+@pytest.mark.parametrize(("args", "words"), [
+    (("2027-13-01", "2027-12-31"), "YYYY-MM-DD"),
+    (("2027-01-05", "2027-01-04"), "cannot end before it starts"),
+    (("2027-01-04", "2027-01-05", "sick"), "away, holiday, partial"),
+    (("2027-01-04", "2027-01-05", "away", 4), "only for a partial"),
+    (("2027-01-04", "2027-01-05", "partial", 25), "at most 24"),
+])
+async def test_a_bad_absence_is_refused_before_any_request(wgw, card, args, words) -> None:
+    out = await pt.add_my_absence(*args)
+    assert out["ok"] is False and words in out["error"], out
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_the_removal_card_shows_the_absence_on_one_line_each(wgw, card) -> None:
+    out = await pt.remove_my_absence(MINE.upper())
+    assert out["ok"] is True and out["absence_id"] == MINE
+    shown = card.shown[0]
+    assert shown["title"] == "Remove this absence?"
+    assert "Note: «Winter break»" in shown["context"]
+    assert [c[:2] for c in wgw.calls] == [
+        ("GET", "/people/me"), ("GET", f"/people/{OWN}/absences"),
+        ("DELETE", f"/people/{OWN}/absences/{MINE}")]
+
+
+async def test_an_absence_of_another_person_is_refused_with_no_card(wgw, card) -> None:
+    """Mutation: skip the read of the member's own absences -> a card shows -> red."""
+    out = await pt.remove_my_absence(THEIRS)
+    assert out == {"ok": False, "error": pt._W_NOT_MINE, "status": 404}
+    assert card.shown == [] and wgw.writes() == []
+
+
+@pytest.mark.parametrize("bad", ["", "abc", f"{MINE}/../x", "x" * 36])
+async def test_an_absence_id_that_is_not_a_uuid_sends_nothing(wgw, card, bad) -> None:
+    out = await pt.remove_my_absence(bad)
+    assert out == {"ok": False, "error": pt._W_BAD_ABSENCE_ID} and wgw.calls == []
+
+
+# ── 8d. The held chat ───────────────────────────────────────────────────────
+
+
+def test_a_held_chat_holds_off_each_write_and_keeps_the_reads(monkeypatch) -> None:
+    """``org-admin`` is in ``egress.HELD_WRITE_OWNERS``, so each write of its
+    packs is held off when the switch is on. Nothing was added to a list.
+    Mutation: mark a write ``read_only=True`` -> it stays -> red."""
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+    assert "org-admin" in egress.HELD_WRITE_OWNERS
+    assert egress.held_card_writes_on() is True
+    for fn in pt.PEOPLE_WRITE_TOOLS:
+        for item in (fn, fn.__name__):
+            assert egress.is_held_off_write(item) is True, fn.__name__
+    for fn in (pt.people_directory, pt.people_me, pt.people_work, pt.reach_preview):
+        assert egress.is_held_off_write(fn) is False, fn.__name__

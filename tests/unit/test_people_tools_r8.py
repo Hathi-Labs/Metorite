@@ -1,4 +1,5 @@
-"""P-5b-1 (task 3114) — the people chat tools on a real database (R8).
+"""P-5b-1 (task 3114) and P-5b-2 (task 3943) — the people chat tools on a real
+database (R8).
 
 Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (the P-5b slices) and
 ``people_center_app.md`` section 6.5 (D-PC-10). Code: the chat tools of
@@ -25,6 +26,10 @@ a. Mel reads the directory and gets no HR field and no private field. Ada
 b. A person id of org B gives Mel the plain not-found words. Zed lists no
    person of org A.
 c. ``people_me`` returns only the row of the caller.
+
+**Acceptance (P-5b-2).** Section d, at the end of the file: each self write
+changes only the caller's own row, ``email`` never changes, and a member
+cannot change another member's record through any tool.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -256,3 +261,168 @@ def test_c_people_me_returns_only_the_callers_row(world) -> None:
         assert other not in out["person"]
     zed = w.act(w.zed, pt.people_me)
     assert _rows(zed["person"])["email"] == w.zed and w.mel not in zed["person"]
+
+
+# ── d. The self writes (P-5b-2, task 3943, owner answer OD1 B) ──────────────
+#
+# Each write runs through the REAL id-bearing People routes (``profile.py``,
+# ``skills.py``, ``absences.py``) as the member of the run, on FORCE RLS. The
+# card answers approved. Acceptance:
+#
+# d1. Each write changes only the caller's own row.
+# d2. A member cannot change the record of another member through any tool.
+#     The tools take no person id, and the route refuses another id too.
+# d3. ``email`` is unchanged after ``update_my_profile``.
+# d4. A removal of another person's absence changes nothing.
+
+
+@pytest.fixture
+def approve(monkeypatch) -> list[str]:
+    """The card of the run answers approved, and records each title."""
+    from acb_skills import ask_tools
+
+    titles: list[str] = []
+
+    async def card(title: str, *_a: Any, **_k: Any) -> bool:
+        titles.append(title)
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    return titles
+
+
+def _seed_children(w: _World) -> dict[str, str]:
+    """A skill, a credential and an absence for Priya (org A) and for Bob
+    (org B), as the superuser. ``{name: absence id}``."""
+    p = w.p
+    out: dict[str, str] = {}
+    with p.admin_engine.begin() as c:
+        for email, org, name in ((w.priya, p.org_a, "priya"), (w.bob, p.org_b, "bob")):
+            pid, o = w.ids[email], org
+            c.execute(text(
+                "INSERT INTO people_skills (organization_id, person_id, skill, level, evidence) "
+                "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'modbus', 'expert', 'manual')"),
+                {"o": o, "p": pid})
+            c.execute(text(
+                "INSERT INTO people_credentials (organization_id, person_id, kind, title) "
+                "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'education', 'BEng')"),
+                {"o": o, "p": pid})
+            out[name] = str(c.execute(text(
+                "INSERT INTO people_absences (organization_id, person_id, starts_on, ends_on, "
+                "kind, created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), "
+                "DATE '2027-02-01', DATE '2027-02-03', 'away', 'test') RETURNING id"),
+                {"o": o, "p": pid}).scalar())
+    return out
+
+
+def _state(w: _World) -> dict[str, Any]:
+    """Each seeded person: the row, the skills, the credentials and the
+    absences, read as the superuser."""
+    out: dict[str, Any] = {}
+    with w.p.admin_engine.begin() as c:
+        for email, pid in w.ids.items():
+            row = c.execute(text(
+                "SELECT email, pronouns, phone, bio, languages, birthday, status, title "
+                "FROM people WHERE id = CAST(:p AS uuid)"), {"p": pid}).mappings().one()
+            skills = sorted(r[0] for r in c.execute(text(
+                "SELECT skill || '/' || coalesce(level, '-') FROM people_skills "
+                "WHERE person_id = CAST(:p AS uuid)"), {"p": pid}))
+            creds = sorted(r[0] for r in c.execute(text(
+                "SELECT kind || '/' || title FROM people_credentials "
+                "WHERE person_id = CAST(:p AS uuid)"), {"p": pid}))
+            away = sorted(str(r[0]) for r in c.execute(text(
+                "SELECT id FROM people_absences WHERE person_id = CAST(:p AS uuid)"),
+                {"p": pid}))
+            out[email] = {"row": dict(row), "skills": skills, "credentials": creds,
+                          "absences": away}
+    return out
+
+
+def _others(state: dict[str, Any], w: _World) -> dict[str, Any]:
+    return {k: v for k, v in state.items() if k != w.mel}
+
+
+def test_d1_d3_the_profile_write_changes_only_my_row_and_never_email(world, approve) -> None:
+    w = world
+    _seed_children(w)
+    before = _state(w)
+    out = w.act(w.mel, pt.update_my_profile, pronouns="she/her", phone="+44 20 7946 0000",
+                languages=["English", "Hindi"], birthday="02-29", bio="Builds PLCs.")
+    assert out["ok"] is True, out
+    assert approve == ["Save these changes to your People record?"]
+    after = _state(w)
+    mine = after[w.mel]["row"]
+    assert mine["pronouns"] == "she/her" and mine["phone"] == "+44 20 7946 0000"
+    assert mine["languages"] == ["English", "Hindi"] and mine["birthday"] == "02-29"
+    assert mine["email"] == w.mel, "d3: the email is unchanged"
+    assert mine["status"] == before[w.mel]["row"]["status"]
+    assert mine["title"] == before[w.mel]["row"]["title"]
+    assert _others(after, w) == _others(before, w), "d1: no other row changed"
+
+
+def test_d1_skills_credentials_and_absences_change_only_my_rows(world, approve) -> None:
+    w = world
+    _seed_children(w)
+    before = _state(w)
+    out = w.act(w.mel, pt.set_my_skills, ["python", {"skill": "rust", "level": "working"}])
+    assert out["ok"] is True and out["count"] == 2, out
+    out = w.act(w.mel, pt.set_my_credentials,
+                [{"kind": "certification", "title": "AWS SA", "issuer": "Amazon"}])
+    assert out["ok"] is True and out["count"] == 1, out
+    made = w.act(w.mel, pt.add_my_absence, "2027-03-01", "2027-03-02", "holiday",
+                 note="Family")
+    assert made["ok"] is True, made
+    after = _state(w)
+    assert after[w.mel]["skills"] == ["python/-", "rust/working"]
+    assert after[w.mel]["credentials"] == ["certification/AWS SA"]
+    assert after[w.mel]["absences"] == [made["absence_id"]]
+    assert _others(after, w) == _others(before, w), "no other person changed"
+    gone = w.act(w.mel, pt.remove_my_absence, made["absence_id"])
+    assert gone["ok"] is True, gone
+    assert _state(w)[w.mel]["absences"] == []
+    assert len(approve) == 4
+
+
+def test_d2_d4_an_absence_of_another_person_is_refused_and_nothing_changes(
+        world, approve) -> None:
+    w = world
+    ids = _seed_children(w)
+    before = _state(w)
+    for other in (ids["priya"], ids["bob"]):
+        out = w.act(w.mel, pt.remove_my_absence, other)
+        assert out == {"ok": False, "error": pt._W_NOT_MINE, "status": 404}, out
+    assert approve == [], "no card for an absence that is not mine"
+    assert _state(w) == before
+    # Non-vacuity: the absence of Priya is still there, and Mel's own read sees none.
+    assert before[w.priya]["absences"] == [ids["priya"]]
+
+
+def test_d2_the_route_refuses_another_id_even_when_the_tool_is_pointed_at_it(
+        world, approve, monkeypatch) -> None:
+    """The tool takes no person id. A defect that points the own id at a
+    colleague still meets the field-class check of the route: each write is
+    refused, and nothing changes. Mutation: drop ``authorize_write`` from a
+    route -> a row of Priya changes -> red."""
+    w = world
+    ids = _seed_children(w)
+    before = _state(w)
+
+    async def priya() -> tuple[str, dict[str, Any]]:
+        return w.ids[w.priya], {"id": w.ids[w.priya]}
+
+    monkeypatch.setattr(pt, "_own", priya)
+    calls = (
+        (pt.update_my_profile, (), {"pronouns": "x/y"}),
+        (pt.set_my_skills, ([],), {}),
+        (pt.set_my_credentials, ([],), {}),
+        (pt.add_my_absence, ("2027-04-01", "2027-04-01"), {}),
+    )
+    for tool, args, kw in calls:
+        out = w.act(w.mel, tool, *args, **kw)
+        assert out["ok"] is False and out.get("status") == 403, (tool.__name__, out)
+        assert out["error"].startswith("Nothing was saved."), out
+    # The removal reads Priya's absences first. Mel may not read them.
+    out = w.act(w.mel, pt.remove_my_absence, ids["priya"])
+    assert out["ok"] is False and out["status"] == 403, out
+    assert _state(w) == before
