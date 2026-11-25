@@ -208,6 +208,31 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     return 0 if not failed else 1
 
 
+def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
+    """The callback of the setup page (TLY-2d). It makes the machine match the
+    two switches at once, and returns an error text, or None. Without
+    ``--windows`` (a dev box) it only saves, so it returns None to the caller."""
+    if not windows:
+        return None
+
+    def apply(new: Settings) -> str | None:
+        from tally_bridge.windows import system
+
+        run = runner or system.run
+        # The request handlers run on the thread of ``_awake_while``, which is
+        # the thread that ``SetThreadExecutionState`` binds to.
+        if new.keep_awake:
+            awake.start()
+        else:
+            awake.stop()
+        wanted = new.start_tally_at_signin or _had_startup(run)
+        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
+            return "Run the setup as an administrator to change the sign-in task."
+        return None
+
+    return apply
+
+
 def _had_startup(run: Any) -> bool:
     """True when the sign-in task may exist, so that turning the setting off
     removes it. ``schtasks /Query`` answers 0 for a task that exists."""
@@ -389,7 +414,18 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
     from tally_bridge import linkcli
 
     controller = linkcli.link_controller(args, live, reader, copy)
-    app = build_address_app(live, secrets, reader, store, copy, link=controller)
+    from tally_bridge.windows.system import KeepAwake
+
+    awake = KeepAwake()
+    app = build_address_app(
+        live,
+        secrets,
+        reader,
+        store,
+        copy,
+        link=controller,
+        on_machine_saved=_machine_applier(getattr(args, "windows", False), awake),
+    )
     link = None
     if controller is not None:
         from tally_bridge.transport.link.dispatch import McpDispatcher
@@ -400,6 +436,7 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
     _awake_while(
         settings.keep_awake,
         lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop, link)),
+        awake=awake,
     )
     return 0
 

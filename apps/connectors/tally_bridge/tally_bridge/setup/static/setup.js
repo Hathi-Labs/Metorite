@@ -116,6 +116,36 @@
     linkCall("/setup/api/link/unlink", {});
   });
 
+  // TLY-2d: the machine switches show only with link mode (the state holds "machine" then).
+  function showMachine(m) {
+    $("machine").hidden = !m;
+    if (!m) { return; }
+    $("machine-start").checked = !!m.start_tally_at_signin;
+    $("machine-exe").value = m.tally_exe || "";
+    $("machine-awake").checked = !!m.keep_awake;
+  }
+
+  $("machine-save").addEventListener("click", function () {
+    var button = $("machine-save");
+    button.disabled = true;
+    call("POST", "/setup/api/machine", {
+      start_tally_at_signin: $("machine-start").checked,
+      tally_exe: $("machine-exe").value.trim(),
+      keep_awake: $("machine-awake").checked
+    }).then(function (res) {
+      button.disabled = false;
+      if (!res.ok) {
+        $("machine-line").textContent = res.data.error || "The switches were not saved.";
+        return;
+      }
+      showMachine(res.data.machine);
+      $("machine-line").textContent = res.data.note || "Saved.";
+    }, function () {
+      button.disabled = false;
+      $("machine-line").textContent = "The bridge did not answer.";
+    });
+  });
+
   function load() {
     $("tally-line").textContent = "Looking for TallyPrime...";
     return call("GET", "/setup/api/state").then(function (res) {
@@ -135,6 +165,7 @@
       }
       showCompanies(s.tally.up ? open : null, s.allowed);
       showLink(s.link);
+      showMachine(s.machine);
       $("address").textContent = s.address || "not set (set PUBLIC_HOST to the tunnel host name)";
       $("token-line").textContent = s.token_set ? "An access token exists. Make a new one only to replace it." : "No access token yet.";
       $("done-line").textContent =

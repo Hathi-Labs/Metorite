@@ -63,6 +63,19 @@
     <button type="button" id="link-unlink" hidden>Unlink this computer</button>
   </section>
 
+  <section id="machine" hidden>
+    <h2>Keep it running</h2>
+    <p class="muted">Two switches, so that the bridge is ready when a person is not at the computer.</p>
+    <p><label><input id="machine-start" type="checkbox"> Start TallyPrime when a person signs in</label></p>
+    <p>
+      <label for="machine-exe">The path of TallyPrime</label>
+      <input id="machine-exe" type="text" autocomplete="off" placeholder="C:\Program Files\TallyPrime\tally.exe">
+    </p>
+    <p><label><input id="machine-awake" type="checkbox"> Keep this computer awake while the bridge runs</label></p>
+    <button type="button" id="machine-save">Save these switches</button>
+    <p id="machine-line" role="status"></p>
+  </section>
+
   <section id="step4">
     <h2>4. Done</h2>
     <p id="done-line"></p>

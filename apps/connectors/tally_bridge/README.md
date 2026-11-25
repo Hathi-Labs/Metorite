@@ -240,6 +240,17 @@ The setup page has a link step (TLY-2b): type the domain, give the code to
 your admin, then confirm the company name. The commands below do the same
 from a command line.
 
+The page also has a "Keep it running" section (TLY-2d), and it shows only
+when `LINK_URL` is set. It holds two switches. One starts TallyPrime when a person
+signs in, and it needs the path of `tally.exe`. The other keeps the computer awake while
+the bridge runs. Each switch saves to the settings file, and the page reloads
+its value.
+
+With `--windows`, a save also makes or removes the sign-in task and
+turns the keep-awake request on or off at once. When the task call fails, the
+page says to run the setup as an administrator. Test:
+`tests/unit/test_tally_bridge_machine.py`.
+
 1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
    the company types it in Metorite and approves it. The program then shows
    the name of the company that approved it.
