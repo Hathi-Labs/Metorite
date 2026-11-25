@@ -146,6 +146,10 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         " reserve_number gives an outside agent the next number of a project"
         " sequence. The chat has no need to reserve a number."
     ),
+    ("POST", "/projects/reservations/{reservation_id}/mark"): (
+        "SW-27c1 (task 3938). The MCP door only: mark_number marks a number of"
+        " the agent's own run used or released. A person's release is SW-27c3."
+    ),
     # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
     ("POST", "/projects/agent-runs/{run_id}/children"): (
         "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
@@ -269,6 +273,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-27b: `reserve_number` (agent_coordination.md SW-27). Each
         # call takes the next number of a project sequence.
         ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+        # WS-MCP SW-27c1: `mark_number`, dark behind `sequence_marks_orgs`.
+        ("POST", "/projects/reservations/{reservation_id}/mark"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -479,6 +485,10 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
                        "idempotentHint": True, "openWorldHint": False},
     "delete_comment": {"readOnlyHint": False, "destructiveHint": True,
                        "idempotentHint": True, "openWorldHint": False},
+    # SW-27c1. A release burns the number for good. The same mark twice
+    # changes nothing more.
+    "mark_number": {"readOnlyHint": False, "destructiveHint": True,
+                    "idempotentHint": True, "openWorldHint": False},
 }
 
 #: The tools of a write pair that write nothing, each with its reason. Each
@@ -885,3 +895,13 @@ def test_the_sequence_name_rule_is_one_rule():
     from gateway.routes.projects.sequences import NAME_RE
 
     assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN
+
+
+def test_the_reserve_run_texts_match_the_route():
+    """SW-27c1. The edge maps the route's own-run detail to a fixed text. The
+    two copies of the detail must stay equal, or the agent gets the general
+    refusal and never learns that the run is not its own."""
+    from agent_edge import tools as edge_tools
+    from gateway.routes.projects.sequences import RUN_NOT_YOURS
+
+    assert edge_tools.RESERVE_RUN_NOT_YOURS_DETAIL == RUN_NOT_YOURS

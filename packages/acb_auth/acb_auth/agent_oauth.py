@@ -545,6 +545,28 @@ def image_upload_allowed(organization_id: object) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def sequence_marks_allowed(organization_id: object) -> bool:
+    """True when ``sequence_marks_orgs`` allows *organization_id* (SW-27c1).
+
+    The ONE reader of the flag. It keeps ``mark_number`` dark: the edge hides
+    the tool for an organization that it refuses, and the mark route answers
+    404 with :data:`SEQUENCE_MARKS_OFF` for a signed agent of that
+    organization. The shape and the parser are those of
+    ``mcp_image_upload_orgs``, and the default is empty. The caller passes the
+    organization of the session or of the token row, never request input.
+    """
+    org = _canonical_org(organization_id)
+    if org is None:
+        return False
+    orgs = _parse_orgs(str(get_settings().sequence_marks_orgs or ""))
+    return ALL_ORGS in orgs or org in orgs
+
+
+#: SW-27c1. The ``detail`` of the 404 of the mark route while
+#: :func:`sequence_marks_allowed` is false. The edge maps it to a fixed text.
+SEQUENCE_MARKS_OFF = "sequence_marks_off"
+
+
 #: CIV-14b. The code of the refusal while :func:`image_upload_allowed` is
 #: false: the ``detail`` of the 404 of the upload, and the ``error`` of the
 #: 422 of ``attachment_ids``. The edge maps it to a fixed tool text. ONE
@@ -1117,6 +1139,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # reach through `resolve_visibility`, so a pinned connection reserves only
     # in its pins. Each call burns a number, so the write cap counts it.
     ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+    # WS-MCP SW-27c1: `mark_number`. The agent marks a number of its OWN run
+    # `used` or `released` (`checks.own_run`). Dark behind
+    # `sequence_marks_orgs` (`sequence_marks_allowed`).
+    ("POST", "/projects/reservations/{reservation_id}/mark"),
     # MCP-P1b-2 (spec §19.5, AD-4): the ask of `app_write`. It opens one
     # request for the member and runs nothing. Branch 0 takes any `<app>:write`
     # here (`request_write_scope`), and the route checks the app of its path.
@@ -1607,6 +1633,7 @@ __all__ = [
     "RESOURCE_SCOPES",
     "S256",
     "SENDS_OFF_CODE",
+    "SEQUENCE_MARKS_OFF",
     "SUPPORTED_SCOPES",
     "WRITES_DISABLED_CODE",
     "WRITE_CAP",
@@ -1660,6 +1687,7 @@ __all__ = [
     "s256",
     "scope_holds",
     "scope_string",
+    "sequence_marks_allowed",
     "task_checks_enabled",
     "token_endpoint",
     "write_cap",
