@@ -377,8 +377,8 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Seven ceilings are above P-0 now (calendar,
-chat, email, integrations, settings, shell, studio), and each one names its
+task of the wave of that app. Four ceilings are above P-0 now (calendar,
+chat, settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
