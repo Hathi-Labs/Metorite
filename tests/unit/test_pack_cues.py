@@ -88,8 +88,7 @@ WHEN = {
         "Reach preview."),
     # Task 3963: the notes pack of the same owner.
     "notes": (
-        "Load for your meetings, a meeting transcript, the notetaker account or the Note "
-        "Taker settings."),
+        "Load for your meetings, a meeting transcript or the Note Taker settings."),
 }
 
 

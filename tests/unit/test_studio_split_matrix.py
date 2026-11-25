@@ -42,7 +42,7 @@ field changed, in BOTH columns: in
 the loader does not offer it.
 
 P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
-surface and another owner. Task 3963 added the pack ``notes`` of seven tools,
+surface and another owner. Task 3963 added the pack ``notes`` of six tools,
 with the same owner. :func:`_allowed` leaves each out, as it leaves out
 ``org-admin``, so no row of the golden file changed.
 

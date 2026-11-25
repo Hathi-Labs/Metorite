@@ -1,6 +1,6 @@
 """The chat tools of the ``notes`` pack (task 3963, the notes read tools).
 
-Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (P-4d). Seven reads let
+Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (P-4d). Six reads let
 a member do from the chat what the Notes page shows. Each tool sends GET
 routes of ``gateway/routes/notes/``. Each route checks the owner of a meeting,
 or reads the rows of the member only:
@@ -8,18 +8,18 @@ or reads the rows of the member only:
 * :func:`notes_meetings` lists the meetings of the member (``GET /notes/meetings``).
 * :func:`notes_meeting` reads one meeting of the member, with one page of the
   transcript (``GET /notes/meetings/{id}``).
-* :func:`notes_bot_identity` says which Google account the notetaker uses.
 * :func:`notes_settings`, :func:`notes_templates`, :func:`notes_glossary` and
   :func:`notes_copilot_instructions` read the settings of the Note Taker.
 
-**Twelve meeting reads are NOT here.** The routes for the note, the actions,
-the agenda, the context, the bot, the live session and the bot list read a
-meeting by its id with no owner check, or they refresh a bot and write rows.
-They stay in ``DEBT`` and wait for task 3966.
+**Thirteen reads are NOT here.** The routes for the note, the actions, the
+agenda, the context, the bot, the live session and the bot list read a meeting
+by its id with no owner check, or they refresh a bot and write rows. The route
+of the bot identity starts a browser on the bot profile. They stay in ``DEBT``
+and wait for task 3966.
 
 **Reads only.** No tool writes, joins a meeting, starts a bot or reaches a
 person. The module has no ``POST``, ``PUT``, ``PATCH`` or ``DELETE``. Each of
-the seven routes is a plain read with no side effect.
+the six routes is a plain read with no side effect.
 
 **The server decides each right.** Each tool calls the gateway over HTTP as the
 member of the run: the internal bearer and ``X-User-Email`` from the run
@@ -32,11 +32,11 @@ title come from people. Each result puts that text in ONE ``UntrustedFrame``
 block, and a tool that read meeting text marks the chat as one that read
 outside text (``egress.mark_untrusted_answer``).
 
-**No secret.** :func:`notes_bot_identity` builds its answer from a list of
-named fields. A field that the list does not name never reaches the model. A
-URL in a value loses its user name, password, query string and fragment. The
-tool never passes the error text of the worker. Each tool drops a key that
-names a token, a cookie, a password or a screenshot.
+**No secret.** Each tool drops a key that names a token, a cookie, a password
+or a screenshot. A URL in a text loses its user name, password, query string
+and fragment, also when it is scheme-relative or sits in quotes or in angle
+brackets. A failed run of a summary shows a fixed text, never the error of a
+provider.
 
 **The pack.** The tools are the pack ``notes``, owned by ``org-admin`` (the
 owner of the dark packs that no agent runs). It is in no ``FOLLOWS`` entry. A
@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import textwrap
 import uuid
 from dataclasses import dataclass
@@ -66,7 +67,6 @@ from acb_skills.tool_annotations import annotate
 
 __all__ = [
     "NOTES_READ_TOOLS",
-    "notes_bot_identity",
     "notes_copilot_instructions",
     "notes_glossary",
     "notes_meeting",
@@ -108,7 +108,7 @@ _SHAPE = "The Notes route answered in a shape that this tool cannot read."
 _SIGNED_OUT = "Your session is not signed in, so nothing was read."
 _NO_RIGHT = ("You do not hold {right} in your organization, so nothing was read. "
              "Ask an admin of your organization.")
-_WORKER_DOWN = "The bot service did not answer."
+_RUN_FAILED = "The run failed. See the meeting page."
 _TEXT_NOTE = "People of your organization, or the people in a call, wrote this text."
 
 
@@ -191,7 +191,7 @@ def _line(value: Any, width: int = MAX_FIELD_CHARS) -> str:
 def _long(value: Any, width: int = MAX_LONG_CHARS) -> str:
     """A long text with its line breaks, with no hidden character, cut at
     *width* characters."""
-    text = strip_hidden(str(value)).strip()
+    text = _scrub(strip_hidden(str(value)).strip())
     if len(text) <= width:
         return text
     cut = textwrap.wrap(text, width, max_lines=1, placeholder="...", replace_whitespace=False,
@@ -225,6 +225,17 @@ def _empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+#: A URL in free text: with a scheme, or scheme-relative (``//host/x``). A
+#: delimiter such as ``<``, a quote or a bracket ends it.
+_URL_IN_TEXT = re.compile(r"""(?<![\w/:.-])(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//[^\s<>"'`)\]]+""")
+
+
+def _scrub(text: str) -> str:
+    """*text* with each URL in it made safe: no user name, password, query
+    string or fragment. A URL can hold a token in each of them."""
+    return _URL_IN_TEXT.sub(lambda m: _safe_url(m.group(0)), text)
+
+
 def _secret_key(key: Any) -> bool:
     low = str(key).lower()
     return any(word in low for word in _SECRET_WORDS)
@@ -236,7 +247,7 @@ def _fold(value: Any, depth: int = 0) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return _line(value)
+        return _line(_scrub(value))
     if depth >= MAX_DEPTH:
         return _line(json.dumps(value, ensure_ascii=False, default=str))
     if isinstance(value, dict):
@@ -314,14 +325,6 @@ def _safe_url(raw: Any) -> str:
     return _line(urlunsplit((parts.scheme, host, parts.path, "", "")))
 
 
-def _clean_value(value: Any) -> Any:
-    """*value* folded, with each URL in it made safe."""
-    if isinstance(value, str) and "://" in value:
-        words = [_safe_url(w) if "://" in w else _line(w) for w in value.split()]
-        return " ".join(words)
-    return _fold(value)
-
-
 async def _read_meeting(mid_raw: Any, template: str,
                         ) -> tuple[str, _Reply] | dict[str, Any]:
     """The reply of a meeting route, or the refusal as a dict."""
@@ -383,8 +386,16 @@ async def notes_meetings(query: str = "", offset: int = 0,
         extra = {"total_is_at_least": True, "capped_note": (
             f"The library holds at least {len(rows)} meetings, and this read shows "
             f"the newest {FETCH_MEETINGS} only. Use query to narrow it.")}
+    line = page.line
+    if capped:
+        # Never say "last page": the route cuts the list at the cap.
+        end = page.offset + len(page.items)
+        line = (f"Showing {page.offset + 1}-{end} of at least {len(rows)} meetings. "
+                f"This read holds the newest {FETCH_MEETINGS} only. Use query to narrow it.")
+        if end < len(rows):
+            line += f" More meetings are in this read: offset={end}."
     return _framed("MEETINGS", [_pick(r, _MEETING_FIELDS) for r in page.items], "rows",
-                   total=page.total, shown=len(page.items), page=page.line, **extra)
+                   total=page.total, shown=len(page.items), page=line, **extra)
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -415,32 +426,17 @@ async def notes_meeting(meeting_id: str, segments_offset: int = 0,
     body["attendees"] = [_pick(a, ("name", "email")) for a in
                          paged(attendees, 0, MAX_LIST_ITEMS, default=MAX_LIST_ITEMS,
                                maximum=MAX_LIST_ITEMS).items]
-    body["last_runs"] = [_pick(r, ("kind", "status", "stage", "error", "created_at",
-                                   "finished_at")) for r in run_page.items]
+    # The error text of a provider can hold a URL with a token, so a failed run
+    # carries a fixed text.
+    body["last_runs"] = [
+        {**_pick(r, ("kind", "status", "stage", "created_at", "finished_at")),
+         **({"error": _RUN_FAILED} if not _empty(r.get("error")) else {})}
+        for r in run_page.items]
     body["transcript"] = [_pick(s, _SEGMENT_FIELDS) for s in seg_page.items]
     await _mark_read()
     return _framed("MEETING", body, "meeting", meeting_id=mid,
                    transcript_total=seg_page.total, transcript_shown=len(seg_page.items),
                    transcript_page=seg_page.line)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_bot_identity() -> dict[str, Any]:
-    """Say if the notetaker is signed in to a Google account, and which one. It shows no password."""
-    got = await _read("/notes/bot/identity")
-    if isinstance(got, dict):
-        return got
-    if not isinstance(got.data, dict):
-        return _refusal(_SHAPE)
-    allowed = ("supported", "signed_in", "provider", "email", "profile",
-               "credentials_configured", "interactive_running", "vnc_enabled",
-               "unreachable")
-    out = {k: _clean_value(got.data[k]) for k in allowed if k in got.data
-           and got.data[k] is not None}
-    if not _empty(got.data.get("error")):
-        # The text of the worker error can hold a URL or a secret. Pass a fixed text.
-        out["error"] = _WORKER_DOWN
-    return {"ok": True, "identity": out}
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -505,6 +501,6 @@ async def notes_copilot_instructions() -> dict[str, Any]:
 
 #: Each tool of the ``notes`` pack, in the order of its skill family.
 NOTES_READ_TOOLS = (
-    notes_meetings, notes_meeting, notes_bot_identity, notes_settings, notes_templates,
-    notes_glossary, notes_copilot_instructions,
+    notes_meetings, notes_meeting, notes_settings, notes_templates, notes_glossary,
+    notes_copilot_instructions,
 )

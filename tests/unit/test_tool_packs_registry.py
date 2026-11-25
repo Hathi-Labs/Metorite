@@ -1477,9 +1477,9 @@ def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
 #: The four reads of the people pack, in the order of the family.
 PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
 
-#: The seven reads of the notes pack (task 3963), in the order of the family.
+#: The six reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
-    "notes_meetings", "notes_meeting", "notes_bot_identity", "notes_settings",
+    "notes_meetings", "notes_meeting", "notes_settings",
     "notes_templates", "notes_glossary", "notes_copilot_instructions")
 
 
@@ -1604,7 +1604,7 @@ def test_no_notes_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("notes", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(NOTES_TOOLS) == 7
+    assert len(tools) == len(NOTES_TOOLS) == 6
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

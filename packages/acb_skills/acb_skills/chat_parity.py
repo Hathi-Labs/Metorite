@@ -383,8 +383,7 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/whatsapp/chats": "list_whatsapp_chats",
     "GET /api/whatsapp/chats/{}/context": "whatsapp_chat_context",
     "GET /api/whatsapp/chats/{}/messages": "read_whatsapp_chat",
-    # Task 3963 (P-4d): the notes read tools. Each of the 7 routes is owner-checked or per member.
-    "GET /api/notes/bot/identity": "notes_bot_identity",
+    # Task 3963 (P-4d): the notes read tools. Each of the 6 routes is owner-checked or per member.
     "GET /api/notes/copilot/instructions": "notes_copilot_instructions",
     "GET /api/notes/glossary": "notes_glossary",
     "GET /api/notes/meetings": "notes_meetings",
@@ -1017,6 +1016,8 @@ DEBT: dict[str, str] = {
     "POST /api/email/signature/images": "P-2",
     # ── Notes ──
     # Waits for task 3966 (owner check and side effects of meeting reads).
+    # Waits for task 3966 (the status check starts a browser on the bot profile).
+    "GET /api/notes/bot/identity": "P-4",
     "GET /api/notes/bots/active": "P-4",
     "GET /api/notes/bots/status": "P-4",
     "GET /api/notes/live/sessions": "P-4",
@@ -1292,7 +1293,7 @@ DEBT_CEILING: dict[str, int] = {
     "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
-    "notes": 44,  # Task 3963 paid the 7 GET rows of Notes that are owner-checked or per member with 7 read tools (51 to 44). Paid by task 3963.
+    "notes": 45,  # Task 3963 paid the 6 GET rows of Notes that are owner-checked or per member with 6 read tools (51 to 45). Paid by task 3963.
     "whatsapp": 25,
     "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
     "knowledge": 19,  # 17 planned rows + POST and PATCH /knowledge/spaces (KB-2q, owner 2026-11-05); P-5 pays them. Paid by task 3105.

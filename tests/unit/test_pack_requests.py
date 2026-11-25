@@ -368,11 +368,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "people_me": ("show my person record", "what does my people profile say?"),
     "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
     "reach_preview": ("show me the reach preview", "what would reach send me now?"),
-    # -- notes: seven reads of the Notes app (task 3963) --
+    # -- notes: six reads of the Notes app (task 3963) --
     "notes_meetings": ("list my meetings", "search my meetings for the budget review"),
     "notes_meeting": ("show the meeting transcript of the sales sync",
                       "show the meeting summary of the sales sync"),
-    "notes_bot_identity": ("which account does the notetaker use?",),
     "notes_settings": ("show my note taker settings",),
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
