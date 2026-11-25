@@ -59,6 +59,10 @@ from sqlalchemy import text
 
 VISIBILITIES = ("private", "people", "org")
 
+#: Review states that a rollback refuses (task 3967). ``auto`` means the
+#: publish needed no review, and ``approved`` means an admin approved it.
+_UNREVIEWED = ("pending", "rejected")
+
 # Sent on every bundle response: even a direct visit renders sandboxed, and
 # nothing sniffs the payload into another content type.
 _BUNDLE_HEADERS = {
@@ -248,18 +252,31 @@ async def rollback_app(
     body: RollbackRequest,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
-    """Repoint the live version at an existing snapshot."""
+    """Repoint the live version at an existing snapshot.
+
+    Task 3967: a version whose admin review (§4.8) is ``pending`` or
+    ``rejected`` cannot go live by this route. That would skip the review.
+    An ``approved`` version, or an ``auto`` one (no review needed), can."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
-        exists = (await db.execute(
+        target = (await db.execute(
             text(
-                "SELECT 1 FROM app_versions "
+                "SELECT review_status FROM app_versions "
                 "WHERE app_id = :app_id AND version = :version"
             ),
             {"app_id": str(row.id), "version": body.version},
         )).fetchone()
-        if not exists:
+        if not target:
             raise HTTPException(status_code=404, detail="Version not found")
+        if target.review_status in _UNREVIEWED:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Version {body.version} cannot go live: its admin review "
+                    f"is {target.review_status}. Only an approved version, or "
+                    "one that needed no review, can go live."
+                ),
+            )
         await db.execute(
             text(
                 "UPDATE apps SET live_version = :version, updated_at = now() "
