@@ -206,6 +206,9 @@ _ALLOWED = {GATEWAY / "crm_sync/questions.py", GATEWAY / "routes/crm/questions.p
 #: broker the name ``proposal`` is a pending broker action, another store.
 _OTHER_MEANING: dict[Path, frozenset[str]] = {
     GATEWAY / "routes/crm/broker_handlers.py": frozenset({"proposal"}),
+    # PAR-3b (task 3901): the Knowledge read tool of `GET /knowledge/proposals`,
+    # the other store (`kb_page_proposals`). Only this exact name passes.
+    REPO / "packages/acb_skills/acb_skills/knowledge_tools.py": frozenset({"list_proposals"}),
 }
 
 #: The same rule for a string key, by file and by exact value. WS-61 KB-5a:
@@ -219,7 +222,11 @@ _KNOWLEDGE_ROUTES = frozenset({
 })
 _OTHER_KEYS: dict[Path, frozenset[str]] = {
     REPO / "packages/acb_skills/acb_skills/knowledge_manifest.py": _KNOWLEDGE_ROUTES,
-    REPO / "packages/acb_skills/acb_skills/knowledge_tools.py": _KNOWLEDGE_ROUTES,
+    # PAR-3b (task 3901): `list_proposals` reads the key "proposals" of the
+    # answer of `GET /knowledge/proposals`, the Knowledge store. The manifest
+    # keeps the route literals only.
+    REPO / "packages/acb_skills/acb_skills/knowledge_tools.py": (
+        _KNOWLEDGE_ROUTES | frozenset({"proposals"})),
 }
 
 #: A name, an attribute or an import that names a proposal, in any case:
@@ -295,7 +302,7 @@ def test_no_module_but_the_two_question_modules_reads_proposals() -> None:
 def test_the_knowledge_route_literals_pass_and_a_store_key_does_not() -> None:
     """WS-61 KB-5a: the exemption names exact route literals only. A key of
     the CRM store in the same file still fails."""
-    keys = _OTHER_KEYS[REPO / "packages/acb_skills/acb_skills/knowledge_tools.py"]
+    keys = _OTHER_KEYS[REPO / "packages/acb_skills/acb_skills/knowledge_manifest.py"]
     assert _offenders('x = "/knowledge/proposals"\n', keys=keys) == []
     assert _offenders('x = state.get("proposals")\n', keys=keys)
     assert _offenders('x = "/knowledge/proposals/all"\n', keys=keys)
