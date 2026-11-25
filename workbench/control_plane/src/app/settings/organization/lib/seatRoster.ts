@@ -259,6 +259,24 @@ export function tally(rows: SeatRow[]): RosterTally {
  * check is `decide_assignment`'s 409. This only decides whether to draw an
  * enabled button.
  */
-export function canOfferSeat(row: SeatRow): boolean {
-  return row.status !== "removed";
+export function canOfferSeat(row: SeatRow, plan?: string): boolean {
+  if (row.status === "removed") return false;
+  // The Core seat is membership itself (D19.3). It comes with an invite and
+  // goes with a remove, and the Console refuses an assign or a release of it
+  // with 400. The plan the action would use is the plan the member holds, or
+  // the plan on offer for an unseated member.
+  const acting = isSeated(row) ? row.seats[0] : plan;
+  return !isCorePlan(acting);
+}
+
+/**
+ * The plan that membership itself holds. The same slug as `CORE_PLAN_SLUG` in
+ * `customer_console/seats.py` and in `acb_skills` `org_admin_more_tools.py`,
+ * where the chat tool `set_seat` refuses it before its card.
+ */
+export const CORE_PLAN_SLUG = "core";
+
+/** Whether a plan slug names the Core seat (same test as `set_seat`: trim, lower case). */
+export function isCorePlan(slug: string | undefined): boolean {
+  return (slug ?? "").trim().toLowerCase() === CORE_PLAN_SLUG;
 }
