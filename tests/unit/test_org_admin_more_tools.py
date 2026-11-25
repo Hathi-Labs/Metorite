@@ -1441,3 +1441,5 @@ def test_the_capability_prefix_is_the_one_the_console_says() -> None:
     said = 'f"deployment key lacks the {capability!r} capability"'
     assert said in inspect.getsource(console_auth)
     assert _KEY_REFUSED[1]["detail"].startswith(CAPABILITY_REFUSAL_PREFIX)
+    # The tool keeps a copy, because it may not import the Console client.
+    assert om.KEY_REFUSAL_PREFIX == CAPABILITY_REFUSAL_PREFIX

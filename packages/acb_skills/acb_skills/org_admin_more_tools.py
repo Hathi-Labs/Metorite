@@ -1349,12 +1349,17 @@ def _holder_row(m: dict[str, Any]) -> dict[str, Any]:
             "status": str(m.get("status"))[:32], "seats": seats, "seated": bool(seats)}
 
 
+#: The start of the Customer Console's refusal of a box key that lacks a
+#: capability. It mirrors the prefix of the one Console client: this module
+#: may not import that client (``tests/unit/test_console_dependency_boundary.py``),
+#: so a drift test ties the two (``test_the_capability_prefix_is_the_one_the_console_says``).
+KEY_REFUSAL_PREFIX = "deployment key lacks the "
+
+
 def _key_refused(reply: oa._Reply) -> bool:
     """True when a 403 is the Console's refusal of the key of this box."""
-    from acb_auth.console_resolve import CAPABILITY_REFUSAL_PREFIX
-
     return reply.status == 403 and oa._detail(reply).lower().startswith(
-        CAPABILITY_REFUSAL_PREFIX.lower())
+        KEY_REFUSAL_PREFIX.lower())
 
 
 def _cap_line(row: dict[str, Any]) -> str:
