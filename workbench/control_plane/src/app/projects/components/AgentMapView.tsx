@@ -717,15 +717,34 @@ export interface AgentMapViewProps {
   emptyCopy?: string;
 }
 
+/** How often the view reads the clock again. The map itself reads the server every 30 seconds. */
+const NOW_TICK_MS = 15_000;
+
+/**
+ * The time that the ages on the map are drawn against. A caller or a test can
+ * fix it. Otherwise it is state: one read at mount, then one read each
+ * `NOW_TICK_MS`. The render reads state and calls no impure function.
+ */
+function useNowMs(given: number | undefined): number {
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (given !== undefined) return undefined;
+    const timer = window.setInterval(() => setClock(Date.now()), NOW_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [given]);
+  return given ?? clock;
+}
+
 export function AgentMapView({
   read,
   showQuiet,
   onShowQuiet,
   phone,
   onOpenTask,
-  nowMs = Date.now(),
+  nowMs: nowGiven,
   emptyCopy = MAP_EMPTY_COPY,
 }: AgentMapViewProps) {
+  const nowMs = useNowMs(nowGiven);
   const [pickedId, setPickedId] = useState<string | null>(null);
   // The switch is local: it is a view of the map, not a setting that persists.
   const [byMachine, setByMachine] = useState(false);
@@ -749,6 +768,9 @@ export function AgentMapView({
     [map, nowMs, byMachine, expanded],
   );
   const picked = layout?.nodes.find((n) => n.id === pickedId) ?? null;
+  // A pick whose node left the map (a poll, or "Show quiet runs" switched off) closes at once. React runs this reset
+  // before it draws, so the sheet never shows a node that is gone, and a node that returns later does not reopen it.
+  if (pickedId !== null && picked === null) setPickedId(null);
   const open = useCallback(
     (taskId: string) => {
       setPickedId(null);
@@ -757,9 +779,6 @@ export function AgentMapView({
     },
     [onOpenTask],
   );
-  useEffect(() => {
-    if (pickedId && !picked) setPickedId(null);
-  }, [pickedId, picked]);
   // The new key remounts the canvas and destroys the focused button. Focus the same toggle again once the new canvas draws it.
   useEffect(() => {
     const id = pendingFocus.current;
