@@ -317,6 +317,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/email/voice-profile": "voice_profile",
     "GET /api/email/voice-profile/preview": "voice_profile",
     "GET /api/email/voice-profile/status": "voice_profile",
+    # P-2a (task 3111): five reads of the Email app. Each is a mode of an email tool
+    # that the email packs already hold, so no pack line changes.
+    "GET /api/email/accounts/{}/folders": "list_labels",
+    "GET /api/email/accounts/{}/storage/older": "get_account_overview",
+    "GET /api/email/admin/connections": "list_accounts",
+    "GET /api/email/messages/facets": "query_inbox",
+    "GET /api/email/search": "query_inbox",
     "PATCH /api/email/accounts/{}": "update_account",
     "PATCH /api/email/accounts/{}/labels": "create_label",
     "PATCH /api/email/knowledge/{}": "save_knowledge",
@@ -988,11 +995,6 @@ DEBT: dict[str, str] = {
     "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
-    "GET /api/email/accounts/{}/folders": "P-2",
-    "GET /api/email/accounts/{}/storage/older": "P-2",
-    "GET /api/email/admin/connections": "P-2",
-    "GET /api/email/messages/facets": "P-2",
-    "GET /api/email/search": "P-2",
     "POST /api/email/accounts/{}/backfill": "P-2",
     "POST /api/email/accounts/{}/storage/remove-older": "P-2",
     # P-2c (task 3919) left it here. create_rules_from_prompt does the same act
@@ -1283,7 +1285,7 @@ DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
     "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
     "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
-    "email": 10,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10).
+    "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 72,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72).
     "notes": 51,
     "whatsapp": 25,

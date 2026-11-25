@@ -201,6 +201,10 @@ debt. That route runs the model again and saves the result with no card, so the
 card of `create_rules_from_prompt` would not show the saved rules. The owner
 accepts that debt, or the gateway changes.
 
+**P-2a (task 3111, 2026-11-22) is BUILT, with no flag.** It pays five reads of
+the Email app. P-2c had already taken the email debt from 14 to 10, so P-2a takes
+it from 10 to 5. §6.4, rung 4, names the reads and the next slice.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -407,7 +411,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
-| email | 13 | 10 | P-2 | 3111, 3919 (P-2c built) |
+| email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
@@ -634,6 +638,30 @@ P-1 does not take all 14. The table names the owner of each row.
 timeout 900 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_calendar_settings_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1a_tools.py
 ```
+- **Built (task 3111, P-2a).** The chat now does five reads of the Email
+  app. Each read is a mode of an email tool that the `email` pack already
+  holds, so no `TOOL_PACKS` line changes. The email ceiling went from 10 to 5 (P-2c had paid four rows before, 14 to 10).
+  - `query_inbox(everywhere=true)` sends the search of the search bar,
+    `GET /email/search` with `folder=all`. It searches each folder but Junk
+    and Trash. The route broadens to any word on page 1 only, so a broadened
+    answer has one page and names no next page.
+  - `query_inbox(counts=true)` reads the counts of the quick filters,
+    `GET /email/messages/facets`. That route takes only the mailbox and the
+    folder. So a call that also gives a filter reads nothing and names the
+    filters that it cannot apply.
+  - `list_labels(folders=true)` lists the folders of a mailbox. The folder
+    names sit in a frame, because a person who shares the mailbox can name a
+    folder.
+  - `get_account_overview(older_than=...)` reads the count and size of the
+    older mail that a removal would take out of Metorite.
+  - `list_accounts(organization=true)` reads the mailbox counts of the
+    organization. The gateway checks the admin right of the run member, and
+    the tool takes no member or organization from the model.
+  - The file from the chat on a draft or a reply was built before, in task
+    3812 (PRs 2607, 2633 and 2634).
+- **Next in P-2.** P-2b puts three writes on one card each: delete a mail,
+  load older mail of a folder, and remove older mail from Metorite. P-2c is
+  BUILT. The signature image stays with SG-6 (task 2182).
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
