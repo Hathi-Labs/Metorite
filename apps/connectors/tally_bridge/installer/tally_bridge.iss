@@ -23,11 +23,10 @@ Compression=lzma2
 SolidCompression=yes
 
 [Dirs]
-; The settings, the DPAPI hashes and the copy key. The service and the
-; administrators have full control. The folder also keeps the read and create
-; rights that %ProgramData% gives to users, so a user cannot change a file that
-; the installer wrote. The hashes are DPAPI blobs at machine scope (brief §6.3).
-Name: "{commonappdata}\TallyBridge"; Permissions: admins-full system-full
+; The settings, the DPAPI hashes and the copy key. The service runs as
+; LocalSystem and trusts these files, so [Code] ProtectDataDir makes the
+; folder admins and SYSTEM only: Users may read, never create or change.
+Name: "{commonappdata}\TallyBridge"
 
 [Files]
 Source: "..\dist\TallyBridge\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -51,6 +50,56 @@ Filename: "{app}\tally_bridge_service.exe"; Parameters: "remove"; Flags: runhidd
 Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; Flags: runhidden waituntilterminated; RunOnceId: "UndoChanges"
 
 [Code]
+const
+  ServiceKey = 'SYSTEM\CurrentControlSet\Services\TallyBridge';
+
+var
+  WasInstalled: Boolean;
+
+// An upgrade stops the running service first, so its files are free.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  WasInstalled := RegKeyExists(HKLM, ServiceKey);
+  if WasInstalled then
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop TallyBridge', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := '';
+end;
+
+procedure Icacls(Params: String);
+var
+  Code: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    RaiseException('Could not set the rights of the data folder: icacls ' + Params);
+end;
+
+// Review finding 1. %ProgramData% lets every user create a folder or a file,
+// and the LocalSystem service reads them. So: the administrators own every
+// item, every explicit right goes, and the folder takes only these rights.
+// A fresh install also deletes what a user put there before it.
+procedure ProtectDataDir;
+var
+  Dir: String;
+begin
+  Dir := ExpandConstant('{commonappdata}\TallyBridge');
+  Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C');
+  Icacls('"' + Dir + '" /reset /T /C');
+  Icacls('"' + Dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX');
+  // An item made between /reset and /inheritance:r gets the same treatment.
+  Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C');
+  Icacls('"' + Dir + '\*" /reset /T /C');
+  if not WasInstalled then
+    DelTree(Dir + '\*', False, True, True);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    ProtectDataDir;
+end;
+
 // The address that the elevated setup-link step wrote. Inno deletes {tmp},
 // and the address with it, when the setup ends.
 // When the bridge did not start, setup-link wrote no address. The finish

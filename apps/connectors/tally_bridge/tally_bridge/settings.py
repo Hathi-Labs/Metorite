@@ -75,8 +75,10 @@ class Settings:
             raise SettingsError("TALLY_TIMEOUT_S must be above 0 and not above CALL_DEADLINE_S.")
         if self.start_tally_at_signin and not self.tally_exe:
             raise SettingsError("START_TALLY_AT_SIGNIN needs TALLY_EXE, the path of TallyPrime.")
-        if self.tally_exe and not self.tally_exe.lower().endswith(".exe"):
-            raise SettingsError("TALLY_EXE must be the path of a program (.exe).")
+        if self.tally_exe and (
+            not self.tally_exe.lower().endswith(".exe") or '"' in self.tally_exe
+        ):
+            raise SettingsError("TALLY_EXE must be the path of a program (.exe), with no quotes.")
         if not 5 <= self.copy_interval_min <= 1440:
             raise SettingsError("COPY_INTERVAL_MIN must be between 5 and 1440.")
         if not 1 <= self.copy_max_age_days <= 90:

@@ -8,10 +8,12 @@ param([string]$Version = "0.1.0")
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 
-uv venv .build-venv --python 3.12
-& .\.build-venv\Scripts\python.exe -m ensurepip
-& .\.build-venv\Scripts\python.exe -m pip install --quiet . "pyinstaller>=6,<7" "pywin32>=306"
-& .\.build-venv\Scripts\pyinstaller.exe installer\tally_bridge.spec --noconfirm --distpath dist --workpath build
+# Only the locked versions (uv.lock, with hashes): the program, pywin32 and
+# the build group with PyInstaller. Never the newest versions on PyPI.
+uv sync --frozen --group build --python 3.12
+if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
+uv run --frozen --group build pyinstaller installer\tally_bridge.spec --noconfirm --distpath dist --workpath build
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 $env:TALLY_BRIDGE_VERSION = $Version
 $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
