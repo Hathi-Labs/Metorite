@@ -242,44 +242,51 @@ def _pascal(head: str) -> str:
 
 def test_the_data_folder_is_for_admins_and_system_only():
     """Review finding 1: %ProgramData% lets users create files, and the
-    LocalSystem service trusts them. The installer takes the folder back:
-    admins own every item, explicit rights go, inheritance stops, and Users
-    may read only. Each failure is an error text, which cancels the setup."""
+    LocalSystem service trusts them. Only SYSTEM and the administrators may
+    write, Users may read, and inheritance from %ProgramData% stops."""
+    assert ("GrantOnly = ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F"
+            " *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX';") in ISS
+
+
+def test_a_fresh_install_never_follows_what_a_user_left_at_the_path():
+    """Re-review 2: a user's junction at the path made the admin take,
+    open and delete the target. A fresh install removes the path as a link
+    only, makes a new folder, closes it with no /T, then deletes children."""
     body = _pascal("function ProtectDataDir(Fresh: Boolean): String;")
-    calls = re.findall(r"Icacls\('\"' \+ Dir \+ '([^']*)'\)", body)
-    assert calls == [
-        '" /setowner *S-1-5-32-544 /T /C',
-        '" /reset /T /C',
-        '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F'
-        ' *S-1-5-32-545:(OI)(CI)RX',
-        '" /setowner *S-1-5-32-544 /T /C',
-        '\\*" /reset /T /C',
-    ]
-    assert body.count("Result := 'Could not") == 5
-    assert "ForceDirectories(Dir)" in body
-    # A child reset runs only when the folder has children.
-    assert "else if HasChildren(Dir) and not (" in body
+    fresh = body.split("if Fresh or not DirExists(Dir) then", 1)[1].split("\n  end\n", 1)[0]
+    steps = ["DeleteFile(Dir)", "DelTree(Dir, True, True, True)", "CreateDir(Dir)",
+             "Icacls('\"' + Dir + '\"' + GrantOnly)", "DelTree(Dir + '\\*', False, True, True)"]
+    at = [fresh.index(x) for x in steps]
+    assert at == sorted(at), fresh
+    assert "ForceDirectories" not in ISS and "/T" not in fresh
+    assert "'Could not make a new data folder '" in fresh
+
+
+def test_an_upgrade_refuses_a_link_and_closes_the_folder_before_its_items():
+    body = _pascal("function ProtectDataDir(Fresh: Boolean): String;")
+    upgrade = body.split("\n  end\n", 1)[1]
+    steps = ["IsReparsePoint(Dir)", "Icacls('\"' + Dir + '\"' + GrantOnly)",
+             "/setowner *S-1-5-32-544 /T /C", "\\*\" /reset /T /C"]
+    at = [upgrade.index(x) for x in steps]
+    assert at == sorted(at), upgrade
+    assert "FILE_ATTRIBUTE_REPARSE_POINT = $400;" in ISS
+    assert "Result := 'The data folder is a link." in upgrade
 
 
 def test_the_folder_is_safe_before_any_file_or_run_step():
-    """Re-review: [Run] steps run before ssPostInstall, so a protection there
-    came after apply-windows and the service had read the folder, and its
-    wipe deleted the key of setup-link. PrepareToInstall runs before [Files]
-    and [Run], and its error text cancels the setup."""
+    """Re-review 1: [Run] steps run before ssPostInstall. PrepareToInstall
+    runs before [Files] and [Run], and its error text cancels the setup."""
     prep = _pascal("function PrepareToInstall(var NeedsRestart: Boolean): String;")
-    assert prep.rstrip().endswith("Result := ProtectDataDir(not WasInstalled);")
+    assert "Result := ProtectDataDir(not WasInstalled);" in prep
     assert "CurStepChanged" not in ISS and "ssPostInstall" not in ISS
     assert "RaiseException" not in ISS
 
 
-def test_a_fresh_install_deletes_what_a_user_put_in_the_folder():
-    body = _pascal("function ProtectDataDir(Fresh: Boolean): String;")
-    assert "else if Fresh then\n    DelTree(Dir + '\\*', False, True, True)" in body
-
-
-def test_an_upgrade_stops_the_service_and_waits_and_keeps_the_settings():
+def test_an_upgrade_stops_the_service_only_after_the_folder_is_safe():
     prep = _pascal("function PrepareToInstall(var NeedsRestart: Boolean): String;")
     assert "WasInstalled := RegKeyExists(HKLM, ServiceKey);" in prep
+    assert prep.index("ProtectDataDir(") < prep.index("'stop TallyBridge'")
+    assert "if (Result = '') and WasInstalled then" in prep
     assert "{sys}\\net.exe'), 'stop TallyBridge'" in prep
     assert r"'SYSTEM\CurrentControlSet\Services\TallyBridge'" in ISS
 
