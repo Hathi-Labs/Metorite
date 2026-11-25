@@ -27,8 +27,9 @@ slug routes.
 
 **The mutations (R7).** On 2026-11-25 each guard was removed in turn and this
 suite ran. Without the call in ``rollback_app``, a went red. Without the call
-in ``patch_app``, d went red. With ``require_org_review`` made to ignore the
-approved scope set, b and e went red.
+in ``patch_app``, d and the second e went red. With ``require_org_review``
+made to ignore the approved scope set, b, the first e and the one-query
+test went red.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
