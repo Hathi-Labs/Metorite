@@ -7,6 +7,9 @@
     python -m tally_bridge delete-copy # delete every local copy (TLY-4)
     python -m tally_bridge apply-windows --windows      # TLY-5: sign-in task, firewall
     python -m tally_bridge uninstall-windows --windows  # TLY-5: undo every change
+    python -m tally_bridge pair --domain <domain>   # link mode (TLY-2): see linkcli.py
+    python -m tally_bridge confirm-link --company "<name>"
+    python -m tally_bridge unlink
 
 On a dev box the settings and the hashes come from the environment
 (``TALLY_BRIDGE_*``), or from two files: ``--settings-file`` (the settings,
@@ -61,10 +64,21 @@ def main(argv: list[str] | None = None) -> int:
             "delete-copy",
             "apply-windows",
             "uninstall-windows",
+            "pair",
+            "confirm-link",
+            "unlink",
         ],
     )
     parser.add_argument("folder", nargs="?", help="record-requests: where to write the requests")
-    parser.add_argument("--company", help="record-requests: the exact Tally company name")
+    parser.add_argument(
+        "--company",
+        help="record-requests: the exact Tally company name; confirm-link: the company"
+        " name that the pairing showed",
+    )
+    parser.add_argument("--domain", help="pair: the company domain, such as example.com")
+    parser.add_argument(
+        "--dev-link-file", help="pair, serve: DEV ONLY, a file that holds the link credential"
+    )
     parser.add_argument("--ledger", help="record-requests: a busy ledger with a known Dr balance")
     parser.add_argument("--settings-file", help="serve, setup-link: the settings file (JSON)")
     parser.add_argument(
@@ -100,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         return _apply_windows(args)
     if args.command == "uninstall-windows":
         return _uninstall_windows(args)
+    if args.command in ("pair", "confirm-link", "unlink"):
+        return _link_command(args)
 
     if args.command == "version":
         print(__version__)
@@ -192,12 +208,66 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     return 0 if not failed else 1
 
 
+def _machine_applier(windows: bool, awake: Any, runner: Any = None) -> Any:
+    """The callback of the setup page (TLY-2d). It makes the machine match the
+    two switches at once, and returns an error text, or None. Without
+    ``--windows`` (a dev box) it only saves, so it returns None to the caller."""
+    if not windows:
+        return None
+
+    def startup(new: Settings) -> str | None:
+        """The schtasks part. It runs in a worker thread (two processes)."""
+        from tally_bridge.windows import system
+
+        run = runner or system.run
+        wanted = new.start_tally_at_signin or _had_startup(run)
+        if wanted and system.apply_startup(new.start_tally_at_signin, new.tally_exe, run) != 0:
+            return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        return None
+
+    async def apply(new: Settings) -> str | None:
+        # Keep-awake stays on this thread: the request handlers run on the
+        # thread of ``_awake_while``, which ``SetThreadExecutionState`` binds to.
+        if new.keep_awake:
+            awake.start()
+        else:
+            awake.stop()
+        # schtasks blocks for up to a second, so it runs off the event loop.
+        try:
+            return await asyncio.to_thread(startup, new)
+        except Exception as exc:
+            logging.getLogger("tally_bridge").warning("the sign-in task failed (%s)", exc)
+            return "The switches are saved, but the sign-in task did not change."
+
+    return apply
+
+
 def _had_startup(run: Any) -> bool:
     """True when the sign-in task may exist, so that turning the setting off
     removes it. ``schtasks /Query`` answers 0 for a task that exists."""
     from tally_bridge.windows import system
 
     return run(["schtasks", "/Query", "/TN", system.TASK_NAME]) == 0
+
+
+def _link_command(args: argparse.Namespace) -> int:
+    from tally_bridge import linkcli
+
+    try:
+        store = linkcli.link_store(args)
+        if args.command == "confirm-link":
+            return linkcli.do_confirm(args, store)
+        settings = _stores(args)[0].load()
+        if args.command == "pair":
+            return linkcli.do_pair(args, settings, store)
+        return linkcli.do_unlink(settings, store)
+    except SettingsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except PermissionError:
+        # The data folder gives a user no right at all (TLY-2).
+        print("Run this command as an administrator.", file=sys.stderr)
+        return 2
 
 
 def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
@@ -215,6 +285,7 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
     settings_store, secrets = _stores(args)
     if isinstance(secrets, stores.DpapiSecretStore):
         secrets.delete()
+    _unlink_quietly(args, settings_store)
     if getattr(args, "windows", False):
         (stores.data_dir() / stores.COPY_KEY_FILE).unlink(missing_ok=True)
     try:
@@ -229,6 +300,21 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
         CopyStore(copy_dir, DevFileKeyProvider("")).delete_all()
     print("Removed the sign-in task, the firewall rule, the stored secrets and the local copy.")
     return 0
+
+
+def _unlink_quietly(args: argparse.Namespace, settings_store: SettingsStore) -> None:
+    """TLY-2 (§3.8.6): an uninstall revokes the link credential while the
+    link is up, and deletes it here in any case."""
+    from tally_bridge import linkcli
+
+    store = linkcli.link_store(args)
+    if store is None or store.load() is None:
+        return
+    try:
+        settings = settings_store.load()
+    except SettingsError:
+        settings = Settings()
+    linkcli.do_unlink(settings, store)
 
 
 def _setup_link(args: argparse.Namespace) -> int:
@@ -308,6 +394,8 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
     from tally_bridge.transport import build_address_app
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    # Link mode (TLY-2): one httpx line per poll and per request is noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     store, secrets = _stores(args)
     settings = store.load()
     open_call_log(settings.log_dir)
@@ -332,11 +420,32 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
         return 2
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
-    app = build_address_app(live, secrets, reader, store, copy)
+    from tally_bridge import linkcli
+
+    controller = linkcli.link_controller(args, live, reader, copy)
+    from tally_bridge.windows.system import KeepAwake
+
+    awake = KeepAwake()
+    app = build_address_app(
+        live,
+        secrets,
+        reader,
+        store,
+        copy,
+        link=controller,
+        on_machine_saved=_machine_applier(getattr(args, "windows", False), awake),
+    )
+    link = None
+    if controller is not None:
+        from tally_bridge.transport.link.dispatch import McpDispatcher
+
+        controller.dispatch = McpDispatcher(app.inner, settings.bind_port)
+        link = controller.run
     server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,
-        lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop)),
+        lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop, link)),
+        awake=awake,
     )
     return 0
 
@@ -377,28 +486,49 @@ def _awake_while(keep_awake: bool, run: Any, awake: Any = None) -> None:
 
 
 async def _serve_with_copy(
-    server: Any, reader: Any, copy: CopyStore | None, live: Any, stop: Any = None
+    server: Any,
+    reader: Any,
+    copy: CopyStore | None,
+    live: Any,
+    stop: Any = None,
+    link: Any = None,
 ) -> None:
     """Run the server, and the copy loop beside it when the copy is on. With
     *stop* (a ``threading.Event``), the server ends when it is set: the
-    Windows service sets it on a stop request."""
+    Windows service sets it on a stop request. With *link* (TLY-2), the link
+    loop runs beside them, and it ends with the server."""
     from tally_bridge.localcopy.schedule import run_forever
 
     loop_task = asyncio.create_task(run_forever(reader, copy, live)) if copy else None
-    stop_task = asyncio.create_task(_stop_when(stop, server)) if stop is not None else None
+    link_stop = asyncio.Event()
+    stop_task = (
+        asyncio.create_task(_stop_when(stop, server, link_stop.set)) if stop is not None else None
+    )
+    link_task = asyncio.create_task(link(link_stop)) if link else None
     try:
         await server.serve()
     finally:
+        link_stop.set()
         for task in (loop_task, stop_task):
             if task is not None:
                 task.cancel()
+        if link_task is not None:
+            try:
+                await asyncio.wait_for(link_task, 5)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception:
+                logging.getLogger("tally_bridge.link").exception("the link loop failed")
 
 
-async def _stop_when(stop: Any, server: Any) -> None:
+async def _stop_when(stop: Any, server: Any, on_stop: Any = None) -> None:
     """Ask *server* to exit once *stop* is set. ``uvicorn.Server`` reads
-    ``should_exit`` in its loop."""
+    ``should_exit`` in its loop. *on_stop* runs first: the link stops polling
+    at once, not after the graceful window of the server (TLY-2)."""
     while not stop.is_set():
         await asyncio.sleep(0.2)
+    if on_stop is not None:
+        on_stop()
     server.should_exit = True
 
 
