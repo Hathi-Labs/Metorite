@@ -470,3 +470,30 @@ def test_d6_an_admin_who_may_manage_people_changes_only_their_own_row(
     assert len(after[w.ada]["absences"]) == 1
     assert {k: v for k, v in after.items() if k != w.ada} == \
         {k: v for k, v in before.items() if k != w.ada}, "no other row changed"
+
+
+def test_d7_a_working_hours_change_merges_over_the_stored_override(world, approve) -> None:
+    """Fix round 3, P1 data loss: "change my end time to 18:00" goes through
+    the real PATCH /people/me and keeps each stored key of the override
+    (``people_center_app.md`` §3.4a). A null clears one key. Mutation: send
+    only the given keys -> the days, fraction and shift go -> red."""
+    w = world
+    stored = {"days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00",
+              "fraction": 0.5, "shift": "night"}
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE people SET working_hours = CAST(:h AS jsonb) "
+                       "WHERE id = CAST(:p AS uuid)"),
+                  {"h": json.dumps(stored), "p": w.ids[w.mel]})
+
+    def hours() -> Any:
+        with w.p.admin_engine.begin() as c:
+            return c.execute(text("SELECT working_hours FROM people WHERE id = "
+                                  "CAST(:p AS uuid)"), {"p": w.ids[w.mel]}).scalar()
+
+    out = w.act(w.mel, pt.update_my_profile, working_hours={"end": "18:00"})
+    assert out["ok"] is True, out
+    assert hours() == {**stored, "end": "18:00"}
+    out = w.act(w.mel, pt.update_my_profile, working_hours={"shift": None})
+    assert out["ok"] is True, out
+    assert hours() == {"days": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00",
+                       "fraction": 0.5}

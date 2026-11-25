@@ -379,6 +379,9 @@ class _Writes:
         #: The reads of GET /people/me/skills, and a hook that runs on each.
         self.reads = 0
         self.on_read: Any = None
+        #: The reads of GET /people/me, and a hook that runs on each.
+        self.me_reads = 0
+        self.on_me: Any = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else None
@@ -389,6 +392,9 @@ class _Writes:
         if forced is not None:
             return httpx.Response(forced[0], json=forced[1])
         if key == ("GET", "/people/me"):
+            self.me_reads += 1
+            if self.on_me is not None:
+                self.on_me(self)
             return httpx.Response(200, json={"state": "resolved", "email": MEMBER,
                                               "person": self.person})
         if key == ("GET", "/people/me/skills"):
@@ -871,15 +877,14 @@ def test_a_held_chat_holds_off_each_write_and_keeps_the_reads(monkeypatch) -> No
 @pytest.mark.parametrize(("field", "value", "key"), [
     ("emergency_contact", {"name": "Sam", "phone_number": "+44 1"}, "phone_number"),
     ("links", {"site": "x.example"}, "site"),
-    ("working_hours", {"days": [1, 2], "timezone": "UTC"}, "timezone"),
+    ("working_hours", {"days": [1, 2], "lunch": "12:00"}, "lunch"),
 ])
-async def test_an_object_key_that_no_page_reads_is_refused_with_no_card(
+async def test_an_unknown_object_key_is_refused_with_no_card(
         wgw, card, field, value, key) -> None:
-    """The People app reads only its own keys (``ProfilePanels.tsx``).
-    Mutation: accept any key -> the tool says saved for a key no page
-    shows -> red."""
+    """Mutation: accept any key -> the tool says saved for a key that no
+    reader uses -> red."""
     out = await pt.update_my_profile(**{field: value})
-    assert out["ok"] is False and f"No page reads the key {key}." in out["error"], out
+    assert out["ok"] is False and f"does not set the key {key}." in out["error"], out
     assert ", ".join(pt.OBJECT_KEYS[field]) in out["error"]
     assert "Nothing was saved." in out["error"]
     assert wgw.calls == [] and card.shown == []
@@ -888,7 +893,8 @@ async def test_an_object_key_that_no_page_reads_is_refused_with_no_card(
 @pytest.mark.parametrize("hours", [
     {"days": [0]}, {"days": [8]}, {"days": ["Mon"]}, {"days": [True]}, {"days": []},
     {"days": 1}, {"start": "9:00"}, {"end": "25:00"}, {"start": "09:60"},
-    {"start": 9},
+    {"start": 9}, {"hours_per_day": 0}, {"hours_per_day": 25}, {"hours_per_day": "8"},
+    {"fraction": 1.5}, {"fraction": -0.1}, {"fraction": True}, {"shift": 3},
 ])
 async def test_a_bad_day_or_time_is_refused_before_any_request(wgw, card, hours) -> None:
     """``work_schedule._clean_days`` reads days 1 to 7 and ``_clean_time``
@@ -940,3 +946,129 @@ async def test_the_removal_card_tells_two_equal_absences_apart(wgw, card) -> Non
     await pt.remove_my_absence(twin)
     one, two = (c["context"] for c in card.shown)
     assert one != two and f"Absence id: {twin}" in two
+
+
+# ── 8f. Fix round 3: the merge, the re-read, exact skill and credential cards ─
+
+#: A stored override of the work schedule (``people_center_app.md`` §3.4a).
+STORED_HOURS = {"days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00",
+                "fraction": 0.5, "shift": "night"}
+
+
+def test_the_vocabularies_equal_the_servers() -> None:
+    """Mutation: add a level that the server refuses -> red."""
+    from gateway.person_skills import CREDENTIAL_KINDS, EVIDENCE, SKILL_LEVELS
+
+    assert pt.SKILL_LEVELS == SKILL_LEVELS and pt.EVIDENCE == EVIDENCE
+    assert pt.CREDENTIAL_KINDS == CREDENTIAL_KINDS
+
+
+async def test_a_working_hours_change_merges_over_the_stored_object(wgw, card) -> None:
+    """P1 data loss. "Change my end time to 18:00" keeps the days, the start,
+    the fraction and the shift. Mutation: send the given keys alone -> the
+    stored keys go -> red."""
+    wgw.person["working_hours"] = dict(STORED_HOURS)
+    out = await pt.update_my_profile(working_hours={"end": "18:00"})
+    assert out["ok"] is True, out
+    merged = {**STORED_HOURS, "end": "18:00"}
+    assert wgw.writes()[0][2] == {"working_hours": merged}
+    old = json.dumps(STORED_HOURS, separators=(",", ":"))
+    new = json.dumps(merged, separators=(",", ":"))
+    assert f"working_hours: «{old}» to «{new}»" in card.shown[0]["context"]
+
+
+async def test_a_null_clears_one_key_and_keeps_the_rest(wgw, card) -> None:
+    wgw.person["working_hours"] = dict(STORED_HOURS)
+    await pt.update_my_profile(working_hours={"shift": None, "fraction": None})
+    assert wgw.writes()[0][2] == {"working_hours": {
+        "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00"}}
+
+
+async def test_an_empty_object_clears_the_whole_field(wgw, card) -> None:
+    wgw.person["emergency_contact"] = {"name": "Sam", "phone": "+44 1"}
+    await pt.update_my_profile(emergency_contact={})
+    assert wgw.writes()[0][2] == {"emergency_contact": None}
+    assert 'emergency_contact: «{"name":"Sam","phone":"+44 1"}» to (empty)' in \
+        card.shown[0]["context"]
+
+
+async def test_a_record_that_changed_while_the_card_waited_saves_nothing(wgw, card) -> None:
+    """P2. Mutation: skip the read after Approve -> the PATCH overwrites the
+    change -> red."""
+    wgw.person["working_hours"] = dict(STORED_HOURS)
+
+    def move(g: _Writes) -> None:
+        if g.me_reads == 2:  # the read after Approve
+            g.person = {**g.person, "working_hours": {**STORED_HOURS, "days": [6, 7]}}
+
+    wgw.on_me = move
+    out = await pt.update_my_profile(working_hours={"end": "18:00"})
+    assert out == {"ok": False, "decision": "approved", "error": (
+        "Your record changed while the card waited. Nothing was saved. Ask again.")}
+    assert len(card.shown) == 1 and wgw.writes() == []
+
+
+@pytest.mark.parametrize("hours", [4.125, 0.001, 23.999, 1e-9])
+async def test_an_absence_hours_value_with_more_than_two_decimals_is_refused(
+        wgw, card, hours) -> None:
+    """The verifier's pair 4.125 and 4.12 drew one card. Mutation: accept any
+    float -> red."""
+    out = await pt.add_my_absence("2027-01-04", "2027-01-04", "partial", hours)
+    assert out["ok"] is False and "at most 2 decimals" in out["error"]
+    assert wgw.calls == [] and card.shown == []
+
+
+async def test_absence_hours_draw_whole(wgw, card) -> None:
+    await pt.add_my_absence("2027-01-04", "2027-01-04", "partial", 4.25)
+    await pt.add_my_absence("2027-01-04", "2027-01-04", "partial", 4.2)
+    lines = [c["context"].split("\n")[3] for c in card.shown]
+    assert lines == ["Hours each day: 4.25", "Hours each day: 4.2"]
+
+
+@pytest.mark.parametrize(("row", "words"), [
+    ({"skill": "go", "level": "expert" + "x" * 90}, "learning, working, proficient, expert"),
+    ({"skill": "go", "level": "Expert"}, "learning, working, proficient, expert"),
+    ({"skill": "go", "evidence": "said so"}, "manual, resume, observed"),
+    ({"skill": "go", "years": 61}, "0 to 60"),
+    ({"skill": "go", "years": -1}, "0 to 60"),
+    ({"skill": "go", "last_used_year": 1969}, "1970 to 2100"),
+    ({"skill": "go", "last_used_year": 2026.5}, "1970 to 2100"),
+])
+async def test_a_skill_value_the_server_refuses_is_refused_before_the_card(
+        wgw, card, row, words) -> None:
+    """A value that the card would cut, or that the server refuses, never
+    reaches a card. Mutation: drop the vocabulary check -> a card shows -> red."""
+    out = await pt.set_my_skills([row])
+    assert out["ok"] is False and words in out["error"], out
+    assert card.shown == [] and wgw.writes() == []
+
+
+async def test_one_year_is_singular_and_each_skill_line_is_whole(wgw, card) -> None:
+    long = "x" * 100
+    await pt.set_my_skills([{"skill": long, "level": "proficient", "years": 1,
+                             "last_used_year": 2025, "evidence": "observed"}])
+    line = card.shown[0]["context"].split("\n")[-1]
+    assert line == f"- «{long}» (proficient, 1 year, last used 2025, evidence observed)"
+
+
+@pytest.mark.parametrize(("row", "words"), [
+    ({"kind": "degree", "title": "MSc"}, "education, certification, prior_role"),
+    ({"kind": "education" + "x" * 50, "title": "MSc"}, "education, certification, prior_role"),
+    ({"kind": "education", "title": "MSc", "year_from": 1949}, "1950 to 2100"),
+    ({"kind": "education", "title": "MSc", "year_to": 2101}, "1950 to 2100"),
+    ({"kind": "education", "title": "MSc", "year_from": 2018, "year_to": 2014},
+     "cannot be before"),
+])
+async def test_a_credential_value_the_server_refuses_is_refused_before_the_card(
+        wgw, card, row, words) -> None:
+    out = await pt.set_my_credentials([row])
+    assert out["ok"] is False and words in out["error"], out
+    assert card.shown == [] and wgw.writes() == []
+
+
+async def test_a_long_credential_text_draws_whole(wgw, card) -> None:
+    title, issuer = "T" * 150, "I" * 150
+    await pt.set_my_credentials([{"kind": "prior_role", "title": title, "issuer": issuer,
+                                  "year_from": 2014, "year_to": 2018}])
+    line = card.shown[0]["context"].split("\n")[-1]
+    assert line == f"- prior_role: «{title}» by «{issuer}», 2014 to 2018"

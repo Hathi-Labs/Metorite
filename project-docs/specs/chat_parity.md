@@ -43,6 +43,13 @@ Two limits of the card are known. A long old value shows cut, and the new
 value always shows whole. A credential that came from a CV loses that mark
 when `set_my_credentials` saves it, because the route takes no `source`.
 
+The object fields `working_hours`, `links` and `emergency_contact` merge. The
+tool lays the keys that the member gives over the stored object, and it keeps
+each other stored key. A key given as null leaves. The card shows the stored
+object and the merged object, and the PATCH sends the merged object. The
+profile write and the two list writes read the row again after Approve. They
+save nothing when the row changed while the card waited.
+
 No write sends `email` (OD1 B). P-5b-2 paid five people rows, so the people
 ceiling went from 13 to 8. Fences: `tests/unit/test_people_tools.py` and
 `tests/unit/test_people_tools_r8.py` (R8).

@@ -35,8 +35,10 @@ another row, and a member without ``feature:people`` can still change their
 own record. The route checks the field class (``fields.authorize_write``).
 Each write shows ONE card with the exact change, and it sends only on
 ``approved``. A decline, a timeout, a chat with no card and a card that does
-not fit send nothing. The two list writes read the list again after Approve,
-and they send nothing when it changed. No tool sends ``email``, ``status``,
+not fit send nothing. The profile write and the two list writes read the row
+again after Approve, and they send nothing when it changed. The object fields
+merge: the keys that the member gives go over the stored object, and each
+other stored key stays. No tool sends ``email``, ``status``,
 ``manager_id`` or ``employee_id`` (D-PC-2): the body holds only the keys of
 :data:`SELF_PROFILE_FIELDS`.
 
@@ -146,20 +148,32 @@ _SHORT_TEXT = ("preferred_name", "pronouns", "location", "timezone", "domain", "
 _LONG_TEXT = ("bio", "resume_summary")
 _TEXT_LISTS = ("languages", "interests")
 _OBJECTS = ("working_hours", "links", "emergency_contact")
-#: The keys of each object field: the keys that the People app edits and reads
-#: (``ProfilePanels.tsx`` ``FieldInput``, kinds ``hours``, ``links`` and
-#: ``contact``). A key outside the set is refused, because no page shows it.
+#: The keys that a write may set in each object field. ``working_hours`` is
+#: the person's override of the work schedule: ``people_center_app.md`` §3.4a
+#: (any subset of days, start, end, hours_per_day, shift, fraction), and
+#: ``work_schedule.effective_schedule``, which reads timezone too. ``links``
+#: and ``emergency_contact`` are the keys of the People app (``ProfilePanels.tsx``
+#: ``FieldInput``, kinds ``links`` and ``contact``). A write MERGES the keys
+#: that the member gives over the stored object, and keeps each other key.
 OBJECT_KEYS: dict[str, tuple[str, ...]] = {
-    "working_hours": ("days", "start", "end"),
+    "working_hours": ("days", "start", "end", "hours_per_day", "shift", "fraction",
+                      "timezone"),
     "links": ("github", "linkedin", "website"),
     "emergency_contact": ("name", "relation", "phone"),
 }
 #: The words of the shape of each object field, for a refusal and the docs.
+#: The shapes are the readers of ``work_schedule.py``: ``_clean_days``,
+#: ``_clean_time``, ``_clean_hours``, ``_clean_str`` and ``_clean_fraction``.
 OBJECT_SHAPES: dict[str, str] = {
     "working_hours": ("days is a list of weekday numbers from 1 (Monday) to 7 (Sunday). "
-                      "start and end are times as HH:MM, 24-hour."),
-    "links": "github, linkedin and website are each one line of text.",
-    "emergency_contact": "name, relation and phone are each one line of text.",
+                      "start and end are times as HH:MM, 24-hour. hours_per_day is a "
+                      "number above 0 and at most 24. fraction is a number from 0 to 1, "
+                      "such as 0.5 for half time. shift is the name of a shift of the "
+                      "organization, and timezone is a time zone such as Asia/Kolkata. "
+                      "null clears one key."),
+    "links": "github, linkedin and website are each one line of text. null clears one key.",
+    "emergency_contact": ("name, relation and phone are each one line of text. null clears "
+                          "one key."),
 }
 #: A time of ``working_hours``, as ``work_schedule._TIME_RE`` reads it.
 _TIME = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
@@ -173,6 +187,12 @@ MAX_NUMBER = 1000
 #: The most rows of one skills or credentials list (``person_skills.py``).
 MAX_SKILL_ROWS = 200
 MAX_CREDENTIAL_ROWS = 100
+#: The vocabularies of a skill and a credential (``gateway/person_skills.py``
+#: ``SKILL_LEVELS``, ``EVIDENCE`` and ``CREDENTIAL_KINDS``). A package must not
+#: import the gateway, so they are text here. ``test_people_tools.py`` pins them.
+SKILL_LEVELS: tuple[str, ...] = ("learning", "working", "proficient", "expert")
+EVIDENCE: tuple[str, ...] = ("manual", "resume", "observed")
+CREDENTIAL_KINDS: tuple[str, ...] = ("education", "certification", "prior_role")
 #: The kinds of an absence (``absences.py`` ``ABSENCE_KINDS``).
 ABSENCE_KINDS: tuple[str, ...] = ("away", "holiday", "partial")
 #: The longest note of an absence.
@@ -225,6 +245,8 @@ _W_NO_CARD = ("This chat shows no card, so nothing was saved. Make the change in
 _W_NOT_DONE = "Nothing was saved. The decision was {decision}."
 _W_WONT_FIT = ("This change does not fit on one card, so nothing was saved. Make it in the "
                "People app, or change fewer values at a time.")
+_W_RECORD_MOVED = ("Your record changed while the card waited. Nothing was saved. "
+                   "Ask again.")
 _W_MOVED = ("Your {what} changed while the card waited. Nothing was saved. Ask again.")
 _W_BAD_ABSENCE_ID = "absence_id is the id of one of your absences. Nothing was removed."
 _W_NOT_MINE = ("None of your absences has that id, so nothing was removed. Read your "
@@ -687,42 +709,84 @@ def _list_arg(field: str, raw: Any) -> list[str]:
     return out
 
 
-def _object_arg(field: str, raw: Any) -> dict[str, Any] | None:
-    """*raw* as an object of the keys of :data:`OBJECT_KEYS`, or None for
-    ``{}``, which clears the field. Each text is one line, so the value sent
-    is the value that the card shows. An empty text leaves its key out, as
-    the People app does."""
+class _Patch(dict):
+    """The keys of one object field that the member gives. A value None
+    clears its key. :func:`_merged` lays it over the stored object."""
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _object_arg(field: str, raw: Any) -> _Patch | None:
+    """The keys that *raw* changes, as a :class:`_Patch`, or None for ``{}``,
+    which clears the whole field. Each text is one line, so the value sent is
+    the value that the card shows. An empty text clears its key, as the
+    People app does. Raise :class:`_Refused` for an unknown key or a bad
+    shape, with words that name the allowed keys."""
     allowed = OBJECT_KEYS[field]
     why = f"The keys are {', '.join(allowed)}. {OBJECT_SHAPES[field]}"
     if not isinstance(raw, dict):
         raise _Refused(_W_BAD.format(field=field, why=f"Send an object. {why}"))
+    if not raw:
+        return None
     unknown = [str(k) for k in raw if k not in allowed]
     if unknown:
         raise _Refused(_W_BAD.format(
-            field=field, why=f"No page reads the key {', '.join(unknown)}. {why}"))
+            field=field, why=f"This tool does not set the key {', '.join(unknown)}. {why}"))
     problem = body_hidden_problem(raw)
     if problem is not None:
         raise _Refused(f"{field}: {problem} Nothing was saved.")
-    out: dict[str, Any] = {}
-    for key in allowed:
-        if key not in raw or raw[key] is None:
-            continue
-        value = raw[key]
-        if key == "days":
-            if not isinstance(value, list) or not value or any(
-                    isinstance(d, bool) or not isinstance(d, int) or not 1 <= d <= 7
-                    for d in value):
-                raise _Refused(_W_BAD.format(field=f"{field}.days", why=why))
-            out[key] = sorted(set(value))
-            continue
-        if not isinstance(value, str):
-            raise _Refused(_W_BAD.format(field=f"{field}.{key}", why=why))
-        text = _text_arg(f"{field}.{key}", value, MAX_SHORT_CHARS)
-        if not text:
-            continue
-        if key in ("start", "end") and not _TIME.fullmatch(text):
-            raise _Refused(_W_BAD.format(field=f"{field}.{key}", why=why))
-        out[key] = text
+    return _Patch({key: _object_value(field, key, raw[key], why)
+                   for key in allowed if key in raw})
+
+
+def _object_value(field: str, key: str, value: Any, why: str) -> Any:
+    """One key of an object field as the write sends it, or None to clear it."""
+    bad = _Refused(_W_BAD.format(field=f"{field}.{key}", why=why))
+    if value is None:
+        return None
+    if key == "days":
+        if not isinstance(value, list) or not value or any(
+                isinstance(d, bool) or not isinstance(d, int) or not 1 <= d <= 7
+                for d in value):
+            raise bad
+        return sorted(set(value))
+    if key == "hours_per_day":
+        if not _number(value) or not 0 < value <= 24:
+            raise bad
+        return value
+    if key == "fraction":
+        if not _number(value) or not 0 <= value <= 1:
+            raise bad
+        return value
+    if not isinstance(value, str):
+        raise bad
+    text = _text_arg(f"{field}.{key}", value, MAX_SHORT_CHARS)
+    if text and key in ("start", "end") and not _TIME.fullmatch(text):
+        raise bad
+    return text or None
+
+
+def _stored_object(value: Any) -> dict[str, Any]:
+    """A stored object field as a dict. The row can hold it as JSON text."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _merged(stored: Any, patch: _Patch) -> dict[str, Any] | None:
+    """*patch* laid over the stored object. Each stored key that the member
+    did not name stays. A key given as None leaves. None when nothing stays."""
+    out = _stored_object(stored)
+    for key, value in patch.items():
+        if value is None:
+            out.pop(key, None)
+        else:
+            out[key] = value
     return out or None
 
 
@@ -821,7 +885,7 @@ async def update_my_profile(
     max_concurrent_tasks: int | None = None, phone: str | None = None,
     emergency_contact: dict[str, Any] | None = None, birthday: str | None = None,
 ) -> dict[str, Any]:
-    """Change fields of your OWN People record after one card. Send only the fields to change: "" or {} or [] clears one. working_hours takes only days (weekday numbers 1 to 7), start and end (HH:MM). links takes only github, linkedin and website. emergency_contact takes only name, relation and phone. It never changes your email, title, manager or status."""
+    """Change fields of your OWN People record after one card. Send only the fields to change: "" or [] clears one. For working_hours, links and emergency_contact send only the keys to change: the tool keeps each other stored key, null clears one key, and {} clears the whole field. working_hours keys: days (weekday numbers 1 to 7), start and end (HH:MM), hours_per_day (above 0, at most 24), fraction (0 to 1), shift (a shift name), timezone. links keys: github, linkedin, website. emergency_contact keys: name, relation, phone. It never changes your email, title, manager or status."""
     given = dict(locals())
     try:
         _member_headers()
@@ -830,6 +894,8 @@ async def update_my_profile(
         if not wanted:
             return _refusal(_W_NONE)
         person = await _own_row()
+        wanted = {f: _merged(person.get(f), v) if isinstance(v, _Patch) else v
+                  for f, v in wanted.items()}
         changes = {f: v for f, v in wanted.items() if not _same(person.get(f), v)}
         if not changes:
             return {"ok": True, "saved": [], "note": _W_SAME}
@@ -843,6 +909,9 @@ async def update_my_profile(
             note + " Approve to save. Reject to keep the record as it is.", rows)
         if decision != "approved":
             return _not_saved(decision)
+        again = await _own_row()
+        if any(not _same(again.get(f), person.get(f)) for f in changes):
+            return _refusal(_W_RECORD_MOVED, decision=decision)
         body = {f: v for f, v in changes.items() if f in SELF_PROFILE_FIELDS
                 and f not in NEVER_SENT}
         sent = await _send("PATCH", MY_ROW_PATH, body, act="change of your record")
@@ -873,15 +942,24 @@ def _skill_rows(raw: Any) -> list[dict[str, Any]]:
             if key not in row and key != "skill":
                 continue  # Not given: :func:`_merge_skills` keeps the value of the row.
             value = row.get(key)
+            where = f"skills #{n} {key}"
             if key in ("skill", "level", "evidence"):
-                text = _text_arg(f"skills #{n} {key}", value, MAX_ITEM_CHARS) \
-                    if value is not None else ""
+                text = _text_arg(where, value, MAX_ITEM_CHARS) if value is not None else ""
+                vocabulary = SKILL_LEVELS if key == "level" else EVIDENCE
+                if text and key != "skill" and text not in vocabulary:
+                    raise _Refused(_W_BAD.format(
+                        field=where, why="Send " + ", ".join(vocabulary) + "."))
                 clean[key] = text or None
-            elif value is None or (isinstance(value, (int, float))
-                                   and not isinstance(value, bool)):
+            elif value is None:
+                clean[key] = None
+            elif (key == "years" and _number(value) and 0 <= value <= 60) or (
+                    key == "last_used_year" and isinstance(value, int)
+                    and not isinstance(value, bool) and 1970 <= value <= 2100):
                 clean[key] = value
             else:
-                raise _Refused(_W_BAD.format(field=f"skills #{n} {key}", why="Send a number."))
+                raise _Refused(_W_BAD.format(field=where, why=(
+                    "Send a number from 0 to 60." if key == "years"
+                    else "Send a year from 1970 to 2100.")))
         if not clean["skill"]:
             raise _Refused(_W_BAD.format(field=f"skills #{n}", why="The skill has no name."))
         out.append(clean)
@@ -910,14 +988,22 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
+def _whole(value: Any) -> str:
+    """A short value of a vocabulary or a number, whole, on one line."""
+    return one_line(strip_hidden(str(value)))
+
+
 def _skill_line(row: dict[str, Any]) -> str:
-    parts = [str(row.get("level") or "no level")]
-    if row.get("years") is not None:
-        parts.append(f"{row['years']} years")
+    """One skill on the card, whole. The level and the evidence are words of
+    the server's vocabulary, so no line is ever cut."""
+    parts = [_whole(row.get("level") or "no level")]
+    years = row.get("years")
+    if years is not None:
+        parts.append(f"{_whole(years)} {'year' if years == 1 else 'years'}")
     if row.get("last_used_year") is not None:
-        parts.append(f"last used {row['last_used_year']}")
-    parts.append(f"evidence {row.get('evidence') or 'manual'}")
-    return f"- {_shown(row.get('skill'))} ({_line(', '.join(parts), 120)})"
+        parts.append(f"last used {_whole(row['last_used_year'])}")
+    parts.append(f"evidence {_whole(row.get('evidence') or 'manual')}")
+    return f"- {_shown(row.get('skill'))} ({', '.join(parts)})"
 
 
 def _credential_rows(raw: Any) -> list[dict[str, Any]]:
@@ -936,33 +1022,41 @@ def _credential_rows(raw: Any) -> list[dict[str, Any]]:
         for key in _CREDENTIAL_KEYS:
             value = row.get(key)
             if key in ("year_from", "year_to"):
-                if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+                if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                          or not 1950 <= value <= 2100):
                     raise _Refused(_W_BAD.format(field=f"credentials #{n} {key}",
-                                                 why="Send a year."))
+                                                 why="Send a year from 1950 to 2100."))
                 clean[key] = value
                 continue
             limit = MAX_NOTE_CHARS if key == "detail" else MAX_SHORT_CHARS
             text = _text_arg(f"credentials #{n} {key}", value, limit) \
                 if value is not None else ""
+            if key == "kind" and text and text not in CREDENTIAL_KINDS:
+                raise _Refused(_W_BAD.format(field=f"credentials #{n} kind",
+                                             why="Send " + ", ".join(CREDENTIAL_KINDS) + "."))
             clean[key] = text or None
         if not clean["kind"] or not clean["title"]:
             raise _Refused(_W_BAD.format(field=f"credentials #{n}",
                                          why="Each row needs a kind and a title."))
+        if clean["year_from"] is not None and clean["year_to"] is not None \
+                and clean["year_to"] < clean["year_from"]:
+            raise _Refused(_W_BAD.format(field=f"credentials #{n}",
+                                         why="year_to cannot be before year_from."))
         out.append(clean)
     return out
 
 
 def _credential_line(row: dict[str, Any]) -> str:
-    text = f"- {_line(row.get('kind') or 'no kind', 40)}: {_shown(row.get('title'))}"
+    text = f"- {_whole(row.get('kind') or 'no kind')}: {_shown(row.get('title'))}"
     if row.get("issuer"):
         text += f" by {_shown(row['issuer'])}"
     start, end = row.get("year_from"), row.get("year_to")
     if start is not None and end is not None:
-        text += f", {_line(start, 8)} to {_line(end, 8)}"
+        text += f", {_whole(start)} to {_whole(end)}"
     elif start is not None:
-        text += f", from {_line(start, 8)}"
+        text += f", from {_whole(start)}"
     elif end is not None:
-        text += f", to {_line(end, 8)}"
+        text += f", to {_whole(end)}"
     if row.get("detail"):
         text += f", {_shown(row['detail'])}"
     return text
@@ -1076,11 +1170,11 @@ def _day(field: str, raw: Any) -> date:
 
 
 def _absence_lines(row: dict[str, Any]) -> list[tuple[str, str]]:
-    lines = [("dates", f"Dates: {_line(row.get('starts_on'), 20)} to "
-                       f"{_line(row.get('ends_on'), 20)}"),
-             ("kind", f"Kind: {_line(row.get('kind') or 'away', 20)}")]
+    lines = [("dates", f"Dates: {_whole(row.get('starts_on'))} to "
+                       f"{_whole(row.get('ends_on'))}"),
+             ("kind", f"Kind: {_whole(row.get('kind') or 'away')}")]
     if row.get("hours_per_day") is not None:
-        lines.append(("hours", f"Hours each day: {_line(row['hours_per_day'], 20)}"))
+        lines.append(("hours", f"Hours each day: {_whole(row['hours_per_day'])}"))
     lines.append(("note", f"Note: {_shown(row.get('note'))}"))
     return lines
 
@@ -1101,10 +1195,11 @@ async def add_my_absence(
             raise _Refused(_W_BAD.format(field="kind", why="Send " + ", ".join(ABSENCE_KINDS)
                                          + "."))
         if hours_per_day is not None and (
-                isinstance(hours_per_day, bool) or not isinstance(hours_per_day, (int, float))
-                or not 0 < hours_per_day <= 24):
-            raise _Refused(_W_BAD.format(field="hours_per_day",
-                                         why="Send a number above 0 and at most 24."))
+                not _number(hours_per_day) or not 0 < hours_per_day <= 24
+                or round(hours_per_day, 2) != hours_per_day):
+            raise _Refused(_W_BAD.format(
+                field="hours_per_day",
+                why="Send a number above 0 and at most 24, with at most 2 decimals."))
         if hours_per_day is not None and kind != "partial":
             raise _Refused(_W_BAD.format(field="hours_per_day",
                                          why="Send it only for a partial absence."))
