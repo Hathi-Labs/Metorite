@@ -215,9 +215,11 @@ def _allowed(workflows: bool) -> frozenset[str]:
     list while the org is off its switches (``_tool_injection._apply_tool_packs``).
     The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
     for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
-    surface, owner ``org-admin``) is out for the same reason."""
+    surface, owner ``org-admin``) is out for the same reason. The dark
+    ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
+    reason."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
-                                          "people"}
+                                          "people", "studio-apps"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

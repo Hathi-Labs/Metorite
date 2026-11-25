@@ -1050,6 +1050,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-9 (chat_parity.md section 6.4, rung 8, task 3950): the Custom Apps of
+    # the App Workshop. Six tools call the /apps routes as the member
+    # (custom_app_tools.py). It has no surface and is NOT in FOLLOWS: only the
+    # owner's pack list turns it on. Fence: test_custom_app_tools.py.
+    "studio-apps": {
+        "label": "AI Studio Custom Apps",
+        "summary": (
+            "Read the Custom Apps of the App Workshop, change their files and stored data, "
+            "rename, copy or pin one, publish it, roll it back, or share it."
+        ),
+        "description": (
+            "A tool pack: the acts of the Custom Apps of the App Workshop, for the main "
+            "assistant to load when a turn asks to read, change, publish or share a "
+            "Custom App. A publish, a roll back, each share act, a file delete, a "
+            "restore and a delete of a stored value show one card. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "custom_app_read",
+            "custom_app_save",
+            "custom_app_files",
+            "custom_app_publish",
+            "custom_app_share",
+            "custom_app_data",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # PAR-2a (chat_parity.md section 6.3, rung 1, task 3102): the members of the
     # org from the chat. Each tool calls an admin route as the member, and the
     # guard of the route is the only check. The owner never runs as an agent, as

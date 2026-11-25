@@ -849,10 +849,12 @@ def test_the_pack_holds_the_two_writes_of_the_studio_owner() -> None:
     # TOF-3a F12c: the repair pack sits between this pack and the share pack.
     # PAR-2a: the org-admin pack of another owner comes after them. P-5b-1 (task
     # 3114): the people pack of that owner comes last of all.
-    assert sf.pack_slugs()[-7:-2] == ("studio", "studio-more", PACK, "studio-repair",
-                                      "studio-share"), "after studio, so the cap drops it first"
+    # PAR-9: the Custom Apps pack of the same owner comes after the share pack.
+    assert sf.pack_slugs()[-8:-2] == ("studio", "studio-more", PACK, "studio-repair",
+                                      "studio-share", "studio-apps"), (
+        "after studio, so the cap drops it first")
     assert tp.owner_packs(STUDIO) == ("studio", "studio-more", PACK, "studio-repair",
-                                      "studio-share")
+                                      "studio-share", "studio-apps")
     assert not set(fam["tools"]) & set(sf.SKILL_FAMILIES["studio-more"]["tools"])
     found = tp.PACKS[PACK]
     assert found.owner == STUDIO and found.delegation_refusal and not found.surface_slugs
