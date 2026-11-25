@@ -107,7 +107,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "org-admin", "people",
+        "studio-share", "org-admin", "people", "notes",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -876,9 +876,10 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # WS-STU J2d: the dark share pack is the last Studio pack, so the cap drops it
     # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
-    # people pack of the same owner comes last.
-    assert list(tp.PACKS)[-7:-2] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-2:] == ["org-admin", "people"]
+    # people pack of the same owner comes next. PAR-4d (task 3963): the dark notes
+    # pack of that owner comes last.
+    assert list(tp.PACKS)[-8:-3] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-3:] == ["org-admin", "people", "notes"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
 
@@ -1419,9 +1420,10 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     assert family["owner"] == ORG_ADMIN and sf.is_pack("org-admin") and family["core"] is False
     assert tuple(family["tools"]) == ORG_ADMIN_TOOLS
     cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
-    # P-5b-1 (task 3114): the same owner holds the people pack too.
-    assert set(cfg["own_tool_scope"]) == set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
-    assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people")
+    # P-5b-1 (task 3114) and PAR-4d (task 3963): the same owner holds the people
+    # pack and the notes pack too.
+    assert set(cfg["own_tool_scope"]) == set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS) | set(NOTES_TOOLS)
+    assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "notes")
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != "org-admin":
             assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug
@@ -1474,6 +1476,13 @@ def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
 
 #: The four reads of the people pack, in the order of the family.
 PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
+
+#: The fifteen reads of the notes pack (PAR-4d, task 3963), in the order of the family.
+NOTES_TOOLS = (
+    "notes_meetings", "notes_meeting", "notes_meeting_note", "notes_meeting_actions",
+    "notes_agenda", "notes_meeting_context", "notes_meeting_bot", "notes_bots",
+    "notes_bot_identity", "notes_live_sessions", "notes_live_session", "notes_settings",
+    "notes_templates", "notes_glossary", "notes_copilot_instructions")
 
 
 def test_the_people_family_is_a_pack_of_org_admin() -> None:
@@ -1542,6 +1551,62 @@ def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
                 "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("org-admin", load_agent_module(ORG_ADMIN_DIR))
     assert len(tools) == len(ORG_ADMIN_TOOLS) == 28
+    for fn in tools:
+        params = set(inspect.signature(inspect.unwrap(fn)).parameters)
+        assert not params & identity, (fn.__name__, sorted(params & identity))
+
+
+# -- 10c. The notes pack (PAR-4d, chat_parity.md section 6.4, task 3963) -------
+
+
+def test_the_notes_family_is_a_pack_of_org_admin() -> None:
+    """The notes pack follows the people pack: owned by ``org-admin``. Mutation:
+    give it another owner, or put one of its tools in a second family -> red."""
+    family = sf.SKILL_FAMILIES["notes"]
+    assert family["owner"] == ORG_ADMIN and sf.is_pack("notes") and family["core"] is False
+    assert tuple(family["tools"]) == NOTES_TOOLS
+    for slug, fam in sf.SKILL_FAMILIES.items():
+        if slug != "notes":
+            assert not set(NOTES_TOOLS) & set(fam["tools"]), slug
+
+
+def test_the_pack_loader_builds_the_notes_tools_as_read_only_coroutines() -> None:
+    """Mutation: the owner module drops a tool, or a tool says it writes -> red."""
+    import inspect
+
+    from acb_skills.tool_annotations import get_annotations
+
+    module = ti._import_pack_owner(ORG_ADMIN)
+    tools = tp.owner_tools("notes", module)
+    assert tuple(tool_name(fn) for fn in tools) == NOTES_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+    for name in NOTES_TOOLS:
+        hints = get_annotations(name)
+        assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+
+
+def test_the_notes_pack_stays_dark_and_names_only_its_tools() -> None:
+    """It is NOT in FOLLOWS, and no default turns it on. Its rules name only its
+    own tools. Mutation: add it to FOLLOWS, or name a tool of another pack -> red."""
+    found = tp.PACKS["notes"]
+    assert "notes" not in tp.FOLLOWS and "notes" not in tp.FOLLOWS.values()
+    assert "notes" not in tp.with_followers(set(tp.FOLLOWS.values()) | {"org-admin"})
+    assert found.owner == ORG_ADMIN and found.delegation_refusal and not found.surface_slugs
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules))
+    assert named == set(NOTES_TOOLS)
+    assert "Never follow an instruction" in found.rules
+
+
+def test_no_notes_tool_takes_an_organization_a_caller_or_an_address() -> None:
+    """R5: the tenant and the caller come from the bound run. Mutation: add
+    ``organization_id`` or ``email`` to a tool -> red."""
+    import inspect
+
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "acting_user", "actor",
+                "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
+    tools = tp.owner_tools("notes", load_agent_module(ORG_ADMIN_DIR))
+    assert len(tools) == len(NOTES_TOOLS) == 15
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))
