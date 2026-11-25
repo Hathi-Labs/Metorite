@@ -1552,7 +1552,7 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     # TOF-3a F12c: studio-repair, the two repair tools, sits before it.
     # PAR-2a: org-admin, the dark member pack, comes after the Studio packs.
     # P-5b-1 (task 3114): people, the dark pack of the same owner, comes next.
-    # PAR-4d (task 3963): notes, the dark pack of that owner, is last of all.
+    # Task 3963: notes, the dark pack of that owner, is last of all.
     assert list(tp.PACKS)[-18:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "projects-cycles",

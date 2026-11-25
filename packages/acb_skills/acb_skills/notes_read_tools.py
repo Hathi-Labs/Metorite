@@ -1,27 +1,25 @@
-"""The chat tools of the ``notes`` pack (PAR-4d, Metorite task 3963).
+"""The chat tools of the ``notes`` pack (task 3963, the notes read tools).
 
-Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (P-4). Fifteen reads let
-a member do from the chat what the Notes page shows. Each tool sends one or two
-``GET`` routes of ``gateway/routes/notes/`` and nothing else:
+Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (P-4d). Seven reads let
+a member do from the chat what the Notes page shows. Each tool sends GET
+routes of ``gateway/routes/notes/``. Each route checks the owner of a meeting,
+or reads the rows of the member only:
 
-* :func:`notes_meetings`, :func:`notes_meeting`, :func:`notes_meeting_note` and
-  :func:`notes_meeting_actions` read the library, one meeting, its note and its
-  action items.
-* :func:`notes_agenda` reads the agenda, and the coverage of it on request.
-* :func:`notes_meeting_context` reads what the copilot knows about a meeting.
-* :func:`notes_meeting_bot` reads the notetaker bot of a meeting, and the
-  diagnostics of a failed join on request.
-* :func:`notes_bots` reads whether the notetaker is set up, and the bots that
-  are active. :func:`notes_bot_identity` reads the Google account of the bot.
-* :func:`notes_live_sessions` and :func:`notes_live_session` read the meetings
-  that capture now, and the roster of one.
+* :func:`notes_meetings` lists the meetings of the member (``GET /notes/meetings``).
+* :func:`notes_meeting` reads one meeting of the member, with one page of the
+  transcript (``GET /notes/meetings/{id}``).
+* :func:`notes_bot_identity` says which Google account the notetaker uses.
 * :func:`notes_settings`, :func:`notes_templates`, :func:`notes_glossary` and
   :func:`notes_copilot_instructions` read the settings of the Note Taker.
 
-**Reads only.** No tool writes, joins a meeting, starts or stops a bot, or
-reaches a person. The module has no ``POST``, ``PUT``, ``PATCH`` or ``DELETE``.
-:func:`notes_bots` sends ``GET /notes/bots/active``, and that route asks the
-provider for the state of each active bot, as the page does. It starts nothing.
+**Twelve meeting reads are NOT here.** The routes for the note, the actions,
+the agenda, the context, the bot, the live session and the bot list read a
+meeting by its id with no owner check, or they refresh a bot and write rows.
+They stay in ``DEBT`` and wait for task 3966.
+
+**Reads only.** No tool writes, joins a meeting, starts a bot or reaches a
+person. The module has no ``POST``, ``PUT``, ``PATCH`` or ``DELETE``. Each of
+the seven routes is a plain read with no side effect.
 
 **The server decides each right.** Each tool calls the gateway over HTTP as the
 member of the run: the internal bearer and ``X-User-Email`` from the run
@@ -29,20 +27,21 @@ binding, the idiom of ``people_tools``. No tool takes an org, a caller or an
 address argument (R5). A meeting id must be one UUID, and a bad id sends no
 request. Each path parameter goes through ``urllib.parse.quote``.
 
-**Text of other people is data.** A transcript, a note, an agenda, a glossary
-term and a diagnostic come from people or from a web page. Each result puts
-that text in ONE ``UntrustedFrame`` block, and a tool that read meeting text
-marks the chat as one that read outside text (``egress.mark_untrusted_answer``).
+**Text of other people is data.** A transcript, a note, a glossary term and a
+title come from people. Each result puts that text in ONE ``UntrustedFrame``
+block, and a tool that read meeting text marks the chat as one that read
+outside text (``egress.mark_untrusted_answer``).
 
-**No secret.** Each tool of the bot builds its answer from a list of named
-fields. A field that the list does not name never reaches the model. The
-diagnostics of a bot also drop each key that names a token, a cookie, a
-password or a screenshot. The join link of a meeting loses its query string,
-because a link can carry a pass code.
+**No secret.** :func:`notes_bot_identity` builds its answer from a list of
+named fields. A field that the list does not name never reaches the model. A
+URL in a value loses its user name, password, query string and fragment. The
+tool never passes the error text of the worker. Each tool drops a key that
+names a token, a cookie, a password or a screenshot.
 
-**Dark.** The tools are the pack ``notes``, owned by ``org-admin`` (the owner
-of the dark packs that no agent runs). It is in no ``FOLLOWS`` entry, so it is
-off until the owner names it in the pack list of the box.
+**The pack.** The tools are the pack ``notes``, owned by ``org-admin`` (the
+owner of the dark packs that no agent runs). It is in no ``FOLLOWS`` entry. A
+run loads it where the owner lists ``notes`` in the pack list of the box, or
+where that list is ``*``.
 
 Fence: ``tests/unit/test_notes_read_tools.py``.
 """
@@ -67,18 +66,10 @@ from acb_skills.tool_annotations import annotate
 
 __all__ = [
     "NOTES_READ_TOOLS",
-    "notes_agenda",
     "notes_bot_identity",
-    "notes_bots",
     "notes_copilot_instructions",
     "notes_glossary",
-    "notes_live_session",
-    "notes_live_sessions",
     "notes_meeting",
-    "notes_meeting_actions",
-    "notes_meeting_bot",
-    "notes_meeting_context",
-    "notes_meeting_note",
     "notes_meetings",
     "notes_settings",
     "notes_templates",
@@ -95,7 +86,7 @@ MAX_LIST_ITEMS = 20
 MAX_DEPTH = 4
 #: The longest filter, and the most meetings that one request asks for.
 MAX_FILTER_CHARS = 200
-FETCH_MEETINGS = 200
+FETCH_MEETINGS = 500
 #: The longest reason of a route that a result passes on.
 MAX_DETAIL_CHARS = 300
 #: The runs of a meeting that the detail shows.
@@ -117,6 +108,7 @@ _SHAPE = "The Notes route answered in a shape that this tool cannot read."
 _SIGNED_OUT = "Your session is not signed in, so nothing was read."
 _NO_RIGHT = ("You do not hold {right} in your organization, so nothing was read. "
              "Ask an admin of your organization.")
+_WORKER_DOWN = "The bot service did not answer."
 _TEXT_NOTE = "People of your organization, or the people in a call, wrote this text."
 
 
@@ -310,15 +302,24 @@ def _meeting_path(template: str, mid: str) -> str:
 
 
 def _safe_url(raw: Any) -> str:
-    """A join link with no query string and no fragment: a pass code lives
-    there."""
+    """A URL with no user name, no password, no query string and no fragment: a
+    secret can live in each of them."""
     if not isinstance(raw, str) or not raw:
         return ""
     try:
         parts = urlsplit(raw.strip())
     except ValueError:
         return ""
-    return _line(urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")))
+    host = parts.netloc.rpartition("@")[2]
+    return _line(urlunsplit((parts.scheme, host, parts.path, "", "")))
+
+
+def _clean_value(value: Any) -> Any:
+    """*value* folded, with each URL in it made safe."""
+    if isinstance(value, str) and "://" in value:
+        words = [_safe_url(w) if "://" in w else _line(w) for w in value.split()]
+        return " ".join(words)
+    return _fold(value)
 
 
 async def _read_meeting(mid_raw: Any, template: str,
@@ -351,20 +352,6 @@ _MEETING_FIELDS = ("id", "title", "platform", "status", "language", "duration_s"
                    "scheduled_at", "copilot_enabled", "pending_actions", "action_count",
                    "agenda_count", "has_brief", "attendee_count", "is_live")
 _SEGMENT_FIELDS = ("idx", "start_s", "end_s", "speaker_label", "text")
-_ACTION_FIELDS = ("id", "description", "confidence", "status", "due_hint", "kind",
-                  "resulting_task_id", "dispatch_ref", "dispatch_error")
-_BOT_FIELDS = ("id", "meeting_id", "status", "provider", "bot_name", "error",
-               "meeting_title", "created_at", "updated_at")
-_SESSION_FIELDS = ("id", "meeting_id", "source", "status", "copilot_enabled", "mode",
-                   "started_at", "ended_at", "title")
-
-
-def _bot_row(row: Any) -> dict[str, Any]:
-    out = _pick(row, _BOT_FIELDS)
-    url = _safe_url(row.get("meeting_url")) if isinstance(row, dict) else ""
-    if url:
-        out["meeting_url"] = url
-    return out
 
 
 # ── The tools ───────────────────────────────────────────────────────────────
@@ -387,10 +374,17 @@ async def notes_meetings(query: str = "", offset: int = 0,
         return _refusal(_SHAPE)
     rows = [r for r in got.data if isinstance(r, dict)]
     page = paged(rows, offset, limit, default=DEFAULT_ROWS, maximum=MAX_ROWS, noun="meetings")
+    capped = len(rows) >= FETCH_MEETINGS
     if page.items:
         await _mark_read()
+    extra: dict[str, Any] = {}
+    if capped:
+        # The route answers with at most FETCH_MEETINGS rows and has no offset.
+        extra = {"total_is_at_least": True, "capped_note": (
+            f"The library holds at least {len(rows)} meetings, and this read shows "
+            f"the newest {FETCH_MEETINGS} only. Use query to narrow it.")}
     return _framed("MEETINGS", [_pick(r, _MEETING_FIELDS) for r in page.items], "rows",
-                   total=page.total, shown=len(page.items), page=page.line)
+                   total=page.total, shown=len(page.items), page=page.line, **extra)
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -431,130 +425,6 @@ async def notes_meeting(meeting_id: str, segments_offset: int = 0,
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_meeting_note(meeting_id: str) -> dict[str, Any]:
-    """Read the saved note of one meeting, as markdown, and who last changed it."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/note")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    data = reply.data
-    if not isinstance(data, dict):
-        return _refusal(_SHAPE)
-    if _empty(data.get("notes_md")):
-        return {"ok": True, "meeting_id": mid, "has_note": False,
-                "answer": "This meeting has no saved note yet."}
-    body = {"notes_md": _long(data["notes_md"]), **_pick(data, ("updated_by", "updated_at"))}
-    await _mark_read()
-    return _framed("MEETING NOTE", body, "note", meeting_id=mid, has_note=True)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_meeting_actions(meeting_id: str, offset: int = 0,
-                                limit: int = DEFAULT_ROWS) -> dict[str, Any]:
-    """List the action items of one meeting with their status. It approves, rejects and sends nothing."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/actions")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    if not isinstance(reply.data, list):
-        return _refusal(_SHAPE)
-    rows = [r for r in reply.data if isinstance(r, dict)]
-    page = paged(rows, offset, limit, default=DEFAULT_ROWS, maximum=MAX_ROWS,
-                 noun="action items")
-    if page.items:
-        await _mark_read()
-    return _framed("ACTION ITEMS", [_pick(r, _ACTION_FIELDS) for r in page.items], "rows",
-                   meeting_id=mid, total=page.total, shown=len(page.items), page=page.line)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_agenda(meeting_id: str, include_progress: bool = False) -> dict[str, Any]:
-    """Read the agenda of one meeting. With include_progress it adds which items the talk has covered."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/agenda")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    data = reply.data if isinstance(reply.data, dict) else None
-    items = data.get("agenda") if data is not None else None
-    if not isinstance(items, list):
-        return _refusal(_SHAPE)
-    body: dict[str, Any] = {"agenda": _fold(items)}
-    extra: dict[str, Any] = {"meeting_id": mid, "items": len(items)}
-    if include_progress is True:
-        prog = await _read_meeting(mid, "/notes/meetings/{}/agenda/progress")
-        if isinstance(prog, dict):
-            return prog
-        pdata = prog[1].data if isinstance(prog[1].data, dict) else None
-        if pdata is None:
-            return _refusal(_SHAPE)
-        body["progress"] = _fold(pdata)
-        extra["covered_count"] = pdata.get("covered_count")
-    if items:
-        await _mark_read()
-    return _framed("AGENDA", body, "agenda", **extra)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_meeting_context(meeting_id: str) -> dict[str, Any]:
-    """Read what the copilot knows about one meeting: the brief, the attendees, past meetings and open actions."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/context")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    if not isinstance(reply.data, dict):
-        return _refusal(_SHAPE)
-    await _mark_read()
-    return _framed("COPILOT CONTEXT", _fold(reply.data), "context", meeting_id=mid,
-                   is_empty=reply.data.get("is_empty") is True)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_meeting_bot(meeting_id: str,
-                            include_diagnostics: bool = False) -> dict[str, Any]:
-    """Read the notetaker bot of one meeting. With include_diagnostics it adds why a join failed. It never starts a bot."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/bot")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    if reply.data is None:
-        return {"ok": True, "meeting_id": mid, "has_bot": False,
-                "answer": "No notetaker bot was sent to this meeting."}
-    if not isinstance(reply.data, dict):
-        return _refusal(_SHAPE)
-    body: dict[str, Any] = {"bot": _bot_row(reply.data)}
-    if include_diagnostics is True:
-        diag = await _read_meeting(mid, "/notes/meetings/{}/bot/diagnostics")
-        if isinstance(diag, dict):
-            return diag
-        if not isinstance(diag[1].data, dict):
-            return _refusal(_SHAPE)
-        body["diagnostics"] = _fold(diag[1].data)
-        await _mark_read()
-    return _framed("MEETING BOT", body, "bot", meeting_id=mid, has_bot=True)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_bots() -> dict[str, Any]:
-    """Say if the meeting notetaker is set up, and list the bots that are active or failed lately."""
-    status = await _read("/notes/bots/status")
-    if isinstance(status, dict):
-        return status
-    active = await _read("/notes/bots/active")
-    if isinstance(active, dict):
-        return active
-    if not isinstance(status.data, dict) or not isinstance(active.data, list):
-        return _refusal(_SHAPE)
-    rows = [r for r in active.data if isinstance(r, dict)]
-    page = paged(rows, 0, MAX_ROWS, default=MAX_ROWS, maximum=MAX_ROWS, noun="bots")
-    if page.items:
-        await _mark_read()
-    return _framed("NOTETAKER BOTS", [_bot_row(r) for r in page.items], "bots",
-                   configured=status.data.get("configured") is True,
-                   provider=_line(status.data.get("provider") or "", 64),
-                   total=page.total, shown=len(page.items), page=page.line)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
 async def notes_bot_identity() -> dict[str, Any]:
     """Say if the notetaker is signed in to a Google account, and which one. It shows no password."""
     got = await _read("/notes/bot/identity")
@@ -564,53 +434,13 @@ async def notes_bot_identity() -> dict[str, Any]:
         return _refusal(_SHAPE)
     allowed = ("supported", "signed_in", "provider", "email", "profile",
                "credentials_configured", "interactive_running", "vnc_enabled",
-               "unreachable", "error")
-    out = {k: _fold(got.data[k]) for k in allowed if k in got.data
+               "unreachable")
+    out = {k: _clean_value(got.data[k]) for k in allowed if k in got.data
            and got.data[k] is not None}
+    if not _empty(got.data.get("error")):
+        # The text of the worker error can hold a URL or a secret. Pass a fixed text.
+        out["error"] = _WORKER_DOWN
     return {"ok": True, "identity": out}
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_live_sessions(offset: int = 0, limit: int = DEFAULT_ROWS) -> dict[str, Any]:
-    """List the meetings that capture right now, with their source and copilot mode."""
-    got = await _read("/notes/live/sessions")
-    if isinstance(got, dict):
-        return got
-    if not isinstance(got.data, list):
-        return _refusal(_SHAPE)
-    rows = [r for r in got.data if isinstance(r, dict)]
-    page = paged(rows, offset, limit, default=DEFAULT_ROWS, maximum=MAX_ROWS,
-                 noun="live sessions")
-    if not page.items:
-        return {"ok": True, "total": 0, "answer": "No meeting captures right now."}
-    await _mark_read()
-    return _framed("LIVE SESSIONS", [_pick(r, _SESSION_FIELDS) for r in page.items], "rows",
-                   total=page.total, shown=len(page.items), page=page.line)
-
-
-@annotate(read_only=True, idempotent=True, open_world=False)
-async def notes_live_session(meeting_id: str) -> dict[str, Any]:
-    """Read the live session of one meeting, if one runs, and who has spoken so far."""
-    got = await _read_meeting(meeting_id, "/notes/meetings/{}/live/session")
-    if isinstance(got, dict):
-        return got
-    mid, reply = got
-    roster = await _read_meeting(mid, "/notes/meetings/{}/live/roster")
-    if isinstance(roster, dict):
-        return roster
-    speakers = roster[1].data.get("speakers") if isinstance(roster[1].data, dict) else None
-    if not isinstance(speakers, list):
-        return _refusal(_SHAPE)
-    session = _pick(reply.data, _SESSION_FIELDS) if isinstance(reply.data, dict) else None
-    if session is None and not speakers:
-        return {"ok": True, "meeting_id": mid, "live": False,
-                "answer": "No live session runs for this meeting."}
-    people = [_pick(s, ("speaker_id", "name", "role", "utterances")) for s in
-              paged([s for s in speakers if isinstance(s, dict)], 0, MAX_ROWS,
-                    default=MAX_ROWS, maximum=MAX_ROWS).items]
-    await _mark_read()
-    return _framed("LIVE SESSION", {"session": session, "speakers": people}, "live_session",
-                   meeting_id=mid, live=bool(session and session.get("status") == "live"))
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -675,8 +505,6 @@ async def notes_copilot_instructions() -> dict[str, Any]:
 
 #: Each tool of the ``notes`` pack, in the order of its skill family.
 NOTES_READ_TOOLS = (
-    notes_meetings, notes_meeting, notes_meeting_note, notes_meeting_actions, notes_agenda,
-    notes_meeting_context, notes_meeting_bot, notes_bots, notes_bot_identity,
-    notes_live_sessions, notes_live_session, notes_settings, notes_templates,
+    notes_meetings, notes_meeting, notes_bot_identity, notes_settings, notes_templates,
     notes_glossary, notes_copilot_instructions,
 )

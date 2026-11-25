@@ -86,10 +86,10 @@ WHEN = {
     "people": (
         "Load for the people directory, your own row, the open work of a colleague, or the "
         "Reach preview."),
-    # PAR-4d (task 3963): the dark notes pack of the same owner.
+    # Task 3963: the notes pack of the same owner.
     "notes": (
-        "Load for your meetings, meeting notes, transcripts, action items, the notetaker bot "
-        "or the Note Taker settings."),
+        "Load for your meetings, a meeting transcript, the notetaker account or the Note "
+        "Taker settings."),
 }
 
 

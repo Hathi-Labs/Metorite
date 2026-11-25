@@ -42,8 +42,8 @@ field changed, in BOTH columns: in
 the loader does not offer it.
 
 P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
-surface and another owner. PAR-4d (task 3963) added the dark pack ``notes`` of
-fifteen tools, with the same owner. :func:`_allowed` leaves each out, as it leaves out
+surface and another owner. Task 3963 added the pack ``notes`` of seven tools,
+with the same owner. :func:`_allowed` leaves each out, as it leaves out
 ``org-admin``, so no row of the golden file changed.
 
 The sticky state of a chat from before the split has its own tests at the end.

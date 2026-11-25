@@ -409,7 +409,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
 | crm | 74 | 72 | P-3 | 3678 |
-| notes | 51 | 32 | P-4 | 3113 (P-4d built) |
+| notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
 | knowledge | 17 | 19 | P-5 | 3105 |
@@ -424,30 +424,33 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | integrations | 19 | 22 | P-8 | 3109 |
 | studio | 0 | 3 | P-9 | 3115 |
 
-**P-4d (task 3963) is BUILT, 2026-11-25, dark.** Fifteen read tools pay the 19
-Notes GET rows of the debt (51 to 32). They are the new pack `notes`, owned by
-`org-admin` as the pack `people` is (OD4 A). The tools are `notes_meetings`,
-`notes_meeting`, `notes_meeting_note`, `notes_meeting_actions`, `notes_agenda`,
-`notes_meeting_context`, `notes_meeting_bot`, `notes_bots`,
-`notes_bot_identity`, `notes_live_sessions`, `notes_live_session`,
-`notes_settings`, `notes_templates`, `notes_glossary` and
-`notes_copilot_instructions`. Each tool sends GET routes only, as the member.
-None writes, joins a meeting, starts a bot or reaches a person.
+**P-4d (task 3963) is BUILT in part, 2026-11-25.** Seven notes read tools pay
+the 7 Notes GET rows that are owner-checked or per member (51 to 44). They are
+`notes_meetings`, `notes_meeting`, `notes_bot_identity`, `notes_settings`,
+`notes_templates`, `notes_glossary` and `notes_copilot_instructions`. They are
+the new pack `notes`, owned by `org-admin` as the pack `people` is (OD4 A).
+Each tool sends GET routes only, as the member. None writes, joins a meeting,
+starts a bot or reaches a person.
 
-The identity of the bot shows no secret, and the join link of a bot loses its
-query string. The pack is off until the owner adds `notes` to `TOOL_PACKS`.
-The 32 Notes rows left are the writes, and they stay debt. Some Notes routes
-read a meeting by its id with no owner check: `/note`, `/actions`, `/agenda`,
-`/context`, `/bot` and the live routes. The Notes page has the same gap. A
-gateway task must close it, and the tools do not hide it.
+The identity of the bot shows no secret. A URL in it loses its user name,
+password, query string and fragment. The tool never passes the error text of
+the worker. The pack is not in `FOLLOWS`. A run loads it where the owner lists
+`notes` in `TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+The 32 Notes write rows stay debt. Twelve meeting-read rows wait for task 3966.
+Their gateway routes read a meeting by its id with no owner check, or they
+refresh a bot and write rows. The rows are `/note`, `/actions`, `/agenda`,
+`/agenda/progress`, `/context`, `/bot`, `/bot/diagnostics`, `/live/session`,
+`/live/roster`, `/bots/active`, `/bots/status` and `/live/sessions`.
 
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
 Five ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4. P-5b-1 took people to 13 and
-memory to 4. P-4d took notes to 32. The total of `DEBT_CEILING` is 318. The "Today" column above does
-not show these changes.
+memory to 4. P-4d took notes to 44. The total of `DEBT_CEILING` is 330.
+
+The "Today" column above does not show these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 

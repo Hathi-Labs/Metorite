@@ -876,7 +876,7 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # WS-STU J2d: the dark share pack is the last Studio pack, so the cap drops it
     # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
-    # people pack of the same owner comes next. PAR-4d (task 3963): the dark notes
+    # people pack of the same owner comes next. task 3963: the dark notes
     # pack of that owner comes last.
     assert list(tp.PACKS)[-8:-3] == list(STUDIO_PACKS)
     assert list(tp.PACKS)[-3:] == ["org-admin", "people", "notes"]
@@ -1420,7 +1420,7 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     assert family["owner"] == ORG_ADMIN and sf.is_pack("org-admin") and family["core"] is False
     assert tuple(family["tools"]) == ORG_ADMIN_TOOLS
     cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
-    # P-5b-1 (task 3114) and PAR-4d (task 3963): the same owner holds the people
+    # P-5b-1 (task 3114) and task 3963: the same owner holds the people
     # pack and the notes pack too.
     assert set(cfg["own_tool_scope"]) == set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS) | set(NOTES_TOOLS)
     assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "notes")
@@ -1477,11 +1477,9 @@ def test_the_org_admin_pack_stays_dark_and_names_only_its_tools() -> None:
 #: The four reads of the people pack, in the order of the family.
 PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
 
-#: The fifteen reads of the notes pack (PAR-4d, task 3963), in the order of the family.
+#: The seven reads of the notes pack (task 3963), in the order of the family.
 NOTES_TOOLS = (
-    "notes_meetings", "notes_meeting", "notes_meeting_note", "notes_meeting_actions",
-    "notes_agenda", "notes_meeting_context", "notes_meeting_bot", "notes_bots",
-    "notes_bot_identity", "notes_live_sessions", "notes_live_session", "notes_settings",
+    "notes_meetings", "notes_meeting", "notes_bot_identity", "notes_settings",
     "notes_templates", "notes_glossary", "notes_copilot_instructions")
 
 
@@ -1556,7 +1554,7 @@ def test_no_org_admin_tool_takes_an_organization_or_a_caller_argument() -> None:
         assert not params & identity, (fn.__name__, sorted(params & identity))
 
 
-# -- 10c. The notes pack (PAR-4d, chat_parity.md section 6.4, task 3963) -------
+# -- 10c. The notes pack (task 3963, chat_parity.md section 6.4) -------
 
 
 def test_the_notes_family_is_a_pack_of_org_admin() -> None:
@@ -1606,7 +1604,7 @@ def test_no_notes_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("notes", load_agent_module(ORG_ADMIN_DIR))
-    assert len(tools) == len(NOTES_TOOLS) == 15
+    assert len(tools) == len(NOTES_TOOLS) == 7
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

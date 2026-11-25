@@ -1,27 +1,27 @@
-"""PAR-4d (task 3963): the 15 read tools of the ``notes`` pack, hermetic.
+"""Task 3963 (P-4d): the 7 notes read tools of the chat, hermetic.
 
-Spec: ``project-docs/specs/chat_parity.md`` section 6.4 (P-4). Module:
+Spec: ``project-docs/specs/chat_parity.md`` section 6.4. Module:
 ``acb_skills.notes_read_tools``.
 
 A fake gateway answers each route over ``httpx.MockTransport`` and records each
-request. The module has no ``_post``. The fake refuses any verb but GET, and the
-test of the source below shows that no write verb is in the module. What is
-locked, each with its mutation (R7):
+request. The module has no ``_post``. The fake refuses any verb but GET, and a
+source test shows that no write verb and none of the 12 held-back routes is in
+the module. What is locked, each with its mutation (R7):
 
 1. Each tool sends its GET route as the member of the run, with its params.
 2. A bad meeting id sends no request. Each path parameter goes through quote.
 3. A shared room and a run with no member send no request.
-4. The identity of the bot and the diagnostics hold no secret.
+4. The identity of the bot holds no secret, no URL part that can hold one, and no
+   raw error of the worker.
 5. Text of other people is framed, and a read of it marks the chat.
-6. A list pages, and the module has no head slice of a list.
-7. The 19 GET rows of Notes are COVERED, and the 32 rows left are not GET.
+6. A list pages, and a library over the route cap says "at least".
+7. The 7 GET rows are COVERED. The 12 rows that wait for task 3966 are DEBT.
 
 Run: ``uv run pytest tests/unit/test_notes_read_tools.py -q``.
 """
 from __future__ import annotations
 
 import ast
-import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -37,13 +37,6 @@ MEMBER = "mel@example.test"
 MID = "3f2c9a5e-1b7d-4c2e-9a4f-6d8e0b1c2a3f"
 _REAL_CLIENT = httpx.AsyncClient
 
-BOT = {"id": "b1", "meeting_id": MID, "status": "in_call", "provider": "selfhosted",
-       "meeting_url": "https://meet.example.test/abc-defg?pwd=SECRETPASS#frag",
-       "bot_name": "Notetaker", "error": None, "meeting_title": "Sales sync",
-       "created_at": "t1", "updated_at": "t2", "api_token": "BOT-TOKEN"}
-SESSION = {"id": "s1", "meeting_id": MID, "source": "bot", "owner_email": "mel@example.test",
-           "status": "live", "copilot_enabled": True, "mode": "listening",
-           "started_at": "t1", "ended_at": None, "title": "Sales sync"}
 
 
 def _meetings(n: int) -> list[dict[str, Any]]:
@@ -82,33 +75,11 @@ class _Gateway:
         table: dict[str, Any] = {
             "/notes/meetings": self.meeting_rows,
             m: self.detail,
-            f"{m}/note": {"meeting_id": MID, "notes_md": "# Note\nbody",
-                          "updated_by": MEMBER, "updated_at": "t"},
-            f"{m}/actions": [{"id": "a1", "description": "Send the quote", "confidence": 0.9,
-                              "status": "draft", "kind": "email",
-                              "payload": {"email_to": "boss@example.test"}}],
-            f"{m}/agenda": {"agenda": [{"title": "Budget", "notes": ""}]},
-            f"{m}/agenda/progress": {"items": [{"title": "Budget", "covered": True}],
-                                     "covered_count": 1, "total": 1, "elapsed_s": 5},
-            f"{m}/context": {"brief": "Renewal call", "attendees": [], "past": [],
-                             "open_actions": [], "systems": [], "is_empty": False},
-            f"{m}/bot": BOT,
-            f"{m}/bot/diagnostics": {"status": "failed", "error": "no join button",
-                                     "diagnostics": {"page_title": "Sign in",
-                                                     "cookies": "SESSIONCOOKIE",
-                                                     "screenshot_b64": "AAAA",
-                                                     "auth_token": "TOK"}},
-            f"{m}/live/session": SESSION,
-            f"{m}/live/roster": {"speakers": [{"speaker_id": "S1", "name": "Ann",
-                                               "role": "host", "utterances": 4}]},
-            "/notes/bots/status": {"configured": True, "provider": "selfhosted"},
-            "/notes/bots/active": [BOT],
             "/notes/bot/identity": {"supported": True, "signed_in": True,
                                     "email": "bot@example.test", "profile": True,
                                     "credentials_configured": True,
                                     "interactive_running": False, "vnc_enabled": False,
                                     "password": "HUNTER2", "cookie": "C", "token": "T"},
-            "/notes/live/sessions": [SESSION],
             "/notes/settings": {
                 "settings": {"copilot_default_on": True, "live_transcription": "auto",
                              "copilot_instructions": "Be brief.", "bot_name": "Notetaker"},
@@ -154,18 +125,7 @@ M = f"/notes/meetings/{MID}"
 ROUTES = [
     (lambda: nt.notes_meetings("budget"), ["/notes/meetings"]),
     (lambda: nt.notes_meeting(MID), [M]),
-    (lambda: nt.notes_meeting_note(MID), [f"{M}/note"]),
-    (lambda: nt.notes_meeting_actions(MID), [f"{M}/actions"]),
-    (lambda: nt.notes_agenda(MID), [f"{M}/agenda"]),
-    (lambda: nt.notes_agenda(MID, include_progress=True), [f"{M}/agenda", f"{M}/agenda/progress"]),
-    (lambda: nt.notes_meeting_context(MID), [f"{M}/context"]),
-    (lambda: nt.notes_meeting_bot(MID), [f"{M}/bot"]),
-    (lambda: nt.notes_meeting_bot(MID, include_diagnostics=True),
-     [f"{M}/bot", f"{M}/bot/diagnostics"]),
-    (lambda: nt.notes_bots(), ["/notes/bots/status", "/notes/bots/active"]),
     (lambda: nt.notes_bot_identity(), ["/notes/bot/identity"]),
-    (lambda: nt.notes_live_sessions(), ["/notes/live/sessions"]),
-    (lambda: nt.notes_live_session(MID), [f"{M}/live/session", f"{M}/live/roster"]),
     (lambda: nt.notes_settings(), ["/notes/settings"]),
     (lambda: nt.notes_templates(), ["/notes/templates"]),
     (lambda: nt.notes_glossary(), ["/notes/glossary"]),
@@ -182,22 +142,37 @@ async def test_each_tool_sends_its_get_routes(gw, marks, call, paths) -> None:
     assert {c[0] for c in gw.calls} == {"GET"}
 
 
-async def test_the_list_sends_the_query_and_a_fixed_fetch_size(gw, marks) -> None:
+async def test_the_list_sends_the_query_and_the_route_cap(gw, marks) -> None:
     await nt.notes_meetings("  budget\nreview ")
-    assert gw.calls == [("GET", "/notes/meetings", {"query": "budget review", "limit": "200"})]
+    assert gw.calls == [("GET", "/notes/meetings", {"query": "budget review", "limit": "500"})]
 
 
-async def test_the_module_has_no_post_and_no_write_verb() -> None:
-    """The read-only fence. Mutation: add a ``_post`` or a write verb -> red."""
+# The 12 routes that wait for task 3966 (owner check and side effects of meeting reads).
+HELD_BACK = (
+    "/note", "/actions", "/agenda", "/agenda/progress", "/context", "/bot",
+    "/bot/diagnostics", "/live/session", "/live/roster", "/bots/active", "/bots/status",
+    "/live/sessions")
+
+
+def test_the_module_has_no_post_and_none_of_the_12_held_back_routes() -> None:
+    """The read-only fence. Mutation: add a write verb, or a route that waits for
+    task 3966 -> red."""
     assert not hasattr(nt, "_post") and not hasattr(nt, "_put")
+    for name in ("notes_meeting_note", "notes_meeting_actions", "notes_agenda",
+                 "notes_meeting_context", "notes_meeting_bot", "notes_bots",
+                 "notes_live_session", "notes_live_sessions", "_refresh_bot"):
+        assert not hasattr(nt, name), name
     src = (REPO / "packages/acb_skills/acb_skills/notes_read_tools.py").read_text(
         encoding="utf-8")
     tree = ast.parse(src)
-    verbs = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
-             and isinstance(n.value, str)}
-    assert not verbs & {"POST", "PUT", "PATCH", "DELETE"}
-    for fn in nt.NOTES_READ_TOOLS:
-        assert len(inspect.signature(fn).parameters) <= 3, fn.__name__
+    strings = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant)
+               and isinstance(n.value, str)]
+    assert not set(strings) & {"POST", "PUT", "PATCH", "DELETE"}
+    paths = [t for t in strings if t.startswith("/notes/")]
+    assert paths, "non-vacuity"
+    for tail in HELD_BACK:
+        assert not [t for t in paths if t.endswith(tail)], tail
+    assert len(nt.NOTES_READ_TOOLS) == 7
 
 
 async def test_a_read_tool_never_calls_a_post(gw, monkeypatch, marks) -> None:
@@ -213,31 +188,30 @@ async def test_a_read_tool_never_calls_a_post(gw, monkeypatch, marks) -> None:
 
 # ── 2. Ids and quoting ──────────────────────────────────────────────────────
 
-MEETING_CALLS = [
-    lambda x: nt.notes_meeting(x), lambda x: nt.notes_meeting_note(x),
-    lambda x: nt.notes_meeting_actions(x), lambda x: nt.notes_agenda(x),
-    lambda x: nt.notes_meeting_context(x), lambda x: nt.notes_meeting_bot(x),
-    lambda x: nt.notes_live_session(x)]
 
-
-@pytest.mark.parametrize("call", MEETING_CALLS)
 @pytest.mark.parametrize("bad", ["", "me", "../../admin", f"{MID}/x", "x" * 36])
-async def test_a_bad_meeting_id_sends_no_request(gw, call, bad) -> None:
+async def test_a_bad_meeting_id_sends_no_request(gw, bad) -> None:
     """Mutation: send an id that is not one UUID -> a request goes out -> red."""
-    out = await call(bad)
+    out = await nt.notes_meeting(bad)
     assert out == {"ok": False, "error": nt._BAD_ID}
     assert gw.calls == []
 
 
 async def test_an_upper_case_id_is_sent_in_its_canonical_form(gw, marks) -> None:
-    await nt.notes_meeting_note(MID.upper())
-    assert gw.paths() == [f"{M}/note"]
+    await nt.notes_meeting(MID.upper())
+    assert gw.paths() == [M]
 
 
 def test_a_path_parameter_goes_through_quote() -> None:
     """Mutation: drop ``quote`` from ``_meeting_path`` -> red."""
-    assert nt._meeting_path("/notes/meetings/{}/note", "a/b?c#d") == \
-        "/notes/meetings/a%2Fb%3Fc%23d/note"
+    assert nt._meeting_path("/notes/meetings/{}", "a/b?c#d") == "/notes/meetings/a%2Fb%3Fc%23d"
+
+
+async def test_the_meeting_detail_calls_the_owner_checked_route(gw, marks) -> None:
+    """The detail route is the one that checks the owner. A 404 reads as not yours."""
+    gw.forced[M] = (404, {"detail": "meeting not found"})
+    assert (await nt.notes_meeting(MID))["error"] == nt._NOT_FOUND
+    assert gw.paths() == [M]
 
 
 # ── 3. Member and room ──────────────────────────────────────────────────────
@@ -252,11 +226,8 @@ async def test_a_room_or_no_member_sends_no_request(gw, monkeypatch, who, words)
     assert gw.calls == []
 
 
-async def test_a_404_and_a_403_give_plain_words(gw) -> None:
-    gw.forced[f"{M}/note"] = (404, {"detail": "meeting not found"})
-    assert (await nt.notes_meeting_note(MID))["error"] == nt._NOT_FOUND
-    gw.forced["/notes/glossary"] = (
-        403, {"detail": "missing permission 'feature:notes'"})
+async def test_a_403_gives_plain_words(gw) -> None:
+    gw.forced["/notes/glossary"] = (403, {"detail": "missing permission 'feature:notes'"})
     out = await nt.notes_glossary()
     assert out["status"] == 403 and "feature:notes" in out["error"]
 
@@ -279,23 +250,35 @@ async def test_the_bot_identity_leaves_out_each_secret(gw) -> None:
     assert out["identity"]["credentials_configured"] is True
 
 
-async def test_the_bot_row_drops_unnamed_fields_and_the_pass_code(gw, marks) -> None:
-    out = await nt.notes_meeting_bot(MID)
+async def test_the_bot_identity_survives_a_hostile_worker_answer(gw) -> None:
+    """Userinfo, a query, a fragment and a raw error never reach the model.
+    Mutation: pass a field through ``_fold`` only, or pass the raw error -> red."""
+    gw.forced["/notes/bot/identity"] = (200, {
+        "supported": True, "signed_in": None, "unreachable": True,
+        "email": "https://bot:HUNTER2@accounts.example.test/signin?token=QTOK&x=1#FRAG",
+        "provider": "selfhosted",
+        "error": "connect failed http://worker:SECRETPW@10.0.0.5:9000/id?key=WORKERKEY",
+        "extra_field": "NOT-NAMED", "access_token": "ATOK"})
+    out = await nt.notes_bot_identity()
     text = json.dumps(out)
-    assert "BOT-TOKEN" not in text and "api_token" not in text
-    assert "SECRETPASS" not in text and "pwd=" not in text
-    assert "https://meet.example.test/abc-defg" in text
-    listed = await nt.notes_bots()
-    assert "BOT-TOKEN" not in json.dumps(listed) and "SECRETPASS" not in json.dumps(listed)
+    for leak in ("HUNTER2", "QTOK", "FRAG", "SECRETPW", "WORKERKEY", "10.0.0.5",
+                 "NOT-NAMED", "ATOK", "token=", "?"):
+        assert leak not in text, leak
+    assert out["identity"]["error"] == nt._WORKER_DOWN
+    assert "accounts.example.test/signin" in out["identity"]["email"]
 
 
-async def test_the_diagnostics_drop_each_secret_key(gw, marks) -> None:
+def test_a_url_loses_userinfo_query_and_fragment() -> None:
+    assert nt._safe_url("https://u:p@h.example.test:8443/a/b?q=1#f") == \
+        "https://h.example.test:8443/a/b"
+    assert nt._safe_url(None) == "" and nt._safe_url("") == ""
+
+
+async def test_the_meeting_drops_each_secret_key(gw, marks) -> None:
     """Mutation: drop ``_secret_key`` from ``_fold`` -> red."""
-    out = await nt.notes_meeting_bot(MID, include_diagnostics=True)
-    text = json.dumps(out)
-    for secret in ("SESSIONCOOKIE", "AAAA", "TOK", "screenshot", "cookies", "auth_token"):
-        assert secret not in text, secret
-    assert "no join button" in text and "Sign in" in text
+    gw.detail["speaker_names"] = {"S1": "Ann", "api_token": "SPEAKERTOK"}
+    out = await nt.notes_meeting(MID)
+    assert "SPEAKERTOK" not in json.dumps(out)
 
 
 # ── 5. Text of other people is data ─────────────────────────────────────────
@@ -311,15 +294,10 @@ async def test_the_meeting_text_is_framed_and_marks_the_chat(gw, marks) -> None:
     assert "IGNORE" not in out["note"] and marks == [1]
 
 
-async def test_a_note_with_no_text_marks_nothing(gw, marks) -> None:
-    gw.forced[f"{M}/note"] = (200, {"meeting_id": MID, "notes_md": None})
-    out = await nt.notes_meeting_note(MID)
-    assert out["has_note"] is False and marks == []
-
-
-async def test_the_action_payload_with_an_outside_address_stays_out(gw, marks) -> None:
-    out = await nt.notes_meeting_actions(MID)
-    assert "boss@example.test" not in json.dumps(out) and "Send the quote" in out["rows"]
+async def test_an_empty_library_marks_nothing(gw, marks) -> None:
+    gw.meeting_rows = []
+    out = await nt.notes_meetings()
+    assert out["total"] == 0 and marks == []
 
 
 # ── 6. Paging ───────────────────────────────────────────────────────────────
@@ -329,9 +307,19 @@ async def test_the_list_pages_and_says_what_is_left(gw, marks) -> None:
     gw.meeting_rows = _meetings(60)
     first = await nt.notes_meetings()
     assert first["total"] == 60 and first["shown"] == 25 and "offset=25" in first["page"]
+    assert "total_is_at_least" not in first
     second = await nt.notes_meetings(offset=50, limit=999)
     assert second["shown"] == 10 and "Meeting 59" in second["rows"]
     assert (await nt.notes_meetings(limit=999))["shown"] == 50
+
+
+async def test_a_library_over_the_route_cap_says_at_least(gw, marks) -> None:
+    """The route gives 500 rows at most and has no offset. Mutation: drop the
+    ``capped`` flag -> the total reads as exact -> red."""
+    gw.meeting_rows = _meetings(nt.FETCH_MEETINGS)
+    out = await nt.notes_meetings()
+    assert out["total_is_at_least"] is True
+    assert "at least 500" in out["capped_note"] and "query" in out["capped_note"]
 
 
 async def test_the_transcript_pages_by_its_own_offset(gw, marks) -> None:
@@ -352,27 +340,7 @@ async def test_a_long_summary_is_cut(gw, marks) -> None:
 # ── 7. The shape of each answer ─────────────────────────────────────────────
 
 
-async def test_agenda_with_progress(gw, marks) -> None:
-    out = await nt.notes_agenda(MID, include_progress=True)
-    assert out["covered_count"] == 1 and "Budget" in out["agenda"]
-
-
-async def test_no_bot_and_no_live_session_say_so(gw, marks) -> None:
-    gw.forced[f"{M}/bot"] = (200, None)
-    assert (await nt.notes_meeting_bot(MID))["has_bot"] is False
-    gw.forced[f"{M}/live/session"] = (200, None)
-    gw.forced[f"{M}/live/roster"] = (200, {"speakers": []})
-    assert (await nt.notes_live_session(MID))["live"] is False
-
-
-async def test_live_session_with_the_roster(gw, marks) -> None:
-    out = await nt.notes_live_session(MID)
-    assert out["live"] is True and "Ann" in out["live_session"] and "host" in out["live_session"]
-
-
-async def test_bots_and_settings_and_small_reads(gw, marks) -> None:
-    bots = await nt.notes_bots()
-    assert bots["configured"] is True and bots["total"] == 1
+async def test_settings_and_small_reads(gw, marks) -> None:
     st = await nt.notes_settings()
     assert "copilot_default_on" in st["settings"] and "Be brief." in st["settings"]
     assert (await nt.notes_templates())["templates"] == [{"key": "standup", "label": "Standup"}]
@@ -389,37 +357,36 @@ async def test_an_odd_shape_gives_one_refusal(gw) -> None:
 
 GET_ROWS = {
     "GET /api/notes/bot/identity": "notes_bot_identity",
-    "GET /api/notes/bots/active": "notes_bots",
-    "GET /api/notes/bots/status": "notes_bots",
     "GET /api/notes/copilot/instructions": "notes_copilot_instructions",
     "GET /api/notes/glossary": "notes_glossary",
-    "GET /api/notes/live/sessions": "notes_live_sessions",
     "GET /api/notes/meetings": "notes_meetings",
     "GET /api/notes/meetings/{}": "notes_meeting",
-    "GET /api/notes/meetings/{}/actions": "notes_meeting_actions",
-    "GET /api/notes/meetings/{}/agenda": "notes_agenda",
-    "GET /api/notes/meetings/{}/agenda/progress": "notes_agenda",
-    "GET /api/notes/meetings/{}/bot": "notes_meeting_bot",
-    "GET /api/notes/meetings/{}/bot/diagnostics": "notes_meeting_bot",
-    "GET /api/notes/meetings/{}/context": "notes_meeting_context",
-    "GET /api/notes/meetings/{}/live/roster": "notes_live_session",
-    "GET /api/notes/meetings/{}/live/session": "notes_live_session",
-    "GET /api/notes/meetings/{}/note": "notes_meeting_note",
     "GET /api/notes/settings": "notes_settings",
     "GET /api/notes/templates": "notes_templates",
 }
 
+WAITING = (
+    "GET /api/notes/bots/active", "GET /api/notes/bots/status",
+    "GET /api/notes/live/sessions",
+    *(f"GET /api/notes/meetings/{{}}{t}" for t in (
+        "/note", "/actions", "/agenda", "/agenda/progress", "/context", "/bot",
+        "/bot/diagnostics", "/live/roster", "/live/session")))
 
-def test_the_19_get_rows_are_covered_and_no_get_row_is_debt() -> None:
+
+def test_the_7_get_rows_are_covered() -> None:
     """Mutation: move a row back to ``DEBT``, or map it to another tool -> red."""
     for key, tool in GET_ROWS.items():
         assert cp.COVERED[key] == tool and key not in cp.DEBT, key
-    assert len(GET_ROWS) == 19
-    left = [k for k in cp.DEBT if k.startswith(("GET /api/notes/", "GET /api/notes"))]
-    assert left == []
+    assert len(GET_ROWS) == 7
 
 
-def test_the_32_rows_left_are_not_get_and_match_the_ceiling() -> None:
+def test_the_12_meeting_reads_wait_for_task_3966_in_debt() -> None:
+    assert len(WAITING) == 12
+    for key in WAITING:
+        assert cp.DEBT[key] == "P-4" and key not in cp.COVERED, key
+
+
+def test_the_debt_of_notes_matches_the_ceiling() -> None:
     notes = [k for k in cp.DEBT if "/api/notes" in k]
-    assert len(notes) == cp.DEBT_CEILING["notes"] == 32
-    assert not [k for k in notes if k.startswith("GET ")]
+    assert len(notes) == cp.DEBT_CEILING["notes"] == 44
+    assert sum(k.startswith("GET ") for k in notes) == 12
