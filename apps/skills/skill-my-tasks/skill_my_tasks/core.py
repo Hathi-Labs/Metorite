@@ -1010,7 +1010,6 @@ MAIL_REPLY_MAX = 3500
 MAIL_STEPS_MAX = 12
 #: The caps of the stranger text in one answer.
 _MAIL_LINE_MAX = 200
-_MAIL_SIMILAR_MAX = 5
 #: The label of the one frame block of each answer.
 MAIL_FRAME_LABEL = "MAIL TASK"
 _MAIL_NOTE = (
@@ -1065,8 +1064,8 @@ def _draft_lines(draft: dict[str, Any]) -> list[str]:
         lines.append(f"Estimate: {_mail_text(draft.get('time_estimate_mins'), 12)} min")
     steps = [s for s in (draft.get("subtasks") or []) if str(s).strip()]
     if steps:
-        lines.append("Steps: " + " | ".join(
-            _mail_text(s, 120) for s in steps[:MAIL_STEPS_MAX]))
+        # The route sends at most 12 steps (`_llm_capture`), so no row is cut here.
+        lines.append("Steps: " + " | ".join(_mail_text(s, 120) for s in steps))
     return lines
 
 
@@ -1080,7 +1079,9 @@ def _task_ref(task: Any, head: str) -> list[str]:
 
 
 def _similar_lines(similar: Any) -> list[str]:
-    rows = [s for s in (similar or []) if isinstance(s, dict)][:_MAIL_SIMILAR_MAX]
+    """The similar tasks. The route sends at most four (`_SIMILAR_MAX`), so no
+    row is cut here."""
+    rows = [s for s in (similar or []) if isinstance(s, dict)]
     return [line for s in rows
             for line in _task_ref(s, f"Similar task ({_mail_text(s.get('reason'), 20)})")]
 
