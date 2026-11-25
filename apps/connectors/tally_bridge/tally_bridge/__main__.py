@@ -184,14 +184,7 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     settings = _stores(args)[0].load()
     failed = 0
     if settings.start_tally_at_signin or _had_startup(run):
-        failed += (
-            run(
-                system.startup_on(settings.tally_exe)
-                if settings.start_tally_at_signin
-                else system.startup_off()
-            )
-            != 0
-        )
+        failed += system.apply_startup(settings.start_tally_at_signin, settings.tally_exe, run) != 0
     # Delete, then add: one rule, whatever ran before.
     run(system.firewall_off())
     failed += run(system.firewall_on()) != 0
@@ -213,16 +206,27 @@ def _uninstall_windows(args: argparse.Namespace, runner: Any = None) -> int:
     from tally_bridge.windows import stores, system
 
     run = runner or system.run
-    settings_store, secrets = _stores(args)
-    settings = settings_store.load()
+    # The machine changes go first, so a damaged settings file cannot leave
+    # the task or the firewall rule behind (review finding 2). Each delete
+    # answers non-zero when there is nothing to delete, so the exit codes say
+    # nothing here.
     run(system.startup_off())
     run(system.firewall_off())
+    settings_store, secrets = _stores(args)
     if isinstance(secrets, stores.DpapiSecretStore):
         secrets.delete()
-    if settings.copy_dir:
-        CopyStore(settings.copy_dir, DevFileKeyProvider("")).delete_all()
     if getattr(args, "windows", False):
         (stores.data_dir() / stores.COPY_KEY_FILE).unlink(missing_ok=True)
+    try:
+        copy_dir = settings_store.load().copy_dir
+    except SettingsError as exc:
+        print(
+            f"Removed the sign-in task, the firewall rule and the stored secrets. "
+            f"The settings file is damaged ({exc}), so delete the local copy by hand."
+        )
+        return 1
+    if copy_dir:
+        CopyStore(copy_dir, DevFileKeyProvider("")).delete_all()
     print("Removed the sign-in task, the firewall rule, the stored secrets and the local copy.")
     return 0
 
