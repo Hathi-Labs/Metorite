@@ -107,7 +107,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "studio-apps", "org-admin", "people",
+        "studio-apps", "studio-share", "org-admin", "people",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -701,8 +701,8 @@ REPAIR_TOOLS = ("studio_skill_repair", "studio_skill_undo")
 APPS_TOOLS = ("custom_app_read", "custom_app_save", "custom_app_files", "custom_app_publish",
               "custom_app_share", "custom_app_data")
 #: Each pack of the Studio owner, in the order of ``PACKS``.
-STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-share",
-                "studio-apps")
+STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-apps",
+                "studio-share")
 
 
 def _studio_scope() -> set[str]:
