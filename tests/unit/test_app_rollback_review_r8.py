@@ -15,9 +15,12 @@ a. Version 1 is ``pending``: the rollback is 409, the detail names the
 b. Version 1 is ``rejected``: the same, with ``rejected``.
 c. Version 1 is ``approved``: the rollback makes it live.
 d. Version 1 is ``auto`` (no review needed): the rollback makes it live.
+e. The guard is an allow-list. A state that it does not know is refused.
 
-**The mutation (R7).** On 2026-11-25 the guard in ``rollback_app`` was removed
-and this suite ran. a and b went red: the rollback made version 1 live.
+**The mutations (R7).** On 2026-11-25 the guard in ``rollback_app`` was
+removed and this suite ran. a and b went red: the rollback made version 1
+live. Then the guard was made a deny-list of pending and rejected again.
+e went red.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -159,6 +162,49 @@ def test_r8_rollback_refuses_an_unreviewed_version(world, status: str) -> None:
     assert "review" in out.detail and status in out.detail, out.detail
     assert _live(world) == 2, "the unreviewed version went live"
     assert _rollback_audits(world) == 0, "a refused rollback wrote an audit row"
+
+
+# ── e. A review state the route does not know is refused (fail closed) ────
+
+
+def test_only_auto_and_approved_may_go_live() -> None:
+    """The guard is an allow-list. A state that a later migration adds, or a
+    null, is refused until someone adds it to the list on purpose."""
+    assert publish._may_go_live("auto")
+    assert publish._may_go_live("approved")
+    for status in ("pending", "rejected", "withdrawn", "", None, "AUTO"):
+        assert not publish._may_go_live(status), status
+
+
+@_DB_GATE
+def test_r8_rollback_refuses_an_unknown_review_status(world) -> None:
+    """The CHECK of ``app_versions`` allows four states only. This test drops
+    it in the dedicated scratch database of this module, seeds an unknown
+    state, and puts the CHECK back."""
+    with world.p.admin_engine.begin() as c:
+        names = [r[0] for r in c.execute(text(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conrelid = 'app_versions'::regclass AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%review_status%'"))]
+        assert names, "the CHECK on review_status moved: update this test"
+        for name in names:
+            c.execute(text(f'ALTER TABLE app_versions DROP CONSTRAINT "{name}"'))
+    try:
+        _set_review(world, 1, "withdrawn")
+
+        out = _rollback(world, 1)
+
+        assert isinstance(out, HTTPException), out
+        assert out.status_code == 409
+        assert "review" in out.detail and "withdrawn" in out.detail, out.detail
+        assert _live(world) == 2, "an unknown review state went live"
+        assert _rollback_audits(world) == 0
+    finally:
+        _set_review(world, 1, "auto")
+        with world.p.admin_engine.begin() as c:
+            c.execute(text(
+                "ALTER TABLE app_versions ADD CONSTRAINT app_versions_review_status_check "
+                "CHECK (review_status IN ('auto', 'pending', 'approved', 'rejected'))"))
 
 
 # ── c and d. A reviewed version, or one with no review, goes live ─────────

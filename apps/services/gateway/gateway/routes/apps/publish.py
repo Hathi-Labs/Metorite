@@ -59,9 +59,15 @@ from sqlalchemy import text
 
 VISIBILITIES = ("private", "people", "org")
 
-#: Review states that a rollback refuses (task 3967). ``auto`` means the
-#: publish needed no review, and ``approved`` means an admin approved it.
-_UNREVIEWED = ("pending", "rejected")
+#: The only review states that a rollback lets go live (task 3967). ``auto``
+#: means the publish needed no review, and ``approved`` means an admin
+#: approved it. Every other state, known or not, is refused (fail closed).
+_MAY_GO_LIVE = ("auto", "approved")
+
+
+def _may_go_live(review_status: Any) -> bool:
+    """True only for a review state in :data:`_MAY_GO_LIVE`."""
+    return review_status in _MAY_GO_LIVE
 
 # Sent on every bundle response: even a direct visit renders sandboxed, and
 # nothing sniffs the payload into another content type.
@@ -254,9 +260,9 @@ async def rollback_app(
 ) -> dict[str, Any]:
     """Repoint the live version at an existing snapshot.
 
-    Task 3967: a version whose admin review (§4.8) is ``pending`` or
-    ``rejected`` cannot go live by this route. That would skip the review.
-    An ``approved`` version, or an ``auto`` one (no review needed), can."""
+    Task 3967: only an ``approved`` version, or an ``auto`` one (no review
+    needed), can go live by this route. Any other review state (§4.8), such
+    as ``pending`` or ``rejected``, is 409, because it would skip the review."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
         target = (await db.execute(
@@ -268,7 +274,7 @@ async def rollback_app(
         )).fetchone()
         if not target:
             raise HTTPException(status_code=404, detail="Version not found")
-        if target.review_status in _UNREVIEWED:
+        if not _may_go_live(target.review_status):
             raise HTTPException(
                 status_code=409,
                 detail=(
