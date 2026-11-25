@@ -94,7 +94,10 @@ BEN = f"ben.{TAG}@f12a.test"
 _LIKE = f"%.{TAG}@f12a.test"
 KEY = "ab" * 32
 KEY2 = "cd" * 32
-INPUT = "Call Asha on 555 0100"
+#: Task 3965: each marker is a word with a letter past ``f``. A UUID, a
+#: sha256 or a run id holds only ``0-9a-f``, so a random value never holds
+#: one, and the "no input in the row" check cannot fail by chance.
+INPUT = "Call Asha on Quill Zephyr"
 
 
 def _migration() -> Path:
@@ -300,7 +303,7 @@ def test_r8_the_writers_write_each_kind_and_keep_no_input(world) -> None:
                        "WHERE created_by LIKE :t", {"t": _LIKE})
     assert len(rows) == 3
     for (blob,) in rows:
-        for word in ("Asha", "555", "0100", "Call"):
+        for word in ("Asha", "Quill", "Zephyr", "Call"):
             assert word not in blob, word
 
 

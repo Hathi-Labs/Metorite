@@ -483,9 +483,13 @@ def tools(app: App) -> set[str]:
 
 
 def tool_class(app: App, name: str) -> str | None:
-    """The class a chat tool acts at, or ``None`` for a tool no row names."""
+    """The class a chat tool acts at, or ``None`` for a tool no row names.
+
+    A tool on more than one row acts at the strongest class of them. A write
+    that reads a list first (PAR-3, ``create_page``) is a write, not a read.
+    """
     classes = {r.cls for r in app.routes if name and name in (r.tool, *r.also)}
-    return sorted(classes)[0] if classes else None
+    return sorted(classes)[-1] if classes else None
 
 
 @functools.lru_cache(maxsize=32)
