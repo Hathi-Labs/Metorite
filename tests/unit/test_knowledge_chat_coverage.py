@@ -79,8 +79,12 @@ def test_the_router_is_not_empty_and_has_no_duplicate_rows() -> None:
     assert len(seen) == len(set(seen))
 
 
-#: The reads of KB-4a and the two proposals of KB-5a.
-READ_TOOLS = {"list_spaces", "read_page"}
+#: The reads of KB-4a, the eight reads of PAR-3b (task 3901), and the two
+#: proposals of KB-5a.
+READ_TOOLS = {
+    "list_spaces", "read_page", "list_pages", "list_recent", "read_page_version",
+    "list_backlinks", "list_proposals", "list_sources", "list_gaps", "list_maintenance",
+}
 PROPOSE_TOOLS = {"propose_page", "propose_edit"}
 #: PAR-3 (task 3105): the write route of each of the member's own writes.
 WRITE_TOOLS = {
@@ -88,6 +92,9 @@ WRITE_TOOLS = {
     "edit_page": ("PATCH", "/knowledge/pages/{page_id}"),
     "create_space": ("POST", "/knowledge/spaces"),
     "edit_space": ("PATCH", "/knowledge/spaces/{space_id}"),
+    # PAR-3b (task 3901): the move and the revert of a draft.
+    "move_page": ("POST", "/knowledge/pages/{page_id}/move"),
+    "revert_page": ("POST", "/knowledge/pages/{page_id}/revert"),
 }
 
 
@@ -106,7 +113,7 @@ def test_the_tools_map_to_their_routes() -> None:
 
 def test_no_write_has_a_tool() -> None:
     """KB-4a builds reads. KB-5a gives one write route to the proposals. PAR-3
-    gives the four routes of :data:`WRITE_TOOLS`, and no other."""
+    and PAR-3b give the six routes of :data:`WRITE_TOOLS`, and no other."""
     built = {("POST", "/knowledge/proposals"), *WRITE_TOOLS.values()}
     for row in m.MANIFEST:
         if row.method != "GET":

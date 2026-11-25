@@ -75,8 +75,11 @@ TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@f12c.test"
 BEN = f"ben.{TAG}@f12c.test"
 _LIKE = f"%.{TAG}@f12c.test"
-WORDS = "Call Asha on 555 0100 about the Acme quote"
-BITS = ("Asha", "555", "0100")
+#: Task 3965: each marker is a word with a letter past ``f``. A UUID, a
+#: sha256 or a run id holds only ``0-9a-f``, so a random value never holds
+#: one, and the "no input in the row" check cannot fail by chance.
+WORDS = "Call Asha on Quill Zephyr about the Acme quote"
+BITS = ("Asha", "Quill", "Zephyr")
 BODY = {"description": "Use this to log a call.", "instructions": "Make a task.",
         "actions": ["tool:create_task"],
         "tests": [{"id": "t1", "input": "Log a call with Ravi",
