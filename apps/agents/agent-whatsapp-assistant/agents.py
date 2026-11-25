@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from acb_common import get_logger, get_settings
@@ -685,7 +686,7 @@ async def whatsapp_call_events(call_id: str, account_id: str | None = None) -> s
     aid = await _account_or_default(account_id)
     if not aid:
         return _NO_ACCOUNT
-    d = await _get(f"/whatsapp/calls/{call_id}/events", {"account_id": aid})
+    d = await _get(f"/whatsapp/calls/{quote(str(call_id), safe='')}/events", {"account_id": aid})
     if not d.get("bridge_reachable", True):
         return "The WhatsApp bridge does not answer, so the call timeline is not known."
     events = d.get("events") or []
