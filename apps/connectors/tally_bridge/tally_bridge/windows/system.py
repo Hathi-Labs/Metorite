@@ -17,9 +17,10 @@ Linux checks each command word for word.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 TASK_NAME = "Tally Bridge - Start TallyPrime"
@@ -33,9 +34,23 @@ ES_SYSTEM_REQUIRED = 0x00000001
 Runner = Callable[[Sequence[str]], int]
 
 
+#: The variables that ``schtasks`` and ``netsh`` need. A child gets only
+#: these, never the whole environment of the bridge (the rule of
+#: ``test_child_env_seam.py``, kept locally: the program imports nothing of
+#: the monorepo).
+CHILD_ENV_NAMES = ("SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "TEMP", "TMP")
+
+
+def child_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment of a child command: :data:`CHILD_ENV_NAMES` only."""
+    source = os.environ if env is None else env
+    upper = {k.upper(): v for k, v in source.items()}
+    return {name: upper[name] for name in CHILD_ENV_NAMES if name in upper}
+
+
 def run(argv: Sequence[str]) -> int:  # pragma: no cover - Windows
     """Run one command with no shell. Returns the exit code."""
-    return subprocess.run(list(argv), check=False, capture_output=True).returncode
+    return subprocess.run(list(argv), check=False, capture_output=True, env=child_env()).returncode
 
 
 def startup_on(tally_exe: str) -> list[str]:
