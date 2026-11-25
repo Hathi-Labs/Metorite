@@ -35,6 +35,24 @@ no write, and it names `propose_edit`, which needs `KNOWLEDGE_PROPOSALS`. The
 PATCH route takes no base version, so a draft edit can overwrite a change
 that a colleague made while the card waited.
 
+**PAR-3b (task 3901, the other Knowledge debt rows) is BUILT, 2026-11-22, dark
+behind `KNOWLEDGE_CHAT_WRITES`.** `move_page` and `revert_page` act on a draft
+only, behind one card. The move card shows the old place and the new place.
+The revert card shows the full old text under the `_fits` rule. For a published
+or archived page, each tool makes no card and no write. Eight reads join with
+no card: `list_pages`, `list_recent`, `read_page_version`, `list_backlinks`,
+`list_proposals`, `list_sources`, `list_gaps` and `list_maintenance`.
+
+After the approve, `move_page` and `revert_page` read the state of the page
+again. If the page is no longer a draft, they write nothing. This makes the
+window between the read and the write shorter, but it does not close it. The
+real fix is an `expect_state` guard on the server, which is a follow-up.
+
+The Knowledge ceiling goes from 15 to 4. Four rows stay in the debt. Publish,
+archive and restore wait for the owner (§7 item 7, D104.4 and F2). The
+Knowledge search makes a model call, and it stays deferred (AD-11,
+`knowledge_base.md` §8.1). Fences: the same two files as PAR-3.
+
 **P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
 `people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
 `people_me`, `people_work` and `reach_preview`. Each tool calls the People
@@ -453,10 +471,10 @@ date. For the debt of today, read `DEBT_CEILING`.
 
 Six ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
-PAR-3 took knowledge to 15. P-5b-1 took people to 13 and memory to 4, and
-P-5b-6 took people to 12.
+PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
+and memory to 4, and P-5b-6 took people to 12.
 
-The total of `DEBT_CEILING` is 332. The "Today" column above does not show
+The total of `DEBT_CEILING` is 321. The "Today" column above does not show
 these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -550,7 +568,7 @@ task of each wave.
 |---|---|---|---|---|
 | 1 | PAR-3: make a page, change a page, make a space (wave P-5a) | 3105 | STANDARD | To do |
 | 2 | The demo of rung 2 | 3106 | none | To do |
-| 3 | PAR-3b: the other Knowledge debt rows | 3901 | STANDARD | To do |
+| 3 | PAR-3b: the other Knowledge debt rows | 3901 | STANDARD | Built, dark |
 
 - **Demo (task 3106).** The chat researches a topic. After one card, it saves
   the result as a draft page. A person publishes it in the app.

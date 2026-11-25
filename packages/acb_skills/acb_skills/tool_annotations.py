@@ -212,6 +212,19 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "edit_page":             {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "create_space":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "edit_space":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # PAR-3b (task 3901): the move and the revert of a draft, behind one card.
+    # Each keeps the old versions, so none is destructive. The eight more
+    # Knowledge reads only read, as the member. Nothing leaves the platform.
+    "move_page":             {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "revert_page":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "list_pages":            {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_recent":           {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "read_page_version":     {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_backlinks":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_proposals":        {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_sources":          {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_gaps":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    "list_maintenance":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -303,6 +316,18 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "edit_page",
     "create_space",
     "edit_space",
+    # PAR-3b (task 3901): the move, the revert and the eight reads, on the
+    # same terms. Only the orchestrator holds them, behind KNOWLEDGE_CHAT_WRITES.
+    "move_page",
+    "revert_page",
+    "list_pages",
+    "list_recent",
+    "read_page_version",
+    "list_backlinks",
+    "list_proposals",
+    "list_sources",
+    "list_gaps",
+    "list_maintenance",
     # WS-63 PZ-5: the colleague lookup only reads, and only the orchestrator
     # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
     # byte-identical.

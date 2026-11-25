@@ -573,12 +573,14 @@ class TestTheMyDayCard:
 # ── The chat manifest ───────────────────────────────────────────────────────
 
 class TestTheManifest:
-    def test_the_list_is_planned_and_the_decisions_are_off_the_chat(self) -> None:
+    def test_the_list_is_a_read_and_the_decisions_are_off_the_chat(self) -> None:
+        """PAR-3b (task 3901) gives the list to the read tool ``list_gaps``.
+        A person still closes each gap in the app."""
         from acb_skills import knowledge_manifest as m
 
         rows = {(r.method, r.path): r for r in m.MANIFEST}
         listed = rows[("GET", "/knowledge/gaps")]
-        assert (listed.cls, listed.tool) == ("A", "") and listed.planned
+        assert (listed.cls, listed.tool, listed.also) == ("A", "list_gaps", ())
         for verb in ("dismiss", "answered"):
             row = rows[("POST", f"/knowledge/gaps/{{gap_id}}/{verb}")]
             assert row.cls == "X" and not row.tool and "person" in row.reason
