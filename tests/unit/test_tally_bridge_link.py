@@ -62,6 +62,7 @@ class FakeLink:
         self.poll_fail = 0  # answer the next N polls with HTTP 503
         self.refuse = 0  # answer the next N polls with a 401 that is not a revoke
         self.bad_answer = 0  # answer the next N polls with a bad deadline_s
+        self.revoke_on_reply = False  # a reply answers 401 revoked; polls still pass
 
     def _auth(self, request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {CREDENTIAL}" and not self.revoked
@@ -104,6 +105,8 @@ class FakeLink:
         return JSONResponse({"requests": out})
 
     async def reply(self, request: Request) -> JSONResponse:
+        if self.revoke_on_reply:
+            return JSONResponse({"error": "revoked"}, status_code=401)
         if not self._auth(request):
             return self._refused()
         self.replies.append(await request.json())
@@ -667,3 +670,131 @@ def test_an_empty_answer_at_once_waits_before_the_next_poll():
 def test_link_url_refuses_any_userinfo(url):
     with pytest.raises(SettingsError):
         Settings(link_url=url).validate()
+
+
+# --- Review round 2 ------------------------------------------------------------------
+
+
+def test_the_wait_for_a_slot_comes_off_the_deadline(monkeypatch):
+    """Round 2, finding 1: a queued request gets only the time that is left,
+    and none when its time ran out while it waited."""
+    from tally_bridge.transport.link import runner
+
+    monkeypatch.setattr(runner, "MAX_IN_FLIGHT", 1)
+    link = FakeLink()
+    link.queue = [
+        {"id": "slow", "method": "POST", "body": "{}", "deadline_s": 30},
+        {"id": "short", "method": "POST", "body": "{}", "deadline_s": 0.2},
+        {"id": "later", "method": "POST", "body": "{}", "deadline_s": 30},
+    ]
+    seen: dict[str, float] = {}
+
+    async def dispatch(request: p.LinkRequest) -> p.LinkReply:
+        seen[request.id] = request.deadline_s
+        if request.id == "slow":
+            await asyncio.sleep(0.4)
+        return await _echo(request)
+
+    async def go():
+        stop = asyncio.Event()
+        loop = asyncio.create_task(run_link(link.api(), _confirmed(), dispatch, _up, "0.1.0",
+                                            stop, Sleeps(), min_gap_s=0))
+        while len(link.replies) < 2:
+            await asyncio.sleep(0.01)
+        stop.set()
+        await asyncio.wait_for(loop, 2)
+
+    asyncio.run(go())
+    assert [r["id"] for r in link.replies] == ["slow", "later"]  # "short" ran out
+    assert "short" not in seen and seen["later"] < 29.8
+
+
+def test_the_loop_stops_polling_while_the_backlog_is_full(monkeypatch):
+    """Round 2, finding 1: under load the backlog stays bounded."""
+    from tally_bridge.transport.link import runner
+
+    monkeypatch.setattr(runner, "MAX_BACKLOG", 2)
+    link = FakeLink()
+    link.queue = [{"id": str(i), "method": "POST", "body": "{}", "deadline_s": 30}
+                  for i in range(2)]
+    release = asyncio.Event()
+
+    async def held(request: p.LinkRequest) -> p.LinkReply:
+        await release.wait()
+        return await _echo(request)
+
+    async def go():
+        stop = asyncio.Event()
+        loop = asyncio.create_task(run_link(link.api(), _confirmed(), held, _up, "0.1.0", stop,
+                                            Sleeps(), min_gap_s=0))
+        while not link.polls:
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.1)
+        polls_while_full = len(link.polls)
+        release.set()
+        while len(link.replies) < 2:
+            await asyncio.sleep(0.005)
+        await asyncio.sleep(0.05)
+        stop.set()
+        await asyncio.wait_for(loop, 2)
+        return polls_while_full
+
+    assert asyncio.run(go()) == 1
+    assert len(link.polls) > 1
+
+
+def test_a_store_read_error_backs_off_and_does_not_end_the_link():
+    """Round 2: a scanner that holds link.bin for a moment does not end it."""
+
+    class Flaky(MemoryLinkStore):
+        def __init__(self, state):
+            super().__init__(state)
+            self.fail = 0
+
+        def load(self):
+            if self.fail:
+                self.fail -= 1
+                raise OSError("sharing violation")
+            return super().load()
+
+    store = Flaky(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    store.fail = 0
+    link = FakeLink()
+    sleeps = Sleeps()
+
+    async def go():
+        stop = asyncio.Event()
+        loop = asyncio.create_task(run_link(link.api(), store, _echo, _up, "0.1.0", stop, sleeps,
+                                            min_gap_s=0))
+        await asyncio.sleep(0.01)
+        store.fail = 2
+        while store.fail or len(link.polls) < 3:
+            await asyncio.sleep(0.005)
+        stop.set()
+        return await asyncio.wait_for(loop, 2)
+
+    assert asyncio.run(go()) == "stopped"
+    assert len(sleeps.calls) >= 1 and store.state is not None
+
+
+def test_a_revoke_on_a_reply_ends_the_loop_as_revoked():
+    """Round 2: the customer sees "Disconnected by your admin"."""
+    link = FakeLink()
+    link.revoke_on_reply = True
+    link.queue = [{"id": "r", "method": "POST", "body": "{}", "deadline_s": 30}]
+    store = _confirmed()
+    assert _run(link, store, polls=5) == "revoked"
+    assert store.state is None
+
+
+def test_unlink_says_so_when_metorite_refuses_the_revoke():
+    """Round 2 note: during a pause (403) the credential stays live at
+    Metorite, so unlink must not say that all is done."""
+
+    def paused(request):
+        return httpx.Response(403, json={"error": "org_not_allowed"})
+
+    api = LinkApi("https://link.test", transport=httpx.MockTransport(paused))
+    store = _confirmed()
+    assert linkcli.do_unlink(Settings(link_url="https://link.test"), store, api) == 1
+    assert store.state is None

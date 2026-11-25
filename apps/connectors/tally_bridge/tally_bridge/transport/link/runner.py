@@ -25,6 +25,7 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 from tally_bridge.transport.link import protocol as p
@@ -53,12 +54,28 @@ class NotConfirmed(p.LinkError):
     """Rule j: the customer has not confirmed the company name."""
 
 
+#: The most requests that wait or run. Past it, the loop does not poll until
+#: one ends, so the backlog stays bounded.
+MAX_BACKLOG = MAX_IN_FLIGHT * 2
+
+
 def _current(store: LinkStore, credential: str) -> bool:
+    """True when the store still holds this confirmed credential. A store that
+    cannot be read answers False (it serves nothing)."""
     try:
         state = store.load()
     except Exception:
         return False
     return state is not None and state.confirmed and state.credential == credential
+
+
+def _unlinked(store: LinkStore, credential: str) -> bool:
+    """True when the store says that this link ended: no state, another
+    credential, or no confirmation. A read error raises, so the loop backs
+    off and tries again: a scanner that holds the file for a moment does not
+    end the link."""
+    state = store.load()
+    return state is None or not state.confirmed or state.credential != credential
 
 
 async def run_link(
@@ -80,6 +97,7 @@ async def run_link(
     credential = state.credential
     stop = stop or asyncio.Event()
     slots = asyncio.Semaphore(MAX_IN_FLIGHT)
+    revoked = asyncio.Event()
     running: set[asyncio.Task[None]] = set()
     wait = BACKOFF_FIRST_S
     result = STOPPED
@@ -90,19 +108,31 @@ async def run_link(
             await asyncio.sleep(0)
             if stop.is_set():
                 break
-            if not _current(store, credential):
-                result = UNLINKED
+            if revoked.is_set():
+                log.warning("the link credential was revoked: disconnected by the admin")
+                result = REVOKED
                 break
             started = time.monotonic()
             try:
+                if _unlinked(store, credential):
+                    result = UNLINKED
+                    break
+                if len(running) >= MAX_BACKLOG:
+                    await _until_stop(
+                        asyncio.wait(set(running), return_when=asyncio.FIRST_COMPLETED), stop
+                    )
+                    continue
                 up = await _tally_state(tally_up)
                 requests = await _until_stop(api.poll(credential, up, version), stop)
                 if requests is None:
                     break
                 wait = BACKOFF_FIRST_S
                 for request in requests:
+                    expires = time.monotonic() + request.deadline_s
                     task = asyncio.create_task(
-                        _serve_one(api, credential, dispatch, request, slots, store)
+                        _serve_one(
+                            api, credential, dispatch, request, expires, slots, store, revoked
+                        )
                     )
                     running.add(task)
                     task.add_done_callback(running.discard)
@@ -167,19 +197,23 @@ async def _serve_one(
     credential: str,
     dispatch: Dispatch,
     request: p.LinkRequest,
+    expires: float,
     slots: asyncio.Semaphore,
     store: LinkStore,
+    revoked: asyncio.Event,
 ) -> None:
-    if request.deadline_s <= 0:
-        return  # Metorite failed it already; a late reply is dropped there too
     try:
         async with slots:
-            if not _current(store, credential):
-                return  # unlinked meanwhile: serve nothing more
-            reply = await dispatch(request)
+            # The wait for a slot comes off the deadline. With no time left,
+            # Metorite has failed the call already, so the bridge skips it.
+            left = expires - time.monotonic()
+            if left <= 0 or revoked.is_set() or not _current(store, credential):
+                return
+            reply = await dispatch(replace(request, deadline_s=left))
             await api.reply(credential, reply)
     except p.Revoked:
-        _forget(store, credential)  # the next poll ends the loop
+        _forget(store, credential)
+        revoked.set()  # the loop ends with "revoked" at its next pass
     except asyncio.CancelledError:
         raise
     except Exception as exc:

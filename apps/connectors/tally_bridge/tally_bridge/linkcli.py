@@ -165,6 +165,8 @@ def link_loop(
         result = await run_link(api, store, dispatch, reader.is_up, __version__, stop)
         if result == "revoked":
             log.warning("Disconnected by your admin. Pair this machine again to reconnect.")
+        elif result == "unlinked":
+            log.warning("The link ended on this machine (unlink, or a new pairing).")
         return result
 
     return loop

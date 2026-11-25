@@ -96,10 +96,12 @@ class LinkApi:
             raise p.LinkError(f"The link reply answered HTTP {answer.status_code}.")
 
     async def revoke(self, credential: str) -> None:
-        """RFC 7009: an unknown credential also gets 200."""
+        """RFC 7009: an unknown credential also gets 200. A revoked one is
+        gone already. Any other refusal (a pause of the org) raises
+        ``Refused``, so the caller says that the revoke did not happen."""
         try:
             await self._post(p.LINK_REVOKE, None, credential=credential)
-        except (p.Revoked, p.Refused):
+        except p.Revoked:
             return
 
 

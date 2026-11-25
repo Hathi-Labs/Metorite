@@ -212,9 +212,9 @@ has no default.
 
 On Windows (`--windows`), DPAPI keeps the link credential in
 `%ProgramData%\TallyBridge\link.bin`. DPAPI at machine scope lets any local
-process unprotect it, so the folder rights protect it. The installer gives
-only SYSTEM and the administrators any right on that folder. A user can
-neither read it nor write it. `test_tally_bridge_installer.py` is its fence. On a dev box, `--dev-link-file` keeps it
+process unprotect it. So only the rights of that folder can protect it, and
+a user must not be able to read it. The installer of TLY-5 PR B sets those
+rights, and task 3663 closes this when that installer is on main. On a dev box, `--dev-link-file` keeps it
 in a plain file (DEV ONLY). A disconnect by the admin deletes the credential
 at the next poll. A cut link comes back by itself, after a wait that grows to
 60 s.
