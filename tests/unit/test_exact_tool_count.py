@@ -27,6 +27,13 @@ Mutations this file catches (R7):
   count misses the tool of a context provider → red;
 * ``tool_digest`` hashes the order of the names → two orders, two hashes → red.
 
+WS-67 TS-2a PR 3 (D222 decision 13) adds the count of ``find_tools``:
+
+* ``base += 1`` for ``find_tools`` runs with the flag off, or not with the
+  flag on → the base of the first choice is off by one → red;
+* ``_log_pack_request_tools`` drops ``find_tools`` → the true count is one
+  short of the estimate with the flag on → red.
+
 Run: ``uv run pytest tests/unit/test_exact_tool_count.py -q``.
 """
 from __future__ import annotations
@@ -123,9 +130,11 @@ async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) ->
         await ti._add_crm_facts_block(agents, frozenset(_names(agents)), no_egress=False)
     plan = [x for x in logged if x["event"] == "executor.pack_plan"]
     loader = 1 if ex._pack_loader_offer(agents[0]) else 0
+    # WS-67 TS-2a: `find_tools` rides in a context provider too.
+    finder = 1 if ex._pack_finder(agents[0]) is not None else 0
     return {"base": seen[0], "plan": plan[0]["planned_tools"] if plan else -1,
-            "sent": len(_names(agents)) + loader, "loader": loader,
-            "packs": len(applied.record.slugs) if applied else 0}
+            "sent": len(_names(agents)) + loader + finder, "loader": loader,
+            "finder": finder, "packs": len(applied.record.slugs) if applied else 0}
 
 
 # ── 1. The estimate equals the sent count ───────────────────────────────────
@@ -190,6 +199,232 @@ async def test_the_true_count_log_counts_the_load_tool(
     ex._log_pack_request_tools(orchestrator)
     line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
     assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+# ── 1b. find_tools counts in the base only with the flag on (TS-2a) ─────────
+
+
+def _search(monkeypatch, on: bool) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "tool_search_orgs", ORG if on else "", raising=False)
+
+
+def _spy_choose(monkeypatch) -> list[int]:
+    """The ``base_tools`` of each call of ``tool_packs.choose``."""
+    bases: list[int] = []
+    real = tp.choose
+
+    def spy(*a: Any, **k: Any) -> Any:
+        bases.append(int(k["base_tools"]))
+        return real(*a, **k)
+
+    monkeypatch.setattr(tp, "choose", spy)
+    return bases
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_find_tools_adds_one_to_the_base_only_with_the_flag_on(
+    staging_shape, orchestrator, store, monkeypatch, on: bool,  # noqa: F811
+) -> None:
+    """D222 decision 13: ``find_tools`` rides in each request of a run where
+    the flag is on, so the first choice already counts it: the base of the
+    estimate + 1 with the flag on, + 0 with it off. The loader adds its own
+    1 for the second choice. The plan, the sent count and the true-count log
+    agree. Mutation: ``base += 1`` with no flag test -> the off case is one
+    high -> red. Mutation: no ``base += 1`` -> the on case is one low -> red."""
+    _search(monkeypatch, on)
+    bases = _spy_choose(monkeypatch)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["finder"] == int(on) and got["loader"] == 1
+    assert bases[0] == got["base"] + int(on), (bases, got)
+    assert bases[1] == got["base"] + int(on) + 1, (bases, got)
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+# ── 1c. pin_chat counts in the base only with its flag on (CO-11b) ──────────
+
+
+@pytest.fixture(params=[False, True], ids=["pin-off", "pin-on"])
+def pin_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``CHAT_PIN_TOOL_ORGS`` (with ``CHAT_PIN_ORGS``) for the build of the
+    orchestrator. The fixture ``orchestrator`` builds with no org, so this
+    sets the one decision of the build, ``agents._chat_pin_enabled``. List it
+    before ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_chat_pin_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
+    staging_shape, pin_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18). ``pin_chat`` is a core
+    tool of the orchestrator, so it rides in each request of an org on
+    ``CHAT_PIN_TOOL_ORGS`` and ``CHAT_PIN_ORGS``. The tool has its own flag
+    (owner, 2026-11-21). So with the tool flag off, the pin of the chat list
+    moves no count. With it off, the numbers of the staging shape do
+    not move: 59 sent and a base of 61. With it on, the estimate, the plan,
+    the sent count and the true-count log each grow by one: 60 sent. Mutation:
+    the build holds the tool with the flag off -> the off case is one high ->
+    red. Mutation: ``_pack_base_count`` skips a core tool -> plan and sent
+    differ -> red."""
+    on = pin_flag
+    assert ("pin_chat" in _names(orchestrator)) is on
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    assert got["base"] + 1 == 62 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+@pytest.fixture(params=[False, True], ids=["home-off", "home-on"])
+def home_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``HOME_TOOLS_ORGS`` for the build of the orchestrator (PAR-8b, task
+    3903). The fixture ``orchestrator`` builds with no org, so this sets the
+    one decision of the build, ``agents._home_tools_enabled``. List it before
+    ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_home_tools_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_home_tools_add_five_to_the_base_only_with_their_flag_on(
+    staging_shape, home_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """PAR-8b (task 3903, ``chat_parity.md`` facts for the owner). The five Home
+    tools are core tools of the orchestrator, so they ride in each request of an
+    org on ``HOME_TOOLS_ORGS``. With the flag off, the staging shape does not
+    move: a base of 61, and 59 planned and sent. With it on, each count grows by
+    five: a base of 66, and 64 planned and sent. The packs that then drop at the
+    cap are pinned in ``test_home_tools.py``
+    (``test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack``).
+    Mutation: the build holds the tools with the flag off -> red."""
+    on = home_flag
+    names = set(_names(orchestrator))
+    home = {"home_read", "home_card", "home_prefs", "home_layout", "home_test_push"}
+    assert (home <= names) is on and (not home & names) is (not on)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + 5 * int(on), got
+    assert got["base"] == 61 + 5 * int(on), got
+
+
+def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
+    """CO-11b (task 3563): the trade that this slice chose, and that the owner
+    accepts before ``CHAT_PIN_TOOL_ORGS`` flips (``chat_organization.md``
+    §18). It is the
+    trade of D222 decision 13, with ``pin_chat`` in the place of
+    ``find_tools``. A Studio turn with the email words fills the cap exactly
+    with production's base: 57 + email 31 + studio 10 + studio-more 13, less
+    the email specialist, is 110, ``MAX_REQUEST_TOOLS``. With ``pin_chat`` in
+    the base the count is 111, so ``choose`` drops studio-more, the last pack
+    that came by the surface alone. With the flag off nothing moves. With
+    both flags on, studio-more stays out, and the request holds
+    59 + 31 + 10 - 1 = 99 tools. Mutation: ``choose`` keeps a pack past the
+    cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    pin = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    assert BASE + 1 + sum(size.values()) - 1 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert pin.slugs == ("email", "studio") and pin.skipped == ("studio-more",)
+    both = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 2, specialists=SPECIALISTS)
+    assert both.slugs == ("email", "studio") and both.skipped == ("studio-more",)
+    assert BASE + 2 + size["email"] + size["studio"] - 1 == 99
+
+
+@pytest.mark.parametrize("held", ["", "*"], ids=["held-off", "held-on"])
+def test_with_both_flags_on_the_core_studio_pack_leaves_a_chosen_trade_of_a_worst_case(
+    monkeypatch: pytest.MonkeyPatch, held: str,
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18 item 3). A chosen trade
+    of a worst case, with the flags ON only. ``pin_chat``
+    (``CHAT_PIN_TOOL_ORGS``) and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add
+    one tool to the base.
+    The case ``studio_with_email_and_crm_records`` of the golden matrix runs
+    through the harness of the matrix (``_row``) at three bases:
+
+    * flags off (BASE): email, crm-records and studio, 57 + 31 + 13 + 10 less
+      the two specialists = 109 tools.
+    * pin_chat alone (BASE + 1): the same packs, 110 tools, at the cap.
+    * both flags (BASE + 2): 111 tools, so ``choose`` drops the core pack
+      ``studio`` by name. The request holds 59 + 31 + 13 - 2 = 101 tools.
+
+    With both flags off, nothing changes. Mutation: expect ``studio-more`` in
+    the place of ``studio``, or run at BASE + 1 -> red."""
+    from acb_common import get_settings
+
+    import tests.unit.test_studio_split_matrix as matrix
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", held, raising=False)
+    case = matrix.CASES["studio_with_email_and_crm_records"]
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"])
+            for slug in ("email", "crm-records", "studio")}
+    assert matrix.BASE == 57 and size == {"email": 31, "crm-records": 13, "studio": 10}
+    rows = {}
+    for extra in (0, 1, 2):
+        monkeypatch.setattr(matrix, "BASE", 57 + extra)
+        rows[extra] = matrix._row(case)
+    assert rows[0]["packs"] == rows[1]["packs"] == ["email", "crm-records", "studio"]
+    assert (rows[0]["tools"], rows[1]["tools"]) == (109, 110)
+    assert "studio" in rows[1]["packs"] and "studio" not in rows[2]["packs"]
+    assert rows[2]["packs"] == ["email", "crm-records"]
+    assert rows[2]["skipped"] == ["studio-more", "studio"]
+    assert 59 + sum(size.values()) - 2 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert rows[2]["tools"] == 59 + size["email"] + size["crm-records"] - 2 == 101
+
+
+def test_at_the_cap_find_tools_drops_studio_more_the_trade_of_decision_13() -> None:
+    """The trade that the owner accepted in D222 decision 13. A Studio turn
+    with the email words fills the cap exactly with production's base (56 and
+    the load tool): email (31), studio (10) and studio-more (13), less the
+    email specialist, make 110 tools. With ``find_tools`` in the base the
+    count would be 111, so ``choose`` drops studio-more, the last pack that
+    came by the surface alone. The request then holds 58 + 31 + 10 - 1 = 98
+    tools. Mutation: ``choose`` keeps a pack past the cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    on = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    assert BASE + sum(size.values()) - 1 == tp.MAX_REQUEST_TOOLS == 110
+    assert on.slugs == ("email", "studio") and on.skipped == ("studio-more",)
+    assert BASE + 1 + size["email"] + size["studio"] - 1 == 98
 
 
 # ── 2. The choice subtracts the specialist tool that a pack replaces ────────

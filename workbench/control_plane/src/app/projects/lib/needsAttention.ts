@@ -9,8 +9,9 @@
  * rule of its own, so the board and the chat read one answer.
  *
  * ⚠️ **`can_act` is the server's.** It is the rule of Release (EA-14a). The
- * run panel's own Release button still reads `access.is_admin` (HANDOFF
- * H-409 item 2), and this list does not add a third rule.
+ * run panel's own Release button reads the same permission slug
+ * (`agentRuns.RELEASE_ADMIN_PERMISSION`, H-409 item 2), and this list does
+ * not add a third rule.
  *
  * Fence: `needsAttention.test.ts`.
  */
@@ -153,7 +154,7 @@ export const ACTION_ICON: Readonly<Record<AttentionAction, string>> = {
  */
 export const ACTION_HINT: Readonly<Record<AttentionAction, string>> = {
   resume: "Ask the same agent client to continue this run. The run keeps the task.",
-  close_run: "End this run and free the task for anyone. The task keeps its status.",
+  close_run: "End this run and free the task for anyone. The task moves to its lane.",
   open_blocker: "Open the task that blocks this one.",
   open_project: "Open this project. Its settings name its lead.",
 };
@@ -315,7 +316,7 @@ export function closeRunCopy(row: AttentionRow): {
 } {
   return {
     title: "Close this agent run?",
-    body: `The run of ${client(row)} ends, and the agent stops on this task. The task keeps its status and its assignees.`,
+    body: `The run of ${client(row)} ends, and the agent stops on this task. The assignees stay. The task moves to its lane: To Do, or In progress while a pull request is open.`,
     confirm: ACTION_LABEL.close_run,
   };
 }

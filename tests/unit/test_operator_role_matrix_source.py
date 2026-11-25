@@ -41,6 +41,9 @@ _MAIN = (
 _GATES = (
     "Operator", "ProvisionCaller", "SeatAdminCaller", "MemberAdminCaller",
     "CatalogCaller", "ResolveCaller",
+    # AO-2: the vendor alert read of a box. Its handler 400s an operator, and
+    # it needs a row for the reason the `/registry/orgs` row gives.
+    "ServeReadCaller",
 )
 
 _ROUTE = re.compile(

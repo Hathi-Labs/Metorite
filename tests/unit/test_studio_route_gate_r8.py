@@ -36,11 +36,14 @@ c. A member with an override that denies ``feature:studio`` gets 403.
 d. A member with an override that allows ``feature:workflows`` and an
    override that denies ``feature:studio`` gets 403. So the interim gate of
    B1 is gone.
-e. Only the owner holds ``studio:publish`` by default. A member with an
-   override that allows it resolves it true through ``has_permission``.
+e. The owner (``*``) and an admin hold ``studio:publish`` by default. The
+   admin row is the seed of J1-2 (task 1707). A manager, a member and a guest
+   do not. A member with an override that allows it resolves it true through
+   ``has_permission``.
 f. The ``studio`` row of ``feature_catalog`` exists, with ``is_default``
-   true. No role of the org holds a ``feature:studio`` or a
-   ``studio:publish`` row.
+   true. No role of the org holds a ``feature:studio`` row. The one
+   ``studio:publish`` row of the org is on ``admin`` (J1-2). The R8 suite of
+   that seed is ``test_studio_publish_seed_r8.py``.
 
 **The mutations (R7).** Each ran on 2026-11-05, and each test named here
 went red.
@@ -50,7 +53,7 @@ went red.
   ``test_a_member_with_a_deny_override_gets_403``. Each of those members
   holds ``feature:workflows``, so the old gate lets them in.
 * M4: in ``347_studio_feature.sql``, drop the ``INSERT``. Red:
-  ``test_the_catalog_row_is_a_default_and_no_role_holds_a_studio_row``.
+  ``test_the_catalog_row_is_a_default_and_only_admin_holds_a_studio_row``.
 """
 
 from __future__ import annotations
@@ -266,28 +269,29 @@ def test_a_member_who_holds_workflows_but_not_studio_gets_403(world) -> None:
 # ── e. The share verb ─────────────────────────────────────────────────────
 
 
-def test_only_the_owner_holds_the_share_verb_by_default(world) -> None:
+def test_the_owner_and_an_admin_hold_the_share_verb_by_default(world) -> None:
     async def fn(call: Any) -> dict[str, bool]:
         return {k: (await call.resolve(k)).has_permission("studio:publish")
                 for k in ("owner", "admin", "manager", "member", "guest", "publisher")}
 
     held = _run(world, fn)
-    assert held == {"owner": True, "admin": False, "manager": False, "member": False,
+    assert held == {"owner": True, "admin": True, "manager": False, "member": False,
                     "guest": False, "publisher": True}, held
 
 
-# ── f. The catalog row, and no role row ───────────────────────────────────
+# ── f. The catalog row, and the admin row ─────────────────────────────────
 
 
-def test_the_catalog_row_is_a_default_and_no_role_holds_a_studio_row(world) -> None:
+def test_the_catalog_row_is_a_default_and_only_admin_holds_a_studio_row(world) -> None:
     with world.p.admin_engine.connect() as c:
         row = c.execute(text(
             "SELECT nav_href, category, sort_order, is_default FROM feature_catalog "
             "WHERE slug = 'studio'")).first()
         studio_rows = c.execute(text(
-            "SELECT count(*) FROM org_role_permission p JOIN org_role r ON r.id = p.role_id "
+            "SELECT r.slug, p.permission FROM org_role_permission p "
+            "JOIN org_role r ON r.id = p.role_id "
             "WHERE r.organization_id = CAST(:o AS uuid) "
-            "AND p.permission IN ('feature:studio', 'studio:publish')"), {"o": world.a}).scalar()
+            "AND p.permission IN ('feature:studio', 'studio:publish')"), {"o": world.a}).all()
     assert row is not None
     assert tuple(row) == ("/studio", "apps", 96, True)
-    assert studio_rows == 0
+    assert [tuple(r) for r in studio_rows] == [("admin", "studio:publish")]

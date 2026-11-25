@@ -87,4 +87,27 @@ describe("buildOutline", () => {
     expect(branchIds(o)).toContain("branch:data");
     expect(branchIds(buildOutline(null))).toEqual([]);
   });
+  it("adds the Pages and Rail branches only with the frame option", () => {
+    expect(labels(buildOutline(manifest, { frame: false }))).toEqual(labels(buildOutline(manifest)));
+    const framed = { ...manifest, views: [{ id: "track", block: "board", object: "milestone" }],
+      pages: [{ id: "home", title: "Home", cells: [{ view: "track" }] }],
+      nav: [{ title: "Work", rows: [{ page: "home", label: "Start" }] }] };
+    const o = buildOutline(framed, { frame: true });
+    expect(labels(o)).toEqual(["Data", "Views", "Pages", "Rail", "Actions", "Rules", "Workflows", "Skill", "Code blocks"]);
+    const [pages, rail] = o.root!.children!.slice(2, 4);
+    expect(pages.children![0]).toMatchObject({ id: "page:home", label: "Home", tab: "pages", page: "home" });
+    expect(pages.children![0].children![0]).toMatchObject({ label: "track", tab: "pages" });
+    expect(rail.children![0]).toMatchObject({ label: "Work", tab: "pages" });
+    expect(rail.children![0].children![0]).toMatchObject({ label: "Start", page: "home" });
+  });
+
+  it("shows the built-in pages and the default rail with the frame option and no pages", () => {
+    const o = buildOutline(manifest, { frame: true });
+    const pages = o.root!.children!.find((c) => c.id === "branch:pages")!;
+    expect(pages.children!.length).toBeGreaterThan(0);
+    const ids: string[] = [];
+    const walk = (n: NonNullable<typeof o.root>) => { ids.push(n.id); n.children?.forEach(walk); };
+    walk(o.root!);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
 });

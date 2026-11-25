@@ -7,9 +7,12 @@ best-effort audit + activity writers. Mirrors ``routes/tasks/core.py`` (the
 leaf module: it imports nothing from siblings).
 
 Canonical store: the ``apps`` / ``app_*`` tables from
-``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live at
-``apps_root()/{slug}`` — git-inited folders holding ``app.json`` (the
-manifest, RFC §4.1) plus the app's source files.
+``infra/postgres/114_custom_apps.sql`` (RFC §4.9). App workspaces live under
+``apps_root()`` — git-inited folders holding ``app.json`` (the
+manifest, RFC §4.1) plus the app's source files. The folder of a new app is
+``apps_root()/{app id}`` (WS-STU A3b-1). An older app keeps its folder at
+``apps_root()/{slug}``. Each reader takes the stored ``apps.workspace_path``,
+never a path that it builds from the slug.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from acb_skills import safe_open
 from fastapi import APIRouter, Depends, HTTPException
 
 # The shared gateway engine (BO-10) — see the DB section below.
-from gateway.db import get_db as _get_db
+from gateway.db import get_db as _get_db  # noqa: F401
 from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 
 # The tenant-bound seam (BO-10 → MT-1c/H2). `_tenant_session` IS
@@ -85,9 +88,10 @@ DEFAULT_AI_TIER = "tier-fast"
 # This package used to build its own engine here with its own 10+20 pool. It now
 # has none: `_get_db` / `_get_session_factory` / `_tenant_session` at the top of
 # this module are re-exports of the shared seam. Since H2 the request handlers
-# acquire sessions through `_tenant_session` only; `_get_db` remains ONLY for
-# the named H4-deferred sites (`record_app_audit` below, and `actions.py`'s
-# dual-audience dispatch), which `test_db_engine_seam.py` pins by exact count.
+# acquire sessions through `_tenant_session` only. `_get_db` remains ONLY for
+# the named H4-deferred sites (`actions.py`'s dual-audience dispatch and
+# `tools.py`'s broker handler), which `test_db_engine_seam.py` pins by exact
+# count. This module opens no unbound session (task 1317).
 
 
 # ── Auth gate ────────────────────────────────────────────────────────────────
@@ -166,7 +170,7 @@ def _uid(user: UserContext | None) -> str:
 # ── Workspace root ───────────────────────────────────────────────────────────
 
 def apps_root() -> Path:
-    """The Custom Apps workspace root (one subfolder per app slug), created
+    """The Custom Apps workspace root (one subfolder per app), created
     on demand. ``CUSTOM_APPS_ROOT`` overrides; empty falls back to
     ``{agents_clone_dir}/custom_apps`` (the reboot-safe clone home)."""
     settings = get_settings()
@@ -473,12 +477,19 @@ def check_bundle_size(data: bytes, cap: int = MAX_BUNDLE_BYTES) -> bytes:
 
 # ── Row loading + gating (shared by every feature module) ────────────────────
 
+#: The org that the session is bound to. Since A3b-2 two orgs may hold one
+#: slug, so a read by slug names the org as well as FORCE RLS (defence in
+#: depth, also for a role that bypasses RLS). An unbound session reads nothing.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+
 async def load_app(db: Any, slug: str) -> Any:
-    """The App Workshop app *slug*, or None. A Studio package (format
+    """The App Workshop app *slug* of the bound org, or None. A Studio package (format
     'manifest', WS-STU A3) answers None, so each slug route gives 404 for
     it. NULL reads as code. Fence: test_studio_packages_r8.py."""
     return (await db.execute(
         text("SELECT * FROM apps WHERE slug = :slug "
+             "AND organization_id = " + _BOUND_ORG + " "
              "AND format IS DISTINCT FROM 'manifest'"),
         {"slug": slug},
     )).fetchone()
@@ -631,65 +642,27 @@ async def record_app_audit_bound(
     kind: str,
     detail: dict[str, Any] | None = None,
     app_version: int | None = None,
-) -> None:
-    """Append one ``app_audit`` row in the tenant that the request bound.
-
-    The twin of :func:`record_app_audit` for a caller in a request, such as
-    the Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row
-    needs a bound session. The unbound session of :func:`record_app_audit`
-    writes no row as a role without BYPASSRLS. Best-effort: it opens its own
-    ``tenant_session()``, and a failure logs and never raises. Call it after
-    the caller's own session closes, so a request holds one session at a time.
-    """
-    try:
-        async with _tenant_session() as db:
-            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
-                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                app_version=app_version))
-    except Exception as exc:
-        _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
-
-
-async def record_app_audit(
-    *,
-    app_id: str,
-    user_email: str,
-    kind: str,
-    detail: dict[str, Any] | None = None,
-    app_version: int | None = None,
     tokens_in: int = 0,
     tokens_out: int = 0,
     cost_usd: float = 0.0,
     model: str = "",
 ) -> None:
-    """Append one ``app_audit`` row. Best-effort: opens its own session so a
-    failed audit can neither raise nor poison the caller's transaction.
+    """Append one ``app_audit`` row in the tenant that the request bound.
 
-    ⚠️ H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): this helper
-    is reached from OUTSIDE any request — `actions.execute_app_action` audits
-    every dispatch, and the orchestrator's agent tools call that function
-    in-process during an agent run with no request and no bound tenant
-    (`orchestrator/app_tools.py`). Converting this site to the ambient
-    `tenant_session()` would raise `TenantUnbound` there, and this except-all
-    wrapper would then silently DROP the audit row — a security trail. It
-    stays on the unbound `get_db()` until H4 threads the explicit tenant (the
-    app row's organization, resolvable from ``app_id``) through the call —
-    `tenant_session(org_id)`. The H2 ratchet in `test_db_engine_seam.py`
-    carries this site as a named, counted exemption.
+    The audit writer of every request handler in ``routes/apps`` and of the
+    Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row needs
+    a bound session. An unbound session writes no row as a role without
+    BYPASSRLS (task 1317 removed the old unbound writer). Best-effort: it
+    opens its own ``tenant_session()``, and a failure logs and never raises.
+    Call it after the caller's own session closes, so a request holds one
+    session at a time. Fence: ``test_app_audit_bound_r8.py``.
     """
     try:
-        db = await _get_db()
-        try:
-            await db.execute(
-                text(_APP_AUDIT_SQL),
-                _app_audit_params(
-                    app_id=app_id, user_email=user_email, kind=kind, detail=detail,
-                    app_version=app_version, tokens_in=tokens_in,
-                    tokens_out=tokens_out, cost_usd=cost_usd, model=model),
-            )
-            await db.commit()
-        finally:
-            await db.close()
+        async with _tenant_session() as db:
+            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                app_version=app_version, tokens_in=tokens_in,
+                tokens_out=tokens_out, cost_usd=cost_usd, model=model))
     except Exception as exc:
         _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
 

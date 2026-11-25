@@ -60,6 +60,7 @@ from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F40
 from gateway.routes.projects import cycles as _cycles  # noqa: F401
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
+from gateway.routes.projects import epic_contract as _epic_contract  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401
 from gateway.routes.projects import imports as _imports  # noqa: F401
 from gateway.routes.projects import intake as _intake  # noqa: F401
@@ -77,6 +78,7 @@ from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
 from gateway.routes.projects import refs as _refs  # noqa: F401
 from gateway.routes.projects import reminders as _reminders  # noqa: F401
+from gateway.routes.projects import sequences as _sequences  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
