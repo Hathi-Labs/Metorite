@@ -254,8 +254,9 @@ refused.
 Before it makes the sign-in task, the bridge checks the rights of
 `tally.exe`, its folder and each folder above it (task 3974). A person who
 is not an administrator must not be able to change the program. Otherwise
-the program would run in the session of each person who signs in. When a
-user can change it, the bridge refuses the task and removes an old one. The
+the program would run in the session of each person who signs in.
+
+When a user can change it, the bridge refuses the task and removes an old one. The
 message names the folder and the `icacls` command that locks it. TallyPrime
 at `C:\TallyPrime` often fails this check, and an install under
 `C:\Program Files` passes it. Test: `tests/unit/test_tally_bridge_folder_acl.py`.
