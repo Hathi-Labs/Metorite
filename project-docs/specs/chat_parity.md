@@ -753,7 +753,9 @@ organization for the last 7 days. It finds each answer where the chat says
 that it cannot act. It pairs that answer with the member's message before it,
 maps the pair to an app of `chat_parity.APPS`, and ranks the apps. The script
 prints the Markdown text of one comment. It never posts, and it holds no
-Metorite credential. One run reads one organization (`--org`), through the
+Metorite credential.
+
+One run reads one organization (`--org`), through the
 tenant seam `acb_graph.db.tenant_session`. The fences are
 `tests/unit/test_chat_cant_sweep.py` and `tests/unit/test_chat_cant_sweep_r8.py`.
 
@@ -773,11 +775,11 @@ The privacy rules of the script:
 - An example shows only the member's message. It never shows the chat's
   answer, an email, a name field, an id, or a time finer than the day.
 - The script deletes the format, bidi, zero-width and tag characters first.
-  Then it masks URLs, email addresses, handles, keys, tokens, PAN numbers,
-  dates, Aadhaar, card and IBAN-like numbers, phone numbers and runs of 6
-  digits or more. Then it cuts the text to 160 characters.
-- The script replaces each Markdown and HTML character of the member's text,
-  so an example cannot make a link, an image, a heading or a mention.
+  Then it masks URLs, email addresses, handles, keys, tokens and PAN numbers.
+  It also masks dates, Aadhaar, card and IBAN-like numbers, phone numbers and
+  runs of 6 digits or more. Then it cuts the text to 160 characters.
+- The script replaces each Markdown and HTML character of the member's text.
+  So an example cannot make a link, an image, a heading or a mention.
 - The script drops a message that names a secret, such as a password, a
   token, an API key or an OTP. It is never an example, and it does not count. Secrets
   stay in the UI (D-PAR-7), so a refusal about one is not a parity gap.
