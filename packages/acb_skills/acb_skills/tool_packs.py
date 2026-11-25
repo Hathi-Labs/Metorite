@@ -714,11 +714,14 @@ No Projects agent exists to hand a task to.
 #: mail, or from a reply that the member sent. A reference pattern, not a word
 #: list, for one reason. A turn that ALSO names a project, a board or an
 #: assignment ("... and assign it to Ravi in the Website project") is Projects
-#: work, and on main it loaded ``projects``. This pack takes the place of the
+#: work, and on main it loaded ``projects``. So is a turn that delegates the
+#: task, gives it to a person, or sets its status, a tag, a priority or a
+#: reminder (review round 2). This pack takes the place of the
 #: core pack when both cannot fit (``replaces_core``), so the lookahead keeps
 #: the pack out of such a turn. Fence: ``tests/unit/test_my_tasks_p1b_tools.py``.
 _MAIL_TASK_REF = re.compile(
-    r"(?is)^(?!.*\b(?:projects?|boards?|assign\w*|sprints?|cycles?|subtasks?)\b).*?"
+    r"(?is)^(?!.*\b(?:projects?|boards?|assign\w*|delegat\w*|give\s+it\s+to|status"
+    r"|tags?|priority|remind\w*|sprints?|cycles?|subtasks?)\b).*?"
     r"(?:\btasks?\s+(?:from|out\s+of)\s+(?:this|that|the|my)\s+(?:e-?mail|mail|reply)\b"
     r"|\bturn\s+(?:this|that|the)\s+(?:e-?mail|mail)\s+into\s+a\s+task\b"
     r"|\badd\s+(?:this|that|the)\s+(?:e-?mail|mail)\s+to\s+(?:my\s+)?tasks\b"

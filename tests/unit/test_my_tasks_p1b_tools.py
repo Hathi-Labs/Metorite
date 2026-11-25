@@ -617,6 +617,20 @@ async def test_a_task_that_matches_the_card_says_nothing_more(env) -> None:
     assert "You asked for" not in out and "No assignee" not in out
 
 
+async def test_the_reply_card_shows_the_thread_and_the_subject_that_it_writes(env) -> None:
+    """The write stores the subject on the task's origin and labels the newest
+    message of the thread. Mutation: drop ``_reply_row``, or send a subject
+    that the card did not show -> red."""
+    env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
+    long = "Re: «quote»\n" + "x" * 300
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="Send the deck",
+                                          reply_subject=long)
+    sent = env["gw"].calls[0][2]["subject"]
+    assert len(sent) == core.MAIL_REPLY_SUBJECT_MAX and "«" not in sent and "\n" not in sent
+    lines = env["card"].cards[0]["context"].splitlines()
+    assert f"thread: «{THREAD}», subject: «{sent}»" in lines
+
+
 async def test_the_reply_card_names_the_label_at_the_provider(env) -> None:
     """The reply path labels the thread "Task" at the mail provider. Mutation:
     drop the line -> red."""
@@ -665,12 +679,27 @@ async def test_the_card_and_the_write_carry_the_same_text(env) -> None:
 def _main_choice(words: str, base: int, held: str) -> tuple[str, ...]:
     if words == BLOCK:
         return ("projects", "calendar-day") if base <= 56 or held else ("calendar-day",)
+    if words == REMIND:
+        return (("projects", "projects-reminders") if base <= 57 or held
+                else ("projects-reminders",))
     return ("email", "projects") if base <= 56 else ("email",)
 
 
 PLAIN = "Make a task from this email"
 PROJECT = "make a task from this email and assign it to Ravi in the Website project"
 BLOCK = "block two hours on my calendar for the task"
+REMIND = "make a task from the reply and remind me tomorrow"
+#: Review round 2: a turn that also delegates, gives, sets a status, a tag, a
+#: priority or a reminder is Projects work. Each chooses as on main.
+PROJECT_WORK = (
+    PROJECT,
+    "make a task from this email and delegate it to Ravi",
+    "make a task from this email and give it to Ravi",
+    "make a task from this email and set its status to In Review",
+    "turn this email into a task and tag it urgent",
+    "add this email to my tasks and mark it high priority",
+    REMIND,
+)
 
 
 @pytest.mark.parametrize("held", ["", "*"])
@@ -697,8 +726,8 @@ def test_no_request_of_main_loses_its_tool(base: int, held: str, monkeypatch) ->
     def got(words: str) -> tuple[str, ...]:
         return tp.choose(_turn(words=words), allowed=EVERY, base_tools=base).slugs
 
-    assert got(PROJECT) == _main_choice(PROJECT, base, held)
-    assert got(BLOCK) == _main_choice(BLOCK, base, held)
+    for words in (*PROJECT_WORK, BLOCK):
+        assert got(words) == _main_choice(words, base, held), words
     plain = got(PLAIN)
     assert plain[0] == "email" and SLUG in plain
     if held and base <= 54:

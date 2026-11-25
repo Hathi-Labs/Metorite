@@ -649,7 +649,10 @@ P-1 does not take all 14. The table names the owner of each row.
   - The card says what the route does with an assignee. The answer says why
     when the stored task differs from the card. The reply path labels the
     thread at the mail provider, so the card says so and the tool says
-    `open_world=True`.
+    `open_world=True`. The reply card also shows the thread and the subject
+    that the task keeps.
+  - Accepted in review: `open_world=True` takes the write out of a covered
+    run (H-236), so a covered run makes no task from a mail.
   - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
     hand-off that made a task refuses it.
   - `capture_intake(source="email")` of `skill_projects` is a different act.

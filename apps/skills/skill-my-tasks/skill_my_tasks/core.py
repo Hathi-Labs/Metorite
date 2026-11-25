@@ -1338,6 +1338,19 @@ async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]]) -> st
     return ask_tools.card_not_done_text("No task was made.")
 
 
+#: The subject that the reply path stores on the task's origin. The card shows
+#: the same text, so one cap serves both.
+MAIL_REPLY_SUBJECT_MAX = 120
+
+
+def _reply_row(thread_id: str, subject: str) -> tuple[str, str]:
+    """The card row of the reply path: the thread that gets the label, and the
+    subject that the task's origin keeps (D169: the card shows the change)."""
+    from acb_common.card_body import one_line
+
+    return ("thread", one_line(f"thread: {_data(thread_id)}, subject: {_data(subject or '(none)')}"))
+
+
 async def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
     """The one write of the capture tool: a POST to *path*. The card comes first."""
     return await _request("POST", path, json=body) or {}
@@ -1476,12 +1489,14 @@ async def my_tasks_capture_from_mail(
         p = await _post(_CAPTURE_EMAIL_CREATE,
                         {**ids, "email_id": email_id.strip(), "draft": draft})
         return await _made(p, draft)
+    subject = _same_text(reply_subject)[:MAIL_REPLY_SUBJECT_MAX]
     stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
-                            [*_card_rows(draft), ("label", MAIL_LABEL_LINE)])
+                            [*_card_rows(draft), _reply_row(thread_id.strip(), subject),
+                             ("label", MAIL_LABEL_LINE)])
     if stop:
         return stop
     p = await _post(_CAPTURE_REPLY_CREATE, {
-        **ids, "thread_id": thread_id.strip(), "subject": reply_subject.strip()[:300],
+        **ids, "thread_id": thread_id.strip(), "subject": subject,
         "reply_to_message_id": reply_to_message_id.strip() or None, "draft": draft})
     return await _made(p, draft)
 
