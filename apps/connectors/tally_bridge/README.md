@@ -155,6 +155,76 @@ How it copies:
   `as_of`.
 - `profit_and_loss` takes 366 days or less.
 
+## On Windows (TLY-5)
+
+On a customer's machine, pass `--windows` to each command. The program then
+keeps its files under `%ProgramData%\TallyBridge`:
+
+| File | What it holds |
+|---|---|
+| `settings.json` | The settings. It holds no secret |
+| `secrets.bin` | The read token hash and the setup secret hash, protected by DPAPI at machine scope |
+| `copy.key` | The key of the local copy, protected by DPAPI at machine scope |
+
+A file that DPAPI cannot read (a new machine, a damaged file) reads as empty.
+The bridge then asks for a new setup link, and the local copy starts again.
+
+Two settings keep Tally reachable (`integrations_console.md` §3.8.13). Each
+one is off until the customer turns it on:
+
+| Setting | What it does |
+|---|---|
+| `START_TALLY_AT_SIGNIN` with `TALLY_EXE` | A Task Scheduler task starts TallyPrime when any person signs in, as that person. The task names the Users group, so it does not depend on the administrator who installed it. TallyPrime loads the companies of its own start-up setting |
+| `KEEP_AWAKE` | While the bridge runs, it asks Windows not to sleep. It changes no power plan |
+
+Two commands change the machine. Run each one as an administrator:
+
+- `python -m tally_bridge apply-windows --windows` makes the sign-in task
+  match the setting. It also makes one firewall rule that blocks TCP 9000
+  (Tally) and 8765 (the bridge) from the network. Windows does not filter
+  loopback, so the bridge still reaches Tally.
+- `python -m tally_bridge uninstall-windows --windows` removes the task, the
+  firewall rule, the stored hashes, the copy key and the local copy.
+
+### The service and the installer (TLY-5 PR B)
+
+The program runs as the Windows service `TallyBridge`. It starts with Windows,
+before anyone signs in. Windows starts it again 5 s, 15 s and 60 s after a
+crash, and the count resets after a day. The service serves with the product
+stores of `--windows`. It starts with no token and no setup key, and both
+guards refuse every request until a key exists.
+
+To build the installer on a Windows machine with `uv` and Inno Setup 6:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.1.0
+```
+
+The build installs only the versions in `uv.lock`, PyInstaller included (the
+`build` dependency group). The output is `dist\TallyBridgeSetup-0.1.0.exe`. It
+is not signed yet, because signing waits for the owner's certificate (brief
+§10 question 8). The installer does these steps in this order:
+
+1. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. Only
+   SYSTEM and the administrators can write there, and Users can read. A fresh
+   install removes whatever was at that path, a link too, and makes a new
+   folder. An upgrade refuses a folder that is a link. If this step fails,
+   the setup stops. The service runs as LocalSystem and trusts its settings.
+2. An upgrade then stops the running service.
+3. It installs the service, which starts with Windows.
+4. It sets the restart rule.
+5. It runs `apply-windows`.
+6. It starts the service.
+7. It makes the setup key (`setup-link --wait --url-file`). That step waits
+   until the service answers, and writes the address to a file in the
+   installer's temporary folder.
+8. It opens that address as the person who signed in, never in the
+   browser of an administrator.
+
+The uninstall stops and removes the service, then runs `uninstall-windows`.
+It also deletes `%ProgramData%\TallyBridge`. A stop gives open requests 10 s,
+well inside the 30 s that Windows waits.
+
 ## Fixtures
 
 - `fixtures/synthetic/`: answers that we wrote by hand. Each file name starts

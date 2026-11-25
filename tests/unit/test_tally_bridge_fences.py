@@ -102,6 +102,28 @@ def test_the_local_copy_imports_only_the_reader():
     assert not bad, bad
 
 
+def test_the_windows_module_imports_no_reader_tools_transport_or_setup():
+    """TLY-5. The Windows side sits behind the store and key seams. It never
+    reaches into the reader, the tools, the transport or the setup page."""
+    bad = {
+        m
+        for m in _module_imports("windows")
+        if m.startswith(("tally_bridge.reader", "tally_bridge.tools",
+                         "tally_bridge.transport", "tally_bridge.setup"))
+    }
+    assert not bad, bad
+
+
+def test_no_module_but_the_entry_point_imports_the_windows_side():
+    bad = {
+        f"{module}: {m}"
+        for module in ("reader", "tools", "transport", "setup", "localcopy")
+        for m in _module_imports(module)
+        if m.startswith("tally_bridge.windows")
+    }
+    assert not bad, bad
+
+
 def test_the_reader_does_not_import_the_local_copy():
     bad = {m for m in _module_imports("reader") if m.startswith("tally_bridge.localcopy")}
     assert not bad, bad
