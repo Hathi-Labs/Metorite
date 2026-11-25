@@ -324,3 +324,18 @@ def test_each_start_of_the_service_checks_again_and_removes_the_task():
     assert cli._signin_guard_at_start(Settings(), lambda a: ran.append(list(a)) or 0,
                                       _refuse) is None
     assert ran == []
+
+
+
+def test_a_link_gets_replace_the_link_and_no_icacls():
+    """Re-review: icacls follows a link and changes its target; the link stays."""
+    with pytest.raises(acl.UnsafeTallyFolder) as raised:
+        acl.check(ROOT_INSTALL, _reader({r"C:\TallyPrime": _link()}), _nothing_beside)
+    text = str(raised.value)
+    assert "Replace the link" in text and "icacls" not in text
+
+
+def test_the_data_warning_comes_before_the_commands():
+    text = acl.message(ROOT_INSTALL, "S-1-5-11 can change the program there",
+                       r"C:\TallyPrime", True)
+    assert text.index("company data") < text.index("(1) icacls")

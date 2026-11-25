@@ -198,7 +198,8 @@ class _SetupApi:
                 "start_tally_at_signin": s.start_tally_at_signin,
                 "tally_exe": s.tally_exe,
                 "keep_awake": s.keep_awake,
-                "problem": self._problem(s),
+                # The DACL reads run off the event loop, as the save does.
+                "problem": await asyncio.to_thread(self._problem, s),
             }
             if link.get("mode") != "off"
             else None

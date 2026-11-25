@@ -98,6 +98,7 @@ class Security:
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 #: The one folder beside the program that Windows reads for its DLLs.
 DOT_LOCAL = "tally.exe.local"
+LINK_REASON = "It is a link"
 
 
 class UnsafeTallyFolder(Exception):
@@ -122,6 +123,13 @@ def message(path: str, reason: str, folder: str, near: bool) -> str:
     For a folder above it (often a drive root), locking would spread over the
     whole drive, so the fix is to install TallyPrime under Program Files."""
     head = f"The sign-in task is off. {reason}: {path}."
+    if reason.startswith(LINK_REASON):
+        # icacls follows a link and changes the target; the link stays.
+        return (
+            f"{head} Replace the link with the real folder (or install "
+            "TallyPrime under C:\\Program Files), set TALLY_EXE to it, then run "
+            "apply-windows again."
+        )
     if not near:
         return (
             f"{head} A user can rename or replace a folder above TallyPrime. "
@@ -129,13 +137,13 @@ def message(path: str, reason: str, folder: str, near: bool) -> str:
             "then run apply-windows again."
         )
     return (
-        f"{head} An administrator can lock the folder with three commands. "
-        f'(1) icacls "{folder}" /setowner *{ADMINISTRATORS} /T /C '
+        f"{head} First move the company data out of {folder}: after the lock, "
+        "users can only read that folder. Then an administrator locks it with "
+        f'three commands. (1) icacls "{folder}" /setowner *{ADMINISTRATORS} /T /C '
         f'(2) icacls "{folder}" /reset /T /C '
         f'(3) icacls "{folder}" /inheritance:r /grant:r *{SYSTEM}:(OI)(CI)F '
         f"*{ADMINISTRATORS}:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX . "
-        "Users can then only read that folder: move the company data out of it "
-        "first. Or install TallyPrime under C:\\Program Files. "
+        "Or install TallyPrime under C:\\Program Files. "
         "Then run apply-windows again."
     )
 
@@ -148,7 +156,9 @@ def chain(tally_exe: str) -> list[str]:
 
 def _reason(security: Security, needed: int, near: bool) -> str | None:
     if security.reparse:
-        return "It is a link (a junction or a symbolic link), and a user can change where it points"
+        return (
+            LINK_REASON + " (a junction or a symbolic link), and a user can change where it points"
+        )
     if security.owner not in TRUSTED:
         return f"Its owner is {security.owner}, not an administrator"
     for entry in security.entries:
