@@ -19,6 +19,22 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
+`KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
+`acb_skills/knowledge_tools.py`: `create_page`, `edit_page`, `create_space`
+and `edit_space`. The Knowledge ceiling goes from 19 to 15. Fences:
+`tests/unit/test_kb_chat_writes.py` and `tests/unit/test_kb_chat_writes_r8.py`.
+
+Each PAR-3 tool shows ONE card with the full text before it saves. A text that
+does not fit whole on one card gets a sentence and no card. A new page is
+always a draft, and no tool publishes (F2). The chat sends no grant. The
+server checks the right, and a 403 comes back as its own sentence.
+
+`edit_page` changes only a draft. For a published page it makes no card and
+no write, and it names `propose_edit`, which needs `KNOWLEDGE_PROPOSALS`. The
+PATCH route takes no base version, so a draft edit can overwrite a change
+that a colleague made while the card waited.
+
 **P-5b-1 (task 3114) is BUILT, 2026-11-25, and it ships dark.** The new pack
 `people` (`acb_skills/people_tools.py`) holds four reads: `people_directory`,
 `people_me`, `people_work` and `reach_preview`. Each tool calls the People
@@ -225,6 +241,10 @@ debt. That route runs the model again and saves the result with no card, so the
 card of `create_rules_from_prompt` would not show the saved rules. The owner
 accepts that debt, or the gateway changes.
 
+**P-2a (task 3111, 2026-11-22) is BUILT, with no flag.** It pays five reads of
+the Email app. P-2c had already taken the email debt from 14 to 10, so P-2a takes
+it from 10 to 5. §6.4, rung 4, names the reads and the next slice.
+
 **The fence blocks every pull request** (owner decision, 2026-11-01). It is a
 SAFETY fence in `tests/fences.json`, so it blocks in build mode too. The
 ceilings in `chat_parity.py` are the baseline at `origin/main` `fc1b5edb6`.
@@ -389,10 +409,10 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Eight ceilings had gone up since P-0 (calendar,
-chat, email, integrations, knowledge, settings, shell, studio), and each one
-names its task now. The CRM wave P-3 had no task, so task 3678 is its task.
-Fence: `tests/unit/test_chat_parity.py`.
+task of the wave of that app. Four ceilings are above P-0 now (calendar,
+chat, settings, studio), and each one names its
+task. The CRM wave P-3 had no task,
+so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
@@ -431,7 +451,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | projects | 7 | 7 | F3 | `projects_agent_parity.md` §6.4 owns it |
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
-| email | 13 | 10 | P-2 | 3111, 3919 (P-2c built) |
+| email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
 | crm | 74 | 72 | P-3 | 3678 |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
@@ -451,9 +471,11 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Four ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Five ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4. P-5b-1 took people to 13 and
-memory to 4, and P-5b-2 took people to 8. The total of `DEBT_CEILING` is 337. The "Today" column above does
+memory to 4, and P-5b-2 took people to 8. PAR-3 took knowledge to 15.
+
+The total of `DEBT_CEILING` is 328. The "Today" column above does
 not show these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -658,6 +680,30 @@ P-1 does not take all 14. The table names the owner of each row.
 timeout 900 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_tool_packs_registry.py tests/unit/test_calendar_settings_tools.py tests/unit/test_my_tasks_p1a_tools.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1a_tools.py
 ```
+- **Built (task 3111, P-2a).** The chat now does five reads of the Email
+  app. Each read is a mode of an email tool that the `email` pack already
+  holds, so no `TOOL_PACKS` line changes. The email ceiling went from 10 to 5 (P-2c had paid four rows before, 14 to 10).
+  - `query_inbox(everywhere=true)` sends the search of the search bar,
+    `GET /email/search` with `folder=all`. It searches each folder but Junk
+    and Trash. The route broadens to any word on page 1 only, so a broadened
+    answer has one page and names no next page.
+  - `query_inbox(counts=true)` reads the counts of the quick filters,
+    `GET /email/messages/facets`. That route takes only the mailbox and the
+    folder. So a call that also gives a filter reads nothing and names the
+    filters that it cannot apply.
+  - `list_labels(folders=true)` lists the folders of a mailbox. The folder
+    names sit in a frame, because a person who shares the mailbox can name a
+    folder.
+  - `get_account_overview(older_than=...)` reads the count and size of the
+    older mail that a removal would take out of Metorite.
+  - `list_accounts(organization=true)` reads the mailbox counts of the
+    organization. The gateway checks the admin right of the run member, and
+    the tool takes no member or organization from the model.
+  - The file from the chat on a draft or a reply was built before, in task
+    3812 (PRs 2607, 2633 and 2634).
+- **Next in P-2.** P-2b puts three writes on one card each: delete a mail,
+  load older mail of a folder, and remove older mail from Metorite. P-2c is
+  BUILT. The signature image stays with SG-6 (task 2182).
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo

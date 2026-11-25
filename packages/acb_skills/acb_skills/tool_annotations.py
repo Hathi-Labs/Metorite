@@ -205,6 +205,13 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # A person accepts in the app. Nothing leaves the platform.
     "propose_page":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     "propose_edit":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    # PAR-3 (task 3105): the four Knowledge writes. Each shows the full text
+    # on one card, and writes as the member. A new page is a draft. An edit
+    # keeps each old version, so none is destructive. Nothing leaves the platform.
+    "create_page":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "edit_page":             {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "create_space":          {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
+    "edit_space":            {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
     # WS-47 WAC-10a: queues an element for the member's own WhatsApp chat.
     # `bot_run` sends it to the member who asked, so it reaches no third party.
     "whatsapp_ui":           {"read_only": False, "destructive": False, "idempotent": False, "open_world": False},
@@ -290,6 +297,12 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     # every risk block stays byte-identical.
     "propose_page",
     "propose_edit",
+    # PAR-3 (task 3105): the four Knowledge writes, on the same terms. Only
+    # the orchestrator holds them, behind KNOWLEDGE_CHAT_WRITES.
+    "create_page",
+    "edit_page",
+    "create_space",
+    "edit_space",
     # WS-63 PZ-5: the colleague lookup only reads, and only the orchestrator
     # holds it, behind ASSISTANT_PROFILE_ENABLED. So every risk block stays
     # byte-identical.
