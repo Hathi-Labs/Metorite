@@ -13,7 +13,8 @@ Link mode (rung 2, TLY-2b) adds a step beside step 3, when LINK_URL is set:
 |---|---|---|
 | Pair | ``POST /setup/api/link/pair`` | Starts the pairing with the typed domain, shows the user code |
 | Confirm | ``POST /setup/api/link/confirm`` | Rule j: the exact company name that the approval returned |
-| Unlink | ``POST /setup/api/link/unlink`` | Revokes the credential at Metorite and deletes it here |
+| Unlink | ``POST /setup/api/link/unlink`` | Revokes the credential at Metorite and deletes it here, or cancels a pairing |
+| Wait | ``GET /setup/api/link/state`` | Only the link block, which the page polls while it waits |
 
 ``state`` holds ``link``: the mode, the user code while it waits, and the
 company name. It never holds the credential or the device code. The link
@@ -87,6 +88,7 @@ def build_setup_routes(
         Route("/setup/api/state", api.state, methods=["GET"]),
         Route("/setup/api/companies", api.companies, methods=["POST"]),
         Route("/setup/api/token", api.token, methods=["POST"]),
+        Route("/setup/api/link/state", api.link_state, methods=["GET"]),
         Route("/setup/api/link/pair", api.link_pair, methods=["POST"]),
         Route("/setup/api/link/confirm", api.link_confirm, methods=["POST"]),
         Route("/setup/api/link/unlink", api.link_unlink, methods=["POST"]),
@@ -228,6 +230,13 @@ class _SetupApi:
         if not isinstance(body, dict):
             return None, _json({"error": "Send a JSON object."}, 400)
         return body, None
+
+    async def link_state(self, request: Request) -> Response:
+        """Only the link block. The page polls it while it waits for the
+        approval, so it does not rebuild the page or ask TallyPrime."""
+        if (no := self._refused_api(request, post=False)) is not None:
+            return no
+        return _json({"link": self._link.state() if self._link is not None else {"mode": "off"}})
 
     async def link_pair(self, request: Request) -> Response:
         body, no = await self._link_body(request)

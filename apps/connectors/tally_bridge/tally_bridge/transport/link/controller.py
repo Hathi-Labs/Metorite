@@ -40,6 +40,10 @@ DISCONNECTED = "disconnected"  # the admin revoked it
 
 #: The pairing start answers within this time, or the page says so.
 CODE_WAIT_S = 15.0
+#: While no confirmed link exists, the controller looks at the store this
+#: often, so a ``confirm-link`` from the command line starts the poll too.
+RECHECK_S = 30.0
+UNREADABLE = "The link state of this computer cannot be read now. Try again in a minute."
 
 
 Result = tuple[dict[str, Any], str | None]
@@ -87,12 +91,16 @@ class LinkController:
         """The link state for the setup page. No credential, no device code."""
         if not self._link_url():
             return {"mode": OFF}
-        stored = self._load()
+        error = self._error
+        try:
+            stored = self._store.load()
+        except Exception:
+            stored, error = None, UNREADABLE
         out: dict[str, Any] = {
             "mode": NOT_LINKED,
             "code": None,
             "company": None,
-            "error": self._error,
+            "error": error,
         }
         if self._pair_task is not None and not self._pair_task.done():
             out.update(mode=WAITING_APPROVAL, code=self._code)
@@ -112,8 +120,11 @@ class LinkController:
         if not url:
             return self.state(), "Link mode is off. Set LINK_URL first."
         if self._pair_task is not None and not self._pair_task.done():
-            return self.state(), "A pairing runs already. Wait for it, or unlink."
-        old = self._load()
+            return self.state(), "A pairing runs already. Wait for it, or cancel it."
+        try:
+            old = self._store.load()
+        except Exception:
+            return self.state(), UNREADABLE
         if old is not None and old.confirmed:
             return self.state(), f"This machine is linked to {old.company_name}. Unlink first."
         api = self._api_factory(url)
@@ -169,6 +180,8 @@ class LinkController:
         text says when Metorite did not take the revoke."""
         if self._pair_task is not None and not self._pair_task.done():
             self._pair_task.cancel()
+            # Wait for the cancel, so the state below is final (no code box).
+            await asyncio.gather(self._pair_task, return_exceptions=True)
         stored = self._load()
         revoked = True
         if stored is not None:
@@ -213,7 +226,9 @@ class LinkController:
                     asyncio.ensure_future(self._wake.wait()),
                     asyncio.ensure_future(stop.wait()),
                 }
-                _, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                _, pending = await asyncio.wait(
+                    waiters, return_when=asyncio.FIRST_COMPLETED, timeout=RECHECK_S
+                )
                 for task in pending:
                     task.cancel()
                 continue

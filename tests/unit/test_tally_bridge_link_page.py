@@ -293,7 +293,7 @@ def test_the_page_has_the_link_step_and_sets_no_html_from_data():
     page = (static / "setup.html").read_text(encoding="utf-8")
     script = (static / "setup.js").read_text(encoding="utf-8")
     for element in ("link-domain", "link-code", "link-company", "link-confirm-name",
-                    "link-refuse", "link-unlink"):
+                    "link-refuse", "link-unlink", "link-cancel"):
         assert f'id="{element}"' in page
     assert "innerHTML" not in script and "insertAdjacentHTML" not in script
 
@@ -329,3 +329,141 @@ def test_the_copy_time_is_the_oldest_copy_and_is_read_once_per_file(tmp_path, mo
     copy.save(Snapshot("Alpha Co", now + timedelta(minutes=30)))
     copy.oldest_copied_at(["Alpha Co"])
     assert loads == ["Alpha Co"]
+
+
+# --- Verifier round 1: the second guards are fenced too ---------------------------
+
+
+def test_an_unconfirmed_link_makes_the_controller_wait_and_not_retry(caplog):
+    """_ready checks the confirmation. Without it, run_link refuses each try
+    (NotConfirmed), and the controller would fail and log again and again."""
+    link = FakeLink()
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
+    ctl = _controller(link, store)
+    ctl.dispatch = _echo
+
+    async def go():
+        stop = asyncio.Event()
+        runner = asyncio.create_task(ctl.run(stop))
+        await asyncio.sleep(0.2)
+        stop.set()
+        await asyncio.wait_for(runner, 3)
+
+    with caplog.at_level("ERROR", logger="tally_bridge.link"):
+        asyncio.run(go())
+    assert link.polls == []
+    assert not [r for r in caplog.records if "link loop failed" in r.getMessage()]
+
+
+def test_unlink_ends_a_held_poll_at_once():
+    """Metorite holds each poll up to 25 s. The unlink stops the loop now,
+    not at the end of the held poll."""
+    link = FakeLink()
+    link.hold = 5.0
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    ctl = _controller(link, store)
+    ctl.dispatch = _echo
+
+    async def go():
+        stop = asyncio.Event()
+        runner = asyncio.create_task(ctl.run(stop))
+        await _until(lambda: ctl._loop_stop is not None)
+        await asyncio.sleep(0.05)  # the poll is held now
+        await ctl.unlink()
+        await _until(lambda: ctl._loop_stop is None, timeout=0.3)
+        stop.set()
+        await asyncio.wait_for(runner, 3)
+
+    asyncio.run(go())
+
+
+# --- Review round 1 (Opus) ---------------------------------------------------------
+
+
+def test_the_wait_polls_only_the_link_block_and_never_asks_tallyprime(tmp_path):
+    """Finding 1: the 3 s timer read the whole state, rebuilt the company
+    ticks and asked TallyPrime each time."""
+    script = (ROOT / "tally_bridge" / "setup" / "static" / "setup.js").read_text(encoding="utf-8")
+    assert "setInterval(loadLink, 3000)" in script and "setInterval(load," not in script
+    asked: list[str] = []
+
+    class Reader:
+        async def is_up(self):
+            asked.append("is_up")
+            return False
+
+        async def post(self, envelope):  # pragma: no cover
+            raise AssertionError
+
+    live = LiveSettings(Settings(link_url=URL))
+    app = build_address_app(live, MemorySecretStore(None, token_sha256(KEY)), Reader(),
+                            FileSettingsStore(tmp_path / "s.json"), link=_controller(FakeLink()))
+    with TestClient(app, base_url=BASE) as c:
+        ok = c.get("/setup/api/link/state", headers={"X-Setup-Key": KEY})
+        no = c.get("/setup/api/link/state", headers={"X-Setup-Key": "x" + KEY})
+    assert ok.status_code == 200 and ok.json() == {"link": _controller(FakeLink()).state()}
+    assert no.status_code == 403 and asked == []
+
+
+def test_a_pairing_can_be_cancelled_from_the_code_box():
+    """Finding 2: a pairing that runs can be cancelled (unlink cancels it)."""
+    link = FakeLink(pending=10_000)
+    ctl = _controller(link)
+
+    async def go():
+        state, _ = await ctl.pair("example.com")
+        assert state["mode"] == WAITING_APPROVAL
+        state, _ = await ctl.unlink()
+        await asyncio.sleep(0.01)
+        return state, ctl.state()
+
+    state, later = asyncio.run(go())
+    assert state["mode"] == NOT_LINKED and later["mode"] == NOT_LINKED
+    page = (ROOT / "tally_bridge" / "setup" / "static" / "setup.html").read_text(encoding="utf-8")
+    code_box = page.split('id="link-code-box"', 1)[1].split("</div>", 1)[0]
+    assert 'id="link-cancel"' in code_box
+
+
+def test_an_unreadable_link_is_never_read_as_no_link():
+    """Finding 3: a scanner holds link.bin. A pairing must not replace a
+    confirmed credential that it cannot read (it would stay live)."""
+
+    class Locked(MemoryLinkStore):
+        locked = True
+
+        def load(self):
+            if self.locked:
+                raise OSError("sharing violation")
+            return super().load()
+
+    store = Locked(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    link = FakeLink()
+    ctl = _controller(link, store)
+    state, error = asyncio.run(ctl.pair("example.com"))
+    assert error and "cannot be read" in error and "cannot be read" in state["error"]
+    assert link.starts == []
+    store.locked = False
+    assert store.state.connector_id == "conn-1" and store.state.confirmed
+
+
+def test_a_confirm_from_the_command_line_starts_the_poll_at_the_next_check(monkeypatch):
+    """The CLI does not wake the controller; it looks at the store again."""
+    from tally_bridge.transport.link import controller as ctl_module
+
+    monkeypatch.setattr(ctl_module, "RECHECK_S", 0.05)
+    link = FakeLink()
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
+    ctl = _controller(link, store)
+    ctl.dispatch = _echo
+
+    async def go():
+        stop = asyncio.Event()
+        runner = asyncio.create_task(ctl.run(stop))
+        await asyncio.sleep(0.1)
+        assert link.polls == []
+        store.save(store.state.confirm())  # what `confirm-link` writes
+        await _until(lambda: len(link.polls) >= 1)
+        stop.set()
+        await asyncio.wait_for(runner, 3)
+
+    asyncio.run(go())

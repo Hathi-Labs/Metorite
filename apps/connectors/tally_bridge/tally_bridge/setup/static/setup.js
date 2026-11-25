@@ -65,11 +65,26 @@
     };
     $("link-line").textContent = (link.error ? link.error + " " : "") + (lines[mode] || "");
     if (mode === "waiting_approval" && linkTimer === null) {
-      linkTimer = window.setInterval(load, 3000);
-    } else if (mode !== "waiting_approval" && linkTimer !== null) {
+      linkTimer = window.setInterval(loadLink, 3000);
+    } else if (mode !== "waiting_approval") {
+      stopLinkTimer();
+    }
+  }
+
+  function stopLinkTimer() {
+    if (linkTimer !== null) {
       window.clearInterval(linkTimer);
       linkTimer = null;
     }
+  }
+
+  // While it waits for the approval, the page reads the link block only. It
+  // does not rebuild the company ticks, and it does not ask TallyPrime.
+  function loadLink() {
+    return call("GET", "/setup/api/link/state").then(function (res) {
+      if (!res.ok) { stopLinkTimer(); return; }
+      showLink(res.data.link);
+    }, stopLinkTimer);
   }
 
   function linkCall(path, body) {
@@ -83,7 +98,13 @@
   }
 
   $("link-start").addEventListener("click", function () {
-    linkCall("/setup/api/link/pair", { domain: $("link-domain").value.trim() });
+    var button = $("link-start");
+    button.disabled = true;
+    linkCall("/setup/api/link/pair", { domain: $("link-domain").value.trim() })
+      .then(function () { button.disabled = false; }, function () { button.disabled = false; });
+  });
+  $("link-cancel").addEventListener("click", function () {
+    linkCall("/setup/api/link/unlink", {});
   });
   $("link-confirm").addEventListener("click", function () {
     linkCall("/setup/api/link/confirm", { company: $("link-confirm-name").value });
@@ -100,6 +121,7 @@
     return call("GET", "/setup/api/state").then(function (res) {
       if (!res.ok) {
         $("tally-line").textContent = "This page has no access. Open it again from the bridge.";
+        stopLinkTimer();
         return;
       }
       var s = res.data;

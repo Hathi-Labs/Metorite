@@ -63,6 +63,7 @@ class FakeLink:
         self.refuse = 0  # answer the next N polls with a 401 that is not a revoke
         self.bad_answer = 0  # answer the next N polls with a bad deadline_s
         self.revoke_on_reply = False  # a reply answers 401 revoked; polls still pass
+        self.hold = 0.0  # seconds that each poll is held before its answer, as Metorite does
 
     def _auth(self, request: Request) -> bool:
         return request.headers.get("authorization") == f"Bearer {CREDENTIAL}" and not self.revoked
@@ -97,6 +98,8 @@ class FakeLink:
         if self.bad_answer:
             self.bad_answer -= 1
             return JSONResponse({"requests": [{"id": "x", "method": "POST", "deadline_s": None}]})
+        if self.hold:
+            await asyncio.sleep(self.hold)
         if self.poll_fail:
             self.poll_fail -= 1
             return JSONResponse({"error": "busy"}, status_code=503)
