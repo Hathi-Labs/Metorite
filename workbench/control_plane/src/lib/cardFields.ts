@@ -188,6 +188,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "parent_project_id": { label: "Parent project" },
   "parent_task_id": { label: "Parent task" },
   "place": { label: "Place" },
+  // WS-CRM CRM-M2i (task 3953): an item of the mapping plan that is not a
+  // field rule, such as the module that plays a slot, on an approve or a restore.
+  "plan item N": { label: "Plan item", plural: "Plan items" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
   // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.

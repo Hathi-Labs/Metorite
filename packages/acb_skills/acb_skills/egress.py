@@ -1423,7 +1423,9 @@ CARD_WRITE_KEY = "card_write"
 #: Each CRM write says ``open_world=True`` and keeps saying it, because D-CRM-9
 #: can queue it for Zoho. The list keeps it, never a claim on the annotation.
 #: Its card carries the Zoho note. In Mirror mode the three record writes leave
-#: the run first (``_tool_injection.MIRROR_RECORD_WRITES``).
+#: the run first (``_tool_injection.MIRROR_RECORD_WRITES``). The three class B
+#: writes of the Field map (task 3953): ``crm_edit_field_rule``,
+#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``.
 #:
 #: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
 #: The class C Projects tools. Each is hard to undo or acts on many rows, so a
@@ -1431,7 +1433,10 @@ CARD_WRITE_KEY = "card_write"
 #: bulk update, a move of a project, a revert, a status set, a change of access
 #: (``grant_access``, ``revoke_access``). The archive is the one class C
 #: exception, and it is not on this list either: :data:`HELD_CLASS_C_TOOLS`
-#: holds it behind its own flag. ``nudge_task`` tells another
+#: holds it behind its own flag. ``crm_approve_mapping_plan`` (class C, task
+#: 3953) approves the field map of the whole org, and no owner decision keeps
+#: it. So a held chat drops it, and the member approves the draft on the
+#: Field map page. ``nudge_task`` tells another
 #: person. ``add_report_recipient``, ``remove_report_recipient`` and
 #: ``set_report_schedule`` change who gets mail later, so they are paths out.
 #: ``attach_to_task`` moves a file of the chat onto a shared task. A store write
@@ -1555,11 +1560,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
-    # CRM-M2f and CRM-M2i (task 3953): a field rule and the mapping plan. Each
-    # card shows the field and the column of each rule that changes.
+    # CRM-M2f and CRM-M2i (task 3953): the three class B writes of the Field
+    # map. Each card shows each rule that changes. The class C approve of a
+    # plan (crm_approve_mapping_plan) is not here, so a held chat drops it.
     "crm_edit_field_rule": _pin("action entity field target_column"),
     "crm_draft_mapping_plan": _pin("changes"),
-    "crm_approve_mapping_plan": _pin("version"),
     "crm_restore_mapping_plan": _pin("version"),
 }
 

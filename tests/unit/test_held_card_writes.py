@@ -80,14 +80,17 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The eleven CRM writes. Each says ``open_world=True`` and keeps saying it.
-#: CRM-M2f and CRM-M2i (task 3953) added a field rule and three plan writes.
+#: The ten CRM writes that a held chat keeps. Each says ``open_world=True``
+#: and keeps saying it. CRM-M2f and CRM-M2i (task 3953) added the three class
+#: B writes of the Field map.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
-    "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
-    "crm_restore_mapping_plan",
+    "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
 })
+#: The CRM writes that a held chat drops. The approve of a plan is class C and
+#: approves the field map of the whole org. No owner decision keeps it (task 3953).
+OFF_CRM = frozenset({"crm_approve_mapping_plan"})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
 #: ``promote_reminder``. A covered run still holds them. ``answer_decision``
@@ -788,7 +791,21 @@ def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
 
     wrote = {_name(t) for t in tools
              if not (TOOL_ANNOTATIONS.get(_name(t)) or {}).get("read_only")}
-    assert wrote - eg.HELD_OWNER_CHAT_FILES == KEPT_CRM
+    assert wrote - eg.HELD_OWNER_CHAT_FILES == KEPT_CRM | OFF_CRM
+    assert not (KEPT_CRM & OFF_CRM)
+
+
+@pytest.mark.parametrize("name", sorted(OFF_CRM))
+def test_a_class_c_crm_write_stays_off_in_a_held_chat(name: str, crm_tools) -> None:
+    """Task 3953: the approve of a plan is on no list, so a held chat drops it,
+    and the three other Field map writes stay. Mutation: put the approve on
+    ``HELD_CARD_WRITE_TOOLS`` -> red."""
+    tool = crm_tools[name]
+    assert name not in eg.HELD_CARD_WRITE_TOOLS and name not in eg.HELD_CLASS_C_TOOLS
+    assert eg.is_held_card_write(tool) is False
+    assert eg.is_held_chat_off(tool, owner=CRM) is True
+    for kept in ("crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan"):
+        assert eg.is_held_chat_off(crm_tools[kept], owner=CRM) is False, kept
 
 
 def test_a_new_write_of_an_owner_outside_a_family_is_off_in_its_run() -> None:
@@ -810,14 +827,18 @@ def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
     assert agents[0].default_options["tools"] == []
 
 
-def test_the_owner_rule_drops_no_tool_of_the_crm_agent_today(crm_tools, monkeypatch) -> None:
-    """Each tool of the agent is a read or a listed write, so a held delegated run
-    keeps all of them. Mutation: drop the read test -> the reads leave -> red."""
+def test_the_owner_rule_drops_only_the_plan_approve_of_the_crm_agent(
+    crm_tools, monkeypatch,
+) -> None:
+    """Each other tool of the agent is a read or a listed write, so a held
+    delegated run keeps it. The class C approve of a plan leaves (task 3953).
+    Mutation: drop the read test -> the reads leave -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
     agents = [_agent_with(list(crm_tools.values()))]
     with _bound(**{eg.CHAT_MARK_KEY: True}):
         ti._apply_no_egress(agents, CRM)
-    assert {_name(t) for t in agents[0].default_options["tools"]} == set(crm_tools)
+    kept = {_name(t) for t in agents[0].default_options["tools"]}
+    assert set(crm_tools) - kept == OFF_CRM
 
 
 def test_the_owner_rule_drops_only_class_c_from_the_projects_agent(

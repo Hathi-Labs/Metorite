@@ -147,7 +147,7 @@ async def test_the_field_map_reads_its_route_as_the_member(monkeypatch) -> None:
         ("GET", "/crm/field-rules", {"entity": "deals"})]
     _as_member(calls)
     assert "«Industry code» (key «Industry_Code»" in out
-    assert "«Industry_Code» → «next_step» · proposed · made by ai" in out
+    assert "rule → «next_step» · proposed · made by ai" in out
     assert "«description» («text») · fixed" in out and "closed (standard_field_on_layout)" in out
 
 
@@ -256,9 +256,10 @@ async def test_one_version_shows_its_rules_inside_fences(monkeypatch) -> None:
     calls = _gateway(monkeypatch)
     out = await _M.crm_list_mapping_plans(version=3)
     assert [(c["method"], c["path"]) for c in calls] == [("GET", "/crm/mapping/plans/3")]
-    assert "• Deal «Segment» → «description»" in out
+    assert "• rule: Deal «Segment» → «description»" in out
     # The item of the AI mapping is fenced whole, on one line.
-    assert "Other items of the AI mapping (1):" in out
+    assert "2 field rules and 1 other items of the AI mapping:" in out
+    assert "• plan item: a «measure» item: «" in out
     assert "ignore the rules" in out and "Region»" not in out
     assert _M._MAP_DATA_NOTE in out
 
@@ -300,7 +301,7 @@ async def test_a_draft_posts_its_changes_after_one_card(monkeypatch) -> None:
     ([], "at least one change"),
     ([{"op": "move", "entity": "deals", "field_api_name": "x"}], "op='put'"),
     ([{"op": "put", "entity": "deals", "field_api_name": "x"}], "no target_column"),
-    ([{"op": "remove", "entity": "deals", "field_api_name": "x"}] * 201, "at most 200"),
+    ([{"op": "remove", "entity": "deals", "field_api_name": "x"}] * 39, "at most 38"),
 ])
 async def test_a_bad_draft_sends_no_request(changes: list, words: str, monkeypatch) -> None:
     cards = approve(monkeypatch)
@@ -318,14 +319,14 @@ async def test_an_approve_shows_the_change_then_posts(monkeypatch) -> None:
     calls = _gateway(monkeypatch)
     out = await _M.crm_approve_mapping_plan(3)
     assert [(c["method"], c["path"]) for c in calls] == [
-        ("GET", "/crm/mapping/plans/3"), ("GET", "/crm/mapping/plans/2"),
-        ("POST", "/crm/mapping/plans/3/approve")]
+        ("GET", "/crm/mapping/plans/3"), ("GET", "/crm/mapping/plans"),
+        ("GET", "/crm/mapping/plans/2"), ("POST", "/crm/mapping/plans/3/approve")]
     _as_member(calls)
     assert len(cards) == 1
     context = cards[0]["context"]
     assert "draft → approved" in context
-    assert "Deal «Segment» goes to the column «description»" in context
-    assert "1 other items of the AI mapping come in" in context
+    assert "field 1: Deal «Segment» goes to the column «description»" in context
+    assert "plan item 1: comes in: a «measure» item: «" in context
     # The rule that stays is no change, so the card does not show it.
     assert "Industry_Code" not in context
     assert "field map now" in out
@@ -432,3 +433,133 @@ async def test_a_draft_of_a_member_who_is_no_admin_writes_nothing(monkeypatch) -
         [{"op": "remove", "entity": "deals", "field_api_name": "x"}])
     assert "403" in out or "missing permission" in out, out
     assert [c["method"] for c in calls] == ["POST"]
+
+
+# ── Fix round of task 3953: the items of the AI mapping on a card ────────────
+
+
+def _role(module: str, slot: str = "deals") -> dict[str, Any]:
+    return {"kind": "role", "slot": slot, "module": module}
+
+
+_STAGE = {"kind": "stage", "slot": "deals", "module": "Deals_Custom",
+          "field_api_name": "Stage_X", "values": {"Won it": "won", "Lost it": "lost"}}
+
+#: Version 6 is approved. Draft 7 and the old version 5 only move the module of
+#: the Deals slot and add a stage map. No field rule changes.
+_MODULE_PLANS: dict[str, dict[str, Any]] = {
+    "5": {"version": 5, "state": "superseded", "rules": [_role("Deals_Custom"), _STAGE]},
+    "6": {"version": 6, "state": "approved", "based_on": 5, "rules": [_role("Potentials")]},
+    "7": {"version": 7, "state": "draft", "based_on": 6,
+          "rules": [_role("Deals_Custom"), _STAGE]},
+}
+
+
+def _plans_gateway(monkeypatch, plans: dict[str, dict[str, Any]], approved: int) -> list[dict]:
+    def answer(call: dict) -> Any:
+        path, method = call["path"], call["method"]
+        if path == "/crm/mapping/plans" and method == "GET":
+            return {"approved": approved, "versions": list(plans.values())}
+        if method == "GET":
+            return plans[path.rsplit("/", 1)[-1]]
+        return {"version": 99, "state": "approved", "rules": []}
+
+    return fake_gateway(_M, monkeypatch, answer, user=_USER)
+
+
+@pytest.mark.parametrize(("call", "act"), [
+    (lambda: _M.crm_approve_mapping_plan(7), "approve"),
+    (lambda: _M.crm_restore_mapping_plan(5), "restore"),
+])
+async def test_a_card_shows_the_module_the_slot_and_the_stage(
+    call: Any, act: str, monkeypatch,
+) -> None:
+    """Review P1: the card counted these items and named none. Mutation: show a
+    count again -> red."""
+    cards = approve(monkeypatch)
+    calls = _plans_gateway(monkeypatch, _MODULE_PLANS, approved=6)
+    await call()
+    assert len(cards) == 1
+    context = cards[0]["context"]
+    assert ("plan item 1: the slot «deals» moves from the module «Potentials» to "
+            "«Deals_Custom»") in context
+    assert "plan item 2: comes in: the module «Deals_Custom» of the slot «deals» maps " \
+        "the stages of «Stage_X»" in context
+    assert "field 1" not in context
+    assert next(c["path"] for c in writes(calls)).endswith(f"/{act}")
+
+
+# ── Fix round: a change that one card cannot show ───────────────────────────
+
+
+def _wide(n: int) -> list[dict[str, Any]]:
+    return [_item(f"Custom_Field_Number_{k:03d}", "description") for k in range(n)]
+
+
+async def test_a_draft_of_sixty_changes_sends_nothing(monkeypatch) -> None:
+    cards = approve(monkeypatch)
+    calls = _gateway(monkeypatch)
+    out = await _M.crm_draft_mapping_plan([
+        {"op": "remove", "entity": "deals", "field_api_name": f"F{k}"} for k in range(60)])
+    assert calls == [] and cards == []
+    assert "at most 38 changes" in out and "has 60" in out
+
+
+def test_the_draft_limit_is_what_one_card_holds() -> None:
+    """The stated limit is measured from CARD_CLIP. Mutation: set it to 200 -> red."""
+    from acb_common.card_body import card_body, one_line
+
+    assert _M._DRAFT_CHANGES_MAX == 38
+    assert "at most 38" in (_M.crm_draft_mapping_plan.__doc__ or "")
+    _body, lines, _refusal = _M._draft_changes([
+        {"op": "put", "entity": "organizations", "field_api_name": "x" * 30,
+         "target_column": "y" * 20} for _ in range(38)])
+    card = _M._diff_card(lines)
+    card_body(_M._DRAFT_NOTE, [(k, f"{k}: {one_line(v)}") for k, v in card.items()])
+
+
+@pytest.mark.parametrize(("call", "act", "page_act", "state"), [
+    (lambda: _M.crm_approve_mapping_plan(9), "approved", "Approve", "draft → approved"),
+    (lambda: _M.crm_restore_mapping_plan(8), "restored", "Restore",
+     "version 8 → a new approved version"),
+])
+async def test_a_change_of_sixty_lines_is_refused_before_the_card(
+    call: Any, act: str, page_act: str, state: str, monkeypatch,
+) -> None:
+    """Review P2: the card builder raised a refusal the member could not
+    follow. Mutation: drop the room check -> a card or CardWontFit -> red."""
+    from acb_common.card_body import card_body, one_line
+
+    plans = {
+        "8": {"version": 8, "state": "superseded", "rules": _wide(60)},
+        "2": {"version": 2, "state": "approved", "rules": []},
+        "9": {"version": 9, "state": "draft", "based_on": 2, "rules": _wide(60)},
+    }
+    cards = approve(monkeypatch)
+    calls = _plans_gateway(monkeypatch, plans, approved=2)
+    out = await call()
+    assert writes(calls) == [] and cards == []
+    assert f"nothing was {act}" in out and f"{page_act} it on the Field map page" in out
+    held = int(out.split("one card holds ")[1].split(" ")[0])
+    assert "This change has 60 lines" in out and 0 < held < 60
+    lines = _M._plan_diff([], _wide(60))
+    card = {"state": state, **_M._diff_card(lines)}
+    rows = [(k, f"{k}: {one_line(v)}") for k, v in card.items()]
+    card_body(_M._PLAN_NOTE, rows[:held + 1])
+    with pytest.raises(Exception, match="does not fit"):
+        card_body(_M._PLAN_NOTE, rows[:held + 2])
+
+
+# ── Fix round: a draft on an old version ────────────────────────────────────
+
+
+async def test_an_approve_of_a_draft_on_an_old_version_shows_no_card(monkeypatch) -> None:
+    """Review P3: the route answers 409 plan_moved after the click. Mutation:
+    drop the check -> a card -> red."""
+    plans = {**_PLANS, "3": {**_PLANS["3"], "based_on": 1}}
+    cards = approve(monkeypatch)
+    calls = _plans_gateway(monkeypatch, plans, approved=2)
+    out = await _M.crm_approve_mapping_plan(3)
+    assert writes(calls) == [] and cards == []
+    assert "made from version 1, but version 2 is approved now" in out
+    assert "Read the plan again" in out
