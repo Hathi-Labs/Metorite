@@ -48,6 +48,8 @@ AGENTS: tuple[tuple[str, str, str], ...] = (
     ("agent-crm", "crm", "native"),
     ("agent-email-assistant", "email-assistant", "native"),
     ("agent-orchestrator", "orchestrator", "native"),
+    # PAR-2a: the owner of the org-admin pack, built and never run.
+    ("agent-org-admin", "org-admin", "native"),
     ("agent-projects", "projects-assistant", "native"),
     # PAR-5 (task 3108): the pack-only owner of the settings pack.
     ("agent-settings-keeper", "settings-keeper", "native"),

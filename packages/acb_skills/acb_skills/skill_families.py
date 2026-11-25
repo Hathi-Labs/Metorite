@@ -803,7 +803,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Calendar day planner",
         "summary": (
             "The member's day: rebuild it, plan what is left, roll over, "
-            "set the One Thing, block or release time, read or change the calendar settings, and keep the day rules."
+            "set the One Thing, block or release time, read or change the calendar settings, keep the day rules, "
+            "list the connected calendars, and propose a clearer title or the missing fields of a task."
         ),
         "description": (
             "A tool pack: the day planner, for the main assistant to load "
@@ -811,7 +812,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "\"I fell behind\". The pack holds the tools to propose and apply "
             "a plan of the day, to fit what is left, to roll over unfinished "
             "work, to read the digest of the day, to set the One Thing, and to "
-            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. A plan is proposed first "
+            "block, release and read the schedule. It also holds the tools to read and change the calendar settings: the standing instruction, the working hours, the capacity, the lunch window, the energy windows and auto rollover. It holds four tools for the day rules too: list, add, edit and delete a recurring focus window or block. Two tools run the day flows in one reply, start my day and close my day: they propose and change nothing. Three reads list the connected calendars, propose a clearer title for a task, and propose the missing fields of a task (P-1a, task 3112): they change nothing. A plan is proposed first "
             "and applied after the member agrees. A run loads a pack only "
             "where tool packs are on, so until then this switch has no effect."
         ),
@@ -821,7 +822,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_day_digest",
             "my_tasks_delete_day_rule",
             "my_tasks_edit_day_rule",
+            "my_tasks_enrich",
             "my_tasks_get_calendar_settings",
+            "my_tasks_list_calendar_connections",
             "my_tasks_list_day_rules",
             "my_tasks_list_events",
             "my_tasks_list_schedule",
@@ -831,6 +834,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "my_tasks_schedule",
             "my_tasks_set_one_thing",
             "my_tasks_start_my_day",
+            "my_tasks_suggest_title",
             "my_tasks_unschedule",
             "my_tasks_update_calendar_settings",
         ),
@@ -999,24 +1003,35 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # they form a small pack of the same owner, after it. It is NOT in
     # tool_packs.FOLLOWS: it ships dark, and it is on only where the tool-pack flag
     # names it (an owner-only line). Fence: test_studio_workflow_write_tools.py.
+    # PAR-8a (chat_parity.md section 6.4, rung 5, task 3903): seven more tools of the
+    # Workflows app join this pack, so it stays the one dark pack of workflow acts.
     "studio-workflows": {
-        "label": "AI Studio workflow publish",
+        "label": "AI Studio workflows",
         "summary": (
-            "Make a workflow live: publish its draft, roll it back to a version, "
-            "pause it or turn it on again."
+            "Run a workflow and read its runs, check it, read the parts of a step, "
+            "make, rename, copy or delete it, change its draft with the workflow helper, "
+            "manage its code modules, publish it, roll it back, pause it or turn it on again."
         ),
         "description": (
-            "A tool pack: the tools that make a workflow live, for the main "
-            "assistant to load when a turn asks to publish, roll back, pause or "
-            "turn on a workflow. Each tool needs the right to publish workflows. "
-            "A publish, a roll back and a turn on show one card with the version, "
-            "the triggers that are on and whether the organization runs workflows "
-            "with no person present. A run loads a pack only where tool packs are "
-            "on, so until then this switch has no effect."
+            "A tool pack: the acts of the Workflows app, for the main assistant to "
+            "load when a turn asks to run, change, publish or pause a workflow. A "
+            "run, a delete, a change of the draft by the workflow helper and a save "
+            "of a code module each show one card. A publish, a roll back and a turn "
+            "on need the right to publish workflows, and show one card with the "
+            "version, the triggers that are on and whether the organization runs "
+            "workflows with no person present. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "studio_workflow_publish",
             "studio_workflow_live",
+            "studio_workflow_runs",
+            "studio_workflow_check",
+            "studio_workflow_catalog",
+            "studio_workflow_run",
+            "studio_workflow_save",
+            "studio_workflow_build",
+            "studio_workflow_module",
         ),
         "owner": "studio-builder",
         "core": False,
@@ -1065,6 +1080,104 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": ("studio_skill_share",),
         "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # PAR-2a (chat_parity.md section 6.3, rung 1, task 3102): the members of the
+    # org from the chat. Each tool calls an admin route as the member, and the
+    # guard of the route is the only check. The owner never runs as an agent, as
+    # studio-builder does. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_org_admin_tools.py.
+    # PAR-4a (rung 3, task 3107) adds the groups, the custom roles, the
+    # overrides of a member, the removal preview and the name of the org
+    # (org_admin_more_tools.py). Fence: test_org_admin_more_tools.py.
+    # PAR-4c (rung 3, task 3935) adds the removal and the purge of a member in
+    # the same module.
+    # PAR-4d (rung 3, task 3936) adds the read of the seats and the assign or
+    # release of one seat (org_admin_more_tools.py). Fences:
+    # test_org_admin_more_tools.py, test_org_admin_seats_console_stub.py.
+    # PAR-6a (rung 3, task 3109): the seven tools of the Integrations app join
+    # the same pack (integrations_admin_tools.py). Fence:
+    # test_integrations_admin_tools.py.
+    "org-admin": {
+        "label": "Organization members and Integrations",
+        "summary": (
+            "Manage the members, the sign-in requests, the groups, the roles, the access "
+            "of a member, the seats and the name of the organization, remove or purge a "
+            "member, or read, test and disconnect the Integrations, the agent connections "
+            "and the MCP servers."
+        ),
+        "description": (
+            "A tool pack: the tools of Organisation and of the Integrations app, for the "
+            "main assistant to load when a turn asks about the members or the "
+            "Integrations of the organization. Each tool calls the routes as the member, "
+            "so a member without the right gets a refusal. Each change shows one card "
+            "first. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
+        ),
+        "tools": (
+            "list_members",
+            "set_member_roles",
+            "set_member_status",
+            "answer_access_request",
+            "list_org_groups",
+            "create_org_group",
+            "edit_org_group",
+            "delete_org_group",
+            "add_org_group_member",
+            "remove_org_group_member",
+            "list_roles_and_rights",
+            "create_org_role",
+            "delete_org_role",
+            "read_member_access",
+            "set_member_overrides",
+            "preview_member_removal",
+            "rename_org",
+            "remove_member",
+            "purge_member",
+            "read_seats",
+            "set_seat",
+            "read_integrations",
+            "read_agent_access",
+            "probe_integration",
+            "discover_api_setup",
+            "revoke_agent_connection",
+            "disconnect_integration",
+            "set_mcp_server",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-5b-1 (chat_parity.md section 6.4, task 3114, owner answer OD4 A of
+    # 2026-11-25): four reads of the People app and of the Reach preview. Each
+    # tool calls a route as the member, and the route projects each field by
+    # the right of the member (D-PC-10). The owner is org-admin, which never
+    # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns
+    # it on (tool_packs.packs_on). Fence: test_people_tools.py.
+    "people": {
+        "label": "People directory",
+        "summary": (
+            "Read the people directory, your own row, the open work of a person, and "
+            "what Reach would send you now."
+        ),
+        "description": (
+            "A tool pack: four reads of the People app and of the Reach preview, for the "
+            "main assistant to load when a turn asks about the people of the "
+            "organization. Each tool calls the routes as the member, so the member sees "
+            "only the fields that the People app shows to that member. No tool writes. A "
+            "run loads a pack only where tool packs are on, so until then this switch has "
+            "no effect."
+        ),
+        "tools": (
+            "people_directory",
+            "people_me",
+            "people_work",
+            "reach_preview",
+        ),
+        "owner": "org-admin",
         "core": False,
         "scope_governed": True,
         "dynamic": False,

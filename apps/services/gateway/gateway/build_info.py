@@ -92,26 +92,44 @@ def _sha_from_git_dir(git_dir: Path) -> str | None:
         return head or None
 
     ref = head[4:].strip()
-    loose = git_dir / ref
-    try:
-        return loose.read_text(encoding="utf-8").strip() or None
-    except OSError:
-        pass
+    # A linked worktree (task 2633) keeps HEAD in `.git/worktrees/<name>` but its
+    # branch refs and `packed-refs` in the shared dir that `commondir` names.
+    # Look in the worktree's own dir first, then in the shared one.
+    for refs_dir in _ref_dirs(git_dir):
+        loose = refs_dir / ref
+        try:
+            return loose.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            pass
 
-    # Packed. Lines are "<sha> <refname>"; annotated-tag peel lines start "^"
-    # and must not be matched as refs.
-    try:
-        for line in (git_dir / "packed-refs").read_text(
-            encoding="utf-8"
-        ).splitlines():
-            if line.startswith(("#", "^")):
-                continue
-            parts = line.split(maxsplit=1)
-            if len(parts) == 2 and parts[1].strip() == ref:
-                return parts[0]
-    except OSError:
-        pass
+        # Packed. Lines are "<sha> <refname>"; annotated-tag peel lines start "^"
+        # and must not be matched as refs.
+        try:
+            for line in (refs_dir / "packed-refs").read_text(
+                encoding="utf-8"
+            ).splitlines():
+                if line.startswith(("#", "^")):
+                    continue
+                parts = line.split(maxsplit=1)
+                if len(parts) == 2 and parts[1].strip() == ref:
+                    return parts[0]
+        except OSError:
+            pass
     return None
+
+
+def _ref_dirs(git_dir: Path) -> list[Path]:
+    """The dirs that can hold a ref: the git dir, then its `commondir`, if any."""
+    dirs = [git_dir]
+    try:
+        common = (git_dir / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        return dirs
+    if common:
+        shared = (git_dir / common).resolve()
+        if shared != git_dir.resolve():
+            dirs.append(shared)
+    return dirs
 
 
 @lru_cache(maxsize=1)

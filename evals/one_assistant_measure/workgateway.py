@@ -202,6 +202,21 @@ NODES = {NODE_SPACE: _node(NODE_SPACE, _SPACE_NAME),
          NODE_MOBILE: _node(NODE_MOBILE, "Mobile App", NODE_SPACE)}
 
 
+#: The route of ``resolve_person`` (``acb_skills.profile_tools.ROUTE``) and its prefix.
+PROFILE_PREFIX = "/auth/me/assistant-profile/"
+PROFILE_RESOLVE_ROUTE = "/auth/me/assistant-profile/resolve-person"
+
+#: The People directory of the synthetic org, for ``resolve_person``: the members that
+#: the owners list of the fake names (``Member`` is the caller, so it is left out).
+DIRECTORY: tuple[tuple[str, str], ...] = (("Kiran", KIRAN),)
+
+
+#: The reads that the run makes for the context of a turn when the production flags are on
+#: (``--mirror-prod``): the Knowledge index (``knowledge_tools.index_block``) and the CRM facts
+#: (``org_facts_tools.crm_facts_for_run``). The synthetic org has no space and no fact.
+TURN_READS: dict[str, Any] = {"/knowledge/spaces": {"spaces": []}, "/org/facts": {"facts": []}}
+
+
 class WorkGateway:
     """Answers the ``/crm``, ``/projects`` and ``/studio`` routes of the measure's chats."""
 
@@ -230,7 +245,7 @@ class WorkGateway:
             url = str(request.url)
             if url.startswith(fake.base() + "/"):
                 path = request.url.path
-                if path.startswith(("/crm/", "/projects/", "/studio/")):
+                if path.startswith(("/crm/", "/projects/", "/studio/", PROFILE_PREFIX, *TURN_READS)):
                     return fake.answer(request, path)
             return await previous(transport, request)
 
@@ -266,7 +281,32 @@ class WorkGateway:
             return self._crm(method, path, params, body)
         if path.startswith("/studio/"):
             return self._studio(method, path, params)
+        if path.startswith(PROFILE_PREFIX):
+            return self._profile(method, path, params)
+        if method == "GET" and path in TURN_READS:
+            return TURN_READS[path]
         return self._projects(method, path, params, body)
+
+    @staticmethod
+    def _profile(method: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        """``GET /auth/me/assistant-profile/resolve-person`` (task 2874, cases 1 and 6).
+
+        The People directory of the synthetic org holds :data:`DIRECTORY`. A name that
+        equals a person's first name or full name (any case) matches that member, as the
+        gateway's member arm does. Any other name, such as "Vineeta" of case 6, matches
+        nobody. The shapes are the gateway's (``profile_tools.format_answer``). Before the
+        pilot of 2026-11-18 the fake said nobody for EVERY name, so the forward of case 1
+        asked who Kiran is: a harness fault, not a product fault."""
+        if method != "GET" or path != PROFILE_RESOLVE_ROUTE:
+            return None
+        asked = str((params or {}).get("name") or "").strip().lower()
+        hits = [{"name": name, "email": email} for name, email in DIRECTORY
+                if asked and asked in (name.lower(), name.split()[0].lower())]
+        if len(hits) == 1:
+            return {"matches": hits, "total": 1, "source": "member", "directory": True,
+                    "mail_searched": True, "truncated": False}
+        return {"matches": [], "total": 0, "directory": True, "mail_searched": True,
+                "truncated": False}
 
     @staticmethod
     def _studio(method: str, path: str, params: dict[str, Any]) -> Any:
@@ -568,6 +608,20 @@ class WorkGateway:
 
     @staticmethod
     def _list(params: dict[str, Any]) -> dict[str, Any]:
+        # H-254: the subtask count asks for `parent_task_id` + `include_descendants`.
+        # The route returns the tasks UNDER the parent (never the parent, never the
+        # whole list). This dataset has no task with a parent, so the walk finds none.
+        if params.get("include_descendants") and params.get("parent_task_id"):
+            parent, under, rows = str(params["parent_task_id"]), set(), []
+            grew = True
+            while grew:
+                grew = False
+                for t in TASKS:
+                    if t["id"] not in under and t.get("parent_task_id") in ({parent} | under):
+                        under.add(t["id"])
+                        rows.append(t)
+                        grew = True
+            return {"rows": rows, "total": len(rows)}
         rows = list(TASKS)
         if params.get("project_id") and params["project_id"] != NODE_SPACE:
             rows = [t for t in rows if t["project_id"] == params["project_id"]]

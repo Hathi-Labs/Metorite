@@ -330,6 +330,20 @@ def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert not core_events_allowed("globex")
 
 
+def test_crm_mirror_age_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q30c, crm_platform.md §18.11.2. The reload list holds the
+    key, and the one reader of the age line sees a change with no restart."""
+    assert fr.reloadable("CRM_MIRROR_AGE_ORGS")
+    monkeypatch.setenv("CRM_MIRROR_AGE_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.mirror_age_allowed("acme")
+    env(**{**_START, "CRM_MIRROR_AGE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MIRROR_AGE_ORGS",)
+    assert crm_flags.mirror_age_allowed("ACME ")
+    assert not crm_flags.mirror_age_allowed("globex")
+    assert not crm_flags.mirror_age_allowed(None)
+
+
 def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-53 CRM-Q34-7, crm_platform.md §18.17. The reload list holds the key,
     and the one reader of `q` across a module sees a change with no restart."""
@@ -341,6 +355,20 @@ def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert fr.reload_flags().applied == ("CRM_MODULE_FIND_ORGS",)
     assert crm_flags.module_find_allowed("acme")
     assert not crm_flags.module_find_allowed("globex")
+
+
+def test_crm_module_reread_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 task 3869, crm_platform.md §18.7. The reload list holds the key,
+    and the one reader of the weekly module read sees a change with no
+    restart."""
+    assert fr.reloadable("CRM_MODULE_REREAD_ORGS")
+    monkeypatch.setenv("CRM_MODULE_REREAD_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.module_reread_allowed("acme")
+    env(**{**_START, "CRM_MODULE_REREAD_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MODULE_REREAD_ORGS",)
+    assert crm_flags.module_reread_allowed("acme")
+    assert not crm_flags.module_reread_allowed("globex")
 
 
 def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
