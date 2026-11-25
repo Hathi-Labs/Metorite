@@ -1711,6 +1711,7 @@ They keep their own gates.
 - **Done when.** Hook tests with transcript fixtures: a claim with no disposition blocks once and then passes. A claim with a release passes. A claim with a 409 passes. A session with no claim passes. An interactive session passes. The message holds the four names.
 - **Fence.** `node .claude/hooks/stop-children.test.mjs` (the test file of the hook, extended). `test_mcp_edge_context.py` holds the protocol line of SW-56. A hook that cannot read the transcript passes and logs, so it never traps a session.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30. **Depends on.** PR 1763 (task 1828), SW-56.
+- **As built (2026-11-25).** `.claude/hooks/stop-disposition.mjs` holds the check. `stop-children.mjs` calls it, so the Stop entry that exists needs no edit, and no `guard-write` is used. The background marker is `CLAUDE_JOB_DIR`. A `waiting` post counts as a park on `ci`, or with `wake_on` (SW-66). The SW-56 block already carries the question line (protocol version 3), so the server is unchanged. Fence: `node .claude/hooks/stop-disposition.test.mjs`, run in pr-check.
 
 #### SW-62 · The first sweep writes one digest, and the owner can release the runs of ended sessions
 
