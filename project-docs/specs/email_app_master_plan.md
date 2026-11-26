@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built, not merged. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
+
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
@@ -379,6 +381,67 @@ Rules the writer already enforces (do not weaken these when building on it):
 recent mail in a post-sync hook, so the directory fills without waiting for someone to click
 every sender. Deliberately deferred — it is a body-text scan over the whole mailbox, and the
 click-driven path already covers everyone the user cares about.
+
+### 6.6 Mark done: a Done that sticks (task 3995)
+
+**Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
+**Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
+No migration. Dark behind `EMAIL_MARK_DONE_ORGS`. The default is empty, which is off.
+
+**One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
+A bulk act sends one call for each conversation, as a pair of `account_id` and
+`thread_id`. The chat tool `mark_thread_done` uses the same route. With the flag on,
+Done does these steps in the request:
+
+1. It reads the state before the act. The answer returns it as `previous`:
+   `{status, follow_up}`, or null when the thread was Done and had no open label.
+2. It writes status `DONE`, reason `Marked done by you`, and the newest stored
+   message. `last_message_at` becomes the newest `received_at` of the thread. That
+   value is the **anchor**.
+3. It removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local rows,
+   and it adds "Done". The provider gets the same change in a background job.
+4. It closes each open task that came from the thread, as before.
+
+**The hold.** A thread is held while its status is `DONE`, its reason is the mark,
+and no message that is newer than the anchor is outside Sent and Drafts.
+`mark_done.held_sql` is the one definition. While a thread is held:
+
+- An automated status write keeps the status, the reason, the anchor and the time of
+  the classification. It still moves `last_message_id`, so the backfill does not
+  select the thread again. This covers the runner, the backfill and each write after
+  a reply of the member.
+- The label reconcile keeps only "Done".
+- The runner suppresses each rule match, and History says why. It asks no model for a
+  status.
+- The sync removes again a label that comes back. That label sets no status. This
+  also covers a label that the member adds in the mail program of the provider.
+
+A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
+move back end it too. A reply that the member sends does not end it.
+
+**Move back.** The same route with `done=false` and `restore` writes the status of
+`restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`) with the reason `Moved back by you`.
+It puts that label on the latest inbound message. With `follow_up` it puts
+"Follow-up" on the latest message. It does not open the tasks that Done closed.
+It does not restore a cleanup label, such as "Newsletter".
+
+**The app.** `GET /email/reply-zero/mark-done` answers `{enabled}`. When it is on,
+the app shows these surfaces:
+
+- "Mark done" as the first item of the row menu, for one row and for a selection.
+- A "Done" button beside Reply all, Reply and Forward, on desktop and on a phone.
+- "Mark done" in the bar of a selection.
+- The key `d` for the open mail. `e` stays Archive.
+- A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
+  act had "Follow-up".
+
+**Accepted limits.** A message that arrives with a date before the anchor does not end
+the hold. When the flag goes off, a held row is a plain `DONE` row again.
+
+**Fences.** `tests/unit/test_email_mark_done.py` (the flag, and the statement with
+the flag off), `tests/unit/test_email_mark_done_r8.py` (the hold on a real database),
+`src/app/email/lib/markDone.test.ts` (the menu order, the key, the patch and the
+undo).
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 

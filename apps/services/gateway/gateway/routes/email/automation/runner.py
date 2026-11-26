@@ -16,6 +16,7 @@ from gateway.routes.email.account_ref import resolve_account_filter
 # senders, rules) and the tests address these through the runner seam, and the
 # apply loop below calls them via this module's namespace — so a test patching
 # ``runner.apply_label`` still intercepts every caller.
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.actions import (  # noqa: F401
     _apply_rule_actions,
     _email_looks_sensitive,
@@ -1342,8 +1343,10 @@ async def _apply_and_log_match(
             "rname": rule.get("name"), "mid": str(r.id),
             "pmid": r.provider_message_id, "tid": r.thread_id,
             "subj": r.subject or "", "frm": frm.get("email", ""),
-            "reason": ("Suppressed: part of a conversation — the thread's "
-                       "status is the classification.")})
+            "reason": (mark_done.HELD_SKIP_REASON
+                       if match["suppressed"] == mark_done.HELD_SUPPRESSION
+                       else "Suppressed: part of a conversation — the thread's "
+                            "status is the classification.")})
         return
     action_errors: list[dict[str, str]] = []
     gone_reason: str | None = None
@@ -1477,7 +1480,14 @@ async def _apply_matches(
     Reply Zero status BETWEEN the apply and the stamp, so the watermark must stay
     last (a message is "processed" only once everything that reads it has run).
     Call ``_stamp_processed_watermark`` at the call site after that work.
+
+    Task 3995: in a thread that the member marked done by hand, each match is
+    suppressed and the cold blocker does not run. This is the one choke point of
+    the three apply paths, and Process past reaches it with no resolver.
     """
+    if await mark_done.thread_is_held(db, account_id, r.thread_id):
+        matches = mark_done.hold_matches(matches)
+        cold_blocker = None
     if matches:
         for match in matches:
             await _apply_and_log_match(

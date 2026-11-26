@@ -15,6 +15,7 @@ from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_c
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
 from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
@@ -90,13 +91,19 @@ async def _upsert_thread_status(
     between a separate check and the write. A newer message
     (:data:`_NO_NEWER_MAIL_SQL`) voids the write: no row is written, and
     this returns False. Without ``guard`` the statement is the old one,
-    and it always writes."""
+    and it always writes.
+
+    Task 3995: an automated write (``preserve_done`` or ``guard``) keeps a
+    HELD row, one that the member marked done by hand
+    (``mark_done.upsert_expressions``)."""
     status_expr = "EXCLUDED.status"
     if preserve_done:
         status_expr = (
             "CASE WHEN email_thread_status.status = 'DONE' "
             "AND EXCLUDED.status <> 'NEEDS_REPLY' THEN 'DONE' "
             "ELSE EXCLUDED.status END")
+    status_expr, at_expr, reason_expr, classified_expr = (
+        mark_done.upsert_expressions(preserve_done or guard, status_expr))
     params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
               "mat": msg_at, "reason": reason}
     if guard:
@@ -118,8 +125,8 @@ async def _upsert_thread_status(
            ON CONFLICT (account_id, thread_id) DO UPDATE SET
              status = {status_expr},
              last_message_id = EXCLUDED.last_message_id,
-             last_message_at = EXCLUDED.last_message_at,
-             reason = EXCLUDED.reason, classified_at = now(),
+             last_message_at = {at_expr},
+             reason = {reason_expr}, classified_at = {classified_expr},
              -- Re-arm the follow-up reminder whenever the thread changes hands.
              follow_up_reminded_at = CASE
                WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
@@ -1346,6 +1353,9 @@ async def status_before_match(
     if not thread_id:
         return StatusFirst(rules={})
     try:
+        # Task 3995: a held thread needs no status, so no model is asked.
+        if await mark_done.thread_is_held(db, account_id, thread_id):
+            return StatusFirst(rules={})
         rules = await _enabled_conversation_rules(db, account_id)
         if not rules:
             return StatusFirst(rules={})
@@ -1577,6 +1587,11 @@ async def resolve_conversation_status_matches(
     from gateway.routes.email.automation.engine import DecisionUnavailable
 
     matches = matches or []
+    # Task 3995: a held thread keeps its Done. No rule of it runs, and no model
+    # is asked. A new inbound message ends the hold before this runs.
+    if await mark_done.thread_is_held(
+            db, account_id, getattr(message_row, "thread_id", None)):
+        return mark_done.hold_matches(matches)
     if decide_features.mode_for("email.thread_status") == "on":
         return await _resolve_on(
             db, account_id, message_row, matches, provider=provider, first=first,
@@ -1660,6 +1675,8 @@ async def _reconcile_thread_labels(
     apply is simply skipped. Stated explicitly because callers without a
     provider used to rely on ``None.set_labels`` raising into the best-effort
     handler, which works by accident and reads like a bug."""
+    # Task 3995: a thread that the member marked done by hand wears "Done" only.
+    keep_label = await mark_done.held_label(db, account_id, thread_id, keep_label)
     rows = (await db.execute(text(
         """SELECT id, provider_message_id, categories, folder
            FROM email_messages
@@ -2140,6 +2157,9 @@ async def read_job_status(
     row_id = getattr(message_row, "id", None)
     message_id = str(row_id) if row_id is not None else None
     try:
+        # Task 3995: a held thread needs no status, so no model is asked.
+        if await mark_done.thread_is_held(db, account_id, message_row.thread_id):
+            return None
         # D-EM-27 first, as in `_determine_status_of`: FYI, with no ask.
         if await _thread_is_self_only(db, account_id, message_row.thread_id):
             return StatusRead(
@@ -2987,6 +3007,9 @@ class ThreadResolveRequest(BaseModel):
     # Files the thread as FYI (not awaiting anything, nothing claimed finished)
     # and does NOT close tasks captured from it. Overrides ``done``.
     dismiss: bool = False
+    # "Move back" after Mark done (task 3995): with ``done=false``, the state
+    # to restore. Ignored with the flag off.
+    restore: mark_done.ThreadRestore | None = None
 
 
 @router.post("/reply-zero/resolve")
@@ -3006,10 +3029,20 @@ async def resolve_thread(
     has ``thread_id``, the answer is 404 and nothing is written. That covers
     the done, the reopen and the dismiss branches. The chat tool
     ``mark_thread_done`` has no mail id, so this check is what makes a wrong
-    mailbox from the model fail closed."""
+    mailbox from the model fail closed.
+
+    Task 3995, with ``EMAIL_MARK_DONE_ORGS`` on: Done writes a HELD status and
+    returns ``previous``, and ``restore`` moves the thread back
+    (``mark_done.resolve_marked``). With the flag off ``restore`` is ignored."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
+        if (mark_done.mark_done_on() and not req.dismiss
+                and (req.done or req.restore is not None)):
+            return await mark_done.resolve_marked(
+                db, background, account_id=req.account_id,
+                thread_id=req.thread_id, done=req.done, restore=req.restore,
+                user_email=user.email or "anonymous")
         keep_label = "Done"
         if req.dismiss:
             # A dead loop the user will never answer: file it as FYI. DONE

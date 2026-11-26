@@ -599,6 +599,12 @@ ALSO: dict[str, tuple[str, ...]] = {
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Email ──
+    "GET /api/email/reply-zero/mark-done": (
+        "stream",
+        "The Email page reads whether Mark done is on for the organization, to draw its buttons. "
+        "No member click sends it. In chat, mark_thread_done marks a thread done on the same route.",
+    ),
     # ── Shell ──
     "GET /api/shell/manifest": (
         "stream",

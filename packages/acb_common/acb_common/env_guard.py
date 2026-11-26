@@ -247,6 +247,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
     "PROJECT_EDIT_CARD_ORGS",
+    # email_app_master_plan.md §6.6: the orgs whose Email app shows Mark done.
+    # It changes which threads the automation may move, so only the operator
+    # writes it. The `EMAIL_` prefix covers it too, and the exact name keeps
+    # the fence if that prefix ever narrows.
+    "EMAIL_MARK_DONE_ORGS",
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
