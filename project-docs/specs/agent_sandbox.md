@@ -3050,6 +3050,10 @@ that mount. So the `tools` branch mounts a sibling dir outside it:
   `_remove_run_data`, as it removes the run-data dir (`maf_coding_engine.md`
   §16.3). The startup sweep `remove_all_run_data` removes the whole
   `.run-data` dir, so it covers `<tool-data>` with no change.
+- Today the map of `_note_run_data` holds ONE rel for each (workspace,
+  thread) key. The step engine changes it to hold a set of rels for each
+  key, and a `tools` binding adds `tool_data_rel`. Without the change, two
+  bindings of one key overwrite each other's rel.
 
 **3. The grants of a round.** The build card is the approval of the member.
 The build session runs its commands with `--network none`. Each round of the
