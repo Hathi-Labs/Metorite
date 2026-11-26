@@ -685,7 +685,8 @@ def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[st
     text at head)."""
     mb = _git_text(["merge-base", base, head], root).strip()
     # `_show_or_empty`: a branch whose merge base predates flag_registry.py (PR 2380)
-    # has no such file there. Its empty text makes no flag-only diff, so it goes FULL.
+    # has no such file there, and `git show` would raise. The diff then shows the
+    # registry as a "new file", which `_added_lines` refuses, so the verdict is FULL.
     out = {f: (_show_or_empty(mb, f, root), _show_or_empty(head, f, root)) for f in FLAG_FILES}
     out[FENCES_JSON] = (_show_or_empty(mb, FENCES_JSON, root), _show_or_empty(head, FENCES_JSON, root))
     return out
