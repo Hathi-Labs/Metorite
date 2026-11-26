@@ -813,6 +813,91 @@ async def provision_member(
     return member, [slug for _rid, slug in role_ids]
 
 
+# ── Integration access rules (ACC-1, integrations_console.md §3.9) ──────────
+
+#: The rules of one org. ``organization`` carries no row security, so the
+#: statement names the org, and the org comes from :func:`get_org_id` (R5).
+#: ``routes/admin/integration_access.py`` and the group gates read it here.
+#: The resolver reads the same key with the member's groups
+#: (``acb_auth.access._INTEGRATION_RULES_SQL``).
+ORG_INTEGRATION_RULES_SQL = (
+    "SELECT settings -> 'integration_access' AS rules "
+    "  FROM organization WHERE id = CAST(:org AS uuid)"
+)
+
+
+async def org_integration_rules(db: Any, org_id: str) -> Any:
+    """The stored rules of *org_id* (raw JSONB, or ``None``). Raises on a fault."""
+    row = (
+        await db.execute(text(ORG_INTEGRATION_RULES_SQL), {"org": org_id})
+    ).mappings().first()
+    return None if row is None else row["rules"]
+
+
+def integration_access_allowed(organization_id: str | None) -> bool:
+    """True when ``INTEGRATION_ACCESS_ORGS`` holds the org, or holds ``*``.
+
+    The one reader of the flag. It gates the two routes of
+    ``integration_access.py`` only: the resolver applies a rule that exists,
+    whatever the flag says, so a flag change never widens access. The org
+    comes from the session. A fault reads as off. Default empty, so OFF.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "integration_access_orgs", "") or "")
+    except Exception:
+        return False
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+async def assert_group_rule_gate(
+    db: Any, org_id: str, slug: str, admin: UserContext, *, deleting: bool = False,
+) -> None:
+    """The two group-write rules of §3.9.2, for a group that a rule names.
+
+    1. A member write to such a group also needs ``admin:access:manage``,
+       because the team then decides who keeps an integration (403).
+    2. Nobody deletes such a group (409).
+
+    A value that the code cannot read counts as naming the group, and a failed
+    read is 503. Neither rule depends on ``INTEGRATION_ACCESS_ORGS``, because a
+    stored rule binds whatever the flag says.
+    """
+    from acb_auth.integration_access import rules_name_group
+
+    try:
+        raw = await org_integration_rules(db, org_id)
+    except Exception as exc:
+        _log.warning("group_rule_gate_read_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read who can use each integration. Try again.",
+        ) from exc
+    if not rules_name_group(raw, slug):
+        return
+    if deleting:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}'. "
+                "Change that rule first."
+            ),
+        )
+    if not admin.has_permission("admin:access:manage"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}', "
+                "so a change of its members needs 'admin:access:manage'."
+            ),
+        )
+
+
 def invalidate_for(*emails: str | None) -> None:
     """Drop cached access so an admin change lands immediately, not in 60s."""
     for email in emails:
