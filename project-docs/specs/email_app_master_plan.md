@@ -481,7 +481,8 @@ the app shows these surfaces:
   The toast closes when the step ran, from either control.
 
 On a phone the "Done" button is an icon with the name "Mark done", as Reply and
-Forward are. So the bar stays one row at 390 px. Email claims the undo scope only
+Forward are. ⚠️ Open defect: at 390 px the bar still has two rows, and the Print
+icon goes to the second row (capture of 2026-11-26). Email claims the undo scope only
 with the flag on. The flag off leaves the history of another surface alone (D10).
 
 **Accepted limits.**

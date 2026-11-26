@@ -73,13 +73,16 @@ extra("8. Keyboard: the focus on Done",
   "Tab moves from Forward to Done. Enter then marks the mail done, and Ctrl+Z moves it back.",
   [["focus-done--dark.png", "Dark, 1440"], ["focus-done--light.png", "Light, 1440"]]);
 extra("9. Keyboard: the row menu (a limit of before)",
-  "The menu does not take the focus, so one Tab goes to the page behind it. The code of the menu had this limit before. The key d marks a mail done from the keyboard. After Ctrl+Z the toast stays until its time ends.",
+  "The menu does not take the focus, so one Tab goes to the page behind it. The code of the menu had this limit before. The key d marks a mail done from the keyboard. After Ctrl+Z the toast closes (fix round 2).",
   [["focus-menu--dark.png", "Dark, 1440"], ["focus-menu--light.png", "Light, 1440"]]);
 const notes = document.createElement("h2"); notes.textContent = "Visual review";
 const list = document.createElement("ul");
 for (const line of [
   "Found and repaired: after Done, the reading pane kept the old labels of the open mail.",
   "The red \"1 Issue\" badge on the light phone menu comes from the development server. The capture with the flag off shows it too.",
+  "Fix round 2 (2026-11-26): on a phone, Done in the bar of the pane is now an icon. The rig took the phone captures of sections 2, 5 and 6 again. The desktop bar did not change, so its captures stay.",
+  "Open defect: at 390 px the bar of the pane still has two rows. The Print icon goes to a second row. Before this round, three icons went to the second row.",
+  "Section 6 on a phone: after Ctrl+Z the toast closes, and the labels of before return.",
   "Not opened: widths of 1280 and 1920, comfortable density, a conversation of two or more messages after Done, hover states, a real mailbox.",
 ]) { const li = document.createElement("li"); li.textContent = line; list.appendChild(li); }
 out.append(notes, list);

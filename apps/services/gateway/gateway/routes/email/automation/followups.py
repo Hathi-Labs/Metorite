@@ -71,21 +71,6 @@ _FOLLOW_UP_MAX_AGE_DAYS = 30
 
 
 async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bool]:
-    """The follow-up scan (:func:`_follow_up_scan`), then the sweep of the
-    held threads (task 3995, ``mark_done.heal_held``).
-
-    The sweep runs after the block of the scan commits, so it sees a label
-    that the scan wrote while the member marked the thread done. The sync
-    loop calls this each cycle, so a held thread with an open label heals at
-    the next cycle at the latest. With ``EMAIL_MARK_DONE_ORGS`` off the sweep
-    reads nothing.
-    """
-    result = await _follow_up_scan(account_id)
-    await mark_done.heal_held(account_id)
-    return result
-
-
-async def _follow_up_scan(account_id: str) -> dict[str, int | bool]:
     """Label (and optionally draft a nudge for) threads waiting too long for a
     reply. Runs both on the sync loop (background) and on demand via the
     "Find follow-ups" button (POST /email/follow-ups/scan).
@@ -104,6 +89,13 @@ async def _follow_up_scan(account_id: str) -> dict[str, int | bool]:
     tenant, and the scan route calls this inside its request. The block holds
     its session across the draft model call and ``create_draft``, as the code
     did before, and EM-T4 owns that I/O.
+
+    Task 3995: after the block of the scan ends, ``mark_done.heal_held``
+    sweeps the held threads of the mailbox (the ``finally`` clause). The
+    sweep sees a label that the scan wrote while the member marked the thread
+    done. The sync loop calls this each cycle, so a held thread with an open
+    label heals at the next cycle at the latest. With ``EMAIL_MARK_DONE_ORGS``
+    off the sweep reads nothing.
     """
     result: dict[str, int | bool] = {
         "configured": False, "scanned": 0, "labeled": 0, "drafted": 0,
@@ -303,4 +295,8 @@ async def _follow_up_scan(account_id: str) -> dict[str, int | bool]:
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.follow_up_failed", account_id=account_id,
                      error=str(exc)[:200])
+    finally:
+        # Each exit of the scan, an early return too, runs the sweep. The
+        # block above has ended, so the sweep reads its commit.
+        await mark_done.heal_held(account_id)
     return result
