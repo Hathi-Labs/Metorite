@@ -245,6 +245,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/integrations_admin_tools.py",
     # P-5b-1: the people pack sends the People routes and the two Reach reads.
     "packages/acb_skills/acb_skills/people_tools.py",
+    # Task 3963: the notes read tools send the Notes routes. They read only.
+    "packages/acb_skills/acb_skills/notes_read_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -398,6 +400,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/whatsapp/chats": "list_whatsapp_chats",
     "GET /api/whatsapp/chats/{}/context": "whatsapp_chat_context",
     "GET /api/whatsapp/chats/{}/messages": "read_whatsapp_chat",
+    # Task 3963 (P-4d): the notes read tools. Each of the 6 routes is owner-checked or per member.
+    "GET /api/notes/copilot/instructions": "notes_copilot_instructions",
+    "GET /api/notes/glossary": "notes_glossary",
+    "GET /api/notes/meetings": "notes_meetings",
+    "GET /api/notes/meetings/{}": "notes_meeting",
+    "GET /api/notes/settings": "notes_settings",
+    "GET /api/notes/templates": "notes_templates",
     # P-4a (task 3960): the read tools of the WhatsApp settings, rules, calls and link.
     "GET /api/me/whatsapp-link": "whatsapp_link_status",
     "GET /api/whatsapp/calls": "list_whatsapp_calls",
@@ -1056,16 +1065,12 @@ DEBT: dict[str, str] = {
     # the member attaches.
     "POST /api/email/signature/images": "P-2",
     # ── Notes ──
-    "DELETE /api/notes/glossary/{}": "P-4",
-    "DELETE /api/notes/meetings/{}": "P-4",
+    # Waits for task 3966 (owner check and side effects of meeting reads).
+    # Waits for task 3966 (the status check starts a browser on the bot profile).
     "GET /api/notes/bot/identity": "P-4",
     "GET /api/notes/bots/active": "P-4",
     "GET /api/notes/bots/status": "P-4",
-    "GET /api/notes/copilot/instructions": "P-4",
-    "GET /api/notes/glossary": "P-4",
     "GET /api/notes/live/sessions": "P-4",
-    "GET /api/notes/meetings": "P-4",
-    "GET /api/notes/meetings/{}": "P-4",
     "GET /api/notes/meetings/{}/actions": "P-4",
     "GET /api/notes/meetings/{}/agenda": "P-4",
     "GET /api/notes/meetings/{}/agenda/progress": "P-4",
@@ -1075,8 +1080,8 @@ DEBT: dict[str, str] = {
     "GET /api/notes/meetings/{}/live/roster": "P-4",
     "GET /api/notes/meetings/{}/live/session": "P-4",
     "GET /api/notes/meetings/{}/note": "P-4",
-    "GET /api/notes/settings": "P-4",
-    "GET /api/notes/templates": "P-4",
+    "DELETE /api/notes/glossary/{}": "P-4",
+    "DELETE /api/notes/meetings/{}": "P-4",
     "PATCH /api/notes/meetings/{}": "P-4",
     "POST /api/notes/actions/{}/approve": "P-4",
     "POST /api/notes/actions/{}/dispatch": "P-4",
@@ -1302,7 +1307,7 @@ DEBT_CEILING: dict[str, int] = {
     "calendar": 2,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now and the switch (4 to 2). Disconnect waits for the owner's decision on C-04. Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).
-    "notes": 51,
+    "notes": 45,  # Task 3963 paid the 6 GET rows of Notes that are owner-checked or per member with 6 read tools (51 to 45). Paid by task 3963.
     "whatsapp": 13,  # P-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). Paid by task 3960.
     "people": 12,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays.
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.

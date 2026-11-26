@@ -543,17 +543,40 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
 debt.
 
+**P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
+the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
+`notes_meetings`, `notes_meeting`, `notes_settings`, `notes_templates`,
+`notes_glossary` and `notes_copilot_instructions`. They are the new pack
+`notes`, owned by `org-admin` as the pack `people` is (OD4 A). Each tool sends
+GET routes only, as the member. None writes, joins a meeting, starts a bot or
+reaches a person.
+
+The meeting text is the member's own words. A result shows it as written, inside
+the untrusted frame. A provider error of a failed run is not shown. A
+library over the route cap says "at least" and never says "last page". The
+pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
+`TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+The 32 Notes write rows stay debt. Thirteen read rows wait for task 3966. Twelve
+gateway routes read a meeting by its id with no owner check, or they refresh a
+bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
+`/context`, `/bot`, `/bot/diagnostics`, `/live/session`, `/live/roster`,
+`/bots/active`, `/bots/status` and `/live/sessions`.
+
+The thirteenth route is `/bot/identity`. Its status check starts a browser on
+the profile of the bot, and a bot join at the same time can fail.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Eleven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Twelve ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
 60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
-calendar to 2. PAR-9 took apps to 2.
+calendar to 2. PAR-9 took apps to 2. Task 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 263. The "Today" column above does not show
+The total of `DEBT_CEILING` is 257. The "Today" column above does not show
 all of these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
