@@ -34,7 +34,9 @@ map of SW-103. The view reads the map of SW-102, so it also needs
 `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
 `gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
 `GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
-change at its next shell read. A reload applies a change. The flip stays
+change at its next shell read. AMR-4: the map read asks the same reader on
+each call. For a listed org it also answers `detail=summary` and `session=`
+(`agent_coordination.md` §3.12.9). A reload applies a change. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
 `AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
@@ -531,6 +533,18 @@ orchestrator asks it at the start of each run, so a reload applies to the next
 run. Any value other than empty is OWNER-GATE, and only the owner flips it.
 The five tools join each request, so the flip takes the trade of the tool cap
 in `chat_parity.md`, PAR-8b facts for the owner.
+
+`INTEGRATION_ACCESS_ORGS` opens the two admin routes that set who can use each
+integration (`integrations_console.md` §3.9.4, ACC-1). Off,
+`GET /admin/integration-access` and `PUT /admin/integration-access/{service}`
+answer 404, and the console shows no control. `*` lists every org, and the
+default is empty. The flag gates the routes only. The access read applies a
+stored rule whatever the flag says. So when the flag goes off, no member gets
+an integration back.
+
+Its one reader is `gateway.routes.admin._common.integration_access_allowed`.
+Each request asks it, so a reload applies at once. The flip waits for the
+owner preview, and it stays OWNER-GATE (`enforcement-flip`).
 
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the

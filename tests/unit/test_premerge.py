@@ -78,9 +78,17 @@ def _advance_main(repo: Path, path: str, text: str = "x\n") -> None:
     _git(repo, "checkout", "-q", "feat")
 
 
+def _at(h: int, m: int) -> int:
+    """Epoch seconds of h:m UTC on 2026-11-16."""
+    import calendar
+    return calendar.timegm((2026, 11, 16, h, m, 0))
+
+
 def _run(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
     # The throwaway repo has no scripts/affected_tests.py: stub the test run unless a case sets it.
-    env = {"PREMERGE_AFFECTED_CMD": "true", "PREMERGE_RERUN_CMD": "true", **env}
+    # 10:00 UTC is outside every release freeze window, so the cases do not depend on the clock.
+    env = {"PREMERGE_AFFECTED_CMD": "true", "PREMERGE_RERUN_CMD": "true",
+           "PREMERGE_NOW": str(_at(10, 0)), **env}
     return subprocess.run([_BASH, SCRIPT.as_posix(), *args], cwd=repo, capture_output=True,
                           text=True, encoding="utf-8", env={**_ENV, **env}, timeout=120)
 
@@ -485,3 +493,27 @@ def test_the_collision_fences_are_named():
     for fence in ("test_migration_prefixes.py", "test_handoff_queue.py", "test_decision_ids.py"):
         assert fence in body
         assert (ROOT / "tests" / "unit" / fence).is_file(), fence
+
+
+# ── The release freeze (task 3415): step 00 runs scripts/release_freeze.sh ──
+# tests/unit/test_release_freeze.py holds the cases of the rule itself.
+_NO_RUN = "true"  # gh answers, and lists no dispatch run
+
+
+def test_premerge_passes_the_freeze_exit_75_through(repo):
+    res = _run(repo, PREMERGE_NOW=str(_at(20, 30)), PREMERGE_RUNS_CMD=_NO_RUN)
+    assert res.returncode == 75, res.stdout  # 75: merge_bot reads it as a wait, not a BACK
+    assert "release freeze" in res.stderr and "21:30" in res.stderr
+
+
+def test_premerge_override_names_the_task_and_passes(repo):
+    res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
+               PREMERGE_FREEZE_OK="3415")
+    assert res.returncode == 0, res.stderr
+    assert "OVERRIDDEN for task 3415" in res.stdout
+
+
+def test_premerge_refuses_an_override_that_is_not_a_task_number(repo):
+    res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
+               PREMERGE_FREEZE_OK="yes please")
+    assert res.returncode == 1 and "must be a task number" in res.stderr

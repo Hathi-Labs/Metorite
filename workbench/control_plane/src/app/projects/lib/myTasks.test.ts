@@ -303,9 +303,12 @@ describe("the task panel keeps a disposition control", () => {
 // ── The tabs, the phone, the facts and the address ─────────────────────────
 
 describe("the tabs", () => {
-  it("are a project's canvases with the same ids and icons, less the Timeline and the Agents map", () => {
+  it("are a project's canvases with the same ids and icons, less the Timeline, the Backlog and the Agents map", () => {
+    // WS-39 SP-3a: the Backlog plans the sprints of one Sprints node. My tasks
+    // is a lens across nodes, so it has none.
+    const notMine = new Set(["timeline", "backlog", "agents"]);
     expect(MY_TASKS_MODES).toEqual(
-      VIEW_MODES.filter((m) => m.id !== "timeline" && m.id !== "agents").map((m) => ({ id: m.id, icon: m.icon })),
+      VIEW_MODES.filter((m) => !notMine.has(m.id)).map((m) => ({ id: m.id, icon: m.icon })),
     );
   });
 });

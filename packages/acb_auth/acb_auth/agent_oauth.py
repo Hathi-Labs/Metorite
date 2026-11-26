@@ -1441,6 +1441,27 @@ def write_window_s() -> int:
     return _positive(get_settings().agent_write_window_s, WRITE_WINDOW_S)
 
 
+#: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
+#: token, in seconds. A longer window lets a stolen refresh token live too
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
+
+
+def refresh_reuse_grace_s() -> int:
+    """The grace window of a spent refresh token, in seconds (MCP-G17f).
+
+    The ONE reader of ``agent_refresh_reuse_grace_s``. A value that is not a
+    whole number, or is below 1, gives 0, and 0 turns the window off. A value
+    above :data:`REFRESH_REUSE_GRACE_MAX_S` gives that cap. The token store
+    reads it at each rotation (``agent_tokens`` rule 5).
+    """
+    value = get_settings().agent_refresh_reuse_grace_s
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return 0
+    return min(value, REFRESH_REUSE_GRACE_MAX_S)
+
+
 #: EA-13a (spec §12.2 item 1, EA3-47). The longest ``<slug>`` of a client
 #: stamp, and the endings of a CIMD path segment that name no client.
 CLIENT_SLUG_MAX = 24

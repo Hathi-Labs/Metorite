@@ -216,6 +216,11 @@ def _squash(sql: str) -> str:
 _CHILD = re.compile(r"\bparent_run_id\b|\bkind\s*(?:=|<>|!=)\s*'(?:run|child)'")
 
 
+#: The statements of ``agent_summary.py`` that read a child run, sorted. Each
+#: reaches a child only through a run of the one ``seen`` text.
+_CHILD_READS = ["_MAP_CHILDREN_SQL", "_MAP_CHILD_COUNTS_SQL", "_MAP_NODE_CHILDREN_SQL"]
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -746,15 +751,16 @@ class TestTheChildGrantsNothing:
                          "apps/services/gateway/gateway/routes/projects/agent_summary.py"], found
 
     def test_the_map_reads_the_child_columns_in_one_statement(self) -> None:
-        """SW-110 (§3.12.4 rules 1 and 2). In ``agent_summary.py``, only
-        ``_MAP_CHILDREN_SQL`` names the two child columns. The reach rule, the
-        ``seen`` text and the other map reads never do. The name, the machine
+        """SW-110 (§3.12.4 rules 1 and 2). In ``agent_summary.py``, only the
+        child reads of :data:`_CHILD_READS` name the two child columns:
+        ``_MAP_CHILDREN_SQL``, and the count and the one-node read of AMR-4.
+        The reach rule, the ``seen`` text and the other map reads never do. The name, the machine
         and the model of a child are display data: no ``WHERE`` or ``JOIN``
         arm of the child read names them. Mutation: add ``AND
         c.agent_model IS NOT NULL`` to the read."""
         path = _GATEWAY / "agent_summary.py"
         readers = _child_namers(_read(path))
-        assert readers == ["_MAP_CHILDREN_SQL"], readers
+        assert readers == _CHILD_READS, readers
         for admin in (True, False):
             assert not _CHILD.search(agent_summary._reach_sql(admin)), admin
         # The label guard reads the tail of the child read after its first
@@ -762,19 +768,24 @@ class TestTheChildGrantsNothing:
         assert "FROM live" not in agent_summary._MAP_CTE
         guarded = agent_summary._MAP_CHILDREN_SQL.split("FROM live", 1)[1]
         assert not _LABEL.search(guarded), guarded
+        # AMR-4: the two reads over ``cur`` hold the same rule after ``FROM cur``.
+        assert "FROM cur" not in agent_summary._MAP_CUR_CTE
+        for sql in (agent_summary._MAP_CHILD_COUNTS_SQL, agent_summary._MAP_NODE_CHILDREN_SQL):
+            tail = sql.split("FROM cur", 1)[1]
+            assert not _LABEL.search(tail), tail
 
     def test_the_whole_file_check_rejects_a_second_reader(self) -> None:
         """Mutation, on a copy of the text and never on the file: a second
         constant that names ``kind = 'child'`` must fail the check, and a
         comment that names it must not."""
         source = _read(_GATEWAY / "agent_summary.py")
-        assert _child_namers(source) == ["_MAP_CHILDREN_SQL"]
+        assert _child_namers(source) == _CHILD_READS
         mutated = source + "\n_LATER_SQL = \"SELECT 1 WHERE kind = 'child'\"\n"
-        assert _child_namers(mutated) == ["_LATER_SQL", "_MAP_CHILDREN_SQL"]
+        assert _child_namers(mutated) == ["_LATER_SQL", *_CHILD_READS]
         in_code = source + "\ndef later(db):\n    return db.execute('SELECT parent_run_id FROM t')\n"
-        assert _child_namers(in_code) == ["_MAP_CHILDREN_SQL", "later"]
+        assert _child_namers(in_code) == [*_CHILD_READS, "later"]
         commented = source + "\n# kind = 'child' and parent_run_id: a comment only\n"
-        assert _child_namers(commented) == ["_MAP_CHILDREN_SQL"]
+        assert _child_namers(commented) == _CHILD_READS
 
     def test_the_session_key_never_meets_the_child_columns(self) -> None:
         files = [_EDGE / "mcp.py", _EDGE / "bearer.py", _EDGE / "gateway_client.py"]
