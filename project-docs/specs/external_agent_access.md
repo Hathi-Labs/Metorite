@@ -1347,6 +1347,8 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 3. The Caddy block of `api.metorite.com` strips `X-User-Email`, `X-User-Role` and `X-Actor-Via` from public requests. On 2026-10-11 it does not. The change edits `deploy/`, so it is an owner gate, and H-303 carries it.
 4. Before the edge goes live, a check proves that the box holds a value for `GATEWAY_INTERNAL_TOKEN`. The edge no longer holds the bearer, and EA-10 still needs this proof. The gateway itself falls back to the LLM key when that token is unset (`deps.py:104-149`).
 
+**The sandbox sibling of branch 0 (SBX-2, 2026-11-26).** `agent_sandbox.md` §12.2 adds a second identity step to `get_current_user`, for code in the sandbox. Any `X-Sandbox-` header triggers it, and it runs before branch 0. It never falls through to branch 0, 1a, 1b or 2. The member and the organization come from a row of `sandbox_capabilities`. Its allowlist is `SANDBOX_ROUTES`, from the app manifests. Its functions join `_BRANCH_ZERO`, so the scan, the tripwire, the one digest pin and the review rule of this section bind it. `agent_sandbox.md` §12.2 owns it.
+
 ### 10.2 Threat table
 
 | Threat | Control |
