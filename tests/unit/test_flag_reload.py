@@ -619,6 +619,23 @@ def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert not api_connections_allowed(None)
 
 
+def test_integration_access_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """ACC-1, integrations_console.md §3.9.4. The reload list holds the key,
+    and the one reader of the switch of the two rule routes sees a change
+    with no restart."""
+    from gateway.routes.admin._common import integration_access_allowed
+
+    assert fr.reloadable("INTEGRATION_ACCESS_ORGS")
+    monkeypatch.setenv("INTEGRATION_ACCESS_ORGS", "")
+    get_settings.cache_clear()
+    assert not integration_access_allowed("acme")
+    env(**{**_START, "INTEGRATION_ACCESS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("INTEGRATION_ACCESS_ORGS",)
+    assert integration_access_allowed("ACME ")
+    assert not integration_access_allowed("globex")
+    assert not integration_access_allowed(None)
+
+
 def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-SEM SEM-12, semantic_model.md §10.4. The reload list holds the key,
     and the one reader of the switch sees a change with no restart.

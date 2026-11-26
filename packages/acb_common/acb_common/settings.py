@@ -437,6 +437,20 @@ class Settings(BaseSettings):
     # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
+    # `integration_access_orgs` (WS-54 ACC-1, task 3987, 2026-11-26) lists
+    # the organization ids whose admins may read and set who can use each
+    # integration (`integrations_console.md` §3.9.4), in the grammar of
+    # `crm_orgs`, or `*`. Default empty means NO organization: both routes
+    # of `routes/admin/integration_access.py` answer 404. It gates the two
+    # routes only. The resolver applies a stored rule whatever the flag
+    # says, so a flag change never widens access. The one reader is
+    # `gateway.routes.admin._common.integration_access_allowed`, and it takes
+    # the org of the session. A `*_ORGS` key, so a SIGHUP reload applies it
+    # (`docs/flag_reload.md`). The flip waits for the owner preview, and it
+    # is gate `enforcement-flip`. Fences:
+    # tests/unit/test_integration_access_rules.py,
+    # tests/unit/test_flag_reload.py.
+    integration_access_orgs: str = ""
     # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
     # the organization ids that may write and read the semantic model of a
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
@@ -1478,6 +1492,8 @@ class Settings(BaseSettings):
     # the default. On, the Agents canvas of Projects draws the Board, Graph and
     # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
     # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # AMR-4: on, the map read also answers `detail=summary` and `session=`,
+    # through the same reach rule as the map.
     # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
     # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
     # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
