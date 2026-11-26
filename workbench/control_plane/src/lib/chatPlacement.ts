@@ -179,6 +179,10 @@ const EVIDENCE: readonly string[] = [
   "get_pipeline",
   "get_record",
   "get_timeline",
+  // P-3 (task 3954): the suggestions of the field map and the AI analysis.
+  "crm_mapping_suggestions",
+  "crm_preview_suggestion",
+  "crm_analysis_status",
   // WS-CRM CRM-M2f and CRM-M2i (task 3953): the Field map and its plan.
   "crm_field_map",
   "crm_list_mapping_plans",
@@ -378,6 +382,9 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+  "crm_decide_suggestion",
+  "crm_rerun_analysis",
   // WS-CRM CRM-M2b: a field of a record, and a task done or due.
   "crm_update_record",
   "crm_update_task",

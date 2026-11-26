@@ -58,8 +58,9 @@ SPEC = REPO_ROOT / "project-docs" / "specs" / "crm_conversational.md"
 #: The most planned rows the manifest may hold. A paid row lowers it in the
 #: same change. CRM-M2a set it from the count of the router (2026-11-08).
 #: Task 3951 (CRM-M2e) paid five rows of the stages and lost reasons (90 to 85).
-#: Task 3953 (CRM-M2f, CRM-M2i) paid eight rows of the Field map and the plan (85 to 77).
-PLANNED_CEILING = 77
+#: Task 3954 (P-3) paid seven rows of the suggestions and the analysis (85 to 78).
+#: Task 3953 (CRM-M2f, CRM-M2i) paid eight rows of the Field map and the plan (78 to 70).
+PLANNED_CEILING = 70
 
 #: The directory of the CRM client files, relative to ``src``.
 CLIENT_DIR = "app/crm/lib/"

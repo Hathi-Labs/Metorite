@@ -152,6 +152,21 @@ def _pipelines(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+def _mapping(call: dict) -> Any:
+    """The suggestion and analysis routes of ``_responder`` (P-3, task 3954)."""
+    path, method = call["path"], call["method"]
+    if path == "/crm/mapping/suggestions" and method == "GET":
+        return _SUGGESTIONS
+    if path.startswith("/crm/mapping/suggestions/") and method == "POST":
+        return {"slot": "deal", "module": "Deals_X", "version": 3}
+    if path == "/crm/analysis/status" and method == "GET":
+        return {"run": None, "allowed": True}
+    if path == "/crm/analysis/rerun" and method == "POST":
+        return {"id": "a1", "state": "running", "started_at": "2026-11-25T10:00:00Z",
+                "steps": {}, "outcome": None, "started": True}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
 #: CRM-M2f and CRM-M2i (task 3953): one field that goes to custom, and the
 #: plan: version 1 superseded, 2 approved, 3 a draft on 2.
 _FIELD_KEY = "Industry_Code"
@@ -195,10 +210,13 @@ def _field_map(call: dict) -> Any:
 
 
 def _by_prefix(call: dict) -> Any:
-    """The pipelines (CRM-M3a), and the Field map and its plan (task 3953)."""
+    """The pipelines (CRM-M3a), the Field map and its plan (task 3953), and
+    the suggestions and the analysis (P-3, task 3954)."""
     if call["path"].startswith("/crm/pipelines"):
         return _pipelines(call)
-    return _field_map(call)
+    if call["path"].startswith(("/crm/field-rules", "/crm/mapping/plans")):
+        return _field_map(call)
+    return _mapping(call)
 
 
 def _responder(call: dict) -> Any:
@@ -212,6 +230,8 @@ def _responder(call: dict) -> Any:
         return _STATUSES
     if path == "/crm/lost-reasons" and method == "GET":
         return _REASONS
+    if path.startswith(("/crm/mapping/", "/crm/analysis/", "/crm/pipelines", "/crm/field-rules")):
+        return _by_prefix(call)
     if path == f"/crm/deals/{_DEAL_ID}":
         return {**_DEAL, **body}
     if path == f"/crm/leads/{_LEAD_ID}" and method == "GET":
@@ -234,8 +254,6 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
-    if path.startswith(("/crm/pipelines", "/crm/field-rules", "/crm/mapping/plans")):
-        return _by_prefix(call)
     if path.startswith(("/crm/statuses/", "/crm/lost-reasons")) and method in ("POST", "PATCH"):
         # CRM-M2e (task 3951): the set-up writes answer the row they wrote.
         made = path.rsplit("/", 1)[-1] if method == "PATCH" else str(uuid4())
@@ -325,6 +343,19 @@ _CARD_MUST_NAME: dict[str, str] = {
     "crm_approve_mapping_plan": "«Segment»",     # the rule the approve adds
     "crm_restore_mapping_plan": "«Region»",      # the rule the restore brings back
 }
+
+# P-3 (task 3954): the two card writes of the suggestions of the field map and
+# the AI analysis. Each reads before its card.
+_SUGGESTIONS = {
+    "suggestions": [{"slot": "deal", "version": 2, "module": "Deals_X",
+                     "label": "Commercials", "records": 40, "targets": [], "stage": None}],
+    "overlays": [],
+}
+_WRITE_TOOLS += ["crm_decide_suggestion", "crm_rerun_analysis"]
+_CALLS["crm_decide_suggestion"] = lambda: _M.crm_decide_suggestion("approve", "deals")
+_CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
+_CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
+_CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
 
 
 def test_the_call_table_covers_every_write_tool() -> None:

@@ -1590,6 +1590,408 @@ async def convert_lead(
     return " · ".join(parts) + "."
 
 
+# ── Suggestions of the field map, and the AI analysis (P-3, task 3954) ──────
+#
+# CRM-Q20-2 and CRM-Q32-10, as the chat speaks them. In Mirror mode the
+# mapping pipeline suggests a Zoho module for a core list that is empty, for
+# example "Commercials" for Deals. The member reads the suggestions, sees real
+# records of one, uses it, dismisses it, or undoes a list that a module shows
+# now. The member can also read the AI analysis that makes them, and start it
+# again. Each route needs `admin:access:manage` and Mirror mode, so a member
+# who is no admin gets the route's 403 as text, and a CRM that is not in
+# Mirror mode gets its 409 as text. Each write asks on one card first.
+#
+# A suggestion is NAMED: by its list ("Deals") or by its module
+# ("Commercials"), never by a number. The draft version that the approve and
+# the dismiss send comes from the read here, never from the model.
+
+#: The slot word of the routes, for each list slug of :data:`ENTITY_LABELS`.
+_SLOT_OF_SLUG: dict[str, str] = {
+    "leads": "lead", "deals": "deal", "contacts": "contact", "organizations": "company",
+}
+
+#: The list of each slot word, as the CRM shows it.
+_SLOT_LIST: dict[str, str] = {
+    "lead": "Leads", "deal": "Deals", "contact": "Contacts", "company": "Organizations",
+}
+
+#: The step words of an analysis (``analysis.ts`` STEP_WORDS), in their order.
+_ANALYSIS_STEPS: dict[str, str] = {
+    "mapping": "Reading your modules and fields",
+    "labels": "Reading your notes",
+    "questions": "Updating the questions and suggestions",
+}
+
+#: The outcome of an analysis that ended, in the member's words.
+_ANALYSIS_OUTCOMES: dict[str, str] = {
+    "done": "It finished.",
+    "limit": "It stopped at the AI limit of the organization. Some steps did not run.",
+    "failed": "It failed. Try again later.",
+}
+
+#: The first line of the card of a suggestion.
+_SUGGESTION_NOTE = (
+    "This changes the field map of the whole CRM. No record moves, and Zoho "
+    "does not change."
+)
+
+#: The first line of the card of a new analysis.
+_ANALYSIS_NOTE = (
+    "This runs the AI on the CRM data now, and it can use AI credits. Answers "
+    "that a person gave stay as they are."
+)
+
+#: The actions of :func:`crm_decide_suggestion`, as a person says them.
+_SUGGESTION_ACTS: dict[str, str] = {
+    "approve": "approve", "use": "approve", "accept": "approve",
+    "dismiss": "dismiss", "reject": "dismiss",
+    "undo": "undo",
+}
+
+
+def _slot_word(word: Any) -> str:
+    """The slot word of a list, from the words of a person or of a route, or
+    refuse. The value goes into a path, so it comes from :data:`_SLOT_LIST`
+    and never from the text it was given."""
+    key = " ".join(str(word or "").lower().split())
+    if key in _SLOT_LIST:
+        return next(s for s in _SLOT_LIST if s == key)
+    slot = _SLOT_OF_SLUG.get(_ENTITY_ALIASES.get(key, key))
+    if slot is None:
+        raise GatewayRefusal(
+            f"Unknown CRM list {word!r}. One of: {', '.join(_SLOT_LIST.values())}."
+        )
+    return slot
+
+
+def _suggestion_name(row: dict[str, Any]) -> str:
+    """"Commercials for Deals": the module and the list of one row."""
+    label = one_line(row.get("label") or row.get("module") or "a module")
+    return f"{label} for {_SLOT_LIST.get(str(row.get('slot')), str(row.get('slot')))}"
+
+
+#: The words of the rows that :func:`_one_suggestion` picks from: the kind,
+#: the answer when no row waits, and the start of the list of the rows.
+_PICK_WORDS: dict[str, tuple[str, str, str]] = {
+    "suggestion": ("suggestion", "No suggestion waits now.", "The suggestions are"),
+    "in_use": ("list that shows a Zoho module", "No list shows a Zoho module now.",
+               "The lists that show a Zoho module are"),
+}
+
+
+def _one_suggestion(
+    rows: Any, list_name: str, module: str, kind: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """The one row of *rows* for the list *list_name* and the module *module*,
+    or the words of a refusal. A module matches its Zoho label or its API
+    name, in any case. An unknown or an ambiguous name is refused, and the
+    refusal lists the real rows."""
+    every = [r for r in rows or [] if isinstance(r, dict)]
+    found = every
+    if str(list_name or "").strip():
+        slot = _slot_word(list_name)
+        found = [r for r in found if r.get("slot") == slot]
+    wanted = " ".join(str(module or "").lower().split())
+    if wanted:
+        found = [r for r in found if wanted in (
+            " ".join(str(r.get("label") or "").lower().split()),
+            str(r.get("module") or "").lower(),
+        )]
+    noun, empty, listed = _PICK_WORDS[kind]
+    if not every:
+        return None, empty
+    if not found:
+        return None, (
+            f"No {noun} matches that. {listed}: "
+            + "; ".join(_suggestion_name(r) for r in every) + "."
+        )
+    if len(found) > 1:
+        return None, (
+            f"That matches more than one {noun}: "
+            + "; ".join(_suggestion_name(r) for r in found)
+            + ". Ask which list is meant."
+        )
+    return found[0], ""
+
+
+def _suggestion_facts(row: dict[str, Any]) -> str:
+    """The facts of one suggestion on one line: records, columns and stage."""
+    parts = [f"{row.get('records', 0)} records"]
+    columns = [_human(str(t.get("target") or "")) for t in row.get("targets") or []
+               if isinstance(t, dict)]
+    parts.append("columns from its fields: " + (", ".join(columns) if columns else "none"))
+    stage = row.get("stage")
+    if isinstance(stage, dict):
+        words = list((stage.get("values") or {}).values())
+        parts.append(
+            f"stage from {one_line(stage.get('label') or stage.get('field'))}: "
+            f"{words.count('won')} won, {words.count('lost')} lost and "
+            f"{words.count('open')} open"
+        )
+    else:
+        parts.append("no stage")
+    return "; ".join(parts)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_mapping_suggestions() -> str:
+    """Read the suggestions of the CRM field map, in Mirror mode: for each
+    empty list (Deals, Contacts, Organizations or Leads), the Zoho module whose
+    records it can show, and the lists that a module shows now. Only a CRM
+    admin can read them. It changes nothing.
+
+    Then crm_preview_suggestion shows real records of one, and
+    crm_decide_suggestion uses, dismisses or undoes one."""
+    body = await _get("/crm/mapping/suggestions")
+    body = body if isinstance(body, dict) else {}
+    suggestions = [r for r in body.get("suggestions") or [] if isinstance(r, dict)]
+    overlays = [r for r in body.get("overlays") or [] if isinstance(r, dict)]
+    lines: list[str] = []
+    if suggestions:
+        lines.append(f"Suggestions ({len(suggestions)}):")
+        lines += [f"• {_suggestion_name(r)}: {_suggestion_facts(r)}." for r in suggestions]
+    else:
+        lines.append("No suggestion waits.")
+    if overlays:
+        lines.append("Lists that a Zoho module shows now (each can be undone):")
+        lines += [f"• {_suggestion_name(r)}" for r in overlays]
+    return "\n".join(lines)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_preview_suggestion(list_name: str = "", module: str = "") -> str:
+    """Show real records of one suggestion of the field map, as its list would
+    show them, before anybody uses it. It changes nothing: the route reads in
+    a read-only transaction.
+
+    Name the suggestion by its list (``list_name``: "deals", "contacts",
+    "organizations" or "leads") or by its Zoho module (``module``, for example
+    "Commercials"), or both. crm_mapping_suggestions lists them."""
+    if not (str(list_name or "").strip() or str(module or "").strip()):
+        return "Which suggestion is meant? Give its list or its module."
+    if str(list_name or "").strip():
+        _slot_word(list_name)  # an unknown list is refused before any request
+    body = await _get("/crm/mapping/suggestions")
+    rows = body.get("suggestions") if isinstance(body, dict) else []
+    row, refusal = _one_suggestion(rows, list_name, module, "suggestion")
+    if row is None:
+        return refusal
+    version = row.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        return "The suggestion came back with no version, so it has no preview."
+    slot = _slot_word(row.get("slot"))
+    # A read: the route opens a READ ONLY transaction and takes no plan lock.
+    result = await _post("/crm/mapping/preview", {"version": version, "slot": slot})
+    overlay = result.get("overlay") if isinstance(result, dict) else None
+    if not isinstance(overlay, dict):
+        return f"The records of {_suggestion_name(row)} did not load. Try again."
+    columns = [str(c) for c in overlay.get("columns") or []]
+    shown = [r for r in overlay.get("rows") or [] if isinstance(r, dict)]
+    lines = [
+        f"The records of {_suggestion_name(row)}: {overlay.get('total', len(shown))} "
+        f"records, the first {len(shown)} shown.",
+        "Columns: " + (", ".join(_human(c) for c in columns) or "none"),
+    ]
+    for rec in shown:
+        values = rec.get("values") or {}
+        cells = ", ".join(f"{_human(c)}={one_line(_shown(values.get(c)))}" for c in columns)
+        lines.append(f"• id={rec.get('id')}: {cells}")
+    for column, count in (overlay.get("unmapped") or {}).items():
+        if count:
+            lines.append(f"{count} values did not fit the {_human(str(column))} column.")
+    if overlay.get("unsorted"):
+        lines.append(
+            f"{overlay['unsorted']} records have a stage that is not sorted. "
+            "They show with no stage."
+        )
+    return "\n".join(lines)
+
+
+def _suggestion_card(act: str, row: dict[str, Any]) -> dict[str, Any]:
+    """The title, the detail, the card fields and the unchanged words of one
+    act of :func:`crm_decide_suggestion`."""
+    label = one_line(row.get("label") or row.get("module") or "")
+    listed = _SLOT_LIST.get(str(row.get("slot")), "")
+    if act == "approve":
+        return {
+            "title": f"Use {label} as {listed}?",
+            "detail": f"{listed} opens the list of {label}",
+            "card": {"field List": listed, "field Module": label,
+                     "field Records": row.get("records", 0),
+                     "field After": f"{listed} opens the list of {label}. You can undo it."},
+            "unchanged": f"{listed} did not change.",
+        }
+    if act == "dismiss":
+        return {
+            "title": f"Dismiss the suggestion {label} for {listed}?",
+            "detail": f"{label} for {listed}",
+            "card": {"field List": listed, "field Module": label,
+                     "field After": "The CRM does not offer it again until the Zoho "
+                                    "modules change."},
+            "unchanged": f"The suggestion {label} for {listed} stays.",
+        }
+    return {
+        "title": f"Undo {label} as {listed}?",
+        "detail": f"{listed} shows its own list again",
+        "card": {"field List": listed, "field Module": label,
+                 "field After": f"{listed} shows its own list again. The CRM does not "
+                                f"offer {label} again until the Zoho modules change."},
+        "unchanged": f"{listed} still shows {label}.",
+    }
+
+
+# `open_world=True`, as each CRM write says: nothing here queues for Zoho, but
+# the claim makes a covered run hold the write off (H-236). A held chat keeps
+# it only through its card (`egress.HELD_CARD_WRITE_TOOLS`).
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_decide_suggestion(action: str, list_name: str = "", module: str = "") -> str:
+    """Use, dismiss or undo a suggestion of the CRM field map, in Mirror mode.
+    Only a CRM admin can, and the person you act for approves it on a card
+    first. No record moves, and Zoho does not change.
+
+    ``action`` is one of:
+
+    - "approve": the list opens the records of the suggested Zoho module.
+    - "dismiss": the CRM does not offer that module for the list again, until
+      the Zoho modules change.
+    - "undo": a list that a module shows now shows its own list again.
+
+    Name the suggestion by its list (``list_name``: "deals", "contacts",
+    "organizations" or "leads") or by its Zoho module (``module``), or both.
+    crm_mapping_suggestions lists them."""
+    act = _SUGGESTION_ACTS.get(" ".join(str(action or "").lower().split()))
+    if act is None:
+        return (
+            f"'{action}' is not an action of this tool. Use action='approve', "
+            "action='dismiss' or action='undo'. Nothing was changed."
+        )
+    if not (str(list_name or "").strip() or str(module or "").strip()):
+        return "Which suggestion is meant? Give its list or its module. Nothing was changed."
+    if str(list_name or "").strip():
+        _slot_word(list_name)  # an unknown list is refused before any request
+    # Read first: the card names a real module, and the version comes from here.
+    body = await _get("/crm/mapping/suggestions")
+    body = body if isinstance(body, dict) else {}
+    rows = body.get("overlays") if act == "undo" else body.get("suggestions")
+    row, refusal = _one_suggestion(
+        rows, list_name, module, "in_use" if act == "undo" else "suggestion")
+    if row is None:
+        return f"{refusal} Nothing was changed."
+    version = row.get("version")
+    if act != "undo" and (not isinstance(version, int) or isinstance(version, bool)):
+        return "The suggestion came back with no version, so nothing was changed."
+    slug = _slot_word(row.get("slot"))
+    plan = _suggestion_card(act, row)
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
+        title=plan["title"],
+        detail=plan["detail"],
+        context=await _held_fields_block(plan["card"], note=_SUGGESTION_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=plan["unchanged"])
+    listed, label = plan["card"]["field List"], plan["card"]["field Module"]
+    if act == "approve":
+        await _post(f"/crm/mapping/suggestions/{slug}/approve", {"version": version})
+        return f"{listed} now opens the list of {label}. Undo it at any time."
+    if act == "dismiss":
+        await _post(f"/crm/mapping/suggestions/{slug}/dismiss", {"version": version})
+        return f"Dismissed the suggestion {label} for {listed}."
+    await _post(f"/crm/mapping/suggestions/{slug}/undo", {})
+    return f"{listed} shows its own list again, not {label}."
+
+
+def _analysis_lines(run: dict[str, Any]) -> list[str]:
+    """The state, the steps and the outcome of one analysis, in words."""
+    steps = run.get("steps") or {}
+    lines = [
+        f"• {words}: {steps.get(step, 'waiting')}"
+        for step, words in _ANALYSIS_STEPS.items()
+    ]
+    if run.get("state") == "running":
+        return [f"An AI analysis runs now. It started at {run.get('started_at')}.", *lines]
+    outcome = _ANALYSIS_OUTCOMES.get(str(run.get("outcome")), "It ended.")
+    return [
+        f"The last AI analysis started at {run.get('started_at')} and ended at "
+        f"{run.get('finished_at')}. {outcome}",
+        *lines,
+    ]
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_analysis_status() -> str:
+    """Read the state of the AI analysis of the CRM: the last run, its steps
+    (the modules and fields, the note labels, then the questions and the
+    suggestions) and how it ended. Only a CRM admin can read it. It changes
+    nothing."""
+    body = await _get("/crm/analysis/status")
+    body = body if isinstance(body, dict) else {}
+    run = body.get("run")
+    lines = _analysis_lines(run) if isinstance(run, dict) else [
+        "No AI analysis ran since the gateway started."]
+    if body.get("allowed") is False:
+        lines.append("The AI analysis is not on for this organization, so it cannot run.")
+    return "\n".join(lines)
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_rerun_analysis() -> str:
+    """Start the AI analysis of the CRM now, in Mirror mode, instead of after
+    the next sync: the modules and fields, the note labels, then the questions
+    and the suggestions. Only a CRM admin can, and the person you act for
+    approves it on a card first. It can use AI credits. Answers that a person
+    gave stay as they are.
+
+    If an analysis runs already, nothing new starts. crm_analysis_status
+    follows it."""
+    # Read first: a member who cannot start a run, an org with the analysis
+    # off, and a run that runs already each get words, and no card. The status
+    # route does not check Mirror mode, so a 409 of the re-run stays text
+    # after the card.
+    try:
+        status = await _get("/crm/analysis/status")
+    except GatewayRefusal as refused:
+        if refused.status == 403:
+            return ("Only a CRM admin can start the AI analysis. Ask an admin of "
+                    "the organization. Nothing was started.")
+        if refused.status == 404:
+            return "The AI analysis is not on for this CRM. Nothing was started."
+        raise
+    status = status if isinstance(status, dict) else {}
+    if status.get("allowed") is False:
+        return ("The AI analysis is not on for this organization, so it cannot "
+                "run. Nothing was started.")
+    running = status.get("run")
+    if isinstance(running, dict) and running.get("state") == "running":
+        return (
+            f"An AI analysis runs already (it started at {running.get('started_at')}), "
+            "so no second one starts. crm_analysis_status follows it."
+        )
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title="Run the AI analysis of the CRM now?",
+        detail="Modules and fields, note labels, then questions and suggestions",
+        context=await _held_fields_block(
+            {"field Steps": ", ".join(_ANALYSIS_STEPS.values())}, note=_ANALYSIS_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged="No AI analysis was started.")
+    run = await _post("/crm/analysis/rerun", {})
+    run = run if isinstance(run, dict) else {}
+    if run.get("started") is False:
+        return (
+            f"An AI analysis runs already (it started at {run.get('started_at')}), "
+            "so no second one started. crm_analysis_status follows it."
+        )
+    return "The AI analysis started. crm_analysis_status follows it."
+
+
 #: Columns of each record type that ``crm_update_record`` may set at the top
 #: level. Any other key goes in ``custom`` (a custom field, CRM-C4a), and the
 #: route checks it against the field definitions.
@@ -2502,7 +2904,7 @@ async def crm_edit_lost_reason(
 # the model and the card inside a « » fence (`tool_refusals.data`), and the
 # read says that a fenced value is data.
 #
-# Not here: `POST /crm/mapping/preview`. It stays planned in CRM-M2i.
+# Not here: `POST /crm/mapping/preview`. Task 3954 reads it with `crm_preview_suggestion`.
 
 #: The words of a stored entity word of the Field map (``crm_field_rules``).
 _MAP_ENTITY_WORDS: dict[str, str] = {
@@ -3242,6 +3644,13 @@ _TOOLS = [
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,
+    # P-3 (task 3954): the suggestions of the field map and the AI analysis.
+    # Two reads, a preview, and two writes on one card each.
+    crm_mapping_suggestions,
+    crm_preview_suggestion,
+    crm_decide_suggestion,
+    crm_analysis_status,
+    crm_rerun_analysis,
 ]
 
 
