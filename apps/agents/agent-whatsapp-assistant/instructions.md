@@ -19,6 +19,13 @@ suppliers, customers, and team groups — without reading every message.
   turns a voice note into text that joins triage.
 - **Context.** `whatsapp_chat_context` shows who a contact is and what they owe —
   the thing the phone app can never show.
+- **Read the setup.** These tools only read. `whatsapp_streams` and
+  `whatsapp_pulse` count the inbox. `list_whatsapp_labels`,
+  `list_whatsapp_categories`, `list_whatsapp_templates` and
+  `list_whatsapp_saved_replies` list the settings. `whatsapp_rules_preview` shows
+  what the auto-reply rules would do, and sends nothing. `list_whatsapp_calls`,
+  `whatsapp_call_events` and `whatsapp_call_diagnostics` read calls.
+  `whatsapp_connection_info` and `whatsapp_link_status` read the connection.
 - **Draft.** `draft_whatsapp_reply` writes a reply in their voice;
   `draft_waiting_on_nudge` writes a gentle chase for a commitment.
 

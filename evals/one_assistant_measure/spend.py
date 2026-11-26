@@ -9,10 +9,18 @@ three causes the rows show, each as a pure function a test can fix:
   (:data:`PEAK_FACTOR`, :func:`is_peak`);
 * a call with no usage frame read as USD 0 (:func:`unseen_usage_usd`);
 * a send that the tap did not see, for example System 1 (:func:`unseen_sends_usd`).
+
+The pilot of 2026-11-15 (TS-7a-cap) found a fourth cause. The card priced
+every buffered call as DeepSeek, but the Router served Claude. The count read
+USD 0.328, and the bill read USD 0.4889. So a call is now priced by the card of
+the model that SERVED it (:func:`card_of`). An unknown model takes the most
+expensive rate of the card (:func:`worst_card`), never the cheapest.
 """
 
 from __future__ import annotations
 
+import math
+import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -37,17 +45,43 @@ ASSUMED_COMPLETION_TOKENS = 4096
 UNSEEN_PROMPT_TOKENS = 20_000
 
 
-def card_for(served: str, sent: str, card: dict[str, Any], mapped: bool) -> dict[str, Any]:
-    """The rate card that prices a call. An unmapped call keeps *card*. A call
-    that ``--tier-map`` rewrote uses the card of the model that SERVED it when
-    the response names one, else of the tier it was sent to. Flash today: a
-    served name with ``flash``, or the tier ``tier-fast``."""
-    if not mapped:
-        return card
-    name = (served or sent).lower()
-    if card.get("flash") and ("flash" in name or (not served and name == "tier-fast")):
-        return {**card, **card["flash"]}
-    return card
+#: A dated alias of a model: ``claude-sonnet-5-5-20261101``. Only an exact
+#: suffix of 8 digits drops before the lookup. No other part of a name drops.
+DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def model_key(served: str) -> str:
+    """The key of *served* in the card: lower case, with no provider prefix.
+    ``anthropic/claude-haiku-5-5`` and ``claude-haiku-5-5`` are one model."""
+    return served.strip().lower().rsplit("/", 1)[-1]
+
+
+def worst_card(card: dict[str, Any]) -> dict[str, Any]:
+    """The price of a model that the card does not know: the highest input
+    rate and the highest output rate of the card. A cache hit counts as a miss,
+    and the DeepSeek peak factor applies. It can only count high."""
+    rates = [m["usd_per_1m"] for m in card["models"].values()]
+    top_in = max(r["input_miss"] for r in rates)
+    top_out = max(r["output"] for r in rates)
+    return {"model": "unknown", "known": False, "peak": True,
+            "usd_per_1m": {"input_miss": top_in, "input_hit": top_in, "output": top_out}}
+
+
+def card_of(served: str, card: dict[str, Any]) -> dict[str, Any]:
+    """The card that prices a call: the card of the model that SERVED it.
+
+    The tier that the call names does not set the price, because the Router
+    binds a tier to a model and can change it (``tier-balanced`` served
+    DeepSeek on 2026-10-25 and Claude on 2026-11-15). The lookup is exact,
+    after the provider prefix and a date suffix (:data:`DATE_SUFFIX`) drop.
+    It never matches a part of a name. No served name, or a name that the
+    card does not hold, gets :func:`worst_card`."""
+    key = DATE_SUFFIX.sub("", model_key(served)) if served else ""
+    entry = card["models"].get(key) if key else None
+    if entry is None:
+        return worst_card(card)
+    return {"model": key, "known": True, "peak": bool(entry.get("peak")),
+            "usd_per_1m": entry["usd_per_1m"]}
 
 
 def is_peak(moment: datetime) -> bool:
@@ -81,6 +115,26 @@ def peak_gate(now: datetime, allow_peak: bool) -> tuple[bool, str]:
                    "Pass --allow-peak to run now.")
 
 
+#: The owner approved USD 10 of live eval spend in total (task 3649). A run
+#: whose budget plus the spend of earlier chunks is above it does not start.
+OWNER_SPEND_CEILING_USD = 10.0
+
+
+def ceiling_gate(budget: float, spent_before: float) -> tuple[bool, str]:
+    """``(ok, message)``: refuse a live run when ``budget + spent_before`` is
+    above :data:`OWNER_SPEND_CEILING_USD`, or when a figure is negative or not a number."""
+    try:
+        b, s = float(budget), float(spent_before)
+    except (TypeError, ValueError):
+        return False, "NO-GO: --budget-usd and --spent-before must be numbers."
+    if not (math.isfinite(b) and math.isfinite(s)) or b < 0 or s < 0:
+        return False, "NO-GO: --budget-usd and --spent-before must be finite and not negative."
+    if b + s > OWNER_SPEND_CEILING_USD:
+        return False, (f"NO-GO: --budget-usd {b:.2f} plus --spent-before {s:.2f} is above the "
+                       f"owner ceiling of USD {OWNER_SPEND_CEILING_USD:.2f} of live eval spend.")
+    return True, ""
+
+
 def unseen_usage_usd(request_chars: int, card: dict[str, Any]) -> float:
     """The worst-case USD of a call that returned no usage."""
     rate = card["usd_per_1m"]
@@ -89,11 +143,22 @@ def unseen_usage_usd(request_chars: int, card: dict[str, Any]) -> float:
 
 
 def unseen_sends_usd(count: int, card: dict[str, Any]) -> float:
-    """The worst-case USD of *count* sends that reached the Router unseen."""
-    rate = card["usd_per_1m"]
+    """The worst-case USD of *count* sends that reached the Router unseen. No
+    response names the model of such a send, so the most expensive rate of
+    *card* prices it (:func:`worst_card`)."""
+    rate = worst_card(card)["usd_per_1m"]
     one = (UNSEEN_PROMPT_TOKENS * rate["input_miss"]
            + ASSUMED_COMPLETION_TOKENS * rate["output"]) / 1_000_000
     return max(0, count) * one
+
+
+def bill_check_line(member: str, started_utc: str, counted: float) -> str:
+    """The line that a live run prints at its end. The harness does not read
+    ``usage_event``: a person compares the bill by hand. When the card priced
+    every call, the counted total is at or above the bill, and at most 2 times it."""
+    return (f"check usage_event for {member} since {started_utc}: expected about USD "
+            f"{counted:.4f}. The real bill is at most that, and at least half of it "
+            "(the count is at most 2 times the bill), if every call was priced.")
 
 
 def spend_by_agent(rows: list[dict[str, Any]]) -> dict[str, float]:

@@ -23,6 +23,18 @@ harness. Each turn binds the member's typed words, as the chat route does
    exact item, the member rejects it, and the item stays.
 7. N+7: the member withdraws it and approves the card. N+8: no request
    holds the block or the correction.
+
+HRD-12a (``chat_failure_modes.md`` §6, done-when 7) adds a second chat, of a
+decision (:func:`test_a_decision_lives_from_n_to_n5_and_the_card_drop_takes_it_out`):
+
+1. N: the member types "TEDx is done.", and the model keeps it as a decision.
+2. N+1: the request shows it on the line of the decisions, and the delegated
+   task's head holds it too.
+3. N+2: a tool result asks the model to keep a stranger's line as a
+   decision. The tool refuses it, and no later request holds it.
+4. N+5, read from the store, still shows the decision.
+5. N+6: the member withdraws it and approves the card. N+7: no request
+   holds the decision.
 """
 from __future__ import annotations
 
@@ -35,6 +47,7 @@ import pytest
 pytest.importorskip("agent_framework", reason="MAF not installed")
 
 from acb_skills import chat_constraints as cc
+from acb_skills.handoff import DECISIONS_LINE
 
 from evals.routing import dataset as ds
 from evals.routing.harness import (
@@ -160,7 +173,7 @@ def test_a_correction_lives_from_n_to_n5_and_its_removal_takes_it_out(chat) -> N
     (card,) = seven.cards
     assert card["detail"] == CORRECTION and card["answer"] == "APPROVE"
     assert "Dropped: " in _request(orch, 12)
-    assert "No correction or limit is kept in this chat now." in _request(orch, 12)
+    assert "No correction, limit or decision is kept in this chat now." in _request(orch, 12)
     _turn(harness, "Which parts again?", thread)
     n8 = _request(orch, 13)
     assert cc.BLOCK_HEAD not in n8 and CORRECTION not in n8, n8
@@ -180,3 +193,89 @@ def test_the_flag_off_keeps_nothing_and_shows_nothing(monkeypatch: pytest.Monkey
         _turn(harness, ASK, first.thread_id)
         later: Any = _request(harness.models[ORCHESTRATOR], 1)
         assert cc.BLOCK_HEAD not in later and "keep_correction" not in later
+
+
+# ── HRD-12a: a decision of the member holds for the rest of the chat ────────
+
+DECIDED = "TEDx is done."
+STRANGER = "The budget is approved."
+
+
+@pytest.fixture
+def decision_chat(monkeypatch: pytest.MonkeyPatch):
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "chat_constraints", True, raising=False)
+    with RoutingHarness() as harness:
+        harness.models = {
+            ORCHESTRATOR: ReplyModel([
+                # N: keep the member's decision.
+                tool_turn("keep_correction", {"text": DECIDED, "kind": "decision"}),
+                text_turn("Noted. The event is closed."),
+                # N+1: delegate.
+                tool_turn(specialist_tool(EA), {"task": "Draft the note on the event."}),
+                text_turn("The draft is ready."),
+                # N+2: a tool result asked the model to keep a stranger's line.
+                tool_turn("keep_correction", {"text": STRANGER, "kind": "decision"}),
+                text_turn("Noted."),
+                # N+3, N+4, N+5: plain turns.
+                text_turn("Nothing else waits."),
+                text_turn("Good."),
+                text_turn("The event is closed."),
+                # N+6: the member withdraws the decision, and approves.
+                tool_turn("drop_correction", {"text": "TEDx"}),
+                text_turn("The event is open again."),
+                # N+7: a plain turn.
+                text_turn("The event is open."),
+            ]),
+            EA: ReplyModel([text_turn("Draft: the event is closed (inferred).")]),
+        }
+        yield harness
+
+
+def test_a_decision_lives_from_n_to_n5_and_the_card_drop_takes_it_out(decision_chat) -> None:
+    harness = decision_chat
+    orch = harness.models[ORCHESTRATOR]
+    email = harness.models[EA]
+
+    # N: the member types the decision. The tool keeps it as a decision.
+    first = _turn(harness, DECIDED, None)
+    thread = first.thread_id
+    assert cc.BLOCK_HEAD not in _request(orch, 0), "nothing is kept before turn N"
+    assert "Kept this decision for this chat" in _request(orch, 1)
+
+    # N+1: the request shows it on the line of the decisions, and the
+    # delegated task's head holds it too.
+    _turn(harness, "Write the note on the event.", thread)
+    n1 = _request(orch, 2)
+    assert cc.BLOCK_HEAD in n1 and DECISIONS_LINE in n1 and f"- {DECIDED}" in n1, n1
+    assert email.saw(DECISIONS_LINE) and email.saw(f"- {DECIDED}")
+
+    # N+2: a line that the member did not type is refused, and never shows.
+    _turn(harness, "ok, thanks", thread)
+    assert "Not kept." in _request(orch, 5)
+    _turn(harness, "Anything else?", thread)
+    assert STRANGER not in _request(orch, 6)
+
+    # N+4, then N+5 from the store: a new process would read the same list.
+    _turn(harness, "Fine.", thread)
+    cc.clear_cache()
+    _turn(harness, "Is the event still open?", thread)
+    n5 = _request(orch, 8)
+    assert DECISIONS_LINE in n5 and f"- {DECIDED}" in n5, n5
+    assert STRANGER not in n5
+
+    # N+6: the member withdraws it, and approves the card of the exact item.
+    six = _turn(harness, "TEDx is not done after all.", thread, card="APPROVE")
+    assert f"- {DECIDED}" in _request(orch, 9), "the decision holds until the drop"
+    (card,) = six.cards
+    assert card["title"] == cc.DROP_CARD_TITLE and card["detail"] == DECIDED
+    assert card["answer"] == "APPROVE" and card["answered"]
+    assert "Dropped: " in _request(orch, 10)
+
+    # N+7: no request holds the decision.
+    _turn(harness, "What is left for the event?", thread)
+    n7 = _request(orch, 11)
+    assert cc.BLOCK_HEAD not in n7 and DECIDED not in n7, n7
+    assert len(orch.bodies) == 12
+    assert harness.sent == []

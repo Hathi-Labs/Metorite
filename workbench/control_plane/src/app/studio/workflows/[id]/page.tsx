@@ -74,6 +74,7 @@ import {
 } from "@/app/workflows/lib/api";
 import { readOnlyNote } from "@/app/workflows/lib/humanStep";
 import { writerRole } from "@/app/workflows/lib/studioWrite";
+import { newWorkflowGraph, normalizeTriggerId } from "@/app/workflows/lib/triggerId";
 import type {
   Catalog,
   GraphIssue,
@@ -98,9 +99,11 @@ const TRIGGER_KIND_HINTS = [
 
 /** Edit-model graph → React Flow state (used on load and on copilot apply). */
 function flowFromGraph(
-  graph: WorkflowGraph,
+  stored: WorkflowGraph,
   catalog: Catalog | null,
 ): { nodes: Node[]; edges: Edge[] } {
+  // Task 3382: an old draft names its trigger node `trigger`, a reserved root.
+  const graph = normalizeTriggerId(stored);
   const graphNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const graphEdges = Array.isArray(graph?.edges) ? graph.edges : [];
   return {
@@ -363,20 +366,8 @@ function EditorInner({ id }: { id: string }) {
           ? g.nodes
           : [];
         if (graphNodes.length === 0) {
-          // Every workflow starts from its trigger (RFC §5.2).
-          setNodes([
-            {
-              id: "trigger",
-              type: "ccNode",
-              position: { x: 120, y: 60 },
-              data: {
-                label: "Trigger",
-                nodeType: "trigger",
-                config: { kind: "manual" },
-                ...describeNode("trigger", { kind: "manual" }, cat),
-              } satisfies CCNodeData & { config: Record<string, unknown> },
-            },
-          ]);
+          // Every workflow starts from its trigger (RFC §5.2), with a free id.
+          setNodes(flowFromGraph(newWorkflowGraph(), cat).nodes);
           setDirty(true);
         } else {
           const flow = flowFromGraph(g, cat);
@@ -425,7 +416,8 @@ function EditorInner({ id }: { id: string }) {
         graph: toGraph(),
         triggers: cleanTriggers(triggers),
       });
-      setDetail(wf);
+      // The save answer holds no versions or hook fields: keep what the page already has.
+      setDetail((d) => (d ? { ...d, ...wf } : wf));
       setDirty(false);
       return true;
     } catch (e) {
@@ -594,9 +586,12 @@ function EditorInner({ id }: { id: string }) {
       seen.add(cur);
       stack.push(...(parents.get(cur) ?? []));
     }
-    seen.delete("trigger");
+    // The trigger node's data is the `{{trigger.*}}` root, whatever its id.
+    for (const n of nodes) {
+      if ((n.data as CCNodeData).nodeType === "trigger") seen.delete(n.id);
+    }
     return [...seen];
-  }, [edges, selectedId]);
+  }, [edges, nodes, selectedId]);
 
   /**
    * The trigger card reads from the Triggers panel, not from its own config —

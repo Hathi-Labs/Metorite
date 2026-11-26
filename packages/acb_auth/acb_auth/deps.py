@@ -78,6 +78,7 @@ such request. Fence: ``tests/unit/test_mcp_edge_signing.py``.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import secrets
 from collections.abc import Collection
@@ -87,7 +88,13 @@ from acb_common import app_manifests, bind_run_context, db_busy, get_logger, ten
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
-from acb_auth import agent_oauth, agent_signing, agent_tokens
+from acb_auth import (
+    agent_oauth,
+    agent_signing,
+    agent_tokens,
+    app_requests,
+    sandbox_capabilities,
+)
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
@@ -98,7 +105,7 @@ from acb_auth.access import (
     role_read_failed,
 )
 from acb_auth.permissions import NO_ACCESS
-from acb_auth.roles import AgentScope, UserContext, UserRole, _coerce_role
+from acb_auth.roles import AgentScope, SandboxScope, UserContext, UserRole, _coerce_role
 
 _log = get_logger("acb_auth.deps")
 
@@ -182,6 +189,31 @@ def allowed_email_domain() -> str:
     and authenticates against the tenant like anybody else.
     """
     return os.getenv("ALLOWED_EMAIL_DOMAIN", "fracktal.in").lower().lstrip("@")
+
+
+#: Task 3865. The mismatch line fired on EVERY request of an off-domain member
+#: (54,959 lines in three days). It logs once per (address, domain) per process
+#: per :data:`_MISMATCH_LOG_WINDOW_S`. The log only labels, so the behaviour is
+#: the same. Fence: tests/unit/test_auth_domain_mismatch_log.py.
+_MISMATCH_LOG_WINDOW_S = 3600.0
+_MISMATCH_LOG_MAX_KEYS = 4096
+_mismatch_logged: dict[tuple[str, str], float] = {}
+
+
+def _mismatch_due(asserted: str, domain: str) -> bool:
+    """True when this (address, domain) has not logged in the window."""
+    import time  # noqa: PLC0415
+
+    now = time.monotonic()
+    key = (asserted.lower(), domain)
+    last = _mismatch_logged.get(key)
+    if last is not None and now - last < _MISMATCH_LOG_WINDOW_S:
+        return False
+    _mismatch_logged.pop(key, None)
+    _mismatch_logged[key] = now  # re-inserted last, so dict order is age order
+    while len(_mismatch_logged) > _MISMATCH_LOG_MAX_KEYS:
+        _mismatch_logged.pop(next(iter(_mismatch_logged)))
+    return True
 
 
 def is_company_email(email: str | None) -> bool:
@@ -409,7 +441,7 @@ def _one_header(request: Request, name: str) -> str | None:
 #: write refusals of EA-6a, "method" and "nonce", come before the signature.
 _UNSIGNED_REFUSALS = frozenset({
     "disabled", "no_key", "headers", "connection_header", "body", "query",
-    "signature", "method", "nonce", "session",
+    "signature", "method", "nonce", "session", "approval",
 })
 
 
@@ -421,20 +453,29 @@ def _refuse_agent(reason: str, **ids: str) -> UserContext:
 
 
 def _verify_signed_request(
-    request: Request, keys: dict[str, str], body: bytes, nonce: str | None,
-) -> tuple[str, str, str, str | None] | str:
+    request: Request, keys: dict[str, str], body: bytes | None, nonce: str | None,
+) -> tuple[str, str, str, str | None, str | None] | str:
     """Step 2 of branch 0: ``(organization, connection, actor stamp,
-    session key)`` of a well-signed, fresh request, or the reason to
-    refuse it.
+    session key, approval)`` of a well-signed, fresh request, or the reason
+    to refuse it.
 
     SW-7 (spec §12.5): ``X-Agent-Session`` is optional. Once and in its
-    shape, it is the last line of the signed string. Twice, or in another
+    shape, it is a line of the signed string. Twice, or in another
     shape, it is a refusal. The session key comes ONLY from this signed
     header, never from a body or a query.
 
+    MCP-P1b-2 (AD-6): ``X-Agent-Approval`` is optional too, and only a write
+    may carry it. Once and in the shape of a request id, it is the line
+    after the session line. Twice, in another shape, or on a GET, it is a
+    refusal. The request id comes ONLY from this signed header.
+
     A GET passes ``b""`` and no *nonce*. A write (EA-6a) passes the body that
-    ``_agent_user`` read and the nonce it checked, and both are signed.
+    ``_signed_body`` read and the nonce it checked, and both are signed.
+    CIV-14b: a write whose body ``_signed_body`` could not give (``None``) is
+    the refusal ``body``.
     """
+    if body is None:
+        return "body"
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     connection_header = _one_header(request, agent_signing.HEADER_CONNECTION)
     timestamp = _one_header(request, agent_signing.HEADER_TIMESTAMP)
@@ -451,6 +492,12 @@ def _verify_signed_request(
         session is not None and not agent_signing.session_key_is_well_formed(session)
     ):
         return "session"
+    approvals = request.headers.getlist(agent_signing.HEADER_APPROVAL)
+    approval = approvals[0] if approvals else None
+    if len(approvals) > 1 or (approval is not None and (
+        nonce is None or not agent_signing.approval_is_well_formed(approval)
+    )):
+        return "approval"
     # A GET has no nonce and a write has one. Anything else never signs.
     if (request.method.upper() == "GET") != (nonce is None):
         return "nonce"
@@ -481,12 +528,13 @@ def _verify_signed_request(
         body=body,
         nonce=nonce,
         session=session,
+        approval=approval,
     )
     if not agent_signing.verify(signature, canonical, keys):
         return "signature"
     if not agent_signing.timestamp_is_fresh(timestamp):
         return "timestamp"
-    return organization_id, connection_id, actor_via, session
+    return organization_id, connection_id, actor_via, session, approval
 
 
 async def _read_connection(
@@ -608,7 +656,7 @@ DOOR_READ_CAP_DETAIL = "Too many reads from this connection. Wait a few minutes.
 
 def _audit_door(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    via: str, decision: str,
+    via: str, decision: str, request_id: str | None = None,
 ) -> None:
     """AD-14: the ONE audit row of a door call, allowed or refused. A call
     that is not a door call (*door* is ``None``) writes none.
@@ -616,8 +664,8 @@ def _audit_door(
     It holds the organization, the connection, the member and the stamp,
     then the app, the op, the class, the request id and the decision of
     branch 0. It holds no body and no argument value. The write is best
-    effort, as ``acb_audit.record`` is. MCP-P1a has no request, so the
-    request id is ``None``.
+    effort, as ``acb_audit.record`` is. *request_id* is the approval that
+    the call spends (MCP-P1b-2), and ``None`` for a call with none.
     """
     if door is None:
         return
@@ -636,7 +684,7 @@ def _audit_door(
                 "app": door.app.id,
                 "op": door.name,
                 "class": door.route.cls,
-                "request_id": None,
+                "request_id": request_id,
                 "decision": decision,
                 # BR-7b (core_brief.md §8.2): the app scope that the door
                 # checks. The close-out names it on an allowed call.
@@ -682,22 +730,142 @@ async def _claim_door_read(connection: agent_tokens.LiveConnection) -> int | Non
 
 async def _claim_call(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp | None,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, pair: tuple[str, str | None],
+    *, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
-    """Steps 5a to 5d of branch 0: :func:`_door_gate` for a door pair, else
-    :func:`_claim_write` with ``projects:write`` for a write of
-    ``MCP_WRITE_ROUTES``. A read of ``MCP_ROUTES`` needs neither. A refusal
-    reason (401), or ``None``."""
+    """Steps 5a to 5e of branch 0: :func:`_door_gate` for a door pair, else
+    :func:`_claim_write` for a write of ``MCP_WRITE_ROUTES``. A read of
+    ``MCP_ROUTES`` needs neither. A refusal reason (401), or ``None``.
+
+    A write of ``MCP_WRITE_ROUTES`` needs ``projects:write``. The ask of
+    ``app_write`` (MCP-P1b-2, AD-4) needs any ``<app>:write`` of an app that
+    the door serves (``agent_oauth.request_write_scope``), and the route
+    checks the app of its path.
+
+    MCP-P1b-2 (AD-6): only a door write that waits for the member may carry
+    an *approval*, and only one whose digest :func:`_approval_of` could
+    form. Any other approval is ``"approval"``, with its audit row for a door
+    pair, so no approval reaches a route that does not spend it."""
+    if approval is not None and (door is None or door.asks == "never"
+                                 or approval[1] is None):
+        _audit_door(connection, door, via, "approval", approval[0])
+        return "approval"
     if door is not None:
-        return await _door_gate(connection, door, nonce, via)
+        return await _door_gate(connection, door, nonce, via, approval)
     if nonce is not None:
-        return await _claim_write(connection, nonce, agent_oauth.PROJECTS_WRITE)
+        scope: str | None = agent_oauth.PROJECTS_WRITE
+        if pair == agent_oauth.REQUEST_ASK_ROUTE:
+            scope = agent_oauth.request_write_scope(connection.scopes)
+        if scope is None:
+            return "write_scope"
+        return await _claim_write(connection, nonce, scope)
     return None
+
+
+def _approval_of(
+    connection_id: str, approval_id: str | None, method: str, template: str | None,
+    path: str, query: str | bytes, body: bytes, if_match: list[str],
+) -> tuple[str, str | None] | None:
+    """The approval of a call and the digest of the call (MCP-P1b-2,
+    AD-17): ``(request id, digest)``, or ``None`` for a call with no
+    approval. The digest is ``None`` when branch 0 must refuse the call.
+
+    The parts are the method, the matched template, the signed path and
+    query, the hash of the signed body, the ONE ``If-Match`` that the route
+    reads, and the binding of the ROW's connection. Two ``If-Match`` headers,
+    or a part that cannot form one line of the digest, give no digest.
+    """
+    if approval_id is None:
+        return None
+    pairs = agent_signing.query_pairs(query)
+    if len(if_match) > 1 or not template or pairs is None:
+        return approval_id, None
+    try:
+        return approval_id, app_requests.digest_of(
+            binding=app_requests.mcp_binding(connection_id),
+            method=method, template=template, path=path, query=pairs,
+            body_sha256=hashlib.sha256(body).hexdigest(),
+            if_match=if_match[0] if if_match else None,
+        )
+    except ValueError:
+        return approval_id, None
+
+
+#: MCP-P1b-2 (AD-6). Each class of a refused spend, with its status and its
+#: code. A request that waits for the member, or that this member, app and
+#: connection do not hold, has no approval to spend.
+_SPEND_REFUSALS: dict[str, tuple[int, str]] = {
+    "mismatch": (409, agent_oauth.APPROVAL_MISMATCH_CODE),
+    "declined": (409, agent_oauth.APPROVAL_USED_CODE),
+    "spent": (409, agent_oauth.APPROVAL_USED_CODE),
+    "expired": (409, agent_oauth.APPROVAL_USED_CODE),
+    "awaiting": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+    "not_found": (403, agent_oauth.APPROVAL_REQUIRED_CODE),
+}
+
+
+async def _spend_approval(
+    connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
+    approval: tuple[str, str | None], via: str,
+) -> None:
+    """Step 5e of branch 0 (MCP-P1b-2, AD-6): spend the approval once.
+
+    *approval* is the signed request id and the digest of THIS call
+    (:func:`_approval_of`). ``acb_auth.app_requests.spend`` is the ONE
+    spend: one ``UPDATE ... RETURNING`` whose WHERE holds the org, the app,
+    the member, the connection, the whole binding, the decision, the expiry
+    and the digest, so two calls that race get one winner. It runs in a
+    tenant session of the ROW's organization, and it commits before the
+    route runs. So a route that refuses the call after the spend changes
+    nothing, and the request stays spent (§19.12).
+
+    A refused spend changes nothing. It answers 409 ``approval_mismatch``
+    for another call (the request stays approved), 409 ``approval_used`` for
+    a spent, declined or expired request, and 403 ``approval_required`` for
+    a request with no decision or one that this member, app and connection
+    do not hold. Each refusal writes its audit row. A failure of the
+    database is the ONE 503 of :func:`_identity_unavailable`, never a 401.
+    """
+    from acb_common.db import tenant_session
+
+    # `_claim_call` refused an approval with no digest. An empty digest
+    # matches no request, so this line cannot open a spend.
+    request_id, digest = approval[0], approval[1] or ""
+    binding = app_requests.mcp_binding(connection.connection_id)
+    spent: app_requests.Spent | None = None
+    why = "not_found"
+    try:
+        async with tenant_session(connection.organization_id) as db:
+            spent = await app_requests.spend(
+                db, org=connection.organization_id, request_id=request_id,
+                app=door.app.id, member=connection.member_email, binding=binding,
+                digest=digest)
+            if spent is None:
+                why = await app_requests.classify_refusal(
+                    db, org=connection.organization_id, request_id=request_id,
+                    app=door.app.id, member=connection.member_email, binding=binding,
+                    digest=digest)
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+        _log.warning("auth.agent_spend_failed", error=type(exc).__name__,
+                     connection_id=connection.connection_id)
+        _audit_door(connection, door, via, "unavailable", request_id)
+        raise _identity_unavailable() from exc
+    if spent is not None:
+        _log.info("auth.agent_approval_spent", request_id=request_id,
+                  connection_id=connection.connection_id)
+        return
+    status, code = _SPEND_REFUSALS.get(why, (403, agent_oauth.APPROVAL_REQUIRED_CODE))
+    _audit_door(connection, door, via, code, request_id)
+    _log.info("auth.agent_refused", reason=code, why=why,
+              connection_id=connection.connection_id)
+    raise HTTPException(status_code=status, detail=code)
 
 
 async def _door_gate(
     connection: agent_tokens.LiveConnection, door: app_manifests.DoorOp,
-    nonce: str | None, via: str,
+    nonce: str | None, via: str, approval: tuple[str, str | None] | None = None,
 ) -> str | None:
     """Step 5a of branch 0, for a door pair (MCP-P1a, spec §19.5 to §19.7).
 
@@ -708,32 +876,36 @@ async def _door_gate(
        ``MCP_WRITE_ROUTES``. It runs here, so the refusal has a connection
        for its audit row.
     1. The door flag names the app, else the coded 403 ``app_off``.
-    2. AD-18: a write of class B or C that is not a proposal gets the coded
-       403 ``approval_required``. Before MCP-P1b no approval can exist, so
-       each such call fails, whatever the scope.
+    2. AD-18: a write of class B or C that is not a proposal needs the
+       member's approval. A call with no *approval* gets the coded 403
+       ``approval_required``, whatever the scope. :func:`_claim_call`
+       already refused an approval on a call that asks nothing.
     3. AD-4: the connection holds the app scope of the op, ``<app>:read`` for
        a read and ``<app>:write`` for a change, else ``"door_scope"`` (401).
     4. AD-13: a read counts under the door read cap (429). A write takes the
        nonce and the write cap of :func:`_claim_write`, with the app's write
-       scope.
+       scope. So the ask and the spend of one change count as two writes.
+    5. MCP-P1b-2 (AD-6): the spend of *approval* (:func:`_spend_approval`),
+       last, so a refused call spends nothing.
 
     Returns a refusal reason, or ``None`` when the call may go on. Each
     refusal writes its audit row (:func:`_audit_door`) before it returns or
     raises. The caller writes the row of an allowed call at the end.
     """
+    request_id = approval[0] if approval is not None else None
     if nonce is not None and not agent_oauth.writes_enabled():
-        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE)
+        _audit_door(connection, door, via, agent_oauth.WRITES_DISABLED_CODE, request_id)
         raise _writes_disabled()
     if not agent_oauth.door_serves(door.app.id):
-        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE)
+        _audit_door(connection, door, via, agent_oauth.APP_OFF_CODE, request_id)
         _log.info("auth.agent_refused", reason=agent_oauth.APP_OFF_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APP_OFF_CODE)
-    if door.asks != "never":
+    if door.asks != "never" and approval is None:
         _audit_door(connection, door, via, agent_oauth.APPROVAL_REQUIRED_CODE)
         _log.info("auth.agent_refused", reason=agent_oauth.APPROVAL_REQUIRED_CODE)
         raise HTTPException(status_code=403, detail=agent_oauth.APPROVAL_REQUIRED_CODE)
     if not agent_oauth.scope_holds(connection.scopes, door.scope):
-        _audit_door(connection, door, via, "door_scope")
+        _audit_door(connection, door, via, "door_scope", request_id)
         return "door_scope"
     over: int | None = None
     refused: str | None = None
@@ -744,7 +916,7 @@ async def _door_gate(
             refused = await _claim_write(connection, nonce, door.scope)
     except HTTPException as exc:
         _audit_door(connection, door, via,
-                    "write_cap" if exc.status_code == 429 else "unavailable")
+                    "write_cap" if exc.status_code == 429 else "unavailable", request_id)
         raise
     if over is not None:
         _audit_door(connection, door, via, "read_cap")
@@ -754,8 +926,32 @@ async def _door_gate(
             headers={"Retry-After": str(over)},
         )
     if refused is not None:
-        _audit_door(connection, door, via, refused)
-    return refused
+        _audit_door(connection, door, via, refused, request_id)
+        return refused
+    if approval is not None:
+        await _spend_approval(connection, door, approval, via)
+    return None
+
+
+async def _signed_body(request: Request) -> bytes | None:
+    """The body bytes that the signature of a write covers, or ``None``.
+
+    EA-6a: the ONE reader of the body in branch 0. A JSON route reads its body
+    with ``request.body()``, which keeps the bytes. CIV-14b: a form route
+    parses a multipart body BEFORE any dependency runs, so the stream is gone
+    here. For the upload of ``upload_task_image``, the gateway wrapper
+    ``AgentUploadBody`` puts the whole body in the scope, as ``bytes``, under
+    the key ``agent_signing.SIGNED_BODY_SCOPE_KEY``, and this reads it. A
+    client cannot set a scope key. A consumed stream with no copy gives
+    ``None``, and :func:`_verify_signed_request` refuses it as ``body``.
+    """
+    kept = request.scope.get("acb.agent_signed_body")
+    if isinstance(kept, bytes):
+        return kept
+    try:
+        return await request.body()
+    except RuntimeError:  # "Stream consumed": a form route with no copy
+        return None
 
 
 
@@ -786,6 +982,13 @@ async def _agent_user(request: Request) -> UserContext:
     (AD-13). Each door call that reaches a live connection writes ONE audit
     row (AD-14): the stamp check and the gate write a refusal, the seat check
     its own, and the end writes ``allowed``.
+
+    The spend (MCP-P1b-2, AD-6). A door write that waits for the member
+    carries the signed ``X-Agent-Approval``. Branch 0 computes the digest of
+    the call (:func:`_approval_of`), and the gate spends the request
+    once, last, in place of the blanket refusal of AD-18
+    (:func:`_spend_approval`). A call with no approval still gets the 403
+    ``approval_required``.
 
     ⚠️ A database outage is not a refusal. It answers the ONE 503 of
     :func:`_identity_unavailable`, with ``Retry-After: 2``, and it never
@@ -829,13 +1032,13 @@ async def _agent_user(request: Request) -> UserContext:
         nonce = _one_header(request, agent_signing.HEADER_NONCE)
         if not agent_signing.nonce_is_well_formed(nonce):
             return _refuse_agent("nonce")
-        body = await request.body()
+        body = await _signed_body(request)
 
     # 2. The four headers, once each. The HMAC under a usable `kid`. The time.
     signed = _verify_signed_request(request, keys, body, nonce)
     if isinstance(signed, str):
         return _refuse_agent(signed)
-    organization_id, connection_id, actor_via, session = signed
+    organization_id, connection_id, actor_via, session, approval_id = signed
 
     # 3. The matched route template is in MCP_ROUTES, or it is a door pair.
     if pair not in agent_oauth.MCP_ROUTES and door is None:
@@ -880,15 +1083,26 @@ async def _agent_user(request: Request) -> UserContext:
     ):
         # AD-14: a refused door call writes its row too. The row holds the
         # row's own stamp, never the header value.
-        _audit_door(connection, door, expected_via, "actor_via")
+        _audit_door(connection, door, expected_via, "actor_via", approval_id)
         return _refuse_agent("actor_via", **ids)
 
-    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope and the
-    # caps, in `_door_gate`. 5b to 5d, a write of MCP_WRITE_ROUTES:
-    # `projects:write` on the connection (EA3-29), a fresh nonce (EA3-28) and
-    # room under the cap (EA3-30). They run before the resolve, so a refused
-    # call binds no tenant.
-    refused = await _claim_call(connection, door, nonce, expected_via)
+    # 5a'. MCP-P1b-2 (AD-6, AD-17): the approval of THIS call and its digest,
+    # for the spend, or None. The parts are the signed path, query and body,
+    # the matched template, the ONE `If-Match` that the route reads, and the
+    # ROW's connection.
+    approval = _approval_of(
+        connection.connection_id, approval_id, method, pair[1],
+        str(request.scope.get("path") or ""), request.scope.get("query_string") or b"",
+        body, request.headers.getlist("if-match"),
+    )
+
+    # 5a, a door pair (MCP-P1a): the door flag, AD-18, the app scope, the
+    # caps and, last, the spend of an approval (MCP-P1b-2), in `_door_gate`.
+    # 5b to 5d, a write of MCP_WRITE_ROUTES: its write scope (EA3-29), a
+    # fresh nonce (EA3-28) and room under the cap (EA3-30). They run before
+    # the resolve, so a refused call binds no tenant.
+    refused = await _claim_call(connection, door, nonce, expected_via, pair,
+                                 approval=approval)
     if refused is not None:
         return _refuse_agent(refused, **ids)
 
@@ -906,15 +1120,17 @@ async def _agent_user(request: Request) -> UserContext:
         # request keeps none.
         clear_tenant()
         outage = identity_read_failed() or role_read_failed()
-        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat")
+        _audit_door(connection, door, expected_via, "unavailable" if outage else "seat",
+                    approval_id)
         if outage:
             # The database refused a read: an outage, not "no seat".
             db_busy.mark()
             raise _identity_unavailable()
         return _refuse_agent("seat", **ids)
 
-    # The audit row of an allowed door call (AD-14).
-    _audit_door(connection, door, expected_via, "allowed")
+    # The audit row of an allowed door call (AD-14), with the request id of
+    # the approval that it spent (MCP-P1b-2).
+    _audit_door(connection, door, expected_via, "allowed", approval_id)
     # Attach the scope LAST. No `_bind_session_member`: no route in
     # MCP_ROUTES and no door op calls a model (AD-11).
     return dataclasses.replace(
@@ -932,6 +1148,269 @@ async def _agent_user(request: Request) -> UserContext:
     )
 
 
+# ---------------------------------------------------------------------------
+# The sandbox sibling of branch 0 (SBX-2, agent_sandbox.md §12.2)
+# ---------------------------------------------------------------------------
+
+#: The body of each 401 of the sandbox door. It is the text of the default
+#: deny, so the 401 cases are alike and a stranger learns nothing.
+SANDBOX_UNAUTHENTICATED_DETAIL = "Authentication required"
+
+#: Refusals that anybody on the network can cause with no live capability.
+#: They log at info. A refusal after a live row logs at warning.
+_SANDBOX_UNSIGNED_REFUSALS = frozenset({"disabled", "headers", "credential", "capability"})
+
+
+def _refuse_sandbox(
+    status: int, code: str, capability: sandbox_capabilities.Capability | None,
+    method: str, template: str | None,
+) -> HTTPException:
+    """Log one refusal of the sandbox door and give its exception (decision
+    8). A 401 has the text of the default deny. Every other refusal has its
+    fixed code. The line holds ids only: no token, hash or header value."""
+    sandbox_capabilities.log_door_call(
+        status=status, code=code, method=method, template=template,
+        org=capability.organization_id if capability is not None else "",
+        run_id=capability.run_id if capability is not None else "",
+        phase=capability.phase if capability is not None else "",
+        warn=code not in _SANDBOX_UNSIGNED_REFUSALS,
+    )
+    detail = SANDBOX_UNAUTHENTICATED_DETAIL if status == 401 else code
+    return HTTPException(status_code=status, detail=detail)
+
+
+async def _read_capability(
+    raw: str, method: str, template: str | None,
+) -> sandbox_capabilities.Capability | None:
+    """Step 3 of the sandbox door: the live row of the header value.
+
+    ``None`` for no live row and for any other failed read, which is a
+    refusal. A database outage (``db_busy.is_db_outage``) raises the ONE 503
+    of :func:`_identity_unavailable` instead. The log names the class of the
+    error only, because a database error can print its bound values, and
+    one of them is the hash.
+    """
+    try:
+        return await sandbox_capabilities.lookup(raw)
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+            sandbox_capabilities.log_door_call(
+                status=503, code="unavailable", method=method, template=template, warn=True)
+            raise _identity_unavailable() from None
+        _log.warning("sandbox.capability_read_failed", error=type(exc).__name__)
+        return None
+
+
+async def _claim_sandbox_call(
+    capability: sandbox_capabilities.Capability, method: str, template: str | None,
+) -> int:
+    """Step 9 of the sandbox door: count one call of the capability, in the
+    tenant Redis wrapper bound to the ROW's organization. The count after
+    this call (``call_n``).
+
+    The key is the token hash under ``sandbox_door_calls``. Its life is the
+    time to ``expires_at`` from the database clock, plus 60 seconds, set in
+    the MULTI block of the INCR, so no counter lives without an end. Every
+    failure of the store raises the 503 (fail closed), never a 401 or a 500.
+    Call 601 and later raise the 429 with ``Retry-After``.
+    """
+    org, run_id, phase = capability.organization_id, capability.run_id, capability.phase
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(capability.organization_id):
+            counter = tenant_redis.key(
+                sandbox_capabilities.CALLS_NAMESPACE, capability.token_sha256)
+            pipe = client.pipeline(transaction=True)
+            pipe.incr(counter)
+            pipe.expire(counter, capability.seconds_left + sandbox_capabilities.CALLS_GRACE_S)
+            replies = await pipe.execute()
+            count = int(replies[0])
+    except Exception as exc:
+        _log.warning("sandbox.door_redis_unavailable", error=type(exc).__name__)
+        sandbox_capabilities.log_door_call(
+            status=503, code="unavailable", method=method, template=template, warn=True,
+            org=org, run_id=run_id, phase=phase)
+        raise HTTPException(
+            status_code=503, detail=DOOR_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from None
+    if count > sandbox_capabilities.CALL_CAP:
+        sandbox_capabilities.log_door_call(
+            status=429, code=sandbox_capabilities.CALL_CAP_CODE, method=method,
+            template=template, call_n=count, warn=True, org=org, run_id=run_id, phase=phase)
+        raise HTTPException(
+            status_code=429, detail=sandbox_capabilities.CALL_CAP_CODE,
+            headers={"Retry-After": str(max(capability.seconds_left, 1))},
+        )
+    return count
+
+
+def _sandbox_gate(
+    capability: sandbox_capabilities.Capability, method: str, template: str | None,
+    query: bytes | str,
+) -> None:
+    """Steps 5 to 8 of the sandbox door, after a live row. Each refusal
+    raises its fixed code (decision 8). It sees the method, the matched
+    template and the raw query, never the request."""
+    # 5. Reads only.
+    if method != "GET":
+        raise _refuse_sandbox(403, sandbox_capabilities.READ_ONLY, capability, method,
+                              template)
+    # 6. The pair is on the allowlist of the manifests.
+    needed = app_manifests.sandbox_scope((method, template))
+    if needed is None:
+        if app_manifests.sandbox_excluded((method, template)):
+            raise _refuse_sandbox(403, sandbox_capabilities.ROUTE_EXCLUDED, capability,
+                                  method, template)
+        raise _refuse_sandbox(404, sandbox_capabilities.ROUTE_UNKNOWN, capability, method,
+                              template)
+    # 7. The read scope of the pair's app.
+    if not agent_oauth.scope_holds(capability.read_scopes, needed):
+        raise _refuse_sandbox(403, sandbox_capabilities.SCOPE, capability, method, template)
+    # 8. The query, with no repeated key, and the page cap.
+    pairs = agent_signing.query_pairs(query)
+    if pairs is None:
+        raise _refuse_sandbox(422, sandbox_capabilities.BAD_QUERY, capability, method,
+                              template)
+    if not sandbox_capabilities.page_within_cap(pairs):
+        raise _refuse_sandbox(422, sandbox_capabilities.PAGE_CAP_CODE, capability, method,
+                              template)
+
+
+def _is_sandbox_request(request: Request) -> bool:
+    """True when the sandbox sibling owns this request (§12.2 decision 3).
+
+    Any header whose name starts with ``X-Sandbox-``, in any case. Every
+    name of a repeated header counts, so a second header cannot hide the
+    first.
+    """
+    for name in request.headers:  # noqa: SIM110 - the scan reads this loop shape
+        if name.lower().startswith("x-sandbox-"):
+            return True
+    return False
+
+
+async def _sandbox_user(request: Request) -> UserContext:
+    """The sandbox sibling of branch 0 (SBX-2, ``agent_sandbox.md`` §12.2).
+
+    It decides each request that triggers it, and it NEVER falls through to
+    branch 0, 1a, 1b or 2. The member and the organization come ONLY from
+    the row of ``sandbox_capabilities``. Each refusal RAISES its
+    ``HTTPException``: it never returns the anonymous context, so a request
+    with a capability never reaches a template of the ``public`` list of
+    :func:`require_authenticated`.
+
+    The steps, in order. No step before step 10 binds a tenant, so a refused
+    request leaves no tenant bound.
+
+    1. ``SANDBOX_DOOR_ORGS`` is not empty, else 401 with no database read and
+       no Redis call.
+    2. One ``X-Sandbox-`` header, ``X-Sandbox-Capability`` in its shape, and
+       no second credential: no ``Authorization``, ``X-User-Email``,
+       ``X-User-Role``, ``X-Actor-Via`` or ``X-Agent-`` header. Else 401.
+    3. A live row (:func:`_read_capability`). Else 401, or the 503 of an
+       outage.
+    4. The flag names the row's organization, or holds ``*``. Else 401.
+    5. The method is GET. Else 403 ``sandbox_read_only``.
+    6. The pair is in ``SANDBOX_ROUTES``. A class X row of ``SANDBOX_APPS``
+       gets 403 ``sandbox_route_excluded``, and any other pair 404
+       ``sandbox_route_unknown``.
+    7. The row's read scopes hold the read scope of the pair's app. Else 403
+       ``sandbox_scope``.
+    8. The query parses with no repeated key, else 422 ``sandbox_bad_query``.
+       Each page key holds 100 or less, else 422 ``sandbox_page_cap``.
+    9. The call cap (:func:`_claim_sandbox_call`): 429 past 600, 503 when
+       Redis is down.
+    10. The member of the ROW resolves. The resolved organization must equal
+        the row's, and the access must be active. Else ``clear_tenant()`` and
+        401, or the 503 of an outage.
+    11. The member's ``UserContext`` with ``sandbox`` set. ``agent`` stays
+        ``None``. No ``_bind_session_member``: no row of ``SANDBOX_ROUTES``
+        calls a model.
+    """
+    method = request.method.upper()
+    template = _matched_template(request)
+
+    # 1. The flag, before any read.
+    orgs = sandbox_capabilities.door_orgs()
+    if not orgs:
+        raise _refuse_sandbox(401, "disabled", None, method, template)
+
+    # 2. One sandbox header, in its shape, and no second credential.
+    marks = 0
+    for name in request.headers:
+        if name.lower().startswith("x-sandbox-"):
+            marks += 1
+        if name.lower().startswith(agent_signing.AGENT_HEADER_PREFIX):
+            raise _refuse_sandbox(401, "credential", None, method, template)
+    raw = _one_header(request, "x-sandbox-capability")
+    if marks != 1 or raw is None or not sandbox_capabilities.well_formed(raw):
+        raise _refuse_sandbox(401, "headers", None, method, template)
+    if (
+        "authorization" in request.headers
+        or "x-user-email" in request.headers
+        or "x-user-role" in request.headers
+        or "x-actor-via" in request.headers
+    ):
+        raise _refuse_sandbox(401, "credential", None, method, template)
+
+    # 3. The live row, by the hash of the header value. No tenant is bound.
+    capability = await _read_capability(raw, method, template)
+    if capability is None:
+        raise _refuse_sandbox(401, "capability", None, method, template)
+
+    # 4. The flag names the ROW's organization.
+    if "*" not in orgs and capability.organization_id not in orgs:
+        raise _refuse_sandbox(401, "org", capability, method, template)
+
+    # 5 to 8. Reads only, the allowlist, the scope, the query.
+    _sandbox_gate(capability, method, template, request.scope.get("query_string") or b"")
+
+    # 9. The call cap, in the ROW's organization. Fails closed.
+    call_n = await _claim_sandbox_call(capability, method, template)
+
+    # 10. The member of the ROW, never of a header. Resolved as a request.
+    try:
+        resolved = await _with_resolved_access(
+            UserContext(email=capability.member_email, role=UserRole.EMPLOYEE)
+        )
+    except HTTPException:
+        # The 503 of an identity read that timed out. No tenant stays bound.
+        clear_tenant()
+        raise
+    if (
+        resolved.organization_id != capability.organization_id
+        or not resolved.access.is_active
+    ):
+        # `_with_resolved_access` may have bound the member's tenant. A refused
+        # request keeps none.
+        clear_tenant()
+        if identity_read_failed() or role_read_failed():
+            # The database refused a read: an outage, not "no seat".
+            db_busy.mark()
+            sandbox_capabilities.log_door_call(
+                status=503, code="unavailable", method=method, template=template,
+                org=capability.organization_id, run_id=capability.run_id,
+                phase=capability.phase, warn=True)
+            raise _identity_unavailable()
+        raise _refuse_sandbox(401, "seat", capability, method, template)
+
+    # 11. Admitted. The middleware caps the answer and writes the log line.
+    sandbox_capabilities.admit(capability, method, template, call_n)
+    return dataclasses.replace(
+        resolved,
+        sandbox=SandboxScope(
+            run_id=capability.run_id,
+            thread_id=capability.thread_id,
+            phase=capability.phase,
+            app_id=capability.app_id,
+            version=capability.version,
+            read_scopes=capability.read_scopes,
+        ),
+    )
+
+
 async def get_current_user(
     x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
@@ -941,6 +1420,10 @@ async def get_current_user(
     """Resolve identity from SSO-injected headers or an internal Bearer token.
 
     Priority:
+    00. A sandbox call (SBX-2, :func:`_sandbox_user`): any ``X-Sandbox-``
+       header → the capability row's member, with ``UserContext.sandbox``
+       set, or an ``HTTPException``. It runs before branch 0 and never falls
+       through. It is the one branch that raises.
     0. A signed request of an outside agent (WS-55 EA-3a, :func:`_agent_user`)
        → that connection's member, with ``UserContext.agent`` set, or the
        anonymous context. Branch 0 never falls through to 1 or 2.
@@ -958,10 +1441,15 @@ async def get_current_user(
     branch 0 then does not run. Branch 0 reads the method, the path, the
     query and its own four headers. It reads no host header.
 
-    Never raises — missing/wrong headers resolve to the lowest-privilege role
-    and an empty permission set. Enforcement is done by require_role() /
+    Never raises outside the sandbox sibling — missing/wrong headers resolve
+    to the lowest-privilege role and an empty permission set. Enforcement is done by require_role() /
     require_permission().
     """
+    # 00. A sandbox call (SBX-2, agent_sandbox.md §12.2). It runs FIRST and
+    # decides each request that triggers it. Each refusal raises.
+    if request is not None and _is_sandbox_request(request):
+        return await _sandbox_user(request)
+
     # 0. A signed outside-agent request (spec §10.1). Decided here, always.
     if request is not None and _is_agent_request(request):
         return await _agent_user(request)
@@ -989,11 +1477,12 @@ async def get_current_user(
             # whose sign-in address is off-domain. The mismatch is only ever
             # LOGGED — the `or x_user_email` below is what makes that explicit,
             # since the assignment above otherwise reads as a check it is not.
-            _log.warning(
-                "auth.identity_domain_mismatch",
-                asserted_email=email[:64],
-                allowed_domain=allowed_domain,
-            )
+            if _mismatch_due(email[:64], allowed_domain):
+                _log.warning(
+                    "auth.identity_domain_mismatch",
+                    asserted_email=email[:64],
+                    allowed_domain=allowed_domain,
+                )
             email = None
         _bind_session_member(email or x_user_email)
         return await _with_resolved_access(
