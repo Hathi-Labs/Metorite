@@ -1327,6 +1327,10 @@ class Tool:
     #: SW-27c1. True for ``mark_number``. It shows only for an organization of
     #: ``agent_oauth.sequence_marks_allowed`` (:func:`offered`).
     marks: bool = False
+    #: EA-5. True for ``get_company_context``. It shows only for an
+    #: organization of ``agent_oauth.resources_allowed`` (:func:`offered`),
+    #: the flag of the resource ``metorite://company/context`` too.
+    resources: bool = False
 
     def describe(self, organization_id: object = None) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool. SW-23: while the Check flag
@@ -2385,6 +2389,85 @@ WHOAMI = Tool(
     not_found=TEXT_BUSY,
     run=_whoami,
     routes=(ME_ROUTE,),
+)
+
+
+# ── get_company_context (EA-5, D-EA-6) ──────────────────────────────────────
+
+#: EA-5. The text of a call while ``agent_resources_orgs`` leaves the
+#: organization out. The tool and the resource ``metorite://company/context``
+#: are dark on that one flag.
+TEXT_CONTEXT_OFF = "Company context is not on for this organization."
+
+#: The shape of an organization slug: the rule of ``_SLUG_RE`` in
+#: ``gateway/routes/signup.py``. A slug of another shape leaves as untrusted
+#: text (§9.1, mark (S)).
+_ORG_SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+#: The keys of ``get_company_context`` are the keys of this dict, and no other
+#: (D-EA-6, corrected 2026-11-25). It is an allowlist: a key that the gateway
+#: adds to ``/auth/me`` never leaves the edge.
+_COMPANY_CONTEXT_PROPERTIES: dict[str, Any] = {
+    "name": _UNTRUSTED_OR_NULL,
+    "slug": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+}
+COMPANY_CONTEXT_KEYS: tuple[str, ...] = tuple(_COMPANY_CONTEXT_PROPERTIES)
+
+_COMPANY_CONTEXT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": _COMPANY_CONTEXT_PROPERTIES,
+    "required": list(COMPANY_CONTEXT_KEYS),
+    "additionalProperties": False,
+}
+
+
+def company_context(body: Any, organization_id: object) -> dict[str, Any]:
+    """The context of D-EA-6 from one ``/auth/me`` answer: ``name`` and
+    ``slug``, and no other key.
+
+    The organization of the answer must be the organization of the token row.
+    Any other answer, an empty ``organization`` too, gives the busy text, so
+    the tool never returns the context of a second organization. The name is
+    free text (U). The slug is plain only in its shape (S).
+    """
+    org = body.get("organization") if isinstance(body, dict) else None
+    if not isinstance(org, dict):
+        raise ToolError(TEXT_BUSY)
+    found, slug = org.get("id"), org.get("slug")
+    if (not isinstance(found, str) or organization_id is None
+            or found.lower() != str(organization_id).lower()
+            or not isinstance(slug, str) or not slug):
+        raise ToolError(TEXT_BUSY)
+    name = org.get("display_name")
+    return {
+        "name": untrusted(name) if isinstance(name, str) else None,
+        "slug": shaped(slug, _ORG_SLUG_RE),
+    }
+
+
+async def _get_company_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of ``/auth/me``, the route of ``whoami``. No new pair."""
+    body = await _get(ctx, ME_ROUTE, TEXT_BUSY)
+    return company_context(body, ctx.caller.lookup.organization_id)
+
+
+GET_COMPANY_CONTEXT = Tool(
+    name="get_company_context",
+    title="Get the company context",
+    description=(
+        "Read the company that this connection acts in: the organization name"
+        " and its slug. Use it to write text that names the company. It"
+        " returns no member, no address and no setting." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.CONTEXT_READ,
+    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    output_schema=_COMPANY_CONTEXT_OUTPUT,
+    route=ME_ROUTE,
+    params={},
+    not_found=TEXT_BUSY,
+    run=_get_company_context,
+    routes=(ME_ROUTE,),
+    resources=True,
 )
 
 
@@ -12264,7 +12347,9 @@ READ_PLAYBOOK = Tool(
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    # EA-5: the company context follows whoami. It needs context:read and
+    # shows only for an organization of agent_resources_orgs.
+    WHOAMI, GET_COMPANY_CONTEXT, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     LIST_TEMPLATES,
@@ -12304,10 +12389,13 @@ def offered(tool: Tool, organization_id: object = None) -> bool:
     tool only for an organization that ``playbook_orgs`` names (PB-3a).
     ``upload_task_image`` only for an organization that
     ``mcp_image_upload_orgs`` names (CIV-14b fix round 1). The gateway
-    refuses the upload of any other organization too."""
+    refuses the upload of any other organization too. ``get_company_context``
+    only for an organization that ``agent_resources_orgs`` names (EA-5)."""
     if tool.door and not agent_oauth.door_apps():
         return False
     if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
+        return False
+    if tool.resources and not agent_oauth.resources_allowed(organization_id):
         return False
     if tool.images and not agent_oauth.image_upload_allowed(organization_id):
         return False
@@ -12396,6 +12484,9 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     if not offered(tool, ctx.caller.lookup.organization_id):
         if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
             return error_result(TEXT_PLAYBOOK_OFF)
+        if tool.resources and not agent_oauth.resources_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_CONTEXT_OFF)
         if tool.images and not agent_oauth.image_upload_allowed(
                 ctx.caller.lookup.organization_id):
             return error_result(TEXT_IMAGES_OFF)
