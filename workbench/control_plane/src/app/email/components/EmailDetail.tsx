@@ -662,6 +662,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // `detail` resets only after the first render of a new mail, so it can still
   // hold the last mail. Read it only when it is this mail (EM-T10 item 5, C2).
   const view: Email = detail?.id === email.id ? detail : email;
+  // The chips of the open mail. With Mark done on, they come from the list row,
+  // which the store changes at once. `detail` is the copy of the open (§6.6).
+  const headerLabels = canMarkDone ? email.categories : view.categories;
   // "Loading message…" shows only while THIS mail has no body to draw. A mail
   // that has its body and waits for its file list draws the body at once.
   const loadingDetail = loadingDetailFor?.id === email.id && !view.bodyHtml && !view.bodyText;
@@ -1519,9 +1522,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
         )}
 
         {/* Categories / labels — rendered in their assigned colours */}
-        {view.categories && view.categories.length > 0 && (
+        {headerLabels && headerLabels.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-4">
-            {view.categories.map((cat) => (
+            {headerLabels.map((cat) => (
               <LabelChip
                 key={cat}
                 name={cat}
