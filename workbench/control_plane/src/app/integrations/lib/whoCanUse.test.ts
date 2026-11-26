@@ -6,9 +6,14 @@ import { getAccessGroups, getAccessPeople, getIntegrationAccess, setIntegrationA
 import { row } from "./testRows";
 import {
   LOAD_FAILED,
+  changedRule,
+  changedText,
   clearCopy,
+  draftOf,
+  editDraft,
   emptyChoice,
   filterChoices,
+  followRule,
   groupChoices,
   parseAccessList,
   personChoices,
@@ -16,6 +21,7 @@ import {
   ruleSummary,
   rowRule,
   sameRule,
+  sameStored,
   saveLabel,
   serviceOfRow,
   toggleValue,
@@ -214,6 +220,65 @@ describe("the editor", () => {
       ["mcp-b", "everyone"],
     ]);
     expect(withItem(list([]), item()).services).toHaveLength(1);
+  });
+});
+
+describe("a rule that changes under the editor", () => {
+  const admins = item({ mode: "admins" });
+
+  it("follows the new rule while the admin made no choice, with Save still off", () => {
+    const draft = followRule(draftOf(item()), admins);
+    expect(draft).toEqual(draftOf(admins));
+    expect(changedRule(draft, admins)).toBeNull();
+    // Before the repair, the old choice "everyone" stood against the new rule.
+    expect(sameRule(draft.base, ruleBody(draft.mode, draft.groups, draft.people))).toBe(true);
+  });
+
+  it("keeps the choices after a choice, and names the new rule", () => {
+    const chosen = editDraft(draftOf(item()), { mode: "chosen", groups: ["sales"] });
+    const after = followRule(chosen, admins);
+    expect(after).toBe(chosen);
+    expect(changedRule(after, admins)).toBe(admins);
+  });
+
+  it("counts a choice that went back as a choice", () => {
+    const back = editDraft(editDraft(draftOf(item()), { mode: "admins" }), { mode: "everyone" });
+    expect(followRule(back, admins)).toBe(back);
+    expect(changedRule(back, admins)).toBe(admins);
+  });
+
+  it("does not follow after a stopped save, for a rule that no choice touched", () => {
+    const broken = item({ mode: "admins", readable: false });
+    const stopped = editDraft(draftOf(broken), {});
+    expect(followRule(stopped, item())).toBe(stopped);
+    expect(changedRule(stopped, item())).toEqual(item());
+  });
+
+  it("takes the new rule at a reload", () => {
+    const reloaded = draftOf(admins);
+    expect(reloaded.touched).toBe(false);
+    expect(changedRule(reloaded, admins)).toBeNull();
+  });
+
+  it("returns the same draft for the same rule, so a read causes no loop", () => {
+    const draft = draftOf(item({ mode: "chosen", groups: ["a", "b"] }));
+    const again = item({ mode: "chosen", groups: ["b", "a"], set_at: "2026-11-26", set_by: "x@x.test" });
+    expect(followRule(draft, again)).toBe(draft);
+    expect(changedRule(draft, again)).toBeNull();
+  });
+
+  it("sees a change of the mode, of a name and of the readable state", () => {
+    const base = item({ mode: "chosen", groups: ["a"], people: ["a@x.test"] });
+    expect(sameStored(base, { ...base })).toBe(true);
+    expect(sameStored(base, { ...base, mode: "admins", groups: [], people: [] })).toBe(false);
+    expect(sameStored(base, { ...base, groups: ["b"] })).toBe(false);
+    expect(sameStored(base, { ...base, people: [] })).toBe(false);
+    expect(sameStored(item({ mode: "admins", readable: false }), admins)).toBe(false);
+  });
+
+  it("says what the rule is now, and what to do", () => {
+    expect(changedText(admins)).toContain("It is now: Admins only.");
+    expect(changedText(admins)).toContain("Reload the rule before you save.");
   });
 });
 

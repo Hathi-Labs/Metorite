@@ -33,9 +33,10 @@ import { GitHubAppReturn } from "@/components/GitHubAppConnect";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import FilterPills from "@/components/FilterPills";
 import { useToast } from "@/components/ui/Toast";
-import { invalidate, put } from "@/lib/dataCache";
+import { invalidate } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { ACCESS_KEY, clearAccessRule } from "../lib/accessSave";
 import * as api from "../lib/api";
 import {
   APP_LABEL,
@@ -58,22 +59,21 @@ import {
   type StatusFilter,
 } from "../lib/connections";
 import {
+  CLEAR_CHANGED,
+  RULE_GONE,
   SAVE_FAILED,
   clearCopy,
-  ruleBody,
   rowRule,
   savedTitle,
   unmatchedRules,
-  withItem,
   type AccessItem,
-  type AccessList,
 } from "../lib/whoCanUse";
 import { ApiConnectReturn } from "./ApiConnect";
 import ApiKeysView from "./ApiKeysView";
 import CalendarConnectionsGroup from "./CalendarConnectionsGroup";
 import ConnectionList from "./ConnectionList";
 import ConnectionSheet from "./ConnectionSheet";
-import WhoCanUseDialog, { ACCESS_KEY, AccessNotice, UnmatchedRules, WhoCanUseRow } from "./WhoCanUse";
+import WhoCanUseDialog, { AccessNotice, UnmatchedRules, WhoCanUseRow } from "./WhoCanUse";
 import { viewHref } from "../lib/views";
 
 export const CONNECTIONS_KEY = "integrations:connections";
@@ -293,17 +293,9 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
-  /** Draw a saved rule at once. The next read confirms it. */
-  function keepRule(saved: AccessItem) {
-    const list: AccessList | null | undefined = rules.data;
-    if (!list) return;
-    invalidate((key) => key === ACCESS_KEY);
-    put(ACCESS_KEY, withItem(list, saved));
-  }
-
+  // `lib/accessSave.ts` has already put the saved rule on screen.
   function ruleSaved(saved: AccessItem) {
     const label = ruledRow ? rowLabel(ruledRow) : saved.service;
-    keepRule(saved);
     setRuling(null);
     toast.show({ key: "integrations-access", variant: "success", title: savedTitle(label, saved) });
   }
@@ -313,13 +305,17 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     setClearBusy(true);
     setClearError(null);
     try {
-      const saved = await api.setIntegrationAccess(clearing.service, ruleBody("everyone", [], []));
-      keepRule(saved);
+      const outcome = await clearAccessRule(clearing);
+      if (outcome.kind !== "saved") {
+        // The confirm stays. Only a Cancel and a new open can pass this.
+        setClearError(outcome.kind === "changed" ? CLEAR_CHANGED : RULE_GONE);
+        return;
+      }
       setClearing(null);
       toast.show({
         key: "integrations-access",
         variant: "success",
-        title: savedTitle(saved.service, saved),
+        title: savedTitle(outcome.item.service, outcome.item),
       });
     } catch (err) {
       setClearError(err instanceof api.IntegrationsError ? err.message : SAVE_FAILED);

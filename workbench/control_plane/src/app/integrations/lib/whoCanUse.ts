@@ -1,6 +1,7 @@
 // ── Who can use an integration: the console rules (ACC-2) ──────────────────
 //
-// Fences: `whoCanUse.test.ts` and `components/WhoCanUse.test.tsx`.
+// Fences: `whoCanUse.test.ts`, `accessSave.test.ts` and
+// `components/WhoCanUse.test.tsx`. `accessSave.ts` holds the writes.
 //
 // Spec: project-docs/specs/integrations_console.md §3.9.2 to §3.9.5.
 //
@@ -189,19 +190,86 @@ export function ruleBody(
   };
 }
 
+/** One string for one rule. The order of the names does not count. */
+function ruleKey(b: RuleBody): string {
+  return JSON.stringify([b.mode, [...b.groups].sort(), [...b.people].sort()]);
+}
+
 /**
  * True when a save would change nothing. A rule that cannot be read always
  * counts as changed, because a save replaces it.
  */
 export function sameRule(item: AccessItem, body: RuleBody): boolean {
   if (!item.readable) return false;
-  const key = (b: RuleBody) => JSON.stringify([b.mode, [...b.groups].sort(), [...b.people].sort()]);
   // "Chosen" with nothing picked is the stored shape of "admins".
   const asStored: RuleBody = emptyChoice(body.mode, body.groups, body.people)
     ? ruleBody("admins", [], [])
     : body;
-  return key(asStored) === key(ruleBody(item.mode, item.groups, item.people));
+  return ruleKey(asStored) === ruleKey(ruleBody(item.mode, item.groups, item.people));
 }
+
+// ── A rule that changed under the editor ──────────────────────────────────
+//
+// The list is live: a focus read can bring the change of another admin while
+// the editor is open. A save must never replace a rule that the admin did not
+// see. So the editor keeps the rule that its choices started from.
+
+/** True when two answers of the gateway hold the same stored rule. */
+export function sameStored(a: AccessItem, b: AccessItem): boolean {
+  return a.readable === b.readable && ruleKey(a) === ruleKey(b);
+}
+
+/** The choices of the editor, and the stored rule that they started from. */
+export interface RuleDraft {
+  /** The rule that the editor shows as stored. */
+  base: AccessItem;
+  mode: AccessMode;
+  groups: string[];
+  people: string[];
+  /** True after a choice, or after a stopped save. Only a reload clears it. */
+  touched: boolean;
+}
+
+export function draftOf(item: AccessItem): RuleDraft {
+  return { base: item, mode: item.mode, groups: item.groups, people: item.people, touched: false };
+}
+
+/** A choice of the admin. An empty change marks a stopped save. */
+export function editDraft(
+  draft: RuleDraft,
+  change: Partial<Pick<RuleDraft, "mode" | "groups" | "people">>,
+): RuleDraft {
+  return { ...draft, ...change, touched: true };
+}
+
+/**
+ * The draft after the editor heard `now`. An untouched draft takes the new
+ * rule. A touched draft stays, and `changedRule` then names the new rule.
+ * The same object comes back when nothing moves.
+ */
+export function followRule(draft: RuleDraft, now: AccessItem): RuleDraft {
+  return draft.touched || sameStored(draft.base, now) ? draft : draftOf(now);
+}
+
+/** The newer rule that stops a save until the admin reloads it, or null. */
+export function changedRule(draft: RuleDraft, now: AccessItem): AccessItem | null {
+  return sameStored(draft.base, now) ? null : now;
+}
+
+/** The words of the editor for a rule that changed under it. */
+export function changedText(now: AccessItem): string {
+  return (
+    `This rule changed after you opened it. It is now: ${ruleSummary(now)}. ` +
+    "Reload the rule before you save. A reload replaces your choices here."
+  );
+}
+
+/** The words of the confirm that stopped on a changed rule. */
+export const CLEAR_CHANGED =
+  "This rule changed, so Metorite saved nothing. Cancel, then look at the rule again.";
+
+export const RULE_GONE =
+  "Metorite cannot find this rule now, so it saved nothing. Open this page again.";
 
 export function saveLabel(mode: AccessMode, groups: readonly string[], people: readonly string[]): string {
   return emptyChoice(mode, groups, people) ? "Save as admins only" : "Save";

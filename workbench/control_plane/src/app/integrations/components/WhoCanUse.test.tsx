@@ -10,6 +10,9 @@ import type { Connection } from "../lib/connections";
 import {
   EMPTY_CHOICE_WARNING,
   UNREADABLE_ALL,
+  changedRule,
+  draftOf,
+  followRule,
   rowRule,
   type AccessItem,
   type AccessList,
@@ -187,6 +190,8 @@ const body = (over: Partial<WhoCanUseBodyProps> = {}) =>
   renderToStaticMarkup(
     createElement(WhoCanUseBody, {
       item: item(),
+      changed: null,
+      onReload: noop,
       mode: "everyone",
       onMode: noop,
       groups: [],
@@ -239,6 +244,34 @@ describe("the open control", () => {
   it("disables Save when nothing changed, and enables it after a change", () => {
     expect(saveButton(body())).toContain('disabled=""');
     expect(saveButton(body({ mode: "admins" }))).not.toContain('disabled=""');
+  });
+
+  it("stops Save and offers a reload when the stored rule changed under it", () => {
+    const html = body({ mode: "admins", changed: item({ mode: "chosen", groups: ["sales"] }) });
+    expect(html).toContain("This rule changed after you opened it. It is now: 1 team.");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Reload the rule");
+    expect(saveButton(html)).toContain('disabled=""');
+    expect(body({ mode: "admins" })).not.toContain("Reload the rule");
+  });
+
+  it("shows one warning when the choice is empty and the rule changed", () => {
+    const html = body({ mode: "chosen", changed: item({ mode: "admins" }) });
+    expect(html).toContain("Reload the rule");
+    expect(html).not.toContain(EMPTY_CHOICE_WARNING);
+  });
+
+  it("keeps Save off for an untouched editor that follows a newer rule", () => {
+    // Opened on a stale "everyone". A read then brings "admins".
+    const now = item({ mode: "admins" });
+    const draft = followRule(draftOf(item()), now);
+    const html = body({
+      item: draft.base,
+      mode: draft.mode,
+      changed: changedRule(draft, now),
+    });
+    expect(saveButton(html)).toContain('disabled=""');
+    expect(html).not.toContain("Reload the rule");
   });
 
   it("shows the gateway's words of a refused save", () => {

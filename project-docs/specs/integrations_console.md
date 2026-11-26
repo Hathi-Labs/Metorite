@@ -1216,7 +1216,9 @@ Each site below reads the resolved access, so the rule reaches it with no change
   - With `readable: false`, a banner says that only members with `integrations:manage` can use each integration. Each row then shows "Admins only" as text, with no control, because no save can repair the value.
   - "Chosen" with no team and no person warns before the save, and the button reads "Save as admins only".
   - A refused save keeps each choice and shows the words of the gateway.
-  - Fences: `app/integrations/lib/whoCanUse.test.ts` and `app/integrations/components/WhoCanUse.test.tsx`.
+  - The open editor never replaces a rule that the admin did not see. With no choice yet, it follows a newer rule. After a choice, it shows "This rule changed", and Save stays off until "Reload the rule".
+  - Each save and each "Set to Everyone" reads the rule first, and writes nothing if it changed. The `PUT` has no version check, so a write between that read and the `PUT` is still replaced.
+  - Fences: `app/integrations/lib/whoCanUse.test.ts`, `app/integrations/lib/accessSave.test.ts` and `app/integrations/components/WhoCanUse.test.tsx`.
 - **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
 - **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 

@@ -25,16 +25,23 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { saveAccessRule } from "../lib/accessSave";
 import * as api from "../lib/api";
 import {
   EMPTY_CHOICE_WARNING,
   LOAD_FAILED,
   MODE_CHOICES,
   RULE_FACTS,
+  RULE_GONE,
   SAVE_FAILED,
   UNREADABLE_ALL,
+  changedRule,
+  changedText,
+  draftOf,
+  editDraft,
   emptyChoice,
   filterChoices,
+  followRule,
   groupChoices,
   personChoices,
   ruleBody,
@@ -48,8 +55,6 @@ import {
   type PickOption,
 } from "../lib/whoCanUse";
 
-/** The one cached read of the rules. `ConnectionsView` watches it. */
-export const ACCESS_KEY = "integrations:access";
 const GROUPS_KEY = "integrations:access-groups";
 const PEOPLE_KEY = "integrations:access-people";
 
@@ -293,7 +298,11 @@ function Picker({
 }
 
 export interface WhoCanUseBodyProps {
+  /** The stored rule that the choices started from. */
   item: AccessItem;
+  /** A newer stored rule. Save stays off until the admin reloads it. */
+  changed: AccessItem | null;
+  onReload: () => void;
   mode: AccessMode;
   onMode: (mode: AccessMode) => void;
   groups: readonly string[];
@@ -313,6 +322,8 @@ export interface WhoCanUseBodyProps {
 
 export function WhoCanUseBody({
   item,
+  changed,
+  onReload,
   mode,
   onMode,
   groups,
@@ -386,8 +397,22 @@ export function WhoCanUseBody({
           </>
         ) : null}
       </div>
-      {/* Outside the scroll box, so both lines show at the moment of a save. */}
-      {empty ? (
+      {/* Outside the scroll box, so each line shows at the moment of a save. */}
+      {changed ? (
+        <div
+          role="alert"
+          className="flex shrink-0 flex-wrap items-start justify-end gap-2 border-t border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
+        >
+          <p className="flex w-full items-start gap-2">
+            <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+            <span className="min-w-0">{changedText(changed)}</span>
+          </p>
+          <Button variant="secondary" size="sm" icon="RefreshCw" disabled={saving} onClick={onReload}>
+            Reload the rule
+          </Button>
+        </div>
+      ) : null}
+      {empty && !changed ? (
         <p
           role="status"
           className="flex shrink-0 items-start gap-2 border-t border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
@@ -408,7 +433,13 @@ export function WhoCanUseBody({
         <Button variant="secondary" size="sm" disabled={saving} onClick={onCancel}>
           Cancel
         </Button>
-        <Button variant="primary" size="sm" loading={saving} disabled={unchanged} onClick={onSave}>
+        <Button
+          variant="primary"
+          size="sm"
+          loading={saving}
+          disabled={unchanged || changed !== null}
+          onClick={onSave}
+        >
           {saveLabel(mode, groups, people)}
         </Button>
       </div>
@@ -419,6 +450,9 @@ export function WhoCanUseBody({
 /**
  * The dialog of one rule. The caller keys it by the service, so each service
  * starts from its own stored rule. A refused save keeps every choice.
+ *
+ * `item` is live. A dialog with no choice yet follows a newer rule. After a
+ * choice, a newer rule stops Save until the admin reloads it.
  */
 export default function WhoCanUseDialog({
   item,
@@ -434,40 +468,71 @@ export default function WhoCanUseDialog({
   const { isMobile } = useViewMode();
   const teamsRead = useCachedResource(GROUPS_KEY, api.getAccessGroups);
   const peopleRead = useCachedResource(PEOPLE_KEY, api.getAccessPeople);
-  const [mode, setMode] = useState<AccessMode>(item.mode);
-  const [groups, setGroups] = useState<string[]>(item.groups);
-  const [people, setPeople] = useState<string[]>(item.people);
+  const [draft, setDraft] = useState(() => draftOf(item));
+  // The newest rule that the dialog heard: the live `item`, or the read that
+  // runs before a save.
+  const [heard, setHeard] = useState({ item, now: item });
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const { mode, groups, people } = draft;
+
+  // Adjusted during render, so no frame draws the old rule as the stored one.
+  if (heard.item !== item) setHeard({ item, now: item });
+  const followed = saving ? draft : followRule(draft, heard.now);
+  if (followed !== draft) {
+    setDraft(followed);
+    setError(null);
+  }
+  // A save in flight can bring its own change, so it raises no notice.
+  const changed = saving ? null : changedRule(draft, heard.now);
 
   // A stored name that left the list stays on screen after an untick.
   const keep = (stored: string[], now: string[]) => Array.from(new Set([...stored, ...now]));
   const teams: PickList = {
-    options: groupChoices(teamsRead.data ?? [], keep(item.groups, groups), teamsRead.data !== undefined),
+    options: groupChoices(teamsRead.data ?? [], keep(draft.base.groups, groups), teamsRead.data !== undefined),
     loading: teamsRead.loading,
     error: teamsRead.data === undefined ? teamsRead.error : null,
     onRetry: teamsRead.refresh,
   };
   const members: PickList = {
-    options: personChoices(peopleRead.data ?? [], keep(item.people, people), peopleRead.data !== undefined),
+    options: personChoices(peopleRead.data ?? [], keep(draft.base.people, people), peopleRead.data !== undefined),
     loading: peopleRead.loading,
     error: peopleRead.data === undefined ? peopleRead.error : null,
     onRetry: peopleRead.refresh,
   };
 
   /** A change of a choice makes the last refusal old. */
-  function change(apply: () => void) {
+  function choose(change: Parameters<typeof editDraft>[1]) {
     setError(null);
-    apply();
+    setDraft(editDraft(draft, change));
+  }
+
+  function reload() {
+    // The button leaves the screen with the notice, so the focus moves first,
+    // to the radio of the stored mode.
+    const at = MODE_CHOICES.findIndex((c) => c.value === heard.now.mode);
+    bodyRef.current?.querySelectorAll<HTMLElement>('[role="radio"]')[at]?.focus();
+    setError(null);
+    setDraft(draftOf(heard.now));
   }
 
   async function save() {
     setSaving(true);
     setError(null);
     try {
-      onSaved(await api.setIntegrationAccess(item.service, ruleBody(mode, groups, people)));
+      const outcome = await saveAccessRule(draft.base, ruleBody(mode, groups, people));
+      if (outcome.kind === "saved") {
+        onSaved(outcome.item);
+        return;
+      }
+      if (outcome.kind === "changed") {
+        setHeard((h) => ({ ...h, now: outcome.current }));
+        setDraft((d) => editDraft(d, {}));
+      } else {
+        setError(RULE_GONE);
+      }
     } catch (err) {
       // A network fault has the browser's words, so it gets ours.
       setError(err instanceof api.IntegrationsError ? err.message : SAVE_FAILED);
@@ -476,8 +541,8 @@ export default function WhoCanUseDialog({
         teamsRead.refresh();
         peopleRead.refresh();
       }
-      setSaving(false);
     }
+    setSaving(false);
   }
 
   return (
@@ -499,13 +564,15 @@ export default function WhoCanUseDialog({
     >
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
         <WhoCanUseBody
-          item={item}
+          item={draft.base}
+          changed={changed}
+          onReload={reload}
           mode={mode}
-          onMode={(next) => change(() => setMode(next))}
+          onMode={(next) => choose({ mode: next })}
           groups={groups}
           people={people}
-          onGroup={(slug) => change(() => setGroups((g) => toggleValue(g, slug)))}
-          onPerson={(email) => change(() => setPeople((p) => toggleValue(p, email)))}
+          onGroup={(slug) => choose({ groups: toggleValue(groups, slug) })}
+          onPerson={(email) => choose({ people: toggleValue(people, email) })}
           teams={teams}
           members={members}
           query={query}
