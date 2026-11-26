@@ -1,10 +1,12 @@
+import { readFileSync } from "node:fs";
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { buildLensModel } from "../lib/agentLenses";
 import { BEN, fleet, mapOf, run, session } from "../lib/agentLensesFixtures";
-import { firstRun } from "./AgentDetails";
+import { AgentDetails, firstRun } from "./AgentDetails";
 import { AgentLenses, type AgentLensesProps } from "./AgentLenses";
 import { panToShow, startViewport } from "./AgentGraphLens";
 import { AgentsPhone, type AgentsPhoneProps } from "./AgentsPhone";
@@ -112,6 +114,36 @@ describe("the run that the details open on", () => {
     const map = mapOf([session("s")], [run("old", "s", { age: 900 }), run("new", "s", { age: 1 })]);
     expect(firstRun(buildLensModel(map).sessions[0])?.run_id).toBe("new");
     expect(firstRun({ runs: [] })).toBeNull();
+  });
+});
+
+describe("a question of another member (EA3-50)", () => {
+  it("reads Waiting for them on the card, and no card needs the viewer", () => {
+    const out = lenses({ viewerEmail: "ana@x.test" });
+    expect(out).toContain("Waiting for Ben");
+    expect(out).not.toContain('data-agent-session="you"');
+    expect(lenses()).toContain('data-agent-session="you"');
+  });
+  it("never reads Needs you on a run in the details", () => {
+    const details = (email: string) =>
+      renderToStaticMarkup(
+        createElement(AgentDetails, {
+          model: buildLensModel(fleet(), new Map(), { email }),
+          selection: { kind: "session", id: "lane-b" },
+          onSelect: () => {},
+          onOpenTask: () => {},
+          nameOf: (e: string) => e,
+          nowMs: NOW,
+        }),
+      );
+    expect(details("ana@x.test")).not.toContain("Needs you");
+    expect(details(BEN.email)).toContain("Needs you");
+  });
+  // No DOM runs in this suite, so the pin is read from the source.
+  it("pins the first run of the details, so a re-read does not swap the panel", () => {
+    const source = readFileSync(new URL("./AgentDetails.tsx", import.meta.url), "utf-8");
+    expect(source).toContain("useState<string | null>(() => firstRun(session)?.run_id ?? null)");
+    expect(source).toContain("session.runs.find((r) => r.run_id === picked) ?? firstRun(session)");
   });
 });
 
