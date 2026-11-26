@@ -1180,25 +1180,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # the right of the member (D-PC-10). The owner is org-admin, which never
     # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns
     # it on (tool_packs.packs_on). Fence: test_people_tools.py.
+    # P-5b-2 (task 3943, owner answer OD1 B): five writes of the member's own
+    # record, each after one card. No tool sends email.
     "people": {
         "label": "People directory",
         "summary": (
-            "Read the people directory, your own row, the open work of a person, and "
-            "what Reach would send you now."
+            "Read the people directory, your own row, the open work of a person and "
+            "what Reach would send you now, and change your own row after one card."
         ),
         "description": (
             "A tool pack: four reads of the People app and of the Reach preview, for the "
             "main assistant to load when a turn asks about the people of the "
             "organization. Each tool calls the routes as the member, so the member sees "
-            "only the fields that the People app shows to that member. No tool writes. A "
-            "run loads a pack only where tool packs are on, so until then this switch has "
-            "no effect."
+            "only the fields that the People app shows to that member. Five writes change "
+            "only the member's own record: the profile, the skills, the credentials and "
+            "the absences. Each write shows one card first, and no write changes the "
+            "email address. A run loads a pack only where tool packs are on, so until "
+            "then this switch has no effect."
         ),
         "tools": (
             "people_directory",
             "people_me",
             "people_work",
             "reach_preview",
+            "update_my_profile",
+            "set_my_skills",
+            "set_my_credentials",
+            "add_my_absence",
+            "remove_my_absence",
         ),
         "owner": "org-admin",
         "core": False,
@@ -1227,6 +1236,40 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         ),
         "tools": (
             "my_tasks_calendar_connection",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # Task 3963 (chat_parity.md section 6.4, P-4d): six reads of the Notes app,
+    # the notes read tools. Each calls GET routes as the member. Each route checks
+    # the owner of a meeting or reads the rows of the member only. Thirteen
+    # reads wait for task 3966. The pack follows the example of "people": owned by
+    # org-admin, which never runs as an agent, and NOT in FOLLOWS. A run loads it
+    # where the owner lists it in the pack list of the box, or where the list is
+    # "*" (tool_packs.packs_on). Fence: test_notes_read_tools.py.
+    "notes": {
+        "label": "Meeting notes",
+        "summary": (
+            "Read your meetings, one meeting with its transcript, "
+            "the Note Taker settings, the templates, your glossary and your copilot "
+            "instructions."
+        ),
+        "description": (
+            "A tool pack: six reads of the Notes app, for the main assistant to "
+            "load when a turn asks about your meetings or the Note Taker settings. "
+            "Each tool calls the routes as the member. No tool writes, joins a "
+            "meeting or starts a bot. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "notes_meetings",
+            "notes_meeting",
+            "notes_settings",
+            "notes_templates",
+            "notes_glossary",
+            "notes_copilot_instructions",
         ),
         "owner": "org-admin",
         "core": False,
