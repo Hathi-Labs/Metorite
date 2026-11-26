@@ -239,6 +239,137 @@ class TestTheCandidates:
         assert {c["signal_id"] for c in got} == {"approvals:1", "tasks:2"}
 
 
+#: Each facts shape that changes a class in ``classes._kind_class``.
+_FACT_SHAPES = ({}, {"notification": "mention"}, {"notification": "comment"},
+                {"self": True}, {"urgency": "urgent"}, {"notify_me": True})
+
+
+class TestTheLearnerLowers:
+    """LOOP-5 (``proactive_loop.md`` §7.3, pins L2 to L5). A member's
+    ``lowered`` set moves the class of each kind in it one place down, and
+    only at the interrupt gate. Mutations, each killed here: a step that
+    raises a class (a floor of ``brief`` on a kind at ``none``, such as
+    ``provider_alert``), a step of two places, a step on ``notify_me`` or a
+    reminder kind, a step on a ``block_soon`` that the member asked for, a
+    needs kind that drops to ``none``, one branch of ``interrupt_candidates``
+    that ignores the set, a step applied after the strongest kind, and a
+    ``reach_kind`` or ``pair`` that reads the set."""
+
+    def test_the_step_never_raises_a_class_and_moves_one_place(self):
+        from gateway.routes.shell.feed_decide import NEEDS_KINDS
+
+        rank = classes.RANK.index
+        for kind in sorted(set(classes.REACH_CLASS) | {"something_new"}):
+            for facts in _FACT_SHAPES:
+                c = {"kind": kind, "facts": facts}
+                before = classes.reach_class(c)
+                after = classes.reach_class(c, frozenset({kind}))
+                assert rank(after) <= rank(before), (kind, facts)
+                assert rank(before) - rank(after) <= 1, (kind, facts)
+                # A set without the kind changes nothing.
+                assert classes.reach_class(c, frozenset({"other_kind"})) == before
+                if before == "none":
+                    assert after == "none", (kind, facts)
+                if kind in NEEDS_KINDS and before != "none":
+                    assert rank(after) >= rank("brief"), (kind, facts)
+        # Each place of the step, on a kind that is not a needs kind.
+        assert classes.step_down("deal_quiet", {}, "urgent") == "interrupt"
+        assert classes.step_down("deal_quiet", {}, "interrupt") == "brief"
+        assert classes.step_down("deal_quiet", {}, "brief") == "none"
+        assert classes.step_down("deal_quiet", {}, "none") == "none"
+        # The kind of AO-2 is a needs kind at none: no floor lifts it.
+        assert classes.REACH_CLASS["provider_alert"] == "none"
+        assert "provider_alert" in NEEDS_KINDS
+        assert classes.reach_class({"kind": "provider_alert"},
+                                   frozenset({"provider_alert"})) == "none"
+
+    def test_the_kinds_of_l3_never_move_and_a_needs_kind_stops_at_brief(self):
+        want = {"notify_me", "reminder_due", "reminder_check", "reminder_unconfirmed"}
+        assert frozenset(want) == classes.NEVER_LOWERED
+        everything = frozenset(classes.REACH_CLASS)
+        for kind in classes.NEVER_LOWERED:
+            for facts in _FACT_SHAPES:
+                c = {"kind": kind, "facts": facts}
+                assert classes.reach_class(c, everything) == classes.reach_class(c)
+        asked = {"kind": "block_soon", "facts": {"notify_me": True}}
+        assert classes.reach_class(asked, everything) == "interrupt"
+        # Non-vacuity: a block_soon that the member did not ask for steps down.
+        assert classes.reach_class({"kind": "block_soon"}, everything) == "brief"
+        # A needs kind: interrupt to brief, and brief stays brief.
+        assert classes.reach_class({"kind": "needs_reply"}, everything) == "brief"
+        mention = {"kind": "notification", "facts": {"notification": "mention"}}
+        assert classes.reach_class(mention, everything) == "brief"
+        for kind in ("overdue", "due_today"):
+            assert classes.reach_class({"kind": kind}, everything) == "brief"
+        # Non-vacuity: a kind at brief that is not a needs kind goes to none.
+        assert classes.reach_class({"kind": "deal_stage_changed"}, everything) == "none"
+
+    @pytest.mark.parametrize("rules", [False, True])
+    def test_both_branches_apply_the_step(self, rules):
+        old = (NOW - timedelta(hours=3)).isoformat()
+        reply = card("email:a:t1")
+        asks = card("agent_asks:1", "agent_asks", facts={})
+        approval = {**card("approvals:1", "approval", facts={}), "at": old}
+        request = card("reach:r1", "notify_me", facts={"self": True})
+        asked = {**card("tasks:b1", "block_soon", facts={"notify_me": True}), "at": old}
+        cards = [reply, asks, approval, request, asked]
+
+        def ids(lowered: frozenset[str]) -> set[str]:
+            got = plan.interrupt_candidates(cards, set(), NOW, rules=rules, lowered=lowered)
+            return {c["signal_id"] for c in got}
+
+        before = ids(frozenset())
+        # Non-vacuity: each card that the step must hold passes with no set.
+        must_hold = {"agent_asks:1", "approvals:1"} | ({"email:a:t1"} if not rules else set())
+        assert must_hold <= before and {"reach:r1", "tasks:b1"} <= before
+        everything = frozenset(classes.REACH_CLASS)
+        assert ids(everything) == before - must_hold
+        # A folded mention that is not lowered still interrupts.
+        mention = card("tasks:9", "overdue", facts={"notification": "mention", "who": "Asha"})
+        mention["folded"] = ["notification"]
+        got = plan.interrupt_candidates([mention], set(), NOW, lowered=frozenset({"overdue"}))
+        assert got == [mention]
+        got = plan.interrupt_candidates([mention], set(), NOW,
+                                        lowered=frozenset({"overdue", "notification"}))
+        assert got == []
+        # The step comes before the strongest kind: a lowered main kind with
+        # a folded kind of the same class keeps the class of the folded one.
+        both = card("approvals:2", "approval", facts={"notification": "mention"})
+        both["folded"] = ["notification"]
+        assert classes.reach_kind(both) == "approval"
+        got = plan.interrupt_candidates([both], set(), NOW, lowered=frozenset({"approval"}))
+        assert got == [both]
+
+    def test_the_pair_and_the_line_do_not_change(self):
+        import inspect
+
+        assert list(inspect.signature(classes.reach_kind).parameters) == ["card"]
+        c = card("tasks:9", "overdue", facts={"notification": "mention", "who": "Asha"})
+        c["folded"] = ["notification"]
+        pair, kind = plan.pair(c), classes.reach_kind(c)
+        line = plan.line(c, NOW, kind=kind)
+        for lowered in (frozenset(), frozenset({"notification"}),
+                        frozenset(classes.REACH_CLASS)):
+            classes.reach_class(c, lowered)
+            assert (plan.pair(c), classes.reach_kind(c)) == (pair, kind)
+            assert plan.line(c, NOW, kind=classes.reach_kind(c)) == line
+        assert kind == "notification"
+
+    def test_two_members_with_the_same_cards_get_different_plans(self):
+        cards = [card("email:a:t1"),
+                 card("approvals:9", "approval", title="Refund", facts={})]
+        # The flag off gives the empty set: the plan of before, to the card.
+        assert plan.interrupt_candidates(cards, set(), NOW, lowered=frozenset()) == \
+            plan.interrupt_candidates(cards, set(), NOW)
+        mine = plan.interrupt_candidates(cards, set(), NOW, lowered=frozenset({"approval"}))
+        theirs = plan.interrupt_candidates(cards, set(), NOW)
+        assert [c["signal_id"] for c in mine] == ["email:a:t1"]
+        assert {c["signal_id"] for c in theirs} == {"email:a:t1", "approvals:9"}
+        # The words of the kept card do not change.
+        assert plan.compose_interrupt(mine, APP, now=NOW) == plan.compose_interrupt(
+            [c for c in theirs if c["signal_id"] == "email:a:t1"], APP, now=NOW)
+
+
 class TestWhen:
     def test_inside_the_day_is_not_quiet(self):
         assert plan.in_quiet_hours(DAY, NOW, True) is False

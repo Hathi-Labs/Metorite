@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
+from typing import ClassVar
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1490,3 +1491,114 @@ class TestAppliedHandsOnWhatTheJoinLearned:
     def test_an_org_off_the_list(self, fakes, taught, monkeypatch):  # noqa: F811
         _flag(monkeypatch, "")
         assert self._run(monkeypatch, {}, _in_org(*FULL)).taught is None
+
+
+# ── The lowered set of Reach (LOOP-5, ``proactive_loop.md`` §7.3) ───────────
+
+#: A second member of the same org.
+PEER = "peer-lowered@shell.test"
+
+
+def _lowered_name(fakes, member: str = ME) -> str:  # noqa: F811
+    day = state.Day(state.zone_of(fakes.zone), fakes.day_start[ME])
+    return f"cc:{ORG}:my_day:lowered:{member}:{day.feed_day(fakes.now).isoformat()}"
+
+
+class TestTheLowerSet:
+    """L1, L6, L7 and L10 of LOOP-5. Mutations, each killed here: a count of
+    2 that lowers, a floor of 5 shown cards on the class, a set that holds
+    another member's kinds, a key with no member or no org, a set that a
+    fault keeps, a read that trusts the affinity and skips the set, a set
+    with the org off, and a set written onto a card."""
+
+    COUNTS: ClassVar[dict[str, dict[str, int]]] = {"day_overbooked": {"shown": 3, "acted": 0, "not_useful": 3},
+              "overdue": {"shown": 9, "acted": 0, "not_useful": 2},
+              "stale_next": {"shown": 3, "acted": 3, "not_useful": 3}}
+
+    def test_three_not_useful_lower_the_kind_for_the_member_only(
+            self, fakes, taught):  # noqa: F811
+        taught.counts[ME] = self.COUNTS
+        assert state.lowered_kinds(self.COUNTS) == {"day_overbooked", "stale_next"}
+        assert state.LOWER_AFTER == 3
+        user = _in_org(*FULL)
+        joined = _bound(lambda: feed.feed_cards(user)).joined
+        assert joined.lowered == {"day_overbooked", "stale_next"}
+        assert joined.taught is not None and joined.taught.lowered == joined.lowered
+        from gateway.reach import loop
+
+        snap = _bound(lambda: loop.snapshot(ORG, user))
+        assert snap.lowered == {"day_overbooked", "stale_next"}
+        # The key holds the session's org and the member's exact address (R5).
+        name = _lowered_name(fakes)
+        assert json.loads(taught.redis.store[name]) == ["day_overbooked", "stale_next"]
+        assert taught.redis.ttl[name] == state.AFFINITY_TTL_S
+        # Another member of the same org keeps every class.
+        day = state.Day(state.zone_of(fakes.zone), fakes.day_start[ME])
+        peer = _bound(lambda: state.learned(_in_org(*FULL, email=PEER), fakes.now, day))
+        assert peer is not None and peer.ok and peer.lowered == frozenset()
+        assert ("counts", PEER) in taught.calls
+        assert json.loads(taught.redis.store[_lowered_name(fakes, PEER)]) == []
+
+    def test_the_set_is_kept_for_the_day_and_a_lone_affinity_computes_both(
+            self, fakes, taught):  # noqa: F811
+        taught.counts[ME] = self.COUNTS
+        user = _in_org(*FULL)
+        for _ in range(3):
+            assert _bound(lambda: feed.feed_cards(user)).joined.lowered == {
+                "day_overbooked", "stale_next"}
+        assert taught.made("counts") == [("counts", ME)]  # once for the day
+        # L6: the affinity alone in Redis is no hit. The next read counts again.
+        del taught.redis.store[_lowered_name(fakes)]
+        taught.counts[ME] = {"overdue": {"shown": 9, "acted": 0, "not_useful": 4}}
+        assert _bound(lambda: feed.feed_cards(user)).joined.lowered == {"overdue"}
+        assert taught.made("counts") == [("counts", ME)] * 2
+
+    @pytest.mark.parametrize("fault", ["prefs", "counts", "redis", "lowered_key", "store",
+                                       "slow"])
+    def test_a_fault_gives_the_empty_set(
+            self, fakes, taught, monkeypatch, fault):  # noqa: F811
+        taught.counts[ME] = self.COUNTS
+        user = _in_org(*FULL)
+        if fault == "redis":
+            taught.redis.fail = ConnectionError("redis is down")
+        elif fault == "lowered_key":
+            async def broken(org, member, feed_day):
+                return None, False
+
+            monkeypatch.setattr(state, "_day_lowered", broken)
+        elif fault == "store":
+            async def refused(org, member, feed_day, value):
+                return False
+
+            monkeypatch.setattr(state, "_keep_day_lowered", refused)
+        elif fault == "slow":
+            async def slow(db, uid):
+                await asyncio.sleep(2)
+
+            monkeypatch.setattr(prefs, "_read", slow)
+            monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 0.05)
+        else:
+            taught.fail[fault] = RuntimeError("the database is down")
+        joined = _bound(lambda: feed.feed_cards(user)).joined
+        assert joined.lowered == frozenset()
+        assert (joined.ok, joined.cacheable) == (True, False)
+
+    def test_the_org_off_gives_no_set_and_the_answer_keeps_its_bytes(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        fakes.capacity[ME] = 60
+        taught.counts[ME] = self.COUNTS
+        user = _in_org(*FULL)
+        for listed in ("", "org-other"):
+            _flag(monkeypatch, listed)
+            assert _bound(lambda: feed.feed_cards(user)).joined.lowered == frozenset()
+        assert taught.calls == [] and taught.redis.names == []
+        # The org on: the set is there, and no card or answer holds it.
+        _flag(monkeypatch, ORG)
+        with_set = run_feed(user)
+        assert _bound(lambda: feed.feed_cards(user)).joined.lowered
+        taught.redis.store.clear()
+        monkeypatch.setattr(state, "lowered_kinds", lambda counts: frozenset())
+        without = run_feed(user)
+        assert json.dumps(with_set, default=str) == json.dumps(without, default=str)
+        assert "lowered" not in with_set
+        assert not [c for c in with_set["cards"] if "lowered" in c]

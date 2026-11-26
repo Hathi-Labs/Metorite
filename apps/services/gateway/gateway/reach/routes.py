@@ -65,7 +65,8 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
     marked = exceptions.with_notify(cards, await loop.block_notify(org, email))
     candidates = plan.interrupt_candidates(marked, logged, snap.now,
                                            rules=brief_flags.exceptions(org),
-                                           muted=await loop.muted_rules(org, email))
+                                           muted=await loop.muted_rules(org, email),
+                                           lowered=snap.lowered)
     wa_id, is_open = await channel.reach_state(org, email)
     held = (wa_id is not None and not is_open and bool(candidates)
             and flags.needs_you_template() is None)

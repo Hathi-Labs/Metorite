@@ -12,11 +12,26 @@ A class says how far a card may reach the member:
 An unknown kind is ``none``, so a new provider reaches nobody until it adds
 its row here. ``tests/unit/test_reach_plan.py`` fails when a kind that a
 provider can give has no row.
+
+**The learner lowers a class, and never raises one** (LOOP-5,
+``proactive_loop.md`` §7.3 pins L2 to L5). A member's ``lowered`` set holds
+each kind with 3 or more "Not useful" in 30 days (``state.learned``). Each
+kind of the set moves one place down in :data:`RANK`, before
+:func:`reach_class` takes the strongest kind of the card. The kinds of
+:data:`NEVER_LOWERED` never move. A ``block_soon`` kind on a card with
+``facts.notify_me`` keeps its class too, because the member asked for that
+alert. A needs kind goes no lower than ``brief``, and a kind at ``none``
+stays at ``none``. :func:`reach_kind` takes no set, so the pair and the line
+of a card never change. Fence: ``TestTheLearnerLowers`` in
+``tests/unit/test_reach_plan.py``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Set
 from typing import Any
+
+from gateway.reach.exceptions import BLOCK_SOON
 
 #: The class of each kind. The CRM and sales kinds of MD-3c to MD-3f are
 #: here before their providers land, so they reach WhatsApp on that day.
@@ -109,6 +124,12 @@ REACHING = frozenset({"interrupt", "urgent"})
 #: The order of the classes, weakest first.
 RANK = ("none", "brief", "interrupt", "urgent")
 
+#: The kinds that the learner never lowers (LOOP-5, ``proactive_loop.md``
+#: §7.3 L3): the member's own request, and the reminder kinds. So
+#: ``push_channel.py``, which reads :data:`REACH_CLASS` for the reminders,
+#: does not change.
+NEVER_LOWERED = frozenset({"notify_me", *NOT_ON_WHATSAPP})
+
 
 def _kind_class(kind: str, facts: dict[str, Any]) -> str:
     if kind == "notify_me" and (facts.get("self") is True
@@ -129,6 +150,40 @@ def reach_kind(card: dict[str, Any]) -> str:
     return max(kinds, key=lambda k: RANK.index(_kind_class(k, facts)))
 
 
-def reach_class(card: dict[str, Any]) -> str:
-    """The class of one card: the strongest of its main and folded kinds."""
-    return _kind_class(reach_kind(card), card.get("facts") or {})
+def step_down(kind: str, facts: dict[str, Any], cls: str) -> str:
+    """The class *cls* of *kind*, one place lower for a member who lowered
+    the kind (LOOP-5, ``proactive_loop.md`` §7.3 L2 to L4). It never raises a
+    class, and it moves one place at most.
+
+    The kinds of :data:`NEVER_LOWERED` keep *cls*. So does a ``block_soon``
+    kind when the card holds ``facts.notify_me``. A needs kind
+    (``feed_decide.NEEDS_KINDS``) goes no lower than ``brief``."""
+    if kind in NEVER_LOWERED or (kind == BLOCK_SOON and facts.get("notify_me") is True):
+        return cls
+    place = RANK.index(cls) if cls in RANK else 0
+    if place == 0:
+        return cls
+    lower = RANK[place - 1]
+    if lower == "none":
+        # feed_decide imports feed, and feed imports the shell state.
+        from gateway.routes.shell.feed_decide import NEEDS_KINDS
+
+        if kind in NEEDS_KINDS:
+            return cls
+    return lower
+
+
+def reach_class(card: dict[str, Any], lowered: Set[str] = frozenset()) -> str:
+    """The class of one card: the strongest of its main and folded kinds.
+
+    *lowered* holds the kinds that the member's learner lowered (LOOP-5).
+    The step applies to each kind of the card before the strongest is taken,
+    so a folded mention that is not lowered still interrupts. An empty set
+    gives the class of before."""
+    facts = card.get("facts") or {}
+    if not lowered:
+        return _kind_class(reach_kind(card), facts)
+    kinds = [str(card.get("kind") or ""), *(str(k) for k in card.get("folded") or ())]
+    found = [step_down(k, facts, _kind_class(k, facts)) if k in lowered
+             else _kind_class(k, facts) for k in kinds]
+    return max(found, key=RANK.index)

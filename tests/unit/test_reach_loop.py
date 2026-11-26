@@ -1426,3 +1426,44 @@ class TestTheMuteReadFailsOpen:
         monkeypatch.setattr(acb_common, "get_logger", lambda name: _Log())
         assert await outbox.muted_rules(ORG, ME) == frozenset()
         assert logged == [("reach.mutes_failed", {"error_class": "RuntimeError"})]
+
+
+class TestTheLearnerLowersInTheLoop:
+    """LOOP-5 (``proactive_loop.md`` §7.3 L4 and L6): the member pass and
+    ``GET /reach/preview`` pass ``Snapshot.lowered`` to the interrupt gate.
+    Mutations, each killed here: a pass or a preview that drops the set, and
+    a set that reaches a second member."""
+
+    PEER = "peer@reach.test"
+
+    def _lowered(self, world, monkeypatch, sets: dict[str, frozenset[str]]) -> None:
+        async def snapshot(org, user, now=None):
+            return loop.Snapshot(list(world.cards), now or world.now, DAY, world.working,
+                                 world.complete, sets.get(user.email, frozenset()))
+
+        monkeypatch.setattr(loop, "snapshot", snapshot)
+
+    async def test_the_pass_holds_a_lowered_kind_for_one_member(self, world, monkeypatch):
+        monkeypatch.setattr(get_settings(), "reach_members", f"{ME},{self.PEER}")
+        world.outbox.rows.append({**world.outbox.rows[0], "id": "ob-peer", "member": self.PEER,
+                                  "key": plan.brief_key(self.PEER, TODAY)})
+        self._lowered(world, monkeypatch, {ME: frozenset({"approval"})})
+        assert await loop.member_pass(ORG, ME) == "baseline"
+        assert await loop.member_pass(ORG, self.PEER) == "baseline"
+        world.cards = [approval("approvals:9", "Refund")]
+        assert await loop.member_pass(ORG, ME) == "nothing"
+        # The other member of the org keeps the class, with the same cards.
+        assert await loop.member_pass(ORG, self.PEER) == "interrupt:sent"
+        assert [c["member"] for c in world.sent.calls] == [self.PEER]
+        # The held card is logged for nobody: the brief still names it (L8, L9).
+        assert (ORG, ME, *plan.pair(world.cards[0])) not in world.outbox.log_rows
+
+    def test_the_preview_shows_no_interrupt_of_a_lowered_kind(self, world, monkeypatch):
+        world.cards = [approval("approvals:9", "Refund")]
+        client = TestTheRoutes._client(None, ME, ORG)
+        self._lowered(world, monkeypatch, {})
+        assert client.get("/reach/preview").json()["interrupts"].startswith("*Needs you now*")
+        self._lowered(world, monkeypatch, {ME: frozenset({"approval"})})
+        body = client.get("/reach/preview").json()
+        assert body["interrupts"] is None and body["held"] is False
+        assert world.sent.calls == []

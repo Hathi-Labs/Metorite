@@ -12,6 +12,11 @@ hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
 of §7.2 hold in the code. "Why am I seeing this" is dark behind the same flag,
 `MY_DAY_LEARN_ORGS`. The flip waits for the owner preview (D218).
 
+**LOOP-5 is BUILT, 2026-11-26** (task 3445, no migration). The pins L1 to L10
+of §7.3 hold in the code. Reach lowers a kind one class for one member, and no
+path raises a class. It is dark behind `MY_DAY_LEARN_ORGS`, and the flip waits
+for the owner preview (D218).
+
 **LOOP-19 is BUILT, 2026-11-22** (task 3572, migration 496). A search of the
 sent mail takes a recipient and a file name. **LOOP-7 is BUILT** (task 3447,
 `finding_contract.py`). **LOOP-9 is BUILT, dark** (task 3449, §7.6), and its
@@ -960,8 +965,10 @@ and no second read of the counts.
 - **L1, the threshold.** The learner lowers a kind for a member when
   `feed_decide._habits` gives the kind a `not_useful` count of 3 or more. The
   count is by `not_useful_at`, on the main kind, inside 30 days (§7.2 P2).
-  One constant, `LOWER_AFTER = 3`, holds the count until LOOP-7 adds the
-  `lower_after` field of §6.2. The class has no floor of 5 shown cards. Three
+  One constant, `state.LOWER_AFTER`, holds the count. LOOP-7 added the
+  `lower_after` field of §6.2 before LOOP-5, but no kind has a declaration
+  yet. So `LOWER_AFTER` takes `finding_contract.DEFAULT_LOWER_AFTER`, which
+  is 3. The class has no floor of 5 shown cards. Three
   "Not useful" are three acts of the member, not silence. In this slice, the
   class comes back when the next day value finds a count under 3.
 - **L2, one step down.** The step moves the class of a lowered kind one place
@@ -1197,7 +1204,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
 | **LOOP-4b** (task 4006), BUILT 2026-11-26, dark | 2 | "Why am I seeing this": the card field, the sentences, the menu item and the box | `my_day_feed.md` MD-9. The pins of §7.2 | LOOP-4a | The pins W1 to W5 and their done-when | STANDARD · AGENT-SAFE, dark |
 | **LOOP-4c** (task 4008) | 2 | The sentence of "Why am I seeing this" for a lowered kind | This spec §7.2 W5, §7.3 | LOOP-4b, LOOP-5 | The sentence is true under L3 and L4 | STANDARD · AGENT-SAFE, dark |
-| **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
+| **LOOP-5** (task 3445), BUILT 2026-11-26, dark | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |
 | **MM-2**, **PZ-15**, **MM-5** | 3 | Habits (2879), proposals with Undo (309), a habit to a kept habit (2882) | `personalization.md` §12, §19 | MM-1 | Their own rows | Their own tiers · AGENT-SAFE |
 | **MM-6** | 3 | The page "How I work" (2883) | `personalization.md` §19.9 | MM-2, PZ-15 | Its own row | STANDARD · owner preview |

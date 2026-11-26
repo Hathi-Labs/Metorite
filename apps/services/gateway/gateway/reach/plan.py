@@ -114,7 +114,8 @@ def _reply_fresh(card: dict[str, Any], now: datetime) -> bool:
 
 def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
                          now: datetime, *, rules: bool = False,
-                         muted: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+                         muted: frozenset[str] = frozenset(),
+                         lowered: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The cards that may interrupt now, in the feed's order.
 
     A card qualifies when its class is ``interrupt`` or ``urgent``, its pair
@@ -131,6 +132,12 @@ def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
     With *rules* on, each card that a rule lets in comes back as a copy with
     the rule id under ``exceptions.RULE_KEY`` (BR-5 slice 2b-1), so the log
     row of the alert names its rule. An explicit request carries none.
+
+    *lowered* holds the kinds that the member's learner lowered (LOOP-5,
+    ``proactive_loop.md`` §7.3 L4). It binds both branches. With *rules* off,
+    the class test reads the lowered class. With *rules* on, a card that a
+    rule lets in still waits for the brief when the step takes it out of
+    ``interrupt`` and ``urgent``. An empty set plans as before.
     """
     out = []
     for card in cards:
@@ -138,9 +145,12 @@ def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
             admitted, rule_id = exceptions.admit(card, now, muted=muted)
             if not admitted:
                 continue
+            if (lowered and reach_class(card) in REACHING
+                    and reach_class(card, lowered) not in REACHING):
+                continue
             if rule_id is not None:
                 card = {**card, exceptions.RULE_KEY: rule_id}
-        elif reach_class(card) not in REACHING:
+        elif reach_class(card, lowered) not in REACHING:
             continue
         if pair(card) in logged:
             continue

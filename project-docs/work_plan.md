@@ -6779,8 +6779,13 @@ and one thing that cannot be written until a second person exists.
 >
 > The reach loop, the briefs and the chat brief read the same learned feed.
 > So a kind that the member mutes leaves them too. A muted needs card in Later
-> is no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect
-> on reach, so the preview must show the brief too.
+> is no interrupt, and it is in no brief. The preview must show the brief too.
+>
+> The flag also lowers a reach class for one member (LOOP-5, built
+> 2026-11-26). Three "Not useful" on a kind in 30 days move that kind one
+> class lower for that member, so an interrupt waits for the brief. The
+> preview must show `GET /reach/preview` for that member and for a second
+> member of the org.
 >
 > **WS-53 — the CRM note labels.** *(Registered 2026-10-16 with CRM-Q26.)* To
 > build CRM-Q26 is AGENT-SAFE, and it ships dark. A mode other than `off` for
