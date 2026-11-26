@@ -575,6 +575,47 @@ def test_mget_stays_inside_the_r5c_ratchet() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5c-1. delete_unless (RESUME-2a follow-up, P2-1): ONE compare-and-delete
+# ---------------------------------------------------------------------------
+#
+# The command runs a FIXED Lua script. A caller gives the key and the value
+# only, so no caller can send a script that names a key of another tenant.
+
+class _EvalRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> int:
+        self.calls.append((script, numkeys, *keys_and_args))
+        return 1
+
+
+async def test_delete_unless_sends_the_fixed_script_and_one_prefixed_key() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        assert await client.delete_unless(client.key("chat-late-offer", "a@x.test", "t1", "d"),
+                                          "SPENT") == 1
+    assert fake.calls == [(tr._DELETE_UNLESS_LUA, 1,
+                           f"{KEY_ROOT}:{ORG_A}:chat-late-offer:a@x.test:t1:d", "SPENT")]
+    assert "KEYS[1]" in tr._DELETE_UNLESS_LUA and "KEYS[2]" not in tr._DELETE_UNLESS_LUA
+    params = list(inspect.signature(TenantRedis.delete_unless).parameters)
+    assert params == ["self", "k", "value"], "a caller gives no script and no second key"
+
+
+async def test_delete_unless_refuses_a_raw_string_and_another_tenant() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.delete_unless("cc:chat-late-offer:t1", "x")  # type: ignore[arg-type]
+    with organization_scope(ORG_A):
+        stolen = key("chat-late-offer", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.delete_unless(stolen, "x")
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
 # 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
 # ---------------------------------------------------------------------------
 #

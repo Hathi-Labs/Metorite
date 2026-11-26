@@ -547,6 +547,11 @@ class RoutingHarness:
         # WS-62 CF-3: the eval runs with the page tool on, so S1 to S3 can
         # drive it. Production ships it dark (settings.chat_first_tools).
         mp.setattr(settings, "chat_first_tools", True, raising=False)
+        if self.live:
+            # Task 3554: a call that the Router does not take runs on a dev
+            # box only. The executor's error recovery calls `complete` in
+            # process, so a live run says dev, as `one_assistant_measure`.
+            mp.setattr(settings, "acb_env", "dev", raising=False)
         mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
         mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
         # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit

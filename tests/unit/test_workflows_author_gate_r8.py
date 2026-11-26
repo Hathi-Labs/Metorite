@@ -39,6 +39,13 @@ d. A member with a ``feature:workflows`` deny gets 403 on the reads, the
    published run and each write. The router gate answers first.
 e. ``resolve_access`` gives each of them the features that a to d need.
 f. With the flag off, the member of b creates a workflow, as before J1-3.
+g. WFC-4a-2s (task 3309, ``ai_studio.md`` row WFC-4a-2s): a member who is
+   not the owner gets 403 on a Save that adds or changes a ``studio_write``
+   step, and the stored draft does not change. The same member keeps the
+   write as the GET gave it (a jsonb round trip), and removes it. The owner
+   changes it. A member of org B gets 404 on the workflow of org A, because
+   the check reads the stored draft in the tenant session, and nothing
+   changes. The hermetic half is ``test_workflows_studio_write_owner_rule.py``.
 
 **The mutations (R7).** Each ran on 2026-11-11, and each test named here
 went red.
@@ -47,11 +54,15 @@ went red.
   ``test_a_studio_deny_reads_and_runs_but_does_not_write`` and
   ``test_a_guest_with_workflows_reads_and_runs_but_does_not_write``.
 * M2: drop the ``check_author`` call of ``run_workflow``. Red: the same two.
+
+The mutations of case g are in ``test_workflows_studio_write_owner_rule.py``.
+They ran on 2026-11-15.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
@@ -89,35 +100,51 @@ PEOPLE: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "guest_workflows": ("guest", (("feature:workflows", "allow"),)),
 }
 
+#: The people of org B, for the case across orgs (WFC-4a-2s).
+PEOPLE_B: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "b_member": ("member", ()),
+}
+
 
 def _email(key: str) -> str:
     return f"{key}.{TAG}@stuj13.test"
 
 
+def _org_of(world: Any, key: str) -> str:
+    return world.b if key in PEOPLE_B else world.a
+
+
+def _seed_people(c: Any, org: str, people: dict) -> dict[str, str]:
+    """Seed the roles of *org* and each person of *people* in it."""
+    c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": org})
+    c.execute(text("SELECT provision_org_roles(:o)"), {"o": org})
+    roles = {str(slug): str(rid) for slug, rid in c.execute(text(
+        "SELECT slug, id FROM org_role WHERE organization_id = CAST(:o AS uuid)"),
+        {"o": org}).all()}
+    for key, (role, overrides) in people.items():
+        uid = c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) RETURNING id"),
+            {"e": _email(key), "o": org}).scalar()
+        c.execute(text(
+            "INSERT INTO user_role (user_id, role_id, organization_id) "
+            "VALUES (:u, CAST(:r AS uuid), CAST(:o AS uuid))"),
+            {"u": uid, "r": roles[role], "o": org})
+        for permission, effect in overrides:
+            c.execute(text(
+                "INSERT INTO user_permission_override (user_id, permission, effect, "
+                "reason, set_by, organization_id) VALUES (:u, :p, :x, 'J1-3 R8', "
+                "'seed@stuj13.test', CAST(:o AS uuid))"),
+                {"u": uid, "p": permission, "x": effect, "o": org})
+    return roles
+
+
 @pytest.fixture(scope="module")
 def world(promoted):  # noqa: F811 — a fixture
-    a = promoted.org_a
+    a, b = promoted.org_a, promoted.org_b
     with promoted.admin_engine.begin() as c:
-        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": a})
-        c.execute(text("SELECT provision_org_roles(:o)"), {"o": a})
-        roles = {str(slug): str(rid) for slug, rid in c.execute(text(
-            "SELECT slug, id FROM org_role WHERE organization_id = CAST(:o AS uuid)"),
-            {"o": a}).all()}
-        for key, (role, overrides) in PEOPLE.items():
-            uid = c.execute(text(
-                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
-                "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid)) RETURNING id"),
-                {"e": _email(key), "o": a}).scalar()
-            c.execute(text(
-                "INSERT INTO user_role (user_id, role_id, organization_id) "
-                "VALUES (:u, CAST(:r AS uuid), CAST(:o AS uuid))"),
-                {"u": uid, "r": roles[role], "o": a})
-            for permission, effect in overrides:
-                c.execute(text(
-                    "INSERT INTO user_permission_override (user_id, permission, effect, "
-                    "reason, set_by, organization_id) VALUES (:u, :p, :x, 'J1-3 R8', "
-                    "'seed@stuj13.test', CAST(:o AS uuid))"),
-                    {"u": uid, "p": permission, "x": effect, "o": a})
+        _seed_people(c, b, PEOPLE_B)
+        roles = _seed_people(c, a, PEOPLE)
         # One draft workflow of org A, with an empty graph: a draft run of it
         # fails the graph check, and a published run of it gets 409. So no
         # case here starts a run.
@@ -125,7 +152,7 @@ def world(promoted):  # noqa: F811 — a fixture
             "INSERT INTO workflows (name, description, owner_email, hook_token, "
             "organization_id) VALUES (:n, '', :e, :t, CAST(:o AS uuid)) RETURNING id"),
             {"n": f"seed {TAG}", "e": _email("owner"), "t": f"tok-{TAG}", "o": a}).scalar())
-    yield SimpleNamespace(p=promoted, a=a, roles=roles, wid=wid)
+    yield SimpleNamespace(p=promoted, a=a, b=b, roles=roles, wid=wid)
     with promoted.admin_engine.begin() as c:
         c.execute(text("DELETE FROM workflows WHERE owner_email LIKE :t"),
                   {"t": f"%.{TAG}@stuj13.test"})
@@ -177,17 +204,18 @@ def _run(world: Any, fn: Callable[[Any], Awaitable[Any]]) -> Any:
                               base_url="http://workflows.test") as client,
         ):
             async def resolve(key: str) -> UserContext:
-                token = bind_tenant(world.a)
+                org = _org_of(world, key)
+                token = bind_tenant(org)
                 try:
                     access = await access_mod.resolve_access(_email(key), use_cache=False)
                 finally:
                     release_tenant(token)
                 return UserContext(email=_email(key), role=UserRole.EMPLOYEE,
-                                   access=access, organization_id=world.a)
+                                   access=access, organization_id=org)
 
             async def call(key: str, method: str, path: str, body: Any = None) -> httpx.Response:
                 users[key] = await resolve(key)
-                token = bind_tenant(world.a)
+                token = bind_tenant(_org_of(world, key))
                 try:
                     return await client.request(method, path, json=body,
                                                 headers={"x-test-as": key})
@@ -371,3 +399,153 @@ def test_with_the_flag_off_a_studio_deny_still_creates(world, monkeypatch) -> No
     assert status == 201
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM workflows WHERE id = :i"), {"i": new_id})
+
+
+# ── g. Only the owner adds or changes a Studio write (WFC-4a-2s) ──────────
+
+_PKG = "7a1c0e55-0000-4000-8000-0000000000c3"
+#: A float, a nested object and a word that is not ASCII, so the keep case
+#: proves the compare after a jsonb round trip.
+_DATA = {"site": "Plant 4", "weight": 1.5, "meta": {"b": 2, "a": [1, "x"]}, "city": "Pune ✓"}
+
+
+def _wnode(nid: str, ntype: str, config: dict | None = None, *, x: int = 0) -> dict:
+    return {"id": nid, "type": ntype, "position": {"x": x, "y": 0},
+            "data": {"label": nid, "config": config or {}}}
+
+
+def _wconfig(**over: Any) -> dict:
+    return {"package_id": _PKG, "action": "add", "data": dict(_DATA), **over}
+
+
+def _wgraph(*writes: dict) -> dict:
+    """trigger -> one approval for each write -> that write."""
+    nodes = [_wnode("start", "trigger", {"kind": "schedule"})]
+    edges = []
+    for i, write in enumerate(writes):
+        gate = f"gate{i}"
+        nodes += [_wnode(gate, "approval"), write]
+        edges += [{"id": f"e{i}a", "source": "start", "target": gate},
+                  {"id": f"e{i}b", "source": gate, "target": write["id"]}]
+    return {"nodes": nodes, "edges": edges}
+
+
+def _seed_workflow(world: Any, graph: dict) -> str:
+    """A draft of org A, owned by "owner", with *graph*, as the superuser."""
+    with world.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO workflows (name, description, owner_email, hook_token, graph, "
+            "organization_id) VALUES (:n, '', :e, :t, CAST(:g AS jsonb), CAST(:o AS uuid)) "
+            "RETURNING id"),
+            {"n": f"write {uuid.uuid4().hex[:6]} {TAG}", "e": _email("owner"),
+             "t": f"tok-{uuid.uuid4().hex}", "g": json.dumps(graph), "o": world.a}).scalar())
+
+
+def _stored(world: Any, wid: str) -> tuple[Any, str, str]:
+    """The draft, its org and its last update, as the superuser reads them."""
+    with world.p.admin_engine.connect() as c:
+        g, o, u = c.execute(text(
+            "SELECT graph, organization_id, updated_at FROM workflows WHERE id = :i"),
+            {"i": wid}).one()
+    return g, str(o), str(u)
+
+
+_REFUSAL = ("Only the owner of this workflow may add or change a step that writes a "
+            "record. Ask {owner}.")
+
+
+def test_another_member_cannot_add_or_change_a_write(world) -> None:
+    wid = _seed_workflow(world, _wgraph(_wnode("w", "studio_write", _wconfig())))
+    before = _stored(world, wid)
+    sends = {
+        "add": _wgraph(_wnode("w", "studio_write", _wconfig()),
+                       _wnode("w2", "studio_write", _wconfig(action="edit"))),
+        "change": _wgraph(_wnode("w", "studio_write",
+                                 _wconfig(data={**_DATA, "weight": 2.5}))),
+        "respell": _wgraph(_wnode("w", " Studio_Write ", _wconfig())),
+    }
+
+    async def fn(call: Any) -> dict[str, tuple[int, str]]:
+        out = {}
+        for name, graph in sends.items():
+            r = await call("member", "PUT", f"/workflows/{wid}", {"graph": graph})
+            out[name] = (r.status_code, r.json().get("detail"))
+        return out
+
+    got = _run(world, fn)
+    refusal = (403, _REFUSAL.format(owner=_email("owner")))
+    assert got == {"add": refusal, "change": refusal, "respell": refusal}, got
+    assert _stored(world, wid) == before
+
+
+def test_another_member_cannot_turn_a_stored_step_into_a_write(world) -> None:
+    """The stored step has the id and the config of a write, with another type."""
+    wid = _seed_workflow(world, _wgraph(_wnode("w", "set", _wconfig())))
+    before = _stored(world, wid)
+
+    async def fn(call: Any) -> tuple[int, str]:
+        r = await call("member", "PUT", f"/workflows/{wid}",
+                       {"graph": _wgraph(_wnode("w", "studio_write", _wconfig()))})
+        return r.status_code, r.json().get("detail")
+
+    assert _run(world, fn) == (403, _REFUSAL.format(owner=_email("owner")))
+    assert _stored(world, wid) == before
+
+
+def test_another_member_keeps_and_then_removes_a_write(world) -> None:
+    write = _wnode("w", "studio_write", _wconfig())
+    wid = _seed_workflow(world, _wgraph(write))
+
+    async def fn(call: Any) -> dict[str, int]:
+        graph = (await call("member", "GET", f"/workflows/{wid}")).json()["graph"]
+        for node in graph["nodes"]:
+            node["position"] = {"x": 500, "y": 40}
+            node["data"]["label"] = "Moved"
+            node["data"]["config"] = dict(reversed(list(node["data"]["config"].items())))
+        kept = await call("member", "PUT", f"/workflows/{wid}", {"graph": graph})
+        gone = await call("member", "PUT", f"/workflows/{wid}", {"graph": _wgraph()})
+        return {"kept": kept.status_code, "gone": gone.status_code}
+
+    _, _, first = _stored(world, wid)
+    got = _run(world, fn)
+    assert got == {"kept": 200, "gone": 200}, got
+    graph, org, last = _stored(world, wid)
+    assert graph == _wgraph() and org == world.a and last != first
+
+
+def test_the_owner_may_change_a_write(world) -> None:
+    wid = _seed_workflow(world, _wgraph(_wnode("w", "studio_write", _wconfig())))
+    changed = _wgraph(_wnode("w", "studio_write", _wconfig(action="edit")),
+                      _wnode("w2", "studio_write", _wconfig()))
+
+    async def fn(call: Any) -> int:
+        return (await call("owner", "PUT", f"/workflows/{wid}", {"graph": changed})).status_code
+
+    assert _run(world, fn) == 200
+    assert _stored(world, wid)[0] == changed
+
+
+def test_a_member_of_another_org_gets_404_and_changes_nothing(world) -> None:
+    """The check reads the stored draft in the tenant session of the Save. So
+    a member of org B never reads the draft of org A, and gets the 404 of a
+    workflow that does not exist."""
+    wid = _seed_workflow(world, _wgraph(_wnode("w", "studio_write", _wconfig())))
+    before = _stored(world, wid)
+    sent = _wgraph(_wnode("w", "studio_write", _wconfig()),
+                   _wnode("w2", "studio_write", _wconfig(action="edit")))
+
+    async def fn(call: Any) -> dict[str, Any]:
+        user = await call.resolve("b_member")
+        return {
+            "access": (user.organization_id, user.has_permission("feature:workflows")),
+            "get": (await call("b_member", "GET", f"/workflows/{wid}")).status_code,
+            "put": [(r.status_code, r.json().get("detail")) for r in [
+                await call("b_member", "PUT", f"/workflows/{wid}", {"graph": sent}),
+                await call("b_member", "PUT", f"/workflows/{wid}", {"graph": _wgraph()}),
+            ]],
+        }
+
+    got = _run(world, fn)
+    assert got == {"access": (world.b, True), "get": 404,
+                   "put": [(404, "Workflow not found")] * 2}, got
+    assert _stored(world, wid) == before

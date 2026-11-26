@@ -279,9 +279,12 @@ export function navigateAct(a: {
   const pane = paneAt(pathname, a.sections);
   if (pathname !== "/") {
     // The allowlist is the control, as `PANES` is on the server: a LIVE pane
-    // the member holds, and never an admin page or a settings page.
-    if (!pane || pane.launch !== "live" || pane.adminOnly) return none;
-    if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
+    // the member holds. `sections` is the member's visible set, so an
+    // `adminOnly` pane (Organisation) is in it for an admin and absent for any
+    // other member, and `paneAt` finds Appearance and Organisation as panes.
+    // `/settings` itself and any `/settings/...` that is no pane have no match
+    // and move nothing (PAR-1, task 3101).
+    if (!pane || pane.launch !== "live") return none;
   }
   return { push: runMovesPage(a), pane };
 }

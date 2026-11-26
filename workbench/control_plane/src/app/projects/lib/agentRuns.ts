@@ -24,10 +24,20 @@
  * the run's member answers it, through the archive approval route. The rules
  * of that card are at the end of this file.
  *
+ * **Images on a question (CIV-14b, `external_agent_access.md` §12.9).** An
+ * agent puts up to 4 images of the task on a question or a line. The server
+ * keeps each one in `content.attachments`, and `activityImages` turns them
+ * into rows that `AgentImageStrip` draws from the cookie serve route.
+ *
  * Fence: `agentRuns.test.ts`.
  */
 
 import type { ElicitationAnswers, ElicitationQuestion } from "@/lib/elicitationAnswer";
+
+import type { AttachmentRow } from "./api";
+import { attachmentImageUrl } from "./inlineUploads";
+import { previewKind } from "./preview";
+import type { TaskHeldBy } from "./agentHolder";
 
 
 /* ── The wire types ──────────────────────────────────────────────────────── */
@@ -131,6 +141,8 @@ export interface AgentActivity {
       evidence?: string | null;
       next?: string | null;
     } | null;
+    /** CIV-14b. The images of the task that the agent put on this activity. */
+    attachments?: AgentImage[] | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -151,6 +163,19 @@ export interface AgentActivity {
   created_at?: string | null;
 }
 
+/**
+ * CIV-14b. One image of an activity, as the server stores it: a file of the
+ * run's task that is a PNG, JPEG, GIF or WebP image. It holds no address.
+ */
+export interface AgentImage {
+  attachment_id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** The cookie serve route, which the gateway adds at each read. */
+  url?: string | null;
+}
+
 export interface AgentRun {
   id: string;
   task_id: string;
@@ -166,6 +191,21 @@ export interface AgentRun {
   client_name?: string | null;
   /** EA-13d. The host that the gateway verified, "claude.ai". Never self-declared. */
   client_host?: string | null;
+  /**
+   * WS-MCP SW-7b. The name that the agent gave its session, such as
+   * "backend-worker-3". Display data only: the agent chose it, and it grants
+   * nothing. `withAgentLabel` puts it beside the client name.
+   */
+  agent_label?: string | null;
+  /**
+   * WS-MCP SW-104 and SW-106. The machine, its kind and the model that the
+   * agent reported for its session, or that its box token proved. Display
+   * data only: the agent chose the text, and it grants nothing. `null` or
+   * absent reads "Not reported" (`agentPlaceLine` of `agentCardLook.ts`).
+   */
+  agent_host?: string | null;
+  agent_host_kind?: string | null;
+  agent_model?: string | null;
   /** EA-14a. The display name of the run's member, for "Held by <name>". */
   member_name?: string | null;
   /**
@@ -199,10 +239,59 @@ export interface AgentRun {
    */
   answer?: { id: string; seq: number; changeable: boolean } | null;
   /**
+   * EA-18b. May the reader answer the open question? The server's answer, from
+   * `may_answer_run` (D-EA-14), on the one-run read. The key is there only
+   * while `AGENT_QUESTIONS_ORGS` holds the org. Absent means the old rule, so
+   * every member who sees the task may answer, and the panel reads it as true.
+   */
+  can_answer?: boolean;
+  /**
    * Task 1045a (`agent_coordination.md` §3.2). The wait of a run that reads
    * `waiting`, else null. A gateway before 1045a does not send it.
    */
   waiting?: AgentWaiting | null;
+  /**
+   * SW-32 (task 1049). The checklist that the agent keeps on its run, or
+   * null. Each `set_run_plan` call replaces the whole list. The text of a
+   * step is the agent's own: draw it as text and nothing else.
+   */
+  plan?: AgentPlanStep[] | null;
+}
+
+/** The four statuses of a plan step (`agent_runs.PLAN_STATUSES`). */
+export type AgentPlanStatus = "pending" | "inProgress" | "completed" | "canceled";
+
+export interface AgentPlanStep {
+  content: string;
+  status: AgentPlanStatus;
+}
+
+/**
+ * SW-32. What a task row says about a plan: the closed steps (`completed` and
+ * `canceled`), all steps, and the step in progress. `agent_plan` of the row.
+ */
+export interface AgentPlanSummary {
+  done: number;
+  total: number;
+  step: string | null;
+}
+
+/** "3 of 7", or null for no plan. A plan of no step reads as no plan. */
+export function planProgressText(plan?: Pick<AgentPlanSummary, "done" | "total"> | null): string | null {
+  if (!plan || !Number.isInteger(plan.total) || plan.total < 1) return null;
+  const done = Math.min(Math.max(Math.trunc(plan.done) || 0, 0), plan.total);
+  return `${done} of ${plan.total}`;
+}
+
+/** The summary of a plan that the run wire carries, as the gateway makes it. */
+export function planSummary(plan?: AgentPlanStep[] | null): AgentPlanSummary | null {
+  if (!plan || plan.length === 0) return null;
+  const current = plan.find((s) => s.status === "inProgress");
+  return {
+    done: plan.filter((s) => s.status === "completed" || s.status === "canceled").length,
+    total: plan.length,
+    step: current?.content.trim() || null,
+  };
 }
 
 /**
@@ -365,6 +454,35 @@ export function clientName(via?: string | null): string {
   return label(body) ?? label(host) ?? (host || "Agent");
 }
 
+/** WS-MCP SW-7b. The most characters of a session label, as the gateway caps it. */
+export const AGENT_LABEL_MAX = 40;
+
+/**
+ * WS-MCP SW-7b (`agent_coordination.md` §3.7 item 2). The label of an agent
+ * session, cleaned again here: no control or format character, one space for
+ * each run of white space, and at most `AGENT_LABEL_MAX` characters. Null
+ * when nothing is left. The gateway cleans it first, by the same rules.
+ */
+export function agentLabelText(label?: string | null): string | null {
+  if (typeof label !== "string") return null;
+  const text = label
+    .replace(/[\p{Cc}\p{Cf}]/gu, (ch) => (/\s/.test(ch) ? " " : ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  const shown = Array.from(text).slice(0, AGENT_LABEL_MAX).join("").trim();
+  return shown || null;
+}
+
+/**
+ * WS-MCP SW-7b. The client name with the label of the session beside it:
+ * "Claude Code (backend-worker-3)". The curated client name always comes
+ * first, so a label never takes its place. With no label, the client name.
+ */
+export function withAgentLabel(client: string, label?: string | null): string {
+  const shown = agentLabelText(label);
+  return shown ? `${client} (${shown})` : client;
+}
+
 /* ── The honest timeline (EA-13b) ─────────────────────────────────────────── */
 
 /** The `via` of a row that the GitHub App wrote (`github_integration.md` §12.4). */
@@ -468,6 +586,8 @@ export function firstName(
 export interface AgentPillFacts {
   /** `mcp:<slug>` of the run, when the caller knows it. */
   clientVia?: string | null;
+  /** SW-7b. The label of the run's agent session. The card line shows it. */
+  agentLabel?: string | null;
   /** The run's member, when the caller knows it. */
   memberEmail?: string | null;
   /** The newest thought, for the tooltip of "working". */
@@ -486,6 +606,8 @@ export interface AgentPillFacts {
   labels?: ReadonlyMap<string, string>;
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** SW-32. The plan of the run, as `agent_plan` of the row. */
+  plan?: AgentPlanSummary | null;
   /** The clock for the minutes of a wait. Tests pass it. */
   nowMs?: number;
 }
@@ -627,16 +749,86 @@ export function lastSeq(activities: readonly AgentActivity[]): number | undefine
 
 /** The newest `thought` or `action`, as one line. */
 export function newestEphemeral(activities: readonly AgentActivity[]): string | null {
+  const a = newestEphemeralActivity(activities);
+  if (!a) return null;
+  if (a.type === "action" && a.content.action?.trim()) return `Running ${a.content.action.trim()}`;
+  return a.content.body?.trim() || null;
+}
+
+/**
+ * The activity of the run panel's line: the newest thought with text, or the
+ * newest action with a name or text. `newestEphemeral` reads its words, and
+ * CIV-14b draws its images beside them.
+ */
+export function newestEphemeralActivity(
+  activities: readonly AgentActivity[],
+): AgentActivity | null {
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
-    if (a.type === "thought" && a.content.body?.trim()) return a.content.body.trim();
+    if (a.type === "thought" && a.content.body?.trim()) return a;
     if (a.type === "action") {
-      const name = a.content.action?.trim();
-      if (name) return `Running ${name}`;
-      if (a.content.body?.trim()) return a.content.body.trim();
+      // SW-32: a plan write is a heartbeat, not a line to read.
+      if (a.content.action?.trim() === "set_run_plan") continue;
+      if (a.content.action?.trim() || a.content.body?.trim()) return a;
     }
   }
   return null;
+}
+
+/* ── Images on a question (CIV-14b, §12.9) ───────────────────────────────── */
+
+/** The most images that one activity carries (`agent_oauth.ACTIVITY_IMAGES_MAX`). */
+export const AGENT_IMAGES_MAX = 4;
+
+const ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The served path of a file: a path of this origin (one `/`, never `//`) that
+ * ends in `/attachments/<id>/<name>`, with no query, fragment or backslash.
+ */
+const SERVED_PATH = /^\/(?!\/)[^?#\\]*\/attachments\/([0-9a-f-]{36})\/[^/?#\\]*$/i;
+
+/**
+ * The URL of one image: the cookie serve route that the gateway gives
+ * (`attachments.served_url`, `GET /projects/attachments/{id}/{name}` through
+ * the BFF proxy), so the member's session decides who reads it. It must be a
+ * path of this origin that names the same id, or the image does not draw.
+ * `attachmentImageUrl` then writes a name segment that needs no escape. Every
+ * `/api/projects/` path of the Projects UI sits in the client
+ * (`test_projects_ui_actions.py`), so the answer is the one source.
+ */
+export function agentImageUrl(image: AgentImage): string | null {
+  const served = typeof image.url === "string" ? SERVED_PATH.exec(image.url) : null;
+  if (!served || served[1].toLowerCase() !== image.attachment_id.toLowerCase()) return null;
+  return attachmentImageUrl(image.url as string, image.name.trim() || "image");
+}
+
+/**
+ * The images of an activity, as rows of the one attachment viewer. Each row
+ * needs an id in the shape of an id and a type that the app shows as an
+ * image. SVG never is one (`preview.ts`). At most `AGENT_IMAGES_MAX`, in the
+ * order the agent sent them. The card never reads the bytes path of the MCP.
+ */
+export function activityImages(
+  activity: Pick<AgentActivity, "content"> | null | undefined,
+): AttachmentRow[] {
+  const raw = activity?.content?.attachments;
+  if (!Array.isArray(raw)) return [];
+  const out: AttachmentRow[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const id = typeof item.attachment_id === "string" ? item.attachment_id : "";
+    const mime = typeof item.mime === "string" ? item.mime : "";
+    if (!ID_SHAPE.test(id) || previewKind(mime) !== "image") continue;
+    if (out.some((row) => row.attachment_id === id)) continue;
+    const name = typeof item.name === "string" ? item.name : "";
+    const size = typeof item.size === "number" && Number.isFinite(item.size) ? item.size : 0;
+    const url = agentImageUrl({ attachment_id: id, name, mime, size, url: item.url });
+    if (!url) continue;
+    out.push({ attachment_id: id, kind: "image", name: name || "image", mime, size, url });
+    if (out.length === AGENT_IMAGES_MAX) break;
+  }
+  return out;
 }
 
 /** The newest elicitation of the run, from the activities or the run row. */
@@ -886,6 +1078,10 @@ export interface AgentRowFacts {
   agent_state?: AgentState | null;
   agent_client_via?: string | null;
   agent_member_email?: string | null;
+  /** SW-7b. The label of the run's agent session, display data only. */
+  agent_label?: string | null;
+  /** SW-5. Who holds the task, from the gateway's `held_by`. Null for a free task. */
+  held_by?: TaskHeldBy | null;
   assignees?: string[];
 }
 
@@ -923,13 +1119,15 @@ export const WAITING_ON_ME_HINT = "No agent waits for your answer on a task in t
  * label comes from the map and never from the client.
  */
 export function runIdentity(
-  run: Pick<AgentRun, "client_via" | "client_name" | "client_host">,
+  run: Pick<AgentRun, "client_via" | "client_name" | "client_host" | "agent_label">,
 ): string {
   const name = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: the label of the session sits beside the client name.
+  const shown = withAgentLabel(name, run.agent_label);
   // EA-19b: the pill of a box reads the label only. Its host is `box`.
-  if (isBoxStamp(run.client_via)) return name;
+  if (isBoxStamp(run.client_via)) return shown;
   const host = run.client_host?.trim() || hostOfStamp(run.client_via);
-  return host && host.toLowerCase() !== name.toLowerCase() ? `${name} \u00b7 ${host}` : name;
+  return host && host.toLowerCase() !== name.toLowerCase() ? `${shown} \u00b7 ${host}` : shown;
 }
 
 /** The host part of a stamp, `mcp:claude.ai:claude-code` -> `claude.ai`. */
@@ -1000,6 +1198,41 @@ export function stripVisible(summary?: AgentSummary | null): boolean {
   return Boolean(summary) && AGENT_STRIP.some((item) => (summary?.[item.field] ?? 0) > 0);
 }
 
+/**
+ * SW-5: the two hold filters of the board. They ride the same `agent_focus`
+ * parameter, so the server takes one of them, or one strip focus, at a time.
+ * `held`: an AI session holds the task now. `free`: none does, and the
+ * server reads the `unheld` rule of the lease (`filters.unheld_clause`).
+ */
+export type HoldFocus = "held" | "free";
+
+export const HOLD_FILTERS: readonly { focus: HoldFocus; label: string; icon: string; title: string }[] = [
+  {
+    focus: "held",
+    label: "Held by an agent",
+    icon: "Bot",
+    title: "Tasks that an AI session holds now",
+  },
+  {
+    focus: "free",
+    label: "Free",
+    icon: "CircleDashed",
+    title: "Tasks that no AI session holds. An agent may claim them.",
+  },
+];
+
+/** The one focus the page and the server take: a strip focus or a hold filter. */
+export type AnyAgentFocus = AgentFocus | HoldFocus;
+
+export function isHoldFocus(focus: AnyAgentFocus | null | undefined): focus is HoldFocus {
+  return focus === "held" || focus === "free";
+}
+
+/** Does an AI session hold the task now? A held task whose lease ended is free. */
+export function isHeldByAgent(task: AgentRowFacts): boolean {
+  return Boolean(task.held_by) && task.held_by?.stale !== true;
+}
+
 /** The states that read as "working" on the strip and on the filter. */
 const WORKING_AGENT_STATES: readonly string[] = ["working", "answered", "stale", "waiting"];
 
@@ -1028,11 +1261,15 @@ export function isAgentWork(task: AgentOversightFacts): boolean {
  */
 export function matchesAgentFocus(
   task: AgentOversightFacts,
-  focus: AgentFocus,
+  focus: AnyAgentFocus,
   me: string,
   nowMs: number = Date.now(),
 ): boolean {
   switch (focus) {
+    case "held":
+      return isHeldByAgent(task);
+    case "free":
+      return !isHeldByAgent(task);
     case "waiting":
       return isWaitingOnMe(task, me);
     case "queued":
@@ -1146,7 +1383,7 @@ export const RELEASE_COPY = {
 
 /** The confirm text. It names the client, and says what stays. */
 export function releaseBody(clientLabel: string): string {
-  return `${clientLabel} gives this task up. The task keeps its status and its assignees. Another AI session can then claim it.`;
+  return `${clientLabel} gives this task up. The assignees stay. The task moves to its lane: To Do, or In progress while a pull request is open. Another AI session can then claim it.`;
 }
 
 /**
@@ -1155,14 +1392,21 @@ export function releaseBody(clientLabel: string): string {
  * comes next, then the address.
  */
 export function heldByLine(
-  run: Pick<AgentRun, "member_email" | "member_name" | "client_via" | "client_name" | "client_host">,
+  run: Pick<
+    AgentRun,
+    "member_email" | "member_name" | "client_via" | "client_name" | "client_host" | "agent_label"
+  >,
   labels?: ReadonlyMap<string, string>,
 ): string {
   const who =
     labels?.get(run.member_email.trim().toLowerCase()) ||
     run.member_name?.trim() ||
     run.member_email;
-  const client = run.client_name?.trim() || clientName(run.client_via);
+  // SW-7b: "via Claude Code (backend-worker-3)".
+  const client = withAgentLabel(
+    run.client_name?.trim() || clientName(run.client_via),
+    run.agent_label,
+  );
   return `Held by ${who} via ${client}`;
 }
 

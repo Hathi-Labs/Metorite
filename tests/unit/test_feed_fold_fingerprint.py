@@ -52,6 +52,8 @@ NO_BUILDER = {
     "agent_asks": "chat:th-9",
     # WS-ALN ALN-2b: a decision keys on its task, so it folds into the card.
     "decision": f"tasks:{TID}",
+    # AO-2: the AI vendor alert gives no feed signal. Its entity is the vendor.
+    "provider_alert": "providers:anthropic",
 }
 
 
@@ -151,6 +153,12 @@ def _reminder(kind: str) -> shell.Signal:
 def _signal_of(kind: str) -> shell.Signal:
     if kind in shell.REMINDER_KINDS:
         return _reminder(kind)
+    if kind == "agent_questions":
+        # WS-55 EA-18c: the agent questions that wait on the member.
+        return feed._agent_questions_signal([{
+            "activity_id": "a-1", "task_id": TID, "task_title": "T", "asked_at": NOW,
+            "project_path": [{"id": "p", "name": "P"}], "agent_name": "Claude Code",
+            "question": {"body": "Which?", "options": [{"id": "x", "label": "X"}]}}], 1)
     real = _real(kind)
     if real is not None:
         return real

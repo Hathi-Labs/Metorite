@@ -36,6 +36,7 @@ import httpx
 import pytest
 from acb_auth import build_access
 from acb_common import get_settings
+from acb_skills.ask_tools import CARD_NOT_SHOWN, card_outcome_text
 from fastapi import FastAPI
 from gateway.db import bind_tenant, current_tenant, release_tenant
 from gateway.routes.whatsapp.transport import webhook
@@ -1070,7 +1071,8 @@ async def test_a_projects_write_tool_in_a_whatsapp_run_writes_nothing(
     with refuse_cards():
         out = await asyncio.wait_for(
             _in_a_run(lambda: W.comment(task_id, "Done today")), timeout=HANG_S)
-    assert out == W.CANCELLED
+    # HRD-7: no card could show here, so the one table says so.
+    assert out == card_outcome_text(CARD_NOT_SHOWN)
     assert writes(calls) == [] and relay == []
 
     out = await _in_a_run(lambda: W.comment(task_id, "Done today"))

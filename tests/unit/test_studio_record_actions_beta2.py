@@ -24,7 +24,7 @@ import copy
 from typing import Any
 
 import pytest
-from acb_common.studio_manifest import OBJECT_OPS, validate_manifest
+from acb_common.studio_manifest import RECORD_OPS, validate_manifest
 from acb_skills import ask_tools
 from acb_skills import studio_tools as st
 
@@ -55,7 +55,7 @@ def _uses(manifest: dict[str, Any]) -> set[str]:
 
 
 def _five(name: str) -> set[str]:
-    return {f"object:{name}.{v}" for v in OBJECT_OPS}
+    return {f"object:{name}.{v}" for v in RECORD_OPS}
 
 
 @pytest.fixture(autouse=True)

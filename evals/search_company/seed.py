@@ -24,6 +24,9 @@ from evals.search_company.questions import Fixture, Record, gold_id
 
 Statement = tuple[str, list[dict[str, Any]]]
 
+#: Fields of a CRM record that name another record by key. The seed resolves them.
+_LINK_FIELDS = ("company", "lead", "contacts", "converted_deal", "days_ago")
+
 #: The features that the five sources need, and the Knowledge manager right.
 PERMISSIONS = (
     "feature:projects", "feature:people", "feature:email", "feature:crm",
@@ -71,7 +74,8 @@ def statements(org: str, fixture: Fixture, *, message_org: bool = True) -> list[
     out += _email(org, who, _of(fixture.records, "email"), message_org)
     out += _crm(org, _of(fixture.records, "crm"))
     out += _knowledge(org, who, _of(fixture.records, "knowledge"))
-    return out
+    # A set with no record of a source (the misses set holds no task) has no row to bind.
+    return [(sql, rows) for sql, rows in out if rows]
 
 
 def _tasks(org: str, who: str, records: list[Record]) -> list[Statement]:
@@ -122,7 +126,7 @@ def _email(org: str, who: str, records: list[Record], message_org: bool) -> list
          "CAST(:f AS jsonb), CAST(:t AS jsonb), :s, :b, :sn, :r" + extra_val + ")",
          [{"i": gold_id(org, r.key), "a": account, "pm": f"kg1-{r.key}-{org[:8]}",
            "f": json.dumps({"name": r.fields["from_name"], "email": r.fields["from_email"]}),
-           "t": json.dumps([{"email": who}]), "s": r.fields["subject"],
+           "t": json.dumps([{"email": r.fields.get("to_email", who)}]), "s": r.fields["subject"],
            "b": r.fields["body"], "sn": r.fields["body"][:120],
            "r": _when(r.fields.get("days_ago", 1)), "o": org} for r in records]),
     ]
@@ -142,9 +146,24 @@ def _crm(org: str, records: list[Record]) -> list[Statement]:
          "CAST(:o AS uuid))", [{"s": deal_status, "o": org}]),
     ]
     by_kind: dict[str, list[dict[str, Any]]] = {}
+    links: list[dict[str, Any]] = []
+    converted: list[dict[str, Any]] = []
     for r in records:
-        row = {"i": gold_id(org, r.key), "o": org, "ls": lead_status, "ds": deal_status}
-        row.update({k: v for k, v in r.fields.items() if k != "kind"})
+        stamp = _when(r.fields.get("days_ago", 0))
+        f = {k: v for k, v in r.fields.items() if k not in _LINK_FIELDS}
+        row = {"i": gold_id(org, r.key), "o": org, "ls": lead_status, "ds": deal_status,
+               "at": stamp, "company_id": None, "lead_id": None}
+        # A relation names a record by KEY. The seed turns it into an id.
+        if "company" in r.fields:
+            row["company_id"] = gold_id(org, r.fields["company"])
+        if "lead" in r.fields:
+            row["lead_id"] = gold_id(org, r.fields["lead"])
+        links += [{"d": row["i"], "c": gold_id(org, key), "o": org}
+                  for key in r.fields.get("contacts", ())]
+        if "converted_deal" in r.fields:
+            converted.append({"l": row["i"], "d": gold_id(org, r.fields["converted_deal"]),
+                              "at": stamp})
+        row.update({k: v for k, v in f.items() if k != "kind"})
         by_kind.setdefault(r.fields["kind"], []).append(row)
     shapes = {
         "company": ("INSERT INTO crm_companies (id, name, industry, organization_id) "
@@ -157,13 +176,24 @@ def _crm(org: str, records: list[Record]) -> list[Statement]:
                  "organization_id) VALUES (CAST(:i AS uuid), :lead_name, :organization_name, "
                  ":email, CAST(:ls AS uuid), CAST(:o AS uuid))",
                  ("lead_name", "organization_name", "email")),
-        "deal": ("INSERT INTO crm_deals (id, name, next_step, status_id, organization_id) "
+        "deal": ("INSERT INTO crm_deals (id, name, next_step, status_id, company_id, lead_id, "
+                 "last_activity_at, created_at, updated_at, organization_id) "
                  "VALUES (CAST(:i AS uuid), :name, :next_step, CAST(:ds AS uuid), "
+                 "CAST(:company_id AS uuid), CAST(:lead_id AS uuid), :at, :at, :at, "
                  "CAST(:o AS uuid))", ("name", "next_step")),
     }
-    for kind, (sql, _cols) in shapes.items():
+    # Companies and contacts first, then leads, then deals (a deal names its lead).
+    for kind in ("company", "contact", "lead", "deal"):
         if kind in by_kind:
-            out.append((sql, by_kind[kind]))
+            out.append((shapes[kind][0], by_kind[kind]))
+    if links:
+        out.append(("INSERT INTO crm_deal_contacts (deal_id, contact_id, organization_id) "
+                    "VALUES (CAST(:d AS uuid), CAST(:c AS uuid), CAST(:o AS uuid))", links))
+    if converted:
+        # A converted lead names its deal, and the deal names its lead: the second
+        # half goes in last, after both rows exist.
+        out.append(("UPDATE crm_leads SET converted_deal_id = CAST(:d AS uuid), "
+                    "converted_at = :at WHERE id = CAST(:l AS uuid)", converted))
     return out
 
 
@@ -196,10 +226,14 @@ def purge(org: str) -> list[Statement]:
     project = [{"p": gold_id(org, "project")}]
     out: list[Statement] = [
         (f"DELETE FROM {t} WHERE organization_id = CAST(:o AS uuid)", o)
-        for t in ("kb_chunks", "kb_pages", "kb_spaces", "crm_deals", "crm_leads",
+        for t in ("kb_chunks", "kb_pages", "kb_spaces", "crm_deal_contacts", "crm_deals",
+                  "crm_leads",
                   "crm_contacts", "crm_companies", "crm_deal_statuses", "crm_lead_statuses",
                   "crm_settings", "email_accounts", "people", "pm_tasks")
     ]
+    # A converted lead points at its deal. Cut that link before the deals go.
+    out.insert(0, ("UPDATE crm_leads SET converted_deal_id = NULL "
+                   "WHERE organization_id = CAST(:o AS uuid)", o))
     out.insert(0, ("DELETE FROM email_messages WHERE account_id = CAST(:a AS uuid)",
                    [{"a": gold_id(org, "account")}]))
     out += [

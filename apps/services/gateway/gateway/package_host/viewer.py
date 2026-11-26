@@ -18,8 +18,8 @@ module holds no SQL and runs no second query of the installs.
 **The installed version, never the draft.** The answer holds the manifest of
 the version that the install runs. An install with no version (a draft) gives
 None, so a draft never reaches a member who does not own it. A paused, an
-archived and an expired install, and an archived app, give None, because the
-resolve shows none of them. When the member sees the app at two scopes, the
+archived and an expired install, and an archived or a paused app (J3a), give
+None, because the resolve shows none of them. When the member sees the app at two scopes, the
 widest install wins (``widest_per_app``), as in the sidebar.
 
 **The fields of the installed version (J2a fix round 1).** A publish only adds
@@ -65,6 +65,10 @@ class InstalledApp:
     id: str
     version: int
     manifest: dict[str, Any]
+    #: WS-STU I9a. The scope of the install and the review status of its
+    #: version. The action door reads them for an ``org`` connection need.
+    scope_kind: str | None = None
+    review_status: str | None = None
 
     @property
     def name(self) -> str:
@@ -155,7 +159,8 @@ def installed(rows: list[resolve.InstallRow], app_id: str) -> InstalledApp | Non
         manifest = _manifest(row.manifest)
         if row.version is None or manifest is None:
             return None
-        return InstalledApp(id=row.app_id, version=row.version, manifest=manifest)
+        return InstalledApp(id=row.app_id, version=row.version, manifest=manifest,
+                            scope_kind=row.scope_kind, review_status=row.review_status)
     return None
 
 

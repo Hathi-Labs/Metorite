@@ -18,21 +18,34 @@
  * It extends the Agents panel of SW-8 and SW-51 when they land. Until then it
  * is a minimal section of Projects. The chips come from `statusAccent.ts`.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { relativeTime } from "@/lib/taskCard";
 
 import Icon from "@/components/Icon";
+import { ModeSwitch, type ModeOption } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-import { agentsOverviewApi } from "../lib/api";
+import { agentMapApi, agentRecentRunsApi, agentsOverviewApi } from "../lib/api";
+import { type AgentMapRead, LIST_LABEL, MAP_LABEL, SWITCH_LABEL } from "../lib/agentMap";
+import { AgentMapView } from "./AgentMapView";
 import {
   type AgentAtWork,
+  type AgentRunsRead,
   type AgentsAtWorkRead,
+  RUNS_EMPTY_COPY,
+  RUNS_ERROR_COPY,
+  RUNS_TITLE,
+  RUNS_TRUNCATED_COPY,
+  RUNS_UNAVAILABLE_COPY,
+  runTimeWord,
   EMPTY_COPY,
   ERROR_COPY,
   SECTION_TITLE,
   TRUNCATED_COPY,
   lastRunLine,
+  outcomeWord,
   outcomeChip,
   outcomeIcon,
   runsWord,
@@ -61,9 +74,173 @@ export function useAgentsAtWork(): AgentsAtWorkRead {
   return read;
 }
 
+/** The Map re-reads every 30 s while the page is visible, and on focus. */
+export const MAP_REFRESH_MS = 30_000;
+
+/**
+ * The map read (WS-MCP SW-103). It reads once when `enabled` turns on, so the
+ * switch knows if the map is dark. It re-reads each 30 s and on focus only
+ * while `live` is on and the document is visible. No event stream.
+ */
+export function useAgentMap(
+  enabled: boolean,
+  live: boolean,
+  showQuiet: boolean,
+  projectId?: string,
+  retry = 0,
+): AgentMapRead {
+  // The read carries the project it answers for. A read of another project, or
+  // a read while `enabled` is off, counts as loading on the same render. No
+  // effect resets it, so a project never shows under the map of the last one.
+  const key = projectId ?? "";
+  const [state, setState] = useState<{ key: string; read: AgentMapRead }>({
+    key,
+    read: { kind: "loading" },
+  });
+  const read: AgentMapRead =
+    enabled && state.key === key ? state.read : { kind: "loading" };
+  // Polls stop once the read is dark or failed: nothing is drawn, so nothing refreshes.
+  const kindRef = useRef<AgentMapRead["kind"]>("loading");
+  kindRef.current = read.kind;
+  const load = useCallback(
+    (alive: () => boolean) => {
+      agentMapApi
+        .read({ showQuiet, projectId })
+        .then((map) => {
+          if (alive()) setState({ key, read: map ? { kind: "ready", map } : { kind: "dark" } });
+        })
+        .catch(() => {
+          // A failed refresh keeps the map on screen.
+          if (alive()) {
+            setState((old) =>
+              old.key === key && old.read.kind === "ready" ? old : { key, read: { kind: "error" } },
+            );
+          }
+        });
+    },
+    [showQuiet, projectId, key],
+  );
+  useEffect(() => {
+    if (!enabled) return;
+    let on = true;
+    const alive = () => on;
+    load(alive);
+    if (!live) {
+      return () => {
+        on = false;
+      };
+    }
+    const refresh = () => {
+      const kind = kindRef.current;
+      if (document.visibilityState === "visible" && kind !== "dark" && kind !== "error") load(alive);
+    };
+    const timer = window.setInterval(refresh, MAP_REFRESH_MS);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      on = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [enabled, live, load, retry]);
+  return read;
+}
+
+/** True below 640 px, the width where the outline takes the place of the canvas. */
+export function usePhone(): boolean {
+  const [phone, setPhone] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 639px)");
+    const sync = () => setPhone(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+  return phone;
+}
+
+type AgentsMode = "list" | "map";
+const MODES: readonly ModeOption<AgentsMode>[] = [
+  { id: "list", icon: "List", label: LIST_LABEL },
+  { id: "map", icon: "Network", label: MAP_LABEL },
+];
+
+/** One read of the last runs of one agent, when its list opens. */
+export function useAgentRuns(agentKey: string): AgentRunsRead {
+  const [read, setRead] = useState<AgentRunsRead>({ kind: "loading" });
+  useEffect(() => {
+    let live = true;
+    agentRecentRunsApi
+      .read(agentKey)
+      .then((runs) => {
+        if (live) setRead(runs ? { kind: "ready", runs } : { kind: "unavailable" });
+      })
+      .catch(() => {
+        if (live) setRead({ kind: "error" });
+      });
+    return () => {
+      live = false;
+    };
+  }, [agentKey]);
+  return read;
+}
+
 const CHIP = "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium";
 
+/** The last runs of one agent. Lean rows: no trace, which stays executive-only. */
+export function AgentRunsView({ read, nowMs = Date.now() }: { read: AgentRunsRead; nowMs?: number }) {
+  return (
+    <div data-agent-runs="" aria-label={RUNS_TITLE} className="basis-full pt-1">
+      {read.kind === "loading" ? (
+        <Skeleton className="h-6 w-full" />
+      ) : read.kind === "error" ? (
+        <p role="alert" className="text-xs text-foreground">
+          {RUNS_ERROR_COPY}
+        </p>
+      ) : read.kind === "unavailable" ? (
+        <p className="text-xs text-muted-foreground">{RUNS_UNAVAILABLE_COPY}</p>
+      ) : read.runs.runs.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{RUNS_EMPTY_COPY}</p>
+      ) : (
+        <>
+          <ul className="divide-y divide-border">
+            {read.runs.runs.map((run) => (
+              <li
+                key={run.id}
+                data-agent-run={run.id}
+                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-1 text-xs"
+              >
+                <span className={`${CHIP} ${outcomeChip(run.state)}`}>{outcomeWord(run.state)}</span>
+                <span className="text-muted-foreground">
+                  {run.started_at ? relativeTime(run.started_at, nowMs) : "Not started"}
+                </span>
+                <span className="tabular-nums text-muted-foreground">{runTimeWord(run.run_seconds)}</span>
+                {run.task ? <span className="min-w-0 flex-1 truncate text-foreground">{run.task.title}</span> : null}
+                {run.error ? (
+                  <span data-agent-run-error="" className="basis-full text-foreground">
+                    {run.error.what}
+                    {run.error.next_step ? ` ${run.error.next_step}` : ""}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {read.runs.truncated ? (
+            <p className="pt-1 text-xs text-muted-foreground">{RUNS_TRUNCATED_COPY}</p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AgentRuns({ agentKey, nowMs }: { agentKey: string; nowMs: number }) {
+  return <AgentRunsView read={useAgentRuns(agentKey)} nowMs={nowMs} />;
+}
+
 function AgentRow({ agent, nowMs }: { agent: AgentAtWork; nowMs: number }) {
+  const [open, setOpen] = useState(false);
   const outcome = agent.last_run?.state ?? "";
   const glyph = outcomeIcon(outcome);
   return (
@@ -105,7 +282,11 @@ function AgentRow({ agent, nowMs }: { agent: AgentAtWork; nowMs: number }) {
           <span data-agent-last-run="">{lastRunLine(agent.last_run, nowMs)}</span>
         )}
         <span className="tabular-nums">{runsWord(agent.runs)}</span>
+        <Button size="sm" variant="ghost" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          {open ? "Hide runs" : RUNS_TITLE}
+        </Button>
       </div>
+      {open ? <AgentRuns agentKey={agent.key} nowMs={nowMs} /> : null}
     </li>
   );
 }
@@ -114,11 +295,32 @@ export interface AgentsAtWorkViewProps {
   read: AgentsAtWorkRead;
   onBack?: () => void;
   nowMs?: number;
+  /** Opens a task on the board. Without it the Map links to the task page. */
+  onOpenTask?: (taskId: string) => void;
+  /** A test passes the map read, and the view does not fetch. */
+  mapRead?: AgentMapRead;
+  /** The mode on first draw. */
+  initialMode?: AgentsMode;
 }
 
 /** The section. It draws nothing while the feature is dark. */
-export function AgentsAtWorkView({ read, onBack, nowMs = Date.now() }: AgentsAtWorkViewProps) {
+export function AgentsAtWorkView({
+  read,
+  onBack,
+  nowMs = Date.now(),
+  onOpenTask,
+  mapRead,
+  initialMode = "list",
+}: AgentsAtWorkViewProps) {
+  const [mode, setMode] = useState<AgentsMode>(initialMode);
+  const [showQuiet, setShowQuiet] = useState(false);
+  const phone = usePhone();
+  const fetched = useAgentMap(!mapRead && read.kind === "ready", mode === "map", showQuiet);
+  const map = mapRead ?? fetched;
   if (read.kind === "dark") return null;
+  // Dark means absent: no switch until the map read answers, and none when it answers 404, 401 or 403.
+  const mapOn = read.kind === "ready" && map.kind === "ready";
+  const showMap = mapOn && mode === "map";
   return (
     <section
       aria-label={SECTION_TITLE}
@@ -127,13 +329,27 @@ export function AgentsAtWorkView({ read, onBack, nowMs = Date.now() }: AgentsAtW
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="text-sm font-semibold text-foreground">{SECTION_TITLE}</h2>
+        {mapOn ? (
+          <div className="ml-auto">
+            <ModeSwitch modes={MODES} mode={mode} onPick={setMode} label={SWITCH_LABEL} />
+          </div>
+        ) : null}
         {onBack ? (
-          <Button className="ml-auto" size="sm" variant="ghost" onClick={onBack}>
+          <Button className={mapOn ? "" : "ml-auto"} size="sm" variant="ghost" onClick={onBack}>
             Back to the board
           </Button>
         ) : null}
       </div>
-      {read.kind === "loading" ? (
+      {showMap ? (
+        <AgentMapView
+          read={map}
+          showQuiet={showQuiet}
+          onShowQuiet={setShowQuiet}
+          phone={phone}
+          onOpenTask={onOpenTask}
+          nowMs={nowMs}
+        />
+      ) : read.kind === "loading" ? (
         <div className="space-y-2 p-3">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />
