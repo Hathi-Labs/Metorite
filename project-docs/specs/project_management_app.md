@@ -8999,7 +8999,7 @@ A **block** is a part that a project can show or hide. Examples are WIP limits, 
 2. **A change never deletes.** A change of style hides the blocks that it no longer uses. The data stays, and a change back shows it again. Fence: `tests/unit/test_project_work_style.py` and `tests/unit/test_project_work_style_r8.py` (SP-3a).
 3. **The picker is the SP-3 setting.** "How this team works" in SP-3 (task 962) becomes the style picker. It offers the five styles, and Flow is the default. Only a Sprints or Cycles project shows the cycle UI. SP-3 owns the picker until WM-0 has a row in §13.6.
 
-**Where the style lives (SP-3a, 2026-11-09).** The picker stores `pm_projects.work_style`. Migration `infra/postgres/505_pm_projects_work_style.sql` adds it as `TEXT NOT NULL DEFAULT 'flow'`, with a CHECK of 1 to 40 characters. The build took 400. Main moved past it while the branch waited, so the number is now 500, the number that the owner's fleet booked (R1). Check it again at merge.
+**Where the style lives (SP-3a, 2026-11-09).** The picker stores `pm_projects.work_style`. Migration `infra/postgres/505_pm_projects_work_style.sql` adds it as `TEXT NOT NULL DEFAULT 'flow'`, with a CHECK of 1 to 40 characters. The build took 400. Main moved past it while the branch waited, so the number is now 505, booked on 2026-11-26 (R1, task 962). Check it again at merge.
 
 - `core.WORK_STYLES` holds the five keys in the order of the picker: `flow`, `sprints`, `shape_up`, `plan` and `personal`. The CHECK holds no value list, so a new style is a code change.
 - Two values are live: `flow` and `sprints` (`core.LIVE_WORK_STYLES`). The route refuses the other three with 422. The picker shows them disabled, with "Coming later".

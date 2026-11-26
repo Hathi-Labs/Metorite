@@ -320,6 +320,53 @@ export function recordMove(
   );
 }
 
+// ── The canvas on screen, and the newest read ───────────────────────────────
+
+/** What an Undo asks of the canvas on screen. */
+export interface CanvasListener {
+  reread: () => Promise<void> | void;
+  placed: (results: readonly MoveResult[]) => void;
+}
+
+/**
+ * An Undo entry lives longer than the canvas that made it: a switch of canvas
+ * or of project mounts a new one. So the entry calls this relay, and the relay
+ * calls the canvas that is mounted at the time of the Undo.
+ */
+export function createCanvasRelay() {
+  const mounted = new Set<CanvasListener>();
+  return {
+    /** Register a canvas. Returns its unmount. */
+    mount(listener: CanvasListener): () => void {
+      mounted.add(listener);
+      return () => {
+        mounted.delete(listener);
+      };
+    },
+    after: async (): Promise<void> => {
+      await Promise.all([...mounted].map((canvas) => canvas.reread()));
+    },
+    placed: (results: readonly MoveResult[]): void => {
+      for (const canvas of mounted) canvas.placed(results);
+    },
+  };
+}
+
+/** The one relay of the app. */
+export const canvasRelay = createCanvasRelay();
+
+/**
+ * Start a read, and get the question "is this still the newest read?". An older
+ * answer that arrives late must not replace a newer one.
+ */
+export function latestOnly(): () => () => boolean {
+  let newest = 0;
+  return () => {
+    const ticket = ++newest;
+    return () => ticket === newest;
+  };
+}
+
 // ── The phone rule, and the targets of "Move to sprint" ─────────────────────
 
 /**

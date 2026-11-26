@@ -3,6 +3,8 @@
  * has no DOM, so each rule of the canvas is a pure function here, and the look
  * is a capture.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { UndoEntry } from "@/lib/undo";
@@ -16,9 +18,12 @@ import {
   type Place,
   applyResults,
   backlogQuery,
+  canvasRelay,
   countWords,
+  createCanvasRelay,
   cycleDates,
   cyclePlace,
+  latestOnly,
   moveLabel,
   moveMany,
   moveOne,
@@ -297,6 +302,67 @@ describe("Undo", () => {
     await entry.redo();
     await entry.undo();
     expect(s.calls).toEqual([]);
+  });
+});
+
+describe("Undo after a canvas switch", () => {
+  const A = cyclePlace("A");
+
+  it("re-reads and places on the canvas that is mounted now", async () => {
+    const s = fakeServer({ t1: null });
+    const { hooks } = recorder();
+    const relay = createCanvasRelay();
+    const first = { reread: vi.fn(), placed: vi.fn() };
+    const second = { reread: vi.fn(), placed: vi.fn() };
+    const leave = relay.mount(first);
+    const moved = [{ taskId: "t1", from: BACKLOG }];
+    await moveMany(s.io, moved, A);
+    const entry = recordMove(
+      s.io,
+      { ...hooks, after: relay.after, placed: relay.placed },
+      moved,
+      A,
+      "moved 1 task to A",
+    );
+    leave();
+    relay.mount(second);
+    await entry.undo();
+    expect(s.at.get("t1")).toBeNull();
+    expect(second.reread).toHaveBeenCalledTimes(1);
+    expect(second.placed).toHaveBeenCalledWith([{ taskId: "t1", ok: true, at: BACKLOG }]);
+    expect(first.reread).not.toHaveBeenCalled();
+    expect(first.placed).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no canvas is mounted", async () => {
+    await expect(canvasRelay.after()).resolves.toBeUndefined();
+  });
+
+  it("is wired in the canvas", () => {
+    const source = readFileSync(new URL("../components/BacklogCanvas.tsx", import.meta.url), "utf-8");
+    expect(source).toContain("canvasRelay.mount({");
+    expect(source).toContain("reread: () => load(pagesRef.current)");
+    expect(source).toContain("after: canvasRelay.after,");
+    expect(source).toContain("placed: canvasRelay.placed,");
+  });
+});
+
+describe("the newest read", () => {
+  it("drops the answer of an older read", () => {
+    const start = latestOnly();
+    const older = start();
+    expect(older()).toBe(true);
+    const newer = start();
+    expect(older()).toBe(false);
+    expect(newer()).toBe(true);
+  });
+
+  it("guards each state write of the canvas read", () => {
+    const source = readFileSync(new URL("../components/BacklogCanvas.tsx", import.meta.url), "utf-8");
+    const load = source.slice(source.indexOf("const load = useCallback("), source.indexOf("[node.id, startRead]"));
+    // After the flag probe, after the reads, and in the catch.
+    expect(load.match(/if \(!isNewest\(\)\) return;/g)).toHaveLength(3);
+    expect(load).toMatch(/catch \(err\) \{\s*if \(!isNewest\(\)\) return;/);
   });
 });
 

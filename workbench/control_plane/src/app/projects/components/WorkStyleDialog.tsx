@@ -19,17 +19,20 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 
 import { type ProjectRow, projectsApi } from "../lib/api";
-import { WORK_STYLES, type WorkStyleKey, workStyleOf } from "../lib/workStyle";
+import type { NodeLevel } from "../lib/tree";
+import { WORK_STYLES, type WorkStyleKey, pickerNote, styleHint, workStyleOf } from "../lib/workStyle";
 import ManagerFrame from "./ManagerFrame";
 
 interface Props {
   node: ProjectRow;
+  /** The level of the node: a space and a folder show no Backlog canvas. */
+  level: NodeLevel;
   onClose: () => void;
   /** The fresh row after a save, so the tree and the tab row read it. */
   onSaved: (fresh: ProjectRow) => void;
 }
 
-export function WorkStyleDialog({ node, onClose, onSaved }: Props) {
+export function WorkStyleDialog({ node, level, onClose, onSaved }: Props) {
   const current = workStyleOf(node);
   const [picked, setPicked] = useState<WorkStyleKey>(current);
   const [busy, setBusy] = useState(false);
@@ -58,7 +61,7 @@ export function WorkStyleDialog({ node, onClose, onSaved }: Props) {
     <ManagerFrame
       onClose={onClose}
       title="How this team works"
-      description={`${node.name}. A change hides or shows parts of the project and deletes nothing.`}
+      description={`${node.name}. ${pickerNote(level)}`}
       icon="Workflow"
       size="md"
     >
@@ -105,7 +108,7 @@ export function WorkStyleDialog({ node, onClose, onSaved }: Props) {
                     </Badge>
                   )}
                 </span>
-                <span className="text-xs text-muted-foreground">{style.hint}</span>
+                <span className="text-xs text-muted-foreground">{styleHint(style, level)}</span>
               </span>
             </button>
           );

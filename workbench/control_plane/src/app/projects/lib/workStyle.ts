@@ -15,6 +15,8 @@
  * Pure: no React and no network, so the rules are tests.
  */
 
+import { type NodeLevel, showsDashboard } from "./tree";
+
 export type WorkStyleKey = "flow" | "sprints" | "shape_up" | "plan" | "personal";
 
 export interface WorkStyle {
@@ -87,6 +89,29 @@ export function workStyle(key: WorkStyleKey): WorkStyle {
 /** True for a node whose team works in sprints: the Backlog canvas may show. */
 export function usesSprints(node: { work_style?: string | null } | null | undefined): boolean {
   return workStyleOf(node) === "sprints";
+}
+
+// A space or a folder draws its overview, with no tab row (`showsDashboard`),
+// and no node inherits a style. So the words of those two levels say so.
+
+/** The line under a style in the picker, true for the level of the node. */
+export function styleHint(style: WorkStyle, level: NodeLevel): string {
+  if (style.key !== "sprints" || !showsDashboard(level)) return style.hint;
+  return `A ${level} shows no Backlog canvas, and the projects in it do not take this style.`;
+}
+
+/** The line under the title of the picker, after the name of the node. */
+export function pickerNote(level: NodeLevel): string {
+  return showsDashboard(level)
+    ? `A change applies to this ${level} only and deletes nothing.`
+    : "A change hides or shows parts of the project and deletes nothing.";
+}
+
+/** The words after a save. */
+export function savedStyleTitle(name: string, key: WorkStyleKey, level: NodeLevel): string {
+  const title = `${name} now works as ${workStyle(key).label}`;
+  if (key !== "sprints" || !showsDashboard(level)) return title;
+  return `${title}. A ${level} shows no Backlog canvas. Its projects keep their own style.`;
 }
 
 /**

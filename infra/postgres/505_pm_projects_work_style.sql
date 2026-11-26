@@ -53,6 +53,7 @@
 --   483, and main then reached 486. So on 2026-11-23 the file moved to 493,
 --   then to 500 (booked), because main reached 495. On that day no open
 --   branch held 500.
+--   Moved to 505, booked 2026-11-26 (task 962), main top 504.
 --   Check it again at merge.
 -- Pinned by tests/unit/test_project_work_style.py and
 --   tests/unit/test_project_work_style_r8.py (R8), which find this file by

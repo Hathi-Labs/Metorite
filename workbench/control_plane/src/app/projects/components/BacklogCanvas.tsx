@@ -49,9 +49,11 @@ import {
   type Place,
   applyResults,
   backlogQuery,
+  canvasRelay,
   countWords,
   cycleDates,
   cyclePlace,
+  latestOnly,
   moveLabel,
   moveMany,
   moveSurface,
@@ -139,7 +141,10 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
   const [data, setData] = useState<CanvasData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [off, setOff] = useState(false);
-  const [pages, setPages] = useState(1);
+  // The count of backlog pages on screen. A ref, so each re-read (a move, an
+  // Undo from an older canvas) asks for the count of now.
+  const pagesRef = useRef(1);
+  const [startRead] = useState(latestOnly);
   const [loadingMore, setLoadingMore] = useState(false);
   // Where a task stands while its move runs and until the next read lands.
   const [overlay, setOverlay] = useState<Map<string, Place>>(() => new Map());
@@ -154,8 +159,10 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
 
   const load = useCallback(
     async (pageCount: number) => {
+      const isNewest = startRead();
       try {
         const probe = await probeSprints(() => projectsApi.cycles(node.id));
+        if (!isNewest()) return;
         if (!probe.on) {
           setOff(true);
           return;
@@ -167,6 +174,7 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
             Array.from({ length: pageCount }, (_, i) => projectsApi.tasks(backlogQuery(node.id, i + 1))),
           ),
         ]);
+        if (!isNewest()) return;
         const members: Record<string, CanvasTask[]> = {};
         const hidden: Record<string, number> = {};
         for (const detail of details) {
@@ -187,19 +195,34 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
         // when no move runs, or a task in flight would jump back.
         if (inflight.current === 0) setOverlay(new Map());
       } catch (err) {
+        if (!isNewest()) return;
         setError((err as Error).message || "Could not read the backlog. Try again.");
       }
     },
-    [node.id],
+    [node.id, startRead],
   );
 
   useEffect(() => {
     setData(null);
-    setPages(1);
+    pagesRef.current = 1;
     setOverlay(new Map());
     setSelection({ selected: new Set(), anchor: null });
     void load(1);
   }, [load]);
+
+  // The Undo of a move calls the canvas that is on screen, not the one that
+  // made the move (`canvasRelay`).
+  useEffect(
+    () =>
+      canvasRelay.mount({
+        reread: () => load(pagesRef.current),
+        placed: (done) => {
+          setOverlay((prev) => applyResults(prev, done));
+          for (const r of done) if (r.ok) flash(r.taskId);
+        },
+      }),
+    [load, flash],
+  );
 
   // Every task on the canvas, with the place the server gave it.
   const base = useMemo(() => {
@@ -275,11 +298,8 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
         {
           record: undoApi.record,
           notify: (message) => toast.show({ variant: "error", title: message }),
-          after: () => load(pages),
-          placed: (done) => {
-            setOverlay((prev) => applyResults(prev, done));
-            for (const r of done) if (r.ok) flash(r.taskId);
-          },
+          after: canvasRelay.after,
+          placed: canvasRelay.placed,
         },
         moved,
         to,
@@ -304,13 +324,13 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
       selected: new Set([...prev.selected].filter((id) => !okIds.has(id))),
       anchor: prev.anchor,
     }));
-    void load(pages);
+    void load(pagesRef.current);
   }
 
   async function loadMore() {
     setLoadingMore(true);
-    const next = pages + 1;
-    setPages(next);
+    const next = pagesRef.current + 1;
+    pagesRef.current = next;
     await load(next);
     setLoadingMore(false);
   }
@@ -472,7 +492,7 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
     return error ? (
       <div className="flex flex-col items-start gap-2 p-6" role="alert">
         <p className="text-sm text-foreground">Could not read the backlog. {error}</p>
-        <Button size="sm" variant="secondary" onClick={() => void load(pages)}>
+        <Button size="sm" variant="secondary" onClick={() => void load(pagesRef.current)}>
           Try again
         </Button>
       </div>
@@ -496,7 +516,7 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
           <p className="text-xs text-foreground">
             Could not read the backlog again, so it can be out of date. {error}
           </p>
-          <Button size="sm" variant="ghost" onClick={() => void load(pages)}>
+          <Button size="sm" variant="ghost" onClick={() => void load(pagesRef.current)}>
             Try again
           </Button>
         </div>
@@ -535,7 +555,7 @@ export function BacklogCanvas({ node, phone, statuses, onOpenTask }: BacklogCanv
             onPlan={async (plan) => {
               const made = await projectsApi.createCycle(node.id, plan);
               flash(`cycle:${made.cycle.id}`);
-              await load(pages);
+              await load(pagesRef.current);
             }}
           />
         </div>

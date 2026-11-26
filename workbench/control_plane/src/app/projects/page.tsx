@@ -104,7 +104,7 @@ import { WorkStyleDialog } from "./components/WorkStyleDialog";
 import { probeSprints } from "./lib/backlogCanvas";
 import { WORK_STYLE_LABEL } from "./lib/projectMenu";
 import { backlogOffered, canvasOnScreen, canvasesFor, stylePickerOffered } from "./lib/viewTabs";
-import { workStyle, workStyleOf } from "./lib/workStyle";
+import { savedStyleTitle, workStyleOf } from "./lib/workStyle";
 import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
@@ -1020,11 +1020,6 @@ const MODE_OPTIONS: readonly ModeOption<ViewMode>[] = VIEW_MODES.map((entry) => 
   id: entry.id,
   icon: entry.icon,
 }));
-
-/** WS-39 SP-3a — the name of a node's style, for the receipt of a save. */
-function workStyleLabelOf(node: ProjectRow): string {
-  return workStyle(workStyleOf(node)).label;
-}
 
 /** #918. The lane sizes of a task-list answer, or null when it sent none. */
 function countsOf(res: {
@@ -3804,7 +3799,8 @@ function ProjectsWorkspace() {
     Boolean(managingStatuses) ||
     Boolean(managingLifecycle) ||
     Boolean(savingTemplateOf) ||
-    Boolean(pickingUnder);
+    Boolean(pickingUnder) ||
+    Boolean(workStyleFor);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -6282,6 +6278,7 @@ function ProjectsWorkspace() {
       {workStyleFor ? (
         <WorkStyleDialog
           node={workStyleFor}
+          level={levelOf(visibleRoots, workStyleFor.id)}
           onClose={() => setWorkStyleFor(null)}
           onSaved={(fresh) => {
             setSelected((current) =>
@@ -6291,7 +6288,11 @@ function ProjectsWorkspace() {
             toast.show({
               key: `project-style:${fresh.id}`,
               variant: "success",
-              title: `${fresh.name} now works as ${workStyleLabelOf(fresh)}`,
+              title: savedStyleTitle(
+                fresh.name,
+                workStyleOf(fresh),
+                levelOf(visibleRoots, workStyleFor.id),
+              ),
             });
           }}
         />
