@@ -1441,6 +1441,13 @@ class TenantScopeMiddleware:
             release_tenant(token)
 
 
+# SBX-2 (agent_sandbox.md §12.2 decision 9): the 4 MB cap and the log line of
+# each call that the sandbox sibling of branch 0 admitted. Pure ASGI, and
+# inside TenantScopeMiddleware, so the record of the call and the route run
+# in one task. Every other request passes through byte for byte.
+from gateway.sandbox_door import SandboxDoorLimits  # noqa: E402
+
+app.add_middleware(SandboxDoorLimits)
 app.add_middleware(TenantScopeMiddleware)
 
 # WS-41 I-7: cap an import upload BEFORE it is read. FastAPI spools a whole

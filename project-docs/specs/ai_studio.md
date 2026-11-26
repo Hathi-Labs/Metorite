@@ -1105,6 +1105,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-3b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-3b.md) |
 | **AF-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-4.md) |
 | **AF-5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5.md) |
+| **AF-5b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5b.md) |
 | **AF-6** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-6.md) |
 | **AF-7** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/AF-7.md) |
 | **AF-8a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-8a.md) |
@@ -1127,8 +1128,11 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E4.md) |
 | **E5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E5.md) |
 | **E6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/E6.md) |
+| **E7c-1** | 🔨 BUILT (2026-11-15, task 3342) | STD | AGENT-SAFE | [row](ai_studio_rows/E7c-1.md) |
 | **E7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E7.md) |
+| **E7a** | 🔨 BUILT (2026-11-15, task 3341) | STD | AGENT-SAFE | [row](ai_studio_rows/E7a.md) |
 | **E7f** | 🔨 BUILT (2026-11-15, task 3382) | STD | AGENT-SAFE | [row](ai_studio_rows/E7f.md) |
+| **E7b** | 🔨 BUILT (2026-11-15, task 3340) | STD | AGENT-SAFE | [row](ai_studio_rows/E7b.md) |
 | **E8a** | 🔨 BUILT, dark (2026-11-13, task 3095) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8a.md) |
 | **E8b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8b.md) |
 | **E8c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E8c.md) |
@@ -1248,7 +1252,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I3.md) |
 | **I4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/I4.md) |
 | **I5** | 🔨 BUILT, dark: the backend seam only (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/I5.md) |
-| **I6** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
+| **I6** | 🔨 FHIR map BUILT (2026-11-11), ABDM link open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
 | **I7** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I7.md) |
 | **I8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8.md) |
 | **I8a** | 🔨 BUILT, dark (2026-11-14), task 3168 | STD | AGENT-SAFE | [row](ai_studio_rows/I8a.md) |
@@ -1838,6 +1842,8 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 | 18 | Member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). A capture of a screen (G13) and a compile (L1, L3) run in the member's browser | D127.2, D146.1 as D202.4 amends it | Advisory. The review of each code slice checks it |
 
 **The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request and a 4 MiB response. It also sets 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
+
+**Status (L6a, task 2417).** The limits and the codes are data only, in `studio_limits.py`, `limits.ts` and `codeErrors.ts`, with a golden file. Only the source size has a refusal test today. The other limits wait on L1, L7, SBX-9 and B5.
 
 | Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
 |---|---|---|---|

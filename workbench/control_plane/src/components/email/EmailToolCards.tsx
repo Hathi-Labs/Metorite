@@ -45,7 +45,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import AppIcon from "@/components/Icon";
 import { clipWords } from "@/lib/fencedText";
 import Readout from "@/components/Readout";
-import { withoutIds } from "@/lib/readout";
+import { withoutFrame, withoutIds } from "@/lib/readout";
 import { useContext, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import type { ToolEvent } from "@/components/MarkdownMessage";
@@ -1802,7 +1802,10 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
   const args = e.args as Record<string, unknown> | undefined;
   const action = String(args?.action ?? "").toLowerCase();
   const ids = args?.message_ids;
-  const count = Array.isArray(ids) ? ids.length : 0;
+  // §18.13 (task 3977): a trash that checked Drafts answers with what went.
+  // The member can pick more or fewer drafts than the call named.
+  const went = /^Trashed (\d+) message\(s\):/.exec((e.result || "").trimStart());
+  const count = went ? Number(went[1]) : Array.isArray(ids) ? ids.length : 0;
   const meta = INBOX_ACTION_META[action];
   // Unknown action or no count → fall back to the generic confirmation.
   if (!meta || count === 0) return <ActionResultCard event={e} />;
@@ -2267,7 +2270,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       id={`tool:${e.id}`}
       title={meta.label}
       icon={iconName}
-      summary={withoutIds(detail.split(/\r?\n/)[0] ?? "")}
+      summary={withoutIds(withoutFrame(detail).split(/\r?\n/)[0] ?? "")}
       receipt={!failed && !readsOnly(e)}
       header="own"
     >
@@ -2365,7 +2368,7 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
 /** A `read_thread` result as a member reads it: each line as sent, with no
  *  id. Exported for its test. */
 export function threadText(raw: string | null | undefined): string {
-  return (raw || "")
+  return withoutFrame(raw || "")
     .split(/\r?\n/)
     .map((line) => withoutIds(line))
     .join("\n")

@@ -1473,6 +1473,15 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
+    # P-1b (task 3922): a task from a mail, in the member's own task list. It
+    # shows its exact fields on one card first (``skill_my_tasks.core``), with
+    # the mailbox line. In a held chat it refuses the AI path, because that
+    # card cannot show the fields. ``open_world=True``: the reply path labels
+    # the thread at the mail provider.
+    "my_tasks_capture_from_mail": _pin(
+        "account_id email_id thread_id title notes disposition next_action "
+        "assignee_name due_at defer_until context energy time_estimate_mins steps "
+        "reply_subject reply_to_message_id"),
     # The class B tools of projects-bulk.
     "create_tasks": _pin("project_id tasks"),
     "edit_comment": _pin("task_id comment_id body"),
@@ -1550,6 +1559,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+    # Each card names the list and the module, or the steps, before the write.
+    "crm_decide_suggestion": _pin("action list_name module"),
+    "crm_rerun_analysis": _pin(""),
     # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
     # open_world=True as each CRM write does, so a covered run holds it off.
     # CRM-M4a adds `kind` and `feeds`: a lead pipeline, and the deal pipeline
@@ -1557,6 +1570,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
+    # CRM-M2e (task 3951): a stage, a lead status or a lost reason. Each card
+    # shows the row and each changed field before the write.
+    "crm_edit_status": _pin("kind action name new_name status_type probability hidden"),
+    "crm_edit_lost_reason": _pin("action label new_label hidden"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter
@@ -1593,7 +1610,24 @@ HELD_CLASS_C_TOOLS: Mapping[str, frozenset[str]] = {
 #: A pack family is one way to know a tool of an owner, and a run of the owner's
 #: own agent is the other: its own tool list can hold a write that no family
 #: names, so the rule reads that too (the ``owner`` of :func:`is_held_off_write`).
-HELD_WRITE_OWNERS: frozenset[str] = frozenset({"projects-assistant", "crm-assistant"})
+#:
+#: ``org-admin`` (PAR-2a, owner decision of 2026-11-23, task 3102). Its writes
+#: grant roles and admit outside addresses to the org, so mail that a held
+#: chat read must not steer them. Each says ``open_world=False`` and shows a
+#: card, and none is on :data:`HELD_CARD_WRITE_TOOLS`. So a held chat holds off
+#: ``set_member_roles``, ``set_member_status`` and ``answer_access_request``.
+#: ``list_members`` says ``read_only=True`` and stays. The owner never runs as
+#: an agent, so only its pack family reaches the rule. Fence:
+#: ``tests/unit/test_org_admin_tools.py``.
+#:
+#: PAR-6a (task 3109) adds the Integrations tools to the same pack. A held chat
+#: holds off ``revoke_agent_connection``, ``disconnect_integration`` and
+#: ``set_mcp_server`` by this rule. ``probe_integration`` and
+#: ``discover_api_setup`` say ``open_world=True``, so :func:`is_egress_tool`
+#: holds them off, as it holds off ``web_search``. The two reads stay. Fence:
+#: ``tests/unit/test_integrations_admin_tools.py``.
+HELD_WRITE_OWNERS: frozenset[str] = frozenset(
+    {"projects-assistant", "crm-assistant", "org-admin"})
 #: The tools of an owner's own agent that stay though no pack family names them:
 #: each sends only reads, and writes only a file of the chat, as
 #: ``tool_packs.CHAT_FILE_TOOLS``. ``crm_report`` says ``read_only=False`` so that
@@ -1715,7 +1749,7 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its twenty tools are the
+#: slug. The first pack is the ``calendar-day`` pack, and its twenty tools are the
 #: My Tasks planner tools, the two calendar settings tools, the four day rule
 #: tools, the read of the synced events (CE-15), and the three reads of P-1a
 #: (task 3112). The Tasks assistant holds
@@ -1748,6 +1782,14 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # apply replays. Mail that a held chat read could steer that apply.
         "my_tasks_close_my_day", "my_tasks_start_my_day",
     }),
+    # P-1c (task 3923): the one act of the dark ``calendar-connections`` pack,
+    # Sync now and the task switch. It shows a card, but it is
+    # ``open_world=True``, so :func:`is_egress_tool` drops it in a held chat
+    # also while ``HELD_CARD_WRITES_ORGS`` is empty. This entry drops it while
+    # that switch names the org, and it keeps the tool out of
+    # :func:`_owner_tool_names`, though its owner ``org-admin`` is in
+    # :data:`HELD_WRITE_OWNERS`. Fence: ``tests/unit/test_calendar_day_held.py``.
+    "calendar-connections": frozenset({"my_tasks_calendar_connection"}),
 }
 
 

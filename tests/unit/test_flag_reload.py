@@ -137,6 +137,23 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_app_owner_root_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-44, agent_coordination.md §3.10.1. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from gateway.routes.projects.needs_attention import app_roots_of
+
+    root = "11111111-2222-4333-8444-555555555555"
+    assert fr.reloadable("APP_OWNER_ROOT_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("APP_OWNER_ROOT_ORGS", "")
+    get_settings.cache_clear()
+    assert app_roots_of("acme") == ()
+    env(**{**_START, "APP_OWNER_ROOT_ORGS": f"acme={root}"})
+    assert fr.reload_flags().applied == ("APP_OWNER_ROOT_ORGS",)
+    assert app_roots_of("acme") == (root,)
+    assert app_roots_of("globex") == ()
+
+
 def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
     and the one reader sees a change with no restart."""
@@ -600,6 +617,23 @@ def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert api_connections_allowed("ACME ")
     assert not api_connections_allowed("globex")
     assert not api_connections_allowed(None)
+
+
+def test_integration_access_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """ACC-1, integrations_console.md §3.9.4. The reload list holds the key,
+    and the one reader of the switch of the two rule routes sees a change
+    with no restart."""
+    from gateway.routes.admin._common import integration_access_allowed
+
+    assert fr.reloadable("INTEGRATION_ACCESS_ORGS")
+    monkeypatch.setenv("INTEGRATION_ACCESS_ORGS", "")
+    get_settings.cache_clear()
+    assert not integration_access_allowed("acme")
+    env(**{**_START, "INTEGRATION_ACCESS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("INTEGRATION_ACCESS_ORGS",)
+    assert integration_access_allowed("ACME ")
+    assert not integration_access_allowed("globex")
+    assert not integration_access_allowed(None)
 
 
 def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:

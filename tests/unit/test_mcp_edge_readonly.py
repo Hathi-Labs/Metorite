@@ -105,6 +105,12 @@ def open_edge(armed, monkeypatch):  # noqa: F811 — a fixture
     # CIV-14b fix round 1: `upload_task_image` shows only for an organization
     # of `mcp_image_upload_orgs`.
     monkeypatch.setattr(settings, "mcp_image_upload_orgs", "*")
+    # SW-27c1: `mark_number` shows only for an organization of
+    # `sequence_marks_orgs`.
+    monkeypatch.setattr(settings, "sequence_marks_orgs", "*")
+    # EA-5: `get_company_context` shows only for an organization of
+    # `agent_resources_orgs`.
+    monkeypatch.setattr(settings, "agent_resources_orgs", "*")
     armed.store.tokens[FULL] = _lookup(scope=" ".join(FULL_SCOPES), scopes=FULL_SCOPES)
     armed.store.tokens[READ] = _lookup(scope=" ".join(READ_SCOPES), scopes=READ_SCOPES)
     return armed
@@ -185,6 +191,18 @@ class TestTheList:
 
     async def test_a_read_token_lists_the_same_on_both_paths(self, open_edge):
         assert await _names(READONLY, token=READ) == await _names(NORMAL, token=READ)
+
+    async def test_the_company_context_stays_on_the_readonly_path(self, open_edge):
+        """EA-5. ``get_company_context`` is a read of ``context:read``, a read
+        scope, so the read-only door keeps it for both tokens and serves it."""
+        from tests.unit.test_mcp_edge_resources import ME_OF_ORG
+        assert "get_company_context" in await _names(READONLY)
+        assert "get_company_context" in await _names(READONLY, token=READ)
+        open_edge.gateway.me = dict(ME_OF_ORG)
+        result = await _result(READONLY, "tools/call",
+                               {"name": "get_company_context", "arguments": {}})
+        assert result["isError"] is False
+        assert set(result["structuredContent"]) == {"name", "slug"}
 
     async def test_app_write_hides_from_a_connection_with_no_write_scope(self, open_edge):
         """``app_write`` has no fixed scope, so ``tools._covered`` hides it

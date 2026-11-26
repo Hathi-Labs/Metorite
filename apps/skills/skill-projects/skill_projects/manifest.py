@@ -284,6 +284,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
     Route("GET", "/projects/plan/order", "my_work", "A"),
+    # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
+    # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
+    Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -540,8 +543,16 @@ MANIFEST: tuple[Route, ...] = (
         "/projects/nodes/{project_id}/sequences/{name}/reserve",
         "",
         "X",
-        "SW-27a: an agent reserves a number over MCP once SW-27b (task 3893) adds "
-        "reserve_number. The chat has no need to reserve a number.",
+        "SW-27b (task 3893): the MCP door only. An outside agent reserves a number "
+        "through reserve_number. The chat has no need to reserve a number.",
+    ),
+    Route(
+        "POST",
+        "/projects/reservations/{reservation_id}/mark",
+        "",
+        "X",
+        "SW-27c1 (task 3938): the MCP door only. The agent of the run marks its "
+        "number through mark_number. A person's release comes with SW-27c3.",
     ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
@@ -589,7 +600,9 @@ MANIFEST: tuple[Route, ...] = (
     # WS-64 OP-6e (D-OP-13): only the run's member answers, on the task card.
     # The chat lists the request (`waiting_agent_requests`) and links the card.
     Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X", _CARD_ANSWER_REASON),
-    # SW-39: the child runs of a run. Not a chat act (see the reason).
+    # SW-39: the child runs of a run. Not a chat act (see the reason). SW-114:
+    # the POST is a pair of MCP_WRITE_ROUTES, the route of `report_subagent`,
+    # and `test_mcp_edge_coverage.py` names it in CLASS_X_WRITES.
     Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It
@@ -653,6 +666,9 @@ PLANNED: dict[str, str] = {
     "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
     # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
     "board_stats": "Metorite task 2223, chat parity for the board count",
+    # SW-45 (task 1878): the route is built, and the MCP `my_work` reads it.
+    # The chat `my_work` does not show the group yet (agent_coordination.md SW-45).
+    "own_app_free": "WS-MCP SW-45 follow-up, chat parity for the own_app_free group of my_work",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
@@ -1663,6 +1679,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "project_id": _AGENT_OVERVIEW_REASON,
         "shape": _AGENT_OVERVIEW_REASON,
         "show_quiet": _AGENT_OVERVIEW_REASON,
+        "detail": _AGENT_OVERVIEW_REASON,
+        "session": _AGENT_OVERVIEW_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
@@ -1798,6 +1816,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "timezone": _SETTINGS_AFTER_CREATE_REASON,
         "task_prefix": _TASK_PREFIX_REASON,
         "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
+        # WS-39 SP-3a: the app's create sends no style, and a new node is Flow.
+        "work_style": (
+            "A new node starts as Flow. The app sets the style after the create, in "
+            "How this team works."
+        ),
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
         "If-Match": (
@@ -1912,6 +1935,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
         "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
     },
     ("POST", "/projects/cycles/{cycle_id}/start"): {"capacity": "G26"},
+    # G26 (WS-39 SP-3a): the style picker and the backlog read of the Backlog
+    # canvas. SP-5 sends each field.
+    ("PATCH", "/projects/nodes/{project_id}"): {"work_style": "G26"},
+    ("GET", "/projects/tasks"): {"cycle": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
@@ -1992,6 +2019,13 @@ UI_ACTIONS: dict[str, str] = {
     # `projects_agent_parity.md` §3.3, and UI_EXEMPT needs a class X route.
     # The chat gets the set with its plan tools in CC-10 (task 1978).
     "projectsApi.myTodaySet": "my_work",
+    # ── projectsApi: the cycles of the Backlog canvas (WS-39 SP-3a) ──────
+    # SP-5a (Metorite task 964) built each tool, so no row is debt.
+    "projectsApi.cycles": "list_cycles",
+    "projectsApi.cycle": "cycle_detail",
+    "projectsApi.createCycle": "create_cycle",
+    "projectsApi.addCycleTask": "plan_cycle",
+    "projectsApi.removeCycleTask": "plan_cycle",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
     "projectsApi.load": "analytics_load",

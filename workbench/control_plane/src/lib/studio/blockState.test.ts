@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { blockStateCopy, blockStateKind, type BlockStateInput } from "@/lib/studio/blockState";
+import { blockStateCopy, blockStateKind, pluralOf, type BlockStateInput } from "@/lib/studio/blockState";
 
 const base: BlockStateInput = { loading: false, error: null, forbidden: false, rows: 3, filtersActive: false };
 
@@ -48,5 +48,15 @@ describe("blockStateCopy", () => {
     expect(blockStateCopy("no-permission", { ...w, askWho: "an admin" }).hint).toBe("Ask an admin for access.");
     expect(blockStateCopy("no-permission", w).hint).toContain("owner");
     expect(blockStateCopy("no-permission", w).action).toBeUndefined();
+  });
+});
+
+describe("pluralOf", () => {
+  it("makes the lower-case plural of an object label", () => {
+    expect(pluralOf("Visit")).toBe("visits");
+    expect(pluralOf("Company")).toBe("companies");
+    expect(pluralOf("Day")).toBe("days");
+    expect(pluralOf("Box")).toBe("boxes");
+    expect(pluralOf("  ")).toBe("records");
   });
 });

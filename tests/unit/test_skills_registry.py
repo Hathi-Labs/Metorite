@@ -105,7 +105,7 @@ def test_no_stale_registry_entries():
 #: on purpose (CAL-1a, task 1675): the day planner tools are My Tasks functions,
 #: and the scope of the Projects specialist must not change. Such a pack is
 #: checked against what the owner builds only.
-SCOPE_FREE_PACKS = frozenset({"calendar-day"})
+SCOPE_FREE_PACKS = frozenset({"calendar-day", "mail-tasks"})  # P-1b (task 3922): My Tasks tools too
 
 
 def _owner_universe(owner: str, *, scoped: bool = True) -> set[str]:

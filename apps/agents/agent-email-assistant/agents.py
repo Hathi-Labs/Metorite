@@ -1040,11 +1040,62 @@ async def _mailbox_name(account_id: str) -> str | None:
     return None
 
 
+#: The answer of ``list_accounts(organization=true)`` to a 401 or a 403. The
+#: gateway route decides, by the session of the member of the run: the route
+#: needs ``admin:members:read``, and the email router adds ``feature:email``,
+#: so a 403 can mean either one. No argument of the tool names a member or an
+#: organization (P-2a, task 3111).
+_ORG_COUNTS_REFUSED = (
+    "Not read. The mailbox counts of the organization need the admin right "
+    "to read members, and the Email feature, for this member. One of them is "
+    "missing. Your own mailboxes: call list_accounts with no argument."
+)
+
+
+async def _org_mailbox_counts() -> str:
+    """``list_accounts(organization=true)``: the mailbox counts of the
+    organization of the member, as the Email tab of Organisation shows them.
+
+    ``GET /email/admin/connections`` takes no argument. The organization and
+    the admin right come from the session of the member of the run, never
+    from the model (R5, D-PAR-2). The answer is seven integers, so it holds
+    no text of a sender."""
+    try:
+        data = await _get("/email/admin/connections")
+    except GatewayError as exc:
+        if exc.status in (401, 403):
+            return _ORG_COUNTS_REFUSED
+        raise
+    if not isinstance(data, dict):
+        data = {}
+
+    def n(key: str) -> int:
+        try:
+            return int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return "\n".join([
+        f"Mailboxes in your organization: {n('members')} member(s) connected "
+        f"{n('mailboxes')} mailbox(es).",
+        f"By provider: Microsoft {n('microsoft')}, Gmail {n('gmail')}, "
+        f"IMAP {n('imap')}.",
+        f"Sync errors: {n('sync_errors')}. Waiting for the first sync: "
+        f"{n('first_sync_pending')}.",
+    ])
+
+
 @_annotate_risk(open_world=False)
-async def list_accounts() -> str:
+async def list_accounts(organization: bool = False) -> str:
     """List the user's connected email accounts as "label · address", with
     the id and the unread count — also answers "how many unread do I have?"
-    via the per-account + total."""
+    via the per-account + total.
+
+    ``organization=true`` gives the counts of the whole organization in
+    place of the list: how many members connected a mailbox, by provider,
+    and how many mailboxes have a sync error. Only an admin may read them."""
+    if organization:
+        return await _org_mailbox_counts()
     accounts = await _accounts()
     if not accounts:
         return "No email accounts are connected."
@@ -1818,10 +1869,52 @@ async def find_priority(account_id: str | None = None, kind: str = "needs_reply"
     return await find_needs_reply(account_id, offset=offset)
 
 
+async def _older_mail(account_id: str, before: str) -> str:
+    """``get_account_overview(older_than=...)``: how much mail Metorite keeps
+    for the mailbox from before a date, as the dialog "Remove older mail"
+    shows it first (``GET .../storage/older``, EM-T6c item 8).
+
+    It is a read. The route writes nothing and counts no draft. The answer
+    says that a removal acts on Metorite's copy only, so the member never
+    reads it as a delete at the provider (D-EM-14)."""
+    when = str(before or "").strip()
+    day = re.match(r"\d{4}-\d{2}-\d{2}", when)
+    try:
+        date.fromisoformat(day.group(0) if day else "")
+    except ValueError:
+        return "Give older_than as a date in the past, for example 2025-01-01."
+    box, question = await _read_mailbox(account_id, "get_account_overview")
+    if question:
+        return question
+    try:
+        data = await _get(f"/email/accounts/{box}/storage/older", {"before": when})
+    except GatewayError as exc:
+        if exc.status == 400 and exc.detail:
+            return f"Nothing read. {exc.detail}"
+        raise
+    data = data if isinstance(data, dict) else {}
+    size = _size_text(data.get("bytes")) if data.get("bytes") else ""
+    return "\n".join([
+        await _mailbox_line(box),
+        f"Mail received before {when}: {data.get('messages', 0)} email(s), "
+        f"{size or '0 KB'} in Metorite. Drafts do not count.",
+        "A removal takes this mail out of Metorite only. The mailbox at the "
+        "provider keeps it. The member removes it in the mailbox settings of "
+        "the Email app.",
+    ])
+
+
 @_annotate_risk(open_world=False)
-async def get_account_overview(account_id: str, days: int = 30) -> str:
+async def get_account_overview(account_id: str, days: int = 30,
+                               older_than: str | None = None) -> str:
     """High-level snapshot: totals, read-rate, top senders, sender categories.
-    ``days`` sets the window, 1 to 365 (default 30)."""
+    ``days`` sets the window, 1 to 365 (default 30).
+
+    ``older_than`` (a date, for example 2025-01-01) gives in place of the
+    snapshot how many emails Metorite keeps from before that date, and their
+    size. It changes nothing."""
+    if older_than:
+        return await _older_mail(account_id, older_than)
     try:
         window = max(1, min(int(days or 30), 365))
     except (TypeError, ValueError):
@@ -1883,6 +1976,143 @@ def _near_sender_line(near: Any, *, found: bool) -> str:
             "matches these filters.")
 
 
+#: Where the text of a search row comes from, for the data note of
+#: ``acb_skills.untrusted`` (P-2a, task 3111), as ``_EMAIL_DATA_WHAT`` says it
+#: for one email.
+_SEARCH_DATA_WHAT = (
+    "The rows below come from mail: the names, the subjects and the matched "
+    "text are text that the senders wrote."
+)
+#: The label counts of a folder come from labels that the rules and the
+#: member set, and a rule can write a label from the text of a mail.
+_COUNTS_DATA_WHAT = (
+    "The label names below come from the labels on the mail. A rule can take "
+    "a label name from the text of a mail."
+)
+
+
+#: The answer of a search of every folder that found nothing.
+_SEARCH_NO_MATCH = "No email in any folder but Junk and Trash matched."
+#: The last line of a broadened answer. The route broadens on page 1 only.
+_SEARCH_BROADENED_ONE_PAGE = (
+    "This broadened answer has only this one page. For other mail, search "
+    "again with more exact words."
+)
+#: A page after page 1 that found nothing, with a total of 0. A broadened
+#: page 1 can hold matches that a strict page 2 does not count.
+_SEARCH_PAST_PAGE_ONE = (
+    "Nothing on this page. Page 1 (offset 0) of this search held the matches: "
+    "a search that broadened to ANY word has only one page. For other mail, "
+    "search again with more exact words."
+)
+#: The filters that ``query_inbox(counts=true)`` cannot apply: the counts
+#: route takes only the mailbox and the folder.
+_COUNTS_FILTERS = ("query", "days", "sender_category", "from_email",
+                   "unread_only", "starred_only", "has_attachments", "importance",
+                   "to_email", "attachment_name")
+
+
+def _mark_free(value: Any, limit: int) -> str:
+    """The highlight of a search row on one line, with no ``<mark>`` tag."""
+    return _one_line(re.sub(r"</?mark>", "", str(value or "")), limit)
+
+
+async def _search_everywhere(
+    account_id: str | None, query: str | None, params: dict[str, Any],
+    start: int, size: int,
+) -> str:
+    """``query_inbox(everywhere=true)``: the search bar of the Email app
+    (``GET /email/search``). It searches every folder but Junk and Trash,
+    sent mail too (``folder=all``, as the search bar and ``narrow_source``
+    send it). With words it ranks the mail by how well it matches them, and
+    with no words it gives the newest first. Each row shows the text that
+    matched.
+
+    The route broadens to ANY word on page 1 only, when no mail holds every
+    word. A broadened answer therefore has one page, and its answer names no
+    offset (the Email app also stops at page 1 of it). A later page of such a
+    query is a strict search, so a page past page 1 that finds nothing with a
+    total of 0 says that page 1 held the matches. It never says "nothing
+    matched".
+
+    *params* holds the filters of ``query_inbox`` in the names of
+    ``/email/messages``. This maps them to the names of ``/email/search``.
+    The rows sit in one block of a new frame, because a sender wrote the
+    names, the subjects and the matched text (EM-G11d)."""
+    sp: dict[str, Any] = {
+        "folder": "all", "light": "true",
+        "page_size": str(size), "page": str(start // size + 1),
+    }
+    if query:
+        sp["q"] = query
+    if account_id:
+        sp["account_id"] = account_id
+    renames = {"from_email": "from_addr"}
+    for key in ("received_after", "sender_category", "from_email", "is_read",
+                "is_starred", "has_attachments", "importance"):
+        if key in params:
+            sp[renames.get(key, key)] = params[key]
+    data = await _get("/email/search", sp)
+    data = data if isinstance(data, dict) else {}
+    emails = [e for e in data.get("emails") or [] if isinstance(e, dict)]
+    total = data.get("total") or 0
+    if not emails:
+        if start and not total:
+            return _SEARCH_PAST_PAGE_ONE
+        return page_line(total, start, 0) or _SEARCH_NO_MATCH
+    labels = {} if account_id else await _account_labels()
+    multi = len(labels) > 1
+    rows: list[str] = []
+    for e in emails:
+        frm = e.get("from_address", {}) or {}
+        acct = f" [{labels.get(str(e.get('account_id')), '?')}]" if multi else ""
+        matched = _mark_free(e.get("highlight"), 160) or _one_line(e.get("snippet"), 80)
+        rows.append(
+            f"• id={e.get('id')}{acct}{_link_field(e.get('id'), e.get('subject'))} | "
+            f"{(e.get('received_at') or '')[:10]} | {_one_line(e.get('folder'), 30)} | "
+            f"{_one_line(frm.get('name') or frm.get('email'), 80)}: "
+            f"{_one_line(e.get('subject') or '(no subject)', 160)} — {matched}")
+    frame = UntrustedFrame.new()
+    order = "best match first" if query else "newest first"
+    lines = [f"Found {total} emails in every folder but Junk and Trash, {order}; "
+             f"showing {len(rows)}:"]
+    broadened = bool(data.get("broadened"))
+    if broadened:
+        lines.append("No email held every word, so these hold ANY of the words.")
+    lines += [frame.note(_SEARCH_DATA_WHAT), frame.wrap("SEARCH", "\n".join(rows))]
+    if broadened:
+        lines.append(_SEARCH_BROADENED_ONE_PAGE)
+    elif line := page_line(total, start, len(rows)):
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _folder_counts(account_id: str | None, folder: str) -> str:
+    """``query_inbox(counts=true)``: how much mail of a folder carries each
+    label, and how much is unread or carries no label. These are the counts
+    of the quick filters of the Email app (``GET /email/messages/facets``).
+    It reads counts only, never a message."""
+    params: dict[str, Any] = {"folder": folder or "inbox"}
+    if account_id:
+        params["account_id"] = account_id
+    data = await _get("/email/messages/facets", params)
+    data = data if isinstance(data, dict) else {}
+    where = "this mailbox" if account_id else "All inboxes"
+    lines = [
+        f"Folder {_one_line(folder or 'inbox', 30)} in {where}: {data.get('total', 0)} "
+        f"email(s), {data.get('unread', 0)} unread, "
+        f"{data.get('uncategorized', 0)} with no label.",
+    ]
+    counts = data.get("labels") if isinstance(data.get("labels"), dict) else {}
+    if counts:
+        frame = UntrustedFrame.new()
+        lines += [frame.note(_COUNTS_DATA_WHAT), frame.wrap("LABELS", "\n".join(
+            f"• {_one_line(name, 60)}: {n}" for name, n in counts.items()))]
+    else:
+        lines.append("No email in this folder carries a label.")
+    return "\n".join(lines)
+
+
 @_annotate_risk(open_world=False)
 async def query_inbox(
     account_id: str | None = None,
@@ -1900,6 +2130,8 @@ async def query_inbox(
     offset: int = 0,
     to_email: str | None = None,
     attachment_name: str | None = None,
+    everywhere: bool = False,
+    counts: bool = False,
 ) -> str:
     """Search and filter the inbox to answer a question over MANY emails.
     For example "unread mail from Acme" or "sales emails of the last month".
@@ -1917,8 +2149,35 @@ async def query_inbox(
       limit / offset: a page of results (limit at most 100)
     account_id: one mailbox. With none, it reads All inboxes, and each line
       names its mailbox as [label · address].
+    everywhere: true searches every folder but Junk and Trash (sent mail
+      too) as the search bar of the Email app does: best match first, with
+      the text that matched. Use it for "search all my mail" or when a search
+      of one folder finds nothing. folder and sort do not apply. An answer
+      that broadened to ANY word has one page only.
+    counts: true gives only the counts of the folder: emails, unread, no
+      label, and the count for each label. It reads no message. It takes
+      only account_id and folder: with any other filter it reads nothing,
+      so use the normal list (counts=false) for a filtered count.
     Returns the emails with ids. Call read_email for the full text of one.
     """
+    if counts:
+        given = {"query": query, "days": days, "sender_category": sender_category,
+                 "from_email": from_email, "unread_only": unread_only,
+                 "starred_only": starred_only, "has_attachments": has_attachments,
+                 "importance": importance, "to_email": to_email,
+                 "attachment_name": attachment_name}
+        # has_attachments=False is a filter ("no attachment"), as the list path reads it:
+        # only None means "not given". For every other key False or 0 means off.
+        bad = [
+            k
+            for k in _COUNTS_FILTERS
+            if (given[k] is not None if k == "has_attachments" else given[k] not in (None, False, "", 0))
+        ]
+        if bad:
+            return (f"Nothing read. counts=true cannot apply {', '.join(bad)}: it counts a "
+                    "whole folder only. Call query_inbox again with counts=false and "
+                    "the same filters, and read the total of that list.")
+        return await _folder_counts(account_id, folder)
     start, size = _page_start(offset, max(1, min(int(limit or 25), 100)))
     params: dict[str, Any] = {
         "folder": folder, "sort": sort,
@@ -1952,6 +2211,8 @@ async def query_inbox(
         params["has_attachments"] = "true" if has_attachments else "false"
     if importance:
         params["importance"] = importance
+    if everywhere:
+        return await _search_everywhere(account_id, query, params, start, size)
     data = await _get("/email/messages", params)
     emails = data.get("emails", [])
     total = data.get("total", 0)
@@ -2322,6 +2583,15 @@ _INBOX_VERBS = {
 }
 #: The most messages that the card of a bulk act lists, one line each.
 _CARD_MESSAGE_LINES = 20
+#: ``request_confirmation`` clips the context of a card here, with no count.
+_CARD_CONTEXT_MAX = 4000
+
+
+def _capped_lines(lines: list[str], cap: int = _CARD_MESSAGE_LINES) -> list[str]:
+    """The first *cap* lines, then one line that counts the rest."""
+    if len(lines) <= cap:
+        return lines
+    return [*lines[:cap], f"+{len(lines) - cap} more"]
 
 
 async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
@@ -2408,6 +2678,362 @@ async def _inbox_card(
     return await _card_refusal(title, detail, unchanged, context)
 
 
+# ── A trash of a draft checks Drafts (task 3977, §18.13) ─────────────────────
+#
+# Production, 2026-11-26: "delete the draft in my Drafts folder" trashed only
+# the draft that the chat made, and the answer said "deleted" while a second
+# draft of the thread stayed. Dark behind ``CHAT_DRAFT_CHOICE_ORGS``. The
+# match and the words live in ``acb_skills.draft_choice``.
+
+#: What a listing of messages is, for the data note of the answer.
+_DRAFT_LIST_WHAT = (
+    "The list of messages below holds subjects, recipients and text that a "
+    "person or an outside sender wrote.")
+_NO_DRAFT_MOVED = "No draft was moved to Trash."
+#: The errors of a gateway call that the draft trash reports, and survives.
+_CALL_ERRORS = (GatewayError, httpx.HTTPError)
+
+
+def _draft_choice() -> Any:
+    """``acb_skills.draft_choice`` when ``CHAT_DRAFT_CHOICE_ORGS`` is on for
+    the run's org, else None. An older platform with no module reads as off."""
+    try:
+        from acb_skills import draft_choice
+    except ImportError:
+        return None
+    return draft_choice if draft_choice.draft_choice_on() else None
+
+
+async def _summaries_for_trash(ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Each message of *ids* that the member can read, by the id of the call.
+
+    ONE read of ``POST /email/messages/summaries``, the read of the card of
+    before. It fetches no body, and it drops an id that is no UUID or no
+    message of the member, so one bad id never stops a good one. A failed
+    read raises."""
+    res = await _post("/email/messages/summaries", {"ids": ids})
+    rows = {str(s.get("id")): dict(s) for s in (res or {}).get("summaries") or []
+            if isinstance(s, dict) and s.get("id")}
+    found: dict[str, dict[str, Any]] = {}
+    for mid in ids:
+        row = rows.get(_canonical_id(mid) or mid)
+        if row is None:
+            continue
+        if row.get("subject") == "(no subject)":
+            row["subject"] = ""  # the route's placeholder matches no draft
+        found[mid] = row
+    return found
+
+
+async def _matching_drafts(
+    rule: Any, anchors: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(drafts, cut)``: each draft in Drafts that matches an anchor, read
+    from each mailbox of the anchors. *cut* is True when a mailbox holds more
+    drafts than one page."""
+    found: list[dict[str, Any]] = []
+    cut = False
+    for account in sorted({str(a.get("account_id") or "") for a in anchors} - {""}):
+        page = await _get("/email/messages", {
+            "folder": "drafts", "account_id": account, "page_size": rule.PAGE_SIZE,
+        }) or {}
+        rows = [r for r in page.get("emails") or [] if isinstance(r, dict)]
+        cut = cut or int(page.get("total") or 0) > len(rows)
+        found += rule.matching(rows, anchors)
+    return found, cut
+
+
+def _own_trashed(
+    rule: Any, read: dict[str, dict[str, Any]], accounts: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Each named message in Trash that its own mailbox sent: a draft that
+    left Drafts before this call. A mail from another sender is never one, so
+    it never finds drafts for the card."""
+    out = []
+    for row in read.values():
+        box = accounts.get(str(row.get("account_id") or "")) or {}
+        mine = str(box.get("email_address") or "").strip().lower()
+        sender = str(row.get("from_email") or "").strip().lower()
+        if rule.is_trashed(row) and mine and sender == mine:
+            out.append(row)
+    return out
+
+
+class _TrashPlan:
+    """What one draft trash shows and does. ``ordered`` is each matching
+    draft, the named ones first. ``others`` is each named message that is no
+    draft and not in Trash. Each value of ``boxes`` names a mailbox."""
+
+    def __init__(self, rule: Any, ids: list[str], read: dict[str, dict[str, Any]],
+                 accounts: dict[str, dict[str, Any]]) -> None:
+        self.rule = rule
+        self.read = read
+        self.accounts = accounts
+        self.named = [m for m in read.values() if rule.is_draft(m)]
+        self.anchors = self.named + _own_trashed(rule, read, accounts)
+        self.others = [m for m in read.values()
+                       if not rule.is_draft(m) and not rule.is_trashed(m)]
+        self.already = [m for m in read.values() if rule.is_trashed(m)]
+        self.unknown_ids = len([mid for mid in ids if mid not in read])
+        self.ordered: list[dict[str, Any]] = []
+        self.cut = False
+
+    def box(self, message: dict[str, Any]) -> str:
+        account = self.accounts.get(str(message.get("account_id") or ""))
+        return _mailbox_text(account) if account else "an unknown mailbox"
+
+    def detail(self) -> str:
+        drafts = sorted({str(m.get("account_id") or "") for m in self.ordered})
+        effect = self.rule.provider_line(
+            str((self.accounts.get(b) or {}).get("provider") or "") for b in drafts
+        ) if drafts else "They leave their folder and go to Trash."
+        boxes = sorted({self.box(m) for m in self.ordered + self.others})
+        noun = "Mailbox" if len(boxes) == 1 else "Mailboxes"
+        text = f"{effect} {noun}: {', '.join(boxes)}."
+        if self.unknown_ids:
+            text += (f" {self.unknown_ids} id(s) name no message of yours, and "
+                     "nothing happens to them.")
+        return text
+
+    def pairs(self, drafts: list[dict[str, Any]],
+              others: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        """``(label, hint)`` of each draft, then of each other message. No
+        two pairs read the same (``draft_choice.unique``)."""
+        out = [self.rule.describe(m) for m in drafts]
+        for m in others:
+            when = str(m.get("received_at") or "")[:16].replace("T", " ")
+            facts = ["not a draft", self.box(m), when]
+            out.append((self.rule.message_label(m), " · ".join(f for f in facts if f)))
+        return self.rule.unique(out)
+
+    def already_lines(self, cap: int = _CARD_MESSAGE_LINES) -> list[str]:
+        if not self.already:
+            return []
+        return ["Already in Trash, so nothing happens to them:", *_capped_lines(
+            [f"- {_card_text(self.rule.message_label(m), 180)}" for m in self.already], cap)]
+
+
+async def _trash_drafts(rule: Any, message_ids: list[str]) -> str | None:
+    """The answer of a trash that holds a draft, or None for any other trash.
+
+    The anchors are the named drafts, and the named messages in Trash that
+    their own mailbox sent. With one matching draft that the call names, the
+    card is the plain one, with the words of a draft. With more, each draft is
+    a row that starts unticked, and the member picks. A run that draws no rows
+    keeps the plain card, acts on the named drafts only, and names the others.
+    Every other named message keeps the act of before: it goes to Trash."""
+    # A repeated id, in any form of the same UUID, is one message.
+    ids = list(dict.fromkeys(_canonical_id(m) or m for m in message_ids))
+    if len(ids) > rule.MAX_IDS:
+        return None
+    try:
+        read = await _summaries_for_trash(ids)
+    except _CALL_ERRORS:
+        return ("Nothing changed. Metorite could not read the messages that you "
+                "named, so it trashed none of them. Try again.")
+    if not any(rule.is_draft(m) or rule.is_trashed(m) for m in read.values()):
+        return None
+    try:
+        accounts = {str(a["id"]): a for a in await _accounts()}
+    except _CALL_ERRORS:
+        accounts = {}
+    plan = _TrashPlan(rule, ids, read, accounts)
+    if not plan.anchors:
+        return None
+    try:
+        matches, plan.cut = await _matching_drafts(rule, plan.anchors)
+    except _CALL_ERRORS:
+        return ("Nothing changed. Metorite could not read Drafts, so it trashed "
+                "nothing. Try again.")
+    plan.ordered = rule.first_named(plan.named, matches)
+    if not plan.ordered and not plan.others:
+        return ("Nothing changed. Each message that you named is already in Trash, "
+                "and no matching draft is in Drafts, as Metorite last synced it.")
+    named_ids = {str(m["id"]) for m in plan.named}
+    from acb_skills import ask_tools
+
+    pick = ((len(plan.ordered) > 1 or {str(m["id"]) for m in plan.ordered} != named_ids)
+            and ask_tools.rows_card_channel_open())
+    chosen = await (_pick_drafts(plan) if pick else _plain_drafts_card(plan, named_ids))
+    if isinstance(chosen, str):
+        return chosen
+    drafts = [m for m in plan.ordered if str(m["id"]) in chosen]
+    others = [m for m in plan.others if str(m["id"]) in chosen]
+    return await _trash_and_report(plan, drafts, others)
+
+
+async def _draft_trash(action: str, message_ids: list[str]) -> str | None:
+    """The answer of a trash that checked Drafts, or None for the act of
+    before: any other act, or ``CHAT_DRAFT_CHOICE_ORGS`` off for the org."""
+    if action != "trash":
+        return None
+    rule = _draft_choice()
+    return None if rule is None else await _trash_drafts(rule, message_ids)
+
+
+def _trash_title(drafts: int, others: int) -> str:
+    """"Move 1 draft and 2 other messages to Trash?", with each noun right."""
+    if not drafts:
+        return f"Move {others} {'message' if others == 1 else 'messages'} to Trash?"
+    text = f"Move {drafts} {'draft' if drafts == 1 else 'drafts'}"
+    if others:
+        text += f" and {others} other {'message' if others == 1 else 'messages'}"
+    return text + " to Trash?"
+
+
+def _short_label(label: str) -> str:
+    """"From sender: subject" or "To people: subject" with each part cut by
+    itself, so a long sender never takes the subject off the line."""
+    who, sep, subject = label.partition(": ")
+    if not sep:
+        return _card_text(label, 100)
+    return f"{_card_text(who, 45)}: {_card_text(subject, 55)}"
+
+
+def _plain_card_context(
+    plan: _TrashPlan, drafts: list[dict[str, Any]], staying: list[dict[str, Any]],
+) -> str:
+    """The lines of the plain card, inside ``_CARD_CONTEXT_MAX``.
+
+    Each message that moves has its own line. A long card first shortens each
+    line. Then it lists fewer of the messages that do not move, and counts
+    the rest."""
+    pairs = plan.pairs(drafts + staying, plan.others)
+    kept_cap, already_cap = plan.rule.MAX_DRAFTS, _CARD_MESSAGE_LINES
+    short = False
+    while True:
+        if short:
+            cut = plan.rule.unique(
+                [(_short_label(a), _card_text(b, 70)) for a, b in pairs])
+            shown = [f"- {' · '.join(p)}" for p in cut]
+        else:
+            shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
+            if len(set(shown)) < len(shown):  # the cut took what told two apart
+                short = True
+                continue
+        # *shown* holds the drafts, then the staying drafts, then the others.
+        moving = [shown.pop(0) for _ in drafts]
+        kept = [shown.pop(0) for _ in staying]
+        lines: list[str] = []
+        if moving:
+            lines += ["Each draft that moves to Trash:", *moving]
+        if shown:
+            lines += ["Each other message that moves to Trash:", *_capped_lines(shown)]
+        if kept:
+            lines += ["These matching drafts stay in Drafts:",
+                      *_capped_lines(kept, kept_cap)]
+        lines += plan.already_lines(already_cap)
+        text = "\n".join(lines)
+        if len(text) <= _CARD_CONTEXT_MAX or (short and not (kept_cap or already_cap)):
+            return text
+        if not short:
+            short = True
+        elif kept_cap >= already_cap:
+            kept_cap -= 1
+        else:
+            already_cap -= 1
+
+
+async def _plain_drafts_card(plan: _TrashPlan, named_ids: set[str]) -> set[str] | str:
+    """The ids that move after one Approve card, or the answer of a card that
+    did nothing. The card lists each message that moves, by sender and
+    subject or as a draft, and each matching draft that stays."""
+    drafts = [m for m in plan.ordered if str(m["id"]) in named_ids]
+    staying = [m for m in plan.ordered if str(m["id"]) not in named_ids]
+    if not drafts and not plan.others:
+        head, data, tail = plan.rule.report(plan.rule.Tally(
+            remaining=staying, cut=plan.cut, already=plan.already,
+            unknown_ids=plan.unknown_ids), _card_text)
+        return _framed_drafts(head, data, tail)
+    context = _plain_card_context(plan, drafts, staying)
+    refusal = await _card_refusal(
+        _trash_title(len(drafts), len(plan.others)), plan.detail(),
+        _NO_DRAFT_MOVED, context)
+    if refusal:
+        return refusal
+    return {str(m["id"]) for m in drafts + plan.others}
+
+
+async def _pick_drafts(plan: _TrashPlan) -> set[str] | str:
+    """The ids that the member ticked, or the answer of a card that did
+    nothing. Each draft row starts unticked, so the member picks each one. A
+    named message that is no draft starts ticked, as on the card of before,
+    and its row names its sender, subject and mailbox."""
+    from acb_skills import ask_tools
+
+    rule = plan.rule
+    drafts = plan.ordered[:rule.MAX_DRAFTS]
+    pairs = plan.pairs(drafts, plan.others)
+    rows = [{"id": str(m["id"]), "label": _card_text(label, 200),
+             "hint": _card_text(hint, 300), "checked": not rule.is_draft(m)}
+            for m, (label, hint) in zip(drafts + plan.others, pairs, strict=True)]
+    detail = plan.detail()
+    if len(plan.ordered) > rule.MAX_DRAFTS:
+        detail += f" The card lists {rule.MAX_DRAFTS} of {len(plan.ordered)} matching drafts."
+    steer = {"close_on_steer": True} if _card_revise_on() else {}
+    answer = await ask_tools.request_confirmation(
+        title="Which drafts go to Trash?",
+        detail=f"Tick each draft to move to Trash. {detail}",
+        context="\n".join(plan.already_lines()), rows=rows, **steer)
+    if ask_tools.is_revised(answer):
+        return _closed_by_message("card")
+    if not isinstance(answer, (set, frozenset)) or not answer:
+        return _unapproved_line() or _not_done(_NO_DRAFT_MOVED)
+    return set(answer)
+
+
+async def _trash_one(mid: str, rule: Any) -> str:
+    """Trash one message through ``DELETE /email/messages/{id}?report=true``,
+    which discards a Gmail draft and re-keys an Outlook one. The answer is
+    one outcome of ``draft_choice``: the provider accepted, did not confirm,
+    the gateway refused, or no answer came back."""
+    try:
+        resp = await _request("DELETE", f"/email/messages/{mid}",
+                              params={"report": "true"})
+    except GatewayError:
+        return rule.FAILED
+    except httpx.HTTPError:
+        return rule.LOST
+    try:
+        body = resp.json() if resp.content else {}
+    except ValueError:
+        body = {}
+    # An older gateway answers 204 with no body: nothing confirms the trash.
+    ok = isinstance(body, dict) and body.get("provider") == rule.CONFIRMED
+    return rule.CONFIRMED if ok else rule.NOT_CONFIRMED
+
+
+async def _trash_and_report(
+    plan: _TrashPlan, drafts: list[dict[str, Any]], others: list[dict[str, Any]],
+) -> str:
+    """Trash each picked message, one call each, so each has its own outcome.
+    Then read Drafts again, with the anchors of the first read only, and count
+    a draft only when the provider accepted it and it left Drafts."""
+    rule = plan.rule
+    done = [(m, await _trash_one(str(m["id"]), rule), True) for m in drafts]
+    done += [(m, await _trash_one(str(m["id"]), rule), False) for m in others]
+    tally = rule.Tally(cut=False, already=plan.already, unknown_ids=plan.unknown_ids)
+    try:
+        tally.remaining, tally.cut = await _matching_drafts(rule, plan.anchors)
+    except _CALL_ERRORS:
+        tally.remaining = None
+    still = None if tally.remaining is None else {str(m["id"]) for m in tally.remaining}
+    for row, outcome, is_draft in done:
+        rule.settle(tally, row, outcome, draft=is_draft, still=still)
+    head, data, tail = rule.report(tally, _card_text)
+    return _framed_drafts(head, data, tail)
+
+
+def _framed_drafts(head: list[str], data: list[str], tail: list[str]) -> str:
+    """The answer, with its listing of messages in one untrusted block. The
+    counts stay above the block, so the chat card reads the first line."""
+    if not data:
+        return "\n".join(head + tail)
+    frame = UntrustedFrame.new()
+    block = frame.wrap("MESSAGES", "\n".join(data))
+    return "\n".join([*head, frame.note(_DRAFT_LIST_WHAT), block, *tail])
+
+
 @_annotate_risk(destructive=True, open_world=False)
 async def manage_inbox(
     action: str,
@@ -2444,6 +3070,12 @@ async def manage_inbox(
         return "Nothing changed. Provide add_labels and/or remove_labels for action='label'."
     if not message_ids:
         return "Nothing changed. Name one or more messages in `message_ids`."
+    # Task 3977: a trash of a draft reads Drafts first, so a second draft of
+    # the same mail shows on the card (``_draft_trash``). Off, or with no
+    # draft in the call, the answer is None and the card of before runs.
+    done = await _draft_trash(action, message_ids)
+    if done is not None:
+        return done
     # EM-G11c1: one card for the whole call, before the first write. It names
     # the act, the count, the mailbox and each message.
     refusal = await _inbox_card(action, message_ids, folder, add_labels, remove_labels)
@@ -6292,9 +6924,71 @@ async def suggest_unsubscribes(account_id: str | None = None, offset: int = 0) -
 
 # ── Labels / folders / send ──────────────────────────────────────────────────
 
+async def _read_mailbox(account_id: str | None, tool: str) -> tuple[str, str]:
+    """The mailbox of a READ of one mailbox, as ``(account_id, question)``.
+
+    The id or the name of the model is held against the member's OWN list
+    (``_named_mailbox``, §7.1.1 rule 4). An unknown name or a name that
+    matches two mailboxes gives the question "Which mailbox?", and the tool
+    reads nothing. The gateway route checks the owner again (D-EM-20)."""
+    if not account_id or not str(account_id).strip():
+        return "", (f"Which mailbox? Ask the user, then call {tool} with the "
+                    "account_id of that mailbox, as list_accounts shows it.")
+    named, hits = await _named_mailbox(str(account_id))
+    if named:
+        return named, ""
+    word = _one_line(account_id, 60)
+    then = f"Ask the user, then call {tool} again with the account_id of that mailbox."
+    if hits:
+        return "", _mailbox_choices(
+            f"Which mailbox? \"{word}\" matches more than one.", hits, then)
+    return "", _mailbox_choices(
+        f"Which mailbox? No mailbox is called \"{word}\".", await _accounts(), then)
+
+
+#: Where the folder names of ``list_labels(folders=true)`` come from.
+_FOLDERS_DATA_WHAT = (
+    "The folder names below come from the mailbox at the provider. The member "
+    "or a person who shares the mailbox can name a folder."
+)
+
+
+async def _list_folders(account_id: str) -> str:
+    """``list_labels(folders=true)``: the folders of the mailbox at the
+    provider, with the count of mail and of unread mail in each, as the
+    folder list of the Email app shows them (``GET .../folders``).
+
+    The member, a person who shares the mailbox or a provider names a
+    folder, so the rows sit in one block of a new frame, as the label
+    counts of ``_folder_counts`` do, and each name stays on one line."""
+    box, question = await _read_mailbox(account_id, "list_labels")
+    if question:
+        return question
+    rows = await _get(f"/email/accounts/{box}/folders")
+    folders = [f for f in (rows or []) if isinstance(f, dict)]
+    head = await _mailbox_line(box)
+    if not folders:
+        return f"{head}\nThe provider lists no folder for this mailbox."
+    rows: list[str] = []
+    for f in folders:
+        kind = "your folder" if f.get("type") == "user" else "system folder"
+        rows.append(
+            f"• {_one_line(f.get('name') or f.get('provider_folder_id'), 120)} "
+            f"({kind}): {f.get('message_count', 0)} emails, "
+            f"{f.get('unread_count', 0)} unread")
+    frame = UntrustedFrame.new()
+    return "\n".join([head, f"Folders ({len(folders)}):",
+                      frame.note(_FOLDERS_DATA_WHAT), frame.wrap("FOLDERS", "\n".join(rows))])
+
+
 @_annotate_risk(open_world=False)
-async def list_labels(account_id: str) -> str:
-    """List the user-applicable label/folder names on the account."""
+async def list_labels(account_id: str, folders: bool = False) -> str:
+    """List the user-applicable label/folder names on the account.
+
+    ``folders=true`` lists the folders of the mailbox at the provider in
+    place of the labels, with the count of emails and unread emails in each."""
+    if folders:
+        return await _list_folders(account_id)
     labels = await _get(f"/email/accounts/{account_id}/labels")
     if not labels:
         return "No user labels on this account yet."
@@ -10617,8 +11311,9 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
       • ``rule``  — sender/subject pins learned for RULES from your Fix
         corrections ("mail from X should / shouldn't match rule Z").
 
-    Forget any pattern with forget_pattern(pattern_id, kind). offset reads
-    the next page."""
+    Forget any pattern with forget_pattern(pattern_id, kind). Approve or
+    reject a rule pattern with forget_pattern(pattern_id, action="review",
+    approve=…). offset reads the next page."""
     k = (kind or "draft").strip().lower()
     if k in ("rule", "rules", "classification"):
         data = await _get("/email/rules/patterns", {"account_id": account_id})
@@ -10657,9 +11352,10 @@ async def list_patterns(account_id: str, kind: str = "draft", offset: int = 0) -
 
 async def _pattern_row(
     pattern_id: str, is_rule: bool,
-) -> tuple[dict[str, Any], str] | None:
-    """The learned pattern with *pattern_id*, and "label · address" of its
-    mailbox, or None when no mailbox of the member has it."""
+) -> tuple[dict[str, Any], str, str] | None:
+    """The learned pattern with *pattern_id*, "label · address" of its
+    mailbox and the id of that mailbox, or None when no mailbox of the
+    member has it."""
     path = "/email/rules/patterns" if is_rule else "/email/learned-patterns"
     try:
         accounts = await _accounts()
@@ -10672,7 +11368,7 @@ async def _pattern_row(
             continue
         for row in (data or {}).get("patterns") or []:
             if isinstance(row, dict) and str(row.get("id")) == str(pattern_id):
-                return row, _mailbox_text(a)
+                return row, _mailbox_text(a), str(a["id"])
     return None
 
 
@@ -10697,10 +11393,22 @@ async def _rule_by_id(rule_id: str) -> dict[str, Any] | None:
 
 
 @_annotate_risk(open_world=False)
-async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
-    """Forget a learned pattern by id. ``kind`` selects which store it's from:
-    ``draft`` (writing preferences) or ``rule`` (rule-classification pins) —
-    matching the id you got from list_patterns(kind=…)."""
+async def forget_pattern(
+    pattern_id: str, kind: str = "draft", action: str = "forget", approve: bool = True,
+) -> str:
+    """Forget a learned pattern by id, or review a learned rule pattern.
+    ``kind`` selects which store it's from: ``draft`` (writing preferences)
+    or ``rule`` (rule-classification pins) — matching the id you got from
+    list_patterns(kind=…).
+
+    ``action``: ``forget`` (default) deletes the pattern. ``review`` approves
+    (``approve=true``) or rejects (``approve=false``) a learned RULE pattern,
+    as the Approve and Reject buttons of the Rules tab do. The Email Cleaner
+    uses an approved pattern. A rejected pattern stays on the list, and the
+    assistant does not learn it again. A review always reads the rule store,
+    whatever ``kind`` says."""
+    if (action or "forget").strip().lower() == "review":
+        return await _review_pattern(pattern_id, bool(approve))
     k = (kind or "draft").strip().lower()
     is_rule = k in ("rule", "rules", "classification")
     # EM-G11c1: a learned pattern shapes each later draft or match. Fix round
@@ -10712,7 +11420,7 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
             f"Nothing changed. No learned {'rule' if is_rule else 'draft'} pattern "
             f"of yours has the id {pattern_id}. Call list_patterns for the id."
         )
-    row, box = found
+    row, box, _account = found
     # Re-review of #1173: a "never match" pin narrows its rule, so to forget
     # it widens the rule. A held run refuses that for a rule that it may not
     # save, and also when it cannot read the rule.
@@ -10741,6 +11449,56 @@ async def forget_pattern(pattern_id: str, kind: str = "draft") -> str:
         return f"Forgot rule pattern {pattern_id}."
     await _delete(f"/email/learned-patterns/{pattern_id}")
     return f"Forgot learned pattern {pattern_id}."
+
+
+async def _review_pattern(pattern_id: str, approve: bool) -> str:
+    """``forget_pattern(action="review")``: approve or reject ONE learned rule
+    pattern behind one card (P-2c, task 3919). It sends the request of the
+    Approve and Reject buttons of the Rules tab,
+    ``POST /email/rules/patterns/review``, for this pattern only.
+
+    A rejected pattern stops matching. The Email Cleaner uses an approved
+    one. So to approve an "always match" pin, or to reject a "never match"
+    pin, widens its rule. A held run refuses that for a rule that sends mail
+    out, and also when it cannot read the rule, as ``forget_pattern`` does."""
+    found = await _pattern_row(pattern_id, True)
+    if found is None:
+        return (
+            f"Nothing changed. No learned rule pattern of yours has the id "
+            f"{pattern_id}. Call list_patterns(kind=\"rule\") for the id."
+        )
+    row, box, account_id = found
+    exclude = bool(row.get("exclude"))
+    widens = approve != exclude
+    if widens and _egress_held():
+        rule = await _rule_by_id(str(row.get("rule_id") or ""))
+        if rule is None or _held_in_no_egress(rule.get("actions")):
+            return _egress_held_answer(
+                "Reviewing a pin so that a rule that sends mail out matches more mail")
+    verb = "never match" if exclude else "always match"
+    shown = (f"{_card_name(row.get('pattern_type'))} "
+             f"\"{_card_text(row.get('value') or '', 120)}\": {verb} the rule "
+             f"\"{_card_name(row.get('rule_name') or row.get('rule_id') or '?')}\"")
+    if approve:
+        title = "Approve this learned rule pattern?"
+        effect = f"The Email Cleaner can then use the learned rule pattern {shown}."
+    else:
+        title = "Reject this learned rule pattern?"
+        effect = (f"The assistant stops using the learned rule pattern {shown}. "
+                  "The pattern stays on the list as rejected, and the assistant "
+                  "does not learn it again.")
+    refusal = await _card_refusal(
+        title, f"{effect} Mailbox: {box}.", "The pattern was not reviewed.",
+    )
+    if refusal:
+        return refusal
+    res = await _post(
+        "/email/rules/patterns/review",
+        {"account_id": account_id, "pattern_ids": [pattern_id], "approve": approve},
+    )
+    if not int((res or {}).get("updated") or 0):
+        return f"Nothing changed. Rule pattern {pattern_id} was not updated."
+    return f"{'Approved' if approve else 'Rejected'} rule pattern {pattern_id}."
 
 
 @_annotate_risk(open_world=False)

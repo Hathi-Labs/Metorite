@@ -156,6 +156,10 @@ export function questionsQuery(opts: {
 
 export const QUESTIONS_COPY = {
   title: "Questions",
+  /** AMR-4: the pager of the phone view of Agents. */
+  pagerWord: "Question",
+  previous: "Previous question",
+  next: "Next question",
   allProjects: "All projects",
   projectFilter: "Project",
   sortOldest: "Oldest first",
