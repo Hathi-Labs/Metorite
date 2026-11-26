@@ -22,6 +22,7 @@ Run::
     eval "$(bash scripts/dev_db.sh --export)"
     uv run pytest tests/unit/test_email_mark_done_r8.py -v -rs
 """
+# ruff: noqa: F811 -- `db` is a fixture that an import brings in.
 from __future__ import annotations
 
 import json
@@ -233,7 +234,7 @@ _OPEN = {"Needs Reply", "Awaiting Reply", "Follow-up"}
 # ── 1. Mark done ─────────────────────────────────────────────────────────────
 
 async def test_mark_done_sets_the_status_and_the_labels_in_one_call(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
@@ -255,7 +256,7 @@ async def test_mark_done_sets_the_status_and_the_labels_in_one_call(
 
 
 async def test_the_provider_hears_the_removals_after_the_request(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
@@ -270,12 +271,12 @@ async def test_the_provider_hears_the_removals_after_the_request(
 
 
 async def test_an_older_done_job_does_not_undo_a_move_back(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """The job drops a change that the mirror no longer holds."""
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
-    thread, _first, sent, _undated = _follow_up_thread(db, box)
+    thread, *_ = _follow_up_thread(db, box)
     _got, done_jobs = await _resolve(db, box, thread, run_jobs=False)
     await _resolve(db, box, thread, done=False, run_jobs=False,
                    restore={"status": "AWAITING", "follow_up": True})
@@ -288,7 +289,7 @@ async def test_an_older_done_job_does_not_undo_a_move_back(
 
 
 async def test_the_backfill_does_not_select_a_done_thread_again(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(a) A ``· auto`` row with a stale message id, and an undated row that
     the backfill reads as the latest one."""
@@ -306,7 +307,7 @@ async def test_the_backfill_does_not_select_a_done_thread_again(
 # ── 2. The hold ──────────────────────────────────────────────────────────────
 
 async def test_an_automated_write_keeps_a_held_thread(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(b) A FYI and then a Needs Reply for OLD mail. The first write must not
     erase the mark that the second one reads."""
@@ -330,7 +331,7 @@ async def test_an_automated_write_keeps_a_held_thread(
 
 
 async def test_the_guarded_writes_of_the_status_keep_a_held_thread(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(d) The outbound recompute and the reply of the member."""
     from gateway.routes.email.automation import replyzero
@@ -358,7 +359,7 @@ async def test_the_guarded_writes_of_the_status_keep_a_held_thread(
 
 
 async def test_a_held_thread_asks_no_model_and_runs_no_rule(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """The resolver and the apply tail. Process past reaches the tail with no
     resolver, and a re-run falls back to the raw match."""
@@ -401,7 +402,7 @@ async def test_a_held_thread_asks_no_model_and_runs_no_rule(
 
 
 async def test_a_new_inbound_message_ends_the_hold(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(c) A sent mail and a draft do not end it. A new inbound mail does."""
     from gateway.routes.email.automation import mark_done
@@ -426,7 +427,7 @@ async def test_a_new_inbound_message_ends_the_hold(
 
 
 async def test_the_follow_up_scan_leaves_a_held_thread(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(d) An Awaiting thread beside it gets its Follow-up label."""
     from gateway.routes.email.automation import followups
@@ -455,7 +456,7 @@ async def test_the_follow_up_scan_leaves_a_held_thread(
 
 
 async def test_a_label_that_a_resync_brings_back_goes_again(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(d) The learner's correction and a lone "Follow-up"."""
     from gateway.routes.email.transport import sync
@@ -485,7 +486,7 @@ async def test_a_label_that_a_resync_brings_back_goes_again(
 
 
 async def test_a_write_of_the_member_still_wins(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """The Fix of the member, a reopen and a dismiss each move a held thread."""
     from gateway.routes.email.automation import mark_done, replyzero
@@ -514,14 +515,14 @@ async def test_a_write_of_the_member_still_wins(
 # ── 3. Move back ─────────────────────────────────────────────────────────────
 
 async def test_move_back_restores_the_status_and_follow_up(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(e)"""
     from gateway.routes.email.automation import mark_done
 
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
-    thread, first, _sent, undated = _follow_up_thread(db, box)
+    thread, first, sent, undated = _follow_up_thread(db, box)
     done, _ = await _resolve(db, box, thread)
     provider.calls.clear()
 
@@ -533,7 +534,7 @@ async def test_move_back_restores_the_status_and_follow_up(
     assert (row.status, row.reason) == ("AWAITING", "Moved back by you")
     inbound = _labels(db, first) | _labels(db, undated)
     assert "Awaiting Reply" in inbound
-    everything = inbound | _labels(db, _sent)
+    everything = inbound | _labels(db, sent)
     assert "Follow-up" in everything and "Done" not in everything
     async with _session(db) as s:
         assert not await mark_done.thread_is_held(s, box, thread)
@@ -543,7 +544,7 @@ async def test_move_back_restores_the_status_and_follow_up(
 
 
 async def test_a_second_done_offers_no_move_back(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
@@ -554,7 +555,7 @@ async def test_a_second_done_offers_no_move_back(
 
 
 async def test_a_thread_with_no_status_row_gets_one(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
@@ -567,7 +568,7 @@ async def test_a_thread_with_no_status_row_gets_one(
 
 
 async def test_a_restore_of_another_status_is_refused(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     from gateway.routes.email.automation import replyzero
     from pydantic import ValidationError
@@ -581,7 +582,7 @@ async def test_a_restore_of_another_status_is_refused(
 # ── 4. The flag off, and the tenant ──────────────────────────────────────────
 
 async def test_with_the_flag_off_the_route_and_the_writers_are_as_before(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(f) No ``previous``, no hold: a Needs Reply opens a Done thread, and a
     restore is a plain reopen."""
@@ -613,7 +614,7 @@ async def test_with_the_flag_off_the_route_and_the_writers_are_as_before(
 
 
 async def test_a_held_row_stops_holding_when_the_flag_goes_off(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
@@ -625,7 +626,7 @@ async def test_a_held_row_stops_holding_when_the_flag_goes_off(
 
 
 async def test_a_member_of_another_organization_marks_nothing(
-    db, monkeypatch, provider,  # noqa: F811
+    db, monkeypatch, provider,
 ):
     """(g) The route reads through the tenant seam, so org A finds no box."""
     from fastapi import HTTPException
