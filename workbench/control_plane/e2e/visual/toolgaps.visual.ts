@@ -31,13 +31,14 @@ test("tool gaps, the other states", async ({ page }) => {
   await page.getByRole("region", { name: "Tool gaps" }).scrollIntoViewIfNeeded();
   await capture(page, "empty", OUT);
 
-  await page.route("**/api/studio/tool-gaps", (r) => r.fulfill({ status: 404, json: { detail: "Not found" } }));
-  await gotoAndSettle(page, "/studio", 8000);
-  await capture(page, "off-404", OUT);
-
-  await page.unroute("**/api/studio/tool-gaps");
+  // The 200 above set the hint, so a failed read now draws the error line.
   await page.route("**/api/studio/tool-gaps", (r) => r.abort("failed"));
   await gotoAndSettle(page, "/studio", 8000);
   await page.getByRole("region", { name: "Tool gaps" }).scrollIntoViewIfNeeded();
   await capture(page, "error", OUT);
+
+  await page.unroute("**/api/studio/tool-gaps");
+  await page.route("**/api/studio/tool-gaps", (r) => r.fulfill({ status: 404, json: { detail: "Not found" } }));
+  await gotoAndSettle(page, "/studio", 8000);
+  await capture(page, "off-404", OUT);
 });

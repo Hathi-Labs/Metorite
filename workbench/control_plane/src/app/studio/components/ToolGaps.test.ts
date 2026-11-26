@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadToolGapsView,
+  panelState,
   TOOL_GAPS_ERROR,
   ToolGapsSection,
   type ToolGapsView,
@@ -114,8 +115,34 @@ describe("the Tool gaps read", () => {
 describe("the Tool gaps panel", () => {
   it("reads through useCachedResource and shows a Skeleton while it loads", () => {
     const src = readFileSync("src/app/studio/components/ToolGaps.tsx", "utf-8");
-    expect(src).toContain("useCachedResource<ToolGapsView>(TOOL_GAPS_KEY, loadToolGapsView");
+    expect(src).toContain("useCachedResource<ToolGapsView>(TOOL_GAPS_KEY, readToolGaps");
     expect(src).toContain("<SkeletonRows");
     expect(src).not.toMatch(/\buseEffect\b/);
+  });
+});
+
+describe("the panel stays dark until the route answered 200 once", () => {
+  const ok: ToolGapsView = { kind: "ok", data: { days: 30, counts: { by_outcome: {}, by_category: {} }, gaps: [] } };
+  const err: ToolGapsView = { kind: "error", detail: TOOL_GAPS_ERROR };
+
+  it("draws no skeleton on a first read in a browser that never saw a 200", () => {
+    expect(panelState(true, undefined, false)).toBe("hidden");
+  });
+
+  it("draws the skeleton on a first read after a 200 was seen", () => {
+    expect(panelState(true, undefined, true)).toBe("skeleton");
+  });
+
+  it("hides a failed first read (a gateway restart) where the feature is dark", () => {
+    expect(panelState(false, err, false)).toBe("hidden");
+  });
+
+  it("shows the error line where the feature was on", () => {
+    expect(panelState(false, err, true)).toBe("view");
+  });
+
+  it("hides the off view, and shows the ok view", () => {
+    expect(panelState(false, { kind: "off" }, true)).toBe("hidden");
+    expect(panelState(false, ok, false)).toBe("view");
   });
 });

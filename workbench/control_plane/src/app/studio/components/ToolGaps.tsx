@@ -167,26 +167,73 @@ export function ToolGapsSection({ view }: { view: ToolGapsView | null }) {
 }
 
 /**
+ * The browser remembers that the route answered 200 once. Only then does the
+ * panel draw a skeleton on a first read, or an error line on a failed read.
+ * A member of an org where the feature is dark never saw a 200, so that
+ * member never sees the panel, its skeleton, or an error of a gateway restart.
+ * The hint picks what draws while nothing is known. It never holds data.
+ */
+export const TOOL_GAPS_SEEN = "studio.toolGaps.seen";
+
+export function seenOn(): boolean {
+  try {
+    return window.localStorage.getItem(TOOL_GAPS_SEEN) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function remember(on: boolean): void {
+  try {
+    if (on) window.localStorage.setItem(TOOL_GAPS_SEEN, "1");
+    else window.localStorage.removeItem(TOOL_GAPS_SEEN);
+  } catch {
+    /* private window or blocked storage: the panel stays quiet */
+  }
+}
+
+/**
+ * What the panel draws, from the read state and the hint. Pure, so the
+ * tests drive it with no DOM.
+ */
+export function panelState(
+  loading: boolean,
+  view: ToolGapsView | undefined,
+  seen: boolean,
+): "skeleton" | "hidden" | "view" {
+  if (view === undefined) return loading && seen ? "skeleton" : "hidden";
+  if (view.kind === "off") return "hidden";
+  if (view.kind === "error") return seen ? "view" : "hidden";
+  return "view";
+}
+
+/** The read: the view, and the hint kept up to date. */
+async function readToolGaps(): Promise<ToolGapsView> {
+  const view = await loadToolGapsView();
+  if (view.kind === "ok") remember(true);
+  if (view.kind === "off") remember(false);
+  return view;
+}
+
+/**
  * The section, with its read through the shared cache (`useCachedResource`).
- * `loadToolGapsView` never throws: an error is a view, so the cache holds the
- * off view too, and a revisit does not show the skeleton again. While the
- * first read runs, the panel shows a skeleton. The caller gives the panel
- * class. The panel goes away when the route is off.
+ * The read never throws: an error is a view, so the cache holds the off view
+ * too. The caller gives the panel class.
  */
 export default function ToolGapsPanel({ className }: { className: string }) {
-  const res = useCachedResource<ToolGapsView>(TOOL_GAPS_KEY, loadToolGapsView, { ttl: 60_000 });
-  if (res.loading && res.data === undefined) {
+  const res = useCachedResource<ToolGapsView>(TOOL_GAPS_KEY, readToolGaps, { ttl: 60_000 });
+  const state = panelState(res.loading, res.data, seenOn());
+  if (state === "hidden") return null;
+  if (state === "skeleton" || res.data === undefined) {
     return (
       <div className={className}>
         <SkeletonRows count={2} className="px-4 sm:px-6 py-3" label="Loading tool gaps" />
       </div>
     );
   }
-  const view = res.data ?? null;
-  if (view === null || view.kind === "off") return null;
   return (
     <div className={className}>
-      <ToolGapsSection view={view} />
+      <ToolGapsSection view={res.data} />
     </div>
   );
 }
