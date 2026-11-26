@@ -499,6 +499,31 @@ def test_a_release_freeze_is_a_wait_and_never_a_back(env):
     assert "pr merge" not in env.calls
 
 
+def test_the_bot_freezes_a_pr_whose_premerge_has_no_freeze_step(env):
+    """Review of PR 2488 (P1): the gate runs the premerge.sh of the PR HEAD. A PR cut
+    before task 3415 has no step 00, so the bot runs the freeze of its own checkout."""
+    env.pr(5, path="scripts/premerge.sh", text="#!/usr/bin/env bash\nexit 0\n")
+    r = env.run(PREMERGE_CMD="bash scripts/premerge.sh", PREMERGE_NOW=str(IN_FREEZE),
+                PREMERGE_RUNS_CMD="true")
+    assert env.log == "", env.log  # no BACK, no DONE: the next pass tries again
+    assert "pr merge" not in env.calls
+    assert "release freeze" in r.stderr
+
+
+def test_the_bot_checks_the_freeze_again_right_before_the_merge(env):
+    """The gate can pass on one side of a window and the merge come on the other.
+    The first gh answer lists the nightly run, and the second lists none."""
+    env.pr(5)
+    count = (env.fix / "runs.count").as_posix()
+    runs = (f'n=$(cat "{count}" 2>/dev/null || echo 0); echo $((n + 1)) > "{count}"; '
+            f'if [ "$n" = 0 ]; then printf "2026-11-16T21:20:00Z\\tdeploy (nightly)\\n"; fi')
+    r = env.run(PREMERGE_NOW=str(IN_FREEZE + 3300), PREMERGE_RUNS_CMD=runs)  # 21:25 UTC
+    assert env.premerge_runs == 1
+    assert env.log == "", env.log
+    assert "pr merge" not in env.calls
+    assert "release freeze" in r.stderr
+
+
 def test_main_moving_during_premerge_runs_premerge_again(env):
     env.pr(5)
     env.premerge("0", move_main_once=True)
