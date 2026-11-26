@@ -1089,7 +1089,7 @@ This section holds the one rule of "who may use a connection". §3.8.8 and rule 
 
 **Five facts of ACC-1 that the design did not state:**
 
-1. **The write casts the service.** asyncpg cannot type a bare parameter of `jsonb_build_object` or of `jsonb - text`. So both statements bind `CAST(:svc AS text)`.
+1. **The write casts the service.** On asyncpg the SQL of §3.9.2 fails with "could not determine data type of parameter $1", because `jsonb_build_object` takes any type. So the write binds `CAST(:svc AS text)`. The bare removal passes on asyncpg, and it keeps the same cast.
 2. **A stale rule.** A rule can outlive its MCP server. `GET` lists it with `listed: false`, and `PUT` with `everyone` clears it. Any other mode on it gets 422.
 3. **The API route.** Each API connection holds `grant = admin` today, so only a holder of `integrations:manage` reaches it. Such a member passes each rule. So a rule changes the API route only when a member grant exists. The R8 suite opens one to prove the route reads the narrowed access.
 4. **The admin floor.** Both routes also take the `/admin` floor `require_admin_user` (`admin:members:read`). The `admin` role holds all three rights.

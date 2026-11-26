@@ -720,6 +720,44 @@ async def test_acc_g_a_malformed_rule_is_admins_only_for_its_service(ns) -> None
     assert access_mod._tables_missing is False
 
 
+async def test_acc_g_the_default_branch_applies_the_rules_too(ns, monkeypatch) -> None:
+    """The branch of today: ``IDENTITY_CUTOVER`` off and no tenant bound, so
+    ``resolve_access`` reads on a plain session of the factory (autobegin),
+    and the rules read takes its savepoint there. The superuser DSN stands in
+    for a database before phase 4, where the app role reads ``app_user``
+    with no bound tenant. A fault on this branch would reach each member of
+    each org."""
+    import acb_auth.access as access_mod
+    from acb_common.db import clear_tenant, release_tenant
+
+    monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+    dsn = ns.p.admin_engine.url.render_as_string(hide_password=False)
+
+    async def unbound(email: str) -> Any:
+        async with tenant_engine_scope(dsn):
+            scope = clear_tenant()
+            try:
+                return await access_mod.resolve_access(email, use_cache=False)
+            finally:
+                release_tenant(scope)
+
+    member, listed = _email("member"), _email("listed")
+    assert (await unbound(member)).has(_use("mcp-x")), "the positive control"
+    _rules(ns, {"mcp-x": {"subjects": [listed]}})
+    refused = await unbound(member)
+    assert refused.is_active and not refused.has(_use("mcp-x"))
+    assert refused.has(_use("zoho-crm"))
+    assert (await unbound(listed)).has(_use("mcp-x"))
+    assert (await unbound(MEMBER_B)).has(_use("mcp-x")), "org A's rule stays in org A"
+    monkeypatch.setattr(access_mod, "_INTEGRATION_RULES_SQL",
+                        "SELECT * FROM acc1_no_such_table WHERE CAST(:org AS uuid) "
+                        "IS NOT NULL AND CAST(:uid AS uuid) IS NOT NULL")
+    failed = await unbound(_email("allow"))
+    assert failed.is_active and failed.has("feature:chat")
+    assert not failed.has(_use("mcp-x")) and not failed.has(_use("zoho-crm"))
+    assert access_mod._tables_missing is False
+
+
 @pytest.mark.parametrize("mode", ["log", "raise"])
 async def test_acc_g_a_failed_read_refuses_integrations_only(ns, monkeypatch, mode) -> None:
     """The read fails with a "does not exist" text, the text that latches

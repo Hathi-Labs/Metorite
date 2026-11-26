@@ -517,8 +517,9 @@ def test_the_write_makes_a_missing_parent_and_names_the_org() -> None:
     for sql in (routes.SET_RULE_SQL, routes.REMOVE_RULE_SQL):
         flat = " ".join(sql.split())
         assert "COALESCE(settings -> 'integration_access', '{}'::jsonb)" in flat
-        assert "CAST(:svc AS text)" in flat, "asyncpg cannot type a bare :svc here"
         assert flat.endswith("WHERE id = CAST(:org AS uuid)")
+    # asyncpg refuses a bare `:svc` in jsonb_build_object ("could not determine
+    # data type of parameter $1", measured 2026-11-26).
     assert "jsonb_build_object(CAST(:svc AS text), CAST(:rule AS jsonb))" in routes.SET_RULE_SQL
 
 
