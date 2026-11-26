@@ -3699,8 +3699,10 @@ def _live_is_stored_draft(live: Any, row: Any, sig: str) -> bool:
     stored = {k: _addresses_of(getattr(row, k)) for k in
               ("to_addresses", "cc_addresses", "bcc_addresses")}
     return (_fold_draft(sig, _live_draft_text(live)) == _fold_draft(sig, row.body_text or "")
-            and " ".join(str(getattr(live, "subject", "") or "").split())
-            == " ".join(str(row.subject or "").split())
+            # Case folds: Outlook's createReply names a reply draft "RE: x",
+            # and the stored copy says "Re: x" until the next sync.
+            and " ".join(str(getattr(live, "subject", "") or "").split()).casefold()
+            == " ".join(str(row.subject or "").split()).casefold()
             and all(_people_set(getattr(live, k, None)) == _people_set(stored[k])
                     for k in stored)
             and not getattr(live, "has_attachments", False) and not row.has_attachments)

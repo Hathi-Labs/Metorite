@@ -21895,6 +21895,8 @@ writes nothing into the record.
   does not return the Bcc of a draft makes the check refuse a draft with a Bcc, so that draft
   is never deleted from the chat. The check and the trash are two calls, so an edit at the
   mailbox in the moment between them is not seen.
+- An Outlook reply-all draft of `draft_reply` can hold fewer recipients at the mailbox than
+  the stored copy until the next sync. In that time "Delete it" deletes nothing and says so.
 - The new-mail card and the held form card say nothing about the earlier draft in these
   cases: a close by a chat message (the answer is the redraft text of §18.11), and a card that
   asks no question (a draft with a queued send, a queue that could not be read, or a draft

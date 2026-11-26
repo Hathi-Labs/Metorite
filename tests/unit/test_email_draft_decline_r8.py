@@ -9,8 +9,9 @@ runs as the app role, with RLS. The provider is a fake.
    nothing is read at the provider.
 3. A stored draft whose live copy differs answers 409, and nothing is trashed.
 
-Mutation: drop the owner predicate from the SQL of block A ->
-``test_another_members_draft_is_no_draft``.
+The SQL of block A and ``_provider_for_message`` each carry the owner
+predicate, so ``test_another_members_draft_is_no_draft`` fails only when both
+are gone. ``test_the_live_check_route`` fences the SQL of block A alone.
 """
 
 from __future__ import annotations

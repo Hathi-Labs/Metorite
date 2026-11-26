@@ -777,6 +777,7 @@ def _live_copy(**change: Any) -> Any:
 
 @pytest.mark.parametrize("live,authed,folder,owned,ok", [
     (_live_copy(), True, "drafts", True, True),
+    (_live_copy(subject="RE: Proposal"), True, "drafts", True, True),
     (_live_copy(body_text="Dear Salil, I changed this in Outlook."), True, "drafts", True, False),
     (_live_copy(subject="Re: Proposal v2"), True, "drafts", True, False),
     (_live_copy(cc_addresses=[{"email": "boss@client.test"}]), True, "drafts", True, False),
@@ -785,7 +786,7 @@ def _live_copy(**change: Any) -> Any:
     (_live_copy(), False, "drafts", True, False),
     (_live_copy(), True, "trash", True, False),
     (_live_copy(), True, "drafts", False, False),
-], ids=["same", "text-edited", "subject-edited", "cc-added", "file-added", "read-fails",
+], ids=["same", "outlook-reply-subject-case", "text-edited", "subject-edited", "cc-added", "file-added", "read-fails",
         "no-sign-in", "not-a-draft", "another-members-draft"])
 def test_the_live_check_route(monkeypatch, live, authed, folder, owned, ok) -> None:
     """Fix rounds 2 and 3: ``DELETE /email/chat-drafts/{id}`` trashes only

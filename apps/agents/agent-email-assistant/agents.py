@@ -8347,7 +8347,7 @@ async def _delete_earlier(earlier: _Earlier) -> tuple[str, str]:
 
 def _earlier_stays(earlier: _Earlier, why: str = "") -> str:
     """The line of an earlier draft that stays in Drafts, with *why* first
-    when the member said no."""
+    when the chat knows one (the draft changed)."""
     lead = f" {why}." if why else ""
     return (f"{lead} The draft that this chat saved stays in Drafts (draft_id "
             f"{earlier.row['id']}): {earlier.line}. Tell the member that it is still "
