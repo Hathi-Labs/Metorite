@@ -394,6 +394,7 @@ def test_the_client_sends_the_capability_header_and_no_other_auth() -> None:
         "/crm\\leads",
         "/crm/le ads",
         "/@evil.example/x",
+        "/crm/leads\n",
         "",
     ],
 )
@@ -758,6 +759,29 @@ def test_the_paging_check_sees_a_route_off_the_door() -> None:
     assert paging_problems(D.PAGED_ROUTES, opened) == [
         "GET /crm/change-history is not open on the door"
     ]
+
+
+def test_the_sandbox_routes_arm_is_read_when_it_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When SBX-2 adds ``SANDBOX_ROUTES``, the check reads it and not the spec list."""
+    from acb_common import app_manifests
+
+    full = {("GET", path) for path in D.PAGED_ROUTES}
+    monkeypatch.setattr(app_manifests, "SANDBOX_ROUTES", frozenset(full), raising=False)
+    assert _opened() == frozenset(full)
+    assert paging_problems(D.PAGED_ROUTES, _opened()) == []
+    short = frozenset(full - {("GET", "/projects/intake")})
+    monkeypatch.setattr(app_manifests, "SANDBOX_ROUTES", short, raising=False)
+    assert paging_problems(D.PAGED_ROUTES, _opened()) == [
+        "GET /projects/intake is not open on the door"
+    ]
+
+
+def test_each_row_of_the_spec_list_is_a_get_row_of_the_manifests() -> None:
+    from acb_common.app_manifests.crm import CRM
+    from acb_common.app_manifests.projects import PROJECTS_DOOR
+
+    rows = {(r.method, r.path) for r in (*CRM.routes, *PROJECTS_DOOR.routes)}
+    assert sorted(_SPEC_OPENED - rows) == []
 
 
 def test_each_paged_route_is_a_class_a_get_row_of_the_manifests() -> None:

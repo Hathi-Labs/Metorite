@@ -138,7 +138,7 @@ class DoorError(Exception):
 def _capability() -> str:
     raw = os.environ.get("METORITE_API_TOKEN") or ""
     value = raw.strip()
-    if not _CAPABILITY_RE.match(value):
+    if not _CAPABILITY_RE.fullmatch(value):
         raise DoorError("no_capability")
     return value
 
@@ -146,7 +146,7 @@ def _capability() -> str:
 def _checked_path(path: str) -> str:
     if (
         not isinstance(path, str)
-        or not _PATH_RE.match(path)
+        or not _PATH_RE.fullmatch(path)
         or ".." in path
         or "%2e" in path.lower()
         or "%2f" in path.lower()
@@ -171,7 +171,7 @@ def _door_code(answer: requests.Response) -> str | None:
     detail = body.get("detail") if isinstance(body, dict) else None
     if isinstance(detail, dict):
         detail = detail.get("code")
-    if isinstance(detail, str) and _DOOR_CODE_RE.match(detail):
+    if isinstance(detail, str) and _DOOR_CODE_RE.fullmatch(detail):
         return detail
     return None
 
@@ -243,7 +243,7 @@ class Door:
         rows in one page.
         """
         path = _checked_path(path)
-        paging = next((p for rx, p in _PAGED_MATCHERS if rx.match(path)), None)
+        paging = next((p for rx, p in _PAGED_MATCHERS if rx.fullmatch(path)), None)
         if paging is None:
             raise ValueError("The route does not page through the door. Use get().")
         if isinstance(page_size, bool) or not isinstance(page_size, int):
