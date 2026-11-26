@@ -14,6 +14,21 @@ the ``metorite`` line. The state is one of:
 - ``error``: a timeout, other text, or a failed run with no ``metorite``
   line. Logged only. It neither notifies nor resets, so a flaky check never
   pages the owner.
+- ``stale``: the OAuth access token of ``metorite`` expired more than
+  :data:`STALE_S` ago, and no lane refreshed it. DOWN.
+
+**The token gate (review finding P1, 2026-11-26).** ``claude mcp list``
+connects to ``metorite``. With an expired access token it spends the
+shared refresh token. A lane that still holds the old refresh token then
+presents a reuse, and the server revokes the sign-in of every lane (rule 5
+of ``agent_tokens.py``). So the alarm must never cause a refresh. Before
+the check it reads ``expiresAt`` of the ``metorite`` entry in
+``~/.claude/.credentials.json``, and never a token value:
+
+- no OAuth entry with a refresh token (a box token, or no sign-in): check;
+- the access token has :data:`MIN_LEFT_S` or more left: check;
+- expired more than :data:`STALE_S` ago: ``stale``, with no check;
+- else: skip, read as ``error``.
 
 On the first DOWN after ``ok`` or unknown, it writes one NOTE line to the
 lane log and sends ONE owner notice on the channel. A repeated DOWN sends
@@ -49,8 +64,13 @@ STATE_PATH = pathlib.Path(os.environ.get(
     "METORITE_ALARM_STATE", str(HOME / ".local/state/metorite/signin_alarm.json")))
 NOTE_LOG = pathlib.Path(os.environ.get(
     "METORITE_ALARM_LOG", str(HOME / "lanes/merge-queue.log")))
+CREDS_PATH = pathlib.Path(os.environ.get(
+    "METORITE_ALARM_CREDS", str(HOME / ".claude/.credentials.json")))
 LIST_TIMEOUT_S = 90
-DOWN = ("auth", "missing")
+MIN_LEFT_S = 600
+STALE_S = 2 * 3600
+GH_REPO = os.environ.get("METORITE_ALARM_GH_REPO", "Hathi-Labs/Metorite")
+DOWN = ("auth", "missing", "stale")
 
 RESIGN = ("Re-sign: docs/home_box.md section 5.2 and docs/box_connect.md "
           "(claude mcp login metorite --no-browser, then send the callback address).")
@@ -75,6 +95,34 @@ def classify(text: str, returncode: int = 0) -> str:
                 return "ok"
             return "error"
     return "error" if returncode != 0 else "missing"
+
+
+def token_gate(now_s: float | None = None) -> str:
+    """``check``, ``skip`` or ``stale``. Reads ``expiresAt`` only, never a token."""
+    now_s = now_utc().timestamp() if now_s is None else now_s
+    try:
+        d = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "check"
+    entries = d.get("mcpOAuth") if isinstance(d, dict) else None
+    if not isinstance(entries, dict):
+        return "check"
+    for v in entries.values():
+        if not isinstance(v, dict) or v.get("serverName") != "metorite":
+            continue
+        if not v.get("refreshToken"):
+            return "check"
+        exp = v.get("expiresAt")
+        if not isinstance(exp, (int, float)):
+            return "skip"
+        exp_s = exp / 1000 if exp > 1e12 else exp
+        left = exp_s - now_s
+        if left >= MIN_LEFT_S:
+            return "check"
+        if left < -STALE_S:
+            return "stale"
+        return "skip"
+    return "check"
 
 
 def run_list(cwd: pathlib.Path) -> tuple[str, int] | None:
@@ -119,7 +167,16 @@ def write_note(msg: str) -> None:
 
 
 def _gh(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+    """Run gh against :data:`GH_REPO`. A failure returns code 1 and logs stderr."""
+    cmd = ["gh", *args, "--repo", GH_REPO]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"signin-alarm: gh failed: {type(e).__name__}", file=sys.stderr)
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+    if p.returncode != 0:
+        print(f"signin-alarm: gh exit {p.returncode}: {(p.stderr or '')[:300]}", file=sys.stderr)
+    return p
 
 
 def notify_down(state: str, since: str, st: dict, gh: Callable = _gh) -> None:
@@ -150,7 +207,7 @@ def step(observed: str, gh: Callable = _gh) -> dict:
     if observed == "error":
         print("signin-alarm: check error, state unchanged", file=sys.stderr)
         return st
-    since = now_utc().strftime("%H:%M UTC")
+    since = now_utc().strftime("%Y-%m-%d %H:%M UTC")
     if observed in DOWN:
         if st.get("state") in DOWN:
             st["state"] = observed
@@ -158,6 +215,7 @@ def step(observed: str, gh: Callable = _gh) -> dict:
             return st
         st = {"state": observed, "since": since, "notified": True}
         write_note(f"{host()}: metorite {observed} since {since}. {RESIGN}")
+        save_state(st)  # before the notice: a failed send never repeats the NOTE
         notify_down(observed, since, st, gh)
         save_state(st)
         return st
@@ -174,7 +232,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cwd", default=os.environ.get("METORITE_REPO", str(HOME / "Metorite")))
     a = ap.parse_args(argv)
-    observed = check(pathlib.Path(a.cwd))
+    gate = token_gate()
+    if gate == "check":
+        observed = check(pathlib.Path(a.cwd))
+    elif gate == "stale":
+        observed = "stale"
+    else:
+        print("signin-alarm: access token near expiry, check skipped (no refresh)",
+              file=sys.stderr)
+        observed = "error"
     step(observed)
     print(f"signin-alarm: {host()} metorite {observed}")
     return 0

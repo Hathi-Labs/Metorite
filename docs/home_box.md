@@ -502,16 +502,26 @@ A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
 line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
 marks the recovery. A failed check (timeout, odd text) changes nothing.
 
+⚠️ The check must never refresh the shared OAuth token. A refresh by the
+alarm can make a lane present a spent refresh token, and then the server
+signs out every lane. So the alarm reads `expiresAt` of the `metorite`
+entry in `~/.claude/.credentials.json` first. It runs the check only when
+the access token has 10 minutes or more left, or when no OAuth entry
+exists (a box token). When the token expired more than 2 hours ago and no
+lane refreshed it, the alarm reports `stale` with no check.
+
 - Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
   enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
 - Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
   `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
   the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
-  mention. Without it, nothing is sent. `METORITE_ALARM_HOST` names the box.
+  mention. Without it, nothing is sent. `METORITE_ALARM_GH_REPO` sets the
+  repository (default `Hathi-Labs/Metorite`). A new issue also notifies the
+  watchers of the repository. `METORITE_ALARM_HOST` names the box.
 - Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
   `~/.local/state/metorite/signin_alarm.json`.
-- `aroh-dev-1` and the PC's WSL install it the same way. Use `--cwd` for a
-  checkout that is not `~/Metorite`.
+- `aroh-dev-1` and the PC's WSL install it the same way. When the checkout
+  is not `~/Metorite`, set `METORITE_REPO=<path>` in `alarm.env`.
 
 ---
 

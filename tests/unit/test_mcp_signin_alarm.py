@@ -122,3 +122,66 @@ def test_damaged_state_reads_unknown(al, raw):
     al.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     al.STATE_PATH.write_text(raw, encoding="utf-8")
     assert al.load_state()["state"] == "unknown"
+
+
+def _creds(al, tmp_path, monkeypatch, entry):
+    import json as _j
+    p = tmp_path / "creds.json"
+    p.write_text(_j.dumps({"mcpOAuth": {"metorite|x": entry}}), encoding="utf-8")
+    monkeypatch.setattr(al, "CREDS_PATH", p)
+
+
+def test_gate_never_lets_the_check_refresh(al, tmp_path, monkeypatch):
+    now = 1_800_000_000.0
+    base = {"serverName": "metorite", "refreshToken": "r", "accessToken": "a"}
+    _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now + 3000) * 1000})
+    assert al.token_gate(now) == "check"
+    _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now + 100) * 1000})
+    assert al.token_gate(now) == "skip"
+    _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now - 600) * 1000})
+    assert al.token_gate(now) == "skip"
+    _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now - 3 * 3600) * 1000})
+    assert al.token_gate(now) == "stale"
+    _creds(al, tmp_path, monkeypatch, {"serverName": "metorite", "accessToken": "a"})
+    assert al.token_gate(now) == "check"  # no refresh token: a box token, or none
+    monkeypatch.setattr(al, "CREDS_PATH", tmp_path / "absent.json")
+    assert al.token_gate(now) == "check"
+
+
+def test_stale_is_down(al):
+    assert "stale" in al.DOWN
+
+
+def test_failed_gh_send_writes_one_note(al, monkeypatch):
+    import subprocess as sp
+    monkeypatch.setenv("METORITE_ALARM_CHANNEL", "gh")
+    monkeypatch.setenv("METORITE_ALARM_GH_USER", "owner")
+
+    def failing(args):
+        return sp.CompletedProcess(args, 1, "", "not a git repository")
+
+    al.step("auth", failing)
+    al.step("auth", failing)
+    assert al.NOTE_LOG.read_text(encoding="utf-8").count("\n") == 1
+    assert al.load_state()["notified"] is True
+
+
+def test_gh_passes_repo(al, monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        import subprocess as sp
+        seen["cmd"] = cmd
+        return sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(al.subprocess, "run", fake_run)
+    al._gh(["issue", "list"])
+    assert seen["cmd"][-2:] == ["--repo", al.GH_REPO]
+
+
+def test_gh_missing_binary_does_not_raise(al, monkeypatch):
+    def raising(cmd, **kw):
+        raise FileNotFoundError("gh")
+
+    monkeypatch.setattr(al.subprocess, "run", raising)
+    assert al._gh(["issue", "list"]).returncode == 1
