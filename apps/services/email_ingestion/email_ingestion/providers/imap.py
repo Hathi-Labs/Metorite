@@ -701,6 +701,14 @@ class IMAPProvider(BaseEmailProvider):
         await asyncio.to_thread(_modify)
 
     async def trash_message(self, provider_message_id: str) -> None:
+        """Trash one INBOX message by its UID.
+
+        Task 3977 (§18.13): a draft that Metorite saved has the id
+        ``draft-<folder>``, not a UID, and the sync reads INBOX only. So this
+        raises for an id that is not a UID, and for a STORE that the server
+        does not answer OK. A caller then knows that nothing was trashed."""
+        if not str(provider_message_id or "").isdigit():
+            raise ValueError("IMAP trash needs the UID of an INBOX message")
         imap = await self._get_imap()
 
         def _trash() -> None:
@@ -723,7 +731,9 @@ class IMAPProvider(BaseEmailProvider):
                 imap.uid("COPY", provider_message_id, trash_dir)
 
             imap.select("INBOX", readonly=False)
-            imap.uid("STORE", provider_message_id, "+FLAGS", "\\Deleted")
+            typ, _ = imap.uid("STORE", provider_message_id, "+FLAGS", "\\Deleted")
+            if typ != "OK":
+                raise RuntimeError(f"IMAP STORE answered {typ}")
             imap.expunge()
 
         await asyncio.to_thread(_trash)
