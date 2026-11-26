@@ -634,6 +634,10 @@ class Proxy:
             if not self._slots.acquire(blocking=False):
                 with contextlib.suppress(OSError):
                     client.sendall(_reply(503, "busy"))
+                self.emit(log_line(
+                    grant=None, method="", host="", port=None, address="",
+                    decision="refuse", reason="busy",
+                ))
                 return
             try:
                 self._handle(client, call)

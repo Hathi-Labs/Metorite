@@ -808,6 +808,30 @@ def test_a_c1_control_byte_is_refused() -> None:
     assert caught.value.reason == "control_byte"
 
 
+def test_a_full_proxy_refuses_with_one_log_line(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Done-when 2: a refusal because every slot of the proxy is taken still
+    writes one log line. Mutation: drop the emit of the busy path, and this
+    test fails."""
+    proxy = proxy_env["proxy"]
+    proxy._slots = threading.BoundedSemaphore(1)
+    assert proxy._slots.acquire(blocking=False)
+    try:
+        before = len(proxy_env["lines"])
+        client, server = socket.socketpair()
+        client.settimeout(HANG_S)
+        proxy.handle(server, "10.0.0.9")
+        assert client.recv(4096).startswith(b"HTTP/1.1 503")
+        client.close()
+        new = proxy_env["lines"][before:]
+        assert len(new) == 1
+        assert json.loads(new[0])["reason"] == "busy"
+        assert proxy._preauth == {}
+    finally:
+        proxy._slots.release()
+
+
 def test_one_peer_holds_at_most_its_preauth_share(
     proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
