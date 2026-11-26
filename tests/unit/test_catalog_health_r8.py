@@ -45,6 +45,7 @@ from customer_console import catalog_health as health
 from customer_console import router as router_mod
 from sqlalchemy import create_engine, text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import apply_ladder
 
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
@@ -459,8 +460,7 @@ def test_this_suite_is_named_in_the_ci_skip_guard():
     """A new R8 suite that CI does not name still SKIPS silently and reports
     green. This reads the hand-lists and fails if an entry is gone."""
     for flow in ("pr-check.yml", "deploy.yml"):
-        ci = (ROOT / ".github/workflows" / flow).read_text(encoding="utf-8")
-        assert "tests/unit/test_catalog_health_r8.py" in ci, flow
+        assert "tests/unit/test_catalog_health_r8.py" in r8_lists.must_run(), flow
 
 
 # ── The database ────────────────────────────────────────────────────────────

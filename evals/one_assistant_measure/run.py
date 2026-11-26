@@ -24,7 +24,8 @@ spend so far. It writes ``--out`` after each chat.
 ``--report`` prints the tables of ``--out``.
 
 Exit codes: 0 pass (or a live run that finished), 1 a scripted check
-failed, 2 the live run cannot start.
+failed, 2 the live run cannot start (or ``--compare`` cannot read its files), 3 ``--compare``
+says that A does not win (task 3649).
 """
 from __future__ import annotations
 
@@ -42,10 +43,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from acb_skills import tier_policy
 
 from evals.one_assistant_measure import checks as ck
-from evals.one_assistant_measure import fanout, pack, spend
+from evals.one_assistant_measure import checks_2874 as ck_2874
+from evals.one_assistant_measure import compare as cmp
+from evals.one_assistant_measure import fanout, mirror, pack, scenarios_2874, spend, splits
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -64,20 +68,60 @@ from tests.unit._egress_mark_store import install_memory_mark_store
 
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
+OWNER_SPEND_CEILING_USD = spend.OWNER_SPEND_CEILING_USD
+#: ``--compare``: A does not win on the rule of :mod:`.compare` (task 3649).
+EXIT_LOSS = cmp.EXIT_LOSS
 ARMS = ("delegation", "pack")
 #: The third arm of the spec (OA-8e): the packs with ``spawn_subagents`` on
 #: (OA-9b). It sets ``SPAWN_SUBAGENTS_ORGS`` for the eval org, in the eval
 #: process only. The fan-out chats run on it and on ``pack``.
 SPAWN_ARM = ck.SPAWN_ARM
-ALL_ARMS = (*ARMS, SPAWN_ARM)
+#: TS-5a. The fourth arm: the packs with ``TOOL_SEARCH_ORGS`` on, where the model
+#: finds a tool with ``find_tools``. It is listed, and it runs only when the
+#: settings hold ``tool_search_orgs`` (:func:`search_built`). The Studio chats and
+#: the plans of TS-5b run on it.
+SEARCH_ARM = ck.SEARCH_ARM
+ALL_ARMS = (*ARMS, SPAWN_ARM, SEARCH_ARM)
 PACK_ARMS = ck.PACK_ARMS
+#: The packs that the Studio chats turn on, BY NAME. ``tool_packs.owner_packs`` of
+#: the Studio owner would add the DARK pack ``studio-workflows`` (the owner turns it
+#: on with a ``TOOL_PACKS`` line, ``tool_packs.py`` near ``FOLLOWS``). It stays off.
+STUDIO_PACKS = ("studio",)
+
+
+#: TS-5b. True: the scripted plans that call ``find_tools`` are in (``Plan.find``,
+#: :func:`scripted_models`). Set it False and the ``search`` arm prints SKIP again.
+#: TS-2a PR 3 added the field ``tool_search_orgs`` first, so the field alone no
+#: longer tells that the arm can run.
+SEARCH_PLANS = True
+
+
+def search_built() -> bool:
+    """True when the plans of TS-5b are in (:data:`SEARCH_PLANS`) and the
+    settings hold ``tool_search_orgs``, the flag of TS-2a. Until then the
+    ``search`` arm prints SKIP and runs nothing. It reads the settings with
+    ``getattr``, so it needs no import of the field."""
+    from acb_common import get_settings
+
+    return SEARCH_PLANS and getattr(get_settings(), "tool_search_orgs", None) is not None
 
 
 def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     """The arms that run *sc*: a fan-out chat runs on ``pack`` and ``packs+spawn``
-    (delegation holds no spawn tool), any other chat on ``delegation`` and ``pack``."""
-    want = (ARMS[1], SPAWN_ARM) if sc.set == "fanout" else ARMS
-    return tuple(a for a in want if a in asked)
+    (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
+    (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
+    ``pack``. The ``search`` arm drops out when :func:`search_built` is False."""
+    if "t2874" in sc.tags:
+        # Task 2874: the chats replay one owner chat on the real packs. The delegation
+        # arm has no such chat, and ``resolve_person`` is no tool of a specialist.
+        want = (ARMS[1],)
+    elif sc.set == "fanout":
+        want = (ARMS[1], SPAWN_ARM)
+    elif sc.set == "studio":
+        want = (ARMS[1], SEARCH_ARM)
+    else:
+        want = ARMS
+    return tuple(a for a in want if a in asked and (a != SEARCH_ARM or search_built()))
 EA = pack.EA
 CRM = pack.CRM
 PROJECTS = pack.PROJECTS
@@ -93,6 +137,10 @@ PRODUCTION: dict[str, Any] = {
     # Run 2 of OA-8e (OA-8f): the base trim we would ship. BOTH arms hold it,
     # so the comparison is fair.
     "orchestrator_floor_trim": True,
+    # TS-2a PR 3: no arm but ``search`` holds ``find_tools``, also where the
+    # .env of a developer sets TOOL_SEARCH_ORGS. The search arm sets it again
+    # (:func:`flag_for`), because its flag comes after this one.
+    "tool_search_orgs": "",
 }
 
 
@@ -116,6 +164,35 @@ def pack_flag(owners: tuple[str, ...] = (pack.EA,)) -> dict[str, Any]:
 def owners_of(sc: Scenario) -> tuple[str, ...]:
     """The owners whose packs the ``pack`` arm turns on for *sc*."""
     return (EA,) if sc.set == "email" else pack.OWNERS
+
+
+def flag_for(sc: Scenario, arm: str, mirror_prod: bool = False) -> dict[str, Any]:
+    """The settings that *arm* adds for *sc*, set in the eval process only.
+
+    The pack arms get the packs of the owners (:func:`pack_flag`). A Studio chat
+    adds ``studio`` BY NAME to ``tool_packs`` (:data:`STUDIO_PACKS`) and the org to
+    ``studio_orgs``, so the pack builds and the loader offers it. The ``search`` arm
+    adds ``tool_search_orgs``. The spawn arm adds ``spawn_subagents_orgs``."""
+    if arm not in PACK_ARMS:
+        return {}
+    flag = pack_flag(owners_of(sc))
+    if mirror_prod:
+        # Task 2874 part 3: the chat flags of production (``prod_flags.json``), set in the
+        # eval process only. The arm flags below come after, so the search arm keeps its own.
+        flag.update(mirror.settings_for(ds.ORG))
+    if sc.set == "studio":
+        have = flag["tool_packs"].split(",")
+        flag["tool_packs"] = ",".join([*have, *(p for p in STUDIO_PACKS if p not in have)])
+        flag["studio_orgs"] = ds.ORG
+    if arm == SPAWN_ARM:
+        # In the eval process only. The tool leaves the request of any
+        # other org (``test_spawn_subagents.py``).
+        flag["spawn_subagents_orgs"] = ds.ORG
+    if arm == SEARCH_ARM:
+        flag["tool_search_orgs"] = ds.ORG
+    # Task 2874: a chat that needs a flag beyond the packs (``resolve_person`` needs the profile).
+    flag.update(scenarios_2874.FLAGS.get(sc.id, {}))
+    return flag
 
 
 EVAL_ENV = Path.home() / ".metorite" / "secrets" / "eval.env"
@@ -167,8 +244,10 @@ def cached_of(usage: dict[str, Any]) -> int:
     return int(details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens") or 0)
 
 
-def cost_of(usage: dict[str, Any], card: dict[str, Any] = RATE_CARD) -> tuple[float, str]:
-    """The USD cost of one call, and its source: ``vendor`` or ``card``."""
+def cost_of(usage: dict[str, Any], card: dict[str, Any]) -> tuple[float, str]:
+    """The USD cost of one call, and its source: ``vendor`` or ``card``. *card*
+    is the card of one model (:func:`spend.card_of`). It has no default, so no
+    caller gets a cheap card by accident."""
     if isinstance(usage.get("cost"), (int, float)):
         return float(usage["cost"]), "vendor"
     rate = card["usd_per_1m"]
@@ -187,13 +266,19 @@ def call_row(c: ModelCall) -> dict[str, Any]:
     usage frame that was not refused is priced from its request size, as the
     worst case (``cost_source`` ``estimate``). A call that starts in a DeepSeek
     peak band counts double (``peak``), because ``usage.cost`` does not know
-    the band. A refused call (status 4xx or 5xx) costs nothing."""
+    the band. A refused call (status 4xx or 5xx) costs nothing.
+
+    The card is that of the model that SERVED the call (TS-7a-cap). An unknown
+    model gets the most expensive rate. ``unpriced`` marks a call that the
+    card had to guess: no vendor cost, and a served name that the card does
+    not hold. A live run stops on it (:func:`run_live`)."""
     mapped = bool(c.requested)
-    card = spend.card_for(c.served, c.model, RATE_CARD, mapped)
+    card = spend.card_of(c.served, RATE_CARD)
     usd, source = cost_of(c.usage, card)
     if not c.usage and (c.status is None or c.status < 400):
         usd, source = spend.unseen_usage_usd(c.request_chars, card), "estimate"
-    peak = bool(c.wall) and spend.is_peak(datetime.fromtimestamp(c.wall, UTC))
+    peak = (bool(c.wall) and card["peak"]
+            and spend.is_peak(datetime.fromtimestamp(c.wall, UTC)))
     if peak:
         usd *= spend.PEAK_FACTOR
 
@@ -202,6 +287,7 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 
     return {
         "agent": c.agent, "model": c.model, "served": c.served, "stream": c.stream,
+        "schema_tokens": int(getattr(c, "schema_tokens", 0) or 0),
         "requested": c.requested or c.model, "mapped": mapped,
         "messages": c.messages, "tools": c.tools, "request_chars": c.request_chars,
         "status": c.status, "ttfb_s": since(c.first_byte), "ttft_s": since(c.first_token),
@@ -210,6 +296,9 @@ def call_row(c: ModelCall) -> dict[str, Any]:
         "reasoning": int((c.usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
                          or 0),
         "cost_usd": round(usd, 6), "cost_source": source, "peak": peak,
+        "card": card["model"],
+        "unpriced": (bool(c.served) and not card["known"] and source != "vendor"
+                     and (c.status is None or c.status < 400)),
     }
 
 
@@ -217,7 +306,10 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 
 
 #: Tools of the orchestrator's base that no pack owner holds.
-BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents"})
+BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents",
+                         # Task 2874: ``resolve_person`` is the orchestrator's own tool
+                         # (``orchestrator/agents.py``, ``profile_on``), not a tool of the pack.
+                         "resolve_person"})
 
 
 def pack_tool_names() -> frozenset[str]:
@@ -228,11 +320,17 @@ def pack_tool_names() -> frozenset[str]:
 
 
 def owner_of_tool(name: str) -> str:
-    """The owner of tool *name*: the CRM or the Projects assistant, else email."""
+    """The owner of tool *name*: the CRM, Projects or Studio owner, else email.
+
+    The Studio owner has no ``config.json``, so its tools come from
+    ``SKILL_FAMILIES`` (:func:`pack.studio_tool_names`). Before TS-5a a Studio tool
+    fell through to email."""
     if name in pack.owner_tool_names(CRM):
         return CRM
     if name in pack.owner_tool_names(PROJECTS):
         return PROJECTS
+    if name in pack.studio_tool_names():
+        return pack.STUDIO
     return EA
 
 
@@ -247,7 +345,8 @@ def pack_of_tool(name: str) -> str:
     raise KeyError(name)
 
 
-def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C901 - one plan per arm
+def scripted_models(sc: Scenario, arm: str,  # noqa: C901 - one plan per arm
+                    mirror_prod: bool = False) -> dict[str, ReplyModel]:
     """The known-good models of *sc* on *arm*, from the plan of each turn.
 
     On the ``pack`` arm a call of the ``email`` pack runs in the orchestrator's
@@ -270,6 +369,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
     for turn in sc.turns:
         plan = turn.plan
         calls_of = plan.calls if (arm == SPAWN_ARM or not plan.solo) else plan.solo
+        if arm == SEARCH_ARM and plan.search_calls is not None:
+            calls_of = plan.search_calls
         # The web tools and the spawn tool belong to no owner: the orchestrator
         # calls them itself, in every arm that holds them.
         direct = [c for c in calls_of if c[0] in BASE_DIRECT]
@@ -290,6 +391,13 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
             for name, args in direct:
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
+            # TS-5b. The model searches first: one ``find_tools`` call for each query of
+            # the plan, then the tools that the find added (no ``load_skill_tools``).
+            searched = arm == SEARCH_ARM and bool(plan.find)
+            if arm == SEARCH_ARM:
+                for query in plan.find:
+                    n += 1
+                    orch.append(tool_turn(ck.FIND_TOOL, {"query": query}, call_id=f"call_{n}"))
             mine = [c for c in calls_of if c[0] in in_pack]
             setup = [c for c in calls_of
                      if c[0] not in in_pack and owner_of_tool(c[0]) == EA]
@@ -312,7 +420,7 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 work = []
             for name, args in work:
                 slug = pack_of_tool(name)
-                if slug not in held and not (
+                if slug not in held and not searched and not (
                         tool_packs.matched_layer(slug, turn.words)
                         or sc.surface in tool_packs.PACKS[slug].surface_slugs):
                     n += 1
@@ -321,7 +429,19 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 held.add(slug)
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
-            if setup:
+            if setup and mirror_prod:
+                # Task 2874 part 4. With the production flags the request holds too many tools
+                # for ``email-setup`` to fit beside ``email`` (the cap of 110), so the loader
+                # refuses it. The rules of the pack then send a setup call to the email
+                # assistant by a hand-off, which the measure counts as legal.
+                n += 1
+                orch.append(tool_turn("call_agent", {"agent_name": EA, "message": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in setup:
+                    n += 1
+                    subs.setdefault(EA, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[EA].append(text_turn(plan.answer))
+            elif setup:
                 # With the base trim on (run 2 onward) the ``email-setup`` pack
                 # fits beside ``email``, so the loader reaches the email owner and
                 # a hand-off to it is refused. The model loads the setup pack and
@@ -336,7 +456,8 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                     n += 1
                     orch.append(tool_turn(name, args, call_id=f"call_{n}"))
             used = used or bool(mine)
-        orch.append(text_turn(plan.answer))
+        answer = plan.search_answer if arm == SEARCH_ARM and plan.search_answer else plan.answer
+        orch.append(text_turn(answer))
     models = {ORCHESTRATOR: ReplyModel(orch)}
     models.update({owner: ReplyModel(turns) for owner, turns in subs.items()})
     if arm == SPAWN_ARM:
@@ -420,19 +541,45 @@ class LogTap:
 
 
 class Member:
-    """Answers each card as the member does, and keeps each card's value."""
+    """Answers each card as the member does, and keeps each card's value.
+
+    The answer grammar is the one that production reads. ``ask_tools._verdict``
+    (``packages/acb_skills/acb_skills/ask_tools.py:2594-2639``) turns the answer string
+    of a card into the verdict:
+
+    * ``APPROVE`` alone approves a plain card (line 2632).
+    * ``APPROVE {"reply": {...}}`` answers a reply card (``reply_card.REPLY_ANSWER_PREFIX``,
+      ``reply_card.py:91``). Its ``action`` is ``send`` or ``save`` (``REPLY_ACTIONS``,
+      ``reply_card.py:94``). An answer that does not parse is a REJECT (line 2613-2614).
+    * ``APPROVE {"rows": [ids]}`` answers a rows card, the held card (line 2633-2639). No
+      ticked row is a REJECT.
+    * ``REJECT`` is the Discard button (``reply_card.py:93``, "Discard is ``REJECT``").
+    * A revise is NOT an answer string. ``{"revised": True}`` comes from a steer, a chat message
+      that the member writes while the card is open (``ask_tools.py:1398`` and ``1408``,
+      ``_close_on_new_steer``). The harness cannot post a steer in the middle of a run, so the
+      measure does not replay a revise.
+
+    ``mode`` is the ``Turn.card`` of the turn that runs: ``approve``, ``send`` or ``discard``.
+    A Discard on a reply card also trashes the card's draft, as the browser does
+    (``ReplyCardForm``), through ``on_discard``."""
 
     def __init__(self) -> None:
         self.cards: list[dict[str, Any]] = []
+        self.mode = "approve"
+        self.on_discard: Any = None
 
     def __call__(self, _record: RunRecord, value: dict[str, Any]) -> str:
         self.cards.append(dict(value))
         form = value.get("reply")
+        if self.mode == "discard":
+            if isinstance(form, dict) and self.on_discard is not None:
+                self.on_discard(str(form.get("draft_id") or ""))
+            return "REJECT"
         if isinstance(form, dict):
             mode = "reply_all" if form.get("reply_all") else "reply"
             ticked = (form.get("ticked") or {}).get(mode) or {}
             return "APPROVE " + json.dumps({"reply": {
-                "action": "save", "reply_all": bool(form.get("reply_all")),
+                "action": "send" if self.mode == "send" else "save", "reply_all": bool(form.get("reply_all")),
                 "body": form.get("body") or "Thanks", "to": list(ticked.get("to") or []),
                 "cc": list(ticked.get("cc") or []), "message_id": form.get("message_id") or "",
             }})
@@ -462,6 +609,46 @@ def router_env() -> tuple[str, str] | None:
     return (base.rstrip("/"), key) if base and key else None
 
 
+def tap_schemas(mp: Any) -> None:
+    """Put the tools of each request on its :class:`ModelCall` (TS-5a).
+
+    ``harness.ModelCall`` keeps only the NUMBER of tools. The checks of the search
+    arm need their names, the description of ``find_tools`` and the schema tokens.
+    This wraps ``_WireTap.handle_async_request`` from here and edits no harness
+    file: it reads the body that the tap reads, and sets three attributes on the
+    call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``,
+    and ``find_answers``: the FULL text of each ``find_tools`` answer that this request
+    carries, because the event stream cuts a tool result at 2000 characters and the hold
+    note of a found pack comes after that cut). It changes nothing on the wire."""
+    real = harness_mod._WireTap.handle_async_request
+
+    async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
+        before = len(tap._sink)
+        try:
+            raw = request.content or b""
+        except httpx.RequestNotRead:
+            raw = b""
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            body = {}
+        tools = [t for t in ((body if isinstance(body, dict) else {}).get("tools") or [])
+                 if isinstance(t, dict)]
+        response = await real(tap, request)
+        mine = next((c for c in tap._sink[before:]
+                     if c.agent == tap._agent and not hasattr(c, "schema_tokens")), None)
+        if mine is not None:
+            funcs = [t.get("function") or {} for t in tools]
+            mine.tool_names = [str(f.get("name") or "") for f in funcs]
+            mine.find_description = next(
+                (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
+            mine.schema_tokens = ck.schema_tokens_of(tools)
+            mine.find_answers = ck.find_answers_in(body if isinstance(body, dict) else {})
+        return response
+
+    mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
+
+
 def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     from acb_common import get_settings
 
@@ -478,6 +665,11 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     # are off by default, and the live run pins them off.
     mp.setattr(settings, "mem0_enabled", False, raising=False)
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
+    # Task 3554: a call that the Router does not take runs on a dev box only.
+    # This eval sets no serving flag, and the executor's error recovery calls
+    # `acb_llm.client.complete` in process. So the live run says dev, and that
+    # call keeps the direct arm that it had before.
+    mp.setattr(settings, "acb_env", "dev", raising=False)
     harness.allow = (base + "/",)
     _system_one_seam(mp)
     tap_system_one(mp, harness.model_calls)
@@ -503,6 +695,71 @@ def tap_system_one(mp: Any, sink: list[ModelCall]) -> None:
         return agent, async_client
 
     mp.setattr(system_one, "_build_agent", build)
+
+
+def tap_every_agent(mp: Any) -> None:
+    """Put the wire tap on the client of EVERY agent that a factory builds.
+
+    ``harness._tap`` wraps the client of the first agent only. A specialist
+    or a worker whose factory builds two agents on two clients would send the
+    calls of the second one past the tap. Those sends count at the worst case
+    as ``unseen``, but the card can price a tapped call exactly. This replaces
+    the module function from here, so no harness file changes. A client that
+    has the tap already keeps one tap (``_tap`` checks it)."""
+    real = harness_mod._tap
+
+    def tap_all(agents: list[Any], name: str, sink: list[ModelCall]) -> None:
+        for agent in agents:
+            real([agent], name, sink)
+
+    mp.setattr(harness_mod, "_tap", tap_all)
+
+
+#: The status of a send that the cap refused. The OpenAI client does not
+#: retry it, and it does not read as a lost Router (:func:`_lost_the_router`).
+CAP_STATUS = 402
+
+
+def cap_sends(mp: Any, refuse: Any, refused: list[str]) -> None:
+    """Check the cap before each model send, inside a turn (TS-7a-cap).
+
+    *refuse* answers a reason when the next send must not go out, else an
+    empty string. The send then gets a local answer with :data:`CAP_STATUS`,
+    and the Router never sees it. The turn ends with that error, and the reason
+    goes in *refused*. Before this, the cap ran between turns only, so one turn
+    of 14 calls could pass it by all 14."""
+    real = harness_mod._WireTap.handle_async_request
+
+    async def handle(tap: Any, request: httpx.Request) -> httpx.Response:
+        why = refuse()
+        if why:
+            refused.append(why)
+            return httpx.Response(CAP_STATUS, request=request,
+                                  json={"error": {"message": f"the eval cap: {why}",
+                                                  "type": "eval_cap"}})
+        return await real(tap, request)
+
+    mp.setattr(harness_mod._WireTap, "handle_async_request", handle)
+
+
+def _cap_each_send(harness: RoutingHarness, should_stop: Any, turn_at: list[int],
+                   refused: list[str]) -> None:
+    """Ask *should_stop* before each model send, with the counted USD of the
+    turn so far: its tapped calls, and its sends that no tap saw at the worst
+    case. *turn_at* holds the marks of the turn, ``[model calls, Router sends]``.
+    A call still in flight has no usage yet, so it counts at the worst case.
+    No *should_stop* (a scripted run) installs nothing."""
+    if should_stop is None:
+        return
+
+    def refuse() -> str:
+        calls = harness.model_calls[turn_at[0]:]
+        unseen = max(0, len(harness.passed) - turn_at[1] - len(calls))
+        extra = (sum(call_row(c)["cost_usd"] for c in calls)
+                 + spend.unseen_sends_usd(unseen, RATE_CARD))
+        return f"USD {extra:.4f} counted in this turn before the send" if should_stop(extra) else ""
+
+    cap_sends(harness._mp, refuse, refused)
 
 
 #: The tools of the orchestrator that read the LOCAL database of the machine
@@ -553,11 +810,19 @@ def _system_one_seam(mp: Any) -> None:
     mp.setattr(routed, "routing_is_on", routing_is_on)
 
 
+#: TS-ORD. The seconds that a scripted turn may take. The first turn of a process
+#: loads the orchestrator, the registry and the model client: 20 s on a quiet
+#: PC, and over 60 s on a PC that runs other work. There is no network in a
+#: scripted run, so a long limit costs nothing and a short one is a flake.
+SCRIPTED_TURN_TIMEOUT = 300.0
+
+
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
              on_turn: Any = None, should_stop: Any = None,
-             tier_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> list[dict[str, Any]]:
     """One chat of *sc* on *arm*: each turn through the real orchestrator run.
 
     *tier_map* is the eval-only rewrite of the tier a request names (see
@@ -567,8 +832,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     *router* None is a scripted run: the plans of *sc* play, or *models*.
     *should_stop* is called before each turn after the first: when it answers
     True the chat ends there, so a budget stops the run inside a long chat.
+    It is also called before each model send, with the counted USD of the
+    turn so far (TS-7a-cap). When it answers True there, the send does not go
+    out (:func:`cap_sends`), and the row says ``capped``.
     Returns one row for each turn.
     """
+    if router is None:
+        timeout = max(timeout, SCRIPTED_TURN_TIMEOUT)
     from acb_common import get_settings
 
     from tests.unit._native_maf_harness import load_agent_module
@@ -576,11 +846,30 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     live = router is not None
     rows: list[dict[str, Any]] = []
     with RoutingHarness(live=live, real_specialists=live) as harness:
+        tap_every_agent(harness._mp)
         if live:
             _use_router(harness, router)
             harness._mp.setattr(harness_mod, "MODEL_REWRITE", dict(tier_map or {}))
         harness.mailboxes = mb.BOXES
         no_local_database(harness._mp)
+        tap_schemas(harness._mp)
+        # The marks of the turn that runs now: (model calls, Router sends).
+        turn_at = [0, 0]
+        refused: list[str] = []
+        _cap_each_send(harness, should_stop, turn_at, refused)
+        if sc.without_features:
+            # TS-5a. The harness grants every feature of a pane. This chat's member
+            # lacks some, so the run reads the narrower set (``in_app_path`` reads
+            # ``member_features`` at call time). No harness file changes.
+            from orchestrator import in_app_path
+
+            kept = frozenset(p.feature for p in in_app_path.PANES
+                             if p.feature) - frozenset(sc.without_features)
+
+            async def member_features() -> frozenset[str]:
+                return kept
+
+            harness._mp.setattr(in_app_path, "member_features", member_features)
         # The worker of ``spawn_subagents`` is an internal agent: the harness
         # registry lists the public agents only, so the stand-in loader gets it here.
         from gateway.routes.agent import _INTERNAL_AGENTS
@@ -610,11 +899,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
         harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        flag = pack_flag(owners_of(sc)) if arm in PACK_ARMS else {}
-        if arm == SPAWN_ARM:
-            # In the eval process only. The tool leaves the request of any
-            # other org (``test_spawn_subagents.py``).
-            flag["spawn_subagents_orgs"] = ds.ORG
+        flag = flag_for(sc, arm, True) if mirror_prod else flag_for(sc, arm)
         web = fanout.WebFixtures()
         web.install(harness._mp)
         for name, value in {**PRODUCTION, **flag}.items():
@@ -629,16 +914,42 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         tap.install(harness._mp)
         fanout.install_timer(harness._mp, tap.events, harness.model_calls)
         if not live:
-            harness.models = models if models is not None else scripted_models(sc, arm)
+            harness.models = models if models is not None else (
+                scripted_models(sc, arm, True) if mirror_prod else scripted_models(sc, arm))
+            # TS-ORD: a scripted run reaches no database. The session load of a
+            # native run reads the chat rows, and a PC with a stale dev database
+            # on a port made each scripted turn stall until the turn timeout.
+            # The answer is the one of a database with no chat row: no session,
+            # the text history, no save. Fence: ``test_one_assistant_measure``.
+            from orchestrator import native_session_store as nss
+
+            harness._mp.setattr(
+                nss, "read_state", lambda *a, **k: nss.LoadState(chat_exists=False))
+            # The member's access read is the second database reach. With no
+            # database it fails closed (``is_active=False``), and CI runs that
+            # way. On a PC with a stale dev database it waited for the turn
+            # timeout instead. The pin answers what CI answers.
+            import acb_auth
+            from acb_auth import access as access_mod
+
+            async def _no_access(*a: Any, **k: Any) -> Any:
+                return access_mod.EffectiveAccess(is_active=False)
+
+            harness._mp.setattr(acb_auth, "resolve_access", _no_access)
+            harness._mp.setattr(access_mod, "resolve_access", _no_access)
         member = Member()
+        member.on_discard = gateway.trash_draft
         history = [dict(h) for h in sc.history]
         thread: str | None = None
+        marked = False  # the chat read outside mail: its packs are held (TS-5a)
         for index, turn in enumerate(sc.turns):
             if index and should_stop is not None and should_stop():
                 break
             marks = (len(gateway.calls), len(member.cards), len(harness.model_calls),
                      len(tap.events), len(harness.sent), len(harness.passed),
-                     len(store.calls), len(work.calls))
+                     len(store.calls), len(work.calls), len(refused))
+            turn_at[:] = [marks[2], marks[5]]
+            member.mode = turn.card
             # The gateway binds the app that the member is in, for this turn.
             with tool_packs.surface_scope(sc.surface):
                 record = asyncio.run(harness.drive(
@@ -647,11 +958,13 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                     history=history or None, typed=turn.words,
                 ))
             thread = record.thread_id
-            main_calls, sub_calls = ck.work_calls_of(record.events, ck.work_tool_names())
+            main_calls, sub_calls = ck.work_calls_of(
+                record.events, ck.work_tool_names() | pack.studio_tool_names())
             # OA-8i: a hand-off that the product refused ran no work. It is
             # counted on its own, and only the hand-offs that ran are checked.
             refused_handoffs = ck.refused_handoffs_of(record.events)
             used_calls = harness.model_calls[marks[2]:]
+            orch_calls = [c for c in used_calls if c.agent == ORCHESTRATOR]
             obs = ck.Observation(
                 arm=arm, answer=record.answer, email_calls=ck.email_calls_of(record.events),
                 tasks=ck.tasks_of(record.tool_calls),
@@ -672,8 +985,19 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 needs=next((str(c.arg) for c in turn.checks if c.kind == "right_pack"), ""),
                 reachable=reachable_of(tap.events[marks[3]:]),
                 write_cards=ck.write_cards_of(record.events),
+                trace=ck.full_find_results(
+                    ck.trace_of(record.events),
+                    [a for c in orch_calls for a in getattr(c, "find_answers", ())]),
+                tool_names=frozenset(n for c in orch_calls for n in getattr(c, "tool_names", ())),
+                find_description=next((d for c in orch_calls
+                                       if (d := getattr(c, "find_description", ""))), ""),
+                schema_tokens=max((int(getattr(c, "schema_tokens", 0) or 0) for c in orch_calls),
+                                  default=0),
+                held=marked,
+                ordered=ck_2874.ordered_calls_of(record.events),
             )
             result = ck.check_turn(turn, obs)
+            find_requests = find_requests_of(orch_calls)
             calls = [call_row(c) for c in harness.model_calls[marks[2]:]]
             # A send that reached the Router and that no tap saw is counted at
             # the worst case, never at zero (2026-10-30 drain).
@@ -693,8 +1017,12 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "router_sends": len(harness.passed) - marks[5],
                 "unseen_sends": unseen,
                 "unseen_usd": round(spend.unseen_sends_usd(unseen, RATE_CARD), 6),
+                # TS-7a-cap: the first send that the cap refused in this turn.
+                "capped": next(iter(refused[marks[8]:]), None),
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
+                # Task 3649: the split and the tags, so a results file reads on its own.
+                "split": splits.split_of(sc), "tags": list(sc.tags),
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
                 "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
                 "handoffs_refused": {k: len(v) for k, v in obs.handoffs_refused.items()},
@@ -713,13 +1041,36 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                                  default=0),
                 "pack_events": events,
                 "mark_writes": sum(1 for kind, _ in store.calls[marks[6]:] if kind == "setex"),
+                # TS-5a. The numbers of the search arm: the find_tools calls of the turn,
+                # the tools that ran after a find or a load, and the schema tokens.
+                "searches": sum(1 for name, _, _ in obs.trace if name == ck.FIND_TOOL),
+                "found_tools": sorted({name for name, _, result in obs.trace
+                                       if name not in (ck.FIND_TOOL, ck.LOAD_TOOL)
+                                       and not ck.refused(result)}),
+                "schema_tokens": obs.schema_tokens, "held": obs.held,
+                # TS-5b. Was ``find_tools`` in the request? A turn with 0 searches is then
+                # "offered and ignored" (True) or "not offered" (False). On the pack arms
+                # the tool is never offered, so a pack row holds False and 0.
+                "find_tools_offered": find_requests > 0,
+                "find_tools_requests": find_requests,
             }
+            if row["capped"]:
+                # TS-7a-cap: the turn did not end, so no check scores it.
+                row["passed"] = None
+            marked = marked or row["mark_writes"] > 0
             rows.append(row)
             if on_turn is not None:
                 on_turn(row)
             history += [{"role": "user", "content": turn.words},
                         {"role": "assistant", "content": record.answer}]
     return rows
+
+
+def find_requests_of(calls: list[Any]) -> int:
+    """TS-5b. How many of the orchestrator's *calls* (requests) carried ``find_tools``.
+    The tap sets ``tool_names`` on a live and on a scripted call alike, so a row says
+    "offered and ignored" (offered, 0 searches) apart from "not offered"."""
+    return sum(1 for c in calls if ck.FIND_TOOL in getattr(c, "tool_names", ()))
 
 
 def reachable_of(events: list[dict[str, Any]]) -> frozenset[str] | None:
@@ -780,11 +1131,12 @@ def runnable(scenarios: tuple[Scenario, ...]) -> tuple[Scenario, ...]:
 
 def run_scripted(scenarios: tuple[Scenario, ...] = SCENARIOS,
                  arms: tuple[str, ...] = ALL_ARMS,
-                 tier_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+                 tier_map: dict[str, str] | None = None,
+                 mirror_prod: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     for sc in runnable(scenarios):
         for arm in arms_for(sc, arms):
-            rows += run_chat(sc, arm, tier_map=tier_map)
+            rows += run_chat(sc, arm, tier_map=tier_map, mirror_prod=mirror_prod)
     return rows, scripted_problems(rows)
 
 
@@ -844,12 +1196,29 @@ def _packs_before_first_call(row: dict[str, Any]) -> bool:
                for e in row.get("pack_events") or [])
 
 
+def capped_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turns in which the cap refused a send (TS-7a-cap). Such a turn did
+    not end, so no check scores it. Its spend still counts."""
+    return [r for r in rows if r.get("capped")]
+
+
+def turn_state(row: dict[str, Any]) -> str:
+    """``CAPPED``, ``pass`` or ``FAIL``. A capped turn is not a product failure."""
+    if row.get("capped"):
+        return "CAPPED"
+    return "pass" if row["passed"] else "FAIL"
+
+
 def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The numbers of each arm. A capped turn is not scored: it is not in the
+    pass rate, in a stop result or in a per-arm number. Its spend stays in
+    ``cost_usd`` of the arm, and ``capped_turns`` counts it."""
     by_arm: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         by_arm[r.get("arm_label") or r["arm"]].append(r)
     out: dict[str, Any] = {}
-    for arm, rs in by_arm.items():
+    for arm, every in by_arm.items():
+        rs = [r for r in every if not r.get("capped")]
         totals = [turn_totals(r) for r in rs]
         per_check: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         for r in rs:
@@ -908,7 +1277,9 @@ def summarise(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "completion_per_turn": _mean([t["completion"] for t in totals]),
             "cost_per_turn_usd": round(statistics.fmean([t["cost_usd"] for t in totals]), 5)
             if totals else None,
-            "cost_usd": round(sum(t["cost_usd"] for t in totals), 4),
+            # The spend of the arm keeps its capped turns: the Router billed them.
+            "cost_usd": round(sum(turn_totals(r)["cost_usd"] for r in every), 4),
+            "capped_turns": len(every) - len(rs),
             "per_check": {k: f"{p}/{n}" for k, (p, n) in sorted(per_check.items())},
             "by_scenario": {k: f"{p}/{n}" for k, (p, n) in by_scenario.items()},
             **extra_summary(rs),
@@ -979,8 +1350,28 @@ def extra_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
             kinds[agent] += n
         for agent, n in (r.get("handoffs_refused") or {}).items():
             refused[agent] += n
+    searched = [r for r in app if r.get("searches")]
+    offered = [r for r in rs if r.get("find_tools_offered")]
+    tokens = [r["schema_tokens"] for r in rs if r.get("schema_tokens")]
     return {
         "app_turns": len(app),
+        # TS-5a. The numbers of the search arm. A false search is a find on a turn that
+        # needs no tool (it has a ``not_searched`` check). It is counted on its own, and
+        # it is NOT in the share of stop result 12.
+        "app_turns_searched": len(searched),
+        "search_turn_share_pct": _pct(len(searched), len(app)),
+        "searches_per_turn": _mean([float(r.get("searches", 0)) for r in rs]),
+        "found_tools_per_turn": _mean([float(len(r.get("found_tools") or [])) for r in rs]),
+        # TS-5b. A turn where ``find_tools`` was in a request and the model made no
+        # search: "offered and ignored". It is a count, never a check.
+        "find_offered_turns": len(offered),
+        "find_requests_per_turn": _mean([float(r.get("find_tools_requests", 0)) for r in rs]),
+        "find_offered_not_called": sum(1 for r in offered if not r.get("searches")),
+        "offered_not_called": f"{sum(1 for r in offered if not r.get('searches'))} of {len(offered)}",
+        "false_searches": sum(r.get("searches", 0) for r in rs
+                              if r["checks"].get("not_searched") is not None),
+        "schema_tokens_max": max(tokens, default=None),
+        "schema_tokens_mean": _mean([float(n) for n in tokens]),
         "layer_b_turns": len(layer_b),
         "layer_b_share_pct": _pct(len(layer_b), len(app)),
         "pack_turns": len(packed),
@@ -1041,11 +1432,34 @@ def set_summary(rs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: Stop result 12 (TS-5a): the most percent of app turns that may call ``find_tools``.
+SEARCH_STOP_PCT = 15
+
+
+def _stop_seven(dele: dict[str, Any], packs: dict[str, Any]) -> tuple[int, str, str]:
+    """Stop result 7: the pack arm costs more a turn than delegation.
+
+    TS-7a-cap. A capped turn is not scored, so an arm whose turns were all
+    capped has no cost a turn (None). Two None values do not compare, and the
+    report crashed. Such an arm reads ``n/a``. An arm with scored turns only in
+    the ``email`` or ``fanout`` set keeps the comparison it had before."""
+    a, b = dele.get("cost_per_turn_usd"), packs.get("cost_per_turn_usd")
+    why = f"packs USD {b} vs delegation {a}"
+    if a is None or b is None:
+        return 7, "n/a", f"no scored turns: {why}"
+    cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
+            for n in v["by_set"] if n not in ("email", "fanout")]
+    if None in cost:
+        return 7, "n/a", why
+    return 7, "STOP" if b > a else "ok", why
+
+
 def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
-    """The ten stop results of §4.3.3 that one results file can show, as
+    """The twelve stop results of §4.3.3 that one results file can show, as
     ``(number, state, why)``. State: ``STOP``, ``ok`` or ``n/a``. Results 3, 4 and
     9 need the ``general`` set, a run with no packs, and the spawn arm. Result 10
-    needs the spawn arm. They show ``n/a`` until those exist."""
+    needs the spawn arm, and result 12 needs the ``search`` arm. They show ``n/a``
+    until those exist."""
     out: list[tuple[int, str, str]] = []
     guards = sorted({g for v in summary.values() for g in v.get("guard_failures", [])})
     out.append((1, "STOP" if guards else "ok", ", ".join(guards) or "no guard check failed"))
@@ -1061,11 +1475,7 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
             out.append((2, "n/a", "no app turn outside email"))
         else:
             out.append((2, "STOP" if b < a - 2 else "ok", f"packs {b:.1f}% vs delegation {a:.1f}%"))
-        cost = [v["by_set"][n]["cost_per_turn_usd"] for v in (dele, packs)
-                for n in v["by_set"] if n not in ("email", "fanout")]
-        out.append((7, "n/a" if None in cost else (
-            "STOP" if packs["cost_per_turn_usd"] > dele["cost_per_turn_usd"] else "ok"),
-            f"packs USD {packs['cost_per_turn_usd']} vs delegation {dele['cost_per_turn_usd']}"))
+        out.append(_stop_seven(dele, packs))
     if packs:
         share = packs.get("layer_b_share_pct")
         out.append((5, "n/a" if share is None else ("STOP" if share > 15 else "ok"),
@@ -1087,6 +1497,21 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
         out.append((11, "STOP" if fault else ("REVIEW" if total else "ok"),
                     f"{total} hand-off turns on a packed app, {fault} by model choice: {by}. "
                     f"Refused hand-offs, not counted: {tried}"))
+    search = summary.get(SEARCH_ARM)
+    if search is None:
+        out.append((12, "n/a", "needs the search arm"))
+    else:
+        # Stop result 12, the twin of result 5: ``find_tools`` on more than 15 percent
+        # of the app turns of the search arm. Counts, not a rounded percent: 15 of 100
+        # is ok, and 16 of 100 is a STOP.
+        calls, total = search.get("app_turns_searched") or 0, search.get("app_turns") or 0
+        if not total:
+            out.append((12, "n/a", "no app turn on the search arm"))
+        else:
+            out.append((12, "STOP" if calls * 100 > SEARCH_STOP_PCT * total else "ok",
+                        f"find_tools on {calls} of {total} app turns ({_pct(calls, total)}%), "
+                        f"the limit is {SEARCH_STOP_PCT}%. False searches, counted on their own: "
+                        f"{search.get('false_searches', 0)}"))
     spawn = summary.get(SPAWN_ARM)
     base = summary.get("pack")
     slow = (spawn or {}).get("research_total_median"), (base or {}).get("research_total_median")
@@ -1105,6 +1530,25 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
                    (4, "needs the general set")):
         out.append((n, "n/a", why))
     return sorted(out)
+
+
+def sealed_lines(data: dict[str, Any]) -> list[str]:
+    """The counts of the held-out chats (task 3649), as Markdown lines."""
+    arms_sealed = (data.get("sealed") or {}).get("arms", {})
+    if not arms_sealed:
+        return []
+    lines = ["", "Held-out chats (sealed, counts only; the rows are in the sibling file):", "",
+             "| Arm | Repeat | Turns passed | Capped |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for rep, c in v["repeats"].items():
+            lines.append(f"| {arm_name} | {rep} | {c['passed']}/{c['turns']} | {c['capped']} |")
+    lines += ["", "| Held-out check | Arm | Pass | Fail |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for name, c in v["checks"].items():
+            lines.append(f"| `{name}` | {arm_name} | {c['pass']} | {c['fail']} |")
+    lines += ["", "Held-out spend, USD (in the counted total): "
+              + ", ".join(f"{a} {v['cost_usd']}" for a, v in arms_sealed.items())]
+    return lines
 
 
 def report(data: dict[str, Any]) -> str:
@@ -1146,6 +1590,11 @@ def report(data: dict[str, Any]) -> str:
     row("Output tokens per turn", lambda v: v["completion_per_turn"])
     row("Cost per turn, USD", lambda v: v["cost_per_turn_usd"])
     row("Cost of the arm, USD", lambda v: v["cost_usd"])
+    capped = capped_rows(data.get("rows") or [])
+    if capped:
+        lines += ["", f"capped: {len(capped)} turns, not scored. Their spend is in the count: "
+                  + ", ".join(f"{r.get('arm_label') or r['arm']} {r['scenario']}#{r['turn']} "
+                              f"r{r.get('repeat', 1)}" for r in capped)]
     if data.get("rows"):
         lines += ["", "Counted spend by agent (USD):", "", spend.spend_table(data["rows"])]
     scen = sorted({k for a in arms for k in s[a]["by_scenario"]})
@@ -1186,11 +1635,32 @@ def report(data: dict[str, Any]) -> str:
                 ("Cache share, other turns", "cache_share_other_turns"),
                 ("Hand-offs to an owner", "specialist_handoffs"),
                 ("Hand-offs that the product refused", "handoffs_refused"),
-                ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns")):
+                ("Hand-off turns on a packed app, by owner and reason", "app_handoff_turns"),
+                ("Searches (find_tools) per turn", "searches_per_turn"),
+                ("Tools that ran after a find or a load, per turn", "found_tools_per_turn"),
+                ("App turns that searched", "app_turns_searched"),
+                ("False searches (a find on a turn that needs no tool)", "false_searches"),
+                ("Turns where find_tools was offered", "find_offered_turns"),
+                ("Requests that carried find_tools, per turn", "find_requests_per_turn"),
+                ("Schema tokens in a request, most", "schema_tokens_max"),
+                ("Schema tokens in a request, mean", "schema_tokens_mean")):
             lines.append(f"| {label} | " + " | ".join(str(s[a].get(key)) for a in arms) + " |")
+        # TS-5b. Check-free: it tells "offered and ignored" from "not offered".
+        for a in arms:
+            if s[a].get("find_offered_turns"):
+                lines += ["", f"{a}: offered but not called: {s[a].get('offered_not_called')}"]
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
+    lines += sealed_lines(data)
     return "\n".join(lines)
+
+
+def public_view(data: dict[str, Any]) -> dict[str, Any]:
+    """*data* as a public file holds it: the tune rows, the counts of the held-out
+    rows, and a summary of the tune rows. Every print of a result reads this."""
+    public, _ = splits.seal(data)
+    public["summary"] = summarise(public["rows"])
+    return public
 
 
 # ── the live run ─────────────────────────────────────────────────────────────
@@ -1228,10 +1698,12 @@ def served_models(rows: list[dict[str, Any]]) -> list[str]:
 def _write(out: Path, data: dict[str, Any]) -> None:
     data["spent_this_chunk_usd"] = round(
         float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
-    data["summary"] = summarise(data["rows"])
+    # Task 3649: the summary reads the tune rows only. The held-out rows go to the
+    # sibling file, and the public file keeps their counts (:func:`splits.save`).
+    data["summary"] = summarise([r for r in data["rows"] if splits.split_of_row(r) == splits.TUNE])
     data["served_models"] = served_models(data["rows"])
     data["spend_by_agent"] = {k: round(v, 4) for k, v in spend.spend_by_agent(data["rows"]).items()}
-    out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    splits.save(out, data)
 
 
 def utc_now() -> datetime:
@@ -1264,77 +1736,124 @@ def _lost_the_router(rows: list[dict[str, Any]]) -> bool:
     return any(any(w in str(r.get("error") or "") for w in words) for r in rows)
 
 
+def stop_reason(spent: float, budget: float, unpriced: list[str]) -> str:
+    """Why a live run must stop now, or an empty string. *spent* holds the
+    count of the turn that runs, when a send asks (TS-7a-cap)."""
+    if unpriced:
+        return (f"the rate card has no price for the served model {unpriced[0]!r}. "
+                "Add it to rate_card.json, then run again")
+    if spent >= budget:
+        return f"the budget: USD {spent:.3f} spent"
+    return ""
+
+
+def stopped_inside(rows: list[dict[str, Any]], turns: int,
+                   reason: str) -> tuple[str, str] | None:
+    """``(why, where)`` when a chat stopped before its end, else None. It stopped
+    when it ran fewer turns than it has, when the cap refused a send in a turn,
+    or when *reason* says the run must stop now."""
+    capped = any(r.get("capped") for r in rows)
+    if len(rows) >= turns and not capped and not reason:
+        return None
+    where = "inside a turn" if capped else f"after turn {len(rows)}"
+    return reason or "the budget", f"{where} of {turns}"
+
+
 def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tuple[str, ...],
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
              first_repeat: int = 1, spent_before: float = 0.0,
              allow_peak: bool = True, clock: Any = None,
-             tier_map: dict[str, str] | None = None) -> dict[str, Any]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> dict[str, Any]:
     """The live chats. *budget* caps the spend, counted from *spent_before*,
     so a run in chunks keeps one cap. The check runs before each chat AND
     before each turn after the first, so one long chat cannot pass the cap by
     more than one turn. A chat that lost the Router is dropped, and the run
     stops. Unless *allow_peak*, the run also stops before a chat that would
-    start in a DeepSeek peak band (*clock* gives the time, for a test)."""
+    start in a DeepSeek peak band (*clock* gives the time, for a test).
+
+    TS-7a-cap. The cap is also checked before each model send inside a turn,
+    with the counted USD of the turn so far, so one turn passes it by at most
+    one call. A call that the card cannot price (a served model that the card
+    does not hold) stops the run after its turn. ``started_utc`` in the file
+    and the last printed line say where to read the real bill."""
     clock = clock or utc_now
+    started = utc_now()
     data: dict[str, Any] = {
-        "date": datetime.now(UTC).date().isoformat(), "sha": _sha(), "tier": tier,
+        "date": started.date().isoformat(), "sha": _sha(), "tier": tier,
+        "started_utc": started.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "member": ds.MEMBER,
         "tier_map": dict(tier_map or {}),
+        # Task 2874 part 3: the production flags that this run set (None: none).
+        "mirror_prod": mirror.header() if mirror_prod else None,
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
-        "repeat": repeat, "budget_usd": budget, "rate_card": RATE_CARD["usd_per_1m"],
+        "repeat": repeat, "budget_usd": budget,
+        "rate_card": {name: m["usd_per_1m"] for name, m in RATE_CARD["models"].items()},
         "rows": [], "stopped": None, "dropped": [], "spent_before_usd": spent_before,
     }
     spent = spent_before
+    unpriced: list[str] = []
+
+    def over(extra: float = 0.0) -> str:
+        return stop_reason(spent + extra, budget, unpriced)
 
     def on_turn(row: dict[str, Any]) -> None:
         nonlocal spent
         t = turn_totals(row)
         spent += t["cost_usd"]
-        print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
-              f"{'pass' if row['passed'] else 'FAIL'} first {row['first_text_s']} s, "
+        unpriced.extend(c.get("served") or "" for c in row["model_calls"] if c.get("unpriced"))
+        held = row.get("split") == splits.HOLDOUT
+        # Task 3649: a held-out turn shows its cost and nothing of its result.
+        print(f"[{row.get('arm_label') or row['arm']:<10}] "
+              f"{splits.HIDDEN if held else row['scenario'] + '#' + str(row['turn'])} r{row['repeat']}: "
+              f"{'sealed' if held else turn_state(row)} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
               f" | spent USD {spent:.3f} of {budget:.2f}", flush=True)
         bad = [k for k, v in row["checks"].items() if v is False]
-        if bad:
+        if bad and not row.get("capped") and not held:
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
+
+    def finish() -> dict[str, Any]:
+        data["spent_usd"] = round(spent, 4)
+        _write(out, data)
+        print(spend.bill_check_line(ds.MEMBER, data["started_utc"], spent - spent_before),
+              flush=True)
+        return data
 
     def stop(why: str) -> dict[str, Any]:
         data["stopped"] = why
-        data["spent_usd"] = round(spent, 4)
         print(why, flush=True)
-        _write(out, data)
-        return data
+        return finish()
 
     for rep in range(first_repeat, first_repeat + repeat):
         for i, sc in enumerate(scenarios):
             mine = arms_for(sc, arms)
             order = mine if (rep + i) % 2 else tuple(reversed(mine))
             for arm in order:
-                if spent >= budget:
-                    return stop(f"the budget: USD {spent:.3f} spent before {sc.id} {arm} r{rep}")
+                if why := over():
+                    return stop(f"{why} before {splits.label(sc)} {arm} r{rep}")
                 ok, why = spend.peak_gate(clock(), allow_peak)
                 if not ok:
-                    return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
+                    return stop(f"peak band before {splits.label(sc)} {arm} r{rep}. {why}")
                 if not router_up(router[0]):
-                    return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
+                    return stop(f"the Router does not answer before {splits.label(sc)} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
                                 repeat=rep, on_turn=on_turn,
-                                should_stop=lambda: spent >= budget, tier_map=tier_map)
+                                should_stop=lambda extra=0.0: bool(over(extra)),
+                                tier_map=tier_map, mirror_prod=mirror_prod)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
                                                              for r in rows), 4)})
-                    return stop(f"the Router went away during {sc.id} {arm} r{rep}: "
+                    return stop(f"the Router went away during {splits.label(sc)} {arm} r{rep}: "
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
-                if len(rows) < len(sc.turns):
-                    return stop(f"the budget: USD {spent:.3f} spent inside {sc.id} {arm} r{rep}, "
-                                f"after turn {len(rows)} of {len(sc.turns)}")
+                if inside := stopped_inside(rows, len(sc.turns), over()):
+                    return stop(f"{inside[0]} inside {splits.label(sc)} {arm} r{rep}, {inside[1]}")
                 _write(out, data)
-    data["spent_usd"] = round(spent, 4)
-    _write(out, data)
-    return data
+    return finish()
 
 
 def merge(paths: list[Path], out: Path) -> dict[str, Any]:
@@ -1343,7 +1862,14 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     Each chunk keeps its own SHA, in ``chunks_run`` and on each of its rows,
     because the chunks of one run can run on different code (fix round 1).
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
-    parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+    parts = [splits.load(p) for p in paths]
+    for path, p in zip(paths, parts, strict=True):
+        held = [r for r in p["rows"] if splits.split_of_row(r) == splits.HOLDOUT]
+        if (p.get("sealed") or {}).get("rows") and not held:
+            raise ValueError(f"{path.name}: it holds held-out counts, but its sibling file "
+                             f"{splits.sibling(path).name} is missing. A merge would drop them.")
+    if len({json.dumps(p.get("mirror_prod"), sort_keys=True) for p in parts}) > 1:
+        raise ValueError("the chunks ran with different --mirror-prod settings. Do not merge them.")
     data = {k: v for k, v in parts[0].items()
             if k not in ("rows", "summary", "stopped", "sha", "tier_map")}
     maps: dict[str, dict[str, str]] = {}
@@ -1448,7 +1974,7 @@ def rescore(data: dict[str, Any], when: str = "") -> list[str]:
                                f"no_email_delegation {was} -> {now}")
                 r["checks"]["no_email_delegation"] = now
             r["handoffs"] = [ck.handoff_kind(t) for t in obs.tasks]
-        r["passed"] = ck.passed(r["checks"])
+        r["passed"] = None if r.get("capped") else ck.passed(r["checks"])
     data["rescored"] = {"when": when or datetime.now(UTC).date().isoformat(),
                         "sha": _sha(), "checks": sorted(RESCORED), "changes": changes}
     data["summary"] = summarise(data["rows"])
@@ -1491,6 +2017,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     mode.add_argument("--merge", default="", help="a comma list of chunk files, into --out")
     mode.add_argument("--rescore", action="store_true",
                       help="run the answer checks again on the stored rows of --out")
+    mode.add_argument("--compare", default="",
+                      help="B.json,A.json: the win margin of A over B (task 3649). The sibling "
+                           "files of the held-out rows are read too")
+    parser.add_argument("--mirror-prod", action="store_true",
+                        help="EVAL ONLY. Set the chat flags of production (prod_flags.json) in the "
+                             "eval process, for each chat of the pack arms. Default off")
+    parser.add_argument("--split", default=splits.ALL, choices=splits.SPLITS,
+                        help="run the tune chats, the held-out chats, or all (default)")
+    parser.add_argument("--t-tag", default=cmp.DEFAULT_T_TAG,
+                        help="compare: the tag of the tune chats that the change aims at")
+    parser.add_argument("--compare-arm", default=cmp.DEFAULT_ARM,
+                        help="compare: the arm to read (the arm label, default pack)")
     parser.add_argument("--arms", default=",".join(ALL_ARMS))
     parser.add_argument("--scenarios", default="", help="a comma list of scenario ids")
     parser.add_argument("--repeat", type=int, default=2)
@@ -1522,33 +2060,63 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print(f"NO-GO: {exc}")
         return EXIT_NO_GO
     asked = [a.strip() for a in args.arms.split(",") if a.strip()]
+    unknown = [a for a in asked if a not in ALL_ARMS]
+    if unknown:
+        # Before TS-5a an unknown value dropped silently, and the run measured less
+        # than the person asked for.
+        print(f"NO-GO: --arms {', '.join(unknown)}: no such arm. Use {', '.join(ALL_ARMS)}.")
+        return EXIT_NO_GO
     arms = tuple(a for a in asked if a in ALL_ARMS)
+    if SEARCH_ARM in arms and (args.scripted or args.live) and not search_built():
+        print(f"SKIP: arm {SEARCH_ARM}: it needs the flag tool_search_orgs (TS-2a) in the "
+              "settings and SEARCH_PLANS on (the plans of TS-5b). One of them is missing.")
+        arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
-    chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
+    chosen = splits.keep(tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted),
+                         args.split)
     for sc in chosen:
         if sc.skip:
-            print(f"SKIP: {sc.id} ({sc.set}): {sc.skip}")
+            print(f"SKIP: {splits.label(sc)} ({sc.set}): {sc.skip}")
     scenarios = runnable(chosen)
     out = Path(args.out)
 
+    if args.compare:
+        names = [p.strip() for p in args.compare.split(",") if p.strip()]
+        if len(names) != 2:
+            print("NO-GO: --compare takes two files: B.json,A.json")
+            return EXIT_NO_GO
+        try:
+            text, code = cmp.compare(Path(names[0]), Path(names[1]), t_tag=args.t_tag,
+                                     arm=args.compare_arm)
+        except (OSError, ValueError, AttributeError, TypeError, KeyError) as exc:
+            # One line. Never a row, and never the path of a sibling file.
+            print(f"NO-GO: --compare: a file does not read ({type(exc).__name__}). "
+                  f"Files: {names[0]}, {names[1]}")
+            return EXIT_NO_GO
+        print(text)
+        return code
     if args.report:
-        print(report(json.loads(out.read_text(encoding="utf-8"))))
+        print(report(public_view(splits.load(out))))
         return EXIT_PASS
     if args.merge:
         data = merge([Path(p) for p in args.merge.split(",") if p.strip()], out)
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.rescore:
-        data = json.loads(out.read_text(encoding="utf-8"))
+        data = splits.load(out)
         changes = rescore(data)
-        out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        # Task 3649: _write seals the held-out rows into the sibling file again.
+        _write(out, data)
+        shown = splits.public_lines(changes)
         print(f"{len(changes)} checks changed")
-        for line in changes:
+        for line in shown:
             print(f"  {line}")
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.scripted:
-        rows, problems = run_scripted(scenarios, arms, tier_map)
+        # A run with no --mirror-prod calls as before, so a test double of the old shape still fits.
+        rows, problems = (run_scripted(scenarios, arms, tier_map, mirror_prod=True)
+                          if args.mirror_prod else run_scripted(scenarios, arms, tier_map))
         for r in rows:
             print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm_label']:<10} {r['scenario']}#{r['turn']}"
                   f"  {len(r['model_calls'])} calls  {r['email_tools']}")
@@ -1557,6 +2125,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print("FAIL" if problems else f"PASS: {len(rows)} turns on {len(arms)} arms")
         return EXIT_FAIL if problems else EXIT_PASS
 
+    # The owner ceiling comes before any credential, network or file step of a live run.
+    earlier = args.spent_before
+    if args.spent_before_from.strip():
+        try:
+            earlier += spent_so_far([Path(p) for p in args.spent_before_from.split(",") if p.strip()])
+        except (OSError, ValueError, AttributeError, TypeError):
+            print("NO-GO: --spent-before-from: a chunk file does not read.")
+            return EXIT_NO_GO
+    ok, why = spend.ceiling_gate(args.budget_usd, earlier)
+    if not ok:
+        print(why)
+        return EXIT_NO_GO
     router = router_env()
     if router is None:
         print("NO-GO: set LITELLM_BASE_URL and LITELLM_API_KEY, or write them in eval.env")
@@ -1578,8 +2158,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
                     first_repeat=args.first_repeat, spent_before=before,
-                    allow_peak=args.allow_peak, tier_map=tier_map)
-    print(report(data))
+                    allow_peak=args.allow_peak, tier_map=tier_map, mirror_prod=args.mirror_prod)
+    print(report(public_view(data)))
     print(f"results: {out}")
     return EXIT_PASS
 

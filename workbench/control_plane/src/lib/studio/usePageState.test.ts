@@ -46,6 +46,7 @@ vi.mock("next/navigation", () => ({
 
 import { FILTER_DEBOUNCE_MS, mergePageQuery, usePageState, type PageStateApi } from "@/lib/studio/usePageState";
 import { PAGE_STATE_LIMITS, type PageTabs } from "@/lib/studio/pageState";
+import { closeRecord, openRecord, withFullPage } from "@/lib/studio/recordPageModel";
 
 const PAGE: PageTabs = { tabs: [{ id: "list" }, { id: "plan" }] };
 
@@ -229,5 +230,102 @@ describe("an edit typed in the last 300 ms", () => {
     const src = readFileSync(new URL("./usePageState.ts", import.meta.url), "utf-8");
     const cleanup = src.slice(src.indexOf("useEffect(() => () =>"));
     expect(cleanup).toMatch(/shouldFlushOnUnmount\([\s\S]*write\(\(s\) => s, "replace"\)/);
+  });
+});
+
+describe("the page id in the URL (STU-AF1)", () => {
+  it("keeps the page over a reload and writes ?page=<id>", () => {
+    mount().setPage("client");
+    expect(hist.url).toContain("page=client");
+    expect(mount().state.page).toBe("client");
+  });
+
+  it("clears the tab and the pick when the page changes", () => {
+    mount().setPage("visit");
+    mount().setTab("plan");
+    mount().setSelected("v1");
+    expect(mount().state).toMatchObject({ page: "visit", tab: "plan", selected: "v1" });
+    mount().setPage("client");
+    const s = mount().state;
+    expect(s.page).toBe("client");
+    expect(s.tab).toBeNull();
+    expect(s.selected).toBeNull();
+    expect(hist.url).not.toContain("tab=");
+    expect(hist.url).not.toContain("sel=");
+  });
+
+  it("goes back to the earlier page, with its tab, on Back", () => {
+    mount().setPage("visit");
+    mount().setTab("plan");
+    mount().setPage("client");
+    hist.back();
+    expect(mount().state).toMatchObject({ page: "visit", tab: "plan" });
+    hist.back();
+    expect(mount().state.tab).toBeNull();
+    hist.back();
+    expect(mount().state.page).toBeUndefined();
+  });
+
+  it("reads an unknown page id from the URL without an error", () => {
+    hist.reset("/studio/package-preview?pkg=x&page=nope");
+    expect(() => mount()).not.toThrow();
+    expect(mount().state.page).toBe("nope");
+  });
+
+  it("keeps each key that it does not own, such as pkg", () => {
+    hist.reset("/studio/package-preview?pkg=abc");
+    mount().setPage("client");
+    expect(hist.url).toContain("pkg=abc");
+    expect(mergePageQuery("pkg=abc&page=a&tab=b", { selected: null, filters: {}, tab: null, page: "c" })).toBe("pkg=abc&page=c");
+  });
+});
+
+/**
+ * STU-D23a: `floor=1` is a key of the viewer, so the hook never owns it.
+ * Mutation: add `key === "floor"` to `OWNED`. Each test below turns red.
+ */
+describe("the floor view key (STU-D23a)", () => {
+  const floorOf = () => new URLSearchParams(hist.url.split("?")[1] ?? "").get("floor");
+
+  it("survives a page change, a tab, a pick and a filter", () => {
+    hist.reset("/studio/package-preview?pkg=abc&floor=1");
+    mount().setPage("client");
+    expect(floorOf()).toBe("1");
+    mount().setTab("plan");
+    mount().setSelected("v1");
+    mount().setFilter("q", "x");
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    expect(floorOf()).toBe("1");
+    expect(hist.url).toContain("pkg=abc");
+  });
+
+  it("survives a record open, the full page and a close", () => {
+    hist.reset("/studio/package-preview?pkg=abc&floor=1");
+    mount().go((s) => openRecord(s, "visit", "r1"));
+    expect(mount().state).toMatchObject({ ro: "visit", rec: "r1" });
+    expect(floorOf()).toBe("1");
+    mount().go((s) => withFullPage(s, true));
+    expect(floorOf()).toBe("1");
+    mount().go(closeRecord);
+    expect(mount().state.rec).toBeUndefined();
+    expect(floorOf()).toBe("1");
+  });
+
+  it("is still there after Back, at each entry", () => {
+    hist.reset("/studio/package-preview?pkg=abc&floor=1");
+    mount().setPage("client");
+    mount().go((s) => openRecord(s, "visit", "r1"));
+    hist.back();
+    expect(mount().state.rec).toBeUndefined();
+    expect(floorOf()).toBe("1");
+    hist.back();
+    expect(mount().state.page).toBeUndefined();
+    expect(floorOf()).toBe("1");
+  });
+
+  it("is kept by mergePageQuery, whatever the state", () => {
+    const q = mergePageQuery("pkg=abc&floor=1&page=a&rec=r1&ro=visit", { selected: null, filters: {}, tab: null, page: "b" });
+    expect(new URLSearchParams(q).get("floor")).toBe("1");
+    expect(q).not.toContain("rec=");
   });
 });

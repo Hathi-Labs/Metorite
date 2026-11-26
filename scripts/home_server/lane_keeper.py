@@ -59,7 +59,7 @@ STALE_S = 1800
 # Lanes that wait on the owner. Owner directive 2026-11-07: never in a loop.
 DEFAULT_SKIP_LANES = "lane-chat,lane-bill"
 NOTE = (
-    "Your turn ended. Read ~/lanes/merge-queue.log, fix a BACK line on your PRs first, "
+    "Your turn ended. Read ~/lanes/merge-bot.log, fix a BACK line on your PRs first, "
     "act on an owner answer that you asked for, then take your next free task. "
     "When you wait on CI or a merge, run one `sleep 600` and look again. "
     "When you hold an open owner question and have no other free work, check it "

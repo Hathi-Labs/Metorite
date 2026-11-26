@@ -69,6 +69,12 @@ export interface VoiceDictation {
   state: VoiceState;
   /** Whole seconds of the recording that runs. */
   elapsed: number;
+  /**
+   * The raw level of the mic, 0..1, written on each audio block. It is a ref
+   * and not state, so a block costs no render. The drawing reads it on each
+   * animation frame.
+   */
+  levelRef: { current: number };
   start: () => Promise<void>;
   /** Stop and transcribe. A second call does nothing. */
   stop: () => Promise<void>;
@@ -83,6 +89,7 @@ export function useVoiceDictation(opts: {
   const [state, dispatch] = useReducer(voiceReducer, IDLE);
   const [now, setNow] = useState(0);
   const capture = useRef<PcmCapture | null>(null);
+  const levelRef = useRef(0);
   // Each start and each cancel moves this on, so a mic grant that arrives
   // after a cancel is dropped and records nothing.
   const attempt = useRef(0);
@@ -102,7 +109,9 @@ export function useVoiceDictation(opts: {
     handlers.current.onNotice(null);
     try {
       const handle = await startPcmCapture({
-        onLevel: (level) => dispatch({ type: "level", level }),
+        onLevel: (level) => {
+          levelRef.current = level;
+        },
       });
       if (!mounted.current || mine !== attempt.current) {
         handle.cancel();
@@ -123,6 +132,7 @@ export function useVoiceDictation(opts: {
     const handle = capture.current;
     if (!handle) return;
     capture.current = null;
+    levelRef.current = 0;
     const clip = handle.stop();
     dispatch({ type: "stop" });
     const out = await postClip(clip);
@@ -137,6 +147,7 @@ export function useVoiceDictation(opts: {
     attempt.current++;
     capture.current?.cancel();
     capture.current = null;
+    levelRef.current = 0;
     dispatch({ type: "cancel" });
   }, []);
 
@@ -162,5 +173,5 @@ export function useVoiceDictation(opts: {
     };
   }, []);
 
-  return { state, elapsed: elapsedSeconds(state, now), start, stop, cancel };
+  return { state, elapsed: elapsedSeconds(state, now), levelRef, start, stop, cancel };
 }

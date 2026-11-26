@@ -25,10 +25,20 @@ Change it here and nowhere else.
 | `queue_wait.p90_min` | over 20 | A job that waits for a runner is idle time, not test time. |
 | `batch_main.median_min` | over 60 | The full suite must fit inside a release window (D194). |
 | `selection_misses.batch_red_after_pr_green` | over 0 | A miss means the PR selection skipped a test it needed. |
+| `quality.revert_share` | over 0.05 | Reverts show that a fast merge let a fault in (D218). |
+| `quality.red_main_minutes_per_day` | over 120 | Main that stays red blocks every release slot. |
+| `quality.hotfix_releases` | over 0 | A release outside a slot needs a reason in the report. |
 | `slowest_tests[].seconds` | over 180 for any file | One slow file sets the floor of the batch time. |
 | Owner queue, oldest item | over 3 days | The owner wait is the biggest delay that CI cannot fix. |
 | Stale hold | any hold stale over 2 hours | A stale hold blocks a task that nobody works. |
 | `open_prs_older_than_2d` | any PR older than 2 days | Long branches cause collisions (root `CLAUDE.md` §4). |
+
+## The rollback rule (D218)
+
+When `quality.revert_share` stays over 0.05 in this report and in the one
+before it, open one fix task. The task returns the merge bot to the strict
+gate for the area that broke. The strict gate re-tests after each merge of
+main. Name the area and the reverted pull requests in the task.
 
 ## Rules for the headless session
 
@@ -67,6 +77,9 @@ The script prints one JSON object. Its keys:
 - `batch_main`: `runs`, `median_min`, `p90_min`, `red_rate`. It counts the
   `deploy.yml` runs with event push on `main`.
 - `selection_misses`: `batch_red_after_pr_green`, `red_batches`, `matched`.
+- `quality`: `merged_prs`, `reverts`, `revert_share`, `red_main_minutes_per_day`,
+  `hotfix_releases`, `hotfix_run_ids`. `selection_misses` in this block only
+  points to the top-level `selection_misses`.
 - `slowest_tests`: the 10 slowest files, with `seconds`.
 - `open_prs_older_than_2d`: `number`, `title`, `age_days`.
 - `delta`: this week minus last week, for every number. It exists only with
