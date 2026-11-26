@@ -30,6 +30,7 @@ import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
 import {
   NO_TICKS,
+  earlierOf,
   asNewMailEdits,
   asTaskEdits,
   rowTicksReducer,
@@ -41,7 +42,7 @@ import {
 import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { CardDraft } from "@/lib/redraftCard";
-import { DELETE_EARLIER_ANSWER, isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, isNewMail, type EarlierDraft, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
 import type { TaskCardEdits, TaskEditApproval } from "@/lib/taskEditCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
@@ -190,8 +191,8 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
-      // Task 3978: Discard, then "Delete it", on a new-mail card with an earlier draft.
-      {...(isNewMail(card.reply) && card.reply?.earlier ? { onDiscardEarlier: () => onAnswer(card, DELETE_EARLIER_ANSWER) } : {})}
+      // Task 3978: Discard or Reject, then "Delete it", on a card that names a draft of the chat.
+      {...earlierProps(card, onAnswer)}
       // §18.11: the slot of a redraft answers nothing. A new-mail card
       // reports each edit, and a redrafted card knows the member's last version.
       {...(card.redraft ? { slot: card.redraft } : {})}
@@ -219,6 +220,22 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
     />
   );
   return shownCard;
+}
+
+/**
+ * Task 3978 (§18.13.1): the props that let a card ask "Keep the earlier
+ * draft, or delete it?". A new-mail card with an `earlier` draft gets the
+ * answer only, because its form holds the line. A plain card gets the line
+ * too. Any other card gets nothing, so its Discard or Reject is as before.
+ */
+export function earlierProps(
+  card: PendingConfirmation,
+  onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void,
+): { onDiscardEarlier?: () => void; earlier?: EarlierDraft } {
+  const earlier = earlierOf(card);
+  if (!earlier) return {};
+  const onDiscardEarlier = () => onAnswer(card, DELETE_EARLIER_ANSWER);
+  return isNewMail(card.reply) ? { onDiscardEarlier } : { onDiscardEarlier, earlier };
 }
 
 /** A card's tab: its kind, a short label (`tabLabel`), and the card's full

@@ -43,6 +43,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
+import EarlierDraftQuestion, { declineStep } from "@/components/EarlierDraftQuestion";
 import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
 import NewMailCardForm from "@/components/NewMailCardForm";
@@ -59,7 +60,7 @@ import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import { slotLine, type CardDraft, type CardText } from "@/lib/redraftCard";
-import { isNewMail, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
+import { isNewMail, type EarlierDraft, type NewMailEdits, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
 import { TASK_EDITED_HINT, isUnchanged, pendingLine, problemOf, taskApproval, withoutFormRows, type TaskCardEdits, type TaskEditApproval, type TaskEditForm } from "@/lib/taskEditCard";
 
@@ -282,8 +283,17 @@ interface ConfirmationCardProps {
    * nudge chips of a new-mail card call it. `AgentChat` passes it.
    */
   onSuggest?: (text: string) => void;
-  /** Task 3978: Discard, then "Delete it", on a new-mail card with an earlier draft. */
+  /**
+   * Task 3978 (§18.13.1): Discard or Reject, then "Delete it", on a card that
+   * names a draft that the chat saved. With none, the card never asks.
+   */
   onDiscardEarlier?: () => void;
+  /**
+   * Task 3978: the draft that the Reject of a PLAIN card asks about (the card
+   * of `edit_draft`). A new-mail card reads its own form. With none, Reject
+   * is the Reject of before.
+   */
+  earlier?: EarlierDraft;
   /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
    *  card frame above its header, when two cards or more wait. */
   tabs?: ReactNode;
@@ -332,7 +342,7 @@ export default function ConfirmationCard({
   rows,
   onToggle,
   onApprove,
-  onReject,
+  onReject: rejectCard,
   disabled = false,
   position,
   fenced = false,
@@ -341,6 +351,7 @@ export default function ConfirmationCard({
   onReply,
   onSuggest,
   onDiscardEarlier,
+  earlier,
   error,
   tabs,
   tabPanel,
@@ -356,6 +367,17 @@ export default function ConfirmationCard({
   onEditAnswer,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
+  // Task 3978: Reject of a plain card that names a draft of the chat asks
+  // "Keep the earlier draft, or delete it?" in place of its buttons.
+  const [asking, setAsking] = useState(false);
+  const asksEarlier = !!(earlier && onDiscardEarlier);
+  // The Reject of the plain card: the question first, when the card asks
+  // (`declineStep`), else the decline of before. The forms get `rejectCard`.
+  const onReject = () => {
+    const step = declineStep(true, earlier?.line, onDiscardEarlier);
+    if (step === "ask") setAsking(true);
+    else if (step === "decline") rejectCard();
+  };
   // EAC-2: a form that the card cannot answer for is no form (the card of before).
   const taskForm = edit && onEditAnswer ? edit : undefined;
   const task = useTaskCardEdits(taskForm, savedTaskEdits, onTaskEdits);
@@ -487,7 +509,7 @@ export default function ConfirmationCard({
           armed={armed}
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}
-          onDiscard={onReject}
+          onDiscard={rejectCard}
           {...(onDiscardEarlier ? { onDiscardEarlier } : {})}
           onSuggest={onSuggest}
           onDraftChange={onDraftChange}
@@ -504,7 +526,7 @@ export default function ConfirmationCard({
           armed={armed}
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}
-          onDiscard={onReject}
+          onDiscard={rejectCard}
         />
       )}
       {!slot && !isReply && hasBody && (
@@ -677,7 +699,17 @@ export default function ConfirmationCard({
         />
       )}
 
-      {!slot && !isReply && (
+      {!slot && !isReply && asking && earlier && onDiscardEarlier && (
+        <EarlierDraftQuestion
+          line={earlier.line}
+          effect={earlier.effect}
+          onKeep={rejectCard}
+          onDelete={onDiscardEarlier}
+          onBack={() => setAsking(false)}
+          disabled={disabled}
+        />
+      )}
+      {!slot && !isReply && !(asking && asksEarlier) && (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -692,6 +724,8 @@ export default function ConfirmationCard({
         <Button
           variant="secondary"
           size="sm"
+          // Task 3978: `onReject` asks first on a card that names a draft of
+          // the chat (see above). Any other card keeps the Reject of before.
           onClick={() => armed && onReject()}
           disabled={disabled}
           aria-disabled={!armed || undefined}

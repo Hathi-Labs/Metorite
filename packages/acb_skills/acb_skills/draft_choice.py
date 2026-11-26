@@ -165,6 +165,28 @@ def provider_line(providers: Iterable[str]) -> str:
     return " ".join(lines)
 
 
+#: Task 3978 (§18.13.1): what "Delete it" does to a draft, for each provider
+#: whose effect is known. ``DELETE /email/messages/{id}`` discards a Gmail
+#: draft, and Outlook moves a draft to Deleted Items. The card draws the
+#: sentence whole, in a field of its own, so no clip can cut it. Each other
+#: provider (IMAP, or one that could not be read) has no sentence, and the
+#: card then promises nothing about the delete.
+DELETE_EFFECT_GMAIL = "Delete removes it from Gmail for good."
+DELETE_EFFECT_OUTLOOK = "Delete moves it to Deleted Items in Outlook."
+DELETE_EFFECTS = (DELETE_EFFECT_GMAIL, DELETE_EFFECT_OUTLOOK)
+
+
+def delete_effect(provider: str) -> str:
+    """The sentence of :data:`DELETE_EFFECTS` for *provider*, or "" when the
+    effect is not known."""
+    kind = str(provider or "").lower()
+    if "gmail" in kind or "google" in kind:
+        return DELETE_EFFECT_GMAIL
+    if "microsoft" in kind or "outlook" in kind:
+        return DELETE_EFFECT_OUTLOOK
+    return ""
+
+
 #: The outcomes of one trash write (:func:`settle`).
 CONFIRMED = "confirmed"          # the provider accepted the trash
 NOT_CONFIRMED = "not_confirmed"  # Metorite marked it, the provider did not say yes

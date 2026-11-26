@@ -2,7 +2,7 @@
 
 > **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Built, not merged, dark behind `CHAT_DRAFT_CHOICE_ORGS`. A trash of a draft reads Drafts, and the answer names each draft that stays.
 >
-> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Built, not merged, dark behind the same flag. The new-mail card asks "Keep the earlier draft, or delete it?".
+> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Built, review round 1 repaired, not merged, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
 
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
@@ -21774,53 +21774,82 @@ is not OK. So an IMAP draft reads `not_confirmed`.
 
 #### 18.13.1 Discard asks about the earlier draft (2026-11-26, task 3978)
 
-**Status:** BUILT on branch `mt-3978-draft-decline`, stacked on `mt-3977-draft-trash`, not
-merged. No migration. Dark behind `CHAT_DRAFT_CHOICE_ORGS`, the flag of §18.13.
+**Status:** BUILT on branch `mt-3978-draft-decline`, stacked on `mt-3977-draft-trash`, review
+round 1 repaired (2026-11-26), not merged. No migration. Dark behind `CHAT_DRAFT_CHOICE_ORGS`,
+the flag of §18.13.
 
-**The defect (rung 0).** Production, 2026-11-26. A member discarded a new-mail card in the
-chat. The chat had saved a draft of that email earlier, and that draft stayed in Drafts.
+**The defect (rung 0).** Production, 2026-11-26. `draft_reply` saved a draft in Drafts. The
+member then declined the card "Save these changes to the draft?" of `edit_draft`. The member
+believed that the draft was rejected, and it stayed in Drafts.
 
-**The choice.** The task offered option (b): "declining an edit card for a chat-made draft
-asks 'Keep the earlier draft, or delete it?' on the same card". This build takes that option.
-The board text was not readable in the build session. So the build reads option (b) as that
-sentence, and it adds no other option. No rule of §18.9, §18.10 or §18.11 forbids it. §18.10
-says that Discard writes nothing, and the act of the card still writes nothing. §18.9 item 7
+**The choice.** The task offered option (b): "when the member declines an edit card for a
+draft the chat made, ask in the same card 'Keep the earlier draft, or delete it?'. In both
+cases the answer must say plainly where the draft is." This build takes that option. No rule
+of §18.9, §18.10 or §18.11 forbids it. The act of the card still writes nothing. §18.9 item 7
 says that only the member's click trashes a draft, and that rule still applies.
 
 **The rules.**
 
-1. The question needs three flags for the org: `CHAT_DRAFT_CHOICE_ORGS`,
-   `CHAT_CARD_REVISE_ORGS` and `EMAIL_EDIT_CARD_ORGS`. Only the one-draft rule of task 3814
-   knows which draft the chat saved, and only the edit card draws the question.
-2. The earlier draft is the draft that the one-draft rule names before the card
-   (`plan.replaces`). It is the chat's own text, with no file. A draft that the member made or
-   changed is never asked about.
-3. A draft with a send in the queue is never asked about, and neither is a draft whose queue
-   the chat could not read. A failed read of the draft asks nothing.
-4. The tool puts one line on the form, `earlier`, which names the draft. Discard then shows
-   the question on the same card, in place of its buttons, with "Keep it", "Delete it" and
-   "Back". Keep sends `REJECT`, the Discard of before.
-5. Delete sends `REJECT {"earlier":"delete"}` (`ask_tools.DELETE_EARLIER_ANSWER`). The card
+1. Two cards ask the ONE question, with one answer text and one component:
+   - the plain card of `edit_draft` ("Save these changes to the draft?") asks at Reject. It
+     needs `CHAT_DRAFT_CHOICE_ORGS` and `CHAT_CARD_REVISE_ORGS`.
+   - the new-mail form card asks at Discard. It also needs `EMAIL_EDIT_CARD_ORGS`, because only
+     that flag draws the form card.
+2. Only the one-draft record of task 3814 knows which draft the chat saved. `draft_reply` now
+   writes its reply draft into that record (`_note_reply_draft`), with the digest of the stored
+   draft and the mark `reply`. A reply draft is never the target of a save of a new mail
+   (`card_revise.plan_save`, `_known` and the redraft marker skip it). An approved edit keeps
+   the mark.
+3. The card of `edit_draft` asks only about a draft that the record holds and that is still
+   the chat's own text, with no file (`card_revise.target_state` is `ok`). The new-mail card
+   asks only about the draft that the one-draft rule names (`plan.replaces`). A draft that the
+   member made or changed is never asked about, and neither is a draft with a send in the
+   queue, or a draft whose queue the chat could not read. A failed read asks nothing.
+4. The tool puts two keys on the card: `earlier`, one line that names the draft, and
+   `earlier_effect`, what "Delete it" does at the provider of the mailbox
+   (`draft_choice.delete_effect`). Gmail: "Delete removes it from Gmail for good." Outlook:
+   "Delete moves it to Deleted Items in Outlook." Each other provider, and a mailbox list that
+   could not be read, has no effect, and the card then promises nothing about the delete.
+   `ask_tools.clean_earlier` is the one cleaner, and it drops any other effect text. The
+   effect is a field of its own, so no clip of the line or of the card body can cut it.
+5. Discard or Reject shows the question on the same card, in place of its buttons and of its
+   hint line, with "Keep it", "Delete it" and "Back". The focus moves to "Keep it". Keep sends
+   `REJECT`, the decline of before. Back sends nothing.
+6. Delete sends `REJECT {"earlier":"delete"}` (`ask_tools.DELETE_EARLIER_ANSWER`). The card
    reads it as a decline, so the card sends and saves nothing. It holds the same Undo of five
    seconds as a Reject.
-6. `ask_tools.earlier_draft_choice` says "delete" only for that exact answer, on a form with
-   `earlier`, from the run's own member. The member is the gateway's session member.
-7. Before the trash, the tool reads the state of the draft again (`card_revise.target_state`).
-   A draft that changed, or that left Drafts, stays, and the answer says why.
-8. The trash goes through `DELETE /email/messages/{id}?report=true`, and the answer comes from
+7. `ask_tools.earlier_draft_choice` says "delete" only for that exact answer, on a card that
+   carries `earlier`, from the run's own member. The member is the gateway's session member.
+8. Before the trash, the tool reads the state of the draft again (`card_revise.target_state`).
+   A draft that changed stays, and the answer says so, with its id. A state that the chat could
+   not check claims no folder: the record or the draft could not be read, the state read
+   failed, the draft left Drafts, or the flag went off while the card waited. The answer then
+   says that the chat deleted nothing, and asks the member to look in Drafts.
+9. The trash goes through `DELETE /email/messages/{id}?report=true`, and the answer comes from
    `draft_choice.report` (§18.13 rules 9 and 10). It counts only a trash that the provider
    confirmed. It names each matching draft that stays, such as a draft that the member made.
-9. Keep, a timeout, a close by a chat message and an answer of another member each keep the
-   draft. The answer names the draft that stays, with its id.
+10. Each other decline keeps the draft, and the answer says plainly that it is still in Drafts,
+    with its draft_id: Keep, a timeout, a close by a chat message, an answer of another member,
+    a WhatsApp park and a run with no card. A declined `edit_draft` card of a draft that the
+    chat did not make asks nothing, never deletes, and says that the draft stays in Drafts.
+11. A late "Delete it" deletes nothing. When no run takes the answer (a restart, or a parked
+    card), the chat sends it as a new message. No tool waits for it, so nothing is trashed. The
+    chat draws it as "Rejected" (`cardAnswer.ts` `isRejectAnswer`), and the gateway agrees
+    (`chat_recovery.card_answer_agrees`). The drawn text never says that a draft was deleted.
 
 **Each surface.**
 
-- The web chat draws the question. A web client of before sends `REJECT`, so the draft stays.
-- A held chat draws the held form card, and it asks the same question.
-- A WhatsApp run and a run with no card channel draw no edit card. They keep the card of
-  before, with no question, and the draft stays.
-- A chat message that closes the card is a redraft (§18.11), not a decline. The draft stays
-  as the target of the next save.
+- The web chat draws the question on both cards. A web client of before sends `REJECT`, so the
+  draft stays.
+- A held chat draws the held form card (`_held_card`, then `_held_form_card`), and it asks the
+  same question. The plain card of `edit_draft` asks there too.
+- A WhatsApp run and a run with no card channel draw no question. The draft stays, and the
+  answer says where it is.
+- A chat message that closes the card is a redraft (§18.11), not a decline. The draft stays,
+  and the answer of `edit_draft` says where it is.
+
+**Flag off.** The card and its answer are the ones of before, byte for byte. `draft_reply`
+writes nothing into the record.
 
 **Known limits.**
 
@@ -21828,6 +21857,8 @@ says that only the member's click trashes a draft, and that rule still applies.
   seen.
 - The `_new_draft` card ("Save this new email in Drafts?") and the reply card do not ask. The
   reply card trashes its own draft at Discard already (§18.9 item 7).
+- A reply draft that `draft_reply` saved before the flag went on is not in the record, so its
+  card does not ask. The answer still says where the draft is.
 
 **Fences.** `tests/unit/test_email_draft_decline.py` and
 `src/components/newMailCardEarlier.test.ts`.

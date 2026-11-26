@@ -1123,9 +1123,7 @@ def _clean_new_mail_form(form: dict) -> dict:
     # Task 3978 (§18.13.1): the draft of this email that the chat saved
     # earlier. Discard then asks "Keep the earlier draft, or delete it?" on
     # this card. The tool sets it only with CHAT_DRAFT_CHOICE_ORGS on.
-    earlier = _clip_line(form.get("earlier"), 300) if isinstance(form.get("earlier"), str) else ""
-    if earlier:
-        out["earlier"] = earlier
+    out.update(clean_earlier(form))
     out.update(_new_mail_redraft(form))
     return out
 
@@ -1717,20 +1715,45 @@ def last_card_outcome() -> str | None:
     return _LAST_OUTCOME.get()
 
 
-#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of a
-#: new-mail card whose form names an ``earlier`` draft, when the member
-#: pressed Discard and then "Delete it". It is a decline: the card sends and
-#: saves nothing. :func:`earlier_draft_choice` then says "delete", and the
-#: tool trashes that one draft. Each other answer keeps the draft.
+#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of a card
+#: that names an ``earlier`` draft (a new-mail form, or the plain card of
+#: ``edit_draft``), when the member pressed Discard or Reject and then
+#: "Delete it". It is a decline: the card sends and saves nothing.
+#: :func:`earlier_draft_choice` then says "delete", and the tool trashes that
+#: one draft. Each other answer keeps the draft.
 DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}'
 #: The choice of the last card of this frame: "delete:<responder>", or "".
 _EARLIER_CHOICE: _contextvars.ContextVar[str] = _contextvars.ContextVar(
     "acb_earlier_draft_choice", default="")
+#: The longest line that names the earlier draft on a card.
+EARLIER_LINE_MAX = 300
+
+
+def clean_earlier(src: Any) -> dict:
+    """The keys of the earlier-draft question of a card, checked: the ONE
+    cleaner of a new-mail form and of a plain card.
+
+    ``earlier`` is one line that names the draft, at most
+    :data:`EARLIER_LINE_MAX` characters. ``earlier_effect`` is what "Delete
+    it" does at the mailbox's provider, and it is kept only when it is one
+    sentence of ``draft_choice.DELETE_EFFECTS``. So the card never draws an
+    effect that the server did not choose. With no line, the answer is {}
+    and the card asks nothing."""
+    if not isinstance(src, dict) or not isinstance(src.get("earlier"), str):
+        return {}
+    line = _clip_line(src["earlier"], EARLIER_LINE_MAX)
+    if not line:
+        return {}
+    from acb_skills.draft_choice import DELETE_EFFECTS
+
+    effect = src.get("earlier_effect")
+    return {"earlier": line,
+            **({"earlier_effect": effect} if effect in DELETE_EFFECTS else {})}
 
 
 def earlier_draft_choice(member: str) -> str:
     """"delete" when *member* answered the last card of this frame with
-    :data:`DELETE_EARLIER_ANSWER`, on a form that names an earlier draft.
+    :data:`DELETE_EARLIER_ANSWER`, on a card that names an earlier draft.
     The responder is the gateway's session member, never a field of the
     answer. Else "": a Keep, a plain Discard, a timeout, a close, an answer
     of another member, or no member. "" keeps the draft, so each fault
@@ -2858,6 +2881,7 @@ async def request_confirmation(
     with_answer: bool = False,
     responder: str | None = None,
     edit: dict | None = None,
+    earlier: dict | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -2924,6 +2948,13 @@ async def request_confirmation(
             any other shape is a REJECT. With ``PROJECT_EDIT_CARD_ORGS`` off,
             in a WhatsApp run, with no channel and with no ``responder``, the
             form is dropped, and the card is the card of before.
+        earlier: task 3978 (§18.13.1), a plain card only: ``{"earlier":
+            line, "earlier_effect": sentence}`` (:func:`clean_earlier`). The
+            card's Reject then asks "Keep the earlier draft, or delete it?"
+            on the same card. :data:`DELETE_EARLIER_ANSWER` is a decline, and
+            :func:`earlier_draft_choice` then says "delete". A card with
+            rows, a reply form, an edit form or a held send id drops it.
+            ``None`` is the card of before.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -2990,6 +3021,10 @@ async def request_confirmation(
     #: EAC-1: the edit form of a new task, or None for the card of before.
     _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
                             str(responder or "").strip().lower())
+    #: Task 3978: the earlier-draft question of a plain card, or {}.
+    _earlier = (clean_earlier(earlier) if earlier is not None and _rows is None
+                and _reply is None and _edit is None and not _with_answer
+                and request_id is None else {})
     if _no_person_present():
         # AUTO-7a: before every path, the WhatsApp paths too. A run with no
         # person cannot ask anyone, and no argument of a tool changes that.
@@ -3066,6 +3101,7 @@ async def request_confirmation(
             value["reply"] = _reply
         if _edit is not None:
             value["edit"] = _edit
+        value.update(_earlier)
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
@@ -3107,8 +3143,9 @@ async def request_confirmation(
                       else parse_reply_answer(raw))
             if choice is None:
                 # Task 3978: Discard, then "Delete it", on a form that names
-                # an earlier draft. Only this exact text, and only the run's
-                # own member (the check above). It stays a decline.
+                # an earlier draft. Only this exact text. The responder goes
+                # with it, and earlier_draft_choice counts only the run's
+                # own member. It stays a decline.
                 if _reply.get("earlier") and raw == DELETE_EARLIER_ANSWER:
                     _EARLIER_CHOICE.set(
                         f"delete:{str(result.get('responder') or '').strip().lower()}")
@@ -3130,6 +3167,11 @@ async def request_confirmation(
             _edited.append(edited)
             return "APPROVE", None
         if _rows is None:
+            # Task 3978: Reject, then "Delete it", on a plain card that names
+            # an earlier draft. Only this exact text. It stays a decline.
+            if _earlier and str(result.get("answer", "")) == DELETE_EARLIER_ANSWER:
+                _EARLIER_CHOICE.set(
+                    f"delete:{str(result.get('responder') or '').strip().lower()}")
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
         if ticked and _with_answer:

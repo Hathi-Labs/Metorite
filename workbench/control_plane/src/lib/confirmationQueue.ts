@@ -34,7 +34,7 @@ import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/
 import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { isNewMail, isNewMailEdits, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
+import { earlierFromEvent, isNewMail, isNewMailEdits, replyFromEvent, startTicks, type EarlierDraft, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
@@ -111,6 +111,28 @@ export interface PendingConfirmation {
    * client computes the "Changed:" line from it, never from the model.
    */
   before?: { subject: string; body: string; people?: PeopleBefore };
+  /**
+   * Task 3978 (`email_app_master_plan.md` §18.13.1), a plain card only (the
+   * card of `edit_draft`): one line that names a draft that the chat saved.
+   * Reject then asks `EARLIER_QUESTION` on the card. A new-mail card keeps
+   * its line on its form (`ReplyForm.earlier`).
+   */
+  earlier?: string;
+  /** Task 3978: what "Delete it" does at the mailbox's provider, if known. */
+  earlierEffect?: string;
+}
+
+/**
+ * Task 3978: the earlier draft that a card asks about, or null. A new-mail
+ * card reads its form, and a plain card (no rows, no reply form, no edit form)
+ * reads its own keys. Any other card asks nothing.
+ */
+export function earlierOf(card: Pick<PendingConfirmation, "reply" | "rows" | "edit" | "earlier" | "earlierEffect">): EarlierDraft | null {
+  if (isNewMail(card.reply)) {
+    return card.reply?.earlier ? { line: card.reply.earlier, ...(card.reply.earlierEffect ? { effect: card.reply.earlierEffect } : {}) } : null;
+  }
+  if (card.reply !== undefined || card.rows !== undefined || card.edit !== undefined || !card.earlier) return null;
+  return { line: card.earlier, ...(card.earlierEffect ? { effect: card.earlierEffect } : {}) };
 }
 
 /** The answer of a card that a chat message closed. The server owns it
@@ -539,6 +561,8 @@ export function cardFromEvent(value: unknown): PendingConfirmation | null {
     ...(v.reply !== undefined ? { reply: replyFromEvent(v.reply, requestId) } : {}),
     // EAC-2: a form the client cannot read is no form, and the card is the card of before.
     ...(taskEditOf(v.edit) ? { edit: taskEditOf(v.edit) } : {}),
+    // Task 3978: a plain card that names a draft of the chat. Reject asks about it.
+    ...(v.rows === undefined && v.reply === undefined && v.edit === undefined ? earlierFromEvent(v) : {}),
   };
 }
 

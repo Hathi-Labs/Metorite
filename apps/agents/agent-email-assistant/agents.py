@@ -215,7 +215,9 @@ def _egress_held_answer(act: str) -> str:
     return "Nothing changed. " + egress_held_answer(act)
 
 
-async def _confirm_destructive(title: str, detail: str, context: str = "") -> Any:
+async def _confirm_destructive(
+    title: str, detail: str, context: str = "", *, earlier: dict[str, str] | None = None,
+) -> Any:
     """Fail-closed HITL gate for a destructive or outward-facing tool.
 
     Returns True only when the user explicitly approves. Declining — OR running
@@ -227,9 +229,15 @@ async def _confirm_destructive(title: str, detail: str, context: str = "") -> An
     Task 3814: with ``CHAT_CARD_REVISE_ORGS`` on (:func:`_card_revise_on`), a
     chat message of the member closes the card (``close_on_steer``), and the
     answer is ``ask_tools.REVISED``. It is falsy, so no caller acts on it.
-    Off, the call is the call of before, with no new argument."""
+    Off, the call is the call of before, with no new argument.
+
+    Task 3978: *earlier* is the question of a draft that this chat saved
+    (``_Earlier.card``). Only ``edit_draft`` passes it, and only with
+    ``CHAT_DRAFT_CHOICE_ORGS`` on. None adds no argument."""
     from acb_skills.ask_tools import request_confirmation  # noqa: PLC0415
     steer = {"close_on_steer": True} if _card_revise_on() else {}
+    if earlier:
+        steer["earlier"] = earlier
     return await request_confirmation(title=title, detail=detail, context=context, **steer)
 
 
@@ -280,7 +288,7 @@ def _wa_parked() -> str | None:
 
 async def _card_refusal(
     title: str, detail: str, act: str, context: str = "",
-    *, closed: str = "card", closed_note: str = "",
+    *, closed: str = "card", closed_note: str = "", earlier: dict[str, str] | None = None,
 ) -> str | None:
     """None when the member approves the card. Else the answer of the tool.
 
@@ -294,8 +302,10 @@ async def _card_refusal(
     Task 3814: a card that a chat message closed (``REVISED``, only with
     ``CHAT_CARD_REVISE_ORGS`` on) answers :func:`_closed_by_message` of the
     act *closed*, then *closed_note*. The text tells the model the three ways
-    to read the member's words."""
-    answer = await _confirm_destructive(title=title, detail=detail, context=context)
+    to read the member's words. *earlier* (task 3978) goes to the card as
+    its question about a draft of this chat."""
+    answer = await _confirm_destructive(title=title, detail=detail, context=context,
+                                        **({"earlier": earlier} if earlier else {}))
     if answer:
         return None
     if _revised(answer):
@@ -3161,6 +3171,9 @@ async def draft_reply(
          **({"instruction": instruction} if (instruction or "").strip() else {})},
     )
     note = " (saved to Drafts)" if res.get("created") else ""
+    # Task 3978: the record of the drafts of this chat holds the reply, so a
+    # declined edit_draft card can ask about it.
+    await _note_reply_draft(account_id, res)
     if res.get("kept_draft"):
         # The first line, because the card edits the rest. The chat never
         # writes over a draft of the member.
@@ -3189,6 +3202,32 @@ async def draft_reply(
         f"Draft from {sender} (mailbox {account_id}){note}:\n\n"
         f"{res.get('draft', '')}"
     )
+
+
+async def _note_reply_draft(account_id: str, res: Any) -> None:
+    """Task 3978 (§18.13.1): write the reply draft that ``draft_reply`` saved
+    into the one-draft record of this chat (``card_revise.note_draft`` with
+    ``reply``). The digest comes from the stored draft, the read that
+    ``edit_draft`` later compares. A reply draft is never the target of a
+    new mail. It needs ``CHAT_DRAFT_CHOICE_ORGS`` and ``CHAT_CARD_REVISE_ORGS``
+    on. Off, or on any fault, it writes nothing and never raises."""
+    revise = _chat_draft_rule()
+    if revise is None or _draft_choice() is None or not isinstance(res, dict):
+        return
+    did = str(res.get("draft_id") or "").strip()
+    if not res.get("created") or not did:
+        return
+    try:
+        row = await _read_chat_draft(did)
+    except Exception as exc:  # the class only: the draft is not recorded
+        _log.warning("email.reply_draft_unread", error=type(exc).__name__)
+        return
+    if not isinstance(row, dict):
+        return
+    await revise.note_draft(thread=_run_thread(), account_id=account_id,
+                            member=_current_user_email(), draft_id=did,
+                            to=res.get("to") or [], subject=res.get("subject"),
+                            digest=revise.draft_digest(row), reply=True)
 
 
 # ── The reply card: one reply, confirmed and done in the chat (EM-CR) ────────
@@ -8099,24 +8138,46 @@ async def _form_replace_tail(res: dict[str, Any], plan: _ChatPlan) -> str:
 
 # ── Discard asks about the earlier draft (task 3978, §18.13.1) ───────────────
 #
-# Production, 2026-11-26: a member discarded a new-mail card in the chat, and
-# the draft of that email that the chat saved earlier stayed in Drafts. Dark
-# behind ``CHAT_DRAFT_CHOICE_ORGS``, and it needs the one-draft rule of
+# Production, 2026-11-26: a member declined the card "Save these changes to
+# the draft?" of ``edit_draft`` for a draft that ``draft_reply`` had saved. The
+# member thought that the draft was gone, and it stayed in Drafts. Dark behind
+# ``CHAT_DRAFT_CHOICE_ORGS``, and it needs the one-draft record of
 # ``CHAT_CARD_REVISE_ORGS``, which alone knows which draft the chat saved.
+# Two cards ask the ONE question: the new-mail form (``form["earlier"]``) and
+# the plain card of ``edit_draft`` (``request_confirmation(earlier=)``).
 
 
 class _Earlier:
-    """The draft of this email that this chat saved earlier, which Discard
-    asks about: its row, its line on the card, and its mailbox."""
+    """The draft that this chat saved, which Discard or Reject asks about:
+    its row, its line on the card, its mailbox, and what "Delete it" does at
+    the mailbox's provider ("" when that is not known)."""
 
-    __slots__ = ("account_id", "line", "row", "rule")
+    __slots__ = ("account_id", "effect", "line", "row", "rule")
 
-    def __init__(self, rule: Any, row: dict[str, Any], account_id: str) -> None:
+    def __init__(self, rule: Any, row: dict[str, Any], account_id: str,
+                 effect: str = "") -> None:
         self.rule = rule
         self.row = row
         self.account_id = account_id
+        self.effect = effect
         label, facts = rule.describe(row)
         self.line = _card_text(f"{label} · {facts}", 300)
+
+    def card(self) -> dict[str, str]:
+        """The keys of the question on a card (``ask_tools.clean_earlier``)."""
+        return {"earlier": self.line, **({"earlier_effect": self.effect} if self.effect else {})}
+
+
+async def _earlier_of(rule: Any, row: dict[str, Any], account_id: str) -> _Earlier:
+    """The :class:`_Earlier` of *row*, with the effect of a delete at the
+    provider of its mailbox. A failed read of the mailboxes gives no effect,
+    so the card then promises nothing about the delete."""
+    try:
+        box = next((a for a in await _accounts() if str(a.get("id")) == str(account_id)), {})
+    except Exception as exc:  # the class only: the card names no effect
+        _log.warning("email.earlier_provider_unread", error=type(exc).__name__)
+        box = {}
+    return _Earlier(rule, row, account_id, rule.delete_effect(str(box.get("provider") or "")))
 
 
 async def _earlier_draft(plan: _ChatPlan | None, account_id: str) -> _Earlier | None:
@@ -8137,20 +8198,51 @@ async def _earlier_draft(plan: _ChatPlan | None, account_id: str) -> _Earlier | 
         return None
     if not isinstance(row, dict) or not rule.is_draft(row):
         return None
-    return _Earlier(rule, {**row, "id": plan.replaces}, account_id)
+    return await _earlier_of(rule, {**row, "id": plan.replaces}, account_id)
+
+
+async def _edit_earlier(
+    account_id: str, draft_id: str, draft: dict[str, Any], pending: list[dict[str, Any]],
+) -> _Earlier | None:
+    """The draft of an ``edit_draft`` card that its Reject asks about, or None.
+
+    The draft must be one that this chat saved: the one-draft record holds
+    it (a save of a new mail, or a reply of ``draft_reply``). It must still
+    be the chat's own text, with no file (``target_state`` is ``ok``). A
+    draft with a queued send is never asked about. With either flag off, or
+    any fault, it asks nothing, and the decline only says where the draft is."""
+    rule, revise = _draft_choice(), _chat_draft_rule()
+    if rule is None or revise is None or pending:
+        return None
+
+    async def _same(_did: str) -> dict[str, Any]:
+        return draft  # the read that the card shows, so the check matches it
+
+    try:
+        state = await revise.target_state(
+            draft_id, thread=_run_thread(), account_id=account_id,
+            member=_current_user_email(), read=_same)
+    except Exception as exc:  # the class only: the card asks nothing
+        _log.warning("email.edit_earlier_unread", error=type(exc).__name__)
+        return None
+    if state != revise.OK:
+        return None
+    return await _earlier_of(rule, {**draft, "id": draft_id}, account_id)
 
 
 def _with_earlier(form: dict[str, Any], earlier: _Earlier | None) -> dict[str, Any]:
-    """*form* with the line of the earlier draft, so Discard asks about it."""
-    return {**form, "earlier": earlier.line} if earlier is not None else form
+    """*form* with the question of the earlier draft, so Discard asks it."""
+    return {**form, **earlier.card()} if earlier is not None else form
 
 
 async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
-    """The answer of a new-mail card that sent and saved nothing, with what
-    became of the earlier draft. Only the member's own "Delete it" trashes
-    it, and only while it is still the chat's own text. Each other way keeps
-    it, and the answer names it. The trash counts only what the provider
-    confirmed (``draft_choice.report``)."""
+    """The answer of a card that sent and saved nothing, with what became of
+    the earlier draft. Only the member's own "Delete it" trashes it, and only
+    while it is still the chat's own text. Each other way keeps it, and the
+    answer names it. The trash counts only what the provider confirmed
+    (``draft_choice.report``). A state that the chat could not check (the flag
+    went off, the draft or its record could not be read, or it left Drafts)
+    claims no place: the chat deleted nothing, and the member looks in Drafts."""
     if earlier is None or not isinstance(out, str):
         return out
     from acb_skills import ask_tools
@@ -8159,24 +8251,61 @@ async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
     if ask_tools.earlier_draft_choice(_current_user_email()) != "delete":
         return out + _earlier_stays(earlier, "The member did not ask to delete it")
     revise = _chat_draft_rule()
-    state = None
-    if revise is not None:
+    if revise is None:
+        return out + _earlier_unchecked(earlier)
+    try:
         state = await revise.target_state(
             did, thread=_run_thread(), account_id=earlier.account_id,
             member=_current_user_email(), read=_read_chat_draft)
-    if revise is None or state != revise.OK:
-        why = ("It left Drafts before the delete" if revise is not None and state == revise.GONE
-               else "It changed after this chat saved it, so the chat did not delete it")
-        return out + _earlier_stays(earlier, why)
+    except Exception as exc:  # the class only: the decline answer stays
+        _log.warning("email.earlier_state_unread", error=type(exc).__name__)
+        return out + _earlier_unchecked(earlier)
+    if state in (revise.EDITED, revise.FILES):
+        # ``_state`` read the draft in Drafts for both.
+        return out + _earlier_stays(
+            earlier, "It changed after this chat saved it, so the chat did not delete it")
+    if state != revise.OK:
+        return out + _earlier_unchecked(earlier)
     plan = _TrashPlan(earlier.rule, [did], {did: earlier.row}, {})
     return f"{out}\n" + await _trash_and_report(plan, [earlier.row], [])
 
 
 def _earlier_stays(earlier: _Earlier, why: str) -> str:
     """The line of an earlier draft that stays in Drafts."""
-    return (f" {why}. The draft of this email that this chat saved earlier stays in "
-            f"Drafts (draft_id {earlier.row['id']}): {earlier.line}. Tell the member "
-            "that it stays.")
+    return (f" {why}. The draft that this chat saved stays in Drafts (draft_id "
+            f"{earlier.row['id']}): {earlier.line}. Tell the member that it is still "
+            "in Drafts.")
+
+
+def _earlier_unchecked(earlier: _Earlier) -> str:
+    """The line of an earlier draft whose place the chat could not check. It
+    claims no folder."""
+    return (f" This chat deleted nothing. It could not check where the draft that it "
+            f"saved is now (draft_id {earlier.row['id']}): {earlier.line}. Tell the "
+            "member that nothing was deleted, and ask them to look in Drafts for it.")
+
+
+def _draft_stays(draft_id: str) -> str:
+    """Task 3978: the line of every decline of an ``edit_draft`` card that
+    asks no question, with ``CHAT_DRAFT_CHOICE_ORGS`` on. The card read the
+    draft in Drafts, and a decline changes nothing."""
+    return (f" The draft stays in Drafts as it was (draft_id {draft_id}). Tell the "
+            "member that it is still in Drafts.")
+
+
+async def _edit_declined(refusal: str, draft_id: str, earlier: _Earlier | None) -> str:
+    """The answer of an ``edit_draft`` card that saved nothing (task 3978).
+
+    Each decline says plainly that the draft is still in Drafts, with its id:
+    a Reject, a Keep, a timeout, a close by a chat message, another member,
+    a WhatsApp park and a run with no card. Only the member's own "Delete it"
+    on a draft that this chat saved trashes it (:func:`_after_discard`). Flag
+    off, the answer is the refusal of before."""
+    if earlier is not None:
+        return await _after_discard(refusal, earlier)
+    if _draft_choice() is None:
+        return refusal
+    return refusal + _draft_stays(draft_id)
 
 
 async def _always_copy_cc(
@@ -9662,6 +9791,10 @@ async def edit_draft(
     # holds the seal of the old text.
     pending = await _pending_schedules(draft_id)
     context = _cancel_line(pending) + context
+    # Task 3978 (§18.13.1): Reject asks "Keep the earlier draft, or delete
+    # it?" on this card, for a draft that this chat saved. Read before the
+    # bind below, so no fact of this card waits through another read.
+    earlier = await _edit_earlier(account_id, draft_id, draft, pending)
     # HRD-10d-1: bound last, after each early return, so no fact reaches a
     # later card.
     _bind_draft_version(version)
@@ -9672,9 +9805,10 @@ async def edit_draft(
         context,
         closed="edit_draft",
         closed_note=f"The draft_id of this draft is {draft_id}.",
+        earlier=earlier.card() if earlier is not None else None,
     )
     if refusal:
-        return refusal
+        return await _edit_declined(refusal, draft_id, earlier)
     try:
         res = await _put("/email/drafts", {
             "account_id": account_id, "draft_id": draft_id,
