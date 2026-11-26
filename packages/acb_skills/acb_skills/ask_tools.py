@@ -1120,6 +1120,12 @@ def _clean_new_mail_form(form: dict) -> dict:
     # says so. Each is a person of the card that starts unticked, or no card shows.
     if "unticked" in form:
         out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    # Task 3978 (§18.13.1): the draft of this email that the chat saved
+    # earlier. Discard then asks "Keep the earlier draft, or delete it?" on
+    # this card. The tool sets it only with CHAT_DRAFT_CHOICE_ORGS on.
+    earlier = _clip_line(form.get("earlier"), 300) if isinstance(form.get("earlier"), str) else ""
+    if earlier:
+        out["earlier"] = earlier
     out.update(_new_mail_redraft(form))
     return out
 
@@ -1709,6 +1715,28 @@ def last_card_outcome() -> str | None:
     the card raised. The bool or the sentinel of the card stays its answer.
     This only says WHY a card did nothing."""
     return _LAST_OUTCOME.get()
+
+
+#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of a
+#: new-mail card whose form names an ``earlier`` draft, when the member
+#: pressed Discard and then "Delete it". It is a decline: the card sends and
+#: saves nothing. :func:`earlier_draft_choice` then says "delete", and the
+#: tool trashes that one draft. Each other answer keeps the draft.
+DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}'
+#: The choice of the last card of this frame: "delete:<responder>", or "".
+_EARLIER_CHOICE: _contextvars.ContextVar[str] = _contextvars.ContextVar(
+    "acb_earlier_draft_choice", default="")
+
+
+def earlier_draft_choice(member: str) -> str:
+    """"delete" when *member* answered the last card of this frame with
+    :data:`DELETE_EARLIER_ANSWER`, on a form that names an earlier draft.
+    The responder is the gateway's session member, never a field of the
+    answer. Else "": a Keep, a plain Discard, a timeout, a close, an answer
+    of another member, or no member. "" keeps the draft, so each fault
+    keeps it."""
+    me = str(member or "").strip().lower()
+    return "delete" if me and _EARLIER_CHOICE.get() == f"delete:{me}" else ""
 
 
 def clear_card_outcome() -> None:
@@ -2936,6 +2964,8 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    # Task 3978: the choice of an earlier card is never the choice of this one.
+    _EARLIER_CHOICE.set("")
     # WT-6a: a card of an earlier call is never the card of this one. A path
     # with no chat card (WhatsApp, no channel) leaves this None.
     _APPROVED_CARD.set(None)
@@ -3076,6 +3106,12 @@ async def request_confirmation(
             choice = (parse_new_mail_answer(raw) if _reply.get("kind") == "new"
                       else parse_reply_answer(raw))
             if choice is None:
+                # Task 3978: Discard, then "Delete it", on a form that names
+                # an earlier draft. Only this exact text, and only the run's
+                # own member (the check above). It stays a decline.
+                if _reply.get("earlier") and raw == DELETE_EARLIER_ANSWER:
+                    _EARLIER_CHOICE.set(
+                        f"delete:{str(result.get('responder') or '').strip().lower()}")
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,
                                         str(result.get("responder") or ""),

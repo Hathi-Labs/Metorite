@@ -8004,6 +8004,9 @@ async def _new_mail_card(
     form = _new_mail_form(prep, notices)
     for line in _replace_lines(plan, form=True):
         _form_notice(form, line)
+    # Task 3978: Discard asks about the draft that this chat saved earlier.
+    earlier = await _earlier_draft(plan, account_id)
+    form = _with_earlier(form, earlier)
     # §18.11 step 4: a chat message spends the old card, and the model starts
     # from the member's version. A revise that did not run shows the card again.
     answer, revised, came_back = await _ask_until_revised(
@@ -8012,6 +8015,8 @@ async def _new_mail_card(
         await _mark_if_closed(_NEW_MAIL_ACT, account_id, plan)
         return revised
     out = await _new_mail_answered(answer, sender, usual, plan)
+    if isinstance(answer, str):
+        out = await _after_discard(out, earlier)
     return _noted(out, came_back)
 
 
@@ -8053,6 +8058,88 @@ async def _form_replace_tail(res: dict[str, Any], plan: _ChatPlan) -> str:
     outcome = str(res.get("replace_outcome") or "")
     earlier = str(res.get("replaced") or "")
     return await _replace_tail(outcome, earlier, plan)
+
+
+# ── Discard asks about the earlier draft (task 3978, §18.13.1) ───────────────
+#
+# Production, 2026-11-26: a member discarded a new-mail card in the chat, and
+# the draft of that email that the chat saved earlier stayed in Drafts. Dark
+# behind ``CHAT_DRAFT_CHOICE_ORGS``, and it needs the one-draft rule of
+# ``CHAT_CARD_REVISE_ORGS``, which alone knows which draft the chat saved.
+
+
+class _Earlier:
+    """The draft of this email that this chat saved earlier, which Discard
+    asks about: its row, its line on the card, and its mailbox."""
+
+    __slots__ = ("account_id", "line", "row", "rule")
+
+    def __init__(self, rule: Any, row: dict[str, Any], account_id: str) -> None:
+        self.rule = rule
+        self.row = row
+        self.account_id = account_id
+        label, facts = rule.describe(row)
+        self.line = _card_text(f"{label} · {facts}", 300)
+
+
+async def _earlier_draft(plan: _ChatPlan | None, account_id: str) -> _Earlier | None:
+    """The earlier draft that Discard asks about, or None for the Discard of
+    before. It needs ``CHAT_DRAFT_CHOICE_ORGS`` on, and a draft that the
+    one-draft rule names (``plan.replaces``: the chat's own text, with no
+    file). A draft with a send in the queue, or whose queue the chat could not
+    read, is never asked about. A failed read asks nothing, so it keeps."""
+    rule = _draft_choice()
+    if rule is None or plan is None or not plan.replaces:
+        return None
+    if plan.pending or plan.unchecked:
+        return None
+    try:
+        row = await _read_chat_draft(plan.replaces)
+    except Exception as exc:  # the class only: the card asks nothing
+        _log.warning("email.earlier_draft_unread", error=type(exc).__name__)
+        return None
+    if not isinstance(row, dict) or not rule.is_draft(row):
+        return None
+    return _Earlier(rule, {**row, "id": plan.replaces}, account_id)
+
+
+def _with_earlier(form: dict[str, Any], earlier: _Earlier | None) -> dict[str, Any]:
+    """*form* with the line of the earlier draft, so Discard asks about it."""
+    return {**form, "earlier": earlier.line} if earlier is not None else form
+
+
+async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
+    """The answer of a new-mail card that sent and saved nothing, with what
+    became of the earlier draft. Only the member's own "Delete it" trashes
+    it, and only while it is still the chat's own text. Each other way keeps
+    it, and the answer names it. The trash counts only what the provider
+    confirmed (``draft_choice.report``)."""
+    if earlier is None or not isinstance(out, str):
+        return out
+    from acb_skills import ask_tools
+
+    did = str(earlier.row["id"])
+    if ask_tools.earlier_draft_choice(_current_user_email()) != "delete":
+        return out + _earlier_stays(earlier, "The member did not ask to delete it")
+    revise = _chat_draft_rule()
+    state = None
+    if revise is not None:
+        state = await revise.target_state(
+            did, thread=_run_thread(), account_id=earlier.account_id,
+            member=_current_user_email(), read=_read_chat_draft)
+    if revise is None or state != revise.OK:
+        why = ("It left Drafts before the delete" if revise is not None and state == revise.GONE
+               else "It changed after this chat saved it, so the chat did not delete it")
+        return out + _earlier_stays(earlier, why)
+    plan = _TrashPlan(earlier.rule, [did], {did: earlier.row}, {})
+    return f"{out}\n" + await _trash_and_report(plan, [earlier.row], [])
+
+
+def _earlier_stays(earlier: _Earlier, why: str) -> str:
+    """The line of an earlier draft that stays in Drafts."""
+    return (f" {why}. The draft of this email that this chat saved earlier stays in "
+            f"Drafts (draft_id {earlier.row['id']}): {earlier.line}. Tell the member "
+            "that it stays.")
 
 
 async def _always_copy_cc(
@@ -8563,8 +8650,9 @@ async def _held_card(
         raise
     if edit and isinstance(prep.get("form"), dict):
         plan = plan or _ChatPlan()
-        out = await _held_form_card(prep, lead, act, thread, closed=closed,
-                                    lines=_replace_lines(plan, form=True))
+        out = await _held_form_card(
+            prep, lead, act, thread, closed=closed, lines=_replace_lines(plan, form=True),
+            earlier=await _earlier_draft(plan, str(body.get("account_id") or "")))
         if isinstance(out, str):
             # Task 3814: when a chat message closed the card, the next save of
             # a new mail may take the draft that this card named.
@@ -8605,7 +8693,7 @@ async def _held_card(
 
 async def _held_form_card(
     prep: dict[str, Any], lead: str, act: str, thread: str = "", *, closed: str,
-    lines: list[str] | None = None,
+    lines: list[str] | None = None, earlier: _Earlier | None = None,
 ) -> dict[str, Any] | str:
     """The held new mail as the one email card (§18.10), on the gateway's
     record. The gateway's form keeps each §21 rule: the classes, and a new
@@ -8615,19 +8703,24 @@ async def _held_form_card(
     same revise route as a plain card. The next held card works out its
     classes and its ticks again, so the member's version never ticks a new
     address. A revise that did not run shows the same card again. *closed*
-    is the text of the card's act that the model then reads (HRD-8a)."""
+    is the text of the card's act that the model then reads (HRD-8a).
+    *earlier* (task 3978): Discard asks about that draft of this chat."""
     form = dict(prep["form"])
     form["notices"] = list(form.get("notices") or [])
     if any(c == "new" for c in (form.get("classes") or {}).values()):
         _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
     for line in lines or []:
         _form_notice(form, line)
+    form = _with_earlier(form, earlier)
     card_id = str(prep.get("card_id") or "")
     answer, revised, came_back = await _ask_until_revised(
         form, card_id, thread, closed)
     if revised is not None:
         return revised
-    return _noted(await _held_form_answered(answer, lead), came_back)
+    out = await _held_form_answered(answer, lead)
+    if isinstance(answer, str):
+        out = await _after_discard(out, earlier)
+    return _noted(out, came_back)
 
 
 async def _held_form_answered(answer: Any, lead: str) -> dict[str, Any] | str:

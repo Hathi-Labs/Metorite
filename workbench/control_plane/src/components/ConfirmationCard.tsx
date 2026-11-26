@@ -282,6 +282,8 @@ interface ConfirmationCardProps {
    * nudge chips of a new-mail card call it. `AgentChat` passes it.
    */
   onSuggest?: (text: string) => void;
+  /** Task 3978: Discard, then "Delete it", on a new-mail card with an earlier draft. */
+  onDiscardEarlier?: () => void;
   /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
    *  card frame above its header, when two cards or more wait. */
   tabs?: ReactNode;
@@ -338,6 +340,7 @@ export default function ConfirmationCard({
   reply,
   onReply,
   onSuggest,
+  onDiscardEarlier,
   error,
   tabs,
   tabPanel,
@@ -485,6 +488,7 @@ export default function ConfirmationCard({
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}
           onDiscard={onReject}
+          {...(onDiscardEarlier ? { onDiscardEarlier } : {})}
           onSuggest={onSuggest}
           onDraftChange={onDraftChange}
           before={before}

@@ -146,7 +146,25 @@ export interface ReplyForm {
    * ticked, is dropped.
    */
   unticked?: string[];
+  /**
+   * Task 3978 (§18.13.1), a new mail only: one line that names the draft of
+   * this email that the chat saved earlier. Discard then asks
+   * `EARLIER_QUESTION` on this card. The tool sets it only while the draft is
+   * the chat's own text.
+   */
+  earlier?: string;
 }
+
+/** Task 3978: the question that Discard asks on a card with an `earlier` draft. */
+export const EARLIER_QUESTION = "Keep the earlier draft, or delete it?";
+/** Task 3978: what each answer to the question does. */
+export const EARLIER_HINT = "Nothing is sent. Keep leaves the draft in Drafts. Delete moves it to Trash.";
+/**
+ * Task 3978: the answer of Discard, then "Delete it". It is a decline, so the
+ * card sends and saves nothing. The tool then trashes the earlier draft. Each
+ * other answer keeps it. `ask_tools.DELETE_EARLIER_ANSWER` holds the same text.
+ */
+export const DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}' as const;
 
 /** The kept unticks of a new-mail form (§18.11 rule 7): each a person of the
  *  card who starts unticked, by lower case, once. Anything else is dropped. */
@@ -307,6 +325,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...(isNew ? linkOf(v) : {}),
     ...(isNew && v.reopened === true ? { reopened: true as const } : {}),
     ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
+    ...(isNew && text(v.earlier, 300).trim() ? { earlier: text(v.earlier, 300).trim() } : {}),
   };
 }
 

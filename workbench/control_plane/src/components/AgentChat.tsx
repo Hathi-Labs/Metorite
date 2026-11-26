@@ -49,6 +49,7 @@ import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
 import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
 import { scrollToEnd } from "@/lib/scrollWithin";
@@ -2432,7 +2433,9 @@ export default function AgentChat({
       return;
     }
     const requestId = card.requestId;
-    const rejecting = answer === "REJECT";
+    // Task 3978: a Discard that also deletes the earlier draft is a REJECT, with
+    // the same Undo, so a slip of the finger trashes nothing.
+    const rejecting = answer === "REJECT" || answer === DELETE_EARLIER_ANSWER;
     // The card leaves with a word: one line says "Applying", then what
     // became of the answer (UXD-3). It draws under the newest message.
     dispatchConfirmation({

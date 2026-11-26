@@ -1,6 +1,8 @@
 # Email App — Master Plan (single source of truth)
 
 > **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Built, not merged, dark behind `CHAT_DRAFT_CHOICE_ORGS`. A trash of a draft reads Drafts, and the answer names each draft that stays.
+>
+> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Built, not merged, dark behind the same flag. The new-mail card asks "Keep the earlier draft, or delete it?".
 
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
@@ -21769,6 +21771,68 @@ is not OK. So an IMAP draft reads `not_confirmed`.
 `src/components/email/draftTrashReceipt.test.ts`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.1 Discard asks about the earlier draft (2026-11-26, task 3978)
+
+**Status:** BUILT on branch `mt-3978-draft-decline`, stacked on `mt-3977-draft-trash`, not
+merged. No migration. Dark behind `CHAT_DRAFT_CHOICE_ORGS`, the flag of §18.13.
+
+**The defect (rung 0).** Production, 2026-11-26. A member discarded a new-mail card in the
+chat. The chat had saved a draft of that email earlier, and that draft stayed in Drafts.
+
+**The choice.** The task offered option (b): "declining an edit card for a chat-made draft
+asks 'Keep the earlier draft, or delete it?' on the same card". This build takes that option.
+The board text was not readable in the build session. So the build reads option (b) as that
+sentence, and it adds no other option. No rule of §18.9, §18.10 or §18.11 forbids it. §18.10
+says that Discard writes nothing, and the act of the card still writes nothing. §18.9 item 7
+says that only the member's click trashes a draft, and that rule still applies.
+
+**The rules.**
+
+1. The question needs three flags for the org: `CHAT_DRAFT_CHOICE_ORGS`,
+   `CHAT_CARD_REVISE_ORGS` and `EMAIL_EDIT_CARD_ORGS`. Only the one-draft rule of task 3814
+   knows which draft the chat saved, and only the edit card draws the question.
+2. The earlier draft is the draft that the one-draft rule names before the card
+   (`plan.replaces`). It is the chat's own text, with no file. A draft that the member made or
+   changed is never asked about.
+3. A draft with a send in the queue is never asked about, and neither is a draft whose queue
+   the chat could not read. A failed read of the draft asks nothing.
+4. The tool puts one line on the form, `earlier`, which names the draft. Discard then shows
+   the question on the same card, in place of its buttons, with "Keep it", "Delete it" and
+   "Back". Keep sends `REJECT`, the Discard of before.
+5. Delete sends `REJECT {"earlier":"delete"}` (`ask_tools.DELETE_EARLIER_ANSWER`). The card
+   reads it as a decline, so the card sends and saves nothing. It holds the same Undo of five
+   seconds as a Reject.
+6. `ask_tools.earlier_draft_choice` says "delete" only for that exact answer, on a form with
+   `earlier`, from the run's own member. The member is the gateway's session member.
+7. Before the trash, the tool reads the state of the draft again (`card_revise.target_state`).
+   A draft that changed, or that left Drafts, stays, and the answer says why.
+8. The trash goes through `DELETE /email/messages/{id}?report=true`, and the answer comes from
+   `draft_choice.report` (§18.13 rules 9 and 10). It counts only a trash that the provider
+   confirmed. It names each matching draft that stays, such as a draft that the member made.
+9. Keep, a timeout, a close by a chat message and an answer of another member each keep the
+   draft. The answer names the draft that stays, with its id.
+
+**Each surface.**
+
+- The web chat draws the question. A web client of before sends `REJECT`, so the draft stays.
+- A held chat draws the held form card, and it asks the same question.
+- A WhatsApp run and a run with no card channel draw no edit card. They keep the card of
+  before, with no question, and the draft stays.
+- A chat message that closes the card is a redraft (§18.11), not a decline. The draft stays
+  as the target of the next save.
+
+**Known limits.**
+
+- The state check and the trash are two steps. An edit in the seconds between them is not
+  seen.
+- The `_new_draft` card ("Save this new email in Drafts?") and the reply card do not ask. The
+  reply card trashes its own draft at Discard already (§18.9 item 7).
+
+**Fences.** `tests/unit/test_email_draft_decline.py` and
+`src/components/newMailCardEarlier.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_decline.py -q`
 
 ## 19. Send later (2026-10-21)
 

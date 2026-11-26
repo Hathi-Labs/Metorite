@@ -41,13 +41,15 @@ import {
 import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { CardDraft } from "@/lib/redraftCard";
-import { isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
 import type { TaskCardEdits, TaskEditApproval } from "@/lib/taskEditCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
- *  Each goes in ONE respond-input. */
-export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyApproval | TaskEditApproval;
+ *  Each goes in ONE respond-input. Task 3978: the Discard of a new-mail card
+ *  that also deletes the earlier draft of the chat is a REJECT too. */
+export type ConfirmationAnswer =
+  | "APPROVE" | "REJECT" | typeof DELETE_EARLIER_ANSWER | RowsApproval | ReplyApproval | TaskEditApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -188,6 +190,8 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
+      // Task 3978: Discard, then "Delete it", on a new-mail card with an earlier draft.
+      {...(isNewMail(card.reply) && card.reply?.earlier ? { onDiscardEarlier: () => onAnswer(card, DELETE_EARLIER_ANSWER) } : {})}
       // §18.11: the slot of a redraft answers nothing. A new-mail card
       // reports each edit, and a redrafted card knows the member's last version.
       {...(card.redraft ? { slot: card.redraft } : {})}

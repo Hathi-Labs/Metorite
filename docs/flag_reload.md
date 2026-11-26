@@ -114,8 +114,14 @@ counts only a trash that the mail provider confirmed, and names each matching dr
 stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
 before.
 
+The same flag turns on the Discard question of task 3978 (§18.13.1). A member discards a
+new-mail card, and the chat saved a draft of that email earlier. The card then asks "Keep the
+earlier draft, or delete it?". The question also needs `CHAT_CARD_REVISE_ORGS` and
+`EMAIL_EDIT_CARD_ORGS` for the org, because only they know the chat's draft and draw the card.
+
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
-each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).
+each trash and before each new-mail card, so a reload applies at once. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps

@@ -40,6 +40,8 @@ import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, changedLinkLine, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
+  EARLIER_HINT,
+  EARLIER_QUESTION,
   leftOutText,
   lineCount,
   newMailBodyCanGo,
@@ -77,6 +79,11 @@ export interface NewMailCardFormProps {
   detail?: string;
   onAnswer: (answer: ReplyApproval) => void;
   onDiscard: () => void;
+  /**
+   * Task 3978: Discard, then "Delete it", on a form with an `earlier` draft.
+   * With none, Discard never asks, and the form is as before.
+   */
+  onDiscardEarlier?: () => void;
   /**
    * Put words in the chat box, and focus it. It never sends. With none (a
    * surface with no chat box), the nudge line shows with no chips.
@@ -205,11 +212,66 @@ export function NudgeLine({
   );
 }
 
+/**
+ * Task 3978: true when Discard asks about the earlier draft first. The form
+ * names one (`earlier`), and the card can carry the answer. Else Discard is
+ * the Discard of before.
+ */
+export function discardAsks(form: ReplyForm, onDiscardEarlier?: () => void): boolean {
+  return !!form.earlier && !!onDiscardEarlier;
+}
+
+/**
+ * Task 3978 (§18.13.1): the question that Discard asks on the same card, in
+ * place of its buttons. Keep is the plain Discard of before, Delete moves the
+ * earlier draft to Trash, and Back shows the buttons again.
+ */
+export function EarlierQuestion({
+  line,
+  onKeep,
+  onDelete,
+  onBack,
+  disabled = false,
+}: {
+  line: string;
+  onKeep: () => void;
+  onDelete: () => void;
+  onBack: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={EARLIER_QUESTION}
+      className="space-y-1.5 rounded-md border border-border px-2.5 py-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3"
+      data-earlier-question=""
+    >
+      <p className="text-xs font-medium text-foreground">{EARLIER_QUESTION}</p>
+      <p className="break-words text-[11px] text-muted-foreground" data-earlier-draft="">
+        {line}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="secondary" size="sm" onClick={onKeep} disabled={disabled} data-earlier-keep="">
+          Keep it
+        </Button>
+        <Button variant="destructive" size="sm" icon="Trash2" onClick={onDelete} disabled={disabled} data-earlier-delete="">
+          Delete it
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onBack} disabled={disabled} data-earlier-back="">
+          Back
+        </Button>
+      </div>
+      <p className="text-[10px] text-muted-foreground">{EARLIER_HINT}</p>
+    </div>
+  );
+}
+
 export default function NewMailCardForm({
   form,
   detail,
   onAnswer,
   onDiscard,
+  onDiscardEarlier,
   onSuggest,
   armed,
   disabled = false,
@@ -281,6 +343,14 @@ export default function NewMailCardForm({
     if (a) onAnswer(a);
   };
   const files = form.files ?? [];
+  // Task 3978: Discard asks first when the form names an earlier draft of this
+  // chat, and the card can carry the answer. Else it is the Discard of before.
+  const [asking, setAsking] = useState(false);
+  const discard = () => {
+    if (!armed) return;
+    if (discardAsks(form, onDiscardEarlier)) setAsking(true);
+    else onDiscard();
+  };
   return (
     <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
       <div className="min-w-0">
@@ -411,6 +481,18 @@ export default function NewMailCardForm({
         carriesEdits={carriesEdits}
       />
 
+      {asking && onDiscardEarlier ? (
+        // Task 3978 (§18.13.1): Discard asks about the draft of this email
+        // that the chat saved earlier, on this same card. Keep is the plain
+        // Discard of before. A card that closes with no answer keeps it too.
+        <EarlierQuestion
+          line={form.earlier ?? ""}
+          onKeep={onDiscard}
+          onDelete={onDiscardEarlier}
+          onBack={() => setAsking(false)}
+          disabled={disabled}
+        />
+      ) : (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -436,7 +518,7 @@ export default function NewMailCardForm({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => armed && onDiscard()}
+          onClick={discard}
           disabled={disabled}
           aria-disabled={!armed || undefined}
           data-reply-discard=""
@@ -444,6 +526,7 @@ export default function NewMailCardForm({
           Discard
         </Button>
       </div>
+      )}
       <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>
     </div>
   );
