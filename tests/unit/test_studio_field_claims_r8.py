@@ -65,6 +65,7 @@ from gateway.routes.studio import packages
 from sqlalchemy import text
 from starlette.requests import Request
 
+from tests.unit._studio_approval import approve_live
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -154,6 +155,9 @@ async def _publish(org: str, email: str, pid: str) -> tuple[int, Any]:
 
 
 async def _install_org(org: str, email: str, pid: str) -> tuple[int, Any]:
+    """WS-STU J2b-1 (path A): an org install needs the live version approved.
+    So another member approves it first, through the one writer."""
+    await approve_live(org, email, pid, BEN if email != BEN else ANA)
     return await _call("install_package", org, email, pid, payload={"scope": "org"},
                        grants=PUBLISHER)
 

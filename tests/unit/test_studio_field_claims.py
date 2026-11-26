@@ -212,7 +212,7 @@ def test_a_bad_entry_refuses_each_install_before_the_store(monkeypatch: Any) -> 
     bad = _manifest({**_WARRANTY, "record": "crm.leads"})
     with pytest.raises(ContributionRefused):
         asyncio.run(studio_app.keep_private_install(
-            None, app_id=PID, version=1, owner="ana@x.test", manifest=bad))
+            None, app_id=PID, version=1, owner="ana@x.test", manifest=bad, ends_at=None))
     with pytest.raises(ContributionRefused):
         asyncio.run(studio_app.keep_scope_install(
             None, app_id=PID, version=1, scope_kind="org", scope_subject="org",
