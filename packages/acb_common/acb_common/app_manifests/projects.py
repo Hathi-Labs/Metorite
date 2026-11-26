@@ -414,6 +414,8 @@ PROJECTS_DOOR = App(
         Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED, sandbox=True),
         # SW-45: the MCP `my_work` reads the free tasks of the own apps.
         Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
+        # LBB-2: the MCP `my_work` reads the open PRs to land of an agent label.
+        Route("GET", "/projects/agent-work/landing", "my_work", "A", off_door=TYPED),
         Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
         Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
