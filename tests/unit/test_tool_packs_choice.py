@@ -1554,11 +1554,12 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     # P-5b-1 (task 3114): people, the dark pack of the same owner, comes next.
     # P-1b (task 3922): mail-tasks sits after calendar-day and before studio.
     # P-1c (task 3923): calendar-connections, the dark pack of that owner, is last.
-    assert list(tp.PACKS)[-19:] == [
+    # PAR-9 (task 3950): studio-apps, the six Custom Apps tools, comes before studio-share.
+    assert list(tp.PACKS)[-20:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "projects-cycles",
         "calendar-day", "mail-tasks", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "org-admin", "people", "calendar-connections"]
+        "studio-apps", "studio-share", "org-admin", "people", "calendar-connections"]
     assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.

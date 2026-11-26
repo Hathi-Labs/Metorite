@@ -78,6 +78,10 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-9 (task 3950): the small pack of the Custom Apps, of the studio owner.
+    "studio-apps": (
+        "Load to read, change, publish, share or pin a Custom App of the App Workshop, its "
+        "files or its stored data."),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
     # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
     # Integrations. PAR-4d (task 3936): the seats.

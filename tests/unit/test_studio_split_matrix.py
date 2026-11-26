@@ -225,10 +225,11 @@ def _allowed(workflows: bool) -> frozenset[str]:
     The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
     for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
     surface, owner ``org-admin``) is out for the same reason. The dark
-    ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
+    ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
+    reason. ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
     ``org-admin``) is out for the same reason."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
-                                          "people", "calendar-connections"}
+                                          "people", "studio-apps", "calendar-connections"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

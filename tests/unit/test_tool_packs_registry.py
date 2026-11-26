@@ -107,7 +107,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "org-admin", "people", "calendar-connections",
+        "studio-apps", "studio-share", "org-admin", "people", "calendar-connections",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -703,8 +703,12 @@ WORKFLOW_WRITES = ("studio_workflow_publish", "studio_workflow_live", "studio_wo
 SHARE_TOOLS = ("studio_skill_share",)
 #: The two tools of the fourth pack of the owner, the repair of a skill (TOF-3a F12c).
 REPAIR_TOOLS = ("studio_skill_repair", "studio_skill_undo")
+#: The six tools of the sixth pack of the owner, the Custom Apps (PAR-9, task 3950).
+APPS_TOOLS = ("custom_app_read", "custom_app_save", "custom_app_files", "custom_app_publish",
+              "custom_app_share", "custom_app_data")
 #: Each pack of the Studio owner, in the order of ``PACKS``.
-STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-share")
+STUDIO_PACKS = ("studio", "studio-more", "studio-workflows", "studio-repair", "studio-apps",
+                "studio-share")
 
 
 def _studio_scope() -> set[str]:
@@ -723,10 +727,11 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert tuple(more["tools"]) == STUDIO_MORE_TOOLS
     assert (set(family["tools"]) | set(more["tools"]) | set(WORKFLOW_WRITES)
-            | set(SHARE_TOOLS) | set(REPAIR_TOOLS)) == _studio_scope()
+            | set(SHARE_TOOLS) | set(REPAIR_TOOLS) | set(APPS_TOOLS)) == _studio_scope()
     assert tuple(sf.SKILL_FAMILIES["studio-workflows"]["tools"]) == WORKFLOW_WRITES
     assert tuple(sf.SKILL_FAMILIES["studio-share"]["tools"]) == SHARE_TOOLS
     assert tuple(sf.SKILL_FAMILIES["studio-repair"]["tools"]) == REPAIR_TOOLS
+    assert tuple(sf.SKILL_FAMILIES["studio-apps"]["tools"]) == APPS_TOOLS
     # STU-K1d added two ready-app tools (20 to 22), and STB-6a one workflow read (22 to 23).
     # WS-67 TS-1b split the 23 into a core of 10 and studio-more of 13, with no tool in both.
     assert len(family["tools"]) == 10 and len(more["tools"]) == 13
@@ -812,6 +817,8 @@ _NOT_TOOLS = {"no_card", "based_on", "request_id"}
     ("studio-more", STUDIO_MORE_TOOLS, frozenset({tp.LOAD_TOOL})),
     # TOF-3a F12c: the repair pack names its two tools only.
     ("studio-repair", REPAIR_TOOLS, frozenset()),
+    # PAR-9: the Custom Apps pack names its six tools only.
+    ("studio-apps", APPS_TOOLS, frozenset()),
 ])
 def test_the_studio_rules_name_only_tools_of_the_pack(
     slug: str, own: tuple[str, ...], extra: frozenset[str],
@@ -883,11 +890,13 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
     # people pack of the same owner comes next. P-1c (task 3923): the dark
-    # calendar-connections pack of that owner comes last.
-    assert list(tp.PACKS)[-8:-3] == list(STUDIO_PACKS)
+    # calendar-connections pack of that owner comes last. PAR-9: the dark Custom
+    # Apps pack comes before the share pack.
+    assert list(tp.PACKS)[-9:-3] == list(STUDIO_PACKS)
     assert list(tp.PACKS)[-3:] == ["org-admin", "people", "calendar-connections"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
+    assert "studio-apps" not in tp.FOLLOWS
 
 
 def test_the_studio_pack_is_filtered_by_the_owner_key() -> None:
