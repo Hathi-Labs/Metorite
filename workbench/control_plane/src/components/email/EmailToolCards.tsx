@@ -1802,7 +1802,10 @@ function ManageInboxCard({ event: e }: { event: ToolEvent }) {
   const args = e.args as Record<string, unknown> | undefined;
   const action = String(args?.action ?? "").toLowerCase();
   const ids = args?.message_ids;
-  const count = Array.isArray(ids) ? ids.length : 0;
+  // §18.13 (task 3977): a trash that checked Drafts answers with what went.
+  // The member can pick more or fewer drafts than the call named.
+  const went = /^Trashed (\d+) message\(s\):/.exec((e.result || "").trimStart());
+  const count = went ? Number(went[1]) : Array.isArray(ids) ? ids.length : 0;
   const meta = INBOX_ACTION_META[action];
   // Unknown action or no count → fall back to the generic confirmation.
   if (!meta || count === 0) return <ActionResultCard event={e} />;

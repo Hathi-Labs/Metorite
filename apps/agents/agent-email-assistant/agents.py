@@ -2669,6 +2669,212 @@ async def _inbox_card(
     return await _card_refusal(title, detail, unchanged, context)
 
 
+# ── A trash of a draft checks Drafts (task 3977, §18.13) ─────────────────────
+#
+# Production, 2026-11-26: "delete the draft in my Drafts folder" trashed only
+# the draft that the chat made, and the answer said "deleted" while a second
+# draft of the thread stayed. Dark behind ``CHAT_DRAFT_CHOICE_ORGS``. The
+# match and the words live in ``acb_skills.draft_choice``.
+
+#: What a draft listing is, for the data note of the answer.
+_DRAFT_LIST_WHAT = (
+    "The list of drafts below holds subjects, recipients and text that a "
+    "person or an outside sender wrote.")
+_NO_DRAFT_MOVED = "No draft was moved to Trash."
+
+
+def _draft_choice() -> Any:
+    """``acb_skills.draft_choice`` when ``CHAT_DRAFT_CHOICE_ORGS`` is on for
+    the run's org, else None. An older platform with no module reads as off."""
+    try:
+        from acb_skills import draft_choice
+    except ImportError:
+        return None
+    return draft_choice if draft_choice.draft_choice_on() else None
+
+
+async def _read_for_trash(message_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Each message of *message_ids* that the member can read, by id. A 404
+    leaves the id out. Another failure raises, so nothing is written."""
+    found: dict[str, dict[str, Any]] = {}
+    for mid in message_ids:
+        try:
+            row = await _get(f"/email/messages/{mid}", {"mark_read": "false"})
+        except GatewayError as exc:
+            if exc.status != 404:
+                raise
+            continue
+        if isinstance(row, dict) and row:
+            found[mid] = {**row, "id": str(row.get("id") or mid)}
+    return found
+
+
+async def _matching_drafts(
+    rule: Any, anchors: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """``(drafts, cut)``: each draft in Drafts that matches an anchor, read
+    from each mailbox of the anchors. *cut* is True when a mailbox holds more
+    drafts than one page."""
+    found: list[dict[str, Any]] = []
+    cut = False
+    for account in sorted({str(a.get("account_id") or "") for a in anchors} - {""}):
+        page = await _get("/email/messages", {
+            "folder": "drafts", "account_id": account, "page_size": rule.PAGE_SIZE,
+        }) or {}
+        rows = [r for r in page.get("emails") or [] if isinstance(r, dict)]
+        cut = cut or int(page.get("total") or 0) > len(rows)
+        found += rule.matching(rows, anchors)
+    return found, cut
+
+
+async def _trash_drafts(rule: Any, message_ids: list[str]) -> str | None:
+    """The answer of a trash that holds a draft, or None for any other trash.
+
+    The anchors are the named messages that are drafts, or that already left
+    Drafts for Trash. With one matching draft that the call names, the card is
+    the plain one, with the words of a draft. With more, each draft is a row
+    that starts unticked, and the member picks. A run that draws no rows keeps
+    the plain card, acts on the named drafts only, and names the others."""
+    if len(message_ids) > rule.MAX_IDS:
+        return None
+    read = await _read_for_trash(message_ids)
+    anchors = [m for m in read.values() if rule.is_draft(m) or rule.is_trashed(m)]
+    if not anchors:
+        return None
+    matches, cut = await _matching_drafts(rule, anchors)
+    named = [mid for mid, m in read.items() if rule.is_draft(m)]
+    # A named draft that the page cut off is still a draft of this call.
+    listed = {str(m["id"]) for m in matches}
+    matches += [read[mid] for mid in named if str(read[mid]["id"]) not in listed]
+    if not matches:
+        if len(anchors) != len(message_ids):
+            return None
+        return ("Nothing changed. Each message that you named is already in Trash, "
+                "and no matching draft is in Drafts, as Metorite last synced it.")
+    named_ids = {str(read[mid]["id"]) for mid in named}
+    gone = {str(m["id"]) for m in anchors if rule.is_trashed(m)}
+    # Every other named id keeps the act of before: a mail goes to Trash.
+    others = [mid for mid in message_ids if mid not in named
+              and str((read.get(mid) or {}).get("id") or mid) not in gone]
+    accounts = {str(a["id"]): a for a in await _accounts()}
+    boxes = sorted({str(m.get("account_id") or "") for m in matches})
+    mailboxes = ", ".join(_mailbox_text(accounts[b]) for b in boxes if b in accounts)
+    effect = rule.provider_line(
+        str((accounts.get(b) or {}).get("provider") or "") for b in boxes)
+    detail = f"{effect} Mailbox: {mailboxes or 'the mailbox of each draft'}."
+    from acb_skills import ask_tools
+
+    pick = ((len(matches) > 1 or {str(m["id"]) for m in matches} != named_ids)
+            and ask_tools.rows_card_channel_open())
+    if pick:
+        chosen = await _pick_drafts(rule, matches, others, detail)
+        if isinstance(chosen, str):
+            return chosen
+        drafts = [str(m["id"]) for m in matches if str(m["id"]) in chosen]
+        others = [mid for mid in others if mid in chosen]
+    else:
+        drafts = [str(m["id"]) for m in matches if str(m["id"]) in named_ids]
+        if not drafts:
+            listing = rule.listing(matches, _card_text)
+            return _framed_drafts(rule.result_text(
+                drafts_moved=0, others_moved=0, drafts_failed=0,
+                remaining=listing, cut=cut))
+        lines = ["Each draft that moves to Trash:"]
+        lines += [f"- {_card_text(' · '.join(rule.describe(m)), 300)}"
+                  for m in matches if str(m["id"]) in drafts]
+        staying = [m for m in matches if str(m["id"]) not in drafts]
+        if staying:
+            lines.append("These matching drafts stay in Drafts:")
+            lines += [f"- {_card_text(' · '.join(rule.describe(m)), 300)}"
+                      for m in staying[:rule.MAX_DRAFTS]]
+        noun = "draft" if len(drafts) == 1 else "drafts"
+        title = f"Move {len(drafts)} {noun} to Trash?"
+        if others:
+            title = f"Move {len(drafts)} {noun} and {len(others)} other to Trash?"
+        refusal = await _card_refusal(title, detail, _NO_DRAFT_MOVED, "\n".join(lines))
+        if refusal:
+            return refusal
+    return await _trash_and_report(rule, drafts, others, anchors, matches)
+
+
+async def _pick_drafts(
+    rule: Any, matches: list[dict[str, Any]], others: list[str], detail: str,
+) -> set[str] | str:
+    """The ids that the member ticked, or the answer of a card that did
+    nothing. Each draft row starts unticked, so the member picks each one. A
+    named message that is no draft starts ticked, as on the card of before."""
+    from acb_skills import ask_tools
+
+    rows = [rule.draft_row(m, _card_text) for m in matches[:rule.MAX_DRAFTS]]
+    rows += [{"id": mid, "label": "Another message that you asked to trash",
+              "hint": "", "checked": True} for mid in others]
+    if len(matches) > rule.MAX_DRAFTS:
+        detail += f" The card lists {rule.MAX_DRAFTS} of {len(matches)} matching drafts."
+    steer = {"close_on_steer": True} if _card_revise_on() else {}
+    answer = await ask_tools.request_confirmation(
+        title="Which drafts go to Trash?",
+        detail=f"Tick each draft to move to Trash. {detail}",
+        rows=rows, **steer)
+    if ask_tools.is_revised(answer):
+        return _closed_by_message("card")
+    if not isinstance(answer, (set, frozenset)) or not answer:
+        return _unapproved_line() or _not_done(_NO_DRAFT_MOVED)
+    return set(answer)
+
+
+async def _trash_and_report(
+    rule: Any, drafts: list[str], others: list[str],
+    anchors: list[dict[str, Any]], matches: list[dict[str, Any]],
+) -> str:
+    """Trash each draft through ``DELETE /email/messages/{id}``, which discards
+    a Gmail draft and re-keys an Outlook one. Then read Drafts again, and count
+    only what left it."""
+    asked: list[str] = []
+    for mid in drafts:
+        try:
+            await _delete(f"/email/messages/{mid}")
+        except GatewayError:
+            continue
+        asked.append(mid)
+    others_moved = 0
+    if others:
+        try:
+            res = await _post("/email/messages/bulk",
+                              {"action": "trash", "message_ids": others})
+            others_moved = int(res.get("affected") or 0)
+        except GatewayError:
+            others_moved = 0
+    # The anchors of the read after the act are the drafts of the first read,
+    # so a draft that matched stays in view when its own anchor went.
+    try:
+        left, cut = await _matching_drafts(rule, anchors + matches)
+    except GatewayError:
+        left, cut = None, False
+    remaining = None
+    if left is None:
+        moved = len(asked)
+    else:
+        still = {str(m["id"]) for m in left}
+        moved = len([mid for mid in asked if mid not in still])
+        remaining = rule.listing(left, _card_text)
+    return _framed_drafts(rule.result_text(
+        drafts_moved=moved, others_moved=others_moved,
+        drafts_failed=len(drafts) - moved, remaining=remaining, cut=cut))
+
+
+def _framed_drafts(text: str) -> str:
+    """*text* with its draft listing in one untrusted block. The counts stay
+    above the block, so the chat card reads the first line."""
+    lines = text.split("\n")
+    marks = [i for i, line in enumerate(lines) if line.startswith(("- draft id=", "+"))]
+    if not marks:
+        return text
+    frame = UntrustedFrame.new()
+    block = frame.wrap("DRAFTS", "\n".join(lines[marks[0]:marks[-1] + 1]))
+    head = lines[:marks[0]] + [frame.note(_DRAFT_LIST_WHAT)]
+    return "\n".join(head + [block] + lines[marks[-1] + 1:])
+
+
 @_annotate_risk(destructive=True, open_world=False)
 async def manage_inbox(
     action: str,
@@ -2705,6 +2911,13 @@ async def manage_inbox(
         return "Nothing changed. Provide add_labels and/or remove_labels for action='label'."
     if not message_ids:
         return "Nothing changed. Name one or more messages in `message_ids`."
+    # Task 3977: a trash of a draft reads Drafts first, so a second draft of
+    # the same mail shows on the card (``_trash_drafts``). Off, or with no
+    # draft in the call, the answer is None and the card of before runs.
+    if action == "trash" and (rule := _draft_choice()) is not None:
+        done = await _trash_drafts(rule, message_ids)
+        if done is not None:
+            return done
     # EM-G11c1: one card for the whole call, before the first write. It names
     # the act, the count, the mailbox and each message.
     refusal = await _inbox_card(action, message_ids, folder, add_labels, remove_labels)

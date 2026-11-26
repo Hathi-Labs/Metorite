@@ -62,6 +62,7 @@
       "tests/unit/test_email_attachment_dedupe.py",
       "tests/unit/test_email_attachment_download.py",
       "tests/unit/test_email_cleanup_apply_cap.py",
+      "tests/unit/test_email_draft_choice.py",
       "tests/unit/test_email_follow_up_scan.py",
       "tests/unit/test_email_markdown_mail.py",
       "tests/unit/test_email_owner_scope_fence.py",

@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Built, not merged, dark behind `CHAT_DRAFT_CHOICE_ORGS`. A trash of a draft reads Drafts, and the answer names each draft that stays.
+
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
@@ -21699,6 +21701,49 @@ text part and the HTML part of the mail.
 **Fence:** `tests/unit/test_email_markdown_mail.py`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_markdown_mail.py -q`
+
+### 18.13 The chat asks which draft (2026-11-26, task 3977)
+
+**Status:** BUILT on branch `mt-3977-draft-trash`, not merged. No migration.
+
+**Dark.** `CHAT_DRAFT_CHOICE_ORGS` lists the organization ids, or `*`. Empty is off, the
+default. Off, the card and the answer of a trash are the ones of before. The one reader is
+`acb_skills.draft_choice.draft_choice_on`. A value on a box is an `enforcement-flip`.
+
+**The defect (rung 0).** Production, 2026-11-26. A thread held two drafts. The chat saved one,
+and the member made a second one with two files. The member asked to delete the draft in
+Drafts. The chat trashed its own draft only, and answered "The draft is deleted".
+
+**The rules.** They apply to `manage_inbox(action="trash")` with 20 ids or fewer, when one id
+is a draft, or is already in Trash.
+
+1. The tool reads the Drafts folder of each mailbox of those messages.
+2. A draft matches when it shares the thread, the To set or the subject of a named one
+   (`draft_choice.matching`). A "Re:" head and the case do not count.
+3. One matching draft that the call names keeps one Approve card, with the words of a draft.
+4. Any other case draws one row for each matching draft. Each draft row starts **unticked**,
+   and the member picks. A named message that is no draft stays ticked.
+5. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
+   drafts only, and it names the other matching drafts.
+6. A draft moves through `DELETE /email/messages/{id}`. That route discards a Gmail draft and
+   keeps the new id of an Outlook draft. The card says which of the two happens.
+7. The tool reads Drafts again after the act. The answer counts only what left Drafts, and
+   names each matching draft that stays. It says "none left" only for a whole page.
+8. The chat receipt takes its count from the head of the answer, and not from the call.
+
+**Known limits.**
+
+- The check reads the Metorite mirror. A draft that the sync did not bring yet does not show.
+- `DELETE` answers 204 when the mailbox refuses the trash. The row then reads as Trash until
+  the next sync brings the draft back. The answer says "as Metorite last synced it" only when
+  it claims that none is left.
+- A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
+- `bulk_manage_inbox` does not run this check.
+
+**Fences.** `tests/unit/test_email_draft_choice.py` and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
 
 ## 19. Send later (2026-10-21)
 
