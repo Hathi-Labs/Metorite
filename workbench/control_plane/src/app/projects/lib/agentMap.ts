@@ -29,7 +29,17 @@ import {
 import { type AgentWaitingOn, WAITING_ON_LABELS } from "./agentRuns";
 import { outcomeWord } from "./agentsAtWork";
 
-export type MapSessionState = "waiting_on_person" | "waiting" | "working" | "quiet";
+/** `failed` and `done` come from the summary read of AMR-4 only (§3.12.9). */
+export type MapSessionState = "waiting_on_person" | "waiting" | "working" | "quiet" | "failed" | "done";
+
+/** AMR-4: the sub-agents of one session of the summary read, as counts. The names are untrusted text. */
+export interface MapSubagents {
+  total: number;
+  working: number;
+  failed: number;
+  done: number;
+  names: string[];
+}
 
 export interface MapPerson {
   person: string;
@@ -55,6 +65,8 @@ export interface MapSession {
   host_kind: HostKind | null;
   host_source: HostSource | null;
   model: string | null;
+  /** AMR-4: present on the summary read. The map of SW-102 sends `children` instead. */
+  subagents?: MapSubagents;
 }
 
 export interface MapRun {
@@ -112,6 +124,8 @@ export type AgentMapRead =
   | { kind: "error" }
   | { kind: "ready"; map: AgentMap };
 
+/** The performance mark of a summary answer (AMR-4). */
+export const MAP_RESPONSE_MARK = "agents-view:map-response";
 export const MAP_LABEL = "Map";
 export const LIST_LABEL = "List";
 export const SWITCH_LABEL = "Agents view";
@@ -163,14 +177,23 @@ export function childAgeWord(age: number | null, nowMs: number): string {
   return when ? `Started ${when}` : "";
 }
 
-const SESSION_STATES: readonly MapSessionState[] = ["waiting_on_person", "waiting", "working", "quiet"];
+const SESSION_STATES: readonly MapSessionState[] = [
+  "waiting_on_person",
+  "waiting",
+  "working",
+  "quiet",
+  "failed",
+  "done",
+];
 
-/** Waiting sessions come first, then working ones, then quiet ones. */
+/** Waiting sessions come first, then failed, working, quiet and done ones. */
 const STATE_RANK: Record<MapSessionState, number> = {
   waiting_on_person: 0,
-  waiting: 1,
-  working: 2,
-  quiet: 3,
+  failed: 1,
+  waiting: 2,
+  working: 3,
+  quiet: 4,
+  done: 5,
 };
 
 /** Each state of a session maps to a state of the one agent vocabulary. */
@@ -179,6 +202,8 @@ const STATE_VOCABULARY: Record<MapSessionState, string> = {
   waiting: "waiting",
   working: "working",
   quiet: "stale",
+  failed: "failed",
+  done: "completed",
 };
 
 const STATE_WORD: Record<MapSessionState, string> = {
@@ -186,6 +211,8 @@ const STATE_WORD: Record<MapSessionState, string> = {
   waiting: "Waiting for an agent",
   working: "Working",
   quiet: "Quiet",
+  failed: "Failed",
+  done: "Done",
 };
 
 /**
@@ -244,6 +271,22 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** A lane in one of these states does no work, so it holds no orchestrator in a wait. */
+const ENDED_LANE: ReadonlySet<MapSessionState> = new Set(["quiet", "failed", "done"]);
+
+/** The sub-agent counts of a summary row, or `undefined` when the row sends none. */
+function subagentsOf(value: unknown): MapSubagents | undefined {
+  const row = record(value);
+  if (!row) return undefined;
+  return {
+    total: whole(row.total),
+    working: whole(row.working),
+    failed: whole(row.failed),
+    done: whole(row.done),
+    names: rows(row.names).map(text).filter(Boolean),
+  };
+}
+
 /** One of the words of `WAITING_ON_LABELS`, else `null`. An older gateway sends none. */
 function waitingOn(value: unknown): AgentWaitingOn | null {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(WAITING_ON_LABELS, value)
@@ -300,6 +343,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
       quiet_count: whole(row.quiet_count),
       quiet_last_at: text(row.quiet_last_at) || null,
       ...placeFields(row),
+      ...(record(row.subagents) ? { subagents: subagentsOf(row.subagents) } : {}),
     });
   }
 
@@ -630,7 +674,9 @@ export function dispatchGraph(map: Pick<AgentMap, "sessions" | "lines">): Dispat
   const stateOf = new Map(map.sessions.map((s) => [s.id, s.state]));
   const waiting = new Set<string>();
   for (const [id, lanes] of dispatched) {
-    if (stateOf.get(id) === "quiet" && lanes.some((lane) => stateOf.get(lane) !== "quiet")) waiting.add(id);
+    if (stateOf.get(id) === "quiet" && lanes.some((lane) => !ENDED_LANE.has(stateOf.get(lane) ?? "quiet"))) {
+      waiting.add(id);
+    }
   }
   return { lines: kept, depth, dispatchers, dispatched, waiting };
 }

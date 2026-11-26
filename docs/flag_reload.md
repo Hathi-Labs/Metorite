@@ -315,7 +315,9 @@ map of SW-103. The view reads the map of SW-102, so it also needs
 `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
 `gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
 `GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
-change at its next shell read. A reload applies a change. The flip stays
+change at its next shell read. AMR-4: the map read asks the same reader on
+each call. For a listed org it also answers `detail=summary` and `session=`
+(`agent_coordination.md` §3.12.9). A reload applies a change. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
 `COMPUTE_RUN_ORGS` is the kill switch of the `compute` target of the sandbox

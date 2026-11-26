@@ -13,7 +13,7 @@
  * its words are those of the board lanes (`AGENT_LANES`), and its card edge is
  * `agentCardLook`. Every name is untrusted text: a view draws it as text.
  */
-import { agentStateChip, agentStateVisual } from "@/lib/statusAccent";
+import { agentMarkFill, agentStateChip, agentStateVisual } from "@/lib/statusAccent";
 
 import { type AgentEdge, agentCardLook } from "./agentCardLook";
 import {
@@ -26,23 +26,34 @@ import {
   sortSessions,
 } from "./agentMap";
 import { NOT_REPORTED } from "./agentPlace";
-import { AGENT_LANES, type AgentWaitingOn, agentPillText, waitingText } from "./agentRuns";
+import { AGENT_ENDED_WORDS, AGENT_LANES, type AgentWaitingOn, agentPillText, waitingText } from "./agentRuns";
 
-export type LensState = "you" | "working" | "waiting" | "idle";
+export type LensState = "you" | "failed" | "working" | "waiting" | "idle" | "done";
 
-/** The order of the chips and of the cards: what waits on a person comes first. */
-export const LENS_STATES: readonly LensState[] = ["you", "working", "waiting", "idle"];
+/** The order of the chips, the cards and the squares: what needs a person comes first. */
+export const LENS_STATES: readonly LensState[] = ["you", "failed", "working", "waiting", "idle", "done"];
 
 /** Each lens state is one state of the one agent vocabulary. */
 const VOCABULARY: Record<LensState, string> = {
   you: "awaiting",
+  failed: "failed",
   working: "working",
   waiting: "waiting",
   idle: "stale",
+  done: "completed",
 };
 
+function vocabularyWord(key: string): string {
+  return AGENT_LANES.find((lane) => lane.key === key)?.label ?? AGENT_ENDED_WORDS[key] ?? key;
+}
+
 export function lensWord(state: LensState): string {
-  return AGENT_LANES.find((lane) => lane.key === VOCABULARY[state])?.label ?? VOCABULARY[state];
+  return vocabularyWord(VOCABULARY[state]);
+}
+
+/** The fill of the square of a state, a token of `AGENT_MARKS`. */
+export function lensMark(state: LensState): string {
+  return agentMarkFill(VOCABULARY[state]);
 }
 
 export function lensIcon(state: LensState): string {
@@ -60,7 +71,58 @@ export function lensEdge(state: LensState): AgentEdge | null {
 /** The word and the chip of one run, in the same words as a session. A quiet run reads Idle. */
 export function lensRun(run: Pick<MapRun, "state" | "quiet">): { word: string; chip: string } {
   const key = run.quiet ? "stale" : run.state;
-  return { word: AGENT_LANES.find((lane) => lane.key === key)?.label ?? key, chip: agentStateChip(key) };
+  return { word: vocabularyWord(key), chip: agentStateChip(key) };
+}
+
+/** The lens state of a sub-agent. A stopped or released one reads Idle: it does nothing now. */
+export function lensOfChild(state: string): LensState {
+  if (state === "failed") return "failed";
+  if (state === "completed") return "done";
+  if (state === "waiting") return "waiting";
+  return state === "working" || state === "queued" || state === "answered" ? "working" : "idle";
+}
+
+/** One sub-agent, as the graph, the dock and the phone sheet draw it. */
+export interface SubRow {
+  id: string;
+  name: string;
+  state: LensState;
+  model: string | null;
+  /** Seconds since it started. */
+  age: number | null;
+}
+
+/** The sub-agents of a read: the most urgent first, then the newest. */
+export function subRows(children: readonly MapChild[]): SubRow[] {
+  return children
+    .map((c) => ({ id: c.child_id, name: c.name, state: lensOfChild(c.state), model: c.model, age: c.age }))
+    .sort(
+      (a, b) =>
+        LENS_STATES.indexOf(a.state) - LENS_STATES.indexOf(b.state) ||
+        (a.age ?? Infinity) - (b.age ?? Infinity) ||
+        a.id.localeCompare(b.id),
+    );
+}
+
+export interface SubCounts {
+  total: number;
+  working: number;
+  failed: number;
+  done: number;
+}
+
+/** "7 subagents · 2 working · 1 failed", or "" with none. The parts, so a view colours "failed". */
+export function subParts(subs: SubCounts): { total: string; working: string; failed: string } {
+  return {
+    total: subs.total === 0 ? "" : `${subs.total} ${subs.total === 1 ? "subagent" : "subagents"}`,
+    working: subs.working > 0 ? `${subs.working} working` : "",
+    failed: subs.failed > 0 ? `${subs.failed} failed` : "",
+  };
+}
+
+export function subWords(subs: SubCounts): string {
+  const parts = subParts(subs);
+  return [parts.total, parts.working, parts.failed].filter(Boolean).join(" · ");
 }
 
 /** What a waiting session waits on, from the structured field of a run. */
@@ -93,8 +155,12 @@ export interface LensSession {
   quietCount: number;
   /** The listed runs: the live ones first. */
   runs: MapRun[];
-  /** The open sub-agents of those runs (SW-110). */
+  /** The open sub-agents of those runs (SW-110). Empty on the summary read. */
   children: MapChild[];
+  /** AMR-4: how many sub-agents it holds, by state. */
+  subs: SubCounts;
+  /** AMR-4: the sub-agent names, so the find box reaches them. */
+  subNames: string[];
   wait: LensWait | null;
   /** "Waiting for Ben": a run of ANOTHER member waits for that member's answer. */
   askedOf: string | null;
@@ -131,9 +197,29 @@ const STATE_OF_MAP = {
   waiting: "waiting",
   working: "working",
   quiet: "idle",
+  failed: "failed",
+  done: "done",
 } as const;
 
-const RANK: Record<LensState, number> = { you: 0, working: 1, waiting: 2, idle: 3 };
+const RANK = Object.fromEntries(LENS_STATES.map((s, i) => [s, i])) as Record<LensState, number>;
+
+/** The sub-agents of a session: the counts of the summary, else a count of its listed children. */
+function subsOf(s: MapSession, children: readonly MapChild[]): { subs: SubCounts; subNames: string[] } {
+  if (s.subagents) {
+    const { names, ...subs } = s.subagents;
+    return { subs, subNames: names };
+  }
+  const states = children.map((c) => lensOfChild(c.state));
+  return {
+    subs: {
+      total: children.length,
+      working: states.filter((x) => x === "working").length,
+      failed: states.filter((x) => x === "failed").length,
+      done: states.filter((x) => x === "done").length,
+    },
+    subNames: [...new Set(children.map((c) => c.name))],
+  };
+}
 
 export function compareSessions(a: LensSession, b: LensSession): number {
   return (
@@ -182,6 +268,7 @@ export function buildLensModel(
     const others = mapped === "you" && (!me || s.person.trim().toLowerCase() !== me);
     const state: LensState = others ? "waiting" : mapped;
     const asked = runs.find((r) => r.state === "awaiting" && questions.has(r.run_id));
+    const children = runs.flatMap((r) => childrenOf(map, r.run_id));
     return {
       id: s.id,
       person: s.person,
@@ -196,7 +283,8 @@ export function buildLensModel(
       runCount: s.run_count,
       quietCount: s.quiet_count,
       runs,
-      children: runs.flatMap((r) => childrenOf(map, r.run_id)),
+      children,
+      ...subsOf(s, children),
       // The awaiting state is the fact that names the wait of another member.
       wait: others ? { on: "member", until: null } : state === "waiting" ? waitOf(runs) : null,
       askedOf: others
@@ -272,7 +360,7 @@ export function personSessions(person: LensPerson): LensSession[] {
 export type LensCounts = Record<LensState, number>;
 
 export function countStates(sessions: readonly LensSession[]): LensCounts {
-  const counts: LensCounts = { you: 0, working: 0, waiting: 0, idle: 0 };
+  const counts: LensCounts = { you: 0, failed: 0, working: 0, waiting: 0, idle: 0, done: 0 };
   for (const s of sessions) counts[s.state] += 1;
   return counts;
 }
@@ -288,8 +376,8 @@ export interface LensFilters {
   find: string;
 }
 
-/** Idle starts folded (`agent_coordination.md` §3.12.2). */
-export const DEFAULT_STATES: readonly LensState[] = ["you", "working", "waiting"];
+/** Idle starts folded (`agent_coordination.md` §3.12.2). Done starts folded too. */
+export const DEFAULT_STATES: readonly LensState[] = ["you", "failed", "working", "waiting"];
 
 export function findText(s: LensSession, personName: string): string {
   return [
@@ -299,6 +387,7 @@ export function findText(s: LensSession, personName: string): string {
     s.client,
     s.host ?? "",
     s.model ?? "",
+    ...s.subNames,
     ...s.runs.flatMap((r) => [r.title, r.task_number === null ? "" : `#${r.task_number}`]),
   ]
     .join(" ")
@@ -334,10 +423,11 @@ export function splitSessions(
   return { shown, folded };
 }
 
-/** "3 idle sessions", or "2 hidden sessions" for a fold of other states. */
+/** "3 idle sessions", "4 idle or done sessions", or "2 hidden sessions" for a fold of other states. */
 export function foldWord(folded: readonly LensSession[]): string {
   const noun = folded.length === 1 ? "session" : "sessions";
-  const kind = folded.every((s) => s.state === "idle") ? "idle" : "hidden";
+  const only = (...states: LensState[]) => folded.every((s) => states.includes(s.state));
+  const kind = only("idle") ? "idle" : only("done") ? "done" : only("idle", "done") ? "idle or done" : "hidden";
   return `${folded.length} ${kind} ${noun}`;
 }
 
@@ -363,14 +453,21 @@ export function machineWord(s: Pick<LensSession, "host">): string {
 
 /** "3 need you", "2 working": the counts of a person or an orchestrator, in words. */
 export function countWords(counts: LensCounts): Array<{ state: LensState; text: string }> {
-  const words: Record<LensState, string> = { you: "need you", working: "working", waiting: "waiting", idle: "idle" };
+  const words: Record<LensState, string> = {
+    you: "need you",
+    failed: "failed",
+    working: "working",
+    waiting: "waiting",
+    idle: "idle",
+    done: "done",
+  };
   return LENS_STATES.filter((s) => counts[s] > 0).map((s) => ({
     state: s,
     text: s === "you" && counts[s] === 1 ? "1 needs you" : `${counts[s]} ${words[s]}`,
   }));
 }
 
-/** How many sessions of a list are not idle. */
+/** How many sessions of a list are not idle and not done. */
 export function activeCount(sessions: readonly LensSession[]): number {
-  return sessions.filter((s) => s.state !== "idle").length;
+  return sessions.filter((s) => s.state !== "idle" && s.state !== "done").length;
 }

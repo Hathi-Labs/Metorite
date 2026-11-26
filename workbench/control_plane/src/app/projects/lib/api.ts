@@ -3498,10 +3498,22 @@ export const agentsOverviewApi = {
   },
 };
 
+/** The options of one map read. */
+export interface AgentMapQuery {
+  showQuiet?: boolean;
+  projectId?: string;
+  /** AMR-4: one lead run for each session and a count of its sub-agents. */
+  summary?: boolean;
+  /** AMR-4: the runs and the sub-agents of one session node. */
+  session?: string;
+}
+
 /** The query string of one map read. `project_id` is present only for a project. */
-export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } = {}): string {
+export function agentMapQuery(opts: AgentMapQuery = {}): string {
   let query = "shape=map";
   if (opts.projectId) query += `&project_id=${encodeURIComponent(opts.projectId)}`;
+  if (opts.session) return `${query}&session=${encodeURIComponent(opts.session)}`;
+  if (opts.summary) return `${query}&detail=summary`;
   if (opts.showQuiet) query += "&show_quiet=true";
   return query;
 }
@@ -3511,7 +3523,7 @@ export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } 
  * `null` means the map is dark for this member (404, 401 or 403).
  */
 export const agentMapApi = {
-  read: async (opts: { showQuiet?: boolean; projectId?: string } = {}): Promise<AgentMap | null> => {
+  read: async (opts: AgentMapQuery = {}): Promise<AgentMap | null> => {
     try {
       // SW-112: a project id scopes the map to that project's subtree. Without it the map is the fleet.
       const query = agentMapQuery(opts);

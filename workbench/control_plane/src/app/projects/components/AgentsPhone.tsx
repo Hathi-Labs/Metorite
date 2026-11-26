@@ -1,12 +1,14 @@
 "use client";
 
 /**
- * The Agents view on a phone (WS-MCP AMR-3, `agent_coordination.md` §5.12).
+ * The Agents view on a phone (WS-MCP AMR-3 and AMR-4, `agent_coordination.md`
+ * §3.12.8 and §3.12.9).
  *
- * Reading this as: one level on each screen. First three counts, then the
- * questions that wait on the member, oldest first, then the people. A person
- * opens their orchestrators, and an orchestrator opens its sessions. The graph
- * never draws on a phone.
+ * Reading this as: one level on each screen. First a find box, four counts, one
+ * question at a time and the people with their squares. A person opens their
+ * orchestrators. An orchestrator opens its sessions by state, ten at a time,
+ * with the idle and done ones as rows that open. The graph never draws on a
+ * phone.
  *
  * ⚠️ A question is answered through the one list of agent questions
  * (`QuestionsView`, the card `AgentQuestionCard`). This view adds no answer
@@ -17,34 +19,39 @@ import { useState } from "react";
 import Icon from "@/components/Icon";
 import { PersonAvatar } from "@/components/room/Identity";
 import Button from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
 
 import {
+  type LensCounts,
   type LensModel,
-  type LensPerson,
   type LensSession,
   type LensState,
-  activeCount,
-  compareSessions,
+  LENS_STATES,
   countStates,
-  foldWord,
   lensIcon,
   lensWord,
   machineWord,
+  matchesFind,
   membersOf,
-  personSessions,
 } from "../lib/agentLenses";
-import { NO_ORCHESTRATOR } from "./AgentBoardList";
-import { CountLine, FoldRow, SessionCard, pressKeys } from "./AgentSessionCard";
+import { PHONE_MORE, PHONE_PAGE, allSessionsOf, attention, rankSessions, subTotals } from "../lib/agentScale";
+import { NO_MATCH_COPY, NO_ORCHESTRATOR } from "./AgentBoardList";
+import { TileCounts } from "./AgentOverview";
+import { SessionCard, pressKeys } from "./AgentSessionCard";
+import { Squares, SubBar } from "./AgentSquares";
 import { QuestionsView } from "./QuestionsView";
 
 /** One level of the phone view. An empty path is the first screen. */
 export type PhoneStep =
-  | { kind: "state"; state: LensState }
+  | { kind: "state"; state: LensState; key?: string; person?: string }
   | { kind: "person"; person: string }
   | { kind: "group"; person: string; key: string };
 
-/** How many questions the first screen draws before "Show all". */
-export const PHONE_QUESTIONS = 3;
+/** The counts of the first screen, in order. */
+export const PHONE_TILES: readonly LensState[] = ["you", "failed", "working", "waiting"];
+/** The squares of one row. */
+const ROW_SQUARES = 60;
+export const PHONE_FIND_LABEL = "Find a session, task or subagent";
 
 export interface AgentsPhoneProps {
   model: LensModel;
@@ -60,30 +67,12 @@ export interface AgentsPhoneProps {
   /** An answer landed. The view reads the map again. */
   onAnswered?: () => void;
   initialPath?: PhoneStep[];
+  find?: string;
+  onFind?: (find: string) => void;
 }
 
-const DOT: Record<Exclude<LensState, "idle">, string> = {
-  you: "bg-warning",
-  working: "bg-primary",
-  waiting: "bg-muted-foreground/60",
-};
-const DOTS_EACH = 6;
-
-/** One dot for each session that is not idle, at most six of a state. */
-function Dots({ sessions }: { sessions: readonly LensSession[] }) {
-  const counts = countStates(sessions);
-  return (
-    <span aria-hidden className="ml-auto flex shrink-0 gap-0.5">
-      {(["you", "working", "waiting"] as const).flatMap((state) =>
-        Array.from({ length: Math.min(counts[state], DOTS_EACH) }, (_, i) => (
-          <i key={`${state}${i}`} className={`size-1.5 rounded-full ${DOT[state]}`} />
-        )),
-      )}
-    </span>
-  );
-}
-
-function Row({ onOpen, label, children }: { onOpen: () => void; label: string; children: React.ReactNode }) {
+/** A row that opens a level: its head, then its squares. */
+function Row({ onOpen, label, head, children }: { onOpen: () => void; label: string; head: React.ReactNode; children?: React.ReactNode }) {
   return (
     <li>
       <div
@@ -93,79 +82,102 @@ function Row({ onOpen, label, children }: { onOpen: () => void; label: string; c
         onClick={onOpen}
         onKeyDown={pressKeys(onOpen)}
         data-agent-phone-row=""
-        className="flex min-h-14 min-w-0 cursor-pointer items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 shadow-sm"
+        className="flex min-h-14 min-w-0 cursor-pointer flex-col justify-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 shadow-sm"
       >
+        <span className="flex min-w-0 items-center gap-2.5">
+          {head}
+          <Icon name="ChevronRight" size={15} className="ml-auto shrink-0 text-muted-foreground" aria-hidden />
+        </span>
         {children}
-        <Icon name="ChevronRight" size={15} className="shrink-0 text-muted-foreground" aria-hidden />
       </div>
     </li>
   );
 }
 
+const countLabel = (counts: LensCounts): string =>
+  LENS_STATES.filter((s) => counts[s] > 0)
+    .map((s) => `${counts[s]} ${lensWord(s).toLowerCase()}`)
+    .join(", ");
+
 export function AgentsPhone(props: AgentsPhoneProps) {
-  const { model, nowMs, nameOf, onOpenSession } = props;
+  const { model, nowMs, nameOf, onOpenSession, find = "" } = props;
   const [path, setPath] = useState<PhoneStep[]>(props.initialPath ?? []);
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  /** How many cards a list shows, by its key. */
+  const [pages, setPages] = useState<Record<string, number>>({});
   const step = path.at(-1) ?? null;
   const go = (next: PhoneStep) => setPath((p) => [...p, next]);
   const back = () => setPath((p) => p.slice(0, -1));
-  const counts = countStates(model.sessions);
+  const match = (list: readonly LensSession[]) => list.filter((s) => matchesFind(s, find, nameOf(s.person)));
+  const all = match(model.sessions);
+  const counts = countStates(all);
 
-  const cards = (sessions: readonly LensSession[]) =>
-    sessions.map((s) => (
-      <li key={s.id} className="h-16">
-        <SessionCard session={s} nowMs={nowMs} onOpen={() => onOpenSession(s)} />
-      </li>
-    ));
-  /** The sessions that are not idle, then one line for the idle ones. */
-  const withIdleFold = (sessions: readonly LensSession[], key: string) => {
-    const open = opened.has(key);
-    const shown = sessions.filter((s) => open || s.state !== "idle");
-    const folded = sessions.filter((s) => !open && s.state === "idle");
+  /** Ten cards, then "Show more". */
+  const paged = (sessions: readonly LensSession[], key: string) => {
+    const shown = pages[key] ?? PHONE_PAGE;
+    const rest = sessions.length - shown;
     return (
       <ul className="flex flex-col gap-2">
-        {cards(shown)}
-        {folded.length > 0 ? (
-          <li key="fold">
-            <FoldRow word={foldWord(folded)} onShow={() => setOpened((prev) => new Set(prev).add(key))} />
+        {sessions.slice(0, shown).map((s) => (
+          <li key={s.id} className="h-16">
+            <SessionCard session={s} nowMs={nowMs} onOpen={() => onOpenSession(s)} />
+          </li>
+        ))}
+        {rest > 0 ? (
+          <li>
+            <Button
+              variant="secondary"
+              layout="flex h-10 w-full items-center justify-center rounded-lg"
+              data-agent-phone-more=""
+              onClick={() => setPages((p) => ({ ...p, [key]: shown + PHONE_MORE }))}
+            >
+              Show {Math.min(PHONE_MORE, rest)} more{rest > PHONE_MORE ? ` of ${rest}` : ""}
+            </Button>
           </li>
         ) : null}
       </ul>
     );
   };
 
+  const person = step && "person" in step ? model.people.find((p) => p.person === step.person) : undefined;
+  const group = step && "key" in step ? person?.groups.find((g) => g.key === step.key) : undefined;
+  const groupName = (g: { orch: LensSession | null }) => g.orch?.name ?? NO_ORCHESTRATOR;
+
   const stepWord = (s: PhoneStep | undefined): string => {
     if (!s) return "Agents";
     if (s.kind === "state") return lensWord(s.state);
-    return nameOf(s.person);
+    if (s.kind === "person") return nameOf(s.person);
+    const found = model.people.find((p) => p.person === s.person)?.groups.find((g) => g.key === s.key);
+    return found ? groupName(found) : nameOf(s.person);
   };
 
-  const person: LensPerson | undefined =
-    step && step.kind !== "state" ? model.people.find((p) => p.person === step.person) : undefined;
-  const group = step?.kind === "group" ? person?.groups.find((g) => g.key === step.key) : undefined;
-
+  const sessionsWord = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
   let title = "Agents";
   let sub = "";
   let body: React.ReactNode;
   if (!step) {
     body = (
       <>
-        <div className="grid grid-cols-3 gap-2">
-          {(["you", "working", "waiting"] as const).map((state) => (
+        <Input
+          icon="Search"
+          value={find}
+          onChange={(e) => props.onFind?.(e.target.value)}
+          placeholder={PHONE_FIND_LABEL}
+          aria-label={PHONE_FIND_LABEL}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          {PHONE_TILES.map((state) => (
             <Button
               key={state}
               variant="secondary"
               size="none"
               data-agent-phone-tile={state}
               aria-label={`${counts[state]} ${lensWord(state)}`}
-              onClick={() => {
-                if (state === "you" && props.questionsOn) {
-                  document.querySelector("[data-agent-phone-questions]")?.scrollIntoView({ block: "start" });
-                } else go({ kind: "state", state });
-              }}
+              onClick={() => go({ kind: "state", state })}
               layout="flex min-h-16 min-w-0 flex-col items-start justify-center gap-0.5 rounded-lg bg-card px-3 py-2"
             >
-              <span className={`text-xl font-bold leading-tight ${state === "you" ? "text-warning" : "text-foreground"}`}>
+              <span
+                className={`text-xl font-bold leading-tight ${state === "you" ? "text-warning" : state === "failed" ? "text-destructive" : "text-foreground"}`}
+              >
                 {counts[state]}
               </span>
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -175,14 +187,24 @@ export function AgentsPhone(props: AgentsPhoneProps) {
             </Button>
           ))}
         </div>
-        {counts.idle > 0 ? (
-          <div>
-            <Button variant="text" size="sm" icon={lensIcon("idle")} onClick={() => go({ kind: "state", state: "idle" })}>
-              {counts.idle === 1 ? "1 idle session" : `${counts.idle} idle sessions`}
-            </Button>
+        {counts.idle + counts.done > 0 ? (
+          <div className="flex gap-3">
+            {(["idle", "done"] as const).map((state) =>
+              counts[state] > 0 ? (
+                <Button key={state} variant="text" size="sm" icon={lensIcon(state)} onClick={() => go({ kind: "state", state })}>
+                  {counts[state]} {lensWord(state).toLowerCase()}
+                </Button>
+              ) : null,
+            )}
           </div>
         ) : null}
-        {props.questionsOn ? (
+        {find.trim() ? (
+          <section aria-label="Matches" className="flex flex-col gap-2">
+            <h3 className="text-xs font-medium text-muted-foreground">{sessionsWord(all.length)} found</h3>
+            {all.length > 0 ? paged(rankSessions(all), `find:${find}`) : <p className="text-sm text-muted-foreground">{NO_MATCH_COPY}</p>}
+          </section>
+        ) : null}
+        {props.questionsOn && !find.trim() ? (
           <section aria-label="Questions for you" data-agent-phone-questions="" className="flex flex-col gap-2">
             <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
               <Icon name={lensIcon("you")} size={15} className="text-warning" aria-hidden />
@@ -191,9 +213,9 @@ export function AgentsPhone(props: AgentsPhoneProps) {
             </h3>
             <QuestionsView
               embedded
+              pager
               projects={[]}
               fixedProject={props.projectId}
-              initialShown={PHONE_QUESTIONS}
               personLabels={props.personLabels}
               onOpenTask={props.onOpenTask}
               onOpenProject={props.onOpenProject}
@@ -208,19 +230,25 @@ export function AgentsPhone(props: AgentsPhoneProps) {
           </h3>
           <ul className="flex flex-col gap-2">
             {model.people.map((p) => {
-              const all = personSessions(p);
-              const c = countStates(all);
+              const own = rankSessions(match(allSessionsOf(model, p.person)));
+              if (own.length === 0) return null;
+              const c = countStates(own);
               return (
-                <Row key={p.person} label={`${nameOf(p.person)}. ${activeCount(all)} active.`} onOpen={() => go({ kind: "person", person: p.person })}>
-                  <PersonAvatar email={p.person} displayName={nameOf(p.person)} size={32} />
-                  <span className="flex min-w-0 flex-col">
-                    <span className="truncate text-sm font-semibold text-foreground">{nameOf(p.person)}</span>
-                    <span className="flex gap-2 text-[11px] text-muted-foreground">
-                      <span>{activeCount(all)} active</span>
-                      {c.you > 0 ? <span className="text-warning">{c.you} need you</span> : null}
-                    </span>
-                  </span>
-                  <Dots sessions={all} />
+                <Row
+                  key={p.person}
+                  label={`${nameOf(p.person)}. ${countLabel(c)}.`}
+                  onOpen={() => go({ kind: "person", person: p.person })}
+                  head={
+                    <>
+                      <PersonAvatar email={p.person} displayName={nameOf(p.person)} size={32} />
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate text-sm font-semibold text-foreground">{nameOf(p.person)}</span>
+                        <TileCounts counts={c} />
+                      </span>
+                    </>
+                  }
+                >
+                  <Squares sessions={own} nowMs={nowMs} max={ROW_SQUARES} />
                 </Row>
               );
             })}
@@ -229,50 +257,100 @@ export function AgentsPhone(props: AgentsPhoneProps) {
       </>
     );
   } else if (step.kind === "state") {
-    const list = model.sessions.filter((s) => s.state === step.state).sort(compareSessions);
-    title = lensWord(step.state);
-    sub = list.length === 1 ? "1 session" : `${list.length} sessions`;
-    body = <ul className="flex flex-col gap-2">{cards(list)}</ul>;
+    const base = group ? membersOf(group) : model.sessions;
+    const list = rankSessions(match(base).filter((s) => s.state === step.state));
+    title = group ? `${lensWord(step.state)} · ${groupName(group)}` : lensWord(step.state);
+    sub = sessionsWord(list.length);
+    body = paged(list, `${step.key ?? ""}:${step.state}`);
   } else if (step.kind === "person" && person) {
-    const own = person.groups.find((g) => !g.orch);
     title = nameOf(person.person);
-    sub = `${activeCount(personSessions(person))} active`;
+    sub = `${person.groups.filter((g) => g.orch).length} orchestrators`;
+    const rows = person.groups
+      .map((g) => ({ g, sessions: rankSessions(match(membersOf(g))) }))
+      .filter((r) => r.sessions.length > 0)
+      // The orchestrator that wants the most attention comes first, as on the PC.
+      .sort((a, b) => attention(countStates(b.sessions)) - attention(countStates(a.sessions)));
     body = (
-      <>
-        <ul className="flex flex-col gap-2">
-          {person.groups.map((g) =>
-            g.orch ? (
-              <Row key={g.key} label={`Orchestrator ${g.orch.name}`} onOpen={() => go({ kind: "group", person: person.person, key: g.key })}>
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-                  <Icon name="Bot" size={16} aria-hidden />
-                </span>
-                <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm font-semibold text-foreground">{g.orch.name}</span>
-                  <CountLine counts={countStates(membersOf(g))} />
-                </span>
-                <Dots sessions={membersOf(g)} />
-              </Row>
-            ) : null,
-          )}
-        </ul>
-        {own ? (
-          <section aria-label={NO_ORCHESTRATOR} className="flex flex-col gap-2">
-            <h3 className="text-xs font-medium text-muted-foreground">{NO_ORCHESTRATOR}</h3>
-            {withIdleFold(own.sessions, own.key)}
-          </section>
-        ) : null}
-      </>
+      <ul className="flex flex-col gap-2">
+        {rows.map(({ g, sessions }) => {
+          const c = countStates(sessions);
+          return (
+            <Row
+              key={g.key}
+              label={`${g.orch ? `Orchestrator ${g.orch.name}` : NO_ORCHESTRATOR}. ${countLabel(c)}.`}
+              onOpen={() => go({ kind: "group", person: person.person, key: g.key })}
+              head={
+                <>
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+                    <Icon name="Bot" size={16} aria-hidden />
+                  </span>
+                  <span className="flex min-w-0 flex-col">
+                    <span className="truncate text-sm font-semibold text-foreground">{groupName(g)}</span>
+                    <TileCounts counts={c} />
+                  </span>
+                </>
+              }
+            >
+              <Squares sessions={sessions} nowMs={nowMs} max={ROW_SQUARES} />
+            </Row>
+          );
+        })}
+      </ul>
     );
-  } else if (step.kind === "group" && group?.orch) {
-    title = group.orch.name;
-    sub = `Orchestrator · ${machineWord(group.orch)}`;
+  } else if (step.kind === "group" && group) {
+    const members = rankSessions(match(membersOf(group)));
+    const orch = group.orch;
+    const rest = members.filter((s) => s.id !== orch?.id);
+    title = groupName(group);
+    sub = orch ? `Orchestrator · ${machineWord(orch)}` : sessionsWord(members.length);
     body = (
       <>
-        <ul>{cards([group.orch])}</ul>
-        <section aria-label="Sessions it dispatched" className="flex flex-col gap-2">
-          <h3 className="text-xs font-medium text-muted-foreground">Sessions it dispatched</h3>
-          {withIdleFold(group.sessions, group.key)}
-        </section>
+        <div className="flex flex-col gap-1.5">
+          <TileCounts counts={countStates(members)} />
+          <Squares sessions={members} nowMs={nowMs} />
+          <SubBar subs={subTotals(members)} />
+        </div>
+        {orch && members.some((s) => s.id === orch.id) ? (
+          <ul>
+            <li className="h-16">
+              <SessionCard session={orch} nowMs={nowMs} onOpen={() => onOpenSession(orch)} />
+            </li>
+          </ul>
+        ) : null}
+        {PHONE_TILES.map((state) => {
+          const list = rest.filter((s) => s.state === state);
+          if (list.length === 0) return null;
+          return (
+            <section key={state} aria-label={lensWord(state)} className="flex flex-col gap-2" data-agent-phone-section={state}>
+              <h3 className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <Icon name={lensIcon(state)} size={12} aria-hidden />
+                {lensWord(state)} · {list.length}
+              </h3>
+              {paged(list, `${group.key}:${state}`)}
+            </section>
+          );
+        })}
+        <ul className="flex flex-col gap-2">
+          {(["idle", "done"] as const).map((state) => {
+            const n = rest.filter((s) => s.state === state).length;
+            if (n === 0) return null;
+            return (
+              <Row
+                key={state}
+                label={`${n} ${lensWord(state).toLowerCase()}`}
+                onOpen={() => go({ kind: "state", state, key: group.key, person: step.person })}
+                head={
+                  <>
+                    <Icon name={lensIcon(state)} size={15} className="shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="text-sm text-foreground">
+                      {n} {lensWord(state).toLowerCase()}
+                    </span>
+                  </>
+                }
+              />
+            );
+          })}
+        </ul>
       </>
     );
   } else {

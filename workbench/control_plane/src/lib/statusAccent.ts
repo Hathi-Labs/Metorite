@@ -545,7 +545,30 @@ export const AGENT_STATES: Record<string, AgentStateVisual> = {
   stale: { hue: "gray", muted: true, icon: "CirclePause" },
   stopping: { hue: "gray", muted: true, icon: "CircleStop" },
   failed: { hue: "red", icon: "CircleAlert" },
+  // AMR-4: a session whose last run completed, in the Agents view.
+  completed: { hue: "green", icon: "CircleCheck" },
 };
+
+/**
+ * AMR-4: the fill of the small mark of an agent state, the square of a session
+ * and the part of a sub-agent bar (`agent_coordination.md` §3.12.9). Tokens
+ * only. The Agents view draws it beside the word of the state, never in place
+ * of it: each mark carries a name.
+ */
+export const AGENT_MARKS: Record<string, string> = {
+  awaiting: "bg-warning",
+  failed: "bg-destructive",
+  working: "bg-primary",
+  waiting: "bg-primary/40",
+  stale: "bg-muted-foreground/35",
+  completed: "bg-success/50",
+};
+
+/** The fill of the mark of a state. An unknown state reads as idle. */
+export function agentMarkFill(value?: string | null): string {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(AGENT_MARKS, key) && AGENT_MARKS[key]) || AGENT_MARKS.stale;
+}
 
 /** How an agent state draws, or `null` when the value is not one. */
 export function agentStateVisual(value?: string | null): AgentStateVisual | null {

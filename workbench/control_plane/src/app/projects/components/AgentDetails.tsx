@@ -7,6 +7,9 @@
  * phone. A session shows its facts, its tasks and the run panel of the picked
  * task (`AgentRunPanel`). Every act on an agent is a control of that panel:
  * Open session, the answer, the reply and Stop. This view adds none.
+ *
+ * AMR-4 (§3.12.9): the runs and the sub-agents of the open session come from
+ * its own read, and the sub-agents list by state with the done ones folded.
  */
 import { useEffect, useState } from "react";
 
@@ -36,11 +39,16 @@ import {
   lensWord,
   personSessions,
   sessionLine,
+  subRows,
 } from "../lib/agentLenses";
 import { MODEL_ICON, NOT_REPORTED, hostKindWord, hostSourceSentence } from "../lib/agentPlace";
 import { waitingText } from "../lib/agentRuns";
+import { WINDOW_ABOVE } from "../lib/agentScale";
+import type { SessionRead } from "../lib/agentSessionReads";
+import { useWindowedList } from "../lib/windowedList";
 import { AgentRunPanel } from "./AgentRunPanel";
 import { STATE_PILL, StatePill, pressKeys } from "./AgentSessionCard";
+import { AgentSubagents } from "./AgentSubagents";
 
 /** What the dock or the sheet shows. */
 export type LensSelection =
@@ -83,7 +91,13 @@ export interface DetailsProps {
   personLabels?: ReadonlyMap<string, string>;
   nameOf: (email: string) => string;
   nowMs: number;
+  /** AMR-4: the read of the selected session. Absent: only the map rows draw. */
+  read?: SessionRead;
+  onRetryRead?: () => void;
 }
+
+/** The height of one session row, in rem. A long list sums it. */
+const SESSION_ROW_REM = 2.75;
 
 function Fact({ term, children }: { term: string; children: React.ReactNode }) {
   return (
@@ -103,19 +117,25 @@ function SessionList({
   nowMs: number;
   onSelect: DetailsProps["onSelect"];
 }) {
-  return (
-    <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-      {sessions.map((s) => {
+  const long = sessions.length > WINDOW_ABOVE;
+  const { attach, start, end, before, after } = useWindowedList(long ? sessions.map(() => SESSION_ROW_REM * 16) : []);
+  const drawn = long ? sessions.slice(start, end) : sessions;
+  const list = (
+    <ul
+      className={`divide-y divide-border ${long ? "" : "overflow-hidden rounded-lg border border-border"}`}
+      style={long ? { paddingTop: `${before / 16}rem`, paddingBottom: `${after / 16}rem` } : undefined}
+    >
+      {drawn.map((s) => {
         const open = () => onSelect({ kind: "session", id: s.id });
         return (
-          <li key={s.id}>
+          <li key={s.id} style={{ height: `${SESSION_ROW_REM}rem` }}>
             <div
               role="button"
               tabIndex={0}
               onClick={open}
               onKeyDown={pressKeys(open)}
               data-agent-detail-row={s.state}
-              className="flex min-w-0 cursor-pointer items-center gap-2 px-2.5 py-1.5 hover:bg-secondary"
+              className="flex h-full min-w-0 cursor-pointer items-center gap-2 px-2.5 hover:bg-secondary"
             >
               <Icon
                 name={lensIcon(s.state)}
@@ -134,6 +154,12 @@ function SessionList({
         );
       })}
     </ul>
+  );
+  if (!long) return list;
+  return (
+    <div ref={attach} className="max-h-96 overflow-y-auto rounded-lg border border-border">
+      {list}
+    </div>
   );
 }
 
@@ -182,7 +208,15 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
   // The panel opens on the run that asks. The first choice stays, so a re-read
   // never swaps the panel (and a typed reply) under the member.
   const [picked, setPicked] = useState<string | null>(() => firstRun(session)?.run_id ?? null);
-  const run = session.runs.find((r) => r.run_id === picked) ?? firstRun(session);
+  const read = props.read;
+  // AMR-4: the summary map holds one lead run. The read of the session holds each.
+  const runs =
+    read?.kind === "ready" && read.runs.length > 0
+      ? [...read.runs].sort((a, b) => Number(a.quiet) - Number(b.quiet) || (a.age ?? 0) - (b.age ?? 0))
+      : session.runs;
+  const run = runs.find((r) => r.run_id === picked) ?? firstRun({ runs });
+  const subs =
+    read?.kind === "ready" ? subRows(read.children) : session.children.length > 0 ? subRows(session.children) : null;
   const names = (ids: readonly string[]) => ids.flatMap((id) => model.byId.get(id) ?? []);
   const place = sessionPlace({
     host: session.host,
@@ -222,11 +256,13 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
         ) : null}
         {session.quietCount > 0 ? <Fact term="Quiet runs">{session.quietCount}</Fact> : null}
       </dl>
-      {session.runs.length > 0 ? (
+      {runs.length > 0 ? (
         <section aria-label="Tasks" className="flex flex-col gap-1">
-          <h4 className="text-[11px] font-medium text-muted-foreground">{session.runs.length === 1 ? "Task" : "Tasks"}</h4>
-          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border">
-            {session.runs.map((r) => (
+          <h4 className="text-[11px] font-medium text-muted-foreground">{runs.length === 1 ? "Task" : "Tasks"}</h4>
+          <ul
+            className={`divide-y divide-border rounded-lg border border-border ${runs.length > WINDOW_ABOVE ? "max-h-96 overflow-y-auto" : "overflow-hidden"}`}
+          >
+            {runs.map((r) => (
               <li key={r.run_id} className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
                 <Button
                   variant="text"
@@ -255,20 +291,13 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
         </section>
       ) : null}
       {run ? <TaskRunPanel taskId={run.task_id} personLabels={personLabels} /> : null}
-      {session.children.length > 0 ? (
-        <section aria-label="Sub-agents" className="flex flex-col gap-1">
-          <h4 className="text-[11px] font-medium text-muted-foreground">Sub-agents</h4>
-          <ul className="flex flex-col gap-1">
-            {session.children.map((child) => (
-              <li key={child.child_id} data-agent-detail-child="" className="flex min-w-0 items-center gap-2 text-xs">
-                <span className="min-w-0 truncate font-medium text-foreground">{child.name}</span>
-                <span className="shrink-0 text-muted-foreground">{lensRun({ state: child.state, quiet: false }).word}</span>
-                {child.model ? <span className="min-w-0 truncate text-muted-foreground">{child.model}</span> : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <AgentSubagents
+        counts={session.subs}
+        rows={subs}
+        failed={read?.kind === "error"}
+        onRetry={props.onRetryRead}
+        nowMs={nowMs}
+      />
       {lanes.length > 0 ? (
         <section aria-label={DISPATCHED_LABEL} className="flex flex-col gap-1">
           <h4 className="text-[11px] font-medium text-muted-foreground">Sessions it dispatched</h4>

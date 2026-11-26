@@ -1675,6 +1675,8 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "project_id": _AGENT_OVERVIEW_REASON,
         "shape": _AGENT_OVERVIEW_REASON,
         "show_quiet": _AGENT_OVERVIEW_REASON,
+        "detail": _AGENT_OVERVIEW_REASON,
+        "session": _AGENT_OVERVIEW_REASON,
     },
     # WS-MCP SW-23: the report of a Check. An outside agent sends each field
     # over MCP (`report_check`). The chat has no report tool.
