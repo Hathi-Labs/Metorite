@@ -251,7 +251,7 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 | LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark **Status: BUILT, dark (2026-11-15, PR 2354).** LY-2 adds the first renderer (the table workspace). Nothing writes `layout` before LY-8. |
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
 | LY-2 | 3315 | Table workspace: the layout, the shared states, the count line, and a table that keeps 40rem and scrolls in its own strip | The layout and states of the L2 bar. The column hide and the bulk bar are in LY-2b (task 3356), by the LY-2 audit on task 3315 (2026-11-15). The active-filter chips, the phone card list and the tablet panel overlay have no slice yet. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2363).** |
-| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
+| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2364): the key facts in the header, the Files count and the not-found sentence.** Left: the main action in the header, the cap of 4 related lists and their counts, the Activity tab (D22), the side panel and the draft keep. |
 | LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. |
 | LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
