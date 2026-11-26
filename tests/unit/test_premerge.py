@@ -488,6 +488,42 @@ def test_renumber_gives_a_second_pr_in_the_same_pass_the_next_number(repo):
     assert (repo / "infra/postgres/319_two.sql").is_file()
 
 
+def test_renumber_keeps_the_order_of_the_branchs_own_migrations(repo):
+    """Review P1: 316_a and 317_b on the branch, main reached 316, the ledger top
+    is 320. Both move, in order: a to 321, b to 322. b must not stay at 317."""
+    book = _ledger_cmd(repo.parent)
+    (repo.parent / "ledger.tsv").write_text("320\tother\t1\n", encoding="utf-8")
+    _commit(repo, "infra/postgres/316_a_create.sql")
+    _commit(repo, "infra/postgres/317_b_alter.sql")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    res = _run(repo, "--renumber", PREMERGE_BOOK_CMD=book, PREMERGE_PR="5")
+    assert res.returncode == 3, res.stdout + res.stderr
+    names = sorted(p.name for p in (repo / "infra/postgres").glob("*.sql"))
+    assert names == ["315_base.sql", "321_a_create.sql", "322_b_alter.sql"]
+
+
+def test_renumber_when_the_ledger_fails_says_why_and_leaves_the_tree_clean(repo):
+    _commit(repo, "infra/postgres/316_feat.sql")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    head = _git(repo, "rev-parse", "HEAD")
+    res = _run(repo, "--renumber", PREMERGE_BOOK_CMD="echo 'flock timeout' >&2; exit 1")
+    assert res.returncode == 1
+    assert "booked no number" in res.stderr and "flock timeout" in res.stderr
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_renumber_on_a_detached_head_commits_nothing(repo):
+    _commit(repo, "infra/postgres/316_feat.sql")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    _git(repo, "checkout", "-q", "--detach")
+    head = _git(repo, "rev-parse", "HEAD")
+    res = _run(repo, "--renumber", PREMERGE_BOOK_CMD=_ledger_cmd(repo.parent))
+    assert res.returncode == 1 and "detached" in res.stderr
+    assert _git(repo, "rev-parse", "HEAD") == head
+    assert not (repo.parent / "ledger.tsv").exists(), "a number was booked for nothing"
+
+
 def test_renumber_without_a_ledger_fails_and_changes_nothing(repo):
     _commit(repo, "infra/postgres/316_feat.sql")
     _advance_main(repo, "infra/postgres/316_other.sql")

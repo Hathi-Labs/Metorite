@@ -152,7 +152,8 @@ d. **The gate**, in the pull request's worktree. When the lane left none, make
      the output on the task, release it, and go on. Do not resolve
      conflicts yourself.
 e. **Merge.** Right before the merge, run `git fetch origin main`. When `main`
-   moved since step d, run `premerge.sh` again. Then run
+   moved since step d, run `premerge.sh --renumber` again. Exit 3 here is the
+   same as exit 3 of step d. Then run
    `gh pr merge <n> --squash`. Never pass `--admin` or `--auto`.
    - Check that `git log origin/main --oneline -5` shows the pull request. A
      `gh` error such as "unexpected EOF" can hide a merge that landed, so look

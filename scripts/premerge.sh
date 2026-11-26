@@ -161,10 +161,12 @@ main_max="$(git ls-tree --name-only "$BASE" infra/postgres/ \
   | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
 main_max="${main_max:-0}"
 low=()
+added=()
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   n="$(num "$f")"
   [ -n "$n" ] || continue
+  added+=("$n $f")
   [ "$n" -le "$main_max" ] && low+=("$n $f")
 done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
 renumbered=""
@@ -172,33 +174,51 @@ if [ "${#low[@]}" -gt 0 ] && [ "$renumber" = 0 ]; then
   set -- ${low[0]}
   fail "migration $(basename "$2") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1). Or run: bash scripts/premerge.sh --renumber"
 fi
-# CIV-MN (item 1 of lane-devx): the merge sets the number. Each low file, lowest
-# first, gets a number booked on the box ledger (reserve_migration.sh takes one
-# above main's top AND every booked number), so a second PR in the same pass
-# gets the next one. renumber_migration.py moves the file and rewrites every
-# reference to its file name. The result is ONE commit on the branch. This is
-# the only case where premerge.sh moves a ref. Fence: tests/unit/test_premerge.py
-# (test_renumber_*).
+# CIV-MN (item 1 of lane-devx): the merge sets the number. When any new file is
+# low, EVERY new file from the lowest low one up moves, in its old order, so
+# the branch's own migrations keep their order (R6). Each gets a number booked
+# on the box ledger (reserve_migration.sh takes one above main's top AND every
+# booked number), so a second PR in the same pass gets the next one. A booked
+# number at or below the branch's own top is skipped (a gap is harmless), so
+# no target can be a file that still waits to move. renumber_migration.py moves
+# the file and rewrites every reference to its file name. The result is ONE
+# commit on the branch, the only case where premerge.sh moves a ref. A failure
+# part way puts the tree back. Fence: tests/unit/test_premerge.py (test_renumber_*).
 if [ "${#low[@]}" -gt 0 ]; then
+  git symbolic-ref -q HEAD >/dev/null || fail "HEAD is detached. Check out the PR branch first."
   [ -f "$RENUMBER_PY" ] || fail "--renumber needs scripts/renumber_migration.py (PR 2813), and this checkout has none."
   book="${PREMERGE_BOOK_CMD:-$HOME/lanes/reserve_migration.sh}"
   [ -n "${PREMERGE_BOOK_CMD:-}" ] || [ -x "$book" ] \
     || fail "--renumber needs the box ledger ($book). Here there is none: run scripts/renumber_migration.sh <old> <new> by hand (R1)."
   r_lane="${PREMERGE_LANE:-premerge}"
   r_task="${PREMERGE_TASK:-pr-${pr_no:-unknown}}"
+  first_low="$(printf '%s\n' "${low[@]}" | sort -n | head -1 | cut -d' ' -f1)"
+  branch_top="$(printf '%s\n' "${added[@]}" | sort -n | tail -1 | cut -d' ' -f1)"
+  undo() { git reset -q --hard HEAD; fail "$@"; }
   while IFS= read -r item; do
     old_n="${item%% *}"; f="${item#* }"
-    new_n="$(bash -c "$book \"\$@\"" _ "$r_lane" "$r_task" "${pr_no:--}" 2>&1 | tail -1 | tr -d '\r')"
-    case "$new_n" in ''|*[!0-9]*) fail "the ledger booked no number for $(basename "$f"): $new_n" ;; esac
-    [ "$((10#$new_n))" -gt "$main_max" ] || fail "the ledger booked $new_n, which is not above main's $main_max (R1)."
-    out="$(python3 "$RENUMBER_PY" "$old_n" "$((10#$new_n))" --repo . --dir "$(dirname "$f")" --no-test 2>&1)" \
-      || fail "renumber of $(basename "$f") to $new_n failed: $(printf '%s' "$out" | tail -3)"
+    [ "$old_n" -ge "$first_low" ] || continue
+    new_n=""; tries=0
+    while [ -z "$new_n" ]; do
+      tries=$((tries + 1))
+      [ "$tries" -le 50 ] || undo "the ledger gave no number above this branch's top ($branch_top) in 50 tries."
+      got="$(bash -c "$book \"\$@\"" _ "$r_lane" "$r_task" "${pr_no:--}" 2>&1)" && rc=0 || rc=$?
+      got_n="$(printf '%s\n' "$got" | tail -1 | tr -d '\r')"
+      case "$rc:$got_n" in 0:[0-9]*) ;; *) undo "the ledger booked no number for $(basename "$f") (exit $rc): $(printf '%s' "$got" | tail -2 | tr '\n' ' ')" ;; esac
+      case "$got_n" in *[!0-9]*) undo "the ledger gave '$got_n', not a number." ;; esac
+      got_n=$((10#$got_n))
+      [ "$got_n" -gt "$main_max" ] || undo "the ledger booked $got_n, which is not above main's $main_max (R1)."
+      [ "$got_n" -gt "$branch_top" ] && new_n="$got_n"
+    done
+    out="$(python3 "$RENUMBER_PY" "$old_n" "$new_n" --repo . --dir "$(dirname "$f")" --no-test 2>&1)" \
+      || undo "renumber of $(basename "$f") to $new_n failed: $(printf '%s' "$out" | tail -3)"
     printf '%s\n' "$out" | sed 's/^/  /'
-    renumbered="$renumbered $old_n->$((10#$new_n))"
-  done < <(printf '%s\n' "${low[@]}" | sort -n)
+    renumbered="$renumbered $old_n->$new_n"
+    branch_top="$new_n"
+  done < <(printf '%s\n' "${added[@]}" | sort -n)
   git add -u
   git -c core.hooksPath=/dev/null commit -q -m "R1: renumber migration${renumbered} at merge (premerge --renumber, CIV-MN)" \
-    || fail "the renumber commit failed."
+    || undo "the renumber commit failed."
   say "RENUMBERED${renumbered} in commit $(git rev-parse --short HEAD) on $(git symbolic-ref -q --short HEAD)"
 fi
 
