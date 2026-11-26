@@ -100,7 +100,6 @@ from acb_common.settings import internal_auth_headers
 from acb_common.studio_manifest import (
     BLOCKS,
     LAYOUTS,
-    PRESET_REGIONS,
     MAX_CELLS_PER_PAGE,
     MAX_COLS,
     MAX_NAV_COUNTS,
@@ -110,6 +109,7 @@ from acb_common.studio_manifest import (
     MAX_TABS_PER_PAGE,
     NAV_ICONS,
     OBJECT_OPS,
+    PRESET_REGIONS,
     RECORD_OPS,
     RESERVED_BLOCKS,
     STUDIO_VERSION,

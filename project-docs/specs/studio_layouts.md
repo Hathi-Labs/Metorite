@@ -252,7 +252,7 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 | LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
 | LY-7 | 3320 | Dashboard | Tile states, caps, tile-to-list link. |
-| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. |
+| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352, PR 2381). |
 | LY-9 to LY-15 | 3322 | Calendar, list and detail, gallery, map, timeline, checklist, document and settings | One slice each, after its block. |
 
 ## 9. Owner decisions (2026-11-14, task 3312)
