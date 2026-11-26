@@ -95,9 +95,11 @@ def test_no_module_reads_the_setting_but_its_one_reader() -> None:
 class _Db:
     def __init__(self) -> None:
         self.statements: list[str] = []
+        self.params: list[Any] = []
 
     async def execute(self, statement: Any, params: Any = None) -> Any:
         self.statements.append(str(statement))
+        self.params.append(params)
 
         class _Result:
             def fetchone(self) -> tuple[int]:
@@ -140,6 +142,24 @@ async def test_with_the_flag_on_only_an_automated_upsert_holds(monkeypatch) -> N
         assert sql.count("held_m.received_at >") == 4, kwargs
         # The message id still moves, so the backfill does not ask again.
         assert "last_message_id = EXCLUDED.last_message_id," in sql
+
+
+async def test_an_automated_write_cannot_forge_the_mark(monkeypatch) -> None:
+    """The reason of a rule match is model text over the mail."""
+    _flag(monkeypatch, "*")
+    for kwargs, stored in (({"preserve_done": True}, "Auto-classified"),
+                           ({"guard": True}, "Auto-classified"),
+                           ({}, mark_done.MANUAL_DONE_REASON)):
+        db = _Db()
+        await replyzero._upsert_thread_status(
+            db, "a", "t", "DONE", "m", None, mark_done.MANUAL_DONE_REASON, **kwargs)
+        assert db.params[-1]["reason"] == stored, kwargs
+    # With the flag off, the write is the write of before.
+    _flag(monkeypatch, "")
+    db = _Db()
+    await replyzero._upsert_thread_status(
+        db, "a", "t", "DONE", "m", None, mark_done.MANUAL_DONE_REASON, guard=True)
+    assert db.params[-1]["reason"] == mark_done.MANUAL_DONE_REASON
 
 
 async def test_with_the_flag_off_the_hold_reads_nothing(monkeypatch) -> None:

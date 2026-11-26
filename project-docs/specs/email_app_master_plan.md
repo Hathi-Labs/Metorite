@@ -433,15 +433,15 @@ the app shows these surfaces:
 - "Mark done" in the bar of a selection.
 - The key `d` for the open mail. `e` stays Archive.
 - A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
-  act had "Follow-up".
+  act had "Follow-up". Ctrl+Z runs the same step, on the one undo stack of the app.
 
 **Accepted limits.** A message that arrives with a date before the anchor does not end
 the hold. When the flag goes off, a held row is a plain `DONE` row again.
 
 **Fences.** `tests/unit/test_email_mark_done.py` (the flag, and the statement with
 the flag off), `tests/unit/test_email_mark_done_r8.py` (the hold on a real database),
-`src/app/email/lib/markDone.test.ts` (the menu order, the key, the patch and the
-undo).
+`src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
+`src/app/email/components/markDoneMenu.test.ts` (the menu order).
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 

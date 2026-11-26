@@ -104,6 +104,8 @@ async def _upsert_thread_status(
             "ELSE EXCLUDED.status END")
     status_expr, at_expr, reason_expr, classified_expr = (
         mark_done.upsert_expressions(preserve_done or guard, status_expr))
+    if preserve_done or guard:
+        reason = mark_done.automated_reason(reason)
     params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
               "mat": msg_at, "reason": reason}
     if guard:

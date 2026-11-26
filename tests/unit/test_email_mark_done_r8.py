@@ -88,13 +88,13 @@ class _Provider:
 def provider(monkeypatch) -> _Provider:
     from acb_llm import key_store
     from gateway.routes.email import core
-    from gateway.routes.email.automation import followups, mark_done, replyzero
+    from gateway.routes.email.automation import followups, mark_done, replyzero, runner
 
     fake = _Provider()
     store = SimpleNamespace(decrypt=lambda raw: json.dumps({}),
                             encrypt=lambda raw: raw)
     monkeypatch.setattr(key_store, "get_key_store", lambda: store)
-    for mod in (core, followups, mark_done, replyzero):
+    for mod in (core, followups, mark_done, replyzero, runner):
         monkeypatch.setattr(mod, "_instantiate_provider",
                             lambda *_a, **_kw: fake)
     return fake
@@ -401,6 +401,39 @@ async def test_a_held_thread_asks_no_model_and_runs_no_rule(
         ("SKIPPED", "Suppressed: you marked this conversation done.")]
 
 
+async def test_a_rerun_of_the_rules_on_held_mail_says_that_nothing_ran(
+    db, monkeypatch, provider,
+):
+    """The re-run falls back to the raw match, and its answer is honest."""
+    from gateway.routes.email.automation import engine, runner
+
+    async def _picks_needs_reply(*_a, **_kw):
+        return {"rule": {"id": None, "name": "Needs Reply", "system_type": "REPLY",
+                         "automated": True,
+                         "actions": [{"type": "LABEL", "label": "Needs Reply"}]},
+                "reason": "ai", "source": "ai"}
+
+    monkeypatch.setattr(runner, "_match_email_to_rule", _picks_needs_reply)
+    monkeypatch.setattr(engine, "_match_email_to_rule", _picks_needs_reply)
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, first, *_ = _follow_up_thread(db, box)
+    await _resolve(db, box, thread)
+    provider.calls.clear()
+
+    async with _as_member(db, db.org_b):
+        got = await runner.run_rules_on_message(
+            runner.RuleRunMessageRequest(
+                account_id=box, message_id=first, is_test=False),
+            user=_user(db.org_b, "feature:email"))
+
+    assert (got["matched"], got["applied"], got["reason"]) == (
+        True, False, "Suppressed: you marked this conversation done.")
+    assert "Needs Reply" not in _labels(db, first)
+    assert _row(db, box, thread).status == "DONE"
+    assert provider.calls == []
+
+
 async def test_a_new_inbound_message_ends_the_hold(
     db, monkeypatch, provider,
 ):
@@ -567,6 +600,34 @@ async def test_a_thread_with_no_status_row_gets_one(
     assert (row.status, row.mid) == ("DONE", only)
 
 
+async def test_done_closes_the_tasks_and_a_failure_there_keeps_the_done(
+    db, monkeypatch, provider,
+):
+    """Done asks the one task hop, as before. A database error inside it rolls
+    back that hop only, and the status and the labels stay."""
+    from gateway.routes.tasks import email_link
+
+    asked: list[tuple[str, str, str]] = []
+
+    async def _broken(s, uid, account_id, thread_id):
+        asked.append((uid, account_id, thread_id))
+        await s.execute(text("SELECT 1 / 0"))
+
+    monkeypatch.setattr(email_link, "propagate_thread_done_to_tasks", _broken)
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, first, _sent, undated = _follow_up_thread(db, box)
+
+    got, _ = await _resolve(db, box, thread)
+    await _resolve(db, box, thread, done=False, restore=got["previous"])
+    await _resolve(db, box, thread)
+
+    # A move back opens no task again, so only the two Done acts ask.
+    assert asked == [(ME, box, thread)] * 2
+    assert _row(db, box, thread).status == "DONE"
+    assert "Done" in _labels(db, first) | _labels(db, undated)
+
+
 async def test_a_restore_of_another_status_is_refused(
     db, monkeypatch, provider,
 ):
@@ -623,6 +684,56 @@ async def test_a_held_row_stops_holding_when_the_flag_goes_off(
     _flag(monkeypatch, "")
     await _project(db, box, first, "REPLY")
     assert _row(db, box, thread).status == "NEEDS_REPLY"
+
+
+async def test_the_two_routes_over_http(db, monkeypatch, provider):
+    """The JSON of the app, through the real email router and its feature gate:
+    the read of the flag, Done, a bad restore, and the move back."""
+    import httpx
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.routes.email import core
+
+    from tests.unit._tenant_ladder import tenant_engine_scope
+
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, *_ = _follow_up_thread(db, box)
+    user = _user(db.org_b, "feature:email")
+
+    async def _caller() -> Any:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(core.router)
+    app.dependency_overrides[get_current_user] = _caller
+    body = {"account_id": box, "thread_id": thread}
+    scope = clear_tenant()
+    try:
+        async with (
+            tenant_engine_scope(db.app_url.render_as_string(hide_password=False)),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                              base_url="http://email.test") as client,
+        ):
+            state = await client.get("/email/reply-zero/mark-done")
+            done = await client.post("/email/reply-zero/resolve", json=body)
+            bad = await client.post(
+                "/email/reply-zero/resolve",
+                json={**body, "done": False, "restore": {"status": "DONE"}})
+            back = await client.post(
+                "/email/reply-zero/resolve",
+                json={**body, "done": False,
+                      "restore": done.json()["previous"]})
+    finally:
+        release_tenant(scope)
+
+    assert (state.status_code, state.json()) == (200, {"enabled": True})
+    assert done.json()["previous"] == {"status": "AWAITING", "follow_up": True}
+    assert bad.status_code == 422
+    assert back.json() == {"ok": True, "thread_id": thread, "done": False}
+    assert _row(db, box, thread).status == "AWAITING"
 
 
 async def test_a_member_of_another_organization_marks_nothing(

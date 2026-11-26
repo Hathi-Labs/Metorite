@@ -1305,10 +1305,12 @@ async def run_rules_on_message(
             "SELECT categories, folder FROM email_messages WHERE id = :id"
         ), {"id": str(row.id)})).fetchone()
         primary = matches[0]
+        # Task 3995: in a held conversation no rule ran, and the answer says so.
+        held = primary.get("suppressed") == mark_done.HELD_SUPPRESSION
         return {
-            "matched": True, "applied": True,
+            "matched": True, "applied": not held,
             "rule": {"id": primary["rule"]["id"], "name": primary["rule"]["name"]},
-            "reason": primary["reason"],
+            "reason": mark_done.HELD_SKIP_REASON if held else primary["reason"],
             "actions": primary["rule"]["actions"],
             "applied_rules": [m["rule"]["name"] for m in matches],
             "categories": list(fresh.categories or []) if fresh else [],

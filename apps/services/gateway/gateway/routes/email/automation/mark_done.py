@@ -170,6 +170,15 @@ def upsert_expressions(
     return status, at, reason, classified
 
 
+def automated_reason(reason: str) -> str:
+    """The reason that an automated write may store. The mark of the hold is
+    the member's alone. A model writes the reason of a rule match, so mail text
+    must not be able to hold a thread. With the flag off the reason stands."""
+    if reason == MANUAL_DONE_REASON and mark_done_on():
+        return "Auto-classified"
+    return reason
+
+
 def hold_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each match suppressed because of the hold. None is dropped, so History
     can say why a rule did not run."""
@@ -268,9 +277,9 @@ async def push_labels(account_id: str, changes: list[LabelChange]) -> None:
             row = now.get(change.message_id)
             if row is None:
                 continue
-            held = set(row.categories or [])
-            add = [lab for lab in change.add if lab in held]
-            remove = [lab for lab in change.remove if lab not in held]
+            mirror = set(row.categories or [])
+            add = [lab for lab in change.add if lab in mirror]
+            remove = [lab for lab in change.remove if lab not in mirror]
             if not add and not remove:
                 continue
             # One bad message must not stop the rest.
