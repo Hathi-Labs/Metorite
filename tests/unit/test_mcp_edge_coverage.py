@@ -689,6 +689,45 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
     assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
+def test_ea5_the_company_context_reads_auth_me_and_adds_no_pair():
+    """EA-5 (D-EA-6, corrected 2026-11-25). ``get_company_context`` reads
+    ``GET /auth/me``, the pair of ``whoami``, and no other route. So the
+    allowlist gains no entry: the branding pair stays out, and the tool's one
+    route is a named exception that EA-3 already held. It needs
+    ``context:read``, it has the hints of a read, and it is dark on
+    ``agent_resources_orgs``. Mutation: give the tool the route
+    ``/settings/branding``, or add that pair to ``MCP_ROUTES``, and this
+    test fails."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    tool = TOOLS["get_company_context"]
+    pair = ("GET", "/auth/me")
+    assert (tool.method, tool.route) == pair and tool.routes == (pair[1],)
+    assert pair in MCP_ROUTES and pair in NAMED_EXCEPTIONS
+    assert tool.required_scope == CONTEXT_READ
+    assert dict(tool.annotations) == READ_HINTS
+    assert tool.resources is True
+    assert not tool.params and not tool.edge_inputs and not tool.prior_writes
+    assert not tool.alt_writes and not tool.param_routes
+    assert tool.input_schema["properties"] == {}
+    assert ("GET", "/settings/branding") not in MCP_ROUTES
+    assert not {p for _, p in MCP_ROUTES if p.startswith("/settings")}
+    assert set(tool.output_schema["properties"]) == {"name", "slug"}
+    assert tool.output_schema["additionalProperties"] is False
+
+
+def test_only_get_company_context_needs_context_read():
+    """EA-5. ``context:read`` reaches one tool. A second needs a spec
+    amendment (§8)."""
+    from acb_auth.agent_oauth import CONTEXT_READ
+    from agent_edge.tools import TOOLS
+
+    assert [n for n, t in TOOLS.items() if t.required_scope == CONTEXT_READ] == [
+        "get_company_context"]
+    assert [n for n, t in TOOLS.items() if t.resources] == ["get_company_context"]
+
+
 def test_sw113_the_agent_map_is_a_read_of_the_one_overview_route():
     """WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tool
     reads the map of SW-102 through the overview route, and no other route.
