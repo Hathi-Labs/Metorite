@@ -1629,6 +1629,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
 
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
+
     # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
     #
     # `chat_packs_batch_orgs` lists the organization ids, or `*` for each one.
@@ -2592,6 +2606,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
