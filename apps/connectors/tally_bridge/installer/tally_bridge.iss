@@ -46,7 +46,7 @@ Filename: "{app}\tally_bridge.exe"; Parameters: "uninstall-windows --windows"; F
 [Code]
 const
   ServiceKey = 'SYSTEM\CurrentControlSet\Services\TallyBridge';
-  GrantOnly = ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX';
+  GrantOnly = ' /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F';
   FILE_ATTRIBUTE_REPARSE_POINT = $400;
 
 // Review finding 1. %ProgramData% lets every user create a folder or a file,
@@ -95,7 +95,8 @@ begin
   end;
 end;
 
-// Only SYSTEM and the administrators may write, and Users may read. A
+// Only SYSTEM and the administrators have any right. A user may not even
+// read: machine-scope DPAPI lets any reader unprotect link.bin (TLY-2). A
 // fresh install never follows what a user left at the path: it removes the
 // path (a junction as a link only), makes a new folder, closes it with no
 // /T, and only then deletes any child. An upgrade refuses a folder that is a
@@ -130,6 +131,10 @@ begin
     Result := 'The data folder is a link. Delete ' + Dir + ' and run the setup again.'
   else if not Icacls('"' + Dir + '"' + GrantOnly) then
     Result := 'Could not set the rights of ' + Dir
+  // An earlier build gave Users read on the folder. /grant:r leaves the
+  // ACE of a SID that it does not name, so remove it by name.
+  else if not Icacls('"' + Dir + '" /remove:g *S-1-5-32-545') then
+    Result := 'Could not remove the rights of Users on ' + Dir
   else if HasChildren(Dir) and not (Icacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C') and Icacls('"' + Dir + '\*" /reset /T /C')) then
     Result := 'Could not reset the rights of the files in ' + Dir;
 end;

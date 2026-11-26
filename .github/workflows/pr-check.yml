@@ -282,6 +282,11 @@ jobs:
       - name: stop-children cleanup hook (blocking)
         run: node .claude/hooks/stop-children.test.mjs
 
+      # SW-61 (task 1903): the Stop hook blocks a background turn that holds a
+      # claim and no disposition. R7 — this step is the fence of that rule.
+      - name: stop-disposition hook (blocking)
+        run: node .claude/hooks/stop-disposition.test.mjs
+
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
       # These tests read files as text and guard consistency: naming, docs,
