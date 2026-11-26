@@ -61,6 +61,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_common import get_settings
+from gateway.routes.projects.refs_classify import classify
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -204,10 +205,11 @@ def _run(world, task: str, *, label: str | None, member: str = MEMBER,
 def _pr(world, task: str, number: int, *, hours: float = 60, state: str | None = "open",
         kind: str = "pull_request", merged: bool = False, landing: str | None = None,
         landing_hours: float = 1) -> str:
-    ref = f"Hathi-Labs/Metorite#{number}"
     url = f"https://github.com/Hathi-Labs/Metorite/pull/{number}"
     if kind == "issue":
-        ref, url = f"Hathi-Labs/Metorite#{number}", f"https://github.com/Hathi-Labs/Metorite/issues/{number}"
+        url = f"https://github.com/Hathi-Labs/Metorite/issues/{number}"
+    # The ref of the one classifier, so an add of the same URL finds this row.
+    ref = classify(url).ref
     return str(world.seeder.one(
         "INSERT INTO pm_task_refs (task_id, kind, provider, ref, url, state, via, created_by,"
         " created_at, merged_at, landing_state, landing_at, landing_by) VALUES"
@@ -286,9 +288,9 @@ class TestTheMigration:
                  if "pm_task_refs_landing_state_known" in p.read_text(encoding="utf-8")]
         assert len(found) == 1, found
         sql = found[0].read_text(encoding="utf-8")
-        assert sql.count("ADD COLUMN IF NOT EXISTS") == 3
-        assert "DROP " not in sql and "RENAME" not in sql and "NOT NULL" not in sql.split(
-            "BEGIN;", 1)[1]
+        code = " ".join(line for line in sql.splitlines() if not line.startswith("--"))
+        assert code.count("ADD COLUMN IF NOT EXISTS") == 3
+        assert "DROP " not in code and "RENAME" not in code and "NOT NULL " not in code
         assert "SET lock_timeout" in sql
 
     def test_the_columns_and_the_check_are_live(self, world):
@@ -613,7 +615,8 @@ def _ref_row(world, task: str, number: int) -> Any:
     with world.admin.begin() as c:
         return c.execute(text(
             "SELECT * FROM pm_task_refs WHERE task_id = CAST(:t AS uuid) AND ref = :r"),
-            {"t": task, "r": f"Hathi-Labs/Metorite#{number}"}).one()
+            {"t": task, "r": classify(f"https://github.com/Hathi-Labs/Metorite/pull/{number}").ref}
+        ).one()
 
 
 def _link_rows(world, task: str) -> list[Any]:
