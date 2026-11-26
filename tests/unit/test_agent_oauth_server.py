@@ -546,6 +546,34 @@ class TestTheOrgAllowlist:
         assert not agent_oauth.org_allowed(_ORG_Z)
 
 
+class TestTheRefreshReuseGrace:
+    """MCP-G17f (task 4032): the one reader of the grace window and its cap.
+
+    The R8 cases of the window are ``TestTheGraceWindow`` in
+    ``test_agent_connection_tokens.py``.
+    """
+
+    def test_the_setting_defaults_to_off(self):
+        from acb_common.settings import Settings
+
+        assert Settings.model_fields["agent_refresh_reuse_grace_s"].default == 0
+        assert agent_oauth.REFRESH_REUSE_GRACE_MAX_S == 300
+
+    @pytest.mark.parametrize(("raw", "want"), [
+        (0, 0), (-5, 0), (1, 1), (30, 30), (300, 300), (301, 300),
+        (10_000, 300), (True, 0), ("30", 0), (None, 0), (2.5, 0),
+    ])
+    def test_the_reader_clamps_to_the_cap(self, monkeypatch, raw, want):
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+        assert agent_oauth.refresh_reuse_grace_s() == want
+
+    def test_the_env_key_sets_it(self, monkeypatch):
+        from acb_common.settings import Settings
+
+        monkeypatch.setenv("AGENT_REFRESH_REUSE_GRACE_S", "45")
+        assert Settings().agent_refresh_reuse_grace_s == 45
+
+
 class TestTheConsentRoutesCheckTheList:
     """EA-10p door 1, database-free. A refused organization gets the 403 of
     rule 11 before the client fetch, the ticket and the code."""
