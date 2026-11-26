@@ -103,8 +103,9 @@ function WorkflowNodeInner(props: NodeProps) {
                 : style.border;
   const dim = status === "skipped" || status === "pending" ? "opacity-45" : "";
 
+  // E7a: a finger needs a bigger handle than a mouse. A coarse pointer gets 20 px.
   const handleCls =
-    "!w-3 !h-3 !border-2 !bg-card !border-muted-foreground/70 hover:!border-primary";
+    "!w-3 !h-3 !border-2 !bg-card !border-muted-foreground/70 hover:!border-primary pointer-coarse:!w-5 pointer-coarse:!h-5";
 
   return (
     <div
@@ -214,14 +215,14 @@ function WorkflowNodeInner(props: NodeProps) {
             type="source"
             position={Position.Bottom}
             style={{ left: "28%" }}
-            className="!w-3 !h-3 !border-2 !bg-card !border-success"
+            className="!w-3 !h-3 !border-2 !bg-card !border-success pointer-coarse:!w-5 pointer-coarse:!h-5"
           />
           <Handle
             id="false"
             type="source"
             position={Position.Bottom}
             style={{ left: "72%" }}
-            className="!w-3 !h-3 !border-2 !bg-card !border-muted-foreground"
+            className="!w-3 !h-3 !border-2 !bg-card !border-muted-foreground pointer-coarse:!w-5 pointer-coarse:!h-5"
           />
           <div className="flex justify-between px-4 pb-1 -mt-px">
             <span className="font-mono text-[8px] uppercase tracking-wider text-success">
