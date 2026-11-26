@@ -623,3 +623,176 @@ def test_the_proxy_reads_no_environment_value() -> None:
     """Its inputs are its arguments and the grants file. It holds no credential."""
     text = _PROXY_PATH.read_text(encoding="utf-8")
     assert "os.environ" not in text and "getenv" not in text
+
+
+# ── review round 1 (2026-11-26) ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("raw", [
+    b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\nHost: evil.com\nTransfer-Encoding: chunked",
+    b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\rHost: evil.com",
+    b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\x00w",
+    b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\x1bw",
+    b"GET http://pypi.org/\x7f HTTP/1.1\r\nHost: pypi.org",
+    b"GET http://pypi.org/ HTTP/1.1\nHost: pypi.org",
+])
+def test_a_control_byte_in_the_head_is_refused(raw: bytes) -> None:
+    with pytest.raises(ep.Refused) as caught:
+        ep.parse_head(raw)
+    assert caught.value.reason == "control_byte"
+
+
+def test_a_tab_in_a_header_value_passes() -> None:
+    request = ep.parse_head(b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: a\tb")
+    assert request.header("X-A") == "a\tb"
+
+
+def test_a_smuggled_header_never_reaches_the_upstream(proxy_env: dict[str, Any]) -> None:
+    proxy_env["write"](["pypi.org"])
+    proxy_env["upstream"] = Upstream(lambda sock: None)
+    reply = _exchange(
+        proxy_env["proxy"],
+        b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\nHost: evil.com\n"
+        b"Transfer-Encoding: chunked\r\n" + _auth() + b"\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 400") and proxy_env["connects"] == []
+    assert json.loads(proxy_env["lines"][0])["reason"] == "control_byte"
+
+
+@pytest.mark.parametrize("port", ["\xb2", "4\u0663", "\uff11", "+80", " 80", "123456"])
+def test_a_port_that_is_not_ascii_digits_is_refused(port: str) -> None:
+    with pytest.raises(ep.Refused) as caught:
+        ep.split_authority(f"pypi.org:{port}", 443)
+    assert caught.value.reason == "bad_port"
+    assert ep.parse_upstream(f"10.0.0.5:{port}") is None
+
+
+def test_a_content_length_that_is_not_ascii_digits_gets_a_reply_and_a_line(
+    proxy_env: dict[str, Any],
+) -> None:
+    proxy_env["write"](["pypi.org"])
+    proxy_env["upstream"] = Upstream(lambda sock: None)
+    reply = _exchange(
+        proxy_env["proxy"],
+        "GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nContent-Length: \xb2\r\n".encode(
+            "iso-8859-1"
+        ) + _auth() + b"\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 400")
+    assert [json.loads(x)["reason"] for x in proxy_env["lines"]] == ["bad_length"]
+
+
+def test_an_unexpected_error_still_gets_a_reply_and_one_line(
+    proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_: Any, **__: Any) -> Any:
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(ep, "request_target", boom)
+    proxy_env["write"](["pypi.org"])
+    reply = _exchange(proxy_env["proxy"], b"CONNECT pypi.org:443 HTTP/1.1\r\n" + _auth() + b"\r\n")
+    assert reply.startswith(b"HTTP/1.1 500")
+    (line,) = proxy_env["lines"]
+    assert json.loads(line)["reason"] == "internal_error"
+
+
+def test_a_slow_head_ends_at_the_deadline(
+    proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ep, "HEAD_DEADLINE_S", 0.5)
+    client, server = socket.socketpair()
+    worker = threading.Thread(target=proxy_env["proxy"].handle, args=(server,), daemon=True)
+    worker.start()
+    try:
+        for byte in b"CONNECT pypi.org:443 HTTP/1.1\r\n":
+            try:
+                client.sendall(bytes([byte]))
+            except OSError:
+                break  # the proxy closed at the deadline
+            if not worker.is_alive():
+                break
+            worker.join(0.05)
+        worker.join(HANG_S)
+        assert not worker.is_alive(), "a slow head held its slot past the deadline"
+    finally:
+        client.close()
+    assert json.loads(proxy_env["lines"][0])["reason"] == "head_timeout"
+
+
+def test_one_grant_holds_at_most_its_share_of_slots(
+    proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ep, "MAX_PER_GRANT", 1)
+    proxy = proxy_env["proxy"]
+    assert proxy._take_grant_slot(ep.token_key(TOKEN))
+    proxy_env["write"](["pypi.org"])
+    reply = _exchange(proxy, b"CONNECT pypi.org:443 HTTP/1.1\r\n" + _auth() + b"\r\n")
+    assert reply.startswith(b"HTTP/1.1 429")
+    line = json.loads(proxy_env["lines"][0])
+    assert line["reason"] == "grant_busy" and line["approver"] == "member@example.com"
+    assert proxy_env["connects"] == []
+    proxy._give_grant_slot(ep.token_key(TOKEN))
+    assert proxy._per_grant == {}
+    assert ep.MAX_PER_GRANT < ep.MAX_CLIENTS or ep.MAX_PER_GRANT == 1
+
+
+def test_the_share_of_one_grant_is_below_the_box_slots() -> None:
+    assert 0 < _load().MAX_PER_GRANT < ep.MAX_CLIENTS
+
+
+def test_a_busy_tunnel_ends_at_its_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tunnel that never goes idle still ends at ``TUNNEL_MAX_S``."""
+    monkeypatch.setattr(ep, "TUNNEL_MAX_S", 0.5)
+    client, client_far = socket.socketpair()
+    upstream, upstream_far = socket.socketpair()
+    stop = threading.Event()
+
+    def chatter() -> None:
+        while not stop.is_set():
+            try:
+                upstream_far.sendall(b"x")
+            except OSError:
+                return
+            stop.wait(0.01)
+
+    talker = threading.Thread(target=chatter, daemon=True)
+    talker.start()
+    def drain_loop() -> None:
+        while not stop.is_set():
+            try:
+                if not client.recv(65536):
+                    return
+            except OSError:
+                return
+
+    drain = threading.Thread(target=drain_loop, daemon=True)
+    drain.start()
+    result: list[tuple[int, int]] = []
+    worker = threading.Thread(
+        target=lambda: result.append(ep._tunnel(client_far, upstream, b"")), daemon=True,
+    )
+    worker.start()
+    worker.join(HANG_S)
+    stop.set()
+    for sock in (client, client_far, upstream, upstream_far):
+        sock.close()
+    assert not worker.is_alive(), "the tunnel outlived TUNNEL_MAX_S"
+    assert result and result[0][1] > 0
+
+
+def test_the_tunnel_lifetime_is_the_longest_grant() -> None:
+    assert ep.TUNNEL_MAX_S == 1800.0
+
+
+@pytest.mark.parametrize("address", ["::808:808", "::a00:1", "::7f00:1"])
+def test_an_ipv4_compatible_address_is_refused(address: str) -> None:
+    refusal = _refusal(["pypi.org"], "pypi.org", resolve=Resolver([address]))
+    assert refusal.reason in {"address_ipv4_compatible", "address_not_global"}
+    assert ep.address_refusal("::808:808") == "ipv4_compatible"
+
+
+@pytest.mark.parametrize("address", ["::ffff:0:a00:1", "::ffff:0:808:808", "::ffff:0:7f00:1"])
+def test_an_ipv4_translated_address_is_refused(address: str) -> None:
+    assert ep.address_refusal(address) == "ipv4_translated"
+    refusal = _refusal(["pypi.org"], "pypi.org", resolve=Resolver([address]))
+    assert refusal.reason == "address_ipv4_translated"

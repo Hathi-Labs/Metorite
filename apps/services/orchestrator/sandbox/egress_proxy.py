@@ -73,6 +73,16 @@ _NAT64 = (
     ipaddress.ip_network("64:ff9b:1::/48"),
 )
 _SIXTOFOUR = ipaddress.ip_network("2002::/16")
+#: The old IPv4-compatible form, ``::a.b.c.d``.
+_V4COMPAT = ipaddress.ip_network("::/96")
+#: The IPv4-translated form of SIIT, ``::ffff:0:a.b.c.d``.
+_V4TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
+
+#: Digits only, ASCII. ``str.isdigit`` takes ``\xb2`` and other digits.
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+_LENGTH_RE = re.compile(r"[0-9]{1,10}")
+#: A control byte other than tab. CR is allowed only as part of CRLF.
+_CONTROL_RE = re.compile(rb"[\x00-\x08\x0a-\x1f\x7f]")
 
 #: A host name: lower-case letters, digits, dots and hyphens, no empty label.
 _HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -83,6 +93,15 @@ _BODY_MAX = 10 * 1024 * 1024
 _CHUNK = 65536
 #: A tunnel with no byte in either way for this long closes.
 TUNNEL_IDLE_S = 300.0
+#: The longest life of one tunnel, whatever its traffic (§7.3). It equals the
+#: longest grant, so no tunnel outlives the grant that opened it by much.
+TUNNEL_MAX_S = 1800.0
+#: The whole request head must arrive within this time, so a slow client
+#: cannot hold a slot by sending one byte at a time.
+HEAD_DEADLINE_S = 10.0
+#: The most requests in flight for one grant token, below :data:`MAX_CLIENTS`.
+#: So one sandbox cannot take every slot from the others.
+MAX_PER_GRANT = 8
 #: The connect and read timeout of a plain HTTP forward.
 FORWARD_TIMEOUT_S = 60.0
 #: The most requests in flight. The container's pids limit is 64.
@@ -283,6 +302,10 @@ def address_refusal(address: str) -> str | None:
             return "6to4"
         if ip.teredo is not None:
             return "teredo"
+        if ip in _V4COMPAT and int(ip) > 1:
+            return "ipv4_compatible"
+        if ip in _V4TRANSLATED:
+            return "ipv4_translated"
     if not ip.is_global:
         return "not_global"
     if ip.is_multicast:
@@ -313,7 +336,7 @@ def parse_upstream(raw: str) -> tuple[str, int] | None:
         host, sep, port = text[1:].partition("]:")
     else:
         host, sep, port = text.rpartition(":")
-    if not sep or not port.isdigit():
+    if not sep or not _PORT_RE.fullmatch(port):
         return None
     try:
         ipaddress.ip_address(host)
@@ -394,7 +417,13 @@ def _door_target(doc: GrantsDoc, method: str, port: int, capability: bool) -> Ta
 
 
 def parse_head(raw: bytes) -> Request:
-    """Parse a request head. Raises :class:`Refused` on a bad one."""
+    """Parse a request head. Raises :class:`Refused` on a bad one.
+
+    A bare LF, a lone CR, a NUL or any other control byte but tab refuses the
+    whole head. Otherwise one header line could hide a second header, such
+    as a ``Host`` or a ``Transfer-Encoding``, that the far side reads.
+    """
+    check_clean(raw)
     try:
         text = raw.decode("iso-8859-1")
     except UnicodeDecodeError:  # pragma: no cover — latin-1 decodes every byte
@@ -414,6 +443,12 @@ def parse_head(raw: bytes) -> Request:
     return request
 
 
+def check_clean(raw: bytes) -> None:
+    """Refuse a head with a control byte other than tab, or a CR outside CRLF."""
+    if _CONTROL_RE.search(raw.replace(b"\r\n", b"")):
+        raise Refused(400, "control_byte")
+
+
 def split_authority(authority: str, default_port: int) -> tuple[str, int]:
     """``host[:port]`` into its parts. Raises :class:`Refused`."""
     if authority.startswith("["):
@@ -428,7 +463,7 @@ def split_authority(authority: str, default_port: int) -> tuple[str, int]:
         host, _sep, port_text = authority.partition(":")
     if not port_text:
         return host, default_port
-    if not port_text.isdigit() or len(port_text) > 5:
+    if not _PORT_RE.fullmatch(port_text):
         raise Refused(400, "bad_port")
     return host, int(port_text)
 
@@ -474,7 +509,9 @@ def forward_head(request: Request, path: str) -> bytes:
             continue
         lines.append(f"{key}: {value}")
     lines.append("Connection: close")
-    return ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
+    head = "\r\n".join(lines).encode("iso-8859-1")
+    check_clean(head)
+    return head + b"\r\n\r\n"
 
 
 # ── the log line ─────────────────────────────────────────────────────────────
@@ -535,15 +572,44 @@ class Proxy:
         self.clock = clock
         self.emit = emit or _print_line
         self._slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        self._per_grant: dict[str, int] = {}
+        self._per_grant_lock = threading.Lock()
+
+    def _take_grant_slot(self, key: str) -> bool:
+        with self._per_grant_lock:
+            held = self._per_grant.get(key, 0)
+            if held >= MAX_PER_GRANT:
+                return False
+            self._per_grant[key] = held + 1
+            return True
+
+    def _give_grant_slot(self, key: str) -> None:
+        with self._per_grant_lock:
+            held = self._per_grant.get(key, 0) - 1
+            if held > 0:
+                self._per_grant[key] = held
+            else:
+                self._per_grant.pop(key, None)
 
     def handle(self, client: socket.socket) -> None:
-        """Serve ONE request on *client*, log it once, and close."""
+        """Serve ONE request on *client*, log it once, and close.
+
+        Any error that the steps do not handle still gets a reply and one
+        ``internal_error`` log line, so no request leaves the log.
+        """
         if not self._slots.acquire(blocking=False):
             with contextlib.suppress(OSError):
                 client.sendall(_reply(503, "busy"))
             return
         try:
             self._handle(client)
+        except Exception:
+            with contextlib.suppress(OSError):
+                client.sendall(_reply(500, "internal_error"))
+            self.emit(log_line(
+                grant=None, method="", host="", port=None, address="",
+                decision="refuse", reason="internal_error",
+            ))
         finally:
             self._slots.release()
             with contextlib.suppress(OSError):
@@ -556,6 +622,7 @@ class Proxy:
         try:
             client.settimeout(FORWARD_TIMEOUT_S)
             head, extra = _read_head(client)
+            client.settimeout(FORWARD_TIMEOUT_S)
             request = parse_head(head)
             method = request.method
             host, port, path = request_target(request)
@@ -572,6 +639,11 @@ class Proxy:
                 except Refused as refusal:
                     refusal.grant = grant
                     raise
+            key = token_key(token)
+            if not self._take_grant_slot(key):
+                refusal = Refused(429, "grant_busy")
+                refusal.grant = grant
+                raise refusal
         except Refused as refusal:
             self._refuse(client, refusal, refusal.grant, method, host, port)
             return
@@ -581,7 +653,10 @@ class Proxy:
                 decision="refuse", reason="client_error",
             ))
             return
-        self._serve(client, request, target, grant, path, extra)
+        try:
+            self._serve(client, request, target, grant, path, extra)
+        finally:
+            self._give_grant_slot(key)
 
     def _refuse(
         self, client: socket.socket, refusal: Refused, grant: Grant | None,
@@ -645,7 +720,8 @@ def _connect(address: str, port: int) -> socket.socket:
 def _reply(status: int, reason: str) -> bytes:
     titles = {
         400: "Bad Request", 403: "Forbidden", 407: "Proxy Authentication Required",
-        411: "Length Required", 413: "Content Too Large", 502: "Bad Gateway",
+        408: "Request Timeout", 411: "Length Required", 413: "Content Too Large",
+        429: "Too Many Requests", 500: "Internal Server Error", 502: "Bad Gateway",
         503: "Service Unavailable",
     }
     body = json.dumps({"refused": reason}).encode("utf-8")
@@ -659,12 +735,23 @@ def _reply(status: int, reason: str) -> bytes:
 
 
 def _read_head(client: socket.socket) -> tuple[bytes, bytes]:
-    """The request head, and the bytes after it that came in the same reads."""
+    """The request head, and the bytes after it that came in the same reads.
+
+    The whole head must arrive within :data:`HEAD_DEADLINE_S`.
+    """
+    deadline = time.monotonic() + HEAD_DEADLINE_S
     buf = b""
     while b"\r\n\r\n" not in buf:
         if len(buf) > _HEAD_MAX:
             raise Refused(400, "head_too_large")
-        chunk = client.recv(_CHUNK)
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise Refused(408, "head_timeout")
+        client.settimeout(left)
+        try:
+            chunk = client.recv(_CHUNK)
+        except TimeoutError:
+            raise Refused(408, "head_timeout") from None
         if not chunk:
             raise Refused(400, "bad_request")
         buf += chunk
@@ -682,7 +769,7 @@ def _forward(
     if sum(1 for k, _v in request.headers if k.lower() == "content-length") > 1:
         raise Refused(400, "bad_length")
     raw_length = request.header("Content-Length") or "0"
-    if not raw_length.isdigit():
+    if not _LENGTH_RE.fullmatch(raw_length):
         raise Refused(400, "bad_length")
     length = int(raw_length)
     if length > _BODY_MAX:
@@ -710,7 +797,8 @@ def _forward(
 
 
 def _tunnel(client: socket.socket, upstream: socket.socket, extra: bytes) -> tuple[int, int]:
-    """Copy bytes both ways until both sides close, or the tunnel is idle.
+    """Copy bytes both ways until both sides close, the tunnel is idle, or it
+    reaches :data:`TUNNEL_MAX_S`.
 
     An end of input on one side half-closes the other side, so an answer
     that is still on its way reaches the client.
@@ -721,11 +809,15 @@ def _tunnel(client: socket.socket, upstream: socket.socket, extra: bytes) -> tup
         up += len(extra)
     for sock in (client, upstream):
         sock.settimeout(None)
+    end = time.monotonic() + TUNNEL_MAX_S
     with selectors.DefaultSelector() as sel:
         sel.register(client, selectors.EVENT_READ, upstream)
         sel.register(upstream, selectors.EVENT_READ, client)
         while sel.get_map():
-            events = sel.select(timeout=TUNNEL_IDLE_S)
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            events = sel.select(timeout=min(TUNNEL_IDLE_S, left))
             if not events:
                 break
             for key, _mask in events:

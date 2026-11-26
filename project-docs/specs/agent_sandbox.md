@@ -513,7 +513,7 @@ reading.
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
 | WS43-G5 | Owner gate. Task 3912 installed `runsc` on `aroh-sandbox-1` (2026-11-23). Production use is not verified | `maf_coding_engine.md` line 1677. `docs/gcp_aroh.md` §4a |
-| WS-43g, the egress proxy | Not built | `maf_coding_engine.md` line 2162 says `grant_egress()` is not built. `git grep grant_egress` finds no code |
+| WS-43g, the egress proxy | WS-43g1 built dark (task 4009, branch `mt-abaa42b0-ws43g1-egress`). WS-43g2 and WS-43g3 are not built | `maf_coding_engine.md` §11, WS-43g. `grant_egress()` and `sandbox/egress_proxy.py` exist. The live `request_network_access` and the firewall in CI do not |
 | `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
 | `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
 | `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
@@ -730,7 +730,7 @@ row is rebuilt.
 | The scope setting | `acb_common/settings.py:1040`, `maf_coding_scope` | A comma list of `<target>:<org>`. Targets in code: `code_task`, `app_builder` and `projects`. Empty turns every target off | Built. The default is empty |
 | `run_command` | `acb_skills/sandbox_tools.py:405` | Runs one command in the broker container. Only `ProjectsSandboxProvider` (`:644`) attaches it, for one run | Built, dark (WS-43d) |
 | User-written skills | `agent-data/skills/` through `acb_skills/tenant_file_store.py` | MAF `SkillsProvider` loads them in a covered run. A skill loads only for the member who wrote it (`tests/unit/test_sandbox_skill_privacy.py`) | Built, dark |
-| The egress proxy and the grant | `maf_coding_engine.md` §7.3, slice WS-43g | An approved per-host grant, an organization network and one proxy. `request_network_access` is a stub that answers "off". No `egress_proxy.py` exists | **Spec only** |
+| The egress proxy and the grant | `maf_coding_engine.md` §7.3, slice WS-43g | An approved per-host grant, an organization network and one proxy. `request_network_access` is a stub that answers "off" until WS-43g2 | **WS-43g1 built dark** (task 4009, branch `mt-abaa42b0-ws43g1-egress`). WS-43g2 and WS-43g3 not built |
 | The sandbox image and its CI | `apps/services/orchestrator/Dockerfile.coding-sandbox`, `.github/workflows/sandbox-docker.yml` | A pinned image with pandas, PDF and Office libraries and no secret. The workflow runs `pytest -m sandbox_docker` on each pull request and fails on a skip | Built (WS-43b). Not on any box (WS43-G2) |
 | BH-2, the gateway unit sandbox | `deploy/hostinger/acb-gateway.service.d/50-hardening.conf:45` | systemd hardening of the gateway. It makes `/run/docker.sock` inaccessible to the gateway, so the broker cannot be healthy on production | Live (WS-49, #758) |
 | BH-3, the broker's own unit | `box_hardening.md` §5 BH-3 | A separate `acb-sandbox-broker.service` with its own user and a local socket | **Spec only**. Gate WS43-G1 |
@@ -833,7 +833,7 @@ an owner decision (CLAUDE.md §3a rule 3).
 | **Ops load** | High. Kind, PostgreSQL, S3, about 8 DaemonSets, btrfs, 50 GiB disk floors, a Rust build. Version 0.8.0, no tag, about 100 commits in 4 days | Low. An account and a key | Low. Install `runsc` and register the runtime (WS43-G5) | None more. Built and dark |
 | **Shares the gateway's 2 vCPU** | No | No | Yes | Yes |
 | **Cash cost (estimate)** | A bare-metal host. A small dedicated server is about EUR 40 to 70 a month. The SPACE EKS reference uses `m5d.metal`, about USD 4,000 a month on demand | Pro is USD 150 a month plus use. Use is USD 0.000014 per vCPU-second and USD 0.0000045 per GiB-second. A 60-second run at 1 vCPU and 1 GiB is about USD 0.0011 | USD 0 | USD 0 |
-| **Built here** | Nothing | Nothing | Named as later hardening (WS43-S1, gate WS43-G5) | WS-43b, WS-43c, WS-43d built. WS-43g spec only |
+| **Built here** | Nothing | Nothing | Named as later hardening (WS43-S1, gate WS43-G5) | WS-43b, WS-43c, WS-43d built. WS-43g1 built dark (task 4009). WS-43g2 and WS-43g3 not built |
 
 The SPACE facts come from the repo on 2026-10-19: Apache-2.0, created
 2026-10-01, no release, no tag, 10 open issues and 88 open pull requests.

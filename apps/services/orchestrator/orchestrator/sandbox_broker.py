@@ -1379,10 +1379,31 @@ class EgressGrant:
 def egress_env(grant: EgressGrant) -> dict[str, str]:
     """The proxy settings of a granted container. They carry the grant token.
 
-    Both cases, because curl reads only the lower-case ``http_proxy``.
+    Both cases, because curl reads only the lower-case ``http_proxy``. They
+    never go in the argv: :func:`write_egress_env_file` puts them in a file
+    that ``docker run --env-file`` reads (review round 1, 2026-11-26).
     """
     url = f"http://grant:{grant.token}@{EGRESS_PROXY_NAME}:{EGRESS_PROXY_PORT}"
     return {"HTTP_PROXY": url, "HTTPS_PROXY": url, "http_proxy": url, "https_proxy": url}
+
+
+def write_egress_env_file(folder: Path, start_id: str, grant: EgressGrant) -> Path:
+    """Write the proxy settings for ONE start, mode 0600, in a 0700 folder.
+
+    The token then stays out of the ``docker run`` argv, which any user of
+    the host can read in the process list. The caller removes the file once
+    ``docker run`` returns.
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", start_id):
+        raise SandboxRefused("The start id is not valid.")
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o700)
+    path = folder / f"{start_id}.env"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        for key, value in egress_env(grant).items():
+            handle.write(f"{key}={value}\n")
+    return path
 
 
 def build_proxy_argv(*, image: str, bin_dir: Path, grants_dir: Path) -> list[str]:
@@ -1397,6 +1418,10 @@ def build_proxy_argv(*, image: str, bin_dir: Path, grants_dir: Path) -> list[str
         "--label", f"{LABEL_SANDBOX}=1",
         "--label", f"{LABEL_EGRESS}=proxy",
         "--network", "bridge",
+        # Defence in depth: the proxy never routes a packet between its
+        # networks, so a sandbox reaches only the proxy's own port.
+        "--sysctl", "net.ipv4.ip_forward=0",
+        "--sysctl", "net.ipv6.conf.all.forwarding=0",
         "--read-only",
         "--user", f"{EGRESS_PROXY_UID}:{EGRESS_PROXY_UID}",
         "--cap-drop", "ALL",
@@ -1463,6 +1488,7 @@ def build_run_argv(
     runtime: str = RUNTIME_RUNC,
     workspace_tmpfs_mb: int | None = None,
     egress: EgressGrant | None = None,
+    egress_env_file: Path | None = None,
 ) -> list[str]:
     """The ``docker run`` arguments, with no ``docker`` in front.
 
@@ -1475,9 +1501,12 @@ def build_run_argv(
     container's user, and no bind mount may come with it.
 
     *egress* (WS-43g1, §7.3) puts the container on its organization's own
-    ``--internal`` network in place of ``none``, and adds the proxy settings
-    with the grant token. Every other flag and mount stays the same.
+    ``--internal`` network in place of ``none``. The proxy settings with the
+    grant token come from *egress_env_file* (``--env-file``), never from the
+    argv. Every other flag and mount stays the same.
     """
+    if (egress is None) != (egress_env_file is None):
+        raise SandboxRefused("An egress grant and its env file come together.")
     _check_run_inputs(
         binding=binding, mounts=mounts, uid=uid, gid=gid, start_id=start_id,
         runtime=runtime, workspace_tmpfs_mb=workspace_tmpfs_mb, egress=egress,
@@ -1546,10 +1575,10 @@ def build_run_argv(
         # host path, and it holds no secret. `@cc/ui` is in the build copy.
         env[T2_VENDOR_ENV] = T2_VENDOR_TARGET
         env[T2_UI_ENV] = f"{APP_BUILDER_BUILD_TARGET}/artifactUi.tsx"
-    if egress is not None:
-        env.update(egress_env(egress))
     for key, value in env.items():
         argv += ["--env", f"{key}={value}"]
+    if egress_env_file is not None:
+        argv += ["--env-file", str(egress_env_file)]
     return [*argv, image, *KEEPALIVE]
 
 
@@ -3519,27 +3548,39 @@ class SandboxBroker:
         handle.start_id, handle.container_id = uuid.uuid4().hex, ""
         if handle.egress is not None and remote:
             raise SandboxRefused("A docker-remote sandbox gets no egress grant.")
-        argv = build_run_argv(
-            binding=handle.binding, mounts=() if remote else mounts, uid=uid, gid=gid,
-            image=image, limits=limits, start_id=handle.start_id,
-            runtime=runtime, workspace_tmpfs_mb=workspace_mb, egress=handle.egress,
-        )
-        handle.remote, handle.pushed = remote, frozenset()
-        await asyncio.to_thread(self._record_dir, handle.workspace)
-        # SBX-15 review P2: the admit and `docker run` hold ONE lock, so two
-        # starts of two orgs never both pass the admit.
-        async with self._start_gate(remote):
-            await self._remote_org_admit(handle.org)
-            try:
-                await self._run_container(handle, argv)
-                handle.keepalive_pid = await self._probe_keepalive(handle.name)
-            except BaseException as exc:
-                cleanup = self._spawn_background(
-                    self._remove_container(handle.container_id, handle.start_id)
-                )
-                if not isinstance(exc, asyncio.CancelledError):
-                    await asyncio.shield(cleanup)
-                raise
+        env_file = None
+        if handle.egress is not None:
+            env_file = await asyncio.to_thread(
+                write_egress_env_file, self._egress_dir() / "env", handle.start_id,
+                handle.egress,
+            )
+        try:
+            argv = build_run_argv(
+                binding=handle.binding, mounts=() if remote else mounts, uid=uid, gid=gid,
+                image=image, limits=limits, start_id=handle.start_id,
+                runtime=runtime, workspace_tmpfs_mb=workspace_mb, egress=handle.egress,
+                egress_env_file=env_file,
+            )
+            handle.remote, handle.pushed = remote, frozenset()
+            await asyncio.to_thread(self._record_dir, handle.workspace)
+            # SBX-15 review P2: the admit and `docker run` hold ONE lock, so two
+            # starts of two orgs never both pass the admit.
+            async with self._start_gate(remote):
+                await self._remote_org_admit(handle.org)
+                try:
+                    await self._run_container(handle, argv)
+                    handle.keepalive_pid = await self._probe_keepalive(handle.name)
+                except BaseException as exc:
+                    cleanup = self._spawn_background(
+                        self._remove_container(handle.container_id, handle.start_id)
+                    )
+                    if not isinstance(exc, asyncio.CancelledError):
+                        await asyncio.shield(cleanup)
+                    raise
+        finally:
+            if env_file is not None:
+                with contextlib.suppress(OSError):
+                    env_file.unlink()
         handle.init_pid = 1
         handle.started_at = handle.last_used = self._clock()
         handle.network = handle.egress.network if handle.egress is not None else "none"
@@ -3901,13 +3942,20 @@ class SandboxBroker:
             if started.rc != 0:
                 _log.warning("sandbox_broker.egress_proxy_failed", error=started.stderr[-300:])
                 raise SandboxUnavailable("The egress proxy did not start.")
-        joined = await self._docker.run(
-            ["network", "connect", network, EGRESS_PROXY_NAME],
-            timeout=_SMALL_TIMEOUT_SECONDS,
-        )
-        if joined.rc != 0 and "already exists" not in joined.stderr:
-            _log.warning("sandbox_broker.egress_join_failed", error=joined.stderr[-300:])
-            raise SandboxUnavailable("The egress proxy did not join the network.")
+            # A fresh proxy is on no egress network. Join it again to the
+            # network of every org that holds a live grant, or those
+            # containers lose their only way out.
+            networks = sorted({g.network for g in self._grants.values()} | {network})
+        else:
+            networks = [network]
+        for name in networks:
+            joined = await self._docker.run(
+                ["network", "connect", name, EGRESS_PROXY_NAME],
+                timeout=_SMALL_TIMEOUT_SECONDS,
+            )
+            if joined.rc != 0 and "already exists" not in joined.stderr:
+                _log.warning("sandbox_broker.egress_join_failed", error=joined.stderr[-300:])
+                raise SandboxUnavailable("The egress proxy did not join the network.")
 
     async def _release_network(self, org: str) -> None:
         """Remove the org's network when no grant of the org is left. Never raises."""

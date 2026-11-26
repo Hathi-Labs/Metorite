@@ -436,6 +436,8 @@ def _egress_grant(org: str = ORG) -> sb.EgressGrant:
 
 
 def _argv_for(handle: sb.SandboxHandle, broker: sb.SandboxBroker, **extra: Any) -> list[str]:
+    if "egress" in extra and "egress_env_file" not in extra:
+        extra["egress_env_file"] = broker.state_dir() / "egress" / "env" / ("0" * 32 + ".env")
     from acb_common import get_settings
 
     return sb.build_run_argv(
@@ -453,21 +455,48 @@ async def test_a_grant_changes_only_the_network_and_the_proxy_settings(
         (ws / ".git").mkdir()
         handle = await broker.acquire()
     plain = _argv_for(handle, broker)
-    granted = _argv_for(handle, broker, egress=_egress_grant())
+    grant = _egress_grant()
+    env_file = broker.state_dir() / "egress" / "env" / ("0" * 32 + ".env")
+    granted = _argv_for(handle, broker, egress=grant, egress_env_file=env_file)
     assert flag_values(granted, "--network") == [sb.egress_network_name(ORG)]
     assert mounts_of(granted) == mounts_of(plain)
     assert any(m.endswith("target=/workspace/.git,readonly") for m in mounts_of(granted))
-    env = dict(v.split("=", 1) for v in flag_values(granted, "--env"))
-    base = dict(v.split("=", 1) for v in flag_values(plain, "--env"))
-    added = {k: v for k, v in env.items() if k not in base}
+    # The 4 proxy variables come from ONE --env-file in the broker's state
+    # dir, and the token is never in the argv (review round 1).
+    assert flag_values(granted, "--env") == flag_values(plain, "--env")
+    assert flag_values(granted, "--env-file") == [str(env_file)]
+    assert grant.token not in " ".join(granted)
     url = f"http://grant:tok-{'q' * 40}@{sb.EGRESS_PROXY_NAME}:{sb.EGRESS_PROXY_PORT}"
-    assert added == dict.fromkeys(("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"), url)
-    strip = {"--network", "--env"}
+    assert sb.egress_env(grant) == dict.fromkeys(
+        ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"), url,
+    )
+    strip = {"--network", "--env-file"}
     def rest(argv: list[str]) -> list[str]:
         return [a for i, a in enumerate(argv) if a not in strip and argv[i - 1] not in strip]
     assert rest(granted) == rest(plain)
-    for flag in ("-p", "--publish", "-P", "--privileged", "--cap-add", "--env-file", "-e"):
+    for flag in ("-p", "--publish", "-P", "--privileged", "--cap-add", "-e"):
         assert flag not in granted
+
+
+def test_the_env_file_is_0600_and_holds_only_the_proxy_settings(tmp_path: Path) -> None:
+    grant = _egress_grant()
+    path = sb.write_egress_env_file(tmp_path / "env", "1" * 32, grant)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "env").stat().st_mode & 0o777 == 0o700
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert dict(x.split("=", 1) for x in lines) == sb.egress_env(grant)
+
+
+def test_an_egress_grant_needs_its_env_file_and_the_reverse(tmp_path: Path) -> None:
+    binding = sb.RunBinding(org=ORG, agent="agent-x", thread="t", instance="", workspace=tmp_path)
+    common = {
+        "binding": binding, "mounts": (), "uid": 1000, "gid": 1000, "image": PINNED_IMAGE,
+        "limits": sb.Limits("1", "1g", 256, 256), "start_id": "0" * 32,
+    }
+    with pytest.raises(sb.SandboxRefused, match="env file"):
+        sb.build_run_argv(**common, egress=_egress_grant())
+    with pytest.raises(sb.SandboxRefused, match="env file"):
+        sb.build_run_argv(**common, egress_env_file=tmp_path / "x.env")
 
 
 async def test_an_egress_grant_is_refused_where_no_grant_may_go(

@@ -52,6 +52,9 @@ MEMBER = "member@example.com"
 _REPO = Path(__file__).resolve().parents[2]
 _FIREWALL = _REPO / "apps" / "services" / "orchestrator" / "sandbox" / "host_firewall.sh"
 _PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+#: What each ``--env-file`` held when ``docker run`` read it: path to
+#: (mode, the variables). The broker removes the file right after.
+_ENV_FILES: dict[str, tuple[int, dict[str, str]]] = {}
 
 
 class EgressDocker(FakeDocker):
@@ -73,6 +76,12 @@ class EgressDocker(FakeDocker):
             if self.proxy_running:
                 return sb.DockerResult(0, "true|proxy\n", "")
             return sb.DockerResult(1, "", "Error: No such container: mtr-egress-proxy")
+        if argv[0] == "run" and "--env-file" in argv:
+            path = Path(flag_values(argv, "--env-file")[0])
+            lines = path.read_text(encoding="utf-8").splitlines()
+            _ENV_FILES[str(path)] = (
+                path.stat().st_mode & 0o777, dict(x.split("=", 1) for x in lines),
+            )
         if argv[0] == "run" and sb.EGRESS_PROXY_NAME in argv:
             self.calls.append(argv)
             self.proxy_runs.append(argv)
@@ -144,7 +153,11 @@ def broker(docker: EgressDocker, env: dict[str, Any], wall: Wall) -> sb.SandboxB
 
 
 def _env_of(argv: list[str]) -> dict[str, str]:
-    return dict(v.split("=", 1) for v in flag_values(argv, "--env"))
+    """The container env: the ``--env`` flags, and the ``--env-file`` as read."""
+    env = dict(v.split("=", 1) for v in flag_values(argv, "--env"))
+    for path in flag_values(argv, "--env-file"):
+        env.update(_ENV_FILES[path][1])
+    return env
 
 
 def _grants_file(broker: sb.SandboxBroker) -> dict[str, Any]:
@@ -219,6 +232,14 @@ async def test_a_grant_recreates_the_container_on_its_own_org_network(
     url = f"http://grant:{grant.token}@{sb.EGRESS_PROXY_NAME}:{sb.EGRESS_PROXY_PORT}"
     assert {k: _env_of(second)[k] for k in _PROXY_VARS} == dict.fromkeys(_PROXY_VARS, url)
     assert not set(_PROXY_VARS) & set(_env_of(first))
+    # Review round 1: the token never reaches the argv. The env file is 0600
+    # in a 0700 folder, and it is gone once the container started.
+    assert grant.token not in " ".join(second)
+    (env_file,) = flag_values(second, "--env-file")
+    assert _ENV_FILES[env_file][0] == 0o600
+    assert oct(Path(env_file).parent.stat().st_mode & 0o777) == "0o700"
+    assert not Path(env_file).exists()
+    assert Path(env_file).parent.is_relative_to(broker.state_dir())
     # The grant: the run binding, never input (R5).
     assert (grant.org, grant.run, grant.agent, grant.approver) == (
         ORG, "run-7", "agent-x", MEMBER,
@@ -566,6 +587,24 @@ def test_the_firewall_script_refuses_an_unknown_mode_and_a_non_root_apply() -> N
         assert apply.returncode == 2
 
 
+@pytest.mark.skipif(_BASH is None, reason="needs bash")
+@pytest.mark.parametrize(("version", "ok"), [
+    ("29.9.2", True), ("26.0.0", True), ("26.1.4", True), ("25.0.5", True),
+    ("25.1.0", True), ("23.0.11", True), ("23.0.15", True),
+    ("25.0.4", False), ("25.0.0", False), ("24.0.9", False), ("23.0.10", False),
+    ("20.10.24", False), ("", False), ("garbage", False), ("26.0.0-rc1", True),
+])
+def test_the_firewall_check_refuses_a_docker_hit_by_cve_2024_29018(
+    version: str, ok: bool,
+) -> None:
+    """Before 26.0.0, 25.0.5 and 23.0.11, an --internal network forwards DNS out."""
+    done = subprocess.run(
+        [_BASH, str(_FIREWALL), "--check-docker-version", version],
+        capture_output=True, timeout=30, check=False,
+    )
+    assert (done.returncode == 0) is ok
+
+
 def test_nothing_in_the_repo_applies_the_firewall_script() -> None:
     """To apply it on a box is owner gate WS43-G1, and in CI it is WS-43g3."""
     hits: list[str] = []
@@ -783,3 +822,41 @@ async def test_docker_a_revoked_token_is_refused_at_the_next_request(
     assert ran.returncode != 0 and "407" in ran.stderr, ran.stderr[-600:]
     refused = [x for x in _proxy_lines(proxy) if x["reason"] == "no_valid_grant"]
     assert refused and refused[-1]["decision"] == "refuse"
+
+
+async def test_a_fresh_proxy_joins_the_network_of_every_live_grant(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """Review round 1: a proxy that died and starts again joins each org's network."""
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        a = await broker.acquire()
+        await broker.grant_egress(a, "pip", ["pypi.org"])
+    docker.proxy_running = False  # the proxy died
+    with bound_run(ORG_B, member=MEMBER, thread="tb"):
+        b = await broker.acquire()
+        await broker.grant_egress(b, "pip", ["pypi.org"])
+    assert len(docker.proxy_runs) == 2
+    after = docker.calls[docker.calls.index(docker.proxy_runs[1]):]
+    joined = {c[2] for c in after if c[:2] == ["network", "connect"]}
+    assert joined == {sb.egress_network_name(ORG), sb.egress_network_name(ORG_B)}
+
+
+async def test_the_env_file_goes_even_when_the_start_fails(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        docker.fail_run = True
+        with pytest.raises(sb.SandboxUnavailable):
+            await broker.grant_egress(handle, "pip", ["pypi.org"])
+    folder = broker.state_dir() / "egress" / "env"
+    assert not folder.exists() or list(folder.iterdir()) == []
+
+
+def test_the_proxy_never_forwards_between_its_networks(tmp_path: Path) -> None:
+    argv = sb.build_proxy_argv(
+        image="sha256:" + "a" * 64, bin_dir=tmp_path / "bin", grants_dir=tmp_path / "grants",
+    )
+    assert set(flag_values(argv, "--sysctl")) == {
+        "net.ipv4.ip_forward=0", "net.ipv6.conf.all.forwarding=0",
+    }

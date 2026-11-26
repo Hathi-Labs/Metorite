@@ -81,6 +81,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - `sandbox_max_per_org` is the one per-org cap. A start refuses when it is above `sandbox_max_total`.
    - WS-43g1 (spec §7.3, task 4009) ships dark. `grant_egress` and `revoke_egress` recreate the container through `_restart`, so `mount_list` gives every mount again. A grant puts the container on its org's own `--internal` network, `mtr-egress-<hash>`. The one proxy, `sandbox/egress_proxy.py`, is its only way out.
    - With `sandbox_egress_enabled` off, a grant refuses, and the broker makes no proxy and no egress network. `docker-remote`, `projects` and `compute` get no grant. The run's end revokes, and `sweep()` removes the proxy, the networks and every grant.
+   - The grant token reaches the container through a 0600 `--env-file`, never the argv. A fresh proxy joins the network of every org with a live grant.
    - The grants file under the state dir holds the SHA-256 of each token, never a token. `sandbox/host_firewall.sh` prints its rule by default. Nothing in the repo applies it (WS43-G1, WS-43g3). Fences: `test_sandbox_egress_proxy.py` (WS43-F5), `test_sandbox_network_grant.py` (WS43-F9).
    - Fences: `test_sandbox_broker_seam.py`, `test_sandbox_broker_argv.py`, `test_sandbox_broker_tenant.py`, `test_sandbox_exec_hygiene.py`, `test_sandbox_remote_backend.py`, `test_projects_sandbox_tools.py`, `test_run_data_hygiene.py`.
 15. **No agent that a member reaches runs a shell on the host** (D85, D129, spec `maf_coding_engine.md` §7.9).
