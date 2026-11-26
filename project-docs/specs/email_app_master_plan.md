@@ -1,6 +1,6 @@
 # Email App — Master Plan (single source of truth)
 
-> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built, not merged. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
+> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built, not merged, with fix round 2. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
 
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
@@ -386,7 +386,8 @@ click-driven path already covers everyone the user cares about.
 
 **Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
 **Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
-No migration. Dark behind `EMAIL_MARK_DONE_ORGS`. The default is empty, which is off.
+Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
+No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
 
 **One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
 A bulk act sends one call for each conversation, as a pair of `account_id` and
@@ -396,15 +397,19 @@ Done does these steps in the request:
 1. It reads the state before the act. The answer returns it as `previous`:
    `{status, follow_up}`, or null when the thread was Done and had no open label.
 2. It writes status `DONE`, reason `Marked done by you`, and the newest stored
-   message. `last_message_at` becomes the newest `received_at` of the thread. That
-   value is the **anchor**.
-3. It removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local rows,
-   and it adds "Done". The provider gets the same change in a background job.
+   message. `last_message_at` becomes the **anchor**. The anchor is the newest
+   `received_at` of the mail that the automation has seen (D8, below).
+3. It removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local rows.
+   It adds "Done" to the latest inbound message. A draft is no inbound message,
+   so no label goes on a draft (D3). The provider gets the same change in a
+   background job.
 4. It closes each open task that came from the thread, as before.
 
 **The hold.** A thread is held while its status is `DONE`, its reason is the mark,
-and no message that is newer than the anchor is outside Sent and Drafts.
-`mark_done.held_sql` is the one definition. While a thread is held:
+and no message from another person is newer than the anchor. The sender decides,
+not the folder, so a copy of the member's own mail in any folder keeps the hold
+(D7). The self set comes from `identity.py` (D-EM-27). `mark_done.held_sql` is the
+one definition. While a thread is held:
 
 - An automated status write keeps the status, the reason, the anchor and the time of
   the classification. It still moves `last_message_id`, so the backfill does not
@@ -415,6 +420,25 @@ and no message that is newer than the anchor is outside Sent and Drafts.
   status.
 - The sync removes again a label that comes back. That label sets no status. This
   also covers a label that the member adds in the mail program of the provider.
+- The follow-up scan, an approval of a proposal and the repair of a failed run each
+  ask the hold for each thread (D1, D5). A held proposal or repair becomes
+  `SKIPPED`, and History says why.
+
+**The races (fix round 2).** One mechanism closes each race, in three parts:
+
+1. **Ask again after the I/O.** After a provider call or a model call, an
+   automated writer asks the hold again. When the thread is held now, the writer
+   puts "Done" back at once (`mark_done.recheck_after_io`). The runner, the
+   follow-up scan, an approval and a repair do this (D1, D5, D6). The scan drafts
+   no nudge for a thread that is held now.
+2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
+   finds each held thread with an open label. It puts "Done" back here and at the
+   provider. An import or a folder load gives the learner no delta, so only the
+   sweep heals its label (D9).
+3. **A generation on each label job.** The generation is the `classified_at` of
+   the status row. Each label job carries the generation of the write that made it.
+   A job that finds a newer generation sends the labels of that newer write
+   (`_converge`). So an older Done job cannot undo a move back (D2a).
 
 A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
 move back end it too. A reply that the member sends does not end it.
@@ -424,10 +448,26 @@ as its reason stores `Auto-classified`, because a model writes that reason over 
 mail text.
 
 **Move back.** The same route with `done=false` and `restore` writes the status of
-`restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`) with the reason `Moved back by you`.
-It puts that label on the latest inbound message. With `follow_up` it puts
-"Follow-up" on the latest message. It does not open the tasks that Done closed.
-It does not restore a cleanup label, such as "Newsletter".
+`restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`). The reason is `Moved back by you`,
+or `Moved back to Follow-up by you` with `follow_up`. It puts that label on the
+latest inbound message. With `follow_up` it puts "Follow-up" on the latest message
+that is not a draft. It opens no task that Done closed, and no cleanup label.
+
+The write asks the hold in its own `WHERE`. When new mail or another write changed
+the thread after Done, the answer is 409 and nothing changes (D4). The app then
+drops the undo step and reads the rows again.
+
+For 10 minutes after a move back, the label job may not have run yet (D2b). In
+that time the sync reads a conversation label that disagrees with the status as
+stale. It puts the labels of the move back again, and the learner ignores the label.
+
+**D8, the choice of the anchor.** Mail that the member may not have seen must not
+fall under the hold. The anchor leaves out inbound mail with no
+`rules_processed_at` that arrived and was stored after the last write of the
+status. Such mail ends the hold at once, so its own classification sets the status.
+We chose this over an anchor from the app, because the chat tool and a bulk act
+know no newest message. The cost: when the rules of that mail already ran with no
+status write, the thread stays Done with no hold.
 
 **The app.** `GET /email/reply-zero/mark-done` answers `{enabled}`. When it is on,
 the app shows these surfaces:
@@ -438,6 +478,11 @@ the app shows these surfaces:
 - The key `d` for the open mail. `e` stays Archive.
 - A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
   act had "Follow-up". Ctrl+Z runs the same step, on the one undo stack of the app.
+  The toast closes when the step ran, from either control.
+
+On a phone the "Done" button is an icon with the name "Mark done", as Reply and
+Forward are. So the bar stays one row at 390 px. Email claims the undo scope only
+with the flag on. The flag off leaves the history of another surface alone (D10).
 
 **Accepted limits.**
 
@@ -447,9 +492,18 @@ the app shows these surfaces:
   the member asked for Done.
 - A reply of the member in a held conversation still pays one status call. The
   result changes nothing.
+- The self set holds the address of each mailbox of the member. Mail from an alias
+  that no mailbox names ends the hold, as mail of another person does.
+- A label that lands between the last ask and the commit of a writer stays until the
+  next sync cycle, when the sweep removes it.
+- The follow-up scan holds its block across its model calls. A Mark done of a
+  thread that the scan wrote in that block waits for the scan to commit.
+- A reopen with `done=false` and no `restore` reads the folder of the latest dated
+  message, as before. A nudge draft there makes it Needs Reply.
 
-**Fences.** `tests/unit/test_email_mark_done.py` (the flag, and the statement with
-the flag off), `tests/unit/test_email_mark_done_r8.py` (the hold on a real database),
+**Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
+the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
+D1 to D9 on a real database. The others are
 `src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
 `src/app/email/components/markDoneMenu.test.ts` (the menu order).
 

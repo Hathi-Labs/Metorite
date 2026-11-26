@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.assistant import (
     EMAIL_TASK_TIERS,
     _load_assistant_about,
@@ -70,6 +71,21 @@ _FOLLOW_UP_MAX_AGE_DAYS = 30
 
 
 async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bool]:
+    """The follow-up scan (:func:`_follow_up_scan`), then the sweep of the
+    held threads (task 3995, ``mark_done.heal_held``).
+
+    The sweep runs after the block of the scan commits, so it sees a label
+    that the scan wrote while the member marked the thread done. The sync
+    loop calls this each cycle, so a held thread with an open label heals at
+    the next cycle at the latest. With ``EMAIL_MARK_DONE_ORGS`` off the sweep
+    reads nothing.
+    """
+    result = await _follow_up_scan(account_id)
+    await mark_done.heal_held(account_id)
+    return result
+
+
+async def _follow_up_scan(account_id: str) -> dict[str, int | bool]:
     """Label (and optionally draft a nudge for) threads waiting too long for a
     reply. Runs both on the sync loop (background) and on demand via the
     "Find follow-ups" button (POST /email/follow-ups/scan).
@@ -178,6 +194,13 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                 if not r.provider_message_id:
                     await mark()
                     continue
+                # Task 3995 (D1): the rows were read once, and the scan holds
+                # its block across model calls. A Mark done that committed
+                # since then leaves the thread alone. Each ask is a statement
+                # of its own, so it reads that commit. No read with the flag off.
+                if await mark_done.thread_is_held(db, account_id, r.thread_id):
+                    await mark()
+                    continue
                 # Apply the "Follow-up" tag on BOTH surfaces. Mirror it locally
                 # (email_messages.categories) so it shows as a chip/filter in
                 # the regular mailbox view at once — the reminder path used to
@@ -202,6 +225,12 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                     await provider.set_labels(
                         r.provider_message_id, add=[_FOLLOW_UP_LABEL], remove=[])
                     labeled_ok = True
+                # Task 3995: the hold may have begun during the label I/O.
+                # Then "Done" goes back at once, and no nudge is drafted.
+                if await mark_done.recheck_after_io(
+                        db, provider, account_id, [r.thread_id]):
+                    await mark()
+                    continue
                 if labeled_ok:
                     result["labeled"] += 1
                 if auto_draft and r.status == "AWAITING":
@@ -242,7 +271,12 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                             )
                             # Confidence gate (defense-in-depth): don't persist
                             # a declined / empty draft as a real provider draft.
-                            if not _is_no_draft(body):
+                            # Task 3995: the model call took time. A thread
+                            # that the member marked done meanwhile gets no
+                            # nudge, and its labels go back to "Done".
+                            held_now = await mark_done.recheck_after_io(
+                                db, provider, account_id, [r.thread_id])
+                            if not held_now and not _is_no_draft(body):
                                 # Signature-in-body: the nudge draft shows the
                                 # signature upstream too (idempotent).
                                 from gateway.routes.email.signature import (  # noqa: PLC0415

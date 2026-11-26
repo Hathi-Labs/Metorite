@@ -167,6 +167,17 @@ async def test_with_the_flag_off_the_hold_reads_nothing(monkeypatch) -> None:
     db = _Db()
     assert not await mark_done.thread_is_held(db, "a", "t")
     assert await mark_done.held_label(db, "a", "t", "Needs Reply") == "Needs Reply"
-    assert await mark_done.held_among("a", ["t"]) == set()
-    await mark_done.reclean_returned_labels("a", [(object(), [])])
+    assert await mark_done.owned_among("a", ["t"]) == set()
+    assert await mark_done.reclean_returned_labels("a", [(object(), [])]) == set()
+    assert await mark_done.heal_held("a") == 0
+    assert await mark_done.recheck_after_io(db, None, "a", ["t"]) == set()
     assert db.statements == []
+
+
+def test_the_hold_reads_the_sender_and_the_move_back_asks_the_hold() -> None:
+    """The text of the two rules that the R8 suite proves (D4, D7)."""
+    held = mark_done.held_sql("s")
+    assert "from_address->>'email'" in held and "email_accounts" in held
+    restore = mark_done._restore_sql()
+    assert "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid" in restore
+    assert mark_done.held_sql("email_thread_status") in restore

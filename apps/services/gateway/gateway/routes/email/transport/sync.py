@@ -156,9 +156,10 @@ async def _apply_label_status_corrections(
     so this runs AFTER the sync's persistence commit, deduped by thread.
     Best-effort — a failed correction never fails the sync.
 
-    Task 3995: a label on a thread that the member marked done by hand is a
-    stale one that came back. It sets no status, and the thread gets "Done"
-    again (``mark_done.settle_held``). The Fix in the app still wins."""
+    Task 3995: a label on a thread whose labels the member owns (held, or a
+    move back of the last minutes) is a stale one. It sets no status, and the
+    thread gets the member's labels again (``mark_done.settle_owned``). The
+    Fix in the app still wins."""
     if not corrections:
         return
     from gateway.routes.email.automation import mark_done
@@ -166,15 +167,15 @@ async def _apply_label_status_corrections(
         apply_thread_status_correction,
     )
     try:
-        held = await mark_done.held_among(account_id, sorted(corrections))
+        owned = await mark_done.owned_among(account_id, sorted(corrections))
     except Exception as exc:
         # No correction runs when the hold cannot be read: it could end it.
         _log.warning("email.label_status_correction_failed",
                      account_id=account_id, error=str(exc)[:160])
         return
     for tid, key in corrections.items():
-        if tid in held:
-            await mark_done.settle_held(account_id, tid)
+        if tid in owned:
+            await mark_done.settle_owned(account_id, tid)
             continue
         try:
             await apply_thread_status_correction(account_id, tid, key)
@@ -207,10 +208,15 @@ async def learn_from_label_change_events(
     """
     if not changes:
         return
-    # Task 3995: "Follow-up" and its like on a held thread go again. The learner
-    # below reacts to rule labels only, so this runs first.
+    # Task 3995: a conversation label that changed on a thread whose labels
+    # the member owns is stale. It goes again, and the learner below learns
+    # nothing from it. The learner reacts to rule labels only, so this runs
+    # first.
     from gateway.routes.email.automation import mark_done
-    await mark_done.reclean_returned_labels(account_id, changes)
+    owned = await mark_done.reclean_returned_labels(account_id, changes)
+    if owned:
+        changes = [(msg, old) for msg, old in changes
+                   if getattr(msg, "thread_id", None) not in owned]
     status_corrections: dict[str, str] = {}
     async with _tenant_session() as db:
         label_rule_map, conv_rule_keys = await _build_label_rule_map(

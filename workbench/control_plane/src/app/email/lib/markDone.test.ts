@@ -27,7 +27,7 @@ vi.mock("./api", async (importOriginal) => {
 import { useEmailStore } from "./emailStore";
 import {
   MARK_DONE_KEY, MOVE_BACK_LABEL, doneCategories, leavesView, markDoneEntry, markDoneItemLabel,
-  moveBackLabel, nextSelection, restoredCategories, threadsOf,
+  moveBackLabel, movedOn, nextSelection, restoredCategories, threadsOf,
 } from "./markDone";
 import type { Email } from "./types";
 
@@ -85,6 +85,11 @@ beforeEach(() => {
 
 describe("the key", () => {
   const page = readFileSync(resolve(__dirname, "../page.tsx"), "utf-8");
+
+  it("claims the undo scope only with Mark done on (D10)", () => {
+    expect(page).not.toContain('useUndoScope("email")');
+    expect(page).toContain('if (canMarkDone) setUndoScope("email");');
+  });
   const at = (needle: string) => {
     const found = page.indexOf(needle);
     expect(found, needle).toBeGreaterThan(-1);
@@ -156,6 +161,22 @@ describe("the rules", () => {
     );
     expect(got.get("in")).toEqual(["Awaiting Reply"]);
     expect(got.get("out")).toEqual(["Follow-up"]);
+  });
+
+  it("puts no label on a draft, also when the draft is the newest row", () => {
+    const thread = [
+      mail("in", { categories: ["Follow-up"] }),
+      mail("out", { folder: "sent", receivedAt: "2026-11-02T10:00:00Z" }),
+      mail("nudge", { folder: "Drafts", receivedAt: "2026-11-03T10:00:00Z" }),
+    ];
+    const done = doneCategories(thread);
+    expect(done.get("in")).toEqual(["Done"]);
+    expect(done.get("nudge")).toEqual([]);
+    const after = thread.map((m) => ({ ...m, categories: done.get(m.id) ?? [] }));
+    const back = restoredCategories(after, { status: "AWAITING", followUp: true });
+    expect(back.get("in")).toEqual(["Awaiting Reply"]);
+    expect(back.get("out")).toEqual(["Follow-up"]);
+    expect(back.get("nudge")).toEqual([]);
   });
 
   it("names the toast button for what it restores", () => {
@@ -268,6 +289,24 @@ describe("Mark done in the store", () => {
     expect(rows().map((e) => e.id)).toEqual(["one", "two", "three"]);
     expect(useEmailStore.getState().emailsTotal).toBe(3);
     expect(useEmailStore.getState().selectedEmailId).toBe("one");
+  });
+
+  it("drops a move back that the gateway refused because the thread changed", async () => {
+    api.resolveThread.mockResolvedValue({ previous: { status: "AWAITING", followUp: true } });
+    const out = await useEmailStore.getState().markThreadsDone([rows()[0]]);
+    const changed = Object.assign(new Error("This conversation changed after you marked it done."), {
+      status: 409,
+    });
+    api.resolveThread.mockRejectedValue(changed);
+    // Nothing is left to undo, so the step counts as done and leaves the stack.
+    expect(await useEmailStore.getState().moveThreadsBack(out.marked)).toBe(0);
+    expect(cats("one")).toEqual(["Client", "Done"]);
+    expect(useEmailStore.getState().error).toBe(changed.message);
+    expect(movedOn(changed)).toBe(true);
+    expect(movedOn(new Error("Gateway error 502"))).toBe(false);
+    // Another failure keeps the step, so the member can try again.
+    api.resolveThread.mockRejectedValue(Object.assign(new Error("down"), { status: 502 }));
+    expect(await useEmailStore.getState().moveThreadsBack(out.marked)).toBe(1);
   });
 
   it("reads the flag, and a failed read keeps Mark done off", async () => {

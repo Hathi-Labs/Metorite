@@ -89,14 +89,31 @@ export function inThread(row: { accountId?: string; threadId?: string }, ref: Th
   return row.threadId === ref.threadId && (!row.accountId || row.accountId === ref.accountId);
 }
 
-/** The newest row of `rows`, and the newest one that is not in Sent. */
+const isDraft = (r: DoneRow) => (r.folder || "").toLowerCase() === "drafts";
+
+/**
+ * The newest row of `rows` that is not a draft, and the newest one that is in
+ * neither Sent nor Drafts. A draft is no inbound mail, and the list shows no
+ * label on it, so no label goes there (the gateway's rule, §6.6).
+ */
 function newest(rows: ReadonlyArray<DoneRow>): { latest?: string; inbound?: string } {
   const order = [...rows].sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : a.receivedAt > b.receivedAt ? 1 : 0));
-  const inbound = order.filter((r) => (r.folder || "").toLowerCase() !== "sent");
+  const kept = order.filter((r) => !isDraft(r));
+  const inbound = kept.filter((r) => (r.folder || "").toLowerCase() !== "sent");
+  const last = kept.at(-1) ?? order.at(-1);
   return {
-    latest: order.at(-1)?.id,
-    inbound: (inbound.at(-1) ?? order.at(-1))?.id,
+    latest: last?.id,
+    inbound: (inbound.at(-1) ?? last)?.id,
   };
+}
+
+/**
+ * True when the gateway refused a move back because the conversation changed
+ * after Done: new mail came, or another write moved it. Then nothing is left
+ * to undo, so the step leaves the stack and the rows read again.
+ */
+export function movedOn(err: unknown): boolean {
+  return (err as { status?: number } | null)?.status === 409;
 }
 
 /** The labels of each loaded row of one conversation after Done. */

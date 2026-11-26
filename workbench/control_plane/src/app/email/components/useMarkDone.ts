@@ -29,14 +29,24 @@ export function useMarkDone() {
       const { marked } = await markThreadsDone(rows);
       if (marked.length === 0) return;
       const back = moveBackLabel(marked);
+      // A key of its own for each act that can move back, so the button of
+      // an earlier act stays while the member works down the list.
+      const key = back ? `email-mark-done:${marked.map(threadKey).join()}` : undefined;
       const entry = back
-        ? markDoneEntry(marked, { markDone: markThreadsDone, moveBack: moveThreadsBack })
+        ? markDoneEntry(marked, {
+            markDone: markThreadsDone,
+            // Ctrl+Z runs the same step as the button. Once it ran, the toast
+            // offers nothing more, so it closes.
+            moveBack: async (threads) => {
+              const failed = await moveThreadsBack(threads);
+              if (failed === 0 && key) toast.dismiss(key);
+              return failed;
+            },
+          })
         : null;
       if (entry) record(entry);
       toast.show({
-        // A key of its own for each act that can move back, so the button of
-        // an earlier act stays while the member works down the list.
-        key: back ? `email-mark-done:${marked.map(threadKey).join()}` : undefined,
+        key,
         title: doneTitle(marked.length),
         timeout: MARK_DONE_TOAST_MS,
         action: back && entry

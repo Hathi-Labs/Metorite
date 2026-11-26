@@ -40,7 +40,7 @@ import { StorageStep } from "./components/StorageStep";
 import { SyncBanner } from "./components/SyncBanner";
 import { EmailDeepLink } from "./components/EmailDeepLink";
 import { useMarkDone } from "./components/useMarkDone";
-import { useUndoScope } from "@/components/UndoProvider";
+import { useUndo } from "@/components/UndoProvider";
 import { MARK_DONE_KEY } from "./lib/markDone";
 import Modal from "@/components/ui/Modal";
 import {
@@ -721,8 +721,13 @@ export default function EmailPage() {
 
   // Mark done (task 3995): the gateway says whether this organization has it.
   const { enabled: canMarkDone, markDone } = useMarkDone();
-  // Ctrl+Z reaches the acts of this app only (`UndoProvider`).
-  useUndoScope("email");
+  // Ctrl+Z reaches the acts of this app only (`UndoProvider`). With Mark done
+  // off, Email puts nothing on the stack, so it claims no scope: a claim would
+  // clear the history of the surface the member came from.
+  const { setScope: setUndoScope } = useUndo();
+  useEffect(() => {
+    if (canMarkDone) setUndoScope("email");
+  }, [canMarkDone, setUndoScope]);
   useEffect(() => {
     void useEmailStore.getState().fetchMarkDone();
   }, []);

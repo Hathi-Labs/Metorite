@@ -1726,6 +1726,12 @@ async def _reconcile_thread_labels(
     # reader looks at); fall back to the latest message if all are outbound.
     inbound = [r for r in rows if (r.folder or "").lower() != "sent"]
     target = inbound[-1] if inbound else rows[-1]
+    if mark_done.mark_done_on():
+        # Task 3995 (D3): a draft is no inbound mail. A nudge draft is often
+        # the newest row, and the list does not show a label on it.
+        kept = [r for r in rows if (r.folder or "").lower() != "drafts"]
+        received = [r for r in kept if (r.folder or "").lower() != "sent"]
+        target = (received or kept or rows)[-1]
     if keep_label in list(target.categories or []):
         return
     # Mirror first (see above), then best-effort provider apply — so a thread

@@ -1301,15 +1301,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
             active={replyMode === "forward"}
           />
           {canMarkDone && email.threadId && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon="Check"
-              title="Mark done"
+            // An icon like its neighbours, so the bar stays one row at 390 px.
+            <TBtn
+              icon={themedIcon("Check")}
+              label="Mark done"
               onClick={() => void markDone([email])}
-            >
-              Done
-            </Button>
+            />
           )}
 
           <TBtn

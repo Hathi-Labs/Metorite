@@ -555,7 +555,14 @@ async def retry_failed_executions(
         repaired = 0
         still_failing = 0
         skipped: set[str] = set()
+        # Task 3995 (D5): a repair replays a rule, and no rule runs in a held
+        # conversation. Its row says why. No read with the flag off.
+        held = await mark_done.held_threads(
+            db, account_id, [r.thread_id for r in rows if r.thread_id])
         for r in rows:
+            if r.thread_id in held:
+                await _skip_held_execution(db, str(r.id))
+                continue
             actions = [a for a in actions_by_rule.get(str(r.rule_id), [])
                        if a.get("type") not in _RETRY_SKIPPED_ACTIONS]
             skipped.update(
@@ -588,6 +595,10 @@ async def retry_failed_executions(
             ), {"eid": str(r.id), "st": status, "acts": json.dumps(taken),
                 "aerr": json.dumps(errors), "reason": gone_reason})
 
+        # The hold may have begun during the provider I/O above.
+        await mark_done.recheck_after_io(
+            db, provider, account_id,
+            [r.thread_id for r in rows if r.thread_id not in held])
         await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.retry_failed_done", account_id=account_id,
                   considered=len(rows), repaired=repaired,
@@ -595,6 +606,15 @@ async def retry_failed_executions(
         return {"considered": len(rows), "repaired": repaired,
                 "still_failing": still_failing,
                 "skipped_actions": sorted(skipped)}
+
+
+async def _skip_held_execution(db: Any, exec_id: str) -> None:
+    """A rule run that the hold stops (task 3995): SKIPPED, with the reason of
+    the hold, so History says why it did not run."""
+    await db.execute(text(
+        "UPDATE email_executed_rules SET status = 'SKIPPED', reason = :reason "
+        "WHERE id = :eid"
+    ), {"eid": exec_id, "reason": mark_done.HELD_SKIP_REASON})
 
 
 class RetryFailedRequest(BaseModel):
@@ -658,6 +678,12 @@ async def approve_execution(
             raise HTTPException(status_code=400, detail="Not pending")
         if not row.rule_id:
             raise HTTPException(status_code=400, detail="Rule no longer exists")
+        # Task 3995 (D5): a proposal of a held conversation does not run. The
+        # member marked the conversation done after the rule proposed it.
+        if await mark_done.thread_is_held(db, str(row.account_id), row.thread_id):
+            await _skip_held_execution(db, exec_id)
+            return {"ok": True, "status": "SKIPPED", "actions": [],
+                    "reason": mark_done.HELD_SKIP_REASON}
 
         act_rows = (await db.execute(text(
             """SELECT type, label, subject, content, to_address, cc_address,
@@ -684,6 +710,9 @@ async def approve_execution(
             "UPDATE email_executed_rules SET status='APPLIED', actions_taken=:acts "
             "WHERE id=:eid"
         ), {"eid": exec_id, "acts": json.dumps(taken)})
+        # The hold may have begun during the provider I/O above.
+        await mark_done.recheck_after_io(
+            db, provider, str(row.account_id), [row.thread_id])
         if row.message_id:
             await _stamp_processed_watermark(
                 db, row.message_id, provider=provider)
@@ -1486,8 +1515,11 @@ async def _apply_matches(
     Task 3995: in a thread that the member marked done by hand, each match is
     suppressed and the cold blocker does not run. This is the one choke point of
     the three apply paths, and Process past reaches it with no resolver.
+    The hold may begin during the provider I/O of an apply (D6), so the apply
+    asks again after it and puts "Done" back (``mark_done.recheck_after_io``).
     """
-    if await mark_done.thread_is_held(db, account_id, r.thread_id):
+    held = await mark_done.thread_is_held(db, account_id, r.thread_id)
+    if held:
         matches = mark_done.hold_matches(matches)
         cold_blocker = None
     if matches:
@@ -1497,6 +1529,9 @@ async def _apply_matches(
                 about, signature, account_user, account_id,
                 sole_match=len(matches) == 1,
             )
+        if apply and not dry_run and not held:
+            await mark_done.recheck_after_io(
+                db, provider, account_id, [r.thread_id])
         return
     if dry_run or not log_no_match:
         return

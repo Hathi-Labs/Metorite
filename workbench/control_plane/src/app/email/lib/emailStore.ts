@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { Email, EmailAccount, EmailFolder, EMAIL_CATEGORIES, RunMessageResult } from "./types";
 import * as api from "./api";
 import {
-  doneCategories, inThread, leavesView, nextSelection, requiredLabels, restoredCategories,
+  doneCategories, inThread, leavesView, movedOn, nextSelection, requiredLabels, restoredCategories,
   threadKey, threadsOf, type DoneRow, type MarkedThread, type ThreadRef,
 } from "./markDone";
 import type { EmailFolderRaw } from "./api";
@@ -2015,7 +2015,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
         } catch (err) {
           change.revert();
           set({ error: (err as Error)?.message || "Failed to move the conversation back" });
-          return false;
+          // A conversation that changed after Done has nothing left to undo:
+          // the step leaves the stack, and the rows read again (afterMark).
+          return movedOn(err);
         }
       },
     );
