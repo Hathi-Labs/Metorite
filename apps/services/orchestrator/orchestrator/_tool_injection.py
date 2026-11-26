@@ -5660,14 +5660,20 @@ def _make_finder(applied: PackApply, candidates: Any) -> Any:
     """THE ``FindTools`` of one run (TS-2a). Its record is the record of the
     apply, the same ``PackRun`` that the loader holds, so the two share
     ``PackRun.lock``. Its builder is the guarded builder of layer (a), and
-    its measure is ``_maf_mcp.schema_tokens``."""
+    its measure is ``_maf_mcp.schema_tokens``.
+
+    SBX-1a (``agent_sandbox.md`` §6.1): its ``on_gap`` is
+    ``tool_gap_path.make_gap_hook()``, the hook of the no-match path. With
+    ``user_tool_find_enabled`` off it is None, and the finder is as before.
+    The import is lazy, because ``tool_gap_path`` imports this module."""
     from acb_skills import tool_packs
 
-    from orchestrator import _maf_mcp
+    from orchestrator import _maf_mcp, tool_gap_path
 
     return tool_packs.FindTools(
         candidates=candidates, run_key=applied.run_key, record=applied.record,
         build=_build_pack_for_load, measure=_maf_mcp.schema_tokens,
+        on_gap=tool_gap_path.make_gap_hook(),
     )
 
 

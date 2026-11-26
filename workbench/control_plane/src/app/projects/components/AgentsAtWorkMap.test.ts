@@ -190,4 +190,16 @@ describe("AgentsCanvas (SW-112)", () => {
     expect(empty).not.toBeNull();
     expect(html).toContain("No agent works on this project yet.");
   });
+  it("draws the map of SW-103, not the lenses, while AGENT_LENSES_ORGS is off", async () => {
+    const { AgentsCanvas } = await import("./AgentsCanvas");
+    const map = parseAgentMap({
+      sessions: [{ id: "s", person: "ana@x.test", name: "s", client: "Claude Code", state: "working", run_count: 1 }],
+      runs: [], lines: [], count: 1, truncated: false, viewer: "admin",
+    })!;
+    const html = renderToStaticMarkup(
+      createElement(AgentsCanvas, { read: { kind: "ready", map }, showQuiet: false, onShowQuiet: () => {} }),
+    );
+    expect(html).toContain("data-agent-map");
+    expect(html).not.toContain("data-agent-lenses");
+  });
 });
