@@ -993,8 +993,11 @@ def starts_without_admit(source: str) -> tuple[list[str], list[str]]:
     A starter is a function that runs a container or builds its argv. It is
     an offender unless EACH of its runs lies in the body of one
     ``async with self._start_gate(...)`` whose same body awaits
-    ``_remote_org_admit`` (review round 2, P3). A starter that builds an
-    argv and runs nothing is an offender too.
+    ``_remote_org_admit`` (review round 2, P3). SBX-15c: that await is a
+    statement of its own in the gate body, and the run lies in a LATER
+    statement of the same body. An admit after the run, or an admit inside an
+    ``if``, does not count. A starter that builds an argv and runs nothing is
+    an offender too.
     """
     import ast
 
@@ -1017,9 +1020,22 @@ def starts_without_admit(source: str) -> tuple[list[str], list[str]]:
                 for w in item.items
             ):
                 continue
-            body = [c for b in item.body for c in ast.walk(b) if isinstance(c, ast.Call)]
-            if any(_call_name(c.func) == "_remote_org_admit" for c in body):
-                gated |= {id(c) for c in body if _is_run(c)}
+            first_admit = next(
+                (
+                    i for i, stmt in enumerate(item.body)
+                    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Await)
+                    and isinstance(stmt.value.value, ast.Call)
+                    and _call_name(stmt.value.value.func) == "_remote_org_admit"
+                ),
+                None,
+            )
+            if first_admit is None:
+                continue
+            after = [
+                c for b in item.body[first_admit + 1:] for c in ast.walk(b)
+                if isinstance(c, ast.Call)
+            ]
+            gated |= {id(c) for c in after if _is_run(c)}
         if not runs or any(id(r) not in gated for r in runs):
             offenders.append(node.name)
     return starters, offenders
@@ -1066,6 +1082,21 @@ def test_the_admit_detector_sees_each_shape_of_a_start() -> None:
         "        await self._run_container(h, argv)\n",
         # An argv that is built and never run under a gate.
         "def j(b):\n    return build_run_argv(binding=b)\n",
+        # SBX-15c: the run before the admit, in one gate.
+        "async def k(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await self._run_container(h, argv)\n"
+        "        await self._remote_org_admit(h.org)\n",
+        # SBX-15c: the admit and the run in one statement.
+        "async def m(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        await asyncio.gather(self._remote_org_admit(h.org), self._run_container(h, argv))\n",
+        # SBX-15c: an admit that only an `if` runs.
+        "async def n(self, h, argv, x):\n    async with self._start_gate(True):\n"
+        "        if x:\n            await self._remote_org_admit(h.org)\n"
+        "        await self._run_container(h, argv)\n",
+        # SBX-15c: an admit that is not awaited.
+        "async def p(self, h, argv):\n    async with self._start_gate(True):\n"
+        "        self._remote_org_admit(h.org)\n"
+        "        await self._run_container(h, argv)\n",
     ]
     for source in bad:
         assert starts_without_admit(source)[1], source
@@ -1248,6 +1279,255 @@ async def test_transfer_feeds_stdin_and_caps_stdout(monkeypatch: pytest.MonkeyPa
     assert len(sink.getvalue()) <= 100
 
 
+# ── SBX-15c: three follow-ups of the docker-remote backend ──────────────────
+
+
+class _StreamProc:
+    """A ``docker`` child for :meth:`DockerCLI.collect`, with two real readers."""
+
+    def __init__(self, stdout: bytes, stderr: bytes) -> None:
+        self.returncode = 0
+        self.stdin = None
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_data(stdout)
+        self.stdout.feed_eof()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_data(stderr)
+        self.stderr.feed_eof()
+
+    async def wait(self) -> int:
+        return 0
+
+
+#: The stderr of a compute run when the ssh link drops: the docker CLI names
+#: the ssh command line, the key file and the cert dir of the gateway box.
+_SSH_DROP = (
+    b"Traceback: ValueError: bad row\n"
+    b"error during connect: command [ssh -o ConnectTimeout=30 -T -l sandbox -p 2222 -- "
+    b"10.20.30.40 docker system dial-stdio] has exited with exit status 255: "
+    b"sandbox@10.20.30.40: Connection reset.\n"
+    b"Identity file /home/acb/.ssh/sandbox_key not accessible.\n"
+    b"ssh: connect to host 10.20.30.40 port 2222: Connection refused\n"
+    b"dial tcp 10.0.0.5:2376: connect: connection refused\n"
+    b"open /etc/metorite/sandbox-tls/key.pem: permission denied\n"
+    b"Authorization: Bearer abcdef0123456789 sk-ant-api03-abcdefghijklmnopqrstuvwx\n"
+)
+
+
+async def test_the_stderr_of_a_compute_run_holds_no_address_path_or_key(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-15c fix 1. ``run_compute`` gives the stderr of ``collect`` to the
+    model, so ``collect`` scrubs it through ``_scrub``, the one scrub of the
+    broker."""
+    monkeypatch.setenv("HOME", "/home/acb")
+    monkeypatch.setattr(env["settings"], "sandbox_docker_cert_path", "/etc/metorite/sandbox-tls")
+
+    async def fake_exec(*args: Any, **kw: Any) -> _StreamProc:
+        return _StreamProc(b"result 42\n", _SSH_DROP)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    cli = sb.DockerCLI()
+    cli._binary = lambda: "/usr/bin/docker"  # type: ignore[method-assign]
+    got = await cli.collect(["exec", "c", "python", "main.py"], timeout=5, cap=1 << 20)
+    err = got.stderr.decode("utf-8")
+    for leak in (
+        "sandbox@", "-l sandbox", "2222", "/home/acb", "/etc/metorite/sandbox-tls",
+        "sk-ant-api03", "abcdef0123456789", "10.20.30.40", "10.0.0.5", "2376",
+    ):
+        assert leak not in err, f"{leak!r} reached the stderr of a compute run: {err}"
+    assert "-l (user) -p (port)" in err
+    assert "connect to host (sandbox box) port (port)" in err  # review P3
+    assert "dial tcp (sandbox box)" in err
+    assert "(host path)/.ssh/sandbox_key" in err and "(secret)" in err
+    assert "ValueError: bad row" in err, "the member's own error stays readable"
+    assert got.stdout == b"result 42\n", "the stdout of the member's code stays as it is"
+
+
+def test_the_scrub_takes_a_whole_host_path_on_any_backend(
+    env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(env["settings"], "sandbox_backend", "docker")
+    monkeypatch.setattr(env["settings"], "sandbox_docker_host", "")
+    monkeypatch.setenv("HOME", "/root")
+    out = sb._scrub("open /root/.ssh/id: no; /rootfs/bin and /root.bak stay; /root. Bearer abc.def")
+    assert out == (
+        "open (host path)/.ssh/id: no; /rootfs/bin and /root.bak stay; (host path). (secret)"
+    )
+    monkeypatch.setenv("HOME", "/")
+    assert sb._scrub("/usr/bin/python") == "/usr/bin/python", "a home of / takes nothing"
+
+
+async def test_a_failed_startup_removal_is_recorded_and_reaped(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """SBX-15c fix 2. The ssh link drops during the ``rm -f`` of the startup
+    sweep. The old container of org A goes to the orphan record, the reaper
+    removes it, and org B then starts."""
+    docker.box = {"cid-old-a": ORG}
+    docker.ps_ids = ["cid-old-a"]
+    docker.fail_rm = 1
+    await broker.sweep()
+    assert docker.box == {"cid-old-a": ORG}, "the failed removal left the container"
+    assert broker._remote_orphans == {"cid-old-a"}, "a failed sweep removal must be recorded"
+    assert broker._reaper is not None, "the reaper runs while an orphan stays"
+    with bound_run(ORG_B, thread="t-b"), pytest.raises(sb.SandboxBusy):
+        await broker.acquire()
+    docker.ps_ids = []
+    await broker.reap_once()
+    assert docker.box == {} and not broker._remote_orphans
+    with bound_run(ORG_B, thread="t-b"):
+        b = await broker.acquire()
+    assert b.org == ORG_B
+    await broker.stop()
+
+
+async def test_a_startup_removal_that_raises_is_recorded_too(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker.box = {"cid-x": ORG}
+    docker.ps_ids = ["cid-x"]
+    real = docker.run
+
+    async def broken(args: Sequence[str], *, timeout: float) -> sb.DockerResult:
+        if list(args[:2]) == ["rm", "-f"]:
+            raise OSError("ssh: broken pipe")
+        return await real(args, timeout=timeout)
+
+    monkeypatch.setattr(docker, "run", broken)
+    assert await broker.sweep() == 0
+    assert broker._remote_orphans == {"cid-x"}
+    await broker.stop()
+
+
+async def test_the_local_sweep_keeps_no_orphan_record(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record is for the remote box. The local sweep runs at each start."""
+    monkeypatch.setattr(env["settings"], "sandbox_backend", "docker")
+    docker.ps_ids = ["cid-x"]
+    docker.fail_rm = 1
+    await broker.sweep()
+    assert not broker._remote_orphans
+
+
+def _late_daemon(docker: RemoteFakeDocker, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """``docker run`` times out. The test then makes the container, as a daemon
+    that finishes the create after the CLI died does. The start-label lookup
+    reads the daemon as it is."""
+    seen: dict[str, str] = {}
+    real = docker.run
+
+    async def run(args: Sequence[str], *, timeout: float) -> sb.DockerResult:
+        argv = list(args)
+        if argv[0] == "run":
+            docker.calls.append(argv)
+            labels = dict(v.split("=", 1) for v in flag_values(argv, "--label"))
+            seen.update(start=labels[sb.LABEL_START], org=labels[sb.LABEL_ORG])
+            return sb.DockerResult(-1, "", "docker run timed out", timed_out=True)
+        if argv[:3] == ["ps", "-aq", "--filter"] and argv[3].startswith(f"label={sb.LABEL_START}="):
+            docker.calls.append(argv)
+            sid = argv[3].split("=", 2)[2]
+            ids = [cid for cid, start in docker.starts.items() if start == sid]
+            return sb.DockerResult(0, "".join(f"{i}\n" for i in ids), "")
+        return await real(args, timeout=timeout)
+
+    monkeypatch.setattr(docker, "run", run)
+    return seen
+
+
+def _daemon_makes(docker: RemoteFakeDocker, seen: dict[str, str], cid: str = "cid-late") -> None:
+    docker.box[cid] = seen["org"]
+    docker.starts[cid] = seen["start"]
+
+
+async def test_a_container_made_after_a_run_timeout_is_reaped(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-15c fix 3. The cleanup looks up the start label and finds nothing,
+    and the daemon makes the container after that. The start label stays in
+    the orphan record, so the next tick finds the container and removes it."""
+    seen = _late_daemon(docker, monkeypatch)
+    with bound_run(ORG, thread="t-late"), pytest.raises(sb.SandboxUnavailable):
+        await broker.acquire()
+    entry = f"start:{seen['start']}"
+    assert entry in broker._remote_orphans, "a run timeout must leave its start label"
+    lookups = [c for c in docker.calls if c[:3] == ["ps", "-aq", "--filter"]]
+    assert lookups, "the cleanup looked up the start label once"
+    await broker.reap_once()
+    assert entry in broker._remote_orphans, "an empty lookup inside the window keeps it"
+    _daemon_makes(docker, seen)
+    await broker.reap_once()
+    assert ["rm", "-f", "cid-late"] in docker.calls
+    assert docker.box == {} and not broker._remote_orphans and not broker._late_starts
+    await broker.stop()
+
+
+async def test_a_cancel_during_docker_run_leaves_its_start_label(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P2. A cancel kills the CLI as a timeout does, so the daemon can
+    make the container late on this path too."""
+    docker.block_run = asyncio.Event()
+    with bound_run(ORG, thread="t-cancel"):
+        task = asyncio.create_task(broker.acquire())
+        await until(lambda: docker.runs(), "docker run must be in flight")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    labels = dict(v.split("=", 1) for v in flag_values(docker.runs()[-1], "--label"))
+    entry = f"start:{labels[sb.LABEL_START]}"
+    assert entry in broker._remote_orphans and entry in broker._late_starts
+    await broker.stop()
+
+
+async def test_a_late_start_entry_ends_with_its_window(
+    docker: RemoteFakeDocker, env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1000.0]
+    broker = sb.SandboxBroker(docker=docker, clock=lambda: now[0])  # type: ignore[arg-type]
+    seen = _late_daemon(docker, monkeypatch)
+    with bound_run(ORG, thread="t-late"), pytest.raises(sb.SandboxUnavailable):
+        await broker.acquire()
+    now[0] += sb._LATE_START_WINDOW_SECONDS - 1
+    await broker.reap_once()
+    assert f"start:{seen['start']}" in broker._remote_orphans
+    now[0] += 2
+    await broker.reap_once()
+    assert not broker._remote_orphans and not broker._late_starts
+    await broker.stop()
+
+
+async def test_a_compute_run_timeout_leaves_its_start_label_too(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker, compute_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _late_daemon(docker, monkeypatch)
+    with bound_run(ORG, thread="t-compute"):
+        handle = await broker._compute_claim(sb.read_compute_binding())
+        with pytest.raises(sb.SandboxUnavailable):
+            await broker._compute_start(handle)
+        broker._compute_drop(handle)
+        await broker._remove(handle)  # the `finally` of run_compute
+    assert f"start:{seen['start']}" in broker._remote_orphans
+    _daemon_makes(docker, seen)
+    await broker.reap_once()
+    assert docker.box == {} and not broker._remote_orphans
+    await broker.stop()
+
+
+async def test_a_run_that_fails_in_time_records_no_late_start(
+    broker: sb.SandboxBroker, docker: RemoteFakeDocker,
+) -> None:
+    """Only a timeout leaves a start label. A refused run made nothing."""
+    docker.fail_run = True
+    with bound_run(ORG, thread="t-fail"), pytest.raises(sb.SandboxUnavailable):
+        await broker.acquire()
+    assert not broker._remote_orphans and not broker._late_starts
+    await broker.stop()
+
+
 # ═════════════════════════ the real-Docker half ═════════════════════════════
 
 DOCKER_ORG = f"eeeeeeee-0000-0000-0000-{uuid.uuid4().hex[:12]}"
@@ -1385,3 +1665,109 @@ async def test_docker_a_name_that_cannot_come_back_never_touches_the_host(
         await broker.settle()
     gone = _docker("ps", "-aq", "--filter", f"label=metorite.start={handle.start_id}", host=host)
     assert gone.stdout.strip() == ""
+
+
+# ── SBX-15c on a real daemon ────────────────────────────────────────────────
+
+
+class _OwnOrgCLI(sb.DockerCLI):
+    """The real CLI, with two changes for a test on a shared daemon.
+
+    The sweep sees only the containers of ``DOCKER_ORG``, so it never removes
+    a sandbox of another session on this daemon. ``fail_rm`` refuses that many
+    ``rm -f`` calls, as a dropped ssh link does. ``late_run`` makes each
+    ``docker run`` time out before it reaches the daemon, and keeps its labels.
+    """
+
+    def __init__(self) -> None:
+        self.fail_rm = 0
+        self.late_run = False
+        self.labels: dict[str, str] = {}
+
+    async def run(
+        self, args: Sequence[str], *, timeout: float, stdin: bytes | None = None,
+    ) -> sb.DockerResult:
+        argv = list(args)
+        if argv == ["ps", "-aq", "--filter", f"label={sb.LABEL_SANDBOX}=1"]:
+            argv += ["--filter", f"label={sb.LABEL_ORG}={DOCKER_ORG}"]
+        if argv[:2] == ["rm", "-f"] and self.fail_rm:
+            self.fail_rm -= 1
+            return sb.DockerResult(1, "", "error during connect: ssh: connection reset")
+        if argv[:1] == ["run"] and self.late_run:
+            self.labels = dict(v.split("=", 1) for v in flag_values(argv, "--label"))
+            return sb.DockerResult(-1, "", "docker run timed out", timed_out=True)
+        return await super().run(argv, timeout=timeout, stdin=stdin)
+
+
+def _labelled(host: str, image: str, labels: dict[str, str]) -> str:
+    made = _docker(
+        "create", *[f"--label={k}={v}" for k, v in labels.items()], image, "true", host=host,
+    )
+    assert made.returncode == 0, made.stderr
+    return made.stdout.strip()
+
+
+def _exists(host: str, cid: str) -> bool:
+    return _docker("ps", "-aq", "--no-trunc", "--filter", f"id={cid}", host=host).stdout.strip() != ""
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_the_stderr_of_collect_is_scrubbed_on_a_real_daemon(
+    remote: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-15c fix 1 through real pipes: a container writes the daemon address,
+    a path of this box's home and a key to its stderr."""
+    host = remote["host"]
+    monkeypatch.setenv("HOME", "/home/acb")
+    script = f"echo {host} /home/acb/.ssh/k sk-ant-api03-abcdefghijklmnopqrstuvwx >&2; echo out"
+    got = await sb.DockerCLI().collect(
+        ["run", "--rm", f"--label={sb.LABEL_ORG}={DOCKER_ORG}", "--network=none",
+         remote["settings"].sandbox_image, "sh", "-c", script],
+        timeout=120, cap=1 << 20,
+    )
+    assert got.rc == 0, got.stderr
+    err = got.stderr.decode("utf-8")
+    assert host not in err and "/home/acb" not in err and "sk-ant-api03" not in err, err
+    assert sb.redact_docker_host(host) in err
+    assert "(host path)/.ssh/k" in err and "(secret)" in err
+    assert got.stdout == b"out\n"
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_failed_sweep_removal_is_reaped_on_a_real_daemon(
+    remote: dict[str, Any],
+) -> None:
+    """SBX-15c fix 2: the sweep's ``rm -f`` fails, and the reaper removes the
+    container from the real daemon."""
+    host, image = remote["host"], remote["settings"].sandbox_image
+    cid = _labelled(host, image, {sb.LABEL_SANDBOX: "1", sb.LABEL_ORG: DOCKER_ORG})
+    cli = _OwnOrgCLI()
+    broker = sb.SandboxBroker(docker=cli)
+    cli.fail_rm = 1
+    assert await broker.sweep() == 0, "a failed removal removed nothing"
+    assert _exists(host, cid), "the failed removal left the container"
+    assert any(cid.startswith(o) for o in broker._remote_orphans)
+    await broker.reap_once()
+    assert not _exists(host, cid) and not broker._remote_orphans
+    await broker.stop()
+
+
+@pytest.mark.sandbox_docker
+async def test_docker_a_container_made_after_a_run_timeout_is_reaped_on_a_real_daemon(
+    remote: dict[str, Any],
+) -> None:
+    """SBX-15c fix 3: the daemon makes the container after the cleanup lookup.
+    The next reaper tick finds it by its start label on the real daemon."""
+    host, image = remote["host"], remote["settings"].sandbox_image
+    cli = _OwnOrgCLI()
+    cli.late_run = True
+    broker = sb.SandboxBroker(docker=cli)
+    with bound_run(DOCKER_ORG, thread="t-late"), pytest.raises(sb.SandboxUnavailable):
+        await broker.acquire()
+    start = cli.labels[sb.LABEL_START]
+    assert f"start:{start}" in broker._remote_orphans
+    cid = _labelled(host, image, cli.labels)
+    await broker.reap_once()
+    assert not _exists(host, cid), "the late container outlived the reaper tick"
+    assert not broker._remote_orphans and not broker._late_starts
+    await broker.stop()
