@@ -1354,6 +1354,19 @@ class Settings(BaseSettings):
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""
+    # SW-45 (agent_coordination.md §3.10.1): the scope of an agent claim, for
+    # each organization. `org=mode` pairs with a comma between them, for
+    # example `<org id>=warn`. `*` names each organization, and an exact id
+    # wins over `*`. A mode is `off`, `warn` or `refuse`. Empty, an unknown
+    # mode and an unknown organization read as `off`, the default. Off, an
+    # agent claims any task that it sees, and `my_work` has no `own_app_free`
+    # rows. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one
+    # reader is `acb_auth.agent_oauth.claim_scope_mode`. The policy store does
+    # not read it (`agent_policies.FLAGS_NOT_YET`) until SW-46 wires the key
+    # `claim_scope_mode`. 🔴 A change on a box is gate `enforcement-flip`.
+    # Fences: tests/unit/test_agent_claim_scope_r8.py and
+    # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
+    agent_claim_scope_modes: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids

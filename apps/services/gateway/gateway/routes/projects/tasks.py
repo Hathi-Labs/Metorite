@@ -54,6 +54,12 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    holds_task,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     ARCHIVED_PROJECT_REFUSAL,
@@ -2692,6 +2698,13 @@ async def set_assignees(
     (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
+
+    SW-45 (review P1). An agent that adds its own member gets the scope
+    check of ``claim_task`` (``claim_scope.check_claim_scope``). Outside the
+    member's own apps, mode ``warn`` writes one timeline line and the answer
+    has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
+    ``outside_apps`` and writes nothing. Only a task that already holds the
+    session member is not checked. Another assignee is not a pass.
     """
     agent_call = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
@@ -2725,12 +2738,24 @@ async def set_assignees(
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
             await require_exact_version(db, task_id, if_match)
+        # SW-45 (review P1): an agent that adds its own member holds the task
+        # as a claim does. So the claim's ONE check runs here too, before any
+        # write, and `refuse` has no second door. Another assignee in
+        # `current` is not a pass: only the session member is.
+        me = actor(user).strip().lower()
+        scope_note = (
+            await check_claim_scope(db, user, task, current, vis)
+            if agent_call and me in wanted and not holds_task(user, current)
+            else None
+        )
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
         )
         added, removed, notified = (
             assigned.added, assigned.removed, assigned.notified)
+        if scope_note is not None and me in added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
     if added:
         await emit("pm.task.assigned", {
@@ -2751,7 +2776,7 @@ async def set_assignees(
         from gateway.routes.shell import cache as feed_cache
 
         await feed_cache.bump_org(task_org)
-    return {
+    result: dict[str, Any] = {
         "task_id": task_id,
         "assignees": sorted(wanted),
         # Named rather than swallowed: assigning somebody outside the project's
@@ -2760,6 +2785,10 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+    # SW-45: the warning of a self-add outside the own apps, in mode `warn`.
+    if scope_note is not None:
+        apply_warning(result, scope_note)
+    return result
 
 
 # ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
@@ -2879,7 +2908,10 @@ async def claim_task(
     WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
     transaction, with ``If-Match`` and no body. The name says that the call
     can move the status, which ``assignees/self`` hid. A member may call it
-    too, and nothing here reads ``UserContext.agent``.
+    too. Only the SW-45 scope check (``claim_scope.check_claim_scope``) reads
+    ``UserContext.agent``: an agent claim of a task that does not hold the
+    session member, outside the member's own apps, warns or gets 403
+    ``outside_apps`` by ``AGENT_CLAIM_SCOPE_MODES``.
 
     * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
       move the task to the first ``in_progress`` lane of its OWN status set
@@ -2948,6 +2980,11 @@ async def claim_task(
                 {"tid": task_id},
             )).fetchall()
         }
+        # SW-45: an agent claim of a task that does not hold the member,
+        # outside the member's own apps, warns or is refused
+        # (AGENT_CLAIM_SCOPE_MODES).
+        # Before any write, so a refusal writes nothing.
+        scope_note = await check_claim_scope(db, user, seen, current, vis)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,
@@ -3029,6 +3066,10 @@ async def claim_task(
         # the row it crossed a member's PATCH, which writes the row and then
         # the editor's watcher key (fix round 3).
         await ensure_watchers(db, task_id, added, by=actor(user))
+        # SW-45: the ONE timeline line of a claim outside the own apps. Only a
+        # claim that wrote the key writes it, so a second claim adds none.
+        if scope_note is not None and added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
         row = await load_visible_task(db, vis, task_id)
         result = row_to_dict(row, TaskModel)
@@ -3041,7 +3082,10 @@ async def claim_task(
         result["agent_run_id"] = run_id
         # SW-63: a task with open subtasks still claims. The result warns.
         await _warn_open_subtasks(db, vis, task_id, result)
-        # SW-107: a dropped dispatcher adds its fixed text after that warning.
+        # SW-45: the warning of a claim outside the own apps, after SW-63's.
+        if scope_note is not None:
+            apply_warning(result, scope_note)
+        # SW-107: a dropped dispatcher adds its fixed text after those warnings.
         agent_runs.warn_dispatch(result, dropped)
 
     if added:
