@@ -153,6 +153,52 @@ def test_last_prompt_member_and_the_vet():
     assert aw.last_prompt_member({"result": {"structuredContent": {"activities": []}}}) is None
 
 
+def _paged_rpc(pages, calls):
+    """A fake `_rpc` for `get_agent_run`: `pages` maps the `after` cursor (None for the
+    first page) to (activities, next cursor). Each call is recorded in `calls`."""
+
+    def rpc(token, sid, rid, name, args):
+        calls.append((name, dict(args)))
+        acts, nxt = pages[args.get("after")]
+        return {"result": {"structuredContent": {"activities": acts, "cursor": nxt}}}
+
+    return rpc
+
+
+def _person(member):
+    return {"type": "prompt", "author": "person", "member": member}
+
+
+def test_make_vet_reads_every_page_and_checks_the_run_member(monkeypatch):
+    """Verifier FAIL of 2026-11-08 (lane-merge, task 2197): `make_vet` had no test.
+    Two mutations stayed green: (1) `vet` returns True, so the own-member check is
+    gone, and (2) `read` never sends `after`, so a newest prompt on a later page is
+    never read. Each one turns this test red."""
+    other = "other@example.com"
+    # Page 1 holds the oldest rows: the member of the run answered first. Page 2 holds
+    # a newer prompt by ANOTHER member. The vet must read page 2 and refuse the run.
+    calls: list = []
+    pages = {None: ([_person(OWNER)], 5), 5: ([_person(other)], 9), 9: ([], 9)}
+    monkeypatch.setattr(aw, "_rpc", _paged_rpc(pages, calls))
+    assert aw.make_vet("tok", "sid")(run()) is False
+    assert ("get_agent_run", {"run_id": R1, "after": 5}) in calls  # mutation 2
+    assert all(name == "get_agent_run" and args["run_id"] == R1 for name, args in calls)
+
+    # The newest prompt on the later page is by the member of the run: it passes.
+    calls.clear()
+    pages = {None: ([_person(other)], 5), 5: ([_person(OWNER)], 9), 9: ([], 9)}
+    monkeypatch.setattr(aw, "_rpc", _paged_rpc(pages, calls))
+    assert aw.make_vet("tok", "sid")(run()) is True
+
+    # Only another member's prompt, on one page: it is refused (mutation 1).
+    monkeypatch.setattr(aw, "_rpc", _paged_rpc({None: ([_person(other)], 3), 3: ([], 3)}, []))
+    assert aw.make_vet("tok", "sid")(run()) is False
+
+    # No person prompt (a queued run that the member made): it passes.
+    monkeypatch.setattr(aw, "_rpc", _paged_rpc({None: ([], 0)}, []))
+    assert aw.make_vet("tok", "sid")(run()) is True
+
+
 def test_a_failed_start_frees_its_wake(tmp_path):
     assert go([run()], tmp_path, Starter(ok=False)) == []
     assert not list(tmp_path.glob("*.attempt"))
