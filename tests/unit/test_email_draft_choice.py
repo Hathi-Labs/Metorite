@@ -602,6 +602,25 @@ async def test_a_long_plain_card_keeps_each_message_that_moves(box, monkeypatch)
     assert f"+{staying - listed} more" in rest
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("others", [3, 19])
+async def test_a_long_sender_never_takes_the_subject_off_a_line(
+    box, monkeypatch, others,
+):
+    monkeypatch.setattr("acb_skills.ask_tools.rows_card_channel_open", lambda: False)
+    sender = "accounts.receivable." * 14 + "department@vendor.test"
+    mails = [f"77777777-7777-4777-8777-{n:012d}" for n in range(others)]
+    for n, mid in enumerate(mails):
+        box.mail(mid, subject=f"Invoice {n}", from_email=sender)
+    card = _card(monkeypatch, False)
+    await agents.manage_inbox("trash", [CHAT_DRAFT, *mails])
+    context = card.shown[0]["context"]
+    assert len(context) <= agents._CARD_CONTEXT_MAX
+    for n in range(others):
+        assert f": Invoice {n} ·" in context
+    assert "copy 2" not in context
+
+
 def test_the_title_of_one_other_message():
     assert agents._trash_title(1, 1) == "Move 1 draft and 1 other message to Trash?"
     assert agents._trash_title(0, 2) == "Move 2 messages to Trash?"
