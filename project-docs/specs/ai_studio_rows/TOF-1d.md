@@ -30,6 +30,26 @@ The cost is one card that the member can close. The draft holds no argument and 
 
 **Not changed.** The draft, `MIN_CALLS = 3`, the private draft save, the typed-words guarantee and the rest of the five rules.
 
+## TOF rung 1, B2, B3 and B5
+
+🔨 **BUILT, dark (2026-11-19, tasks 3829, 3830 and 3832).** The owner demo of 2026-11-19 found three faults of the saved draft. All three sit behind the same flag, `STUDIO_SKILL_OFFER_ORGS`. No migration. No model call.
+
+**B2, the draft (task 3829).** `lib/studio/skillDraft.ts` builds the draft from the typed sentence and from the calls, with no model. The name is a verb phrase of at most five words. It has no politeness word and no question mark. The description says what the job does and when to use it.
+
+The instructions hold one numbered step for each call, with the tool and a target. The rules block is fixed text.
+
+A target is an id only. `targetOf` reads the keys of `TARGET_KEYS` and keeps a value only when it is a UUID or a short token with a digit. A title, a query, a body and a result never reach the draft.
+
+**B5, the fold (task 3832).** Each call is its own row and its own step, in call order. Two reads of one tool are two rows. The skill holds each catalog id once (`body.actions`), because the gateway refuses a duplicate action. `MIN_CALLS = 3` counts calls and not distinct tools. A turn that has more than 35 calls gives no offer.
+
+**B3, a turn that ran a skill (task 3830).** The stream carries no mark of a loaded skill, and a skill adds no tool. So the card asks `POST /studio/skills/match` with the typed words. The route runs the two matchers of the turn over the heads of the skills that the member may load. These are `skill_packs.matches`, and then `tool_search.match_skill_descriptions` while `STUDIO_CHAT_TOOLS_ORGS` holds the org.
+
+It answers a boolean only. A match, a read not yet answered and a failed read all show no offer.
+
+Limit: the route re-derives the match and does not observe it. A skill that the turn loaded after a different cut of the words can differ. A mark in the stream is the exact fix, and it is a later slice (the executor, the BFF and the chat fold carry it).
+
+Fences: `skillDraft.test.ts`, `skillOffer.test.ts`, `SkillOfferCard.test.ts` and `tests/unit/test_studio_skill_match.py`.
+
 ## Done when
 
 With the flag on for an org, a turn of three CRM or Projects reads shows the offer, and Save makes a private draft skill. With the flag off, nothing renders and the chat reads no catalog for it.
