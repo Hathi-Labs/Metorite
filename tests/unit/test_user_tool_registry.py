@@ -452,6 +452,21 @@ def test_4_the_private_package_never_reaches_the_context_or_the_row(world, monke
         assert secret not in seen, secret
 
 
+def test_5_the_real_catalog_runs_in_the_hook(world, monkeypatch) -> None:
+    """Done-when 9 on the real seam: the hook calls the REAL
+    ``routes/studio/actions.catalog_rows`` in the bound frame, before any
+    session of its own, and writes one row."""
+    from gateway.routes.studio import actions
+
+    real = actions.catalog_rows
+    _hook_fakes(monkeypatch, lambda items: "none")
+    monkeypatch.setattr(actions, "catalog_rows", real)
+    assert _hook(world, monkeypatch, BEN, world.chat_ben) is not None
+    [row] = _rows_of(world, BEN)
+    assert (row.answer, row.outcome) == ("none", "no_match")
+    assert all(" " not in c for c in row.candidates)
+
+
 # ── 6. The route ──────────────────────────────────────────────────────────
 
 
