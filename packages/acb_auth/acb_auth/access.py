@@ -399,8 +399,11 @@ async def _rules_for_row(session: object, row: object, org_id: object = None) ->
     """The rules for one access row, or none for a member who is not active.
 
     Never raises. *org_id* names the org when the caller holds it (the org of
-    a run). Else the org is the org of the member's row.
+    a run). Else the org is the org of the member's row. A missing row
+    (``None``) gives no rule and reads nothing.
     """
+    if row is None:
+        return IntegrationRules()
     try:
         if row["status"] != "active":  # type: ignore[index]
             return IntegrationRules()
@@ -1268,16 +1271,15 @@ async def resolve_access(
             session_cm = tenant_session()
         else:
             session_cm = _get_session_factory()()
-        rules = IntegrationRules()
         async with session_cm as session:
             row = (
                 await session.execute(text(_ACCESS_SQL), {"email": key})
             ).mappings().first()
             # ACC-1: the integration rules, as their own statement in a
             # savepoint. `_rules_for_row` never raises, so a fault here can
-            # never reach the `except` below (no lockout, no latch).
-            if row is not None:
-                rules = await _rules_for_row(session, row)
+            # never reach the `except` below (no lockout, no latch). A
+            # missing row gives no rule and reads nothing.
+            rules = await _rules_for_row(session, row)
     except Exception as exc:  # noqa: BLE001
         # A pool or connect TIMEOUT is not "no access". It raises, and the
         # auth dependency answers 503 (2026-10-07, see IdentityUnavailable).

@@ -253,7 +253,7 @@ def world(monkeypatch):
         return ORG
 
     async def _closed(_db: Any, _org: str) -> dict[str, str]:
-        return {"mcp-x": "mcp", "api-zoho_books": "api", "zoho-crm": "agent"}
+        return {"mcp-x": "mcp", "api-zoho_books": "api"}
 
     state = SimpleNamespace(db=fake, audit=[], cleared=[])
     monkeypatch.setattr(get_settings(), "integration_access_orgs", ORG, raising=False)
@@ -386,8 +386,51 @@ async def test_the_list_shows_each_service_and_a_stale_rule(world) -> None:
     assert rows["mcp-x"]["mode"] == "chosen" and rows["mcp-x"]["groups"] == ["ops"]
     assert rows["mcp-x"]["set_by"] == "b@x.test" and rows["mcp-x"]["listed"]
     assert rows["mcp-gone"]["mode"] == "admins" and not rows["mcp-gone"]["listed"]
-    assert rows["zoho-crm"]["mode"] == "everyone"
+    assert rows["api-zoho_books"]["mode"] == "everyone"
+    assert {row["kind"] for row in rows.values() if row["listed"]} == {"mcp", "api"}
     assert r.json()["readable"] is True
+
+
+#: The real list, kept before the `world` fixture replaces it.
+_REAL_CLOSED_LIST = routes.closed_list
+
+
+def _api_templates() -> list[str]:
+    from gateway.connections import api as api_templates
+
+    return list(api_templates.TEMPLATES)
+
+
+async def test_a_built_in_connector_takes_no_new_rule_and_a_stored_one_clears(
+        world, monkeypatch) -> None:
+    """ACC-1 fix round 2. A tool reads a `_REGISTRY` credential with no check,
+    so the real list refuses each key. A rule that is already stored still
+    shows with `listed` false, and `everyone` clears it."""
+    from acb_skills.integrations import list_registered
+    from gateway.connections import store
+
+    async def _rows(_db: Any, _org: str, _prefix: str, _app: str) -> list[Any]:
+        return [SimpleNamespace(provider="mcp:x")]
+
+    monkeypatch.setattr(store, "list_by_prefix", _rows)
+    monkeypatch.setattr(routes, "closed_list", _REAL_CLOSED_LIST)
+    keys = list_registered()
+    assert {"serpapi", "litellm", "smtp", "zoho-crm"} <= set(keys)
+    for key in keys:
+        r = await _call(_user(ADMIN_PERMS), "PUT", f"/admin/integration-access/{key}",
+                        {"mode": "admins"})
+        assert r.status_code == 422, (key, r.text)
+    assert world.db.writes == [] and world.audit == []
+
+    world.db.rules = {"serpapi": {"subjects": []}}
+    r = await _call(_user(ADMIN_PERMS), *GET)
+    rows = {row["service"]: row for row in r.json()["services"]}
+    assert set(rows) - {"serpapi"} == {"mcp-x", *(f"api-{t}" for t in _api_templates())}
+    assert (rows["serpapi"]["listed"], rows["serpapi"]["mode"]) == (False, "admins")
+    r = await _call(_user(ADMIN_PERMS), "PUT", "/admin/integration-access/serpapi",
+                    {"mode": "everyone"})
+    assert r.status_code == 200 and world.db.rules == {}, r.text
+    assert r.json()["listed"] is False
 
 
 # ── 5. The service names ─────────────────────────────────────────────────────
@@ -422,8 +465,11 @@ async def test_each_service_name_is_the_name_that_each_check_uses(monkeypatch) -
                               access=build_access(["integrations:use:*", MANAGE],
                                                   [(_use(f"api-{tid}"), "deny")]))
         assert not api_connections._granted(refused, tid, row)
+    # ACC-1 fix round 2: no built-in connector is on the list. Its tools read
+    # the credential through `credential()`, with no access check.
+    assert set(services.values()) == {"mcp", "api"}, services
     for key in list_registered():
-        assert services[key] == "agent"
+        assert key not in services, key
 
 
 # ── 6. The preview ───────────────────────────────────────────────────────────

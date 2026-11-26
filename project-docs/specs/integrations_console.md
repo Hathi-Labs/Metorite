@@ -1083,13 +1083,13 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 
 ### 3.9 Who can use an integration (task 3985, ACC-1 BUILT)
 
-> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix round 1 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
+> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix rounds 1 and 2 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
 This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
 **Five facts of ACC-1 that the design did not state:**
 
-1. **The write casts the service.** On asyncpg the SQL of §3.9.2 fails with "could not determine data type of parameter $1", because `jsonb_build_object` takes any type. So the write binds `CAST(:svc AS text)`. The bare removal passes on asyncpg, and it keeps the same cast.
+1. **The write casts the service.** `jsonb_build_object` takes any type. So on asyncpg the SQL of §3.9.2 fails with "could not determine data type of parameter $1". So the write binds `CAST(:svc AS text)`. The bare removal passes on asyncpg, and it keeps the same cast.
 2. **A stale rule.** A rule can outlive its MCP server. `GET` lists it with `listed: false`, and `PUT` with `everyone` clears it. Any other mode on it gets 422.
 3. **The API route.** Each API connection holds `grant = admin` today, so only a holder of `integrations:manage` reaches it. Such a member passes each rule. So a rule changes the API route only when a member grant exists. The R8 suite opens one to prove the route reads the narrowed access.
 4. **The admin floor.** Both routes also take the `/admin` floor `require_admin_user` (`admin:members:read`). The `admin` role holds all three rights.
@@ -1099,7 +1099,7 @@ This section holds the one rule of "who may use a connection". §3.8.8 and rule 
 
 | Fact | Evidence |
 |---|---|
-| A run gets a credential only with `integrations:use:<service>`. An MCP server is `mcp-<name>` and an API connection is `api-<template>` | `executor._integration_authorizer`, `_maf_mcp.mcp_service`, `routes/api_connections.py` |
+| An MCP server reaches a run, and an API connection answers, only with `integrations:use:<service>`. An MCP server is `mcp-<name>` and an API connection is `api-<template>`. A built-in tool reads its credential with no such check (§3.9.2) | `executor._integration_authorizer`, `_maf_mcp.mcp_service`, `routes/api_connections.py` |
 | Each check ends in `EffectiveAccess.has`, so a deny pattern in the resolved access stops each of them | `acb_auth/permissions.py` (`decide`) |
 | The roles `admin`, `manager` and `member` hold `integrations:use:*`. `guest` does not | migrations 131, 179 and 200 |
 | The only control is one switch for all integrations on one member page | `settings/members/[email]/page.tsx` |
@@ -1116,9 +1116,10 @@ This section holds the one rule of "who may use a connection". §3.8.8 and rule 
 |---|---|---|
 | MCP server of the organization | `mcp-<name>` | `connections/mcp.py` (`mcp:<name>`) |
 | API connection | `api-<template>` | `connections/api/template.py` (`TEMPLATE_ID_PATTERN`) |
-| Built-in agent connector | A key of `_REGISTRY` | `acb_skills/integrations.py` |
 
-**Not in scope.** The app connections have no rule: the CRM Zoho sync, mailboxes, WhatsApp and Google. No check of `integrations:use` gates their app screens (`routes/crm/import_zoho.py`, `routes/crm/stage_metadata.py`). A rule on a `_REGISTRY` key stops the credentials of agent runs only, and the console says so. ACC-Q4 asks about the app connections.
+**Not in scope.** The app connections have no rule: the CRM Zoho sync, mailboxes, WhatsApp and Google. No check of `integrations:use` gates their app screens (`routes/crm/import_zoho.py`, `routes/crm/stage_metadata.py`). ACC-Q4 asks about the app connections.
+
+**Not on the list: the built-in agent connectors** (the keys of `_REGISTRY` in `acb_skills/integrations.py`, ACC-1 fix round 2). A tool reads such a credential through `credential()`. That function reads the process environment first, and it checks no access (`web_tools._serpapi_search`, for example). So a rule on `serpapi`, `litellm` or `smtp` would stop nothing, and the console would show a control that does nothing. The PUT answers 422 for each key. ACC-Q4 asks about them too.
 
 | Mode | Who may use the service |
 |---|---|
@@ -1187,7 +1188,7 @@ Each site below reads the resolved access, so the rule reaches it with no change
 - An org-visible room expands to every member. So one restriction removes the service from each such room.
 - A room that expands past 200 members does not narrow. A failed read of the room members does not narrow either. In both cases, `resolve_session_access` falls back to the access of the actor, so the actor's own rule still applies. The access of the other members does not. This is the fold of `acb_auth/access.py` (`_MAX_PARTICIPANT_EXPANSION`), and ACC-1 did not change it.
 - Replay redaction compares allowed sets only (`routes/chat.py` `_render_message`, `chat_fold._run_authority`). A rule adds a deny, and it removes no allow. So a member that a rule refuses later can still read the tool output of an earlier shared run. A member who was in the room at that run also reads it again.
-- `litellm` and `smtp` are keys of `_REGISTRY`, so they can hold a rule. A rule on one removes that credential from each agent run of a refused member. An agent that declares the key then gets no model credential or no mail credential for that member. ACC-2 must warn the admin before such a rule saves.
+- A key of `_REGISTRY`, such as `litellm` or `smtp`, takes no rule (§3.9.2). The resolver still narrows a rule that a row already holds, but a tool reads the credential with no check. `GET` shows such a rule with `listed: false`, and `PUT` with `everyone` clears it.
 - A member purge takes the address off each rule, in the purge transaction (`members.purge_member_rows`, the admin door and the operator door). A rule that becomes empty stays, and it then means admins only, plus its teams. An org purge deletes the org row, and its rules go with it. No other path deletes an `app_user` row.
 - A rule write, a member write to a group, a group delete and a member purge each lock the org row first. The rule write takes `FOR NO KEY UPDATE`, and the group writes take `FOR SHARE` (`_common.ORG_RULE_LOCKS`). So a rule check and its write never interleave with another of them.
 - The room caps read allow overrides only (`routes/rooms.py`). So they do not name the rule as the cause.
@@ -1357,7 +1358,8 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 **ACC-1 acceptance, R8** (`test_integration_access_r8.py`, two organizations, a real database):
 
 - **ACC-a.** With no rule, the resolved access of each of the five roles is the same as today.
-- **ACC-b.** For a refused member, the run authorizer refuses `mcp-x`, and `_maf_servers` drops the server. No credential of a ruled `_REGISTRY` key reaches the run. The `api-y` route answers 404. `_may_use` answers False.
+- **ACC-b.** For a refused member, the run authorizer refuses `mcp-x`, and `_maf_servers` drops the server. The `api-y` route answers 404. `_may_use` answers False. `build_integrations` drops a `_REGISTRY` key that a stored rule refuses, but the route takes no such rule (§3.9.2).
+- **ACC-i (fix round 2).** A PUT on each `_REGISTRY` key answers 422. A stored rule of one shows with `listed: false`, and `everyone` clears it.
 - **ACC-c.** A listed person passes. A new member is refused. A listed group member passes, and a removal refuses at the next resolve with no restart.
 - **ACC-d.** A holder of `integrations:manage` passes. A member with an exact allow override is refused. A guest on the list is refused.
 - **ACC-e.** A shared session with a refused participant denies, for an email, group or org subject. A delegated run also denies.
@@ -1368,7 +1370,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 **ACC-1 acceptance, hermetic** (`test_integration_access_rules.py`):
 
 - Both routes answer 404 for an organization off the flag, and 403 without either permission.
-- An unknown service, group or address, and `org`, answer 422.
+- An unknown service, group or address, and `org`, answer 422. So does each key of `_REGISTRY`.
 - Each write records the audit line and clears the cache.
 - Each service name equals the output of `mcp_service` in both modules, and of `api-<template>`.
 - The preview shows the rule as the source.
@@ -1496,4 +1498,4 @@ The owner answers these on task 3985. The default is not open: the owner ask of 
 | Id | Question | Recommendation |
 |---|---|---|
 | **ACC-Q2** | May a team decide who keeps an integration? A change of that team's members then also needs the access right | ✅ **Yes** (owner, task 3985, 2026-11-26, answer to "Yes to all three"). A team only narrows, and it gives no permission |
-| **ACC-Q4** | Do the app connections (CRM Zoho, mailboxes, WhatsApp, Google) get a rule in a later slice? | Later, one app at a time. The assistant and agents come first |
+| **ACC-Q4** | Do the app connections (CRM Zoho, mailboxes, WhatsApp, Google) get a rule in a later slice? Do the built-in agent connectors (the keys of `_REGISTRY`) get one? | Later, one app at a time. The assistant and agents come first. A built-in connector first needs a check in `credential()` or in each tool that reads it. Today `credential()` reads the process environment first, so a rule would stop nothing (ACC-1 fix round 2) |

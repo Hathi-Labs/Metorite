@@ -25,10 +25,11 @@ The closed list of services (§3.9.2):
 * each MCP server of the org: ``mcp-<name>``, the rule of
   ``connections.mcp_tools.mcp_service`` and ``orchestrator._maf_mcp``;
 * each API template: ``api-<template>``, the name that
-  ``routes/api_connections.py`` checks;
-* each key of ``acb_skills.integrations._REGISTRY``.
+  ``routes/api_connections.py`` checks.
 
-Any other service gets 422. One exception: ``everyone`` on a service that
+A key of ``acb_skills.integrations._REGISTRY`` is not on the list (ACC-1 fix
+round 2): its tools read the credential with no access check
+(:func:`closed_list`). Any other service gets 422. One exception: ``everyone`` on a service that
 holds a stored rule clears it, also when the service has left the list.
 """
 
@@ -149,16 +150,13 @@ async def require_rule_admin(
 async def closed_list(db: Any, org_id: str) -> dict[str, str]:
     """``{service: kind}`` for each service that may hold a rule in *org_id*.
 
-    *kind* is ``mcp``, ``api`` or ``agent``. A registry that does not load
-    gives fewer services, so a write is refused rather than widened.
+    *kind* is ``mcp`` or ``api``. ⚠️ No key of ``acb_skills.integrations._REGISTRY``
+    is on the list (ACC-1 fix round 2). A tool reads those credentials through
+    ``credential()``, which reads the process environment first and checks no
+    access. So a rule on such a key would stop nothing. ACC-Q4 of
+    ``integrations_console.md`` §10 owns them.
     """
     out: dict[str, str] = {}
-    try:
-        from acb_skills.integrations import list_registered
-
-        out.update({name: "agent" for name in list_registered()})
-    except Exception as exc:
-        _log.warning("integration_access.registry_unavailable", error=type(exc).__name__)
     from gateway.connections import api as api_templates
     from gateway.connections import mcp, store
     from gateway.connections.mcp_tools import mcp_service

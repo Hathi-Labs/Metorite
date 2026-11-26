@@ -342,6 +342,13 @@ def _run(world: Any, member: str, *, delegated: bool, session: str | None = None
 
 
 def test_acc_b_no_credential_of_a_ruled_registry_key_reaches_the_run(world) -> None:
+    """The run authorizer drops a `_REGISTRY` key that a stored rule refuses.
+
+    ACC-1 fix round 2: the route takes no new rule on such a key, because a
+    tool reads its credential with no check. This test writes the rule
+    straight to the row. It proves that `build_integrations` reads the
+    narrowed access, the step that a later slice of ACC-Q4 builds on.
+    """
     import acb_auth.access as access_mod
 
     ns = world.ns
@@ -609,35 +616,36 @@ def flag_on(ns, monkeypatch):
 
 async def test_acc_f_the_write_persists_and_org_b_does_not_change(ns, flag_on) -> None:
     org_b = {"theme": {"accent": "y"},
-             "integration_access": {"zoho-crm": {"subjects": [MEMBER_B]}}}
+             "integration_access": {"api-zoho_books": {"subjects": [MEMBER_B]}}}
     _settings(ns, ns.b, org_b)
     assert _stored(ns, ns.a) == {}, "the first write meets empty settings"
     listed = _email("listed")
 
-    r = await _admin_call(ns, "PUT", "/admin/integration-access/zoho-crm",
+    r = await _admin_call(ns, "PUT", "/admin/integration-access/api-zoho_books",
                           {"mode": "chosen", "people": [listed.upper()], "groups": [GROUP]})
     assert r.status_code == 200, r.text
     assert (r.json()["mode"], r.json()["people"], r.json()["groups"]) == (
         "chosen", [listed], [GROUP])
     first = _stored(ns, ns.a)["integration_access"]
-    assert first["zoho-crm"]["subjects"] == sorted([listed, f"group:{GROUP}"])
+    assert first["api-zoho_books"]["subjects"] == sorted([listed, f"group:{GROUP}"])
 
     r = await _admin_call(ns, "PUT", "/admin/integration-access/mcp-x", {"mode": "admins"})
     assert r.status_code == 200, r.text
     both = _stored(ns, ns.a)["integration_access"]
-    assert set(both) == {"zoho-crm", "mcp-x"}, "a second key keeps the first"
+    assert set(both) == {"api-zoho_books", "mcp-x"}, "a second key keeps the first"
     assert both["mcp-x"]["subjects"] == []
     assert not (await _resolve(ns, _email("member"))).has(_use("mcp-x"))
     assert (await _resolve(ns, _email("admin"))).has(_use("mcp-x"))
 
-    r = await _admin_call(ns, "PUT", "/admin/integration-access/zoho-crm", {"mode": "everyone"})
+    r = await _admin_call(ns, "PUT", "/admin/integration-access/api-zoho_books",
+                          {"mode": "everyone"})
     assert r.status_code == 200 and r.json()["mode"] == "everyone", r.text
     assert set(_stored(ns, ns.a)["integration_access"]) == {"mcp-x"}, "a removal deletes the key"
     assert _stored(ns, ns.b) == org_b, "org B did not change"
     assert [(a[1], a[2]) for a in flag_on] == [
-        ("org.integration_access_set", "integration:zoho-crm"),
+        ("org.integration_access_set", "integration:api-zoho_books"),
         ("org.integration_access_set", "integration:mcp-x"),
-        ("org.integration_access_set", "integration:zoho-crm"),
+        ("org.integration_access_set", "integration:api-zoho_books"),
     ]
 
 
@@ -650,18 +658,39 @@ async def test_acc_f_the_list_names_each_service_of_the_org(ns, flag_on) -> None
     assert rows["mcp-x"]["kind"] == "mcp" and rows["mcp-x"]["mode"] == "chosen"
     assert rows["mcp-x"]["people"] == [_email("listed")]
     assert rows["api-zoho_books"]["kind"] == "api" and rows["api-zoho_books"]["mode"] == "everyone"
-    assert rows["zoho-crm"]["kind"] == "agent"
+    assert {row["kind"] for row in rows.values()} == {"mcp", "api"}, rows
     # An MCP name that org A does not hold is not in the closed list.
     unknown = await _admin_call(ns, "PUT", "/admin/integration-access/mcp-nope",
                                 {"mode": "admins"})
     assert unknown.status_code == 422
 
 
+async def test_fix2_a_built_in_connector_takes_no_rule_and_a_stored_one_clears(
+        ns, flag_on) -> None:
+    """ACC-1 fix round 2. A tool reads a `_REGISTRY` credential through
+    `credential()`, with no check, so a rule there stops nothing. The route
+    refuses such a key. A rule that a row already holds shows, and clears."""
+    for key in ("serpapi", "litellm", "smtp", "zoho-crm"):
+        r = await _admin_call(ns, "PUT", f"/admin/integration-access/{key}",
+                              {"mode": "admins"})
+        assert r.status_code == 422, (key, r.text)
+    assert _stored(ns, ns.a) == {} and flag_on == []
+
+    _rules(ns, {"serpapi": {"subjects": []}})
+    rows = {row["service"]: row
+            for row in (await _admin_call(ns, "GET", "/admin/integration-access")).json()[
+                "services"]}
+    assert (rows["serpapi"]["listed"], rows["serpapi"]["mode"]) == (False, "admins")
+    r = await _admin_call(ns, "PUT", "/admin/integration-access/serpapi", {"mode": "everyone"})
+    assert r.status_code == 200 and r.json()["listed"] is False, r.text
+    assert "serpapi" not in (_stored(ns, ns.a).get("integration_access") or {})
+
+
 async def test_acc_f_the_route_refuses_a_group_or_person_of_org_b(ns, flag_on) -> None:
     for body in ({"mode": "chosen", "people": [MEMBER_B]},
                  {"mode": "chosen", "people": ["org"]},
                  {"mode": "chosen", "groups": ["no-such-team"]}):
-        r = await _admin_call(ns, "PUT", "/admin/integration-access/zoho-crm", body)
+        r = await _admin_call(ns, "PUT", "/admin/integration-access/mcp-x", body)
         assert r.status_code == 422, (body, r.text)
     assert _stored(ns, ns.a) == {}
 
