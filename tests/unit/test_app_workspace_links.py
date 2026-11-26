@@ -465,7 +465,7 @@ def test_a_dir_that_a_container_mounted_never_builds_on_the_host(
     app_scope: Path, sandbox: Sandbox, monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     """Review round 2, option b: the host build refuses a sandbox dir for good,
-    also after a flip off, and the text says how the app builds again."""
+    also after a flip off, and the text says what to do next."""
     from gateway.routes.apps.files import host_build_refusal
 
     (app_scope / ".git").mkdir()
@@ -473,4 +473,6 @@ def test_a_dir_that_a_container_mounted_never_builds_on_the_host(
     assert "exit 0" in _command(app_scope, "true")
     sandbox.set_scope(monkeypatch, "")
     refusal = host_build_refusal(app_scope)
-    assert refusal and "builds only in its sandbox" in refusal and "MAF_CODING_SCOPE" in refusal
+    # Task 2465: the text says what to do, and names no internal flag.
+    assert refusal and "sandbox" in refusal and "Metorite support" in refusal
+    assert "MAF_CODING_SCOPE" not in refusal

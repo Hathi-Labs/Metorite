@@ -360,6 +360,76 @@ async def test_a_run_with_no_holder_has_no_budget(gateway: list) -> None:
         assert "BUDGET" not in await crm_tools.crm_aggregate("deals")
 
 
+@pytest.fixture()
+def refusing(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """CRM-Q34-3: a gateway whose total refuses with a 422 while
+    ``state["refuse"]`` is true, and answers otherwise."""
+    state: dict[str, Any] = {"refuse": True, "calls": 0}
+
+    async def _get(path: str, params: dict | None = None) -> Any:
+        state["calls"] += 1
+        if path == "/crm/aggregate" and state["refuse"]:
+            raise crm_tools._GatewayError(
+                "CRM GET /crm/aggregate failed (422)", detail="Unknown field 'Nope'.",
+                status=422, route="/crm/aggregate")
+        if path == "/crm/aggregate":
+            return {"total": 10, "records": 1, "groups": []}
+        return {}
+
+    monkeypatch.setattr(crm_tools, "_get", _get)
+    monkeypatch.setattr(crm_tools, "_short_note", _no_note)
+    return state
+
+
+async def test_a_refused_total_spends_no_aggregate_count(
+    run_holder: Any, refusing: dict[str, Any],
+) -> None:
+    """CRM-Q34-3 item 2: eight 422s leave every total of the run open."""
+    for _ in range(crm_tools.AGGREGATE_BUDGET):
+        out = await crm_tools.crm_aggregate("module:Invoices", measure="sum", field="Nope")
+        assert out.startswith("Refused:") and "BUDGET" not in out
+    assert run_holder.reads.aggregates == 0
+    assert run_holder.reads.total == crm_tools.AGGREGATE_BUDGET
+    refusing["refuse"] = False
+    assert "BUDGET" not in await crm_tools.crm_aggregate("deals")
+    assert run_holder.reads.aggregates == 1
+
+
+async def test_the_ninth_answered_total_still_gets_the_budget_line(
+    run_holder: Any, refusing: dict[str, Any],
+) -> None:
+    for _ in range(3):
+        await crm_tools.crm_aggregate("module:Invoices", measure="sum", field="Nope")
+    refusing["refuse"] = False
+    for _ in range(crm_tools.AGGREGATE_BUDGET):
+        assert "BUDGET" not in await crm_tools.crm_aggregate("deals")
+    calls = refusing["calls"]
+    assert (await crm_tools.crm_aggregate("deals")).startswith("BUDGET:")
+    assert refusing["calls"] == calls
+
+
+async def test_the_read_budget_still_stops_a_run_of_refusals(
+    run_holder: Any, refusing: dict[str, Any],
+) -> None:
+    """The give-back never lets a run loop: the 21st read is refused."""
+    for _ in range(crm_tools.READ_BUDGET):
+        out = await crm_tools.crm_aggregate("module:Invoices", measure="sum", field="Nope")
+        assert out.startswith("Refused:")
+    calls = refusing["calls"]
+    assert (await crm_tools.crm_aggregate("module:Invoices")).startswith("BUDGET:")
+    assert refusing["calls"] == calls
+
+
+async def test_a_client_refusal_keeps_its_aggregate_count(
+    run_holder: Any, refusing: dict[str, Any],
+) -> None:
+    """A refusal of the tool itself reads no gateway, and keeps its count."""
+    out = await crm_tools.crm_aggregate("nonsense")
+    assert out.startswith("Refused:")
+    assert refusing["calls"] == 0
+    assert run_holder.reads.aggregates == 1
+
+
 def test_the_budget_numbers_are_the_spec_s() -> None:
     assert (crm_tools.AGGREGATE_BUDGET, crm_tools.READ_BUDGET) == (8, 20)
     assert crm_tools.FOLLOW_UP_PARK_SECONDS == 2.0

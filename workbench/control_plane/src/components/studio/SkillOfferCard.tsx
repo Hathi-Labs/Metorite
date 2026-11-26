@@ -17,7 +17,8 @@
  * catalog. A catalog that does not load (404 while Studio is off for the
  * org, 401, 403 or a fault) draws nothing.
  *
- * Dark behind `NEXT_PUBLIC_SKILL_OFFER` (`lib/studio/skillOfferFlag.ts`).
+ * Dark behind `STUDIO_SKILL_OFFER_ORGS` (TOF-1d). The shell read serves it as
+ * `skill_offer`, and `useSkillOfferOn` in `lib/shell/shellPrefs.ts` reads it.
  * `MessageBubble` mounts it once, after the action bar of the turn. The card
  * comes after the turn ends, so its place at the end moves no other part of
  * the turn. A long body is cut by `ShowMore`, and the card holds no scroll
@@ -56,9 +57,9 @@ import {
   type SkillOffer,
 } from "@/lib/studio/skillOffer";
 import { classWord } from "@/lib/studio/skillForm";
-import { skillOfferOn } from "@/lib/studio/skillOfferFlag";
 import { NAME_MAX } from "@/lib/studio/skillStarter";
 import { createSkill, listCatalogActions, type CatalogAction } from "@/lib/studio/skillsApi";
+import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 /** The cache key of the catalog that the offer reads. */
@@ -206,7 +207,7 @@ export function SkillOfferSaved({ messageId, skillId }: { messageId: string; ski
 
 /** The offer of one turn, or nothing (`lib/studio/skillOffer.ts` rules 1 to 5). */
 export default function SkillOfferCard({ turn }: { turn: OfferTurn }) {
-  const on = skillOfferOn();
+  const on = useSkillOfferOn();
   const read = () => offerLocal(turn.messageId);
   const local = useSyncExternalStore(subscribeOffers, read, read);
   const asks = on && offerAsks(turn, answeredOffer(local));

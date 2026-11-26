@@ -54,6 +54,9 @@ class Outcome:
     skipped: tuple[str, ...] = ()
     #: A short code when the request failed (``http-500``), or empty.
     error: str = ""
+    #: True when a gold id is among the related records of the answer (rung 4,
+    #: FIND-3). It never counts as a hit: the misses report names it apart.
+    related: bool = False
 
 
 def locate(
@@ -216,6 +219,10 @@ class MissesSummary:
     missed_ids: tuple[str, ...]
     #: Failed requests. A failed request is a miss.
     errors: int = 0
+    #: Ids of the missed cases whose gold is among the related records of the
+    #: answer (rung 4, FIND-3). Apart from ``found``, as the neighbour score of
+    #: ``knowledge_graph.md`` §7.2.
+    related_ids: tuple[str, ...] = ()
 
 
 def summarize_misses(
@@ -243,6 +250,8 @@ def summarize_misses(
         by_rung={x: (a, b) for x, (a, b) in sorted(by_rung.items())},
         found_ids=tuple(found), missed_ids=tuple(missed),
         errors=sum(1 for o in outcomes if o.error),
+        related_ids=tuple(o.question_id for o in outcomes
+                          if o.related and o.question_id in missed),
     )
 
 
@@ -254,6 +263,7 @@ def render_misses(summary: MissesSummary, k: int = K) -> str:
         "  by rung: " + ", ".join(f"{x} {a}/{b}" for x, (a, b) in summary.by_rung.items()),
         f"  found ids: {', '.join(summary.found_ids) or 'none'}",
         f"  missed ids: {', '.join(summary.missed_ids) or 'none'}",
+        f"  missed, found in related records: {', '.join(summary.related_ids) or 'none'}",
         f"  failed requests: {summary.errors}",
     ]
     return "\n".join(lines)

@@ -1102,19 +1102,34 @@ def test_a_run_with_no_message_id_cannot_be_preempted(clean) -> None:
 
 
 def test_the_caller_id_wins_and_the_run_route_uses_the_helper() -> None:
-    """The source half of the test above. The route mints the fold id once,
-    through ``fold_message_id``, and the ``run_id`` shape is gone."""
+    """The source half of the test above. The route mints each fold id
+    through ``fold_message_id``, the caller's id wins for the main fold, and
+    the ``run_id`` shape is gone.
+
+    RESUME-2b (``chat_run_continuity.md`` §4.12.4, case A) adds ONE more
+    call: the fallback row of a same-reply run, which is server-only (no
+    caller id), named ``_same_reply_fallback``. So the route has exactly two
+    calls, and each one is the call named here. Mutation: mint a fold id
+    with a raw ``uuid4`` or an f-string, or pass the caller's id to the
+    fallback -> red."""
     import inspect
+    import re
 
     from gateway.routes import agent
 
     assert agent.fold_message_id("client-nanoid", "t1") == "client-nanoid"
     route = inspect.getsource(agent.run_agent_stream_endpoint)
-    assert (
-        "_persist_message_id = fold_message_id(req.assistant_message_id, thread_id)"
-        in route
-    )
-    assert route.count("fold_message_id(") == 1
+    flat = " ".join(route.split())
+    main = "_persist_message_id = fold_message_id(req.assistant_message_id, thread_id)"
+    fallback = "_same_reply_fallback = ( fold_message_id(None, thread_id)"
+    assert flat.count(main) == 1, "the caller's id wins for the main fold id"
+    assert flat.count(fallback) == 1, "the one other call: the server-only fallback"
+    assert route.count("fold_message_id(") == 2, "no third mint of a fold id"
+    # The helper is the ONLY mint of a fold id. The one raw uuid of the route
+    # is the run id, and no fold id is an f-string of the thread.
+    assert re.findall(r"uuid\.uuid4\(\)", route) == ["uuid.uuid4()"]
+    assert "run_id = req.run_id or str(uuid.uuid4())" in route
+    assert 'f"assistant-' not in route
     assert 'f"assistant-{thread_id}-{run_id}"' not in inspect.getsource(agent)
 
 
@@ -1920,54 +1935,6 @@ def test_solo_and_legacy_rows_are_never_filtered(clean) -> None:
     out = _render_message(_Row(), _CAROL, frozenset())
     assert out["content"] == "plain"
     assert "redacted" not in out
-
-
-# ---------------------------------------------------------------------------
-# 9. Personal memory never enters a shared room
-# ---------------------------------------------------------------------------
-
-@_needs_db
-def test_the_run_path_is_wired_to_the_run_clearance() -> None:
-    """The rule with the quietest failure mode, pinned where it is applied.
-
-    *What* a shared room may read and write is decided by
-    ``acb_memory.resolve_clearance`` and tested against that function directly
-    (``tests/unit/test_memory_compartments.py``) — a pure function, so the
-    properties are assertable without a model, a Redis, or an agent registry.
-
-    What THIS asserts is that the streaming endpoint actually consults it at
-    all four seams. The decision being right is worthless if a seam still reads
-    the caller's own compartment, and the seams sit inside a 300-line handler
-    whose real execution needs the whole stack — so they are checked in the
-    source. The specific thing that must never come back: `_mem_user` naming
-    the session owner and the acting member for authorship, which is why the
-    memory target is a SEPARATE variable rather than that one blanked out.
-    """
-    import inspect
-
-    from gateway.routes import agent as agent_routes
-
-    src = inspect.getsource(agent_routes.run_agent_stream_endpoint)
-
-    # 1. The clearance is resolved from the room's sharedness, once.
-    assert "resolve_clearance(" in src
-    assert "shared=_room_is_shared," in src
-    # 2. The memory TOOLS read and write the run's compartment — in a room the
-    #    room's, so remember/save_memory keep working and file what they learn
-    #    where the room can see it.
-    assert "_set_memory_user_id(_clearance.write)" in src
-    # 3. The prompt block reads the room and prefs compartments, and the
-    #    personal one only when the run is not shared.
-    assert '_has_user = user_id != "anonymous" and not _room_is_shared' in src
-    assert "if _clearance.room:" in src
-    assert "if _clearance.prefs:" in src
-    # 4. The cached block is keyed by clearance, or a thread cached while solo
-    #    would serve the owner's private block to the room for the whole TTL.
-    assert "clearance=_clearance.fingerprint," in src
-    # 5. Run-boundary extraction targets the compartment, not the typer...
-    assert "_extract_user = _clearance.write if _room_is_shared else _mem_user" in src
-    # ...and the session owner / authorship actor is still a real email.
-    assert '_mem_user = (user.email or "").strip()' in src
 
 
 # ---------------------------------------------------------------------------

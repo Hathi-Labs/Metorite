@@ -109,7 +109,7 @@ def _result(label: str, link: str, sent: bool) -> str:
 
 #: The page's canvases, `VIEW_MODES` in `app/projects/lib/commands.ts`.
 #: `tests/unit/test_projects_show_view.py` holds the two lists equal.
-CANVASES = ("overview", "board", "list", "table", "calendar", "timeline")
+CANVASES = ("overview", "board", "list", "table", "calendar", "timeline", "agents")
 
 
 async def _saved_view(pid: str, name: str) -> dict[str, Any]:
@@ -129,8 +129,8 @@ async def show_view(
     sub_group_by: str = "",
 ) -> str:
     """Change what the member's open Projects page shows, for one project.
-    Nothing is saved. mode is overview, board, list, table, calendar or
-    timeline. view_name opens a saved view of the project by name, with its
+    Nothing is saved. mode is overview, board, list, table, calendar,
+    timeline or agents. view_name opens a saved view of the project by name, with its
     filters and grouping. filters is a JSON object in save_view's words:
     query, status_category, assignee, unassigned, overdue, watching, archived
     and tags. It REPLACES the filters on screen, and {} clears them. group_by

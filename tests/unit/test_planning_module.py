@@ -395,3 +395,29 @@ def test_the_fence_flags_a_renamed_kahn_loop(tmp_path, monkeypatch):
         encoding="utf-8")
     monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
     assert _scan([fake]) == ["apps/order_things.py"]
+
+
+class TestAFinishWithNoEstimate:
+    """Task 2473: a slice with no estimate counts for the review wait only, so the
+    plan said "Finish: 120 minutes, 1 working day" for 8 slices with no estimate.
+    With none estimated the finish is unknown, and with some it says how many it
+    guessed. A plan with every estimate is unchanged (see ``test_a_chain``)."""
+
+    def test_no_estimate_on_any_slice_says_the_finish_is_unknown(self):
+        r = analyze_plan([T("a"), T("b"), T("c")], [("a", "b"), ("b", "c")],
+                         start=date(2026, 11, 2))
+        assert r.finish["unknown"] is True and r.finish["guessed"] == 3
+        assert r.finish["mins"] is None and r.finish["working_days"] is None
+        assert r.finish["date"] is None
+        assert "unknown" in r.finish["words"] and "3 tasks have no estimate" in r.finish["words"]
+
+    def test_some_estimates_keep_the_date_and_count_the_guesses(self):
+        r = analyze_plan([T("a", 60), T("b"), T("c")], [("a", "b"), ("b", "c")],
+                         start=date(2026, 11, 2))
+        assert r.finish["guessed"] == 2 and "unknown" not in r.finish
+        assert r.finish["date"] == "2026-11-02" and r.finish["mins"] == (60 + W) + 2 * W
+        assert "2 tasks have no estimate" in r.finish["words"]
+
+    def test_every_estimate_leaves_the_finish_as_it_was(self):
+        r = analyze_plan([T("a", 60), T("b", 120)], [("a", "b")])
+        assert set(r.finish) == {"mins", "working_days", "date"}

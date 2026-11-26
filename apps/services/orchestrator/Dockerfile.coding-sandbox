@@ -99,6 +99,11 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # and no uid can change it. It comes after pip, so an edit keeps the pip layer.
 COPY --chmod=0444 sandbox/data_engine.py /opt/sandbox/data_engine.py
 
+# The door client of agent_sandbox.md §12.3 (SBX-13). Site-packages stays on
+# sys.path under `python3 -I`, so a tool imports it as `metorite_door`. Root
+# owns it, mode 0444. It is not a pip package, so it is not in SANDBOX_MODULES.
+COPY --chmod=0444 sandbox/metorite_door.py /usr/local/lib/python3.12/site-packages/metorite_door.py
+
 # A uid with no /etc/passwd entry gets HOME=/, which --read-only makes
 # unwritable. /tmp is the broker's tmpfs, so matplotlib, pip and npm write there.
 ENV HOME=/tmp

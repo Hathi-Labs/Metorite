@@ -20,6 +20,11 @@ Mutations this file catches (R7):
 * The executor opens the tools for a shared room, another agent or an
   unverified member, or the block or the delegated head drops the list
   (``TestTheExecutor``).
+* HRD-12a (``chat_failure_modes.md`` §6): a decision is kept from text that
+  the member did not type, the old store shape fails to read as a limit, a
+  decision does not show on its own line, the card drop or the delegated
+  head misses it, the two kinds get two caps, or the flag off changes a byte
+  (``TestTheDecisions``).
 
 Run::
 
@@ -47,6 +52,24 @@ OPEN_CTX = {"session_id": SESSION, "member": MEMBER, cc.OPEN: True}
 SAID = ("Thanks. The attachments are only references. Read the parts from the "
         "body of the email, not from the file names.")
 ITEM = "The attachments are only references."
+
+#: HRD-12a: the member's typed words that hold a decision, and the decision.
+DECIDE_SAID = "TEDx is done. Book the hall for the review."
+DECIDED = "TEDx is done."
+
+
+def _limit(text: str) -> dict[str, str]:
+    """A kept item of the kind ``limit`` (HRD-12a store shape)."""
+    return {"kind": cc.LIMIT, "text": text}
+
+
+def _decision(text: str) -> dict[str, str]:
+    """A kept item of the kind ``decision`` (HRD-12a)."""
+    return {"kind": cc.DECISION, "text": text}
+
+
+def _texts(items: list[dict[str, str]]) -> list[str]:
+    return [i["text"] for i in items]
 
 
 @pytest.fixture
@@ -82,9 +105,12 @@ def chat(flag, tenant, store):
     bind_artifact_context()
 
 
-def _keep(text: str, typed: str = SAID) -> str:
+def _keep(text: str, typed: str = SAID, kind: str | None = None) -> str:
+    """One keep. With no *kind* it is the call of before HRD-12a."""
     with member_typed(typed):
-        return asyncio.run(cc.keep_correction(text))
+        if kind is None:
+            return asyncio.run(cc.keep_correction(text))
+        return asyncio.run(cc.keep_correction(text, kind))
 
 
 def _drop(text: str, typed: str) -> str:
@@ -129,19 +155,22 @@ class TestTheFlag:
 class TestTheList:
     def test_newest_last_each_once_ten_at_most(self) -> None:
         items = [f"item {i}" for i in range(12)]
-        assert cc.clean(items) == items[-cc.MAX_ITEMS:]
-        assert cc.clean(["No tables.", "Be brief.", "no  TABLES."]) == ["Be brief.", "no TABLES."]
+        assert _texts(cc.clean(items)) == items[-cc.MAX_ITEMS:]
+        assert cc.clean(["No tables.", "Be brief.", "no  TABLES."]) == [
+            _limit("Be brief."), _limit("no TABLES.")]
 
     def test_only_text_items_of_the_right_length(self) -> None:
         long = "x" * (cc.ITEM_CHARS + 1)
-        assert cc.clean(["ok", "123", 5, None, long, "  Be\nbrief  ", {"a": 1}]) == ["Be brief"]
+        assert cc.clean(["ok", "123", 5, None, long, "  Be\nbrief  ", {"a": 1}]) == [
+            _limit("Be brief")]
         assert cc.clean("not a list") == [] and cc.clean(None) == []
 
     def test_a_struck_item_never_comes_back_from_the_store(self) -> None:
         for mark in range(0x0334, 0x0339):
             assert cc.clean([f"Do n{chr(mark)}ot use tables."]) == [], hex(mark)
+            assert cc.clean([_decision(f"Do n{chr(mark)}ot use tables.")]) == [], hex(mark)
         hindi = chr(0x0928) + chr(0x0939) + chr(0x0940) + chr(0x0902)  # a word with signs
-        assert cc.clean([f"Tables {hindi}."]) == [f"Tables {hindi}."]
+        assert cc.clean([f"Tables {hindi}."]) == [_limit(f"Tables {hindi}.")]
 
 
 # ── the keep guard ──────────────────────────────────────────────────────────
@@ -249,9 +278,9 @@ class TestTheStore:
         (key,) = store.values
         assert key.startswith(f"cc:{ORG}:chat-limits:{SESSION}:"), key
         assert MEMBER not in key
-        assert json.loads(store.values[key]) == [ITEM]
+        assert json.loads(store.values[key]) == [ITEM]  # a limit keeps the old shape
         cc.clear_cache()  # a second process: Redis answers
-        assert asyncio.run(cc.load_constraints(ctx)) == [ITEM]
+        assert asyncio.run(cc.load_constraints(ctx)) == [_limit(ITEM)]
         cc.clear_cache()
         assert asyncio.run(cc.load_constraints({**ctx, "member": "kiran@x.test"})) == []
         assert asyncio.run(cc.load_constraints({**ctx, "session_id": "t-2"})) == []
@@ -288,7 +317,7 @@ class TestTheStore:
         monkeypatch.setattr(cc, "get_tenant_redis", lambda: Broken())
         ctx = {"session_id": SESSION, "member": MEMBER}
         assert asyncio.run(cc.save_constraints([ITEM], ctx)) is False
-        assert asyncio.run(cc.load_constraints(ctx)) == [ITEM]  # this process
+        assert asyncio.run(cc.load_constraints(ctx)) == [_limit(ITEM)]  # this process
         cc.clear_cache()
         assert asyncio.run(cc.load_constraints(ctx)) == []
 
@@ -296,7 +325,7 @@ class TestTheStore:
         ctx = {"session_id": SESSION, "member": MEMBER, "batch_thread": True}
         assert asyncio.run(cc.save_constraints([ITEM], ctx)) is False
         assert store.values == {}
-        assert asyncio.run(cc.load_constraints(ctx)) == [ITEM]
+        assert asyncio.run(cc.load_constraints(ctx)) == [_limit(ITEM)]
 
 
 # ── the two tools ───────────────────────────────────────────────────────────
@@ -306,7 +335,7 @@ class TestTheKeep:
     def test_it_keeps_the_members_sentence(self, chat) -> None:
         out = _keep(ITEM)
         assert out.startswith(f'Kept for this chat: "{ITEM}".'), out
-        assert cc.cached_constraints() == [ITEM]
+        assert cc.cached_constraints() == [_limit(ITEM)]
         assert [json.loads(v) for v in chat.values.values()] == [[ITEM]]
 
     def test_words_the_member_did_not_type_are_refused(self, chat) -> None:
@@ -354,11 +383,11 @@ class TestTheKeep:
         for i in range(10):
             _keep(f"Rule {i} holds.", typed=typed)
         _keep("rule 0 HOLDS.", typed=typed)
-        assert cc.cached_constraints()[-1] == "rule 0 HOLDS."
+        assert cc.cached_constraints()[-1] == _limit("rule 0 HOLDS.")
         assert len(cc.cached_constraints()) == cc.MAX_ITEMS
         out = _keep("Rule 10 holds.", typed=typed)
         assert 'The oldest item went, to stay at 10: "Rule 1 holds."' in out, out
-        assert "Rule 1 holds." not in cc.cached_constraints()
+        assert "Rule 1 holds." not in _texts(cc.cached_constraints())
 
 
 @pytest.fixture
@@ -391,23 +420,24 @@ class TestTheDrop:
         assert shown["title"] == cc.DROP_CARD_TITLE and shown["detail"] == ITEM
         assert shown["context"].endswith(ITEM)
         assert shown["non_interactive_default"] == "deny"
+        assert shown["context"].startswith(cc.DROP_CARD_LEAD)
         assert cc.cached_constraints() == [
-            "Read the parts from the body of the email, not from the file names."]
+            _limit("Read the parts from the body of the email, not from the file names.")]
         cc.clear_cache()  # Redis holds the drop too
         assert asyncio.run(cc.load_constraints()) == [
-            "Read the parts from the body of the email, not from the file names."]
+            _limit("Read the parts from the body of the email, not from the file names.")]
 
     def test_a_rejected_card_keeps_the_item(self, chat, card) -> None:
         _keep("No tables.", typed="No tables.")
         card.answer = False
         assert _drop("tables", typed="You can use tables again.") == cc.DROP_DECLINED
-        assert cc.cached_constraints() == ["No tables."]
+        assert cc.cached_constraints() == [_limit("No tables.")]
 
     def test_no_card_channel_keeps_the_item(self, chat, card) -> None:
         _keep("No tables.", typed="No tables.")
         card.answer, card.open = False, False
         assert _drop("tables", typed="You can use tables again.") == cc.DROP_NO_CARD
-        assert cc.cached_constraints() == ["No tables."]
+        assert cc.cached_constraints() == [_limit("No tables.")]
 
     def test_the_real_gate_with_no_card_channel_drops_nothing(self, chat) -> None:
         """No fake: inside ``refuse_cards`` the real gate denies at once, and
@@ -417,7 +447,7 @@ class TestTheDrop:
         _keep("No tables.", typed="No tables.")
         with refuse_cards():
             assert _drop("tables", typed="You can use tables again.") == cc.DROP_NO_CARD
-        assert cc.cached_constraints() == ["No tables."]
+        assert cc.cached_constraints() == [_limit("No tables.")]
 
     @pytest.mark.parametrize("typed", [
         # The verifier's probes (fix round 2): no word of these proves a
@@ -434,7 +464,7 @@ class TestTheDrop:
         _keep("No tables.", typed="No tables.")
         card.answer = False
         assert _drop("tables", typed=typed) == cc.DROP_DECLINED
-        assert cc.cached_constraints() == ["No tables."]
+        assert cc.cached_constraints() == [_limit("No tables.")]
         card.answer = True
         assert _drop("tables", typed=typed).startswith('Dropped: "No tables."')
         assert [c["detail"] for c in card.shown] == ["No tables.", "No tables."]
@@ -596,6 +626,7 @@ class TestTheFlagOn:
         persona = _build(monkeypatch).kwargs["instructions"]
         old, new = mod._CONSTRAINTS_SWAP
         assert "call keep_correction with their own sentences" in persona
+        assert 'decision for this chat, pass kind "decision".' in persona  # HRD-12a
         assert persona.replace(new, old, 1) == mod._PULL_INSTRUCTIONS
 
     def test_their_risk_is_registered_and_they_stay_on_a_no_egress_run(self) -> None:
@@ -655,7 +686,7 @@ class TestTheExecutor:
         asyncio.run(cc.save_constraints([ITEM], {"session_id": SESSION, "member": MEMBER}))
         cc.clear_cache()
         ctx = self._prime(ex)
-        assert ctx[cc.OPEN] is True and ctx[cc.CONSTRAINTS] == (ITEM,)
+        assert ctx[cc.OPEN] is True and ctx[cc.CONSTRAINTS] == (_limit(ITEM),)
 
     @pytest.mark.parametrize("why", ["another agent", "a shared room", "no org",
                                      "another member", "flag off"])
@@ -704,10 +735,10 @@ class TestTheExecutor:
     def test_a_delegated_run_inherits_the_list(self, flag, tenant, store, ex) -> None:
         asyncio.run(cc.save_constraints([ITEM], OPEN_CTX))
         parent = {**OPEN_CTX, "run_id": "r-parent"}
-        assert ex._inherited_chat_constraints(parent) == {cc.CONSTRAINTS: (ITEM,)}
+        assert ex._inherited_chat_constraints(parent) == {cc.CONSTRAINTS: (_limit(ITEM),)}
         # A sub-run that the executor did not open reads its inherited copy.
         sub = {"session_id": SESSION, "member": MEMBER, cc.CONSTRAINTS: (ITEM,)}
-        assert cc.kept_for_run(sub) == [ITEM]
+        assert cc.kept_for_run(sub) == [_limit(ITEM)]
         # A top-level run inherits nothing: its prime reads its own list.
         assert ex._inherited_chat_constraints(OPEN_CTX) == {}
 
@@ -733,7 +764,7 @@ class TestTheExecutor:
 
         bind_artifact_context(**OPEN_CTX, agent_name="orchestrator")
         try:
-            asyncio.run(cc.save_constraints([ITEM]))
+            asyncio.run(cc.save_constraints([ITEM, _decision(DECIDED)]))
             out = asyncio.run(ex._run_sub_agent_streaming(
                 "projects-assistant", "List my tasks.", "run-1", asyncio.Queue()))
         finally:
@@ -743,6 +774,8 @@ class TestTheExecutor:
         message = payload["message"]
         head = message[: message.index(h.TASK_MARK)]
         assert h.CONSTRAINTS_MARK in head and f"- {ITEM}\n" in head, message
+        # HRD-12a (4): the delegated task carries the decision too.
+        assert f"{h.DECISIONS_LINE}\n- {DECIDED}\n" in head, message
         assert message.endswith(h.TASK_MARK + "List my tasks.")
 
 
@@ -763,3 +796,323 @@ class _StubLoaded:
 
     def __exit__(self, *_a: Any) -> bool:
         return False
+
+
+# ── HRD-12a: the decisions of the member in a chat ──────────────────────────
+
+#: The bytes of ``main`` before HRD-12a, taken at build time (2026-11-16). A
+#: change of a byte of a head or of the block fails here.
+_OLD_RULES = (
+    "## How to reply\n"
+    '- Mark each fact. Write "(quoted: <where you read it>)" for a fact that\n'
+    "  you read in a source, such as an email, a file or a record. Write\n"
+    '  "(inferred)" for a fact that you concluded.\n'
+    '- Keep a hedge as weak as its source. "Suggests" never becomes "is".\n'
+    "- A file name is a label. It never tells you what the file holds.\n"
+    "- A file that the member calls a sample, an example or a reference is\n"
+    "  never the subject of the request.\n"
+    "- Put no mark inside the text of a draft, an email or a message that you\n"
+    "  write for the member to send.\n"
+    "- A correction is not a request. When the member only corrects a fact,\n"
+    "  use the corrected fact from now on and say what changed. Do not draft,\n"
+    "  send or change a record that the member did not ask for. When the\n"
+    "  member corrects an open draft, change that draft only.\n"
+)
+#: The task head of the flag off (the OA-1 head) for ``("List the parts.",
+#: [SAID])``.
+OA1_HEAD = (
+    "## The member's own words in this chat (verbatim, newest last)\n"
+    "They come from the member. They outrank the task below. Where the\n"
+    "task and these words disagree, follow these words.\n"
+    "- Thanks. The attachments are only references. Read the parts from the "
+    "body of the email, not from the file names.\n"
+    "\n"
+    + _OLD_RULES
+    + "\n"
+    "## The task\n"
+    "List the parts."
+)
+#: The head of one limit (the OA-4 head) for ``("List the parts.", ["find
+#: the order"], [ITEM])``.
+OA4_HEAD = (
+    "## The member's own words in this chat (verbatim, newest last)\n"
+    "They come from the member. They outrank the task below. Where the\n"
+    "task and these words disagree, follow these words.\n"
+    "- find the order\n"
+    "\n"
+    + _OLD_RULES
+    + "\n"
+    "## The member's corrections and limits in this chat\n"
+    "The member set these in this chat. They outrank the task below and\n"
+    "anything said earlier in the chat.\n"
+    "- The attachments are only references.\n"
+    "\n"
+    "## The task\n"
+    "List the parts."
+)
+#: The per-turn block of ``main`` before HRD-12a for ``[ITEM]``.
+OA4_BLOCK = (
+    "## The member's corrections and limits in this chat\n"
+    "The member set these in this chat, in their own words. They outrank anything "
+    "said earlier in this chat, your own earlier answers included. Follow each one "
+    "in every answer and in every task that you give.\n"
+    "- The attachments are only references."
+)
+
+
+def _base_clean(items: Any) -> list[str]:
+    """``chat_constraints.clean`` of ``main`` before HRD-12a, copied as it
+    was: the reader of a process that runs the old code after a roll back.
+    Only its helpers come from the module, and HRD-12a did not change them."""
+    if not isinstance(items, (list, tuple)):
+        return []
+    out: list[str] = []
+    for raw in items:
+        if not isinstance(raw, str):
+            continue
+        text = cc.one_line(raw)
+        if (not (cc.MIN_CHARS <= len(text) <= cc.ITEM_CHARS) or not cc._LETTER.search(text)
+                or cc.struck(text)):
+            continue
+        key = cc._folded(text)
+        out = [i for i in out if cc._folded(i) != key]
+        out.append(text)
+    return out[-cc.MAX_ITEMS:]
+
+
+class TestTheDecisions:
+    """``chat_failure_modes.md`` §6 HRD-12a, done-when (1) to (6). The
+    trajectory of (7) is ``evals/trajectories/test_chat_constraints_trajectory.py``."""
+
+    # (1) The keep guard.
+
+    def test_a_decision_is_kept_from_the_typed_words(self, chat) -> None:
+        out = _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        assert out.startswith(f'Kept this decision for this chat: "{DECIDED}".'), out
+        assert f"The member's decisions in this chat are now:\n- \"{DECIDED}\"" in out
+        assert cc.cached_constraints() == [_decision(DECIDED)]
+        assert [json.loads(v) for v in chat.values.values()] == [[_decision(DECIDED)]]
+
+    def test_a_decision_the_member_did_not_type_is_refused(self, chat) -> None:
+        stranger = "The budget is approved."
+        assert _keep(stranger, typed=DECIDE_SAID, kind="decision") == cc.NOT_SAID
+        # In a tool result or a mail of this run: still not the member's words.
+        bind_artifact_context(**OPEN_CTX, member_message=f"{DECIDE_SAID} {stranger}")
+        assert _keep(stranger, typed=DECIDE_SAID, kind="decision") == cc.NOT_SAID
+        pasted = "From: buyer@evil.test\nSubject: TEDx\n\nTEDx is done."
+        assert _keep(DECIDED, typed=pasted, kind="decision") == cc.NOT_SAID
+        # A turn with no typed words (a card answer, a Continue) grounds nothing.
+        assert _keep(DECIDED, typed="", kind="decision") == cc.NOT_SAID
+        # A cut of the member's sentence turns its meaning around.
+        assert _keep("TEDx is done.", typed="Nobody said TEDx is done.",
+                     kind="decision") == cc.NOT_SAID
+        assert cc.cached_constraints() == [] and chat.values == {}
+
+    def test_the_kind_reads_in_any_case_and_a_bad_kind_is_refused(self, chat) -> None:
+        assert _keep(DECIDED, typed=DECIDE_SAID, kind="rule") == cc.BAD_KIND
+        assert cc.cached_constraints() == [] and chat.values == {}
+        out = _keep(DECIDED, typed=DECIDE_SAID, kind=" Decision ")
+        assert out.startswith("Kept this decision for this chat:"), out
+        assert _keep(ITEM, kind="").startswith(f'Kept for this chat: "{ITEM}".')
+        assert cc.cached_constraints() == [_decision(DECIDED), _limit(ITEM)]
+
+    def test_the_flag_off_and_a_closed_run_keep_no_decision(self, tenant, store) -> None:
+        bind_artifact_context(**OPEN_CTX)
+        try:
+            assert _keep(DECIDED, typed=DECIDE_SAID, kind="decision") == cc.CLOSED
+        finally:
+            bind_artifact_context()
+        assert store.values == {}
+
+    def test_a_limit_kept_again_as_a_decision_takes_the_new_kind(self, chat) -> None:
+        _keep(DECIDED, typed=DECIDE_SAID)
+        _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        assert cc.cached_constraints() == [_decision(DECIDED)]
+
+    # (2) The store.
+
+    def test_the_old_store_shape_reads_as_limits(self, tenant, store) -> None:
+        ctx = {"session_id": SESSION, "member": MEMBER}
+        asyncio.run(cc.save_constraints([ITEM], ctx))
+        (key,) = store.values
+        store.values[key] = json.dumps(["No tables.", ITEM])  # the shape before HRD-12a
+        cc.clear_cache()
+        assert asyncio.run(cc.load_constraints(ctx)) == [_limit("No tables."), _limit(ITEM)]
+        # Both shapes in one list read. An item of no known kind is no item.
+        store.values[key] = json.dumps([
+            "No tables.", _decision(DECIDED), {"kind": "rule", "text": "Be brief."},
+            {"text": "Be brief."}, {"kind": "decision", "text": 5}, 7,
+        ])
+        cc.clear_cache()
+        assert asyncio.run(cc.load_constraints(ctx)) == [
+            _limit("No tables."), _decision(DECIDED)]
+
+    def test_the_store_keeps_a_limit_plain_and_a_decision_as_kind_and_text(
+        self, tenant, store,
+    ) -> None:
+        """Expand only. The store keeps one JSON list. A limit stays a plain
+        string, the shape before HRD-12a. Only a decision is ``{kind,
+        text}``. So a reader from before HRD-12a, after a flip and a roll
+        back, loses only the decisions, and never raises."""
+        ctx = {"session_id": SESSION, "member": MEMBER}
+        asyncio.run(cc.save_constraints([ITEM, _decision(DECIDED), "No tables."], ctx))
+        (raw,) = store.values.values()
+        assert json.loads(raw) == [ITEM, _decision(DECIDED), "No tables."]
+        cc.clear_cache()  # the new reader reads its own shape back
+        assert asyncio.run(cc.load_constraints(ctx)) == [
+            _limit(ITEM), _decision(DECIDED), _limit("No tables.")]
+
+    def test_a_reader_from_before_hrd12a_keeps_the_limits_of_a_mixed_store(
+        self, tenant, store,
+    ) -> None:
+        """The ``clean`` of ``main`` before HRD-12a (:func:`_base_clean`, a
+        literal copy) reads the new store. It keeps each limit, skips the
+        decision, and does not raise."""
+        ctx = {"session_id": SESSION, "member": MEMBER}
+        asyncio.run(cc.save_constraints([ITEM, _decision(DECIDED), "No tables."], ctx))
+        (raw,) = store.values.values()
+        assert _base_clean(json.loads(raw)) == [ITEM, "No tables."]
+        # With no decision, the old reader reads the whole list, as before.
+        asyncio.run(cc.save_constraints([ITEM, "No tables."], ctx))
+        (raw,) = store.values.values()
+        assert _base_clean(json.loads(raw)) == [ITEM, "No tables."]
+
+    def test_the_cache_hands_out_copies(self, tenant, store) -> None:
+        ctx = {"session_id": SESSION, "member": MEMBER}
+        asyncio.run(cc.save_constraints([_decision(DECIDED)], ctx))
+        cc.cached_constraints(ctx)[0]["text"] = "Something else."
+        assert cc.cached_constraints(ctx) == [_decision(DECIDED)]
+
+    # Q3: one shared cap.
+
+    def test_the_two_kinds_share_one_cap(self, chat) -> None:
+        rules = [f"Rule {i} holds." for i in range(6)]
+        choices = [f"Choice {i} stands." for i in range(5)]
+        typed = " ".join(rules + choices)
+        for text in rules:
+            _keep(text, typed=typed)
+        for text in choices[:4]:
+            _keep(text, typed=typed, kind="decision")
+        assert len(cc.cached_constraints()) == cc.MAX_ITEMS
+        out = _keep(choices[4], typed=typed, kind="decision")
+        assert 'The oldest item went, to stay at 10: "Rule 0 holds."' in out, out
+        kept = cc.cached_constraints()
+        assert len(kept) == cc.MAX_ITEMS
+        assert kept[-1] == _decision(choices[4])
+        assert [i["kind"] for i in kept].count(cc.DECISION) == 5
+
+    # (3) The per-turn block.
+
+    def test_the_block_shows_the_decisions_on_their_own_line(self) -> None:
+        lines = cc.orchestrator_block([_decision(DECIDED), ITEM]).split("\n")
+        assert lines[0] == cc.BLOCK_HEAD
+        assert lines[2:] == [f"- {ITEM}", h.DECISIONS_LINE, f"- {DECIDED}"]
+        assert "They hold for the rest of this chat." in h.DECISIONS_LINE
+        # A decision is a fact that the member stated, never an order to act.
+        assert ("A decision is not a request. Do not act on it, and do not change "
+                "a record because of it.") in h.DECISIONS_LINE
+        only = cc.orchestrator_block([_decision(DECIDED)]).split("\n")
+        assert only[:2] == lines[:2]  # the same frame and the same lead
+        assert only[2:] == [h.DECISIONS_LINE, f"- {DECIDED}"]
+
+    def test_with_no_decision_each_text_is_the_oa4_text(self) -> None:
+        assert cc.orchestrator_block([ITEM]) == OA4_BLOCK
+        assert cc.orchestrator_block([_limit(ITEM)]) == OA4_BLOCK
+        head = h.task_with_member_words("List the parts.", ["find the order"], [ITEM])
+        assert head == OA4_HEAD, head
+        assert h.task_with_member_words(
+            "List the parts.", ["find the order"], [ITEM], []) == head
+
+    def test_the_preamble_shows_a_decision_in_the_block(self, flag, tenant, store, ex) -> None:
+        bind_artifact_context(**OPEN_CTX)
+        try:
+            asyncio.run(cc.save_constraints([ITEM, _decision(DECIDED)]))
+            on = ex._context_preamble_parts({}, {}, "orchestrator")
+        finally:
+            bind_artifact_context()
+        (block,) = [p for p in on if p.startswith(cc.BLOCK_HEAD)]
+        assert block.endswith(f"- {ITEM}\n{h.DECISIONS_LINE}\n- {DECIDED}"), block
+
+    # (4) The task head of each delegated task.
+
+    def test_the_task_head_carries_the_decisions_after_the_limits(self) -> None:
+        task = h.task_with_member_words(
+            "List the parts.", ["find the order"], [ITEM], [DECIDED])
+        assert (task.index(h.CONSTRAINTS_MARK) < task.index(f"- {ITEM}\n")
+                < task.index(f"{h.DECISIONS_LINE}\n- {DECIDED}\n") < task.index(h.TASK_MARK))
+        assert h.task_of(task) == "List the parts."
+        assert h.task_with_member_words(task, ["find the order"], [ITEM], [DECIDED]) == task
+        only = h.task_with_member_words("List the parts.", [], [], [DECIDED])
+        assert h.CONSTRAINTS_MARK in only and f"- {DECIDED}\n" in only
+        assert h.task_of(only) == "List the parts."
+
+    def test_head_task_carries_a_kept_decision(self, chat) -> None:
+        _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        bind_artifact_context(**OPEN_CTX, **{h.MEMBER_TURNS: [DECIDE_SAID]})
+        task = h.head_task("Book the hall.")
+        assert f"{h.DECISIONS_LINE}\n- {DECIDED}\n" in task, task
+        assert task.index(h.DECISIONS_LINE) < task.index(h.TASK_MARK)
+        assert h.head_task(task) == task
+
+    def test_the_prime_and_a_delegated_run_carry_a_decision(self, flag, tenant, store, ex) -> None:
+        asyncio.run(cc.save_constraints(
+            [_decision(DECIDED)], {"session_id": SESSION, "member": MEMBER}))
+        cc.clear_cache()
+        ctx = TestTheExecutor()._prime(ex)
+        assert ctx[cc.OPEN] is True and ctx[cc.CONSTRAINTS] == (_decision(DECIDED),)
+        parent = {**OPEN_CTX, "run_id": "r-parent"}
+        assert ex._inherited_chat_constraints(parent) == {cc.CONSTRAINTS: (_decision(DECIDED),)}
+        sub = {"session_id": SESSION, "member": MEMBER, cc.CONSTRAINTS: (_decision(DECIDED),)}
+        assert cc.kept_for_run(sub) == [_decision(DECIDED)]
+
+    # (5) The card drop.
+
+    def test_the_card_drops_a_decision(self, chat, card) -> None:
+        _keep(ITEM)
+        _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        out = _drop("TEDx", typed="TEDx is not done after all.")
+        assert out.startswith(f'Dropped: "{DECIDED}".'), out
+        (shown,) = card.shown
+        assert shown["title"] == cc.DROP_CARD_TITLE and shown["detail"] == DECIDED
+        assert shown["context"] == f"{cc.DROP_CARD_LEAD_DECISION}\n\n{DECIDED}"
+        assert shown["non_interactive_default"] == "deny"
+        assert cc.cached_constraints() == [_limit(ITEM)]
+        cc.clear_cache()  # Redis holds the drop too
+        assert asyncio.run(cc.load_constraints()) == [_limit(ITEM)]
+
+    def test_a_rejected_card_keeps_the_decision(self, chat, card) -> None:
+        _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        card.answer = False
+        assert _drop("TEDx", typed="Drop the TEDx line.") == cc.DROP_DECLINED
+        assert cc.cached_constraints() == [_decision(DECIDED)]
+
+    def test_the_last_drop_says_nothing_is_kept(self, chat, card) -> None:
+        _keep(DECIDED, typed=DECIDE_SAID, kind="decision")
+        out = _drop("TEDx", typed="TEDx is not done after all.")
+        assert "No correction, limit or decision is kept in this chat now." in out, out
+        assert _drop("TEDx", typed="TEDx again.") == cc.DROP_EMPTY
+
+    # (6) The flag off changes no byte.
+
+    def test_the_flag_off_is_byte_identical_with_a_decision_kept(
+        self, tenant, store, ex, monkeypatch,
+    ) -> None:
+        """A stored and bound decision changes no byte of the tools, the
+        persona, the preamble or the task head while the flag is off. The
+        head is the head of ``main`` before HRD-12a (:data:`OA1_HEAD`)."""
+        bind_artifact_context(**OPEN_CTX, **{h.MEMBER_TURNS: [SAID]})
+        try:
+            before = ex._context_preamble_parts({}, {}, "orchestrator")
+            asyncio.run(cc.save_constraints([ITEM, _decision(DECIDED)]))
+            bind_artifact_context(**OPEN_CTX, **{
+                h.MEMBER_TURNS: [SAID], cc.CONSTRAINTS: (_limit(ITEM), _decision(DECIDED))})
+            after = ex._context_preamble_parts({}, {}, "orchestrator")
+            head = h.head_task("List the parts.")
+        finally:
+            bind_artifact_context()
+        assert before == after
+        assert not any(cc.BLOCK_HEAD in p or DECIDED in p for p in after)
+        assert head == OA1_HEAD, head
+        agent = _build(monkeypatch)
+        assert not {"keep_correction", "drop_correction"} & set(_names(agent))
+        assert agent.kwargs["instructions"] is _orchestrator_module()._PULL_INSTRUCTIONS

@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_task_project_open,
     emit,
     load_default_status,
     load_visible_task,
@@ -224,6 +225,12 @@ def _own_run(run: Any, user: UserContext) -> bool:
     return run.session_key is None or (mine is not None and run.session_key == mine)
 
 
+#: The public name of the own-run rule (SW-27c1, the owner's decision 1 on
+#: task 3894). ``sequences.py`` reads it for a reservation's run, so the rule
+#: has one copy.
+own_run = _own_run
+
+
 async def _closing_refusal(db: Any, user: UserContext, task: Any) -> str | None:
     """Why a pass may NOT close *task*, or ``None`` when it may.
 
@@ -297,6 +304,8 @@ async def report_check(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
+        # ARC-2b: a Check result writes the task, so an archived project refuses it.
+        await assert_task_project_open(db, before)
         require_precondition(before, if_match, row_to_dict(before, TaskModel))
         expected = getattr(before, "check_text", None)
         if expected is None:

@@ -38,8 +38,24 @@ What it counts:
 An open stream is never counted. It ends only when its client goes, and the
 holds in front of the gateway reconnect it.
 
+**Park at the stop** (RESUME-5, ``chat_run_continuity.md`` §4.12.5). Before
+its first count, the stop step calls ``POST /internal/drain/park`` once. Each
+run of this process that waits on a person parks, where
+``CHAT_DURABLE_ASKS`` is on and ``CHAT_RESUME_ORGS`` and
+``CHAT_LATE_APPROVE_ORGS`` both name its org. The run parks in its own task
+(``orchestrator.pending_ask.park_at_stop``). Its row goes to ``parked``, its
+stream ends with the parked ``RUN_FINISHED``, and its drain saves the reply
+with no "interrupted" mark. While a park runs, the count reads it as a
+running chat run, so the stop waits for the save. A run of another org, and a
+card that opens after the call, take the path above. Flags off, nothing
+parks, and the route answers ``{"tried": 0, "parked": 0}``.
+
 All counts are of this process only. Internal token only. Caddy answers
 ``/internal/*`` with 404 on every public host, so the one caller is the box.
+No route here reads a tenant or a member from the request (R5): each park
+uses the org of its own run.
+
+Fence: ``tests/unit/test_gateway_drain.py``.
 """
 from __future__ import annotations
 
@@ -91,13 +107,17 @@ class AfterResponseCounter:
 
 
 def _chat_runs() -> tuple[int, int]:
-    """``(running, waiting on a person)`` for the detached chat runs."""
+    """``(running, waiting on a person)`` for the detached chat runs.
+
+    RESUME-5: a run whose park at the stop has not ended counts as running,
+    so the stop never cuts a park before its drain saves the reply."""
     try:
         from orchestrator.executor import threads_waiting_on_a_person  # noqa: PLC0415
+        from orchestrator.pending_ask import parking_threads
         from orchestrator.stream_relay import live_run_count  # noqa: PLC0415
     except ImportError:
         return 0, 0
-    waiting = threads_waiting_on_a_person()
+    waiting = threads_waiting_on_a_person() - parking_threads()
     return live_run_count(skip=waiting), len(waiting)
 
 
@@ -131,3 +151,18 @@ async def drain() -> dict[str, int]:
         "email_teardowns": teardowns,
         "waiting_on_a_person": waiting,
     }
+
+
+@router.post("/drain/park", dependencies=[Depends(require_internal_auth)])
+async def drain_park() -> dict[str, int]:
+    """Park each run of this process that waits on a person (RESUME-5).
+
+    ``tried`` is the number of waits that the call woke, and ``parked`` the
+    number that parked. Only a wait whose org both resume flags name is
+    woken. The call waits at most ``pending_ask.STOP_PARK_SECONDS``. It takes
+    no body: no tenant and no member come from the request (R5)."""
+    try:
+        from orchestrator.pending_ask import park_at_stop
+    except ImportError:
+        return {"tried": 0, "parked": 0}
+    return await park_at_stop()

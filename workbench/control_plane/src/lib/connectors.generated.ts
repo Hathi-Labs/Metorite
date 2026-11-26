@@ -45,6 +45,17 @@ export const CONNECTOR_ROWS: readonly Connector[] = [
     "scope": "org"
   },
   {
+    "id": "api:zoho_books",
+    "label": "Zoho Books",
+    "signin": "admin_consent",
+    "owning_app": "integrations",
+    "unlocks": "Connects the invoices and totals of your Zoho Books organization to Metorite.",
+    "built_in_app_shows_data": false,
+    "key_hint": "",
+    "scope": "org",
+    "chat_reads": false
+  },
+  {
     "id": "google_calendar",
     "label": "Google Calendar",
     "signin": "one_click",
