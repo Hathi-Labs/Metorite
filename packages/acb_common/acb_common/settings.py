@@ -663,6 +663,16 @@ class Settings(BaseSettings):
     # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
     # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
     knowledge_proposals: bool = False
+    # PAR-3 (task 3105, chat_parity.md §5 wave P-5). The assistant's own
+    # Knowledge writes, default OFF. ON gives the orchestrator `create_page`,
+    # `edit_page`, `create_space`, `edit_space` and their persona line (with
+    # COMPANY_SEARCH_ENABLED on too). Each one shows the full text on one card
+    # before it saves. A new page is always a draft. No tool publishes. OFF
+    # keeps the four tools out. The routes do not change, because the web
+    # already uses them. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_chat_writes_enabled`. AGENT-SAFE:
+    # it spends nothing. Fence: tests/unit/test_kb_chat_writes.py.
+    knowledge_chat_writes: bool = False
     # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
     # ids whose `search_company` reads with no Knowledge hit write a
     # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
@@ -1344,6 +1354,19 @@ class Settings(BaseSettings):
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""
+    # SW-45 (agent_coordination.md §3.10.1): the scope of an agent claim, for
+    # each organization. `org=mode` pairs with a comma between them, for
+    # example `<org id>=warn`. `*` names each organization, and an exact id
+    # wins over `*`. A mode is `off`, `warn` or `refuse`. Empty, an unknown
+    # mode and an unknown organization read as `off`, the default. Off, an
+    # agent claims any task that it sees, and `my_work` has no `own_app_free`
+    # rows. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one
+    # reader is `acb_auth.agent_oauth.claim_scope_mode`. The policy store does
+    # not read it (`agent_policies.FLAGS_NOT_YET`) until SW-46 wires the key
+    # `claim_scope_mode`. 🔴 A change on a box is gate `enforcement-flip`.
+    # Fences: tests/unit/test_agent_claim_scope_r8.py and
+    # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
+    agent_claim_scope_modes: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
@@ -1414,6 +1437,19 @@ class Settings(BaseSettings):
     # a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
+
+    # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
+    #
+    # `org_id=root_project_id` pairs with a comma between pairs. A root is the
+    # project whose direct children are the apps of the org, for example
+    # "Metorite Application". An org may name more than one root. Empty means
+    # off, the default: the Needs attention kind `no_lead` ("App project with
+    # no lead") lists nothing. A pair with no `=`, or a root that is not a
+    # UUID, names nothing. The one reader is
+    # `gateway.routes.projects.needs_attention.app_roots_of`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_needs_attention_r8.py.
+    app_owner_root_orgs: str = ""
 
     # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
     #
@@ -3063,6 +3099,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""
+    # SW-27c1 (agent_coordination.md SW-27, task 3938): the organizations where
+    # an outside agent may mark a number of a project sequence `used` or
+    # `released` (`mark_number`). The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, keeps it dark:
+    # the edge hides the tool, and the mark route answers 404 for a signed
+    # agent. `acb_auth.agent_oauth.sequence_marks_allowed` is the one reader.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    sequence_marks_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as

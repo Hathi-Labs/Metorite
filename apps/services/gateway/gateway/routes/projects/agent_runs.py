@@ -125,6 +125,11 @@ from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.attachments import served_url
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     LANE_STAGE_REVIEW,
     LANE_STAGE_TODO,
@@ -2603,6 +2608,17 @@ async def start_agent_run(
 
     201 with ``created: true``, or 200 with ``created: false`` and the run
     that the key or the open-run rule found (EA12-6).
+
+    SW-45 (review P1). An agent's start on a task that does not hold the
+    session member gets the scope check of ``claim_task``
+    (``claim_scope.check_claim_scope``).
+    Outside the member's own apps, mode ``warn`` starts the run, writes one
+    timeline line for a new run, and the answer has ``warning`` and
+    ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
+    writes nothing. A replay of the same key is not checked again. The MCP
+    ``ask_on_task`` starts its run here, so it gets the same answer. A run
+    that the member queued here (``via is None``) lets the member's agent
+    in, and a run that an agent started does not.
     """
     task_id = _parse_uuid(task_id, "Task")
     _require_write_scope(user)
@@ -2629,7 +2645,7 @@ async def start_agent_run(
     written: _Written | None = None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
             # SW-104 (SW-50): a box token's connection name wins over `host`.
@@ -2668,6 +2684,11 @@ async def start_agent_run(
         if replay is not None:
             response.status_code = 200
             return replay
+
+        # SW-45 (review P1): an agent's start on a task that does not hold
+        # the member holds it as a claim does. So the claim's ONE check runs here, before
+        # any write, and `refuse` has no second door.
+        scope_note = await _start_scope(db, user, via, task, vis)
 
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
@@ -2737,11 +2758,47 @@ async def start_agent_run(
             run = await _load_run(db, str(made.id))
             out = (await _runs_out(db, [run]))[0]
             created = True
+            # SW-45: the ONE timeline line, only for the start that made the run.
+            await _record_start_scope(db, user, task_id, scope_note)
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
-    result: dict[str, Any] = {"run": out, "created": created}
+    # SW-45: the warning of a start outside the own apps first. SW-107: then
+    # the fixed text of a dropped dispatcher.
+    result = _with_scope_warning({"run": out, "created": created}, scope_note)
     warn_dispatch(result, dropped)
     return result
+
+
+async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
+                       vis: Any) -> dict[str, Any] | None:
+    """SW-45: the scope check of an agent's start, or ``None`` for a member.
+    It reads the assignees of the task. Only the session member among them
+    is a pass (review P1 of 2026-11-17). The other passes are in
+    ``check_claim_scope``."""
+    if via is None:
+        return None
+    current = {
+        str(r.assignee) for r in (await db.execute(
+            text("SELECT assignee FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid)"),
+            {"tid": str(task.id)},
+        )).fetchall()
+    }
+    return await check_claim_scope(db, user, task, current, vis)
+
+
+def _with_scope_warning(result: dict[str, Any],
+                        note: dict[str, Any] | None) -> dict[str, Any]:
+    """SW-45: *result* with the warning of *note*, in mode ``warn``."""
+    if note is not None:
+        apply_warning(result, note)
+    return result
+
+
+async def _record_start_scope(db: Any, user: UserContext, task_id: str,
+                              note: dict[str, Any] | None) -> None:
+    """SW-45: the ONE timeline line of a new run outside the own apps."""
+    if note is not None:
+        await record_outside_claim(db, user, task_id, note)
 
 
 # ── Child runs (WS-MCP SW-39, SW-114) ───────────────────────────────────────
@@ -2825,13 +2882,19 @@ _INSERT_CHILD_SQL = (
     "ON CONFLICT DO NOTHING RETURNING id"
 )
 
+#: SW-39. The one column list of a child run, over the alias ``c``. The map
+#: read of SW-110 (``agent_summary._MAP_CHILDREN_SQL``) reads the same list.
+CHILD_COLUMNS = (
+    "c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
+    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
+    " c.last_activity_at"
+)
+
 #: SW-39. The columns of the children of one run, in the org of the bound
 #: session (``filters.BOUND_ORG_SQL``) beside FORCE RLS. A child names its
 #: own subject, ``kind = 'child'``.
 _CHILD_SELECT = (
-    "SELECT c.id, c.parent_run_id, c.kind, c.status, c.agent_label, c.agent_host,"
-    " c.agent_model, c.agent_host_kind, c.created_at, c.started_at, c.ended_at,"
-    " c.last_activity_at"
+    f"SELECT {CHILD_COLUMNS}"
     " FROM pm_agent_runs c"
     f" JOIN (SELECT {BOUND_ORG_SQL} AS id) bound_org ON c.organization_id = bound_org.id"
     " WHERE c.kind = 'child' AND c.parent_run_id = CAST(:rid AS uuid)"

@@ -300,12 +300,53 @@ async def apply_pull_request(
         return written, None
     state = written[0].state
     merged_at = _stamp(pull_request.get("merged_at")) if state == "merged" else None
+    if state == "merged":
+        await mark_reservations_used(db, org, moved, merged_at)
     login = _obj(pull_request.get("merged_by")).get("login")
     outcome = await github_merge.on_merged(
         db, org, ref, merged_at, str(login) if login else None, delivery=delivery,
         only_tasks=moved,
     )
     return written, outcome
+
+
+#: SW-27c2 (``agent_coordination.md`` SW-27, the owner's decision 3 on task
+#: 3894). A merge marks the task's reserved numbers ``used``: only the rows
+#: still ``reserved``, and only those reserved at or before the merge. A row
+#: reserved after the merge belongs to later work, and a ``released`` row
+#: stays released. The org is in the WHERE as well as in RLS.
+_RESERVATIONS_USED_SQL = """
+UPDATE pm_sequence_reservations
+   SET state = 'used', used_at = now()
+ WHERE organization_id = CAST(:org AS uuid)
+   AND task_id = ANY(CAST(:tasks AS uuid[]))
+   AND state = 'reserved'
+   AND reserved_at <= COALESCE(CAST(:merged_at AS timestamptz), now())
+"""
+
+
+async def mark_reservations_used(
+    db: Any, org: str, tasks: set[str], merged_at: datetime | None,
+) -> int:
+    """Mark the reserved numbers of *tasks* used, for a pull request that this
+    write moved INTO ``merged`` (SW-27c2). Returns the count.
+
+    It runs in the transaction of the write, once for each transition, as the
+    merge rule does (:func:`moved_into_terminal`). So a second delivery marks
+    nothing, and a closed pull request that did not merge marks nothing. It
+    runs before ``github_merge.on_merged`` and apart from it: that rule skips
+    a task that is already done or that a person runs, and a merged number of
+    such a task is still used. A missing ``merged_at`` reads as now.
+    """
+    if not tasks:
+        return 0
+    result = await db.execute(text(_RESERVATIONS_USED_SQL), {
+        "org": org, "tasks": sorted(tasks), "merged_at": merged_at,
+    })
+    count = int(result.rowcount or 0)
+    if count:
+        _log.info("github.merge.reservations_used", count=count)
+    return count
 
 
 async def record_read(db: Any, org: str, ref: str) -> None:

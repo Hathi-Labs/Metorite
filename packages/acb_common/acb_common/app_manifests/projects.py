@@ -405,6 +405,8 @@ PROJECTS_DOOR = App(
         # ── me.py · personal.py ──
         Route("GET", "/projects/assigned-to-me", "my_work", "A", off_door=LATER),
         Route("GET", "/projects/plan/order", "my_work", "A", off_door=TYPED),
+        # SW-45: the MCP `my_work` reads the free tasks of the own apps.
+        Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
         Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
         Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
@@ -535,8 +537,11 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         # ── sequences.py (SW-27a, task 861) ──
         Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
-              reason="SW-27a: no tool reaches the reserve route yet. SW-27b (task 3893) adds the "
-              "MCP edge tool reserve_number, behind the owner's seam answer."),
+              reason="SW-27b (task 3893): the typed MCP tool reserve_number reaches this "
+              "route, as delete_task reaches the agent-delete route. The door adds nothing."),
+        Route("POST", "/projects/reservations/{reservation_id}/mark", "", "X",
+              reason="SW-27c1 (task 3938): the typed MCP tool mark_number reaches this "
+              "route. Only the agent of the run marks its number. The door adds nothing."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),
