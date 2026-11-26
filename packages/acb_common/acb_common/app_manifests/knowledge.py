@@ -19,7 +19,10 @@ a re-export, so its readers do not change.
 **The chat.** KB-4a builds two read tools. KB-5a gives
 ``POST /knowledge/proposals`` to the two propose tools. PAR-3 (task 3105)
 gives the page create and edit, and the space create and edit, to four
-tools. Each one shows the full text on one card before it saves.
+tools. Each one shows the full text on one card before it saves. PAR-3b
+(task 3901) gives the move and the revert of a draft to two tools behind one
+card, and eight more reads to tools. Publish, archive, restore and the search
+stay with no tool.
 
 **The door (MCP-P1a).** The reads that call no model, and ``propose``. The
 search makes an embedding call, so it is off the door (AD-11). Each other
@@ -126,9 +129,9 @@ KNOWLEDGE = App(
     routes=(
         # ── Spaces ──
         # PAR-3: `create_page` and `edit_space` read the list to find a space
-        # by its name, before the card.
+        # by its name, before the card. PAR-3b: `move_page` and `list_pages` too.
         Route("GET", "/knowledge/spaces", "list_spaces", "A",
-              also=("create_page", "edit_space"), op="list_spaces", title="List the spaces that the member can open.",
+              also=("create_page", "edit_space", "move_page", "list_pages"), op="list_spaces", title="List the spaces that the member can open.",
               plain=_PLAIN),
         # PAR-3 (task 3105): the chat makes a space and changes its name or
         # purpose, behind one card. It never sends a grant (D-PM-40).
@@ -137,14 +140,16 @@ KNOWLEDGE = App(
               off_door=_WAITS_FOR_P1B),
         Route("PUT", "/knowledge/spaces/{space_id}/grants", "", "X", reason=_GRANT_REASON),
         # ── Pages ──
-        Route("GET", "/knowledge/pages", "", "A", planned="KB-5",
+        # PAR-3b (task 3901).
+        Route("GET", "/knowledge/pages", "list_pages", "A",
               op="list_pages",
               title="List the pages that the member can see, with no body. "
                     "Filter by space, parent, state or a word of the title (q).",
               plain=_PLAIN),
         # PAR-3: `edit_page` reads the page for its card, before the PATCH.
+        # PAR-3b: `move_page` and `revert_page` read it too, and act on a draft only.
         Route("GET", "/knowledge/pages/{page_id}", "read_page", "A",
-              also=("edit_page",), op="get_page", title="Read one page, with its body, versions and links.",
+              also=("edit_page", "move_page", "revert_page"), op="get_page", title="Read one page, with its body, versions and links.",
               plain=_PLAIN),
         # PAR-3 (task 3105): the chat makes a draft, or changes the title and
         # the body, behind one card that shows the full text. The POST always
@@ -154,30 +159,36 @@ KNOWLEDGE = App(
               off_door=_WAITS_FOR_P1B),
         Route("POST", "/knowledge/pages/{page_id}/publish", "", "B", planned="KB-5",
               off_door=_PERSON_PUBLISHES),
-        Route("POST", "/knowledge/pages/{page_id}/move", "", "B", planned="KB-5",
+        # PAR-3b (task 3901): a draft only, behind one card. The tool refuses a
+        # published page before the card.
+        Route("POST", "/knowledge/pages/{page_id}/move", "move_page", "B",
               off_door=_WAITS_FOR_P1B),
         Route("POST", "/knowledge/pages/{page_id}/archive", "", "C", planned="KB-5",
               off_door=_PERSON_PUBLISHES),
         Route("POST", "/knowledge/pages/{page_id}/restore", "", "C", planned="KB-5",
               off_door=_PERSON_PUBLISHES),
-        Route("POST", "/knowledge/pages/{page_id}/revert", "", "B", planned="KB-5",
+        # PAR-3b (task 3901): a draft only. The card holds the full old text.
+        Route("POST", "/knowledge/pages/{page_id}/revert", "revert_page", "B",
               off_door=_WAITS_FOR_P1B),
         # ── Home and favourites (KB-2f, §21.7) ── A favourite is the member's
         # own shortcut in the app, so neither door reads nor writes it.
-        Route("GET", "/knowledge/recent", "", "A", planned="KB-5",
+        # PAR-3b (task 3901).
+        Route("GET", "/knowledge/recent", "list_recent", "A",
               op="list_recent", title="List the pages that changed last, newest first.",
               plain=_PLAIN, page=_RECENT_PAGE),
         Route("GET", "/knowledge/favorites", "", "X", reason=_FAVORITE_REASON),
         Route("POST", "/knowledge/pages/{page_id}/favorite", "", "X", reason=_FAVORITE_REASON),
         Route("DELETE", "/knowledge/pages/{page_id}/favorite", "", "X",
               reason=_FAVORITE_REASON),
-        # KB-2g: one old version with its body, for the history modal.
-        Route("GET", "/knowledge/pages/{page_id}/versions/{version}", "", "A",
-              planned="KB-5", op="get_page_version",
+        # KB-2g: one old version with its body, for the history modal. PAR-3b
+        # (task 3901): `revert_page` reads it for the full text of its card.
+        Route("GET", "/knowledge/pages/{page_id}/versions/{version}", "read_page_version",
+              "A", also=("revert_page",), op="get_page_version",
               title="Read one old version of a page, with its body.",
               plain=_PLAIN, path_shapes=(("version", r"[0-9]{1,10}"),)),
         # KB-2h: the pages that link here, for the "Linked from" list.
-        Route("GET", "/knowledge/pages/{page_id}/backlinks", "", "A", planned="KB-5",
+        # PAR-3b (task 3901).
+        Route("GET", "/knowledge/pages/{page_id}/backlinks", "list_backlinks", "A",
               op="list_backlinks", title="List the pages that link to a page.",
               plain=_PLAIN),
         # ── Proposals (KB-5a, §8.1) ── The two propose tools and the door op
@@ -187,7 +198,8 @@ KNOWLEDGE = App(
               title="Propose a new page (kind page) or an edit of a page (kind edit). "
                     "A person accepts or rejects it in Knowledge.",
               plain=_PLAIN),
-        Route("GET", "/knowledge/proposals", "", "A", planned="KB-5b",
+        # PAR-3b (task 3901): a read. The decisions below stay a person's.
+        Route("GET", "/knowledge/proposals", "list_proposals", "A",
               op="list_proposals", title="List the proposals that the member can see.",
               plain=_PLAIN),
         Route("POST", "/knowledge/proposals/{proposal_id}/accept", "", "X",
@@ -199,13 +211,14 @@ KNOWLEDGE = App(
         Route("GET", "/knowledge/search", "", "A", planned="search_knowledge, deferred (§8.1)",
               off_door=_SEARCH_CALLS_A_MODEL),
         # ── Gaps (KB-9a, §8.4 door 3) ── the questions Knowledge could not
-        # answer. A read may join the chat later. A person decides each close.
-        Route("GET", "/knowledge/gaps", "", "A", planned="KB-AI-3 (§22)",
+        # answer. PAR-3b (task 3901) gives the two lists to read tools. A
+        # person decides each close.
+        Route("GET", "/knowledge/gaps", "list_gaps", "A",
               op="list_gaps",
               title="List the questions that Knowledge could not answer, that the member "
                     "can see.",
               plain=_PLAIN),
-        Route("GET", "/knowledge/maintenance", "", "A", planned="KB-AI-3 (§22)",
+        Route("GET", "/knowledge/maintenance", "list_maintenance", "A",
               op="list_maintenance",
               title="List the pages that are expired, unowned or stale. It needs "
                     "knowledge:manage.",
@@ -215,17 +228,16 @@ KNOWLEDGE = App(
         Route("POST", "/knowledge/gaps/{gap_id}/answered", "", "X",
               reason=_GAP_DECISION_REASON),
         Route("POST", "/knowledge/gaps/{gap_id}/reopen", "", "X", reason=_GAP_DECISION_REASON),
-        # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only. A
-        # read may join the chat with `search_knowledge` (knowledge_base.md §7.2).
+        # ── Sources (KC-1a, knowledge_curation.md §7) ── the tree is names only.
         Route("POST", "/knowledge/sources/google_drive/connect", "", "X",
               reason=_SOURCE_CONSENT_REASON),
         Route("GET", "/knowledge/sources/google_drive/callback", "", "X",
               reason=_SOURCE_CONSENT_REASON),
-        Route("GET", "/knowledge/sources", "", "A", planned="search_knowledge, deferred (§8.1)",
+        # PAR-3b (task 3901): one tool reads the list and the tree.
+        Route("GET", "/knowledge/sources", "list_sources", "A",
               op="list_sources", title="List the file sources that the member can see.",
               plain=_PLAIN),
-        Route("GET", "/knowledge/sources/{source_id}/tree", "", "A",
-              planned="search_knowledge, deferred (§8.1)",
+        Route("GET", "/knowledge/sources/{source_id}/tree", "list_sources", "A",
               op="get_source_tree",
               title="Read one level of the folder tree of a file source. Names only.",
               plain=_PLAIN),

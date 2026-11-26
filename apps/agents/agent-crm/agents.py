@@ -931,13 +931,13 @@ def _matches_by_name(rows: Any, field: str, wanted: str) -> list[dict[str, Any]]
     named. Two lanes with the same spoken name is a question for a human, not
     a coin toss, so the caller refuses and lists them verbatim.
     """
-    target = str(wanted or "").strip().lower()
+    target = " ".join(str(wanted or "").split()).lower()
     if not target:
         return []
     return [
         row for row in rows or []
         if isinstance(row, dict)
-        and str(row.get(field) or "").strip().lower() == target
+        and " ".join(str(row.get(field) or "").split()).lower() == target
     ]
 
 
@@ -2410,6 +2410,484 @@ async def crm_update_task(
         f"{names[k].lower()} {v}" for k, v in lines.items()
     ) + "."
 
+# ── Stages, lead statuses and lost reasons (CRM-M2e, task 3951) ──────────────
+#
+# The set-up vocabulary of the CRM, as CRM settings edits it: add a stage or a
+# lead status, change it, reset its Zoho order, and add or change a lost
+# reason. Each route needs `admin:access:manage`, so a member who is no admin
+# gets the route's 403 as text. Each write asks on one card first, as each
+# write of this agent does. The tools take NAMES and resolve them here.
+#
+# Not here: the DELETE of a stage and of a lost reason, and the PUT of the
+# stage order. `_ALLOWED_METHODS` has no DELETE and no PUT (apps/AGENTS.md),
+# so those three rows of the manifest stay planned in CRM-M2e.
+
+#: The words for a status kind, as a person says them, to the route segment.
+_STATUS_KIND_ALIASES: dict[str, str] = {
+    "deal": "deal", "deals": "deal", "stage": "deal", "stages": "deal",
+    "deal stage": "deal", "deal stages": "deal",
+    "lead": "lead", "leads": "lead", "lead status": "lead",
+    "lead statuses": "lead", "status": "lead", "statuses": "lead",
+}
+
+#: The types of a stage that the route takes (``core.STATUS_TYPES``).
+_STATUS_TYPES: tuple[str, ...] = ("open", "ongoing", "on_hold", "won", "lost")
+
+#: D-CRM-10: a won stage forecasts 100 and a lost stage 0. The route refuses a
+#: contradiction, so a new type with no chance sends the pinned chance.
+_PINNED_CHANCE: dict[str, int] = {"won": 100, "lost": 0}
+
+#: The first line of the card of a change to a stage or a lead status. The
+#: set-up never queues for Zoho, so the Zoho note does not apply.
+_STATUS_NOTE = (
+    "This changes the set-up of the whole CRM. Change history keeps an add and "
+    "a change, with Undo. A reset of the order has no Undo."
+)
+
+#: The first line of the card of a change to a lost reason.
+_REASON_NOTE = (
+    "This changes the set-up of the whole CRM. Change history keeps an add and "
+    "a change, with Undo."
+)
+
+#: The answer when the member asks to delete. The chat cannot (apps/AGENTS.md).
+_NO_DELETE = (
+    "The chat cannot delete a {noun}. Hide it with hidden=true, so that no "
+    "picker offers it, or delete it in CRM settings. Nothing was changed."
+)
+
+#: The answer of a reset outside Mirror mode. Only a Zoho mirror has an order
+#: to reset to, and the route answers 422.
+_NO_ZOHO_ORDER = (
+    "This CRM does not mirror Zoho, so the {nouns} have no Zoho order to go "
+    "back to. Nothing was changed. Change the order in CRM settings."
+)
+
+#: The advice after a 409 of Mirror mode on the set-up (CRM-C3).
+_SETUP_MIRROR = (
+    "In Mirror mode Zoho owns the set-up. Here you can hide a row, or reset "
+    "the stage order to Zoho."
+)
+
+
+def _plural(noun: str) -> str:
+    """The plural of a set-up noun: "deal stages", "lead statuses"."""
+    return noun + ("es" if noun.endswith("s") else "s")
+
+
+def _status_kind(kind: str) -> str:
+    """``deal`` or ``lead`` for the words of a status kind, or refuse.
+
+    The value goes into the path, so it comes from this map and never from
+    the caller's text."""
+    key = " ".join(str(kind or "").lower().split())
+    slug = _STATUS_KIND_ALIASES.get(key)
+    if slug is None:
+        raise GatewayRefusal(
+            f"Unknown status kind {kind!r}. Use kind='deal' for a deal stage or "
+            "kind='lead' for a lead status."
+        )
+    return slug
+
+
+def _one_name(rows: Any, field: str, wanted: str, noun: str) -> tuple[dict[str, Any] | None, str]:
+    """The one row of *rows* called *wanted*, or the words of a refusal."""
+    found = _matches_by_name(rows, field, wanted)
+    if not found:
+        return None, (
+            f"There is no {noun} called '{wanted}', so nothing was changed. "
+            f"The {_plural(noun)} are: {_name_list(rows, field)}."
+        )
+    if len(found) > 1:
+        return None, (
+            f"'{wanted}' matches more than one {noun}: "
+            f"{_quoted_names(found, field)}. Nothing was changed. Ask which one "
+            "is meant."
+        )
+    return found[0], ""
+
+
+def _name_taken(
+    rows: Any, field: str, new: str, target: dict[str, Any], noun: str,
+) -> str:
+    """The words of a refusal when another row holds the new name, or "".
+
+    The unique index is case-sensitive, so the route can take a case
+    variant. The chat never makes one, for the reason of
+    :func:`_matches_by_name`."""
+    others = [r for r in _matches_by_name(rows, field, new) if r.get("id") != target.get("id")]
+    if not new or not others:
+        return ""
+    return (
+        f"Another {noun} is called '{others[0].get(field)}' already, so nothing "
+        "was changed. Ask for a different name."
+    )
+
+
+def _yes_no(value: Any) -> str:
+    return "yes" if value else "no"
+
+
+def _setup_blocked(blocked: _MirrorBlocked) -> str:
+    return f"Nothing was changed. {blocked} {_SETUP_MIRROR}"
+
+
+def _status_changes(
+    row: dict[str, Any], new_name: str, status_type: str | None,
+    probability: int | None, hidden: bool | None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """The PATCH body of a status, and one card line for each changed field.
+
+    A field that holds the value already stays out. A new won or lost type
+    with no chance sends the chance that D-CRM-10 pins."""
+    payload: dict[str, Any] = {}
+    lines: dict[str, str] = {}
+    old_name = str(row.get("name") or "")
+    if new_name and new_name != old_name:
+        payload["name"] = new_name
+        lines["field Name"] = f"{old_name} → {new_name}"
+    old_type = str(row.get("type") or "open")
+    if status_type and status_type != old_type:
+        payload["type"] = status_type
+        lines["field Type"] = (
+            f"{_STAGE_TYPE_WORDS.get(old_type, old_type)} → "
+            f"{_STAGE_TYPE_WORDS.get(status_type, status_type)}"
+        )
+        if probability is None and status_type in _PINNED_CHANCE:
+            probability = _PINNED_CHANCE[status_type]
+    old_chance = row.get("probability")
+    if probability is not None and probability != old_chance:
+        payload["probability"] = int(probability)
+        before = "none" if old_chance is None else f"{old_chance}%"
+        lines["field Win chance"] = f"{before} → {int(probability)}%"
+    if hidden is not None and bool(hidden) != bool(row.get("hidden")):
+        payload["hidden"] = bool(hidden)
+        lines["field Hidden"] = f"{_yes_no(row.get('hidden'))} → {_yes_no(hidden)}"
+    return payload, lines
+
+
+def _chance(probability: Any) -> int | None:
+    """The win chance as a whole number from 0 to 100, or None when the
+    value is no such number. "40", 40, 40.0 and "40%" are 40."""
+    if isinstance(probability, bool):
+        return None
+    text = str(probability).strip().removesuffix("%").strip()
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if value != int(value) or not 0 <= value <= 100:
+        return None
+    return int(value)
+
+
+def _status_args(
+    action: str, act: str, noun: str, status_type: str | None, probability: Any,
+) -> tuple[str | None, int | None, str]:
+    """The type of a status as the route spells it, the win chance as a
+    number, and the words of a refusal before any request, or ``""``."""
+    if act in ("delete", "remove"):
+        return None, None, _NO_DELETE.format(noun=noun)
+    if act not in ("add", "change", "reset_order"):
+        return None, None, (
+            f"'{action}' is not an action of this tool. Use action='add', "
+            "action='change' or action='reset_order'. Nothing was changed."
+        )
+    typed = "_".join(str(status_type or "").lower().split()) or None
+    if typed is not None and typed not in _STATUS_TYPES:
+        return None, None, (
+            f"'{status_type}' is not a type of {noun}. One of: "
+            f"{', '.join(_STATUS_TYPES)}. Nothing was changed."
+        )
+    chance = None if probability is None else _chance(probability)
+    if probability is not None and chance is None:
+        return None, None, (
+            f"A win chance is a whole number from 0 to 100, not {probability!r}. "
+            "Nothing was changed."
+        )
+    return typed, chance, ""
+
+
+def _pin_refusal(noun: str, status_type: str, chance: int | None) -> str:
+    """The words of a refusal when a won or a lost type meets a win chance
+    that D-CRM-10 forbids, or "". The route answers that write with 422."""
+    pinned = _PINNED_CHANCE.get(status_type)
+    if pinned is None or chance is None or chance == pinned:
+        return ""
+    return (
+        f"A {status_type} {noun} always has a win chance of {pinned}%, not "
+        f"{chance}%. Leave out the win chance, or use another type. Nothing "
+        "was changed."
+    )
+
+
+def _status_add(
+    wanted: str, typed: str | None, probability: int | None, hidden: bool | None, noun: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The POST body of a new status, and its card. A won or a lost type with
+    no chance sends the chance that D-CRM-10 pins."""
+    kept_type = typed or "open"
+    type_words = _STAGE_TYPE_WORDS.get(kept_type, kept_type)
+    chance = probability if probability is not None else _PINNED_CHANCE.get(kept_type)
+    body: dict[str, Any] = {"name": wanted, "type": kept_type}
+    card: dict[str, Any] = {"kind": noun, "name": wanted, "type": type_words}
+    if chance is not None:
+        body["probability"] = int(chance)
+        card["field Win chance"] = f"{int(chance)}%"
+    if hidden:
+        body["hidden"] = True
+        card["field Hidden"] = "yes"
+    return body, card
+
+
+def _changed_words(lines: dict[str, str]) -> str:
+    """The changed fields of a card, for the answer after the write."""
+    return "; ".join(f"{k.removeprefix('field ').lower()} {v}" for k, v in lines.items())
+
+
+def _status_plan(
+    act: str, noun: str, wanted: str, rows: Any, typed: str | None,
+    probability: int | None, hidden: bool | None, new_name: str | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """The card and the body of one act of :func:`crm_edit_status`, or the
+    words of a refusal before any card. It reads nothing and writes nothing."""
+    if act == "reset_order":
+        return {
+            "title": f"Reset the order of the {_plural(noun)} to Zoho?",
+            "detail": f"Each {noun} goes back to the order of Zoho",
+            "card": {"kind": noun, "order": "the order of Zoho"},
+            "body": {}, "id": "",
+            "unchanged": f"The order of the {_plural(noun)} did not change.",
+        }, ""
+    if act == "add":
+        if _matches_by_name(rows, "name", wanted):
+            return None, (
+                f"The CRM has a {noun} called '{wanted}' already, so nothing was "
+                "added. Use action='change' to change it."
+            )
+        pinned = _pin_refusal(noun, typed or "open", probability)
+        if pinned:
+            return None, pinned
+        body, card = _status_add(wanted, typed, probability, hidden, noun)
+        return {
+            "title": f"Add the {noun} {wanted}?", "detail": f"{wanted} · {card['type']}",
+            "card": card, "body": body, "id": "", "unchanged": f"No {noun} was added.",
+        }, ""
+    target, refusal = _one_name(rows, "name", wanted, noun)
+    if target is None:
+        return None, refusal
+    title = str(target.get("name") or wanted)
+    rename = " ".join(str(new_name or "").split())
+    taken = _name_taken(rows, "name", rename, target, noun)
+    if taken:
+        return None, taken
+    pinned = _pin_refusal(noun, typed or str(target.get("type") or "open"), probability)
+    if pinned:
+        return None, pinned
+    payload, lines = _status_changes(target, rename, typed, probability, hidden)
+    if not payload:
+        return None, f"The {noun} {title} has those values already, so nothing was changed."
+    return {
+        "title": f"Change the {noun} {title}?",
+        "detail": f"{title} · " + ", ".join(k.removeprefix("field ") for k in lines),
+        "card": {"kind": noun, "name": title, **lines}, "body": payload,
+        "id": str(target.get("id") or ""), "lines": lines, "name": title,
+        "unchanged": f"The {noun} {title} did not change.",
+    }, ""
+
+
+# `open_world=True`, as `crm_create_pipeline` says: the set-up never queues for
+# Zoho, but the claim makes a covered run hold the write off (H-236). A held
+# chat keeps it only through its card (`egress.HELD_CARD_WRITE_TOOLS`).
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_edit_status(
+    kind: str,
+    action: str,
+    name: str = "",
+    new_name: str | None = None,
+    status_type: str | None = None,
+    probability: int | None = None,
+    hidden: bool | None = None,
+) -> str:
+    """Add or change a deal stage or a lead status, or reset the stage order
+    to the order of Zoho. Only a CRM admin can, and the person you act for
+    approves it on a card first.
+
+    ``kind`` is "deal" for a deal stage or "lead" for a lead status.
+    ``action`` is one of:
+
+    - "add": a new stage called ``name``. ``status_type`` is "open" (the
+      default), "ongoing", "on_hold", "won" or "lost". ``probability`` is the
+      win chance in percent. A won stage is always 100 and a lost stage 0.
+    - "change": the stage called ``name``. Send only what changes:
+      ``new_name`` to rename it, ``status_type``, ``probability``, or
+      ``hidden`` (true takes it out of every picker, false shows it again).
+    - "reset_order": a CRM that mirrors Zoho goes back to the stage order of
+      Zoho. It needs no name.
+
+    Give the stage by NAME, as it reads on the board. get_pipeline lists the
+    deal stages. The chat cannot delete a stage or set the whole order. For
+    those, send the member to CRM settings."""
+    slug = _status_kind(kind)
+    noun = "deal stage" if slug == "deal" else "lead status"
+    act = "_".join(str(action or "").lower().split())
+    typed, chance, refusal = _status_args(action, act, noun, status_type, probability)
+    if refusal:
+        return refusal
+    wanted = " ".join(str(name or "").split())
+    rows: Any = []
+    if act == "reset_order":
+        # The route answers 422 outside Mirror mode, so ask the mode first,
+        # as the orchestrator does (`GET /crm/mode`).
+        mode = await _get("/crm/mode")
+        if not (isinstance(mode, dict) and mode.get("mode") == "mirror"):
+            return _NO_ZOHO_ORDER.format(nouns=_plural(noun))
+    else:
+        if not wanted:
+            return f"Which {noun} is meant? Give its name. Nothing was changed."
+        # Read first: the card names a real row, and an add never makes a
+        # second row that differs only in case.
+        rows = await _get(f"/crm/statuses/{slug}")
+    plan, refusal = _status_plan(act, noun, wanted, rows, typed, chance, hidden, new_name)
+    if plan is None:
+        return refusal
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
+        title=plan["title"],
+        detail=plan["detail"],
+        context=await _held_fields_block(plan["card"], note=_STATUS_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=plan["unchanged"])
+    try:
+        if act == "reset_order":
+            await _post(f"/crm/statuses/{slug}/order/reset", {})
+            return f"The {_plural(noun)} are in the order of Zoho again."
+        if act == "add":
+            made = await _post(f"/crm/statuses/{slug}", plan["body"])
+            row = made if isinstance(made, dict) else {}
+            return (
+                f"Added the {noun} {row.get('name') or wanted} (id={row.get('id')}). "
+                "Change history keeps it, with Undo."
+            )
+        record = _record_uuid(plan["id"])
+        await _patch(f"/crm/statuses/{slug}/{record}", plan["body"])
+    except _MirrorBlocked as blocked:
+        return _setup_blocked(blocked)
+    return (
+        f"Changed the {noun} {plan['name']}: {_changed_words(plan['lines'])}. "
+        "Change history keeps it, with Undo."
+    )
+
+
+def _reason_plan(
+    act: str, wanted: str, rows: Any, new_label: str | None, hidden: bool | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """The card and the body of one act of :func:`crm_edit_lost_reason`, or
+    the words of a refusal before any card."""
+    if act == "add":
+        if _matches_by_name(rows, "label", wanted):
+            return None, (
+                f"The CRM has a lost reason called '{wanted}' already, so nothing "
+                "was added. Use action='change' to change it."
+            )
+        return {
+            "title": f"Add the lost reason {wanted}?", "detail": wanted,
+            "card": {"name": wanted}, "body": {"label": wanted}, "id": "",
+            "unchanged": "No lost reason was added.",
+        }, ""
+    target, refusal = _one_name(rows, "label", wanted, "lost reason")
+    if target is None:
+        return None, refusal
+    title = str(target.get("label") or wanted)
+    relabel = " ".join(str(new_label or "").split())
+    taken = _name_taken(rows, "label", relabel, target, "lost reason")
+    if taken:
+        return None, taken
+    payload: dict[str, Any] = {}
+    lines: dict[str, str] = {}
+    if relabel and relabel != title:
+        payload["label"] = relabel
+        lines["field Name"] = f"{title} → {relabel}"
+    if hidden is not None and bool(hidden) != bool(target.get("hidden")):
+        payload["hidden"] = bool(hidden)
+        lines["field Hidden"] = f"{_yes_no(target.get('hidden'))} → {_yes_no(hidden)}"
+    if not payload:
+        return None, f"The lost reason {title} has those values already, so nothing was changed."
+    return {
+        "title": f"Change the lost reason {title}?",
+        "detail": f"{title} · " + ", ".join(k.removeprefix("field ") for k in lines),
+        "card": {"name": title, **lines}, "body": payload,
+        "id": str(target.get("id") or ""), "lines": lines, "name": title,
+        "unchanged": f"The lost reason {title} did not change.",
+    }, ""
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_edit_lost_reason(
+    action: str,
+    label: str,
+    new_label: str | None = None,
+    hidden: bool | None = None,
+) -> str:
+    """Add or change a lost reason of the CRM: the list of reasons that a
+    member picks when a deal or a lead is lost. Only a CRM admin can, and the
+    person you act for approves it on a card first.
+
+    ``action`` is "add" (a new reason called ``label``) or "change" (the
+    reason called ``label``). For a change, send ``new_label`` to rename it,
+    or ``hidden`` (true takes it out of the picker, false shows it again).
+
+    Give the reason by its label. The chat cannot delete a lost reason. For
+    that, send the member to CRM settings."""
+    act = " ".join(str(action or "").lower().split())
+    if act in ("delete", "remove"):
+        return _NO_DELETE.format(noun="lost reason")
+    if act not in ("add", "change"):
+        return (
+            f"'{action}' is not an action of this tool. Use action='add' or "
+            "action='change'. Nothing was changed."
+        )
+    wanted = " ".join(str(label or "").split())
+    if not wanted:
+        return "Which lost reason is meant? Give its label. Nothing was changed."
+    # Read first, for the same reasons as crm_edit_status.
+    rows = await _get("/crm/lost-reasons")
+    plan, refusal = _reason_plan(act, wanted, rows, new_label, hidden)
+    if plan is None:
+        return refusal
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=plan["title"],
+        detail=plan["detail"],
+        context=await _held_fields_block(plan["card"], note=_REASON_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=plan["unchanged"])
+    try:
+        if act == "add":
+            made = await _post("/crm/lost-reasons", plan["body"])
+            row = made if isinstance(made, dict) else {}
+            return (
+                f"Added the lost reason {row.get('label') or wanted} "
+                f"(id={row.get('id')}). Change history keeps it, with Undo."
+            )
+        record = _record_uuid(plan["id"])
+        await _patch(f"/crm/lost-reasons/{record}", plan["body"])
+    except _MirrorBlocked as blocked:
+        return _setup_blocked(blocked)
+    return (
+        f"Changed the lost reason {plan['name']}: {_changed_words(plan['lines'])}. "
+        "Change history keeps it, with Undo."
+    )
+
 
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
@@ -2426,6 +2904,10 @@ _TOOLS = [
     crm_create_pipeline,
     crm_update_record,
     crm_update_task,
+    # CRM-M2e (task 3951): add and change a stage, a lead status and a lost
+    # reason, and reset the Zoho order of the stages, each on one card.
+    crm_edit_status,
+    crm_edit_lost_reason,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,

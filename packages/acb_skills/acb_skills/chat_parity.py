@@ -186,8 +186,9 @@ def app_of(path: str) -> str | None:
 WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-1": ("Calendar and Tasks", ("calendar", "tasks"), (3112, 3922, 3923)),
     "P-2": ("Email", ("email",), (3111, 3919)),
-    # P-3 (task 3678): task 3954 built the suggestions of the field map and the AI analysis.
-    "P-3": ("CRM", ("crm",), (3678, 3954)),
+    # P-3 (task 3678): task 3951 built the add and change of the CRM set-up (CRM-M2e).
+    # Task 3954 built the suggestions of the field map and the AI analysis.
+    "P-3": ("CRM", ("crm",), (3678, 3951, 3954)),
     "P-4": ("Notes and WhatsApp", ("notes", "whatsapp"), (3113,)),
     # P-5b (task 3114) splits into P-5b-1 (3114) and P-5b-2 to P-5b-6 (3943 to 3947).
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
@@ -1093,7 +1094,6 @@ DEBT: dict[str, str] = {
     "POST /api/people/{}/absences": "P-5",
     "POST /api/people/{}/avatar": "P-5",
     "POST /api/people/{}/resume": "P-5",
-    "POST /api/tasks/people": "P-5",
     "POST /api/tasks/people/{}/resume": "P-5",
     "PUT /api/people/schedule": "P-5",
     "PUT /api/people/{}/credentials": "P-5",
@@ -1288,11 +1288,11 @@ DEBT_CEILING: dict[str, int] = {
     "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
     "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
-    "crm": 65,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (72 to 65).
+    "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).
     "notes": 51,
     "whatsapp": 25,
-    "people": 13,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13).
-    "knowledge": 15,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15).
+    "people": 12,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays.
+    "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 28,
