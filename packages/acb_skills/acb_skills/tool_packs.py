@@ -1855,7 +1855,9 @@ PACK_OUTSIDE_TEXT: Mapping[str, bool | tuple[str, ...]] = {
     "list_artifacts": True,  # file names that a mail can have named
     "list_labels": True,  # a label name that a rule or a sort can have made
     "list_scheduled_sends": True,  # draft subjects and failure text
-    "manage_inbox": False,  # counts; the senders and subjects stay on the card
+    # Task 3977: a trash with CHAT_DRAFT_CHOICE_ORGS on answers a MESSAGES
+    # block of the subjects, the people and the text of drafts and mail.
+    "manage_inbox": True,
     "mark_thread_done": False,  # fixed words; the subject stays on the card
     "narrow_and_read": True,  # mail text
     "present_email_groups": True,  # subjects and senders
@@ -1865,8 +1867,11 @@ PACK_OUTSIDE_TEXT: Mapping[str, bool | tuple[str, ...]] = {
     "read_email_attachment": True,  # file text
     "read_thread": True,  # mail text
     "reclassify_reply_zero": False,  # fixed words
-    "schedule_send": False,  # the time, the own mailbox and the schedule id
-    "send_draft": False,  # "Draft sent." or a refusal with ids
+    # HRD-10d-2: with CHAT_CARD_PRECONDITION_ORGS on, a 409 of a changed
+    # draft answers its subject, its people, the start of its text and its
+    # file names (``_send_changed_text``). A draft can quote a stranger.
+    "schedule_send": True,
+    "send_draft": True,
     "send_email": ("reply_to_email_id",),  # a reply names derived addresses
     "snooze_email": True,  # the subject of the mail
     "sync_account": False,  # a count

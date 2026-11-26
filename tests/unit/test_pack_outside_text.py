@@ -44,8 +44,17 @@ from tests.unit.test_pack_guards import (
 #: a search, a thread, a list with bodies and a file read.
 READS = ("read_email", "read_thread", "query_inbox", "read_email_attachment",
          "narrow_and_read", "query_insights", "find_priority", "digest")
-#: The tools that only write or send, and that the brief names.
-SENDS = ("send_email", "send_draft", "schedule_send")
+#: The tools that only write or send, and that the brief names. The brief
+#: named ``send_draft`` and ``schedule_send`` too. Main then gave both a
+#: refusal that names the draft (HRD-10d-2), so both mark now:
+#: :data:`MARKS_SINCE_MAIN`.
+SENDS = ("send_email",)
+#: The tools that the brief classified False, and whose answer on main can
+#: now hold outside text. ``manage_inbox``: a trash lists drafts and mail
+#: (task 3977, ``_framed_drafts``). ``send_draft`` and ``schedule_send``: a
+#: 409 of a changed draft names its subject, people, text and files
+#: (HRD-10d-2, ``_send_changed_text``).
+MARKS_SINCE_MAIN = ("manage_inbox", "send_draft", "schedule_send")
 
 
 def _outside_owner_tools() -> set[str]:
@@ -106,6 +115,14 @@ def test_each_read_marks_and_each_send_does_not() -> None:
         assert tp.marks_chat(EA, name, {}) is True, name
     for name in SENDS:
         assert tp.marks_chat(EA, name, {}) is False, name
+
+
+def test_a_tool_whose_answer_names_a_draft_or_a_trash_list_marks() -> None:
+    """Main gave these tools an answer that can hold outside text, so each
+    call marks. Mutation: classify any of them False again → red."""
+    for name in MARKS_SINCE_MAIN:
+        assert tp.PACK_OUTSIDE_TEXT[name] is True, name
+        assert tp.marks_chat(EA, name, {}) is True, name
 
 
 def test_each_argument_of_a_rule_is_a_parameter_of_the_tool() -> None:
