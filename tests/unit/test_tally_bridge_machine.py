@@ -87,6 +87,7 @@ def test_the_start_switch_saves_and_reloads(tmp_path):
             "start_tally_at_signin": True,
             "tally_exe": EXE,
             "keep_awake": False,
+            "problem": None,
         }
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert saved["START_TALLY_AT_SIGNIN"] == "true" and saved["TALLY_EXE"] == EXE
@@ -244,7 +245,7 @@ def test_without_windows_there_is_no_callback():
 
 def test_the_callback_makes_the_task_and_starts_keep_awake():
     awake, runner = _Awake(), _Runner()
-    apply = entry._machine_applier(True, awake, runner)
+    apply = entry._machine_applier(True, awake, runner, lambda path: None)
     settings = Settings(start_tally_at_signin=True, tally_exe=EXE, keep_awake=True)
     assert asyncio.run(apply(settings)) is None
     assert awake.calls == ["start"]
@@ -253,7 +254,7 @@ def test_the_callback_makes_the_task_and_starts_keep_awake():
 
 def test_the_callback_removes_the_task_and_stops_keep_awake():
     awake, runner = _Awake(), _Runner(task=True)
-    apply = entry._machine_applier(True, awake, runner)
+    apply = entry._machine_applier(True, awake, runner, lambda path: None)
     assert asyncio.run(apply(Settings(keep_awake=False))) is None
     assert awake.calls == ["stop"]
     assert _has(runner, "/Delete")
