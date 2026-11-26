@@ -504,7 +504,7 @@ reading.
 | SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
 | SBX-8 | Built, dark (PR 2625, 2026-11-19). The cost of gVisor is not measured | `RUNTIME_RUNSC` in `sandbox_broker.py` |
 | SBX-12 | Not built | Needs SBX-5 |
-| SBX-13 | Not built | `git grep metorite_door` finds nothing |
+| SBX-13 | Built, read only (task 3428, 2026-11-26). The image on a box is WS43-G2. The proof with the real door moves to SBX-4 (§12.3) | `apps/services/orchestrator/sandbox/metorite_door.py`. `tests/unit/test_sandbox_door_client.py` (SBX-F22) |
 | SBX-15a, the remote backend and the org lock | Built, dark (PR 2625, 2026-11-19) | `BACKEND_REMOTE` in `sandbox_broker.py`. `tests/unit/test_sandbox_remote_backend.py` |
 | SBX-15c, three follow-ups of 15a | Built, dark (PR 2839, merged 2026-11-26) | Merge `e8b692f04`. Its §12 row |
 | SBX-15b, the tools half | Not built | Needs SBX-4 and WS-43g |
@@ -2888,3 +2888,5 @@ here, and each needs its own check before anyone acts on it.
   and the INDEX row. No rule changes.
 - 2026-11-26 — SBX-0g (task 4000). The owner answered the build card question
   of SBX-20 on task 3981 (answer `8c7fc3a3`). §0d, SBX-F27 and D233 record it.
+- 2026-11-26 — SBX-13 built (task 3428). The door client `metorite_door` is in
+  the sandbox image, read only. Fence SBX-F22. The §0c row of SBX-13 says so.
