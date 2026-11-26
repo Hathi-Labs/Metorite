@@ -375,6 +375,14 @@ into `apps.<app>`. A bool key takes a bool, and a time takes `HH:MM` from
 00:00 to 23:59. The GET answers `apps`, each app over its defaults. The
 brief's keys are the first: `enabled`, `brief_time` and `closeout_time`.
 
+**The chat's keys.** `chat.summaries` is "Keep chat summaries" (PZ-35).
+`chat.follow_up_suggestions` is "Show follow-up suggestions" (task 4002), off by
+default (Ishaan, 2026-11-26). While it is off, the web chat draws no "Follow up"
+pill and sends no request to `/api/chat/suggestions`. The starter pills of an
+empty chat stay. Settings → Assistant holds the switch, and the PUT above writes
+it also while the profile flag is off. Fences:
+`src/lib/followUpPref.test.ts` and `e2e/chat-starter-pills.spec.ts`.
+
 A member with no `user_settings` row gets one on the first write, with the
 calendar seed, as `prefs.py` does.
 

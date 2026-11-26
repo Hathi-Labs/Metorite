@@ -11,7 +11,9 @@
  * answer, the full profile, as the new state.
  */
 
+import { invalidate } from "@/lib/dataCache";
 import { filenameFromDisposition } from "@/lib/export";
+import { FOLLOW_UPS_KEY, followUpsOn } from "@/lib/followUpPref";
 
 export const FACT_KINDS = ["about", "routine", "preference", "work", "relationship"] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
@@ -551,9 +553,24 @@ export async function fetchProfileAndGate(): Promise<{
   profile: Profile;
   gate: SummaryGate;
   celebrations: CelebrationsGate;
+  followUps: boolean;
 }> {
   const raw = await call<Partial<Profile>>("", "GET");
-  return { profile: normalize(raw), gate: summaryGate(raw), celebrations: celebrationsGate(raw) };
+  return {
+    profile: normalize(raw),
+    gate: summaryGate(raw),
+    celebrations: celebrationsGate(raw),
+    followUps: followUpsOn(raw),
+  };
+}
+
+/**
+ * The switch "Show follow-up suggestions" (task 4002). After the save, the
+ * open chats read the setting again.
+ */
+export async function saveFollowUps(value: boolean): Promise<void> {
+  await call("", "PUT", { key: "apps", value: { chat: { follow_up_suggestions: value } } });
+  invalidate(FOLLOW_UPS_KEY);
 }
 
 /** The switch "Keep chat summaries". Forget keeps it. */

@@ -258,9 +258,31 @@ describe("the page says what the assistant does with this data", () => {
   it("has jump links to the sections", () => {
     const html = draw({});
     expect(html).toContain('aria-label="Sections on this page"');
-    for (const id of ["memory", "address", "style", "facts", "interview", "names", "download", "forget"]) {
+    for (const id of [
+      "memory", "address", "style", "follow-ups", "facts", "interview", "names", "download", "forget",
+    ]) {
       expect(html).toContain(`id="assistant-${id}"`);
     }
+  });
+});
+
+describe("Follow-up suggestions (task 4002)", () => {
+  const box = (html: string) => html.match(/<input[^>]*aria-label="Show follow-up suggestions"[^>]*>/)?.[0] ?? "";
+
+  it("draws the switch off, until the member turned it on", () => {
+    for (const html of [draw({}), draw({ followUps: false })]) {
+      expect(box(html)).not.toBe("");
+      expect(box(html)).not.toContain('checked=""');
+    }
+    expect(box(draw({ followUps: true }))).toContain('checked=""');
+  });
+
+  it("wires the switch to the save and to the first read", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/onFollowUps:\s*\(value\) =>/);
+    expect(src).toMatch(/await saveFollowUps\(value\)/);
+    expect(src).toMatch(/setFollowUps\(read\.followUps\)/);
+    expect(src).toMatch(/followUps=\{followUps\}/);
   });
 });
 

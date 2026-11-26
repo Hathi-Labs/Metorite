@@ -87,7 +87,11 @@ APP_PREFERENCES: dict[str, dict[str, Any]] = {
     # WS-63 PZ-35 (``personalization.md`` §15.5): "Keep chat summaries". The
     # job of PZ-33b reads ``app_prefs(raw, "chat")["summaries"]`` and writes
     # no new summary while it reads False.
-    "chat": {"summaries": True},
+    # Task 4002: "Show follow-up suggestions", off by default (Ishaan,
+    # 2026-11-26). While it reads False, the chat draws no "Follow up" pills
+    # and sends no request to ``/api/chat/suggestions``. Change the default
+    # here to show them to each member who made no choice.
+    "chat": {"summaries": True, "follow_up_suggestions": False},
 }
 
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")

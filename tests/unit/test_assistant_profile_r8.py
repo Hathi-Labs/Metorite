@@ -438,6 +438,35 @@ async def test_forget_keeps_the_app_settings(db) -> None:
     assert _stored(db, email) == [(db.org_a, {"v": 1, "apps": {"brief": {"enabled": False}}})]
 
 
+async def test_the_follow_up_setting_is_stored_for_one_member_of_one_org(db) -> None:
+    """Task 4002. ``apps.chat.follow_up_suggestions`` is off until the member
+    stores true. It merges beside the summaries switch, Forget keeps it, and
+    no other member and no other org reads it."""
+    email, other = _address(), _address()
+    db.made.extend([email, other])
+    user = _member(email)
+    unset = {"summaries": True, "follow_up_suggestions": False}
+    on = {"summaries": False, "follow_up_suggestions": True}
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert (await _get_apps(db.org_a, user))["chat"] == unset
+        await _put(db.org_a, user, "apps", {"chat": {"summaries": False}})
+        answer = await _put(db.org_a, user, "apps",
+                            {"chat": {"follow_up_suggestions": True}})
+        assert answer["apps"]["chat"] == on
+        assert (await _get_apps(db.org_a, user))["chat"] == on
+        assert (await _get_apps(db.org_a, _member(other)))["chat"] == unset
+        assert (await _get_apps(db.org_b, user))["chat"] == unset
+        with _tenant(db.org_a):
+            await _ap().delete_assistant_profile(user=user)
+        assert (await _get_apps(db.org_a, user))["chat"] == on
+        await _put(db.org_a, user, "apps", {"chat": {"follow_up_suggestions": False}})
+        assert (await _get_apps(db.org_a, user))["chat"] == {
+            "summaries": False, "follow_up_suggestions": False}
+    [(org, stored)] = _stored(db, email)
+    assert org == db.org_a
+    assert stored["apps"] == {"chat": {"summaries": False, "follow_up_suggestions": False}}
+
+
 def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
     ap = _ap()
     from gateway.routes.tasks.settings import upsert_settings_sql
