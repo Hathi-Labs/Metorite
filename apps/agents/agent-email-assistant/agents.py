@@ -8280,9 +8280,8 @@ async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
     Only the member's own "Delete it" trashes it, and only while it is still
     the chat's own text: the stored copy (``target_state``), then the live
     draft at the mailbox (``DELETE /email/chat-drafts/{id}``). Each other way
-    keeps it, and the answer says where it is. "The member did not ask to
-    delete it" goes only with the member's own no. A timeout, a close, no card
-    and another member's answer get the plain line.
+    keeps it, and the answer says where it is, with no reason: Keep, a
+    timeout, a close, no card and another member's answer get the same line.
 
     After "Delete it", the answer is ``ask_tools.card_declined_draft_text``:
     the lead stays "Declined", and the member's line says that nothing was
@@ -8294,8 +8293,8 @@ async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
     from acb_skills import ask_tools
 
     if ask_tools.earlier_draft_choice(_current_user_email()) != "delete":
-        if ask_tools.last_card_outcome() == ask_tools.CARD_DECLINED:
-            return out + _earlier_stays(earlier, "The member did not ask to delete it")
+        # Fix round 3: no reason. The card binds no responder, so a decline
+        # can be another member's, and the line names only where it is.
         return out + _earlier_stays(earlier)
     act, detail = await _delete_earlier(earlier)
     return ask_tools.card_declined_draft_text(act) + (f"\n{detail}" if detail else "")

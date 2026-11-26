@@ -44,8 +44,13 @@ Each rule names the mutation that turns it red (R7):
     the decline text of before -> ``test_delete_trashes_the_chat_draft_and_names_what_stays``.
 16. **Reply entries have their own cap** (fix round 2, D). Mutation: one cap
     of 20 -> ``test_reply_entries_never_push_out_a_new_mail_draft``.
-17. **Only the member's own no says "did not ask to delete"** (fix round 2, E).
-    Mutation: say it on each end -> ``test_keep_and_no_answer_keep_the_draft``.
+17. **A kept draft gets the plain line, with no reason** (fix round 3). The
+    card binds no responder, so a decline can be another member's. Mutation:
+    say "The member did not ask to delete it" -> ``test_keep_and_no_answer_keep_the_draft``.
+18. **No session is open across the provider call of the live check** (fix
+    round 3). Mutation: read the provider inside block A -> ``test_the_live_check_route``.
+19. **The live check compares the subject, the people and the files too**
+    (fix round 3). Mutation: compare the body only -> ``test_the_live_check_route``.
 """
 from __future__ import annotations
 
@@ -354,21 +359,20 @@ async def test_a_draft_with_a_queued_send_asks_nothing(box):
     assert await agents._earlier_draft(agents._ChatPlan(CHAT_DRAFT, unchecked=True), BOX) is None
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome,said_no", [
-    (at.CARD_DECLINED, True), (at.CARD_TIMED_OUT, False), (at.CLOSED_BY_YOUR_MESSAGE, False),
-    (at.CARD_NOT_SHOWN, False), (at.CARD_OTHER_MEMBER, False)])
-async def test_keep_and_no_answer_keep_the_draft(box, monkeypatch, outcome, said_no):
-    """Fix round 2 (E): only the member's own no says that the member did not
-    ask to delete it. Each other end gets the plain line."""
-    earlier = await agents._earlier_draft(_PLAN, BOX)
-    _choice(monkeypatch, "")
-    monkeypatch.setattr(at, "last_card_outcome", lambda: outcome)
-    out = await agents._after_discard(_DECLINED, earlier)
+@pytest.mark.parametrize("answer,responder", [
+    ("REJECT", ME), (at.DELETE_EARLIER_ANSWER, "bo@acme.test"), ("REJECT", "bo@acme.test")],
+    ids=["keep", "another-member-deletes", "another-member-keeps"])
+def test_keep_and_no_answer_keep_the_draft(record, box, answer, responder):
+    """Fix round 3: the REAL card (``request_confirmation`` on the native
+    queue). Keep, and any answer of another member, keep the draft. The
+    answer names where it is, and gives no reason: the card binds no
+    responder, so "the member did not ask" could be false."""
+    _saved_by_draft_reply()
+    out, card = _edit(answer, responder=responder)
+    assert card is not None and "earlier" in card
     assert box.deletes == []
-    assert out.startswith(_DECLINED)
     assert f"stays in Drafts (draft_id {CHAT_DRAFT})" in out
-    assert ("The member did not ask to delete it" in out) is said_no
+    assert "did not ask" not in out
 
 
 @pytest.mark.asyncio
@@ -738,28 +742,57 @@ async def test_reply_entries_never_push_out_a_new_mail_draft(record) -> None:
 
 
 class _Live:
-    def __init__(self, live: Any) -> None:
+    """The provider of the route: it records the open sessions at each call."""
+
+    def __init__(self, live: Any, open_now: list[int], *, authed: bool = True) -> None:
         self.live = live
+        self.open_now = open_now
+        self.authed = authed
+        self.calls: list[tuple[str, int]] = []
+        self.dirty = False
 
-    async def get_message_body(self, _pmid: str) -> Any:
-        from types import SimpleNamespace
+    async def authenticate(self) -> bool:
+        self.calls.append(("authenticate", self.open_now[0]))
+        self.dirty = True  # the sign-in rotated a token
+        return self.authed
 
+    async def get_message(self, _pmid: str) -> Any:
+        self.calls.append(("get_message", self.open_now[0]))
         if isinstance(self.live, Exception):
             raise self.live
-        return SimpleNamespace(body_text=self.live, body_html="")
+        return self.live
+
+    def credentials_dirty(self) -> bool:
+        return self.dirty
 
 
-@pytest.mark.parametrize("live,authed,folder,ok", [
-    ("Dear Salil,", True, "drafts", True),
-    ("Dear Salil, I changed this in Outlook.", True, "drafts", False),
-    (TimeoutError(), True, "drafts", False),
-    ("Dear Salil,", False, "drafts", False),
-    ("Dear Salil,", True, "trash", False),
-], ids=["same", "edited-at-the-mailbox", "read-fails", "no-sign-in", "not-a-draft"])
-def test_the_live_check_route(monkeypatch, live, authed, folder, ok) -> None:
-    """Fix round 2 (A): ``DELETE /email/chat-drafts/{id}`` trashes only while
-    the live body at the provider is the stored text. The member comes from
-    the session. A refusal is 409, and nothing is trashed."""
+def _live_copy(**change: Any) -> Any:
+    from types import SimpleNamespace
+
+    base = {"body_text": "Dear Salil,", "body_html": "", "subject": "Re: Proposal",
+            "to_addresses": [SimpleNamespace(email="Salil@client.test", name="")],
+            "cc_addresses": [], "bcc_addresses": [], "has_attachments": False}
+    return SimpleNamespace(**{**base, **change})
+
+
+@pytest.mark.parametrize("live,authed,folder,owned,ok", [
+    (_live_copy(), True, "drafts", True, True),
+    (_live_copy(body_text="Dear Salil, I changed this in Outlook."), True, "drafts", True, False),
+    (_live_copy(subject="Re: Proposal v2"), True, "drafts", True, False),
+    (_live_copy(cc_addresses=[{"email": "boss@client.test"}]), True, "drafts", True, False),
+    (_live_copy(has_attachments=True), True, "drafts", True, False),
+    (TimeoutError(), True, "drafts", True, False),
+    (_live_copy(), False, "drafts", True, False),
+    (_live_copy(), True, "trash", True, False),
+    (_live_copy(), True, "drafts", False, False),
+], ids=["same", "text-edited", "subject-edited", "cc-added", "file-added", "read-fails",
+        "no-sign-in", "not-a-draft", "another-members-draft"])
+def test_the_live_check_route(monkeypatch, live, authed, folder, owned, ok) -> None:
+    """Fix rounds 2 and 3: ``DELETE /email/chat-drafts/{id}`` trashes only
+    while the live draft at the provider is the stored copy: its text, its
+    subject, its To, Cc and Bcc, and no file. The member comes from the
+    session. No session is open across the provider call, and the rotated
+    token goes in a later session. A refusal is 409, and nothing is trashed."""
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
 
@@ -767,22 +800,35 @@ def test_the_live_check_route(monkeypatch, live, authed, folder, ok) -> None:
     from gateway.routes.email.automation import drafting as dr
     from gateway.routes.email.transport import messages
 
-    owners: list[str] = []
-    row = SimpleNamespace(account_id=BOX, body_text="Dear Salil,", folder=folder)
+    open_now = [0]
+    sql: list[tuple[str, dict[str, Any]]] = []
+    row = SimpleNamespace(account_id=BOX, subject="Re:  Proposal", body_text="Dear Salil,",
+                          folder=folder, has_attachments=False,
+                          to_addresses='[{"email": "salil@client.test", "name": ""}]',
+                          cc_addresses="[]", bcc_addresses=[])
+    provider = _Live(live, open_now, authed=authed)
 
     class _Db:
-        async def execute(self, *_a: Any, **_k: Any) -> Any:
-            return SimpleNamespace(fetchone=lambda: row)
+        async def execute(self, stmt: Any, params: Any = None) -> Any:
+            sql.append((str(stmt), dict(params or {})))
+            return SimpleNamespace(fetchone=lambda: row if owned else None)
 
     @asynccontextmanager
     async def tenant() -> Any:
-        yield _Db()
+        open_now[0] += 1
+        try:
+            yield _Db()
+        finally:
+            open_now[0] -= 1
 
-    @asynccontextmanager
-    async def session(_db: Any, owner: str, *, message_id: str, require_auth: bool) -> Any:
-        assert message_id == CHAT_DRAFT and require_auth is False
-        owners.append(owner)
-        yield SimpleNamespace(authed=authed, provider=_Live(live), provider_message_id="p1")
+    async def for_message(_db: Any, mid: str, owner: str) -> Any:
+        assert mid == CHAT_DRAFT and owner == ME
+        return provider, "pm-1", BOX, object()
+
+    saved: list[int] = []
+
+    async def persist(*_a: Any) -> None:
+        saved.append(open_now[0])
 
     async def signature(*_a: Any) -> str:
         return ""
@@ -795,7 +841,8 @@ def test_the_live_check_route(monkeypatch, live, authed, folder, ok) -> None:
         return {"id": mid, "provider": "confirmed"}
 
     monkeypatch.setattr(dr, "_tenant_session", tenant)
-    monkeypatch.setattr(dr, "provider_session", session)
+    monkeypatch.setattr(dr, "_provider_for_message", for_message)
+    monkeypatch.setattr(dr, "_persist_rotated_creds", persist)
     monkeypatch.setattr(dr, "_account_signature", signature)
     monkeypatch.setattr(messages, "delete_message", delete)
     user = SimpleNamespace(email=ME)
@@ -805,5 +852,11 @@ def test_the_live_check_route(monkeypatch, live, authed, folder, ok) -> None:
     else:
         with pytest.raises(HTTPException) as exc:
             asyncio.run(dr.trash_chat_draft_live(CHAT_DRAFT, user))
-        assert exc.value.status_code == 409 and trashed == []
-    assert owners == [ME], "the member of the session, never a request field"
+        assert exc.value.status_code == (409 if owned else 404) and trashed == []
+    # The owner is the session's member, in the SQL of block A.
+    assert sql and sql[0][1]["user_id"] == ME and "user_id" in sql[0][0]
+    # No session is open at any provider call (gateway rule, fix round 3).
+    assert provider.calls == ([] if not owned else
+                              [("authenticate", 0)] + ([("get_message", 0)] if authed else []))
+    # The rotated token goes in a session of its own, after the read.
+    assert saved == ([1] if owned else [])
