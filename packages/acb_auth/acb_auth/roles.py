@@ -78,6 +78,26 @@ class AgentScope:
 
 
 @dataclass(slots=True, frozen=True)
+class SandboxScope:
+    """The run of a sandbox call (SBX-2, ``agent_sandbox.md`` §12.2 step 11).
+
+    The sandbox sibling of branch 0 in ``deps.get_current_user`` attaches it
+    LAST, after the member's access resolved, and only for a live capability
+    of the ``sandbox_capabilities`` table. Every field comes from that row,
+    never from a header. It never holds the token or its hash.
+    """
+
+    run_id: str
+    thread_id: str
+    #: ``build``, ``smoke`` or ``run``.
+    phase: str
+    #: The Studio package and its version (D187). ``None`` during a build.
+    app_id: str | None = None
+    version: int | None = None
+    read_scopes: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
 class UserContext:
     """Resolved identity for one request.
 
@@ -101,6 +121,10 @@ class UserContext:
     #: that is not a signed agent request. Only branch 0 of
     #: ``deps.get_current_user`` sets it, with ``dataclasses.replace``.
     agent: AgentScope | None = None
+    #: The sandbox run of the call (SBX-2). ``None`` for every request that
+    #: is not a sandbox call. Only the sandbox sibling of branch 0 sets it,
+    #: with ``dataclasses.replace``.
+    sandbox: SandboxScope | None = None
 
     # ── Legacy coarse role ──────────────────────────────────────────────────
 

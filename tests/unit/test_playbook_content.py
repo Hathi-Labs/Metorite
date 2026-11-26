@@ -52,6 +52,7 @@ def test_the_required_topics_exist():
         "kit/skill/bulk-writes",
         "kit/skill/review-and-verify",
         "start-here",
+        "default-guidance",
     }
     assert required <= slugs
 

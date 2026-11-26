@@ -1,19 +1,26 @@
 /**
  * The Explorer tree of the Studio IDE (`ai_studio.md` §6.3, slice G3a).
  *
- * `buildOutline` turns the DRAFT manifest into a tree: the app, then seven branches. The
+ * `buildOutline` turns the DRAFT manifest into a tree: the app, then seven branches. Under the app frame flag it adds a Pages and a Rail branch. The
  * tree is the same for a small app and a large one. A branch with nothing in it shows a
  * muted "None yet" child, so a member sees what a complex app can hold. The function is
  * pure and never throws: a manifest that is not an object gives an empty tree and a hint.
  */
 import type { Reveal } from "./codeReveal";
 import type { StudioManifest } from "./manifest";
+import { pagesView, railView } from "./pagesTabModel";
+
+/** The options of `buildOutline`. */
+export interface OutlineOptions {
+  /** True under the app frame flag. The tree then holds the Pages and Rail branches. Default false. */
+  frame?: boolean;
+}
 
 export type OutlineKind =
-  | "app" | "branch" | "object" | "field" | "view" | "action" | "rule" | "workflow" | "skill" | "code" | "none";
+  | "app" | "branch" | "object" | "field" | "view" | "action" | "rule" | "workflow" | "skill" | "code" | "page" | "rail" | "none";
 
 /** The centre tab that a click on a node shows. */
-export type OutlineTab = "preview" | "data" | "views" | "code";
+export type OutlineTab = "preview" | "data" | "views" | "pages" | "code";
 
 export interface OutlineNode {
   /** Unique in the tree. */
@@ -26,6 +33,8 @@ export interface OutlineNode {
   object?: string;
   /** The tab that a click shows. */
   tab?: OutlineTab;
+  /** The page of the Pages tab that a click puts in focus. The page keeps it in local state. */
+  page?: string;
   /** Where the Code tab scrolls to, for a part that has no tab of its own. */
   reveal?: Reveal;
   children?: OutlineNode[];
@@ -44,7 +53,7 @@ export const EMPTY_HINT =
 
 /** The seven branches, in order. The ids are the ones that `branchOf` returns. */
 export const BRANCHES = ["data", "views", "actions", "rules", "workflows", "skill", "code"] as const;
-export type BranchId = (typeof BRANCHES)[number];
+export type BranchId = (typeof BRANCHES)[number] | "pages" | "rail";
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const list = (v: unknown): Record<string, unknown>[] => (Array.isArray(v) ? v.filter(isObject) : []);
@@ -92,7 +101,32 @@ function codeNodes(manifest: Record<string, unknown>): OutlineNode[] {
     }));
 }
 
-export function buildOutline(manifest: unknown): Outline {
+/** The Pages branch and the Rail branch. Every label is read-only text, and a click opens the Pages tab. */
+function frameBranches(manifest: unknown): OutlineNode[] {
+  const pages = pagesView(manifest);
+  const pageNodes = pages.pages.map((p): OutlineNode => ({
+    id: `page:${p.id}`, kind: "page", label: p.title || p.id, hint: p.title ? p.id : undefined, tab: "pages", page: p.id,
+    children: p.parts.length
+      ? p.parts.map((t, i): OutlineNode => ({ id: `page:${p.id}:part:${i}`, kind: "view", label: t, tab: "pages", page: p.id }))
+      : undefined,
+  }));
+  const rail = railView(manifest);
+  const railNodes = rail.sections.map((s, i): OutlineNode => ({
+    id: `rail:${i}`, kind: "rail", label: s.title || "Default rail", tab: "pages",
+    hint: s.rows.length ? String(s.rows.length) : undefined,
+    children: s.rows.length
+      ? s.rows.map((r, j): OutlineNode => ({
+        id: `rail:${i}:${j}`, kind: "rail", label: r.label || r.pageName, hint: r.page, tab: "pages", page: r.page,
+      }))
+      : undefined,
+  }));
+  return [
+    branch("pages", "Pages", "pages", pageNodes),
+    branch("rail", "Rail", "pages", railNodes),
+  ];
+}
+
+export function buildOutline(manifest: unknown, opts: OutlineOptions = {}): Outline {
   if (!isObject(manifest)) return { root: null, hint: EMPTY_HINT };
   const m = manifest as Partial<Record<keyof StudioManifest, unknown>> & Record<string, unknown>;
   const name = text(m.name) || text(m.id) || "Untitled app";
@@ -130,6 +164,7 @@ export function buildOutline(manifest: unknown): Outline {
       children: [
         branch("data", "Data", "data", objects),
         branch("views", "Views", "views", views),
+        ...(opts.frame ? frameBranches(m) : []),
         branch("actions", "Actions", "code", actions),
         branch("rules", "Rules", "data", ruleNodes(m)),
         branch("workflows", "Workflows", "code", workflows),

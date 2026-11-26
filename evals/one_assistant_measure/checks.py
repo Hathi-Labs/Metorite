@@ -29,11 +29,23 @@ from evals.one_assistant_measure.pack import (
     OWNERS,
     PROJECTS,
     email_tool_names,
+    studio_tool_names,
 )
 
 SPAWN_ARM = "packs+spawn"
-#: The arms that run the real pack code (the packs, with or without the spawn tool).
-PACK_ARMS = ("pack", SPAWN_ARM)
+#: TS-5a. The arm with ``TOOL_SEARCH_ORGS`` on: the model finds a tool with
+#: ``find_tools`` and does not load a whole pack. It waits for TS-5b and the flag.
+SEARCH_ARM = "search"
+#: The arms that run the real pack code (the packs, with or without the spawn
+#: tool, and the search arm, which holds the packs and ``find_tools`` too).
+PACK_ARMS = ("pack", SPAWN_ARM, SEARCH_ARM)
+#: The tool of the search arm, and the loader of a whole pack on the other arms.
+FIND_TOOL = "find_tools"
+LOAD_TOOL = "load_skill_tools"
+#: The schema tokens that one request may carry (``one_assistant_context.md``
+#: §4.2.9, "about 30 thousand"). TS-4 builds the real limit, and this number only
+#: reads it. A request over it fails the check ``schema_tokens``.
+SCHEMA_TOKEN_BUDGET = 30_000
 
 #: The email tools that read one email, a thread or a file.
 READS = frozenset({"read_email", "read_thread", "read_email_attachment"})
@@ -101,6 +113,91 @@ class Observation:
     #: a CRM or Projects write: the names of its writes and the cards it raised
     #: (:func:`write_cards_of`).
     write_cards: list[tuple[tuple[str, ...], int]] = field(default_factory=list)
+    #: TS-5a. The calls of the orchestrator's own run to ``find_tools``,
+    #: ``load_skill_tools`` and a Studio tool, in order: name, arguments, result.
+    trace: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
+    #: TS-5a. The tool names that the orchestrator's requests of this turn carried.
+    #: Empty means that no request was read (:func:`_no_studio_names` fails on it).
+    tool_names: frozenset[str] = frozenset()
+    #: TS-5a. The description of ``find_tools`` in those requests, or "".
+    find_description: str = ""
+    #: TS-5a. The most schema tokens that one request of the orchestrator carried.
+    schema_tokens: int = 0
+    #: TS-5a. True when the chat had read outside mail before this turn, so the
+    #: packs are held (the mark of ``egress``).
+    held: bool = False
+    #: Task 2874. EVERY tool call of the orchestrator's own run in this turn, in order:
+    #: name, arguments, result (:func:`checks_2874.ordered_calls_of`).
+    ordered: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
+
+
+def trace_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
+    """TS-5a. Each call of the orchestrator's own run to ``find_tools``,
+    ``load_skill_tools`` or a Studio tool, in order: ``(name, args, result)``."""
+    names = {FIND_TOOL, LOAD_TOOL} | studio_tool_names()
+    calls: dict[str, list[Any]] = {}
+    for e in events:
+        kind = e.get("type")
+        cid = str(e.get("toolCallId") or "")
+        name = str(e.get("toolCallName") or "")
+        if kind == "TOOL_CALL_START" and name in names:
+            calls[cid] = [name, e.get("args") or "", "", ""]
+        elif kind == "TOOL_CALL_ARGS" and cid in calls:
+            calls[cid][3] += str(e.get("delta") or "")
+        elif kind == "TOOL_CALL_RESULT" and cid in calls:
+            calls[cid][2] = str(e.get("content") or "")
+    return [(c[0], _args(c[1] or c[3]), c[2]) for c in calls.values()]
+
+
+#: The event stream cuts a tool result at this many characters
+#: (``executor.py``: ``result_str[:2000]``).
+RESULT_CUT = 2000
+
+
+def find_answers_in(body: dict[str, Any]) -> list[str]:
+    """TS-5b. The FULL text of each ``find_tools`` answer in the messages of one
+    model request (``body`` is the JSON of the request). The event stream cuts a
+    result at :data:`RESULT_CUT`, and the hold note of a found pack comes after
+    that cut, so the held check reads the request, the text that the model read."""
+    messages = [m for m in (body.get("messages") or []) if isinstance(m, dict)]
+    ids = {str(c.get("id")) for m in messages for c in (m.get("tool_calls") or [])
+           if isinstance(c, dict) and (c.get("function") or {}).get("name") == FIND_TOOL}
+    out: list[str] = []
+    for m in messages:
+        if m.get("role") == "tool" and str(m.get("tool_call_id")) in ids:
+            content = m.get("content")
+            if isinstance(content, list):
+                content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
+            out.append(str(content or ""))
+    return out
+
+
+def full_find_results(
+    trace: list[tuple[str, dict[str, Any], str]], answers: list[str],
+) -> list[tuple[str, dict[str, Any], str]]:
+    """*trace* with each cut ``find_tools`` result swapped for its full text, taken
+    from *answers* (:func:`find_answers_in`). A result that no answer extends stays as
+    it is, so a missing request never invents a note."""
+    out = []
+    for name, args, result in trace:
+        if name == FIND_TOOL and len(result) >= RESULT_CUT:
+            result = next((a for a in answers if a.startswith(result[:RESULT_CUT]) and len(a) > len(result)),
+                          result)
+        out.append((name, args, result))
+    return out
+
+
+def schema_tokens_of(tools: list[dict[str, Any]]) -> int:
+    """TS-5a. The schema tokens of the *tools* of one request, summed.
+
+    It uses the repo's one estimate, the one of ``orchestrator._maf_mcp.schema_tokens``:
+    ``acb_llm.context.count_message_tokens`` on the JSON of one schema at a time.
+    The request holds each schema already (``{"type": "function", "function": {...}}``),
+    so this prices the schema that went on the wire."""
+    from acb_llm.context import count_message_tokens
+
+    return sum(count_message_tokens([{"role": "system", "content": json.dumps(
+        t.get("function") or t, sort_keys=True, ensure_ascii=False)}]) for t in tools)
 
 
 def _args(raw: Any) -> dict[str, Any]:
@@ -665,11 +762,26 @@ _NOTHING_HAPPENED = re.compile(
     re.IGNORECASE | re.DOTALL)
 
 
+#: The answer of MAF to a call of a tool that is not in the request. The ``Error:
+#: Requested function ...`` form is in :data:`_NOTHING_HAPPENED`. This is the plain form
+#: that a run with the ``studio`` pack missing gave (TS-5a, a run with no ``STUDIO_ORGS``).
+_UNKNOWN_FUNCTION = re.compile(r"""^['"]?Function "[^"]+" not found\.?['"]?$""")
+
+
 def refused(result: str) -> bool:
     """True when *result* is the answer to a call that the run refused: it starts
-    as a refusal does, or it says that nothing was created or changed."""
-    text = str(result).lstrip()
-    return text.startswith(REFUSED_PREFIXES) or _NOTHING_HAPPENED.search(text) is not None
+    as a refusal does, it is the unknown-function answer, or it says that nothing
+    was created or changed.
+
+    Task 3599: the stream no longer carries MAF's unknown-function text. The
+    step of such a call shows ``unknown_tool.MEMBER_LINE``, and that call did
+    not run either."""
+    from acb_skills.unknown_tool import MEMBER_LINE
+
+    text = str(result).strip()
+    return (text.startswith(REFUSED_PREFIXES) or text == MEMBER_LINE
+            or _UNKNOWN_FUNCTION.match(text) is not None
+            or _NOTHING_HAPPENED.search(text) is not None)
 
 
 def _ran_ok(calls: list[tuple[str, dict[str, Any], str]]) -> list[tuple[str, dict[str, Any], str]]:
@@ -856,6 +968,70 @@ def _answer_none(obs: Observation, arg: Any) -> bool:
     return not any(_found(p, obs.answer) for p in arg)
 
 
+#: TS-5b. A sentence or line that says a skill is a draft, and one that says it is not.
+_DRAFT_WORD = r"\bdrafts?\b"
+_NOT_A_DRAFT = (
+    r"\b(?:published|live|already|not (?:a |still )?drafts?|no longer (?:a )?drafts?|"
+    r"isn't (?:a |still )?drafts?|is not (?:a |still )?drafts?)\b"
+)
+
+
+def calls_live_skill_a_draft(answer: str, live: tuple[str, ...]) -> bool:
+    """True when the sentence or line of *answer* that names a live skill calls it a draft.
+
+    Pure and deterministic (TS-5b, the pilot of 2026-11-15). The first live answer
+    "Two of your three skills are still drafts: ... Quote follow-up is already
+    published." is right, and the strict check ``answer_none`` failed it, because it
+    names the live skill. Now the unit (a sentence or a line, :func:`sentences`) that
+    names a live skill fails only when it says "draft" and holds none of
+    "published", "live", "already" or a negated draft."""
+    for unit in sentences(answer):
+        if not re.search(_DRAFT_WORD, unit, re.IGNORECASE):
+            continue
+        if re.search(_NOT_A_DRAFT, unit, re.IGNORECASE):
+            continue
+        if any(_found(rf"\b{re.escape(name)}\b", unit) for name in live):
+            return True
+    return _named_under_draft_heading(answer, live)
+
+
+_LIST_ITEM = r"^\s*(?:[-*\u2022]|\d+[.)])\s+"
+
+
+def _named_under_draft_heading(answer: str, live: tuple[str, ...]) -> bool:
+    """True when a list item that names a live skill sits under a heading (a line that
+    ends with a colon) that says "draft" and says none of published, live or not.
+    A blank line, a prose line or a new heading ends the block. English only."""
+    in_drafts = False
+    for line in (answer or "").split("\n"):
+        text = line.strip()
+        if not text:
+            in_drafts = False
+        elif re.match(_LIST_ITEM, line):
+            if (
+                in_drafts
+                and not re.search(_NOT_A_DRAFT, text, re.IGNORECASE)
+                and any(_found(rf"\b{re.escape(name)}\b", text) for name in live)
+            ):
+                return True
+        elif text.endswith(":"):
+            in_drafts = bool(re.search(_DRAFT_WORD, text, re.IGNORECASE)) and not re.search(
+                _NOT_A_DRAFT, text, re.IGNORECASE
+            )
+        else:
+            in_drafts = False
+    return False
+
+
+def _drafts_listed_fairly(obs: Observation, arg: Any) -> bool:
+    """The answer names EVERY draft skill and does not call a live skill a draft.
+    *arg* is ``((draft patterns, ...), (live names, ...))``. A live skill may be NAMED,
+    when its sentence says that it is published (:func:`calls_live_skill_a_draft`)."""
+    drafts, live = arg
+    return (all(_found(p, obs.answer) for p in drafts)
+            and not calls_live_skill_a_draft(obs.answer, tuple(live)))
+
+
 def _right_pack(obs: Observation, arg: Any) -> bool | None:
     """Pack arm: a tool of pack *arg* ran in the orchestrator's own run, or the
     route went to the owner's specialist AND the needed pack was not reachable
@@ -1035,6 +1211,132 @@ def spawn_results_of(events: list[dict[str, Any]]) -> list[str]:
     return out
 
 
+# ── the checks of the search arm and the Studio chats (TS-5a) ────────────────
+
+
+def _loader_name(arm: str) -> str:
+    """The tool that brings a tool in: ``find_tools`` on the search arm, and
+    ``load_skill_tools`` (a whole pack) on the others."""
+    return FIND_TOOL if arm == SEARCH_ARM else LOAD_TOOL
+
+
+def _found_tool(obs: Observation, arg: Any) -> bool | None:
+    """A Studio tool ran AFTER the turn's find (``find_tools`` on the search arm,
+    ``load_skill_tools`` on the pack arms), and the run did not refuse it.
+
+    A call that answers ``Requested function "X" not found`` did not run: the
+    tool was never in the request (:func:`refused`). *arg* may list the tools that
+    count, and it defaults to every Studio tool. None on the delegation arm."""
+    if obs.arm not in PACK_ARMS:
+        return None
+    want = set(arg) if arg else studio_tool_names()
+    loader = _loader_name(obs.arm)
+    looked = False
+    for name, _, result in obs.trace:
+        if name == loader:
+            looked = True
+        elif looked and name in want and not refused(result):
+            return True
+    return False
+
+
+def _find_refused(result: str) -> bool:
+    """True when the answer of ``find_tools`` is a refusal. An answer that starts
+    ``Found`` is a round, whatever its body says: the rules text of a found pack
+    holds sentences such as "nothing was created" (the card text), and
+    :func:`refused` reads them as a refusal (TS-5b, the first scripted run). An answer
+    that starts ``Not `` is a refusal of the product (``tool_packs.FIND_REFUSED``,
+    ``FIND_PAST_*``)."""
+    text = str(result).lstrip()
+    if text.startswith("Found"):
+        return False
+    # The refusals of the product start "Not found.", "Not searched." or "Not added.",
+    # and ``refused`` knows only the prefixes "Error:", "Refused" and "Not run".
+    return text.startswith("Not ") or refused(text)
+
+
+def _search_round(obs: Observation, _arg: Any) -> bool | None:
+    """Search arm: EXACTLY one counted round of ``find_tools`` in a turn that needs
+    a search. Zero fails (the model never searched), and two fail (it searched
+    again). A refused call is no round. None off the search arm."""
+    if obs.arm != SEARCH_ARM:
+        return None
+    return sum(1 for name, _, r in obs.trace if name == FIND_TOOL and not _find_refused(r)) == 1
+
+
+def _not_searched(obs: Observation, _arg: Any) -> bool | None:
+    """A turn that needs no tool makes no find: no ``find_tools`` call on the
+    search arm, and no ``load_skill_tools`` call on the pack arms (the load is the
+    search of those arms). None on the delegation arm."""
+    if obs.arm not in PACK_ARMS:
+        return None
+    return not any(name == _loader_name(obs.arm) for name, _, _ in obs.trace)
+
+
+def _no_studio_ran(obs: Observation, _arg: Any) -> bool | None:
+    """A member without ``feature:studio``: no Studio tool RAN, though the model tried.
+    A call that the run refused (the tool is not in the request) is no run. None on the
+    delegation arm."""
+    if obs.arm not in PACK_ARMS:
+        return None
+    names = studio_tool_names()
+    return not any(n in names and not refused(r) for n, _, r in obs.trace)
+
+
+def _studio_texts(obs: Observation) -> list[str]:
+    """Every text that a member's model reads: the answer, the ``find_tools``
+    description, and the answer of each find or load."""
+    return [obs.answer, obs.find_description,
+            *(r for name, _, r in obs.trace if name in (FIND_TOOL, LOAD_TOOL))]
+
+
+def _no_studio_names(obs: Observation, _arg: Any) -> bool | None:
+    """A member without ``feature:studio``: no Studio tool name in the tool list,
+    in the ``find_tools`` description or in any answer. A request that was not read
+    fails (the check proves nothing without it). None on the delegation arm."""
+    if obs.arm not in PACK_ARMS:
+        return None
+    if not obs.tool_names:
+        return False
+    names = studio_tool_names()
+    if names & obs.tool_names:
+        return False
+    return not any(re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", text)
+                   for n in names for text in _studio_texts(obs))
+
+
+def hold_notes() -> tuple[str, ...]:
+    """The hold notes of a held pack (``egress.EGRESS_HOLD_NOTE_PACK*``)."""
+    from acb_skills import egress
+
+    return tuple(v for k, v in sorted(vars(egress).items())
+                 if k.startswith("EGRESS_HOLD_NOTE_PACK") and isinstance(v, str) and v)
+
+
+def _held_note(obs: Observation, _arg: Any) -> bool | None:
+    """Search arm, held chat: the answer of each ``find_tools`` call carries the hold
+    note, so the model knows that the writes of the pack are held (``one_assistant_context.md``
+    §4.2.9, "the rules go with the tool"). None in a chat that is not held.
+
+    None on the other arms too. On the ``pack`` arm the hold note reaches the model in
+    the persona (``tool_packs._rules_block``), and not in the answer of
+    ``load_skill_tools`` (a run of 2026-11-14 showed it: the answer of the ``studio`` load
+    ends with the rules, not the note). A held turn with no find fails."""
+    if obs.arm != SEARCH_ARM or not obs.held:
+        return None
+    answers = [r for name, _, r in obs.trace if name == FIND_TOOL]
+    notes = hold_notes()
+    return bool(answers) and bool(notes) and all(any(n in a for n in notes) for a in answers)
+
+
+def _schema_tokens(obs: Observation, _arg: Any) -> bool | None:
+    """Search arm: no request carried more schema tokens than the budget. A turn
+    with no reading fails. None off the search arm."""
+    if obs.arm != SEARCH_ARM:
+        return None
+    return 0 < obs.schema_tokens <= SCHEMA_TOKEN_BUDGET
+
+
 KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "answer_all": _answer_all,
     "answer_some": _answer_some,
@@ -1061,6 +1363,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "no_unasked_write": _no_unasked_write,
     "work_write": _work_write,
     "answer_none": _answer_none,
+    "drafts_listed_fairly": _drafts_listed_fairly,
     "count_stated": _count_stated,
     "body_figure": _body_figure,
     "answer_not_mine": _answer_not_mine,
@@ -1074,19 +1377,28 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "items_contract": _items_contract,
     "spawned": _spawned,
     "not_spawned": _not_spawned,
+    "found_tool": _found_tool,
+    "search_round": _search_round,
+    "not_searched": _not_searched,
+    "no_studio_names": _no_studio_names,
+    "no_studio_ran": _no_studio_ran,
+    "held_note": _held_note,
+    "schema_tokens": _schema_tokens,
 }
 
 #: The checks that run on EVERY turn, with no entry in the scenario. Each gives
 #: None when it does not apply, and the summary leaves a None out.
 AUTO = ("no_email_delegation", "held_card", "one_card", "no_crm_delegation",
         "no_projects_delegation", "mirror_respected", "one_card_per_write", "tools_per_call",
-        "items_contract")
+        "items_contract", "schema_tokens")
 
 
 def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
     """Each check of *turn* on *obs*, plus ``ran`` and the :data:`AUTO` checks."""
     out: dict[str, bool | None] = {"ran": obs.error is None}
     for c in turn.checks:
+        if getattr(c, "arms", ()) and obs.arm not in c.arms:
+            continue  # TS-5b: a check of one arm (the cap chat)
         out[c.name] = KINDS[c.kind](obs, c.arg)
     for name in AUTO:
         out[name] = KINDS[name](obs, None)
@@ -1095,3 +1407,9 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
 
 def passed(result: dict[str, bool | None]) -> bool:
     return all(v is not False for v in result.values())
+
+
+# Task 2874: the checks of the seven defects of the chat of 2026-11-11.
+from evals.one_assistant_measure import checks_2874 as _checks_2874  # noqa: E402
+
+KINDS.update(_checks_2874.KINDS)

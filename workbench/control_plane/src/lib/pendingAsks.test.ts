@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { cardsToRestore, fetchPendingAsks, type PendingAsk } from "./pendingAsks";
+import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull as fetchPendingAsks, type PendingAsk } from "./pendingAsks";
 
 const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
@@ -60,11 +60,40 @@ describe("the read", () => {
     expect(got).toHaveLength(1);
   });
 
-  it("is empty on any failure", async () => {
-    const down = vi.fn(async () => { throw new Error("offline"); });
-    expect(await fetchPendingAsks("t", down as unknown as typeof fetch)).toEqual([]);
-    const refused = vi.fn(async () => new Response("no", { status: 403 }));
-    expect(await fetchPendingAsks("t", refused as unknown as typeof fetch)).toEqual([]);
+  const SHOWN = new Set(["a".repeat(32), "b".repeat(32)]);
+  const settled = async (fetchFn: unknown) =>
+    cardsToSettle(await fetchPendingAsks("t", fetchFn as typeof fetch), SHOWN);
+
+  // Mutation: fold a failure into `[]` again, and the failure cases fail.
+  it("a 200 list settles the shown card it leaves out", async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify([ask({ requestId: "a".repeat(32) })]), { status: 200 }));
+    expect(await settled(f)).toEqual(["b".repeat(32)]);
+  });
+
+  it("a 200 [] settles every shown card: no card waits", async () => {
+    const f = vi.fn(async () => new Response("[]", { status: 200 }));
+    expect(await settled(f)).toEqual(["a".repeat(32), "b".repeat(32)]);
+  });
+
+  it.each([500, 503, 403])("a %i keeps every shown card", async (status) => {
+    const f = vi.fn(async () => new Response("no", { status }));
+    expect(await fetchPendingAsks("t", f as unknown as typeof fetch)).toBeNull();
+    expect(await settled(f)).toEqual([]);
+  });
+
+  it("a timeout keeps every shown card", async () => {
+    const f = vi.fn(async () => { throw new DOMException("timed out", "TimeoutError"); });
+    expect(await settled(f)).toEqual([]);
+  });
+
+  it("a thrown fetch keeps every shown card", async () => {
+    const f = vi.fn(async () => { throw new Error("offline"); });
+    expect(await settled(f)).toEqual([]);
+  });
+
+  it("a body that is no list keeps every shown card", async () => {
+    const f = vi.fn(async () => new Response('{"error":"x"}', { status: 200 }));
+    expect(await settled(f)).toEqual([]);
   });
 });
 

@@ -26,7 +26,7 @@ export const INTEGRATION_VIEWS: RailView[] = [
   { id: "connections", label: "Connections", icon: "Plug", line: "Every tool your company has connected", org: true },
   { id: "keys", label: "API keys", icon: "KeyRound", line: "Service keys for your company", org: true },
   { id: "plugins", label: "Plugins", icon: "Puzzle", line: "Tool plugins for agents", org: true },
-  { id: "skills", label: "Skills", icon: "Sparkles", line: "Agent skill families and token costs", org: true },
+  { id: "skills", label: "Built-in skills", icon: "Sparkles", line: "Skills that ship with Metorite, and their token costs", org: true },
   { id: "agents", label: "AI agents", icon: "Bot", line: "Outside AI agents that act as you", org: false },
 ];
 

@@ -1,0 +1,2008 @@
+[
+  {
+    "seed": 11,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board",
+              "span": 2
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": []
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 11,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "week"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 23,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "list"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 50,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "board",
+              "span": 2
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 100,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 150,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "seed": 47,
+    "op": 200,
+    "manifest": {
+      "studio": 1,
+      "id": "drop-app",
+      "views": [
+        {
+          "id": "board"
+        },
+        {
+          "id": "week"
+        },
+        {
+          "id": "check_in"
+        },
+        {
+          "id": "list"
+        }
+      ],
+      "pages": [
+        {
+          "id": "home",
+          "cols": 3,
+          "cells": [
+            {
+              "view": "board",
+              "span": 2
+            },
+            {
+              "view": "check_in"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "week"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "list"
+            },
+            {
+              "view": "board"
+            },
+            {
+              "view": "check_in"
+            }
+          ]
+        },
+        {
+          "id": "work",
+          "cols": 2,
+          "tabs": [
+            {
+              "id": "a",
+              "title": "Plan",
+              "cells": [
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "list"
+                }
+              ]
+            },
+            {
+              "id": "b",
+              "title": "Do",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                }
+              ]
+            },
+            {
+              "id": "c",
+              "title": "Done",
+              "cells": [
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "week"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "board"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "check_in"
+                },
+                {
+                  "view": "list"
+                },
+                {
+                  "view": "board"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

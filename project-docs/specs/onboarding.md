@@ -244,8 +244,8 @@ Each later slice adds its own command here, in the same PR.
 |---|---|
 | A way out of the welcome never waits on the server | `e2e/shell-presets.spec.ts`, "a slow server never holds the founder's welcome open" |
 | The founder's mark leaves the address and keeps the rest | `src/lib/shell/welcomeSteps.test.ts`, "the founder's mark leaves the address" |
-| One `setup_status`, and no second status function | Advisory until OB-1a adds a source test |
-| A step is done from real state, never from a click | Advisory until OB-1a adds a test per step |
+| One `setup_status`, and no second status function | `tests/unit/test_setup_status_source.py`, "one setup_status and no second status function" |
+| A step is done from real state, never from a click | `tests/unit/test_setup_status_r8.py`, "each step is open then done after its row lands" |
 
 ## 12. The AI-led layer
 
@@ -401,6 +401,8 @@ joiner gets no company interview, and never sees `company_context`,
 - **Join before create (OB-22).** A person who proved an address at a domain of
   an opted-in org sees "Ask to join" before the org form. The request goes to the
   queue of `colleague_onboarding.md` §6. The joiner gets the member role.
+  Its row joins the one signup screen of `seat_plans.md` §8a.2, below the orgs
+  and the invites of the person's own address.
 - **Their other assistant (OB-23).** A pasted memory export arrives as proposals.
   The member confirms each line. Only the member reads the profile (D-PZ-3).
 

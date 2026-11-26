@@ -28,6 +28,7 @@ members = [
     "agent-edge",
     "agent-email-assistant",
     "agent-orchestrator",
+    "agent-org-admin",
     "agent-projects",
     "agent-studio-builder",
     "agent-task-manager",
@@ -469,6 +470,25 @@ wheels = [
 name = "agent-orchestrator"
 version = "0.1.0"
 source = { editable = "apps/agents/agent-orchestrator" }
+
+[[package]]
+name = "agent-org-admin"
+version = "0.1.0"
+source = { editable = "apps/agents/agent-org-admin" }
+dependencies = [
+    { name = "acb-common" },
+    { name = "acb-skills" },
+    { name = "agent-framework-core" },
+    { name = "agent-framework-openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-skills", editable = "packages/acb_skills" },
+    { name = "agent-framework-core", specifier = ">=1.19.0" },
+    { name = "agent-framework-openai", specifier = ">=1.14.4" },
+]
 
 [[package]]
 name = "agent-projects"
@@ -1494,6 +1514,7 @@ dependencies = [
     { name = "acb-auth" },
     { name = "acb-common" },
     { name = "acb-llm" },
+    { name = "acb-playbook" },
     { name = "acb-stt" },
     { name = "action-broker" },
     { name = "agent-framework-ag-ui" },
@@ -1521,6 +1542,7 @@ requires-dist = [
     { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "acb-llm", editable = "packages/acb_llm" },
+    { name = "acb-playbook", editable = "packages/acb_playbook" },
     { name = "acb-stt", editable = "packages/acb_stt" },
     { name = "action-broker", editable = "apps/services/action_broker" },
     { name = "agent-framework-ag-ui", specifier = ">=1.4.0" },

@@ -241,10 +241,12 @@ class AgentManifest:
         Mirrors ``app_data.user_scope``, where ``''`` already means "shared row,
         else a per-user partition" (migration 114).
         """
+        from acb_skills.agent_paths import PERSONAL_INSTANCE_PREFIX, TEAM_INSTANCE_PREFIX
+
         if self.sharing.instancing == "personal":
-            return f"u:{actor}" if actor else ""
+            return f"{PERSONAL_INSTANCE_PREFIX}{actor}" if actor else ""
         if self.sharing.instancing == "team":
-            return f"t:{self.sharing.team}" if self.sharing.team else ""
+            return f"{TEAM_INSTANCE_PREFIX}{self.sharing.team}" if self.sharing.team else ""
         return ""
 
     def memory_scope(self, actor: str | None = None) -> str | None:

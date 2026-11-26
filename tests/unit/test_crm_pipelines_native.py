@@ -27,12 +27,13 @@ on that skip.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -228,9 +229,7 @@ def test_a_run_with_no_org_holds_no_tool(monkeypatch) -> None:
 def test_this_suite_is_named_in_both_must_run_lists() -> None:
     """An R8 suite that CI does not list skips in silence when the database
     gate is disarmed. ``deploy.yml`` copies the list of ``pr-check.yml``."""
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert re.search(r"^\s+tests/unit/test_crm_pipelines_native\.py \\?$", workflow, re.M), name
+    assert "tests/unit/test_crm_pipelines_native.py" in r8_lists.must_run()
 
 
 # ── The database tests ──────────────────────────────────────────────────────
@@ -557,6 +556,38 @@ async def test_via_is_chat_for_the_agent_and_ui_for_a_forged_stamp(pns) -> None:
     for made, via in ((forged.json(), "ui"), (wrong.json(), "ui"), (agent.json(), "chat")):
         assert by[("pipeline", made["id"])] == via, made["name"]
         assert by[("deal_stage", made["stages"][0]["id"])] == via, made["name"]
+
+
+async def test_the_setup_routes_log_chat_for_the_agent_and_ui_for_a_plain_request(pns) -> None:
+    """CRM-M2e (task 3951): the add and the change of a stage and of a lost
+    reason take ``via`` from ``change_log.via_of``, as the create of a
+    pipeline does. The agent request logs ``chat``, and a plain request logs
+    ``ui``. Mutation: drop ``via=via`` from one of the four routes -> red."""
+    _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    agent = {"X-Actor-Via": STAMP, "Authorization": f"Bearer {TOKEN}"}
+    made: list[tuple[str, str, str]] = []
+    for headers, via, tag in (({}, "ui", "Plain"), (agent, "chat", "Agent")):
+        stage = await _call(pns, admin, "POST", "/crm/statuses/deal",
+                            {"name": f"{tag} stage"}, headers=headers)
+        assert stage.status_code == 201, stage.text
+        sid = stage.json()["id"]
+        out = await _call(pns, admin, "PATCH", f"/crm/statuses/deal/{sid}",
+                          {"name": f"{tag} stage two"}, headers=headers)
+        assert out.status_code == 200, out.text
+        reason = await _call(pns, admin, "POST", "/crm/lost-reasons",
+                             {"label": f"{tag} reason"}, headers=headers)
+        assert reason.status_code == 201, reason.text
+        rid = reason.json()["id"]
+        out = await _call(pns, admin, "PATCH", f"/crm/lost-reasons/{rid}",
+                          {"label": f"{tag} reason two"}, headers=headers)
+        assert out.status_code == 200, out.text
+        made.append((via, sid, rid))
+    rows = _rows(pns, pns.org_a)
+    for via, sid, rid in made:
+        seen = {(x.area, x.action, x.via) for x in rows if str(x.entity_id) in (sid, rid)}
+        assert seen == {("deal_stage", "create", via), ("deal_stage", "change", via),
+                        ("lost_reason", "create", via), ("lost_reason", "change", via)}, via
 
 
 async def test_the_preview_writes_nothing_and_the_create_makes_what_it_showed(pns) -> None:

@@ -389,7 +389,8 @@ def test_the_eval_declines_every_card(
     assert record["cards_declined"] == 1
     assert record["approvals"] == 0
     [call] = record["sessions"][0]["tool_calls"]
-    assert call["name"] == "create_personal_task" and "Cancelled" in call["result"]
+    # HRD-7: the eval answers REJECT, so the words are the decline of the one table.
+    assert call["name"] == "create_personal_task" and call["result"].startswith("Declined:")
     assert [q for q in harness.stub.stub.requests if q.method != "GET"] == []
 
 

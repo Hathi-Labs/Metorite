@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { COMPOSER_MIN_PX, composerCap, composerHeight, offerExpand } from "./composerHeight";
+import { ASK_BAR_LINE_PX, ASK_BAR_MAX_PX, COMPOSER_MIN_PX, askBarHeight, composerCap, composerHeight, offerExpand } from "./composerHeight";
 
 describe("the chat composer's height", () => {
   it("is one line when empty, so a sent message leaves a small box", () => {
@@ -30,5 +30,13 @@ describe("the chat composer's height", () => {
     expect(offerExpand(100, 300, false)).toBe(false);
     expect(offerExpand(400, 300, false)).toBe(true);
     expect(offerExpand(40, 540, true)).toBe(true);
+  });
+});
+
+describe("the Ask bar field's height", () => {
+  it("is one line when empty, grows with the text, then stops at six lines", () => {
+    expect(askBarHeight(0)).toBe(ASK_BAR_LINE_PX);
+    expect(askBarHeight(70)).toBe(70);
+    expect(askBarHeight(900)).toBe(ASK_BAR_MAX_PX);
   });
 });

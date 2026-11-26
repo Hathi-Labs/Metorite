@@ -110,10 +110,17 @@ EXPECTED_OPEN_WORLD = frozenset({
     "compose_reply",
     # crm-assistant: writes that queue for the live Zoho tenant (D-CRM-9)
     "create_lead", "update_deal_status", "log_activity", "convert_lead",
+    # crm-assistant, P-3 (task 3954): a suggestion of the field map and a new
+    # AI analysis. They never queue for Zoho, and say open_world as each CRM
+    # write does.
+    "crm_decide_suggestion", "crm_rerun_analysis",
     # crm-assistant, WS-CRM CRM-M3a: a new pipeline. It never queues for Zoho,
     # but it says open_world as each CRM write does, so a covered run holds it off.
     "crm_create_pipeline",
     "crm_update_record", "crm_update_task",
+    # crm-assistant, CRM-M2e (task 3951): the set-up writes of stages and lost
+    # reasons. They never queue for Zoho, and say open_world as each CRM write does.
+    "crm_edit_status", "crm_edit_lost_reason",
     # task-manager (skill_my_tasks)
     "my_tasks_delegate",
 })
@@ -146,6 +153,8 @@ def _no_database(monkeypatch):
     # WS-VOX VOX-3: analyze_image is per org. The covered run pins the surface
     # of a lit org (the dark case is in test_attachment_analyze_image.py).
     monkeypatch.setattr(_ti_vox, "_image_withheld", lambda: frozenset())
+    # SBX-19: compute_run is per org too. The covered run pins a lit org.
+    monkeypatch.setattr(_ti_vox, "_compute_withheld", lambda: frozenset())
 
     monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
@@ -570,8 +579,11 @@ def _egress_in(body: dict[str, Any]) -> list[str]:
 
 def _blocked(result: str) -> bool:
     """A call that ran nothing: refused by the H-236 middleware, or not found
-    because the run does not hold the tool."""
-    return "off in this run" in result or "not found" in result
+    because the run does not hold the tool. HRD-1b (task 3230): a delegated
+    run answers a name that it does not hold with the HRD-1 text, which
+    starts "Not run". Its model never reads MAF's own "not found" text."""
+    return ("off in this run" in result or "not found" in result
+            or result.startswith("Not run"))
 
 
 def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # noqa: F811
@@ -822,6 +834,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: the gateway, behind one card, and says open_world=False.
 #: 2026-10-25 (WS-55 SW-11a, external_agent_access.md §12.7): needs_attention (a read) joined.
 #: It reads one gateway route, writes nothing and says open_world=False.
+#: 2026-11-11 (WS-55 EA-18d, external_agent_access.md §12.8): agent_questions (a read) and
+#: answer_agent_question (one card) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
@@ -829,11 +843,18 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: update_task patch through the gateway, behind one card, and says open_world=False.
 #: 2026-11-08 (WS-39 LP-1a): list_project_updates (a read) and post_project_update (one
 #: card) joined. Each reaches only the gateway, and says open_world=False.
+#: 2026-11-09 (WS-39 SP-5a): list_cycles, cycle_detail (reads), create_cycle, plan_cycle (one
+#: card) and start_cycle, close_cycle (class C) joined. Each reaches only the gateway, and
+#: says open_world=False.
 #: 2026-11-08 (WS-VOX VOX-3, projects_ai_chat.md §31): analyze_image joined the
 #: floor. It sends an attached image only to the metered tier-vision model of the
 #: Console, writes nothing, and says open_world=False.
 #: 2026-11-08 (SP-12, task 2295): get_plan (a read) joined. It reads one gateway route,
 #: the one plan engine, writes nothing and says open_world=False.
+#: 2026-11-08 (SP-8a): set_epic_contract joined. It writes one epic contract through the
+#: gateway, behind one card, and says open_world=False.
+#: 2026-11-11 (SW-43c): change_agent_answer joined. It changes the member's own answer to
+#: an agent through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "analyze_image",
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
@@ -847,9 +868,12 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "nudge_task", "export_tasks", "attach_to_task",
     "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
     "list_project_updates", "post_project_update", "delete_project_update",
+    "list_cycles", "cycle_detail", "create_cycle", "plan_cycle", "start_cycle", "close_cycle",
+    "set_epic_contract",
     "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
-    "waiting_agent_requests", "needs_attention",
+    "waiting_agent_requests", "needs_attention", "agent_questions", "answer_agent_question",
+    "change_agent_answer",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
     "delete_tag", "delete_type", "delete_view", "edit_comment", "edit_project",
     "edit_task", "emit_generative_ui", "file_access_delete", "file_access_grep",
@@ -1451,7 +1475,8 @@ def test_a_delegated_mail_write_with_no_card_channel_answers_as_on_main(
     _run_top(PA, ORG_B, cards=False)
     assert email.bodies, "the delegation never ran"
     answer = _results(email.bodies[1])[-1]
-    assert answer.startswith("Nothing changed. This needs your approval on a card"), answer
+    # HRD-7: the email assistant's no-card answer is the one table's.
+    assert answer.startswith("Not shown: a card cannot show here"), answer
     assert "read an answer of an agent" not in answer, answer
 
 
