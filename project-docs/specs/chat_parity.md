@@ -35,6 +35,12 @@ tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
 write, each on one card. They pay seven CRM rows, so the CRM ceiling goes from
 72 to 65. Fence: `tests/unit/test_crm_suggestion_tools.py`.
 
+**P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
+task from a mail, or from a reply that the member sent, and makes it after one
+card. Two tools of the new pack `mail-tasks` pay the six capture rows of mail:
+`my_tasks_draft_from_mail` and `my_tasks_capture_from_mail`. The tasks ceiling
+went from 7 to 1. §6.4 holds the P-1 slices.
+
 **PAR-3 (task 3105, the Knowledge writes) is BUILT, 2026-11-22, dark behind
 `KNOWLEDGE_CHAT_WRITES` (default off).** The orchestrator gets four tools in
 `acb_skills/knowledge_tools.py`: `create_page`, `edit_page`, `create_space`
@@ -89,6 +95,22 @@ and the people ceiling went from 13 to 12. The gateway route stays.
 `packs_batch_on` may name an org. Then `reach_preview` can bring the subject of
 an outside mail into a WhatsApp turn. The tool marks that chat as one that read
 outside text, so each egress tool and each held write then shows a card first.
+
+**P-1c (task 3923) is BUILT, 2026-11-25, and it ships dark.**
+The new pack `calendar-connections` holds one tool,
+`my_tasks_calendar_connection`. It syncs a connected calendar now, or turns
+on or off the switch that shows the member's tasks in it. Each act asks on one
+card first. The list read stays in `calendar-day`, as P-1a built it.
+
+The chat does not disconnect a calendar (§7 item 10). P-1c paid two calendar
+rows, 4 to 2.
+
+The pack reaches no chat until the owner's `TOOL_PACKS` line names
+`calendar-connections`. Until then, "sync my google calendar" loads no pack,
+as on main. The owner of the pack is `org-admin`, and the owner picked that
+option on 2026-11-26 (§7 item 11). §6.4 holds the P-1c block. Fences:
+`tests/unit/test_my_tasks_p1c_tools.py` and
+`tests/unit/test_calendar_connections_pack.py`.
 
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
@@ -549,13 +571,15 @@ off, each write keeps its card. Fences:
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Seven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Ten ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13,
-and task 3961 took it to 6.
+and memory to 4, and P-5b-6 took people to 12.
 
-The total of `DEBT_CEILING` is 290. The "Today" column above does not show
+Tasks 3951 and 3954 took crm to 60. Task 3960 took whatsapp to 13, and task
+3961 took it to 6. P-1b took tasks to 1, and P-1c took calendar to 2.
+
+The total of `DEBT_CEILING` is 282. The "Today" column above does not show
 these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -724,7 +748,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 
 | Rung | Apps, in order | Wave | Task | Demo | Debt rows | Reason |
 |---|---|---|---|---|---|---|
-| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
+| 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
 | 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
@@ -741,8 +765,8 @@ P-1 does not take all 14. The table names the owner of each row.
 | Slice | Task | Tier | Rows | State |
 |---|---|---|---|---|
 | P-1a: list the connected calendars, propose a title, propose the missing fields | 3112 | STANDARD, agent-safe | 3: `GET /api/calendar/connections`, `POST /api/tasks/items/{}/suggest-title`, `POST /api/tasks/items/{}/enrich` | BUILT, 2026-11-22 |
-| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge. Choose the pack with P-2 (task 3111) | 6: the capture rows of mail | To do |
-| P-1c: Sync now, the switch and Disconnect of a connection | 3923 | HIGH | 3: the sync, the `PATCH` and the `DELETE` of a connection | To do |
+| P-1b: a task from an email and from a reply | 3922 | HIGH. The owner approves the preview and the merge | 6: the capture rows of mail | BUILT, 2026-11-25 |
+| P-1c: Sync now and the switch of a connection | 3923 | HIGH | 2: the sync and the `PATCH` of a connection. The `DELETE` stays debt (§7 item 10) | BUILT, 2026-11-25, dark. The owner picked option (a) of §7 item 11 on 2026-11-26 08:40 UTC (answer 5bc98d70), and approved the merge at 09:13 UTC (answer 051363c7) |
 | The day state read | 1680 | Not P-1 | 1: `GET /api/tasks/calendar/day-state`, PR 1998 | Not here |
 | Fill the context of many tasks | none | An owner question | 1: `POST /api/tasks/ai/backfill-context` | Stays debt. The owner decides: retire the button of `/tasks`, or build a tool with a card |
 
@@ -751,6 +775,57 @@ P-1 does not take all 14. The table names the owner of each row.
   entry. The connections read shows no token. When `CALENDAR_SYNC_READ` is off,
   it answers in one line. Each proposal changes nothing. The member applies
   a field with the task edit tool. A held chat keeps all three.
+- **P-1b.** Two tools of `skill_my_tasks` are in a new pack, `mail-tasks`,
+  owned by the Projects assistant. The pack follows `projects` (one new
+  `FOLLOWS` entry), so it needs no `TOOL_PACKS` line. The email pack stays with
+  P-2, so P-1b does not touch it. The spec asked P-1b to choose the pack with
+  P-2 (task 3111). The choice is `mail-tasks`, a pack of its own, and P-1b
+  changes no file of the email pack. The pull request of P-1b tells P-2 so.
+  Review round 1 moved the tools out of
+  `calendar-day`: at 22 tools, that pack pushed `projects` out of turns where
+  it fitted on main.
+  - `my_tasks_draft_from_mail` reads. It sends `/preview`, `/enhance` or
+    `/from-reply/detect`, and makes no task. A held chat keeps it.
+  - `my_tasks_capture_from_mail` makes one task after one card. It sends
+    `/create`, `/from-reply/create`, or the one-click `/capture/from-email`
+    when the member lets the AI pick each field.
+  - The mail text is hostile. Each answer puts the sender, the subject, the
+    draft and the similar tasks in one `UntrustedFrame` block, and marks the
+    chat. The card starts with the mailbox line of RX-1 and binds the run's
+    own member. The tool refuses a field that the route drops with no word.
+  - A held chat keeps the write behind its one card (D169, decided on task
+    3922). The write is on `egress.HELD_CARD_WRITE_TOOLS` with its pinned
+    parameters. In a held chat it refuses the AI path, because that card
+    cannot show the fields, and a cut card.
+  - The tool keeps no assignee. The store of a capture
+    (`item_lens._PmLens.insert_capture`) reads none, and the board lookup of a
+    delegate reads `task_accounts`, which nothing writes. So the tool refuses
+    `assignee_name` before the card, and no card names a person. A WAITING
+    task waits on the sender of the mail, or on the member for a reply. The
+    answer says so when the stored disposition differs from the card. The reply path labels the
+    thread at the mail provider, so the card says so and the tool says
+    `open_world=True`. The reply card also shows the thread and the subject
+    that the task keeps.
+  - Accepted in review: `open_world=True` takes the write out of a covered
+    run (H-236), so a covered run makes no task from a mail.
+  - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
+    hand-off that made a task refuses it.
+  - `capture_intake(source="email")` of `skill_projects` is a different act.
+    It puts a task in the intake queue of a project (`/projects/intake`). It
+    reads no mail, and it has no draft, no idempotency per mail and no thread
+    tag. So it pays none of the six rows.
+  - "Make a task from this email" loads `mail-tasks`. With the held switch
+    on, `projects` stays where the three packs fit (base 54 and less). At the
+    base of production (57) main loaded only the email pack. A turn that names
+    a project, a board or an assignment loads no `mail-tasks`, so it chooses
+    as on main. `test_my_tasks_p1b_tools.py` measures each base from 30 to 59.
+- **Verify P-1b.** Run these commands in the worktree.
+
+```bash
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py tests/unit/test_answer_claims.py -q -p no:cacheprovider
+uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
+```
+
 - **The day acts of My Day are not P-1.** CC-10 (task 1978) owns the capture,
   the focus start and stop, and the plan and the close of the day. P-1 builds
   no day flow, and no second read of the day state.
@@ -784,6 +859,61 @@ uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills test
 - **Next in P-2.** P-2b puts three writes on one card each: delete a mail,
   load older mail of a folder, and remove older mail from Metorite. P-2c is
   BUILT. The signature image stays with SG-6 (task 2182).
+
+**P-1c: Sync now and the switch (task 3923, rung 4, HIGH).**
+
+- **Gate.** AGENT-SAFE to build, dark. The owner approves the card previews
+  (D145) and the merge (D-PAR-4). The owner turns the pack on with a
+  `TOOL_PACKS` line.
+- **Scope.** One tool of `skill_my_tasks`,
+  `my_tasks_calendar_connection(provider, action)`. The act `sync` sends
+  `POST .../{id}/sync`. The acts `show_tasks` and `hide_tasks` send
+  `PATCH .../{id}` with `push_tasks`. The tool pays the rows of the sync and
+  of the `PATCH`. The row of the `DELETE` stays debt (§7 item 10).
+- **The pack.** The owner chose a new small pack (§7 item 9). The pack
+  `calendar-connections` holds the one act. The list read
+  `my_tasks_list_calendar_connections` and its words stay in `calendar-day`,
+  which keeps its 20 tools. The pack is in no `FOLLOWS` entry and in no
+  default, so it reaches no chat until the owner's `TOOL_PACKS` line names it.
+  Its owner is `org-admin`, a pack-only owner with no specialist (§7 item 11).
+- **The flow.** The tool takes the provider, `google` or `outlook`, and no id.
+  It reads the list of P-1a and takes the row that is not disconnected. It
+  shows one card, and it sends one write after an approve.
+- **No new seam.** The gateway routes exist. This slice adds no route, no BFF
+  path, no migration, no flag, no SQL, no `TOOL_PACKS` slug and no `FOLLOWS`
+  entry.
+- **The cap of 110 tools.** The base is 56 tools. The worst turn that can occur
+  holds `calendar-day` (20), `projects` (23) and the smallest Projects work
+  pack (11), which is 110. The new pack adds 1, so a turn with it,
+  `calendar-day` and `projects` holds 100. A fourth pack is not possible,
+  because `MAX_PACKS` is 3.
+- **Acceptance.**
+  1. The rows of the sync and of the `PATCH` are COVERED. The `DELETE` row is
+     in `DEBT`, and the calendar ceiling is 2 (`test_chat_parity.py`).
+  2. Each act sends its request only after an approve of one card. A deny, a
+     closed card or a run with no person sends no write.
+  3. When the route answers 404 (the flag is off), the tool answers the
+     `CONNECTIONS_OFF` line and sends no write.
+  4. In a held chat the act is absent, with `HELD_CARD_WRITES_ORGS` empty and
+     with it on.
+  5. No output holds a token or a field outside the allow-list.
+  6. No tool of `skill_my_tasks` disconnects a calendar, and the C-04 eval
+     passes with no change.
+  7. With an empty `TOOL_PACKS` line, the stream run of a turn with the words
+     of the pack holds no tool of the pack (`test_tool_packs_off.py`).
+  8. `tp.owner_packs("projects-assistant")` does not hold the pack, and the
+     loader still reaches the Projects owner while the pack is off
+     (`test_calendar_connections_pack.py`).
+  9. `calendar-day` holds 20 tools, and the golden matrix equals the one of
+     main.
+- **Done when** the commands below pass, and the owner approves the previews
+  and the merge.
+
+```bash
+PYTHONPATH=. timeout 300 uv run pytest evals/trajectories -q -p no:cacheprovider
+timeout 1500 uv run pytest tests/unit/test_chat_parity.py tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar_connections_pack.py tests/unit/test_tool_packs_off.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_projects_packs.py tests/unit/test_tool_packs_registry.py tests/unit/test_tool_packs_choice.py tests/unit/test_studio_split_matrix.py -q -p no:cacheprovider --timeout=120
+uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar_connections_pack.py
+```
 - **Rung 5.** The four actions are the Home feed, "Needs you", the decision on
   a pending action, and a workflow run. Task 3115 holds 113 rows, so this rung
   takes its shell and Workflows rows as one slice, PAR-8 (task 3903). The demo
@@ -958,6 +1088,8 @@ he approves the merge.
    Home tools of PAR-8b.
    Add `people` before the demo of rung 7 (task 3907). It holds the four
    reads of P-5b-1.
+   Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
+   the act of P-1c.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller
@@ -978,3 +1110,32 @@ he approves the merge.
    the person answers.
 8. **The Customer Console for seats.** The seat writes of PAR-4 need it wired
    on production (`customer_console.md` §8, gates 7 and 8).
+9. **P-1c: the layout. DECIDED.** The owner answered on task 3923 (comment
+   aa02d28f, 2026-11-23 04:11 UTC): "A new small pack, calendar-connections".
+   On 2026-11-25 the orchestrator kept the list read in `calendar-day`, so no
+   tool that works today moves. The pack holds only the act.
+10. **P-1c: Disconnect and C-04. DECIDED by the orchestrator, 2026-11-25 13:32
+    UTC.** The owner gave no answer. The C-04 eval
+    (`evals/trajectories/test_my_tasks_quality_trajectory.py`) lets no My
+    Tasks tool be destructive. So the chat does not disconnect a calendar, and
+    the row `DELETE /api/calendar/connections/{}` stays debt. The C-04 eval does
+    not change. Only the owner may amend C-04.
+11. **P-1c: the owner of the pack. DECIDED by the owner, 2026-11-26 08:40 UTC
+    (task 3923, answer 5bc98d70).** The owner picked option (a). A dark pack of
+    `projects-assistant` took the Projects reach away in every chat, because
+    the loader reaches an owner only when each pack of that owner is allowed.
+    The three options were these.
+    - (a) A pack-only owner, `org-admin`, as for `people`. It changes no
+      loader rule, and a later change can undo it.
+    - (b) The loader skips a pack that is not allowed when it tests the reach.
+      This changes a shared seam.
+    - (c) A `FOLLOWS` entry, so the pack follows a parent. Then the pack is
+      not dark.
+12. **P-1c: the `TOOL_PACKS` line.** The pack reaches no chat until the owner's
+    line names `calendar-connections`. Until then, "sync my google calendar"
+    loads no pack, as on main, and the chat cannot sync or switch.
+13. **P-1c: the defaults.** Each act asks on a card, though the page has no
+    confirm step. A held chat drops the act, also while
+    `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
+    to the Metorite calendar when calendar write-out is on. It promises no
+    delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.

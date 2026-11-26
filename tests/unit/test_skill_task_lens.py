@@ -258,6 +258,23 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_list_calendar_connections", {}, [("GET", "/tasks/calendar/connections")]),
     ("my_tasks_suggest_title", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/suggest-title")]),
     ("my_tasks_enrich", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/enrich")]),
+    # P-1b (task 3922): the draft of a task from a mail, three ways. The write
+    # shows a card first, and a run with no card channel sends nothing. Its
+    # three routes are checked in test_my_tasks_p1b_tools.py.
+    ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID},
+     [("POST", "/tasks/capture/from-email/preview")]),
+    ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID, "ai": True},
+     [("POST", "/tasks/capture/from-email/enhance")]),
+    ("my_tasks_draft_from_mail", {"account_id": PID, "thread_id": "t-1",
+                                  "reply_body": "I will send the deck by Friday."},
+     [("POST", "/tasks/capture/from-reply/detect")]),
+    ("my_tasks_capture_from_mail", {"account_id": PID, "email_id": CID,
+                                    "title": "Send the deck"}, []),
+    # P-1c (task 3923): the list read comes first. This recorder answers no
+    # connection, so no card shows and no write goes. The writes and the cards
+    # are fenced in test_my_tasks_p1c_tools.py.
+    ("my_tasks_calendar_connection", {"provider": "google", "action": "sync"},
+     [("GET", "/tasks/calendar/connections")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),
@@ -438,6 +455,9 @@ STORE_NEUTRAL: dict[str, str] = {
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
     "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
     "/tasks/calendar/connections": "the member's calendar connections, no task (P-1a, task 3112)",
+    "/tasks/capture/from-email/enhance": (
+        "email_messages and people only. It drafts a task and reads or writes none "
+        "(P-1b, task 3922)"),
 }
 
 SEAMS = ("item_source(", "agent_source(")
