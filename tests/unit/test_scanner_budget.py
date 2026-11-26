@@ -44,8 +44,8 @@ OVER_BUDGET: dict[str, str] = {
     "tests/unit/test_auto_revert.py": "task 3074, dated 2026-11-19, 61 s",
     "tests/unit/test_merge_bot.py": "task 3074, dated 2026-11-19, 36 s",
     # Over the budget in the refresh of 2026-11-26 (CIV-33b).
-    "tests/unit/test_credential_tenant_threading.py": "task 4019, dated 2026-11-26, 33 s",
-    "tests/unit/test_service_identity_and_webhook_auth.py": "task 4019, dated 2026-11-26, 39 s",
+    "tests/unit/test_credential_tenant_threading.py": "task 4037, dated 2026-11-26, 33 s",
+    "tests/unit/test_service_identity_and_webhook_auth.py": "task 4037, dated 2026-11-26, 39 s",
 }
 
 
