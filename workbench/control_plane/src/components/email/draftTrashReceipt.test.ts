@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { parseCardBody } from "@/components/ConfirmationCard";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 
 import EmailToolCards from "./EmailToolCards";
@@ -41,9 +42,44 @@ describe("the receipt of a draft trash", () => {
     expect(html).toContain("the mailbox did not confirm a trash");
   });
 
+  it("says that nothing moved when the trash counts 0", () => {
+    // Task 4026. Mutation: drop the `Trashed 0` rule of `noActionOf` → the
+    // generic receipt "Inbox updated", with its check mark, is back.
+    const html = draw(
+      "Trashed 0 message(s): the mailbox did not confirm a trash.\nThe mailbox provider did not confirm",
+      ["m1"],
+    );
+    expect(html).toContain('data-email-card="no-action"');
+    expect(html).toContain("Nothing changed");
+    expect(html).not.toContain("Inbox updated");
+    expect(html).not.toContain('data-email-card="action"');
+  });
+
   it("draws no trashed receipt when nothing went", () => {
     const html = draw("Nothing changed. No message was moved to Trash.", ["m1"]);
     expect(html).toContain('data-email-card="no-action"');
     expect(html).not.toContain("1 email");
+  });
+});
+
+describe("the plain card of one draft", () => {
+  // Task 4026. The context of `_plain_card_context` for one draft, as
+  // `test_the_plain_card_of_one_draft_reads_as_a_list` makes it. Its last
+  // line holds no ": ", so the card draws a list and never a grid of rows.
+  // Mutation: drop the last line → the body reads as one `key: value` row.
+  const ONE_DRAFT =
+    "Each draft that moves to Trash:\n" +
+    "- To kim@client.test: Lunch · saved 2026-11-26 06:05 · starts: Dear Salil,\n" +
+    "No other matching draft is in Drafts, as Metorite last synced it.";
+
+  it("reads as a list, not as rows", () => {
+    const body = parseCardBody(ONE_DRAFT);
+    expect(body.fields).toEqual([]);
+    expect(body.text).toBe(ONE_DRAFT);
+  });
+
+  it("was a grid with no last line", () => {
+    const before = ONE_DRAFT.split("\n").slice(0, 2).join("\n");
+    expect(parseCardBody(before).fields.length).toBe(1);
   });
 });

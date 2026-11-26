@@ -1,8 +1,8 @@
 # Email App — Master Plan (single source of truth)
 
-> **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Built, not merged, dark behind `CHAT_DRAFT_CHOICE_ORGS`. A trash of a draft reads Drafts, and the answer names each draft that stays.
+> **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Merged in #2878, dark behind `CHAT_DRAFT_CHOICE_ORGS`, and task 4026 closes the gaps before the flip (§18.13.2). A trash of a draft reads Drafts, and the answer names each draft that stays.
 >
-> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Built, review round 3 repaired, not merged, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
+> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Merged in #2893, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
 
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
@@ -21706,8 +21706,8 @@ text part and the HTML part of the mail.
 
 ### 18.13 The chat asks which draft (2026-11-26, task 3977)
 
-**Status:** BUILT on branch `mt-3977-draft-trash`, review round 1 repaired, not merged. No
-migration.
+**Status:** MERGED in #2878 (task 3977). Task 4026 closes the gaps before the flag flip
+(§18.13.2), built on branch `cd4026`, not merged. No migration.
 
 **Dark.** `CHAT_DRAFT_CHOICE_ORGS` lists the organization ids, or `*`. Empty is off, the
 default. Off, the card and the answer of a trash are the ones of before. The one reader is
@@ -21734,8 +21734,10 @@ Drafts. The chat trashed its own draft only, and answered "The draft is deleted"
 6. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
    drafts and the other named mail, and it names the other matching drafts.
 7. Each card names each other message by its sender and subject. It names the mailbox of
-   each message, and each id that names no message. No two rows or lines read the same. A
-   named message already in Trash is listed, and nothing happens to it.
+   each message, and each id that names no message. No two rows or lines read the same, also
+   after a cut. A named message already in Trash is listed, and nothing happens to it. The
+   plain card ends with a line that says what stays in Drafts (§18.13.2). So the chat never
+   draws it as a grid of rows.
 8. Each message moves through `DELETE /email/messages/{id}?report=true`, one call each. That
    route discards a Gmail draft and keeps the new id of an Outlook draft. The card says which
    of the two happens.
@@ -21774,8 +21776,8 @@ is not OK. So an IMAP draft reads `not_confirmed`.
 
 #### 18.13.1 Discard asks about the earlier draft (2026-11-26, task 3978)
 
-**Status:** BUILT on branch `mt-3978-draft-decline`, review round 3 repaired (2026-11-26), not
-merged. Task 3977 (§18.13) merged in #2878, and the branch holds it. No migration. Dark behind
+**Status:** MERGED in #2893 (task 3978). Task 3977 (§18.13) merged in #2878 before it. No
+migration. Dark behind
 `CHAT_DRAFT_CHOICE_ORGS`, the flag of §18.13.
 
 **The defect (rung 0).** Production, 2026-11-26. `draft_reply` saved a draft in Drafts. The
@@ -21906,6 +21908,45 @@ writes nothing into the record.
 `src/components/newMailCardEarlier.test.ts`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_draft_decline.py -q`
+
+#### 18.13.2 The gaps before the flag flip (2026-11-27, task 4026)
+
+**Status:** BUILT on branch `cd4026`, not merged. No migration. Each item stays dark behind
+`CHAT_DRAFT_CHOICE_ORGS`, except item 7, which is on the card of before.
+
+1. **The plain card of one draft is a list.** The line "To people: subject" is a `key: value`
+   line. So the chat drew a card of one draft as a grid (`parseCardBody` in
+   `ConfirmationCard.tsx`). The plain card now ends with one line that holds no ": ". The line
+   says that no other matching draft is in Drafts, or that the Drafts page was full
+   (`_plain_card_end`).
+2. **A trash that counts 0 says that nothing moved.** A head of "Trashed 0 message(s):" drew
+   "Inbox updated" with a check mark. The chat now draws "Nothing changed", with no check mark
+   (`noActionOf`).
+3. **Fences for the summaries fields and for the rule of Drafts.** A test reads
+   `POST /email/messages/summaries` through a session that answers only the columns that the
+   SQL names. So a column that leaves the SELECT fails it. A second test holds each case of
+   `draft_choice.settle`: a draft that is still in Drafts never counts.
+4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
+   and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
+5. **The visual review.** The captures and the findings are in the report of task 4026.
+6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
+   `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
+   itself, before it joins them.
+7. **The bulk card counts each message that it cuts.** `request_confirmation` clips the
+   context of a card at 4000 characters, with no count. `_inbox_card_parts` now lists fewer
+   messages and counts the rest, so each message has a line or a count. A card that fits is
+   the card of before, byte for byte. This item has no flag.
+8. **No session across the provider.** `trash_chat_draft_live` reads the stored copy in one
+   short session. It reads the live draft with no session open, and it saves a rotated token
+   in a later session. No work was needed.
+9. **A real Gmail and Outlook mailbox.** This item is outside task 4026.
+10. **The R8 suite.** `tests/unit/test_email_draft_decline_r8.py` runs against the scratch
+    database of `scripts/dev_db.sh`. The report of task 4026 gives the result.
+
+**Fences.** `tests/unit/test_email_draft_choice.py` (the tests under "Task 4026") and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
 
 ## 19. Send later (2026-10-21)
 

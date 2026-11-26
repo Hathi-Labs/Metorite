@@ -2321,6 +2321,9 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
+  // Task 4026: a draft trash that moved nothing (§18.13). Its head counts 0,
+  // so the card says "Nothing changed" and draws no check mark.
+  if (/^Trashed 0 message\(s\):/.test(t)) return "unchanged";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
   return null;
 }
