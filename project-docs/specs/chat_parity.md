@@ -290,13 +290,20 @@ reads and changes the member's own chat list. Three tools join the new pack
 `chat-threads` of the owner `org-admin` (`acb_skills/chat_thread_tools.py`).
 `list_chats` reads the chat list or the topics. `edit_chat` renames, archives,
 restores or moves a chat, or makes a private topic. `delete_chat` deletes one
-chat.
+archived chat.
 
 Each tool sends the route of the chat list as the verified member of the run,
 through the one sender of `chat_pin_tools`. So each route keeps its gates. A
 delete ALWAYS shows one card. The other writes show one card only in a chat
 that must ask first. A write reads the chat before its card, reads it again
 after the approve, and sends nothing when the chat changed.
+
+The chat does only what the dock does. Only the owner of a chat renames,
+archives, restores or deletes it, because the dock shows those acts to the
+owner only. A delete needs an archived chat, as "Delete for good" of the dock
+does. Otherwise the member gets "Archive it first", with no card. The card of
+a shared chat says who else sees the change. The delete card gives no count
+of people, because the count of the list holds the owner and the groups.
 
 The chat ceiling goes from 28 to 19. Six rows are COVERED: the list, the
 rename and archive, the delete, the topic read, the topic create and the move.

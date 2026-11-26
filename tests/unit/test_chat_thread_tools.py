@@ -569,68 +569,147 @@ async def test_a_held_new_topic_shows_one_card(
     assert out["ok"] is False and gw.calls == [] and len(card.cards) == 1
 
 
-# ── delete_chat: always one card ─────────────────────────────────────────────
+# ── delete_chat: always one card, an archived chat only ──────────────────────
+
+OLD = "par11-old"
 
 
 async def test_a_delete_always_shows_one_card_in_a_clear_chat(gw: Gateway, card: Card) -> None:
     """Mutation: show the card only where ``_must_ask`` says so -> red."""
     card.answer = False
     with _run():
-        out = await ct.delete_chat(CID)
+        out = await ct.delete_chat(OLD)
     assert out["ok"] is False and gw.writes() == []
     [shown] = card.cards
     assert shown["title"] == "Delete this chat?" and shown["responder"] == MEMBER
-    assert "4 messages" in shown["detail"] and "cannot undo" in shown["detail"]
+    assert "cannot undo" in shown["detail"]
+    assert not re.search(r"\d", shown["detail"]), "no number that can be wrong"
     card.answer = True
     with _run():
-        out = await ct.delete_chat(CID)
+        out = await ct.delete_chat(OLD)
     assert out == {"ok": True, "deleted": True, "decision": "approved",
                    "answer": "Deleted the chat." + ct._RELOAD}
     write = gw.writes()[-1]
     assert (write["method"], write["handler"], write["raw"], write["body"]) == (
-        "DELETE", "delete_session", f"/chat/sessions/{CID}", None)
+        "DELETE", "delete_session", f"/chat/sessions/{OLD}", None)
 
 
 async def test_a_delete_reads_the_chat_again_after_the_approve(gw: Gateway, card: Card) -> None:
     """A message that came in while the card waited stops the delete.
     Mutation: drop the second read -> red."""
     def _grow(g: Gateway) -> None:
-        g.chats[1]["messageCount"] = 5
+        g.chats[3]["messageCount"] = 5
 
     gw.after_list = _grow
     with _run():
-        out = await ct.delete_chat(CID)
+        out = await ct.delete_chat(OLD)
     assert out["error"] == ct._CHANGED
     assert gw.writes() == [] and len(card.cards) == 1
 
 
 @pytest.mark.parametrize(("cid", "words"), [
     (THIS, ct._DELETE_THIS), ("", ct._BAD_ID), (SHARED, ct._DELETE_OWNER_ONLY),
-    ("not-in-the-list", ct._NOT_IN_LIST)])
+    ("not-in-the-list", ct._NOT_IN_LIST), (CID, ct._ARCHIVE_FIRST)])
 async def test_a_delete_that_may_not_go_shows_no_card(
     gw: Gateway, card: Card, cid: str, words: str,
 ) -> None:
-    """The run never deletes its own chat, and the route deletes for the owner only."""
+    """The run never deletes its own chat, the route deletes for the owner
+    only, and the dock offers "Delete for good" only on an archived row.
+    Mutation: drop the archive check -> a card shows for CID -> red."""
     with _run():
         out = await ct.delete_chat(cid)
     assert out["error"] == words
     assert gw.writes() == [] and card.cards == []
 
 
-async def test_a_shared_chat_names_its_people_on_the_card(gw: Gateway, card: Card) -> None:
-    gw.chats[1]["participantCount"] = 3
+async def test_a_shared_chat_that_is_archived_later_can_be_deleted(gw: Gateway, card: Card) -> None:
+    """Non-vacuity of the archive check: the same chat, archived, gets its card."""
+    gw.chats[1]["archivedAt"] = "2026-11-24T10:00:00+00:00"
     card.answer = False
     with _run():
         await ct.delete_chat(CID)
-    assert "The 3 people in this chat lose it too." in card.cards[0]["detail"]
+    assert len(card.cards) == 1
+
+
+@pytest.mark.parametrize(("over", "line"), [
+    ({}, None),
+    ({"participantCount": 1}, None),
+    ({"participantCount": 3}, "Each other person and group that it is shared with loses it too."),
+    ({"visibility": "people", "participantCount": 1},
+     "Each other person and group that it is shared with loses it too."),
+    ({"visibility": "org"}, "Each member of the organization who can open it loses it too."),
+])
+async def test_the_delete_card_says_only_what_is_true_about_others(
+    gw: Gateway, card: Card, over: dict[str, Any], line: str | None,
+) -> None:
+    """The count of the list holds the owner's own row and a group row, so the
+    card gives no number. A chat of the member alone says nothing of others.
+    Mutation: print the count, or name others for a solo chat -> red."""
+    gw.chats[3].update(over)
+    card.answer = False
+    with _run():
+        await ct.delete_chat(OLD)
+    detail = card.cards[0]["detail"]
+    assert not re.search(r"\d", detail), detail
+    if line is None:
+        assert "loses it too" not in detail and "shared" not in detail, detail
+    else:
+        assert detail.endswith(line), detail
 
 
 async def test_a_kept_chat_gives_the_words_of_the_route(gw: Gateway, card: Card) -> None:
     words = "The files of this chat could not be removed, so the chat is kept. Try again."
     gw.force["delete_session"] = (503, {"detail": words})
     with _run():
-        out = await ct.delete_chat(CID)
+        out = await ct.delete_chat(OLD)
     assert out["error"] == words and out["status"] == 503
+
+
+# ── the owner rule of the dock, and the words of a shared chat ───────────────
+
+
+async def test_a_rename_of_a_chat_of_another_owner_sends_no_write(
+    gw: Gateway, card: Card, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dock shows Rename only to the owner (``SessionPicker.tsx``).
+    Mutation: drop the owner check of a rename -> a card or a PATCH -> red."""
+    for held in (False, True):
+        if held:
+            _held(monkeypatch)
+        with _run():
+            out = await ct.edit_chat("rename", SHARED, name="Our room")
+        assert out["error"] == ct._RENAME_OWNER_ONLY
+    assert gw.writes() == [] and card.cards == []
+
+
+async def test_a_row_with_no_owner_mark_is_the_members_own(gw: Gateway) -> None:
+    """The dock reads ``isOwner !== false``. A row with no mark is the member's."""
+    del gw.chats[1]["isOwner"]
+    with _run():
+        out = await ct.edit_chat("rename", CID, name="Budget")
+    assert out["ok"] is True
+
+
+@pytest.mark.parametrize(("act", "cid", "line"), [
+    ("rename", CID, "Each person who can open this chat sees the new name."),
+    ("archive", CID, "It moves under Archived for each person who can open it too."),
+    ("restore", OLD, "It goes back into the list of each person who can open it too."),
+])
+async def test_the_card_of_a_shared_chat_says_who_else_sees_the_change(
+    gw: Gateway, card: Card, monkeypatch: pytest.MonkeyPatch, act: str, cid: str, line: str,
+) -> None:
+    """The name and the archive are columns of the chat, so each person in it
+    sees the change. A solo chat says nothing of others."""
+    _held(monkeypatch)
+    card.answer = False
+    with _run():
+        await ct.edit_chat(act, cid, name="Budget")
+    assert line not in card.cards[0]["detail"]
+    for row in gw.chats:
+        row["participantCount"] = 3
+    with _run():
+        await ct.edit_chat(act, cid, name="Budget")
+    assert card.cards[1]["detail"].endswith(line)
 
 
 # ── the pack ─────────────────────────────────────────────────────────────────

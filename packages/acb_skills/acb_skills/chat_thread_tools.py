@@ -11,7 +11,9 @@ CO-2b). Three tools do the same from the chat:
   ``title``), archives or restores it (the same route with ``archived``),
   moves it into a topic (``PUT /chat/sessions/{id}/topic``), or makes a
   private topic (``POST /chat/topics``).
-* :func:`delete_chat` deletes a chat (``DELETE /chat/sessions/{id}``).
+* :func:`delete_chat` deletes an archived chat (``DELETE /chat/sessions/{id}``).
+  The dock offers "Delete for good" only on an archived row, so the tool
+  refuses a chat that is not archived.
 
 The rules:
 
@@ -26,6 +28,9 @@ The rules:
   and no org. A chat id is only a key: the tool finds it in the member's own
   list first, and a chat that the list does not hold gets plain words and no
   request.
+* **The acts of the dock, and no more.** A rename, an archive, a restore
+  and a delete are for the owner of the chat, as the dock shows them only to
+  a row that does not say ``isOwner: false`` (``SessionPicker.tsx``).
 * **The fields of the UI, and no more.** A rename sends ``title`` alone, cut
   as the dock cuts it (``SESSION_TITLE_MAX``). An archive sends ``archived``
   alone. A move sends ``topic_id`` alone. A new topic sends ``name`` alone.
@@ -114,6 +119,10 @@ _NO_NAME = "Send the new name. Nothing changed."
 _SAME_NAME = "The chat already has that name. Nothing changed."
 _ARCHIVED_ALREADY = "The chat is already archived. Nothing changed."
 _NOT_ARCHIVED = "The chat is not archived. It is in your chat list. Nothing changed."
+_RENAME_OWNER_ONLY = ("Only the owner of a shared chat can rename it, because each person in it "
+                      "sees the name. Nothing changed.")
+_ARCHIVE_FIRST = ("The chat list deletes only an archived chat. Archive it first, then ask "
+                  "again. Nothing changed.")
 _OWNER_ONLY = ("Only the owner of a shared chat can archive it or restore it. You can leave "
                "the chat from its row. Nothing changed.")
 _ARCHIVED_MOVE = "This chat is archived. Restore it, then move it. Nothing changed."
@@ -274,6 +283,25 @@ def _snapshot(row: dict[str, Any] | None, *, delete: bool = False) -> tuple[Any,
     return tuple(row.get(k) for k in keys)
 
 
+def _owner(row: dict[str, Any]) -> bool:
+    """The owner rule of the dock: a row that does not say ``isOwner: false``
+    is the member's own (``SessionPicker.tsx``)."""
+    return row.get("isOwner") is not False
+
+
+def _sharing(row: dict[str, Any]) -> str:
+    """How far a chat is shared, from the list alone: ``org`` for a chat that
+    each member of the organization can open, ``shared`` for a chat with more
+    than one row of people or groups, or "" for a chat of the member alone.
+    The count of the list holds the owner's own row and a row of a group, so
+    no answer gives a number of people."""
+    if str(row.get("visibility") or "private") == "org":
+        return "org"
+    if str(row.get("visibility") or "private") != "private":
+        return "shared"
+    return "shared" if int(row.get("participantCount") or 0) > 1 else ""
+
+
 def _chat_row(r: dict[str, Any], this: str) -> dict[str, Any]:
     """One chat of the list, with the fields of the dock. A title and a topic
     are the text of a member."""
@@ -283,8 +311,8 @@ def _chat_row(r: dict[str, Any], this: str) -> dict[str, Any]:
         "updated": _line(r.get("updatedAt"), 40),
         "archived": bool(r.get("archivedAt")),
         "pinned": r.get("pinned") is True,
-        "shared": int(r.get("participantCount") or 0) > 1,
-        "owner": r.get("isOwner") is True,
+        "shared": _sharing(r) != "",
+        "owner": _owner(r),
     }
     if r.get("topicName"):
         out["topic"] = _line(r.get("topicName"), TOPIC_NAME_MAX + 10)
@@ -479,12 +507,14 @@ def _edit_problem(act: str, row: dict[str, Any], clean: str) -> str:
     nothing, or "". An archive and a restore are for the owner only
     (``_MAY_DELETE_SQL`` of the route)."""
     if act == "rename":
+        if not _owner(row):
+            return _RENAME_OWNER_ONLY
         return _SAME_NAME if (row.get("title") or "") == clean else ""
     if act == "archive" and row.get("archivedAt"):
         return _ARCHIVED_ALREADY
     if act == "restore" and not row.get("archivedAt"):
         return _NOT_ARCHIVED
-    if row.get("isOwner") is not True:
+    if not _owner(row):
         return _OWNER_ONLY
     return ""
 
@@ -492,11 +522,23 @@ def _edit_problem(act: str, row: dict[str, Any], clean: str) -> str:
 def _edit_card(act: str, row: dict[str, Any], clean: str) -> tuple[str, str]:
     """The title and the detail of the card of an edit."""
     old = _shown(row.get("title"))
+    shared = _sharing(row) != ""
     if act == "rename":
-        return "Rename this chat?", f"From {old} to {_shown(clean)}. Only the name changes."
+        detail = f"From {old} to {_shown(clean)}. Only the name changes."
+        if shared:
+            detail += " Each person who can open this chat sees the new name."
+        return "Rename this chat?", detail
     if act == "archive":
-        return "Archive this chat?", f"{old} moves under Archived. Its messages and files stay."
-    return "Restore this chat?", f"{old} goes back into your chat list."
+        detail = f"{old} moves under Archived. Its messages and files stay."
+        if shared:
+            # The archive is a column of the chat (``_patch_session``), so it
+            # moves the chat under Archived for each person in it.
+            detail += " It moves under Archived for each person who can open it too."
+        return "Archive this chat?", detail
+    detail = f"{old} goes back into your chat list."
+    if shared:
+        detail += " It goes back into the list of each person who can open it too."
+    return "Restore this chat?", detail
 
 
 async def _move(member: str, cid: str, row: dict[str, Any], topic_id: Any) -> dict[str, Any]:
@@ -572,7 +614,7 @@ async def _new_topic(member: str, name: Any) -> dict[str, Any]:
 
 @annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_chat(chat_id: str) -> dict[str, Any]:
-    """Delete one chat of your chat list for good, after one card. Only the owner of a chat can delete it.
+    """Delete one archived chat of your chat list for good, after one card. Only its owner can delete it.
 
     Args:
         chat_id: the id of the chat from the chat list.
@@ -594,13 +636,17 @@ async def delete_chat(chat_id: str) -> dict[str, Any]:
     row = _find(rows, cid)
     if row is None:
         return _refusal(_NOT_IN_LIST)
-    if row.get("isOwner") is not True:
+    if not _owner(row):
         return _refusal(_DELETE_OWNER_ONLY)
-    people = int(row.get("participantCount") or 0)
-    detail = (f"{_shown(row.get('title'))} and its {int(row.get('messageCount') or 0)} "
-              "messages and files go for good. You cannot undo it.")
-    if people > 1:
-        detail += f" The {people} people in this chat lose it too."
+    if not row.get("archivedAt"):
+        return _refusal(_ARCHIVE_FIRST)
+    detail = (f"{_shown(row.get('title'))} and its messages and files go for good. "
+              "You cannot undo it.")
+    sharing = _sharing(row)
+    if sharing == "org":
+        detail += " Each member of the organization who can open it loses it too."
+    elif sharing == "shared":
+        detail += " Each other person and group that it is shared with loses it too."
     if not await _approved("Delete this chat?", detail, member):
         return _not_done("delete")
     again, why = await _list(member)
