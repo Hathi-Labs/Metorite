@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import uuid
 from pathlib import Path
@@ -432,7 +433,8 @@ def test_crm_kinds_is_the_one_map_and_covers_each_crm_kind() -> None:
 # ── g. The R8 twin runs in CI ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_package_host_door_r8\.py \\$", text, re.M)
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    """CIV-33c-2: pr-check.yml and deploy.yml read the R8 lists from the
+    ``r8`` key of tests/fences.json."""
+    fences = json.loads((_ROOT / "tests" / "fences.json").read_text(encoding="utf-8"))
+    assert "tests/unit/test_package_host_door_r8.py" in fences["r8"]["must_run"]

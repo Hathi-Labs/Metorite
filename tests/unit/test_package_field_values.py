@@ -359,7 +359,7 @@ def test_get_values_drops_a_value_that_the_declaration_now_refuses() -> None:
                 return _Result(rows=rows)
             return await super().execute(stmt, params)
 
-    got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD))
+    got = _run(fv.get_values(_Db(), record_kind="task", record_id=RECORD, install_ids={INSTALL}))
     assert [g.field_key for g in got] == ["load2", "score2"]
 
 
