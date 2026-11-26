@@ -1,12 +1,12 @@
 # Connect a headless box with a box token
 
-**Status: BUILT 2026-11-07, dark. Fix round 1 on 2026-11-07.** The routes ship behind the flag `agent_box_tokens_enabled`, which is off. Until an owner turns it on, a box token gets 401. The design is `project-docs/specs/external_agent_access.md` §10.9 (D-EA-5, EA-19).
+**Status: BUILT 2026-11-07, dark. Fix round 1 on 2026-11-07. The header helper (EA-19g, task 1819) BUILT 2026-11-26.** The routes ship behind the flag `agent_box_tokens_enabled`, which is off. Until an owner turns it on, a box token gets 401. The design is `project-docs/specs/external_agent_access.md` §10.9 (D-EA-5, EA-19).
 
 > ⚠️ **OWNER STEP on a box whose settings enable the project entry.** In a checkout of this repo, `.mcp.json` names `metorite` with no header. When `enabledMcpjsonServers` in the user settings holds `metorite`, that project entry wins over the user entry. Then the box token does NOTHING. Claude Code sends no bearer and starts OAuth, which is the path of the incident.
 
 **An owner must close the project route first. Section 4 names the two ways. The script finds this case and stops with exit code 7.**
 
-**Script:** `scripts/box_connect.sh`. **Fences:** `tests/unit/test_box_token_secret_rules.py` and `tests/unit/test_box_token_claude_client.py`.
+**Scripts:** `scripts/box_connect.sh` and the header helper `scripts/metorite_box_headers.sh`. **Fences:** `tests/unit/test_box_token_secret_rules.py` and `tests/unit/test_box_token_claude_client.py`.
 
 ## Why a box token
 
@@ -17,7 +17,7 @@ On 2026-11-06 at 01:23 UTC, one session on `metorite-home` presented a spent ref
 - A box token is `mbt_` and 43 URL-safe characters. The `mbt_` prefix lets gitleaks and the log redactor find it.
 - It acts as the member who made it, with the scopes that the member chose.
 - It lives 90 days by default, and at most 365. Use does not extend it.
-- Claude Code sends it as a static `Authorization` header. Claude Code does not start OAuth when the server refuses it.
+- Claude Code gets the `Authorization` header from a header helper, and sends it. Claude Code does not start OAuth when the server refuses it.
 
 ## 1. Make the token
 
@@ -44,9 +44,11 @@ The script does these steps:
 
 - It checks the shape of the token before it writes a file. A bad shape stops it with exit code 3.
 - It writes `~/.config/metorite/box.env` with mode 0600. The file holds one line, `METORITE_BOX_TOKEN=<token>`.
-- It writes the user-scope MCP entry `metorite`. The header is `Bearer ${METORITE_BOX_TOKEN}`, so the token is not in `.claude.json`.
-- In the project folder, it runs `claude mcp get metorite`. The `Scope:` line must say `User config`, and the header must show `Bearer ${METORITE_BOX_TOKEN}`. A `Project config` or `Local config` scope stops it with exit code 7, and it does not show `Connected`.
-- Then it runs `claude mcp list` in the same folder, and shows the result. Each command has 60 seconds.
+- It installs the header helper as `~/.local/bin/metorite-box-headers`, with mode 0700. This path is outside the checkout, so a worktree removal does not break the lanes.
+- It writes the user-scope MCP entry `metorite`. The entry has `headersHelper` and no `headers`. The helper command is the helper path and the `box.env` path. The token is not in `.claude.json`.
+- In the project folder, it runs `claude mcp get metorite`. The `Scope:` line must say `User config`. A `Project config` or `Local config` scope stops it with exit code 7, and it does not show `Connected`.
+- `claude mcp get` does not show a `headersHelper`. So the script reads the entry from `.claude.json`. The entry must name the helper and hold no `headers`. Then the script runs the helper once, and discards what it prints.
+- Then it runs `claude mcp list` in the same folder, and shows the result. Each command has 60 seconds. `claude` gets no `METORITE_BOX_TOKEN` in its environment.
 
 The script never shows the token. If a user-scope `metorite` entry exists, the script refuses and writes nothing. It also refuses for a local-scope entry of the project folder, because that entry wins over the user entry. To replace the entry, add `--replace`.
 
@@ -55,29 +57,34 @@ For an old entry, the script shows the type, the address and the kind of header,
 | Exit code | Meaning |
 |---|---|
 | 0 | Connected, or written with `--no-verify` |
-| 2 | A bad argument |
+| 2 | A bad argument, or a `HOME` path with a character that the helper command cannot hold |
 | 3 | The token is empty or has the wrong shape |
-| 4 | `claude` or `python3` is not on the path |
+| 4 | `claude` or `python3` is not on the path, or the checkout has no header helper |
 | 5 | A `metorite` entry exists, and `--replace` is not set |
 | 6 | A write failed |
-| 7 | In the project folder, the effective `metorite` entry is not the user entry with the box token header, or `claude mcp list` does not show it as connected |
+| 7 | In the project folder, the effective `metorite` entry is not the user entry with the header helper, the helper refuses `box.env`, or `claude mcp list` does not show it as connected |
 
-## 3. Load the token in each lane shell
+## 3. A lane does not load the token
 
-Each shell that starts `claude` must load the token first:
+**Not needed since 2026-11-26 (task 1819).** A lane shell does not load `box.env`. Claude Code runs the header helper each time it connects the entry, when it connects again, and after a 401 or 403. The helper reads `box.env` and prints `{"Authorization":"Bearer <token>"}`.
 
-```
-set -a; . ~/.config/metorite/box.env; set +a
-```
+The old entry used the header `Bearer ${METORITE_BOX_TOKEN}`. Claude Code expands that variable from its own environment. On the box, a long-lived `claude daemon` starts each `claude --bg` lane, and the daemon never loaded `box.env`. So the old header could go out with no token. To move a box from the old entry to the helper, run the script again with `--replace`.
 
-Put this line in the start script of each lane. Without it, Claude Code sends the text `Bearer ${METORITE_BOX_TOKEN}` as it is, and the server refuses it. `claude mcp list` then shows the warning "Missing environment variables: METORITE_BOX_TOKEN".
+The helper refuses `box.env` when the file does not exist, is a symlink, has a second hard link, is not mode 0600, or is not owned by you. It also refuses a token of the wrong shape. A refusal shows one line on stderr and never the token.
+
+A refusal still prints an `Authorization` header with the bearer `box-token-helper-refused`, and exits 0. The server answers 401 to it, and Claude Code then starts no OAuth. Without that header, Claude Code starts OAuth discovery and registers a client (review of 2026-11-26). So a refused `box.env` shows as "Failed to connect", never as a sign-in prompt.
+
+The session-start hook `.claude/hooks/session-handoff.mjs` also runs the helper when `METORITE_BOX_TOKEN` is not set. It reads the refusal bearer as no credential. To test the helper by hand, run `~/.local/bin/metorite-box-headers >/dev/null`. No line on stderr means that it reads the token. The exit code is 0 in both cases.
+
+The helper takes the path of `box.env` from the entry only. No environment variable changes the path, because a project settings file can set a variable.
 
 ## 4. Verify
 
-Do these steps in the folder where the lanes start `claude`, in a shell that loaded `box.env`.
+Do these steps in the folder where the lanes start `claude`. You do not load `box.env` first.
 
-1. Run `claude mcp get metorite`. The line `Scope:` must say `User config`. The header must show `Bearer ${METORITE_BOX_TOKEN}`, and not the token.
-2. Run `claude mcp list`. The line for `metorite` must say `Connected`.
+1. Run `claude mcp get metorite`. The line `Scope:` must say `User config`.
+2. Read the user entry in `~/.claude.json`, under `mcpServers.metorite`. It must hold `headersHelper` with the helper path and the `box.env` path, and no `headers`. `claude mcp get` does not show the helper.
+3. Run `claude mcp list`. The line for `metorite` must say `Connected`.
 
 ### The project entry of `.mcp.json` (OWNER STEP)
 
@@ -94,15 +101,15 @@ The script does not edit a settings file or `.mcp.json`. A local-scope entry win
 
 1. In **Integrations**, **AI agents**, select **Rotate** on the box row. Copy the new token.
 2. On the box, run `bash scripts/box_connect.sh --replace`, and paste the new token.
-3. Restart each lane, so that each shell loads the new `box.env`.
+3. The Claude Code docs say that Claude Code runs the helper again after a 401. So a lane reads the new `box.env` with no restart. No test in this repo proves that path. If a lane shows a failed `metorite` call, restart that lane.
 
 **Rotate** keeps the old token for 24 hours. **Rotate now** stops the old token at once. Use **Rotate now** when the row shows the new-address mark.
 
 ## 6. Revoke
 
-1. In **Integrations**, **AI agents**, select **Revoke** on the box row.
-2. On the box, delete `~/.config/metorite/box.env`.
-3. Remove the entry with `claude mcp remove -s user metorite`.
+1. On the box, remove the entry first: `claude mcp remove -s user metorite`.
+2. In **Integrations**, **AI agents**, select **Revoke** on the box row.
+3. On the box, delete `~/.config/metorite/box.env` and `~/.local/bin/metorite-box-headers`.
 
 The revoke takes effect on the next call.
 
@@ -111,7 +118,7 @@ The revoke takes effect on the next call.
 `claude mcp list` shows this line:
 
 ```
-metorite: https://mcp.metorite.com/mcp (HTTP) - ✘ Failed to connect — Server rejected the configured Authorization header (HTTP 401) ... OAuth fallback is disabled when headers.Authorization is set
+metorite: https://mcp.metorite.com/mcp (HTTP) - ✘ Failed to connect — Server rejected the Authorization header minted by the configured headersHelper (HTTP 401) ... OAuth fallback is disabled when the helper supplies Authorization
 ```
 
 The script then stops with exit code 7. This is the correct result. No sign-in loop starts. Make a new token, then run the script again with `--replace`.
@@ -122,7 +129,7 @@ All lanes on one box use one token, so they share one stamp, `mcp:box:<name>-<8 
 
 ## Residual risks
 
-- Each process that inherits the env var can read the token. Root can read it too.
+- Each process of the box user can read `box.env`. Root can read it too. The token is not in the environment of a lane.
 - A box token is a bearer secret. It has no proof of possession, so a thief with the token can use it from another address.
 - The new-address mark compares the address at most once a minute. Calls between two compares are not seen.
 - A script with a stolen session cookie can mint a token. The mint ticket and the same-origin check do not stop that thief.
