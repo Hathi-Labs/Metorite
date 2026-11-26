@@ -12,6 +12,8 @@ from typing import get_args, get_type_hints
 
 from acb_common.studio_consent import (
     FIELD_PARTS,
+    NO_REACH,
+    RULE_REACH,
     RUNTIME_ORDER,
     TOP_LEVEL_PARTS,
     USES_SOURCES,
@@ -27,6 +29,7 @@ from acb_common.studio_manifest import (
     parse_uses,
     validate_manifest,
 )
+from acb_common.studio_rules import RULE_KINDS
 from pydantic import BaseModel
 
 _SRC = (
@@ -304,7 +307,9 @@ def test_a_link_a_grant_change_knowledge_and_a_hook_widen() -> None:
         {"name": "note", "fields": [{"key": "t", "type": "text"}]},
     ])
     assert validate_manifest(linked) == []
-    assert widens(_m(), linked) == ["Links to the records of `crm.deal`."]
+    assert widens(_m(), linked) == [
+        "Links to the records of `crm.deal`.", "Adds or changes the field `order.deal`."
+    ]
     regrant = _m(objects=[
         {"name": "order", "fields": [{"key": "name", "type": "text"}],
          "access": [{"role": "clerk", "read": "all", "write": "all"}]},
@@ -346,9 +351,113 @@ def test_every_field_of_the_manifest_schema_has_a_consent_part() -> None:
     _models(Manifest, seen)
     assert set(seen) == set(FIELD_PARTS)
     parts = {"none", "reads", "writes", "sends", "connections", "viewers", "links",
-             "sensitive_fields", "knowledge", "hooks", "runtime"}
+             "sensitive_fields", "knowledge", "hooks", "runtime", "app", "rules",
+             "action_sets", "fields", "records", "view_sources", "shell_needs"}
     for name, model in seen.items():
         assert set(model.model_fields) == set(FIELD_PARTS[name]), name
         for field, part in FIELD_PARTS[name].items():
             assert set(part.split()) <= parts, (name, field)
     assert set(Manifest.model_fields) == TOP_LEVEL_PARTS
+
+
+# --- fix round 3: the parts that the consent does not rank -------------------
+
+#: The exact fields with no reach. A field joins this list only with a reason
+#: in NO_REACH, and a review of that reason.
+_NONE_FIELDS = {
+    "Manifest.studio", "Manifest.name", "Manifest.purpose", "Manifest.pages", "Manifest.nav",
+    "ObjectDef.label",
+    "FieldDef.label", "FieldDef.required", "FieldDef.options", "FieldDef.min", "FieldDef.max",
+    "FieldDef.units", "FieldDef.normal", "FieldDef.critical", "FieldDef.conversions",
+    "FieldDef.format", "FieldDef.prefix", "FieldDef.pad", "FieldDef.reset",
+    "ActionDef.id", "ActionDef.title",
+    "ViewDef.id", "ViewDef.block", "ViewDef.title", "ViewDef.fields", "ViewDef.group_by",
+    "ViewDef.card", "ViewDef.start", "ViewDef.end", "ViewDef.columns", "ViewDef.sort",
+    "ViewDef.text", "Card.title", "Card.meta",
+    "PageDef.id", "PageDef.title", "PageDef.cols", "PageDef.tabs", "PageDef.cells",
+    "PageDef.side", "PageDef.layout", "PageDef.regions",
+    "TabDef.id", "TabDef.title", "TabDef.cells", "CellDef.view", "CellDef.span", "SideDef.view",
+    "NavSection.title", "NavSection.rows",
+    "NavRow.page", "NavRow.icon", "NavRow.label", "NavRow.count",
+    "Skill.description", "Skill.instructions", "Skill.cards",
+    "SkillExample.prompt", "SkillExample.args",
+    "Shell.jobs", "ShellJob.verb", "ShellJob.view",
+}
+
+
+def test_the_fields_with_no_reach_are_pinned_with_a_reason() -> None:
+    none = {f"{m}.{f}" for m, fields in FIELD_PARTS.items() for f, p in fields.items()
+            if p == "none"}
+    assert none == _NONE_FIELDS == set(NO_REACH)
+    for name, reason in NO_REACH.items():
+        assert reason.strip(), name
+
+
+def test_each_rule_kind_has_a_reach_and_each_change_widens() -> None:
+    """Ties RULE_KINDS to how the consent reads each kind: an add, a change and
+    a drop of each kind widen, and the line names the kind."""
+    assert set(RULE_REACH) == set(RULE_KINDS)
+    for kind in RULE_KINDS:
+        rule = {"name": "r", "kind": kind, "field": "name"}
+        with_rule = _m(objects=[{**_m()["objects"][0], "rules": [rule]}, _m()["objects"][1]])
+        changed = _m(objects=[{**_m()["objects"][0], "rules": [{**rule, "message": "m"}]},
+                              _m()["objects"][1]])
+        for old, new in ((_m(), with_rule), (with_rule, changed), (with_rule, _m())):
+            lines = widens(old, new)
+            assert any(f"`{kind}` rules of `order`" in x for x in lines), (kind, lines)
+
+
+def test_a_timer_that_moves_or_loses_its_pause_widens() -> None:
+    timer = {"name": "t", "kind": "timer", "field": "due", "pause": {"field": "st", "in": ["x"]}}
+    base = _m(objects=[{**_m()["objects"][0], "rules": [timer]}, _m()["objects"][1]])
+    moved = _m(objects=[{**_m()["objects"][0], "rules": [{**timer, "field": "due2"}]},
+                        _m()["objects"][1]])
+    paused = {k: v for k, v in timer.items() if k != "pause"}
+    unpaused = _m(objects=[{**_m()["objects"][0], "rules": [paused]}, _m()["objects"][1]])
+    line = "Changes the `timer` rules of `order`: runs with no member."
+    assert widens(base, moved) == [line]
+    assert widens(base, unpaused) == [line]
+    sm = {"name": "s", "kind": "state_machine", "field": "name", "initial": "a", "moves": []}
+    guarded = _m(objects=[{**_m()["objects"][0], "rules": [sm]}, _m()["objects"][1]])
+    assert widens(guarded, _m()) == [
+        "Changes the `state_machine` rules of `order`: a guard on the moves of a field."
+    ]
+    odd = _m(objects=[{**_m()["objects"][0], "rules": [{"kind": "teleport"}]},
+                      _m()["objects"][1]])
+    assert any("`?` rules" in x for x in widens(_m(), odd))
+
+
+def test_a_changed_or_dropped_set_widens() -> None:
+    upd = {"id": "close", "uses": "object:order.update", "set": {"name": "closed"}}
+    old = _m(actions=[upd])
+    assert widens(old, _m(actions=[{**upd, "set": {"name": "open"}}])) == [
+        "Changes the fields that the action `close` sets."
+    ]
+    free = {k: v for k, v in upd.items() if k != "set"}
+    assert widens(old, _m(actions=[free])) == ["Changes the fields that the action `close` sets."]
+
+
+def test_the_app_keys_a_field_shape_a_record_tab_a_view_source_and_a_need_widen() -> None:
+    assert widens(_m(), _m(team="ops")) == ["Changes the app `team`."]
+    assert widens(_m(), _m(kind="system")) == ["Changes the app `kind`."]
+    assert widens(_m(), _m(id="shop2")) == ["Changes the app `id`."]
+    person = _m(objects=[{**_m()["objects"][0], "fields": [{"key": "name", "type": "person"}]},
+                         _m()["objects"][1]])
+    assert widens(_m(), person) == ["Adds or changes the field `order.name`."]
+    tabs = _m(objects=[{**_m()["objects"][0], "record": {"tabs": ["details", "files"]}},
+                       _m()["objects"][1]])
+    assert widens(_m(), tabs) == ["Changes the record tabs of `order`."]
+    view = {"id": "v", "block": "table", "source": {"action": "order_list",
+                                                    "args": {"where": {"name": "a"}}}}
+    unfiltered = {"id": "v", "block": "table", "source": {"action": "order_list"}}
+    assert widens(_m(views=[view]), _m(views=[unfiltered])) == [
+        "Changes the source of the view `v`."
+    ]
+    need = {"object": "order", "where": {"name": "a"}}
+    assert widens(_m(shell={"needs": [need]}), _m(shell={"needs": [{"object": "order"}]})) == [
+        "Adds or changes a shell need."
+    ]
+    # A label, a title and a layout give no reach, so they ask for nothing.
+    relabel = _m(name="Shop 2", objects=[{**_m()["objects"][0], "label": "Orders"},
+                                         _m()["objects"][1]])
+    assert widens(_m(), relabel) == []

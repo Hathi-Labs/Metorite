@@ -39,13 +39,18 @@ manifest, so the caller passes it to :func:`consent`.
 * ``sensitive_fields``: the fields that carry ``sensitive: true``. The restricted
   field type of C9 is not built, so this list is empty today. A manifest that
   carries the flag is already counted, and C9 gives it its meaning.
+* ``shapes``: the parts that the consent does not rank, so each change widens:
+  the app ``kind``, ``id`` and ``team``, the rules of each object by kind
+  (:data:`RULE_REACH`), the ``set`` of each action, the reach keys of each
+  field, the record tabs, the source of each view and the shell needs.
 * ``unclassified``: each top-level key that :data:`TOP_LEVEL_PARTS` does not
   name. A change to one widens.
 
 **Fail closed.** A ``uses``, a connection item, a scope list or a top-level key
 that this module cannot read shows up as a widening. It never drops out.
-:data:`FIELD_PARTS` names the consent part of each field of each schema model.
-The fence fails when the schema gains a field that the table does not name.
+:data:`FIELD_PARTS` names the consent part of each field of each schema model,
+and :data:`NO_REACH` gives the reason for each field that has no part. The
+fence fails when the schema gains a field that the tables do not name.
 
 Fence: ``tests/unit/test_studio_consent.py``.
 """
@@ -70,15 +75,69 @@ RUNTIME_ORDER = ("none", "browser", "sandbox", "packages")
 #: this equal to the ``Literal`` of ``studio_manifest.UsesRef``.
 USES_SOURCES = frozenset({"object", "manifest", "integration", "workflow", "logic", "mcp"})
 
+#: Why each field with the part ``none`` can never give the app more reach.
+#: The fence pins this exact list, so a field moves here only with a reason.
+NO_REACH: dict[str, str] = {
+    "Manifest.studio": "the schema version, always 1",
+    "Manifest.name": "display text",
+    "Manifest.purpose": "display text",
+    "Manifest.pages": "places views, and each view is counted under views",
+    "Manifest.nav": "places pages, and a row count shows the rows of a counted view",
+    "ObjectDef.label": "display text",
+    "FieldDef.label": "display text",
+    "FieldDef.required": "a check on a value that a member types, inside the app",
+    "FieldDef.options": "the values of a select, inside the app",
+    "FieldDef.min": "a check on a value, inside the app",
+    "FieldDef.max": "a check on a value, inside the app",
+    "FieldDef.units": "the units of a value, inside the app",
+    "FieldDef.normal": "a flag on a value, computed on read",
+    "FieldDef.critical": "a flag on a value, computed on read",
+    "FieldDef.conversions": "unit factors of a value, inside the app",
+    "FieldDef.format": "the format of a barcode value",
+    "FieldDef.prefix": "the text of an autonumber",
+    "FieldDef.pad": "the width of an autonumber",
+    "FieldDef.reset": "when an autonumber starts again",
+    "ActionDef.id": "a name, and consent counts the uses and the set of each id",
+    "ActionDef.title": "display text",
+    "ViewDef.id": "a name, and consent counts the source of each id",
+    "ViewDef.block": "how a read draws, and a form writes only through a counted action",
+    "ViewDef.title": "display text",
+    "ViewDef.fields": "the fields that a counted read draws, after the access rules",
+    "ViewDef.group_by": "how a counted read draws",
+    "ViewDef.card": "how a counted read draws",
+    "ViewDef.start": "how a counted read draws",
+    "ViewDef.end": "how a counted read draws",
+    "ViewDef.columns": "the fields that a counted read draws, after the access rules",
+    "ViewDef.sort": "the order of a counted read",
+    "ViewDef.text": "display text",
+    "Card.title": "a field of a counted read",
+    "Card.meta": "fields of a counted read",
+    "PageDef.id": "layout", "PageDef.title": "layout", "PageDef.cols": "layout",
+    "PageDef.tabs": "layout", "PageDef.cells": "layout", "PageDef.side": "layout",
+    "PageDef.layout": "layout", "PageDef.regions": "layout",
+    "TabDef.id": "layout", "TabDef.title": "layout", "TabDef.cells": "layout",
+    "CellDef.view": "layout", "CellDef.span": "layout", "SideDef.view": "layout",
+    "NavSection.title": "layout", "NavSection.rows": "layout",
+    "NavRow.page": "layout", "NavRow.icon": "layout", "NavRow.label": "layout",
+    "NavRow.count": "a count of the rows of a counted view",
+    "Skill.description": "text to the model, and the counted actions bound what it does",
+    "Skill.instructions": "text to the model, and the counted actions bound what it does",
+    "Skill.cards": "names views, and each view is counted under views",
+    "SkillExample.prompt": "text to the model",
+    "SkillExample.args": "an example for the model, and the counted action bounds it",
+    "Shell.jobs": "opens a view, and each view is counted under views",
+    "ShellJob.verb": "display text",
+    "ShellJob.view": "names a counted view",
+}
+
 #: The part of the consent that reads each field of each schema model of
-#: ``studio_manifest``. ``none`` is a field that gives no reach: a label, a
-#: layout or a pointer to a part that is counted elsewhere. The fence walks
-#: the models from ``Manifest`` and fails on a field that this table does not
-#: name, so a new form of the manifest cannot skip the consent.
+#: ``studio_manifest``. ``none`` is a field of :data:`NO_REACH`. The fence
+#: walks the models from ``Manifest`` and fails on a field that this table
+#: does not name, so a new form of the manifest cannot skip the consent.
 FIELD_PARTS: dict[str, dict[str, str]] = {
     "Manifest": {
-        "studio": "none", "kind": "none", "id": "none", "name": "none",
-        "purpose": "none", "team": "none", "connections": "connections",
+        "studio": "none", "kind": "app", "id": "app", "name": "none",
+        "purpose": "none", "team": "app", "connections": "connections",
         "roles": "viewers", "objects": "viewers", "actions": "reads writes sends",
         "views": "reads sends", "pages": "none", "nav": "none",
         "workflows": "reads sends", "skill": "reads writes sends knowledge",
@@ -87,25 +146,27 @@ FIELD_PARTS: dict[str, dict[str, str]] = {
     },
     "ConnectionNeed": {"name": "connections", "as_": "connections", "scopes": "connections"},
     "ObjectDef": {
-        "name": "viewers", "label": "none", "fields": "links sensitive_fields",
-        "rules": "none", "access": "viewers", "record": "none",
+        "name": "viewers", "label": "none", "fields": "fields links sensitive_fields",
+        "rules": "rules", "access": "viewers", "record": "records",
     },
     "FieldDef": {
-        "key": "none", "type": "none", "label": "none", "required": "none",
-        "many": "none", "options": "none", "to": "links", "hot": "none",
+        "key": "fields", "type": "fields", "label": "none", "required": "none",
+        "many": "fields", "options": "none", "to": "fields links", "hot": "fields",
         "min": "none", "max": "none", "units": "none", "normal": "none",
         "critical": "none", "conversions": "none", "format": "none",
-        "lines": "none", "prefix": "none", "pad": "none", "reset": "none",
+        "lines": "fields", "prefix": "none", "pad": "none", "reset": "none",
     },
-    "RecordDef": {"tabs": "none"},
-    "ActionDef": {"id": "none", "uses": "reads writes sends", "title": "none", "set": "none"},
+    "RecordDef": {"tabs": "records"},
+    "ActionDef": {"id": "none", "uses": "reads writes sends", "title": "none",
+                  "set": "action_sets"},
     "ViewDef": {
-        "id": "none", "block": "none", "title": "none", "source": "reads sends",
+        "id": "none", "block": "none", "title": "none", "source": "reads sends view_sources",
         "object": "reads", "fields": "none", "submit": "sends", "group_by": "none",
         "card": "none", "start": "none", "end": "none", "columns": "none",
         "sort": "none", "actions": "sends", "text": "none",
     },
-    "Source": {"object": "reads", "action": "sends", "args": "none"},
+    "Source": {"object": "reads view_sources", "action": "sends view_sources",
+               "args": "view_sources"},
     "Card": {"title": "none", "meta": "none"},
     "PageDef": {
         "id": "none", "title": "none", "cols": "none", "tabs": "none",
@@ -123,11 +184,31 @@ FIELD_PARTS: dict[str, dict[str, str]] = {
         "cards": "none", "knowledge": "knowledge", "examples": "reads writes sends",
     },
     "SkillExample": {"prompt": "none", "action": "reads writes sends", "args": "none"},
-    "Shell": {"jobs": "none", "needs": "reads", "search": "reads"},
+    "Shell": {"jobs": "none", "needs": "reads shell_needs", "search": "reads"},
     "ShellJob": {"verb": "none", "view": "none"},
-    "ShellNeed": {"object": "reads", "where": "none"},
+    "ShellNeed": {"object": "reads shell_needs", "where": "shell_needs"},
     "RuntimeDef": {"kind": "runtime", "packages": "runtime"},
 }
+
+#: What each rule kind of ``studio_rules.RULE_KINDS`` does, in the line that
+#: :func:`widens` writes. Each kind widens on any change, an add and a drop:
+#: a guard that goes away lets more writes through, and a timer, a formula and
+#: a roll-up act with no member. The fence holds the keys equal to RULE_KINDS.
+RULE_REACH: dict[str, str] = {
+    "range": "a guard on the writes",
+    "unique": "a guard on the writes",
+    "group_sum_min": "a guard on the writes",
+    "state_machine": "a guard on the moves of a field",
+    "formula": "writes a computed field",
+    "rollup": "reads the lines of another object",
+    "hierarchy": "a guard on the tree",
+    "timer": "runs with no member",
+}
+#: The bucket of a rule whose kind is not in :data:`RULE_REACH`.
+UNKNOWN_RULE = "?"
+#: The field keys that decide reach. The keys of :data:`NO_REACH` are the rest.
+_FIELD_REACH_KEYS = ("type", "to", "lines", "hot", "many")
+_APP_KEYS = ("kind", "id", "team")
 
 #: The top-level keys that :func:`consent` reads. Each other key lands in
 #: ``unclassified``, and a change to it widens.
@@ -343,6 +424,56 @@ def _objects(m: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rule_kind(rule: Any) -> str:
+    kind = rule.get("kind") if isinstance(rule, Mapping) else None
+    return kind if isinstance(kind, str) and kind in RULE_REACH else UNKNOWN_RULE
+
+
+def _shapes(m: Mapping[str, Any]) -> dict[str, Any]:
+    """The parts that widen on any change, because the consent does not rank
+    them: the app keys, the rules, the ``set`` of each action, the reach keys
+    of each field, the record tabs, the view sources and the shell needs."""
+    rules: dict[str, dict[str, list[str]]] = {}
+    fields: dict[str, str] = {}
+    records: dict[str, str] = {}
+    for obj in _list(m, "objects"):
+        if not isinstance(obj, Mapping) or not isinstance(obj.get("name"), str):
+            continue
+        name = obj["name"]
+        by_kind: dict[str, set[str]] = {}
+        raw_rules = obj.get("rules")
+        for rule in raw_rules if isinstance(raw_rules, list) else (
+            [] if raw_rules is None else [raw_rules]
+        ):
+            by_kind.setdefault(_rule_kind(rule), set()).add(_canon(rule))
+        rules[name] = {k: _sorted(v) for k, v in sorted(by_kind.items())}
+        for fld in _list(obj, "fields"):
+            key = fld.get("key") if isinstance(fld, Mapping) else None
+            label = f"{name}.{key}" if isinstance(key, str) else f"{name}.{_canon(fld)}"
+            reach = {k: fld.get(k) for k in _FIELD_REACH_KEYS} if isinstance(fld, Mapping) else fld
+            fields[label] = _canon(reach)
+        if obj.get("record") is not None:
+            records[name] = _canon(obj.get("record"))
+    action_sets: dict[str, str] = {}
+    for action in _list(m, "actions"):
+        if isinstance(action, Mapping) and isinstance(action.get("id"), str):
+            # The first action of an id wins, as at the door.
+            action_sets.setdefault(action["id"], _canon(action.get("set")))
+    view_sources: dict[str, str] = {}
+    for view in _list(m, "views"):
+        if isinstance(view, Mapping) and isinstance(view.get("id"), str):
+            view_sources.setdefault(view["id"], _canon(view.get("source")))
+    return {
+        "app": {k: _canon(m.get(k)) for k in _APP_KEYS},
+        "rules": rules,
+        "action_sets": action_sets,
+        "fields": dict(sorted(fields.items())),
+        "records": dict(sorted(records.items())),
+        "view_sources": dict(sorted(view_sources.items())),
+        "shell_needs": sorted({_canon(n) for n in _list(_map(m, "shell"), "needs")}),
+    }
+
+
 def consent(manifest: Any, *, run_as: str | None = None) -> dict[str, Any]:
     """What the installer agrees to. Never raises: a value that is not a
     manifest gives an empty consent. A part that this module cannot read
@@ -375,6 +506,7 @@ def consent(manifest: Any, *, run_as: str | None = None) -> dict[str, Any]:
             str(k): _canon(v) for k, v in sorted(m.items(), key=lambda kv: str(kv[0]))
             if k not in TOP_LEVEL_PARTS
         },
+        "shapes": _shapes(m),
         "run_as": run_as,
     }
 
@@ -474,6 +606,39 @@ def _runtime_lines(a: dict[str, Any], b: dict[str, Any], out: list[str]) -> None
             out.append(f"Changes the package `{pkg}` to {ver}.")
 
 
+def _rule_lines(a: dict[str, Any], b: dict[str, Any], out: list[str]) -> None:
+    """An add, a change and a drop of a rule each widen. A new object counts
+    too: its timer runs with no member from the first install."""
+    for name, kinds in b.items():
+        old = a.get(name, {})
+        for kind in sorted(set(kinds) | set(old)):
+            if set(kinds.get(kind, ())) != set(old.get(kind, ())):
+                what = RULE_REACH.get(kind, "a rule that the consent cannot read")
+                out.append(f"Changes the `{kind}` rules of `{name}`: {what}.")
+
+
+def _shape_lines(a: dict[str, Any], b: dict[str, Any], out: list[str]) -> None:
+    """Each change widens, in both directions (fail closed)."""
+    for key in _APP_KEYS:
+        if a["app"][key] != b["app"][key]:
+            out.append(f"Changes the app `{key}`.")
+    _rule_lines(a["rules"], b["rules"], out)
+    for aid, value in b["action_sets"].items():
+        if aid in a["action_sets"] and a["action_sets"][aid] != value:
+            out.append(f"Changes the fields that the action `{aid}` sets.")
+    for label, value in b["fields"].items():
+        if a["fields"].get(label) != value:
+            out.append(f"Adds or changes the field `{label}`.")
+    for name, value in b["records"].items():
+        if a["records"].get(name) != value:
+            out.append(f"Changes the record tabs of `{name}`.")
+    for vid, value in b["view_sources"].items():
+        if vid in a["view_sources"] and a["view_sources"][vid] != value:
+            out.append(f"Changes the source of the view `{vid}`.")
+    if set(b["shell_needs"]) - set(a["shell_needs"]):
+        out.append("Adds or changes a shell need.")
+
+
 def widens(old: Any, new: Any) -> list[str]:
     """One sentence for each thing that *new* adds to *old* in what the
     installer agrees to. An empty list means the new version asks for nothing
@@ -504,6 +669,7 @@ def widens(old: Any, new: Any) -> list[str]:
     for s in b["sensitive_fields"]:
         if (s["object"], s["field"]) not in before_s:
             out.append(f"Adds the sensitive field `{s['object']}.{s['field']}`.")
+    _shape_lines(a["shapes"], b["shapes"], out)
     for key, value in b["unclassified"].items():
         if a["unclassified"].get(key) != value:
             out.append(f"Changes `{key}`, which the consent does not classify.")
