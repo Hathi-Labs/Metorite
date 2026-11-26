@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -202,7 +203,8 @@ def _label(p: Any, rid: str, *, label: str | None, key: str | None, conn: str | 
         c.execute(text(
             "UPDATE pm_agent_runs SET agent_label = :l, session_key = :k, "
             "connection_id = CAST(:c AS uuid), "
-            "waiting_until = CASE WHEN :w THEN now() + interval '30 minutes' END "
+            "waiting_until = CASE WHEN :w THEN now() + interval '30 minutes' END, "
+            "waiting_on = CASE WHEN :w THEN 'ci' END "
             "WHERE id = CAST(:r AS uuid)"),
             {"l": label, "k": key, "c": conn, "w": waiting, "r": rid})
 
@@ -443,6 +445,18 @@ class TestTheMap:
         assert all(tuple(r) == m.MAP_RUN_KEYS for r in body["runs"])
         assert all(tuple(x) == m.MAP_LINE_KEYS for x in body["lines"])
         assert all(tuple(c) == m.MAP_CHILD_KEYS for c in body["children"])
+
+    async def test_a_waiting_run_says_what_it_waits_on(self, w):
+        """AMR-1. Only a run that reads ``waiting`` carries the wait. Every
+        other run, an awaiting one too, carries two nulls."""
+        _, body, _ = await _get(w, w.admin_a)
+        runs = {r["run_id"]: r for r in body["runs"]}
+        wait = runs[w.r_wait]
+        assert wait["state"] == "waiting" and wait["waiting_on"] == "ci"
+        assert datetime.fromisoformat(wait["waiting_until"]) > datetime.now(UTC)
+        for rid, run in runs.items():
+            if rid != w.r_wait:
+                assert run["waiting_on"] is None and run["waiting_until"] is None, rid
 
     async def test_one_name_of_one_connection_is_one_node(self, w):
         _, body, _ = await _get(w, w.admin_a)
@@ -1108,6 +1122,12 @@ def test_the_edge_wraps_each_name_and_keeps_only_the_pinned_keys() -> None:
     raw = json.dumps(out)
     for leaked in ("SECRETKEY", "box-1", "model-x", "10.0.0.1"):
         assert leaked not in raw
+    # AMR-1: the wait leaves as one of the five fixed words and an ISO time.
+    assert out["runs"][0]["waiting_on"] is None
+    kept = tools.map_run({"waiting_on": "ci", "waiting_until": "2026-11-21T10:00:00+00:00"})
+    assert (kept["waiting_on"], kept["waiting_until"]) == ("ci", "2026-11-21T10:00:00+00:00")
+    bad = tools.map_run({"waiting_on": hostile, "waiting_until": hostile})
+    assert (bad["waiting_on"], bad["waiting_until"]) == (None, None)
     bare = _bare_strings(out)
     assert all(_plain_ok(s) for s in bare), bare
     # A value out of its shape never leaves plain.

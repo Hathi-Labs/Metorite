@@ -139,6 +139,7 @@ from gateway.routes.projects.filters import (
     agent_runs_enabled,
     connection_gone_sql,
     run_life_at_sql,
+    waiting_of,
 )
 from sqlalchemy import text
 
@@ -277,6 +278,7 @@ _SEEN_RUNS_SQL = """
     SELECT r.id, r.client_via, r.status, r.created_at, r.task_id,
            r.member_email, r.connection_id, r.agent_label, r.session_key,
            r.agent_host, r.agent_host_kind, r.agent_model,
+           r.waiting_on, r.waiting_until,
            EXISTS (SELECT 1 FROM agent_connection bc WHERE bc.id = r.connection_id
                       AND bc.organization_id = r.organization_id
                       AND bc.credential = 'box') AS box_checked,
@@ -643,7 +645,7 @@ MAP_SESSION_KEYS: tuple[str, ...] = (
 )
 MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
-    "last_at",
+    "last_at", "waiting_on", "waiting_until",
 )
 #: SW-107. One line of who dispatched whom: from the dispatcher's session
 #: node to the session node of the run that it dispatched.
@@ -693,7 +695,7 @@ _MAP_CTE = "{head}seen AS (" + _SEEN_RUNS_SQL + """), live AS (
     SELECT seen.id, seen.client_via, seen.task_id, seen.state, seen.run_at,
            seen.life_at, seen.agent_label, lower(seen.member_email) AS person,
            seen.agent_host, seen.agent_host_kind, seen.agent_model, seen.box_checked,
-           seen.dispatched_by_run_id,
+           seen.dispatched_by_run_id, seen.waiting_on, seen.waiting_until,
            """ + _NODE_SQL + """ AS node_id,
            (seen.life_at < now() - interval '{quiet_s} seconds'
             AND seen.state NOT IN ('awaiting', 'waiting')) AS quiet
@@ -736,7 +738,8 @@ SELECT node_id,
 #: quiet runs unless the caller asks for them (``show_quiet``).
 _MAP_RUNS_SQL = _MAP_CTE + """
 SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
-       live.life_at, live.quiet, t.task_number, t.title AS task_title
+       live.life_at, live.quiet, live.waiting_on, live.waiting_until,
+       t.task_number, t.title AS task_title
   FROM live
   JOIN pm_tasks t ON t.id = live.task_id
  WHERE {fold}
@@ -867,6 +870,15 @@ def _place_of(row: Any) -> dict[str, str | None]:
             "model": _line(row.agent_model) or None}
 
 
+def _wait_of(row: Any) -> dict[str, str | None]:
+    """AMR-1: what a ``waiting`` run waits on, and until when, by the one rule
+    of :func:`waiting_of`. A run that does not wait gives two nulls. The word
+    is one of the CHECK of ``pm_agent_runs.waiting_on``, never agent text."""
+    found = waiting_of(row.state, row.waiting_on, row.waiting_until)
+    return {"waiting_on": found["on"] if found else None,
+            "waiting_until": found["until"] if found else None}
+
+
 def _empty_map(viewer: str) -> dict[str, Any]:
     return {"people": [], "sessions": [], "runs": [], "lines": [], "children": [],
             "count": 0, "truncated": False, "viewer": viewer}
@@ -968,6 +980,7 @@ async def _agent_map(
             "quiet": bool(r.quiet),
             "age": _age_s(r.run_at),
             "last_at": _when(r.life_at),
+            **_wait_of(r),
         } for r in listed],
         # SW-107: who dispatched whom, from session node to session node.
         "lines": [{"from": str(x.from_id), "to": str(x.to_id)}

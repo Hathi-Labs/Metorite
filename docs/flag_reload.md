@@ -301,6 +301,17 @@ moves a chat, and answers 404 with the org off. The chat list sends
 the answer to the client as `chat_topics`, so a tab shows a change at its
 next shell read.
 
+`AGENT_LENSES_ORGS` opens the new Agents view of Projects
+(`agent_coordination.md` §5.12, AMR-1). For each listed org, the Agents canvas
+draws the Board, Graph and List lenses, and a phone gets one level per screen.
+`*` lists every org, and the default is empty. Empty means the canvas draws the
+map of SW-103. The view reads the map of SW-102, so it also needs
+`AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
+`gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
+`GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
+change at its next shell read. A reload applies a change. The flip stays
+OWNER-GATE (`enforcement-flip`), after the owner preview.
+
 `COMPUTE_RUN_ORGS` is the kill switch of the `compute` target of the sandbox
 broker (`agent_sandbox.md` §0c rung 6a', SBX-18). It does not turn compute on.
 Compute needs `compute:<org>` in `MAF_CODING_SCOPE`. That is a sealed owner
