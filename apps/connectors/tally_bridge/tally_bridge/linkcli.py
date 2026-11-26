@@ -116,9 +116,15 @@ def do_confirm(args: argparse.Namespace, store: LinkStore | None) -> int:
     return 0
 
 
-def do_unlink(settings: Settings, store: LinkStore | None, api: LinkApi | None = None) -> int:
-    """Revoke the credential at Metorite, then delete it here. The local
-    delete happens even when Metorite cannot be reached."""
+def do_unlink(
+    settings: Settings,
+    store: LinkStore | None,
+    api: LinkApi | None = None,
+    delete_copy: Any = None,
+) -> int:
+    """Revoke the credential at Metorite, then delete it here, and the local
+    copy of the books with it (TLY-4, §3.8.13 point 6). The local delete
+    happens even when Metorite cannot be reached."""
     state = store.load() if store else None
     if state is None:
         print("This machine has no link.")
@@ -135,7 +141,16 @@ def do_unlink(settings: Settings, store: LinkStore | None, api: LinkApi | None =
                 file=sys.stderr,
             )
     store.delete()  # type: ignore[union-attr]
-    print("Unlinked. The credential is deleted on this machine.")
+    if delete_copy is not None:
+        try:
+            delete_copy()
+        except Exception as exc:
+            print(
+                f"The local copy could not be deleted ({type(exc).__name__}). Run delete-copy.",
+                file=sys.stderr,
+            )
+            revoked = False
+    print("Unlinked. The credential and the local copy are deleted on this machine.")
     return 0 if revoked else 1
 
 
@@ -161,4 +176,5 @@ def link_controller(args: argparse.Namespace, live: Any, reader: Any, copy: Any)
         __version__,
         platform.node(),
         copy_at=copy_at,
+        on_disconnect=copy.delete_all if copy is not None else None,
     )
