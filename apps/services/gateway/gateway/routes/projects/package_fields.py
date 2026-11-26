@@ -13,7 +13,9 @@ leaves the org out, each route answers 404 and opens no session.
 ``load_visible_task``, the load of ``patch_task``. A task that the caller
 cannot see is 404 ``Task not found``, also when an org install declares a
 field on it. So the rule of who may edit a task is the rule of Projects
-(PKG-Q26), and this module adds no second rule.
+(PKG-Q26), and this module adds no second rule. The PUT then calls
+``assert_task_project_open``, so a task in an archived project is 409 and
+the write runs no statement. The GET still reads it.
 
 **The values come from the door.** ``package_host/host_door.py`` reads the set
 of installs from the one resolve and calls the field store. This module runs
@@ -36,6 +38,7 @@ from fastapi import Depends, HTTPException
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.projects.core import (
     _tenant_session,
+    assert_task_project_open,
     load_visible_task,
     resolve_visibility,
     router,
@@ -98,7 +101,8 @@ async def set_task_package_field(
     try:
         async with _tenant_session() as db:
             vis = await resolve_visibility(db, user)
-            await load_visible_task(db, vis, record)
+            task = await load_visible_task(db, vis, record)
+            await assert_task_project_open(db, task)
             stored = await host_door.write_field(
                 db, user, record_kind=TASK_KIND, record_id=record, install_id=install_id,
                 field_key=field_key, value=payload.value)

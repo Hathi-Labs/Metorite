@@ -427,6 +427,29 @@ def test_r8_a_write_to_a_visible_task_stores_and_null_deletes(world) -> None:
     assert len(_values(world)) == len(before) - 1
 
 
+def test_r8_a_write_to_a_task_in_an_archived_project_is_409_and_the_read_stays(world) -> None:
+    """ARC-2b: an archived project is read-only. The PUT calls
+    ``assert_task_project_open`` after the task load, so it writes nothing.
+    The GET still reads the values."""
+    from gateway.routes.projects.core import ARCHIVED_PROJECT_REFUSAL
+
+    org, key = world.ids["org"], _key("org")
+    _admin(world, "UPDATE pm_projects SET archived_at = now() WHERE id = CAST(:p AS uuid)",
+           {"p": world.p2})
+    try:
+        before = _values(world)
+        for value in ("2030-01-01", None):
+            res = _do(world, world.ben, "PUT", _task_path(world.t2, org, key), {"value": value})
+            assert res.status_code == 409, (value, res.text)
+            assert res.json()["detail"] == ARCHIVED_PROJECT_REFUSAL
+        assert _values(world) == before
+        got = _do(world, world.ben, "GET", _task_path(world.t2))
+        assert got.status_code == 200 and _keys(got)[key] == (org, "2027-01-31")
+    finally:
+        _admin(world, "UPDATE pm_projects SET archived_at = NULL WHERE id = CAST(:p AS uuid)",
+               {"p": world.p2})
+
+
 # ── 3. The CRM access modes ────────────────────────────────────────────────
 
 

@@ -54,7 +54,8 @@ from gateway.package_host.store import InstallError, InstallNotFound
 REFUSALS: tuple[type[Exception], ...] = (InstallError, FieldError)
 
 #: The keys that the resolve adds to the payload of a claim (§5.2).
-_RESOLVE_KEYS: tuple[str, ...] = ("key", "source", "install_id", "needs_setup")
+#: ``extends`` marks an entry of a sub-app install (PKG-15a, ``resolve.py``).
+_RESOLVE_KEYS: tuple[str, ...] = ("key", "source", "install_id", "needs_setup", "extends")
 
 
 @dataclass(frozen=True)

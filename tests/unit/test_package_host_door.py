@@ -40,6 +40,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -116,6 +117,18 @@ def test_a_system_entry_and_a_setup_install_are_dropped() -> None:
     ]}
     assert [f.field_key for f in host_door.fields_of(body, "task").fields] == ["kept"]
     assert host_door.fields_of(body, "task").install_ids == {I_ORG}
+
+
+def test_an_entry_of_a_sub_app_keeps_its_field() -> None:
+    """PKG-15a: the resolve adds ``"extends": <host>`` to each entry of an
+    install whose manifest extends a host. The key is the resolve's, not the
+    declaration's, so the door strips it and keeps the field."""
+    body = {"fields": [_entry("task:warranty_end", I_ORG, extends="crm"),
+                       _entry("task:size", I_GRP, "group", type="number")]}
+    seen = host_door.fields_of(body, "task")
+    assert [(f.install_id, f.field_key) for f in seen.fields] == [
+        (I_ORG, "warranty_end"), (I_GRP, "size")]
+    assert "extends" in host_door._RESOLVE_KEYS
 
 
 @pytest.mark.parametrize("entry", [
@@ -349,6 +362,46 @@ def test_the_task_routes_load_the_visible_task_first(monkeypatch) -> None:
     # The load is the one of patch_task.
     src = Path(task_fields.__file__).read_text(encoding="utf-8")
     assert src.count("await load_visible_task(db, vis, record)") == 2
+
+
+def test_a_task_write_in_an_archived_project_is_409_before_the_door(monkeypatch) -> None:
+    """ARC-2b: the PUT calls ``assert_task_project_open`` on the loaded task,
+    so a task in an archived project is 409 and the door never runs. The
+    GET does not ask, so the values of an archived task still read."""
+    monkeypatch.setattr(get_settings(), "package_host_orgs", "*")
+    log: list[str] = []
+    task = SimpleNamespace(id=str(RECORD), project_id=str(uuid.uuid4()))
+
+    async def vis(db: Any, user: Any) -> str:
+        return "VIS"
+
+    async def load(db: Any, v: Any, task_id: str) -> Any:
+        log.append("load")
+        return task
+
+    async def archived(db: Any, project_id: str) -> bool:
+        log.append(f"archived? {project_id}")
+        return True
+
+    async def door(*_a: Any, **_k: Any) -> Any:
+        log.append("door")
+        return []
+
+    monkeypatch.setattr(task_fields, "_tenant_session", _Session(log))
+    monkeypatch.setattr(task_fields, "resolve_visibility", vis)
+    monkeypatch.setattr(task_fields, "load_visible_task", load)
+    monkeypatch.setattr(projects_core, "project_is_archived", archived)
+    monkeypatch.setattr(host_door, "read_fields", door)
+    monkeypatch.setattr(host_door, "write_field", door)
+    put = _calls()[1][2]
+    with pytest.raises(HTTPException) as exc:
+        _run(put())
+    assert (exc.value.status_code, exc.value.detail) == (
+        409, projects_core.ARCHIVED_PROJECT_REFUSAL)
+    assert log == ["session", "load", f"archived? {task.project_id}"]
+    log.clear()
+    assert _run(_calls()[0][2]())["fields"] == []
+    assert log == ["session", "load", "door"]
 
 
 def test_the_crm_write_loads_the_row_and_asks_assert_writable_first(monkeypatch) -> None:
