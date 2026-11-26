@@ -1577,3 +1577,176 @@ async def test_an_automated_write_on_a_held_row_keeps_the_reminder(
             "AND thread_id = :t"), {"a": box, "t": thread}).one()
     assert (got.status, got.mid) == ("DONE", first)
     assert got.follow_up_reminded_at is not None
+
+
+# ── 6. The label learner: a click during its corrections (N1) ───────────────
+
+def _learner_thread(db, box: str, *, old_fyi: bool = False) -> tuple[str, str, str]:
+    """A thread whose member put "Needs Reply" on the latest inbound message
+    in the mail client. The status is FYI. With *old_fyi*, an older message
+    still wears "FYI" here and at the mail server, so the correction of the
+    learner calls the provider to remove it. Returns ``(thread, older, latest)``."""
+    thread = f"ln-{uuid.uuid4().hex[:8]}"
+    older = _mail(db, box, thread, days_ago=4,
+                  categories=["FYI"] if old_fyi else [])
+    latest = _mail(db, box, thread, days_ago=3)
+    _status_row(db, box, thread, "FYI", latest, reason="r", days_ago=3)
+    return thread, older, latest
+
+
+def _pause_authenticate(provider: _Provider, entered: asyncio.Event,
+                        release: asyncio.Event) -> None:
+    """The first ``authenticate`` call waits for *release*."""
+    real = provider.authenticate
+
+    async def _auth() -> bool:
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        return await real()
+
+    provider.authenticate = _auth  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("flag", ["on", "off"])
+async def test_a_click_on_a_later_thread_during_a_correction_stays_done(
+    db, monkeypatch, provider, flag,
+):
+    """(N1) The learner asks the hold once, before its corrections. The member
+    marks B done while the correction of A waits for the provider. The
+    correction of B must not end the hold: B ends Done here and at the mail
+    server. With the flag off, the correction of B writes as before."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    _rule(db, box, "Needs Reply", "Needs Reply", "REPLY")
+    a, a_old, a_new = _learner_thread(db, box)
+    b, b_old, b_new = _learner_thread(db, box)
+    _seed_remote(db, provider, a_old, a_new, b_old, b_new)
+    for m in (a_new, b_new):
+        provider.remote[_pmid(db, m)] = {"Needs Reply"}
+    if flag == "on":
+        _flag(monkeypatch, db.org_b)
+    _quick_jobs(monkeypatch)
+    _pause_authenticate(provider, entered, release)
+    before = _deadlocks(db)
+
+    import structlog
+
+    with structlog.testing.capture_logs() as caps:
+        async with _as_member(db, db.org_b):
+            learner = asyncio.create_task(_sync_stores_the_remote(
+                db, box, provider, a_new, b_new))
+            await _click_during(db, box, b, entered, release, learner)
+
+    await _no_deadlock(db, before, caps)
+    assert _row(db, box, a).status == "NEEDS_REPLY"
+    if flag == "off":
+        row = _row(db, box, b)
+        assert (row.status, row.reason) == ("NEEDS_REPLY", "Fix correction")
+        return
+    _assert_done(db, provider, box, b, b_old, b_new)
+
+
+async def test_a_click_during_the_same_correction_stays_done(
+    db, monkeypatch, provider,
+):
+    """(N1) The member marks A done while the correction of A sends its
+    labels to the provider, and the label job of the click does not run.
+    The correction asks the hold again after its I/O, so A ends Done here
+    and at the mail server."""
+    _flag(monkeypatch, db.org_b)
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    _rule(db, box, "Needs Reply", "Needs Reply", "REPLY")
+    a, a_old, a_new = _learner_thread(db, box, old_fyi=True)
+    _seed_remote(db, provider, a_old, a_new)
+    provider.remote[_pmid(db, a_new)] = {"Needs Reply"}
+    pmid_old = _pmid(db, a_old)
+    provider.pause = (lambda p, _add, rem: p == pmid_old and "FYI" in rem,
+                      entered, release)
+    before = _deadlocks(db)
+
+    import structlog
+
+    with structlog.testing.capture_logs() as caps:
+        learner = asyncio.create_task(_sync_stores_the_remote(
+            db, box, provider, a_new))
+        await _click_during(db, box, a, entered, release, learner, jobs=False)
+
+    await _no_deadlock(db, before, caps)
+    _assert_done(db, provider, box, a, a_old, a_new)
+
+
+async def test_a_member_fix_during_a_hold_still_wins_over_the_learner(
+    db, monkeypatch, provider,
+):
+    """(N1) Only the learner's correction keeps a held row. The Fix of the
+    member, the other caller of the correction, still ends the hold."""
+    from gateway.routes.email.automation import replyzero
+
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    a, _a_old, a_new = _learner_thread(db, box)
+    await _resolve(db, box, a)
+    async with _as_member(db, db.org_b):
+        held = await replyzero.apply_thread_status_correction(
+            box, a, "REPLY", automated=True)
+        fixed = await replyzero.apply_thread_status_correction(box, a, "REPLY")
+    assert held == {"ok": False, "held": True}
+    assert fixed["ok"]
+    row = _row(db, box, a)
+    assert (row.status, row.reason) == ("NEEDS_REPLY", "Fix correction")
+    assert "Needs Reply" in _labels(db, a_new)
+
+
+# ── 7. The locks of the click and the sweep (N5, N4) ────────────────────────
+
+async def test_a_key_share_lock_does_not_make_the_click_skip_the_labels(
+    db, monkeypatch, provider,
+):
+    """(N5) An insert of a child row holds ``FOR KEY SHARE`` on its message
+    row. The click takes the rows ``FOR NO KEY UPDATE NOWAIT``, which does not
+    conflict, so it sets the local labels in the request."""
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, first, sent, undated, nudge = _follow_up_thread(db, box)
+    with db.admin_engine.connect() as c:
+        tx = c.begin()
+        c.execute(text(
+            "SELECT id FROM email_messages WHERE id = CAST(:m AS uuid) "
+            "FOR KEY SHARE"), {"m": sent})
+        try:
+            await asyncio.wait_for(
+                _resolve(db, box, thread, run_jobs=False), _CLICK_S)
+        finally:
+            tx.rollback()
+    assert not _all(db, first, sent, undated, nudge) & _OPEN
+    assert "Done" in _all(db, first, sent)
+
+
+async def test_the_sweep_authenticates_once(db, monkeypatch, provider):
+    """(N4) The sweep heals each held thread with ONE provider."""
+    from gateway.routes.email.automation import mark_done
+
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    threads = [_follow_up_thread(db, box) for _ in range(3)]
+    for thread, *_rest in threads:
+        await _resolve(db, box, thread)
+    for _thread, _first, sent, *_rest in threads:
+        _set_labels(db, sent, ["Follow-up"])
+    calls = []
+    real = provider.authenticate
+
+    async def _auth() -> bool:
+        calls.append(1)
+        return await real()
+
+    provider.authenticate = _auth  # type: ignore[method-assign]
+    async with _as_member(db, db.org_b):
+        healed = await mark_done.heal_held(box)
+    assert healed == 3
+    assert len(calls) == 1
+    for _thread, first, sent, undated, nudge in threads:
+        assert not _all(db, first, sent, undated, nudge) & _OPEN
+        assert provider.remote[_pmid(db, sent)] == set()

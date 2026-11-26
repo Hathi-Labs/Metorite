@@ -159,7 +159,12 @@ async def _apply_label_status_corrections(
     Task 3995: a label on a thread whose labels the member owns (held, or a
     move back of the last minutes) is a stale one. It sets no status, and the
     thread gets the member's labels again (``mark_done.settle_owned``). The
-    Fix in the app still wins."""
+    Fix in the app still wins.
+
+    The ask before the loop is a fast path only. A click can commit while an
+    earlier correction waits for the provider. So each correction runs as an
+    automated one: its write keeps a held row, and it then settles the
+    thread with the member's labels."""
     if not corrections:
         return
     from gateway.routes.email.automation import mark_done
@@ -178,7 +183,10 @@ async def _apply_label_status_corrections(
             await mark_done.settle_owned(account_id, tid)
             continue
         try:
-            await apply_thread_status_correction(account_id, tid, key)
+            got = await apply_thread_status_correction(
+                account_id, tid, key, automated=True)
+            if got.get("held"):
+                await mark_done.settle_owned(account_id, tid)
         except Exception as exc:  # noqa: BLE001
             _log.warning("email.label_status_correction_failed",
                          account_id=account_id, error=str(exc)[:160])

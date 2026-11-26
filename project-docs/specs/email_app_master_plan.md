@@ -387,10 +387,13 @@ click-driven path already covers everyone the user cares about.
 
 **Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
 **Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
+No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
+
 Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
 Fix round 3 closes F1 to F6 and V1: the lock order, a reopen, a reply before a move back,
-the reminder, and the bar on a phone. No migration. Dark behind `EMAIL_MARK_DONE_ORGS`,
-which is empty (off) by default.
+the reminder, and the bar on a phone. Fix round 4 closes N1, N4 and N5. These are a
+click during a learner correction, one provider for the sweep, and the row lock of
+the click.
 
 **One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
 A bulk act sends one call for each conversation, as a pair of `account_id` and
@@ -426,6 +429,9 @@ one definition. While a thread is held:
   status.
 - The sync removes again a label that comes back. That label sets no status. This
   also covers a label that the member adds in the mail program of the provider.
+  The learner asks the hold once before its corrections, and each correction keeps
+  a held row in its own write too (N1). So a click during an earlier correction
+  stays Done. The Fix of the member still ends the hold.
 - The follow-up scan, an approval of a proposal and the repair of a failed run each
   ask the hold for each thread (D1, D5). A held proposal or repair becomes
   `SKIPPED`, and History says why.
@@ -452,8 +458,9 @@ We weighed three designs:
 We chose a mix, because no single design meets both rules at a small cost:
 
 1. **The request waits only for the status row.** It takes the message rows with
-   `NOWAIT` (`mark_done._take_thread_rows`). A lock that never waits is in no
-   cycle, so the request cannot deadlock.
+   `FOR NO KEY UPDATE NOWAIT` (`mark_done._take_thread_rows`). A lock that never
+   waits is in no cycle, so the request cannot deadlock. The block writes no key
+   column, so the `FOR KEY SHARE` of a child-row insert does not stop it (N5).
 2. **A writer takes the status row last.** With the flag on, the rules runner,
    Process past and the status backfill run the label reconcile first. Then they
    write the status row, and the block commits
@@ -479,12 +486,13 @@ A commit ends the `SET LOCAL` tenant of a block. So each short block is a new
    automated writer asks the hold again. When the thread is held now, the writer
    puts "Done" back at once, and it sends the whole state of the thread to the
    provider (`mark_done.recheck_after_io`). The runner, its reconcile, the
-   follow-up scan, an approval and a repair do this (D1, D5, D6). The scan drafts
-   no nudge for a thread that is held now.
+   follow-up scan, an approval and a repair do this (D1, D5, D6). So does a
+   correction of the label learner (N1). The scan drafts no nudge for a thread
+   that is held now.
 2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
    finds each held thread with an open local label. It puts "Done" back here and
-   at the provider. An import or a folder load gives the learner no delta, so only
-   the sweep heals its label (D9).
+   at the provider, with one provider for the sweep (N4). An import or a folder
+   load gives the learner no delta, so only the sweep heals its label (D9).
 3. **The provider shows the committed rows.** A label job reads the committed
    local labels, sends each message that is not a draft its whole set, and reads
    them again. While the read differs from what it sent, it sends again
@@ -572,15 +580,21 @@ of another surface alone (D10).
   old labels until that writer asks again, or until the sweep.
 - A reopen with `done=false` and no `restore` reads the folder of the latest dated
   message, as before. A nudge draft there makes it Needs Reply.
+- Known limits: the task-close path (`tasks/email_link.py`) still holds the status
+  row across provider I/O, as before this feature. Mark done on a long thread makes
+  one provider call for each message.
 
 **Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
 the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
-D1 to D9 and F1 to F6 on a real database. Its F1 and F2 tests run the real scan and
+D1 to D9, F1 to F6, N1, N4 and N5 on a real database. Its F1 and F2 tests run the real scan and
 the real rules job in one task and the click in another, at three points each. They
 assert that the click answers while the writer waits in its I/O, and that the
 database counted no deadlock. The others are
 `src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
 `src/app/email/components/markDoneMenu.test.ts` (the menu order).
+
+The N1 tests run the real learner. The click lands during a correction of another
+thread, and during a correction of the same thread.
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 

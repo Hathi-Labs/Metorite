@@ -378,13 +378,18 @@ async def _take_thread_rows(db: Any, account_id: str, thread_id: str) -> bool:
     no cycle, so the member's request and the label jobs cannot deadlock with
     a writer (§6.6 "The locks"). Inside a savepoint, so a refusal does not
     abort the block.
+
+    ``FOR NO KEY UPDATE``: the block then writes ``categories`` and
+    ``updated_at`` only, which are no key columns. So the lock does not
+    conflict with the ``FOR KEY SHARE`` that each insert of a child row
+    takes on its message row.
     """
     try:
         async with _savepoint(db):
             await db.execute(text(
                 "SELECT id FROM email_messages "
                 "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid "
-                "ORDER BY id FOR UPDATE NOWAIT"
+                "ORDER BY id FOR NO KEY UPDATE NOWAIT"
             ), {"aid": account_id, "tid": thread_id})
     except Exception as exc:
         if _lock_busy(exc):
@@ -560,16 +565,33 @@ async def push_labels(
     committed rows (:func:`converge`). The provider calls run with no block
     open. *delays* defaults to :data:`SETTLE_DELAYS`.
     """
+    await _push_threads(
+        account_id, [thread_id], SETTLE_DELAYS if delays is None else delays)
+
+
+async def _push_threads(
+    account_id: str, thread_ids: list[str], delays: tuple[float, ...],
+) -> None:
+    """:func:`push_labels` for each of *thread_ids*, with ONE provider. It
+    builds and authenticates the provider at the first thread that needs it.
+    A fault on one thread does not stop the others. Best effort."""
+    got: tuple[Any, Any] | None = None
+    for thread_id in thread_ids:
+        try:
+            if not await _settle_mirror(account_id, thread_id, delays):
+                continue
+            if got is None:
+                got = await _provider_for(account_id)
+                if got is None:
+                    return
+            await converge(got[0], account_id, thread_id)
+        except Exception as exc:
+            _log.warning("email.mark_done_labels_failed",
+                         account_id=account_id, error=str(exc)[:160])
+    if got is None:
+        return
+    provider, store = got
     try:
-        settled = await _settle_mirror(
-            account_id, thread_id, SETTLE_DELAYS if delays is None else delays)
-        if not settled:
-            return
-        got = await _provider_for(account_id)
-        if got is None:
-            return
-        provider, store = got
-        await converge(provider, account_id, thread_id)
         if provider.credentials_dirty():
             async with _tenant_session() as db:
                 await _persist_rotated_creds(db, store, account_id, provider)
@@ -663,8 +685,8 @@ async def heal_held(account_id: str) -> int:
         _log.warning("email.mark_done_heal_failed",
                      account_id=account_id, error=str(exc)[:160])
         return 0
-    for r in rows:
-        await settle_owned(account_id, r.thread_id)
+    # One provider for the sweep, not one for each thread.
+    await _push_threads(account_id, [r.thread_id for r in rows], (0,))
     return len(rows)
 
 

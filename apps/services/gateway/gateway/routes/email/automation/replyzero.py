@@ -73,7 +73,7 @@ _NO_NEWER_MAIL_SQL = """NOT EXISTS (
 async def _upsert_thread_status(
     db: Any, account_id: str, thread_id: str, status: str,
     msg_id: Any, msg_at: Any, reason: str, *, preserve_done: bool = False,
-    guard: bool = False, seen_at: Any = None,
+    guard: bool = False, seen_at: Any = None, keep_held: bool = False,
 ) -> bool:
     """Write a thread's Reply Zero status. Returns True when it wrote the row.
 
@@ -93,9 +93,11 @@ async def _upsert_thread_status(
     this returns False. Without ``guard`` the statement is the old one,
     and it always writes.
 
-    Task 3995: an automated write (``preserve_done`` or ``guard``) keeps a
-    HELD row, one that the member marked done by hand
-    (``mark_done.upsert_expressions``)."""
+    Task 3995: an automated write (``preserve_done``, ``guard`` or
+    ``keep_held``) keeps a HELD row, one that the member marked done by hand
+    (``mark_done.upsert_expressions``). ``keep_held`` changes nothing else
+    in the statement."""
+    automated = preserve_done or guard or keep_held
     status_expr = "EXCLUDED.status"
     if preserve_done:
         status_expr = (
@@ -108,9 +110,8 @@ async def _upsert_thread_status(
                  OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
                THEN NULL ELSE email_thread_status.follow_up_reminded_at END"""
     status_expr, at_expr, reason_expr, classified_expr, reminder_expr = (
-        mark_done.upsert_expressions(
-            preserve_done or guard, status_expr, reminder_expr))
-    if preserve_done or guard:
+        mark_done.upsert_expressions(automated, status_expr, reminder_expr))
+    if automated:
         reason = mark_done.automated_reason(reason)
     params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
               "mat": msg_at, "reason": reason}
@@ -2426,7 +2427,8 @@ async def _reconcile_labels_bg(
 
 
 async def apply_thread_status_correction(
-    account_id: str, thread_id: str, status_key: str,
+    account_id: str, thread_id: str, status_key: str, *,
+    automated: bool = False,
 ) -> dict[str, Any]:
     """Force a thread's Reply Zero status to a user-corrected value (the Fix flow).
 
@@ -2443,6 +2445,13 @@ async def apply_thread_status_correction(
     block closes, inside the sync loop's binding. Block A writes the status.
     Block B reads the account. The provider authenticates with no session
     open. Block C swaps the labels and persists rotated credentials.
+
+    Task 3995: ``automated`` is for the label learner of the sync, a write
+    that no member asked for. Its block A keeps a held row, and when the row
+    is held after the write, nothing else runs and the answer is
+    ``{ok: False, held: True}``. Its block C asks the hold again after the
+    provider I/O and puts "Done" back (``mark_done.recheck_after_io``). The
+    Fix of the member leaves it False, so the Fix still ends the hold.
     """
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status_key), ("", ""))
@@ -2458,7 +2467,14 @@ async def apply_thread_status_correction(
             await _upsert_thread_status(
                 db, account_id, thread_id, rz_status,
                 latest.id if latest else None,
-                latest.received_at if latest else None, "Fix correction")
+                latest.received_at if latest else None, "Fix correction",
+                keep_held=automated)
+            # The upsert holds the row lock, so this read stays true until
+            # the block commits. No read with the flag off.
+            held = automated and await mark_done.thread_is_held(
+                db, account_id, thread_id)
+        if held:
+            return {"ok": False, "held": True}
         # Best-effort: swap the provider/local labels to the corrected status.
         async with _tenant_session() as db:
             acc = (await db.execute(text(
@@ -2474,6 +2490,10 @@ async def apply_thread_status_correction(
                 async with _tenant_session() as db:
                     await _reconcile_thread_labels(
                         db, provider, account_id, thread_id, label)
+                    if automated:
+                        # A click during the provider I/O ends Done.
+                        await mark_done.recheck_after_io(
+                            db, provider, account_id, [thread_id])
                     if provider.credentials_dirty():
                         await _persist_rotated_creds(
                             db, store, account_id, provider)
