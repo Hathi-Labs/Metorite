@@ -75,7 +75,7 @@ store that must work before a tenant is known.
 
    **The grace window (MCP-G17f, owner directive 2026-11-26, spec §5.5).**
    ``agent_refresh_reuse_grace_s`` (read through
-   ``agent_oauth.refresh_reuse_grace_s``, capped at 300 s) is 0 by default,
+   ``agent_oauth.refresh_reuse_grace_s``, capped at 60 s) is 0 by default,
    and 0 keeps the rule above with no change. Above 0, a reuse whose token
    was spent less than that many seconds ago, by the same client for the
    same resource, is NOT a theft signal. The store issues a NEW pair of the
@@ -544,8 +544,8 @@ RETURNING connection_id, organization_id, client_id, resource, scope
 #: MCP-G17f (rule 5). A spent refresh token that its own client presents
 #: again INSIDE the grace window: the row, else no row. Runs bound, under the
 #: connection lock, after a failed spend. The client and the resource
-#: clauses are the ones of :data:`_SPEND_REFRESH_SQL`. A revoked token never
-#: matches. The age is in SQL, on the database clock: ``now()`` is the start
+#: clauses are the ones of :data:`_SPEND_REFRESH_SQL`. A revoked token and
+#: an expired token never match, as in the spend. The age is in SQL, on the database clock: ``now()`` is the start
 #: of this transaction, so a rotation that waited on the lock gets no less
 #: window than it had. ⚠️ The caller never runs it with a window of 0. A
 #: rotation that started before the winner spent the token sees ``used_at``
@@ -557,6 +557,7 @@ SELECT client_id, resource, scope
    AND kind = 'refresh'
    AND used_at IS NOT NULL
    AND revoked_at IS NULL
+   AND expires_at > now()
    AND client_id = CAST(:client_id AS TEXT)
    AND (CAST(:resource AS TEXT) IS NULL OR resource = CAST(:resource AS TEXT))
    AND used_at > now() - make_interval(secs => CAST(:grace_s AS DOUBLE PRECISION))
@@ -1959,7 +1960,8 @@ async def _rotate_in(
             spent = await _in_grace(session, hashed, client_id, resource)
             if spent is not None:
                 # Ids only. A token or its hash never goes into a log line.
-                _log.info(
+                # A warning, so that a replay inside the window is visible.
+                _log.warning(
                     "agent_tokens.refresh_reuse_in_grace",
                     connection_id=connection_id,
                 )

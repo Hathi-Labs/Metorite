@@ -649,7 +649,11 @@ class TestTheGraceWindow:
     proved red on 2026-11-26: drop the time bound of ``_GRACE_REFRESH_SQL``
     (case b and the late org case go red), drop its ``revoked_at`` clause
     (the revoked token case goes red), or drop ``revoked_at IS NULL`` from
-    ``_LOCK_LIVE_CONNECTION_SQL`` (case e goes red).
+    ``_LOCK_LIVE_CONNECTION_SQL`` (case e goes red). Drop its
+    ``expires_at`` clause, and the expired token case goes red. The guard
+    of a window of 0 has a hermetic fence in ``test_agent_oauth_server.py``
+    (``test_a_window_of_zero_runs_no_sql``), because a gather of two
+    refreshes cannot force the order that needs it.
     """
 
     @pytest.fixture(autouse=True)
@@ -810,6 +814,20 @@ class TestTheGraceWindow:
                 " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
             monkeypatch.setattr(
                 get_settings(), "agent_access_orgs", promoted.org_b)
+            assert _reason(await _rotate(issued.refresh_token)) == REUSED
+        assert _connection_revoked(promoted, cid)
+
+    async def test_an_expired_token_gets_no_pair(self, promoted):
+        """F3. An expired token never matches the window, as in the spend.
+        Mutation: drop ``expires_at > now()`` from ``_GRACE_REFRESH_SQL``."""
+        async with tenant_engine_scope(promoted.app_dsn):
+            cid, _code, issued = await _connect(promoted.org_a)
+            assert isinstance(await _rotate(issued.refresh_token), IssuedTokens)
+            _admin_exec(
+                promoted,
+                "UPDATE agent_token SET expires_at = now() - interval '1 second' "
+                " WHERE token_hash = :h", h=hash_token(issued.refresh_token))
+            # It falls back to the rule before MCP-G17f: a reuse revokes.
             assert _reason(await _rotate(issued.refresh_token)) == REUSED
         assert _connection_revoked(promoted, cid)
 

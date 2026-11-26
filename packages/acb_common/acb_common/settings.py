@@ -3213,7 +3213,7 @@ class Settings(BaseSettings):
     # `acb_auth.agent_tokens` holds as before, and each reuse revokes.
     # `acb_auth.agent_oauth.refresh_reuse_grace_s` is the one reader. It
     # reads a value below 0 as 0, and a value above
-    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (300) as 300. The env key is
+    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (60) as 60. The env key is
     # `AGENT_REFRESH_REUSE_GRACE_S`. It is not a `*_ORGS` or `*_MODES` key,
     # so a SIGHUP reload does not apply it: restart `acb-agent-edge`, which
     # runs the token endpoint (`docs/flag_reload.md`). 🔴 A change on a box

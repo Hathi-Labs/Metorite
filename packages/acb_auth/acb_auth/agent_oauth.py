@@ -1439,8 +1439,9 @@ def write_window_s() -> int:
 
 #: MCP-G17f (spec §5.5, task 4032). The longest grace window of a refresh
 #: token, in seconds. A longer window lets a stolen refresh token live too
-#: long after its own client spent it.
-REFRESH_REUSE_GRACE_MAX_S = 300
+#: long after its own client spent it. The recorded collisions were 2 s
+#: apart, so 60 s covers them with room to spare.
+REFRESH_REUSE_GRACE_MAX_S = 60
 
 
 def refresh_reuse_grace_s() -> int:

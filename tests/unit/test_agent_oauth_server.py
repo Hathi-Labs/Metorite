@@ -557,11 +557,11 @@ class TestTheRefreshReuseGrace:
         from acb_common.settings import Settings
 
         assert Settings.model_fields["agent_refresh_reuse_grace_s"].default == 0
-        assert agent_oauth.REFRESH_REUSE_GRACE_MAX_S == 300
+        assert agent_oauth.REFRESH_REUSE_GRACE_MAX_S == 60
 
     @pytest.mark.parametrize(("raw", "want"), [
-        (0, 0), (-5, 0), (1, 1), (30, 30), (300, 300), (301, 300),
-        (10_000, 300), (True, 0), ("30", 0), (None, 0), (2.5, 0),
+        (0, 0), (-5, 0), (1, 1), (30, 30), (60, 60), (61, 60),
+        (300, 60), (10_000, 60), (True, 0), ("30", 0), (None, 0), (2.5, 0),
     ])
     def test_the_reader_clamps_to_the_cap(self, monkeypatch, raw, want):
         monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
@@ -572,6 +572,42 @@ class TestTheRefreshReuseGrace:
 
         monkeypatch.setenv("AGENT_REFRESH_REUSE_GRACE_S", "45")
         assert Settings().agent_refresh_reuse_grace_s == 45
+
+    @pytest.mark.parametrize("raw", [0, -1, True, None])
+    async def test_a_window_of_zero_runs_no_sql(self, monkeypatch, raw):
+        """F1 (R7). With the window off, ``_in_grace`` must not ask the
+        database. ``used_at > now() - 0`` can be true for a rotation that
+        started before the winner spent the token, so a query at 0 would
+        give a pair where rule 5 says revoke. A fake session fails on any
+        ``execute``. Mutation: delete the ``grace_s <= 0`` guard, and this
+        goes red."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", raw)
+
+        class _NoSql:
+            async def execute(self, *_a, **_k):
+                raise AssertionError("_in_grace ran SQL with the window off")
+
+        found = await agent_tokens._in_grace(_NoSql(), "h" * 64, CLIENT, None)
+        assert found is None
+
+    async def test_a_window_above_zero_asks_with_the_capped_value(
+            self, monkeypatch):
+        """The twin: the fake sees one query, with the capped window."""
+        monkeypatch.setattr(get_settings(), "agent_refresh_reuse_grace_s", 999)
+        seen: list[dict] = []
+
+        class _Result:
+            def one_or_none(self):
+                return None
+
+        class _Recorder:
+            async def execute(self, _stmt, params):
+                seen.append(params)
+                return _Result()
+
+        assert await agent_tokens._in_grace(_Recorder(), "h" * 64, CLIENT, None) \
+            is None
+        assert [p["grace_s"] for p in seen] == [60.0]
 
 
 class TestTheConsentRoutesCheckTheList:
