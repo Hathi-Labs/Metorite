@@ -485,12 +485,13 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Seven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Eight ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. P-1c took calendar to 2.
+and memory to 4, and P-5b-6 took people to 12. P-3a took crm to 67, and P-1c
+took calendar to 2.
 
-The total of `DEBT_CEILING` is 319. The "Today" column above does not show
+The total of `DEBT_CEILING` is 314. The "Today" column above does not show
 these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
