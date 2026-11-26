@@ -45,6 +45,18 @@ CENTER_GROUP_SLUGS: tuple[str, ...] = (
 MEMBER_ROLES = ("lead", "member")
 _SLUG_MAX = 48
 
+#: The slugs that no group may take (task 2886). The team scope holds a team
+#: slug or the word ``all``, and ``all`` means every team of the member
+#: (``project_management_app.md`` §14.9, ``navigation_shell.md`` §4.2a). A
+#: group with the slug ``all`` would make that value mean two things. The T-1
+#: team filter must import this set and keep no copy of the word. It must
+#: import the set inside a function, because a module-level import makes an
+#: import cycle (see ``authorities.py``). ``_clean_slug`` compares a slug after
+#: it normalises it. A row that a release before this check wrote stays, and
+#: its routes still read, edit and delete it, because they look a group up by
+#: the path slug as it is. Fence: ``tests/unit/test_admin_groups.py``.
+RESERVED_GROUP_SLUGS: frozenset[str] = frozenset({"all"})
+
 
 # ── Models ──────────────────────────────────────────────────────────────────
 
@@ -105,6 +117,14 @@ def _clean_slug(raw: str) -> str:
         raise HTTPException(
             status_code=400,
             detail="slug may contain only letters, digits, '_' and '-'.",
+        )
+    if slug in RESERVED_GROUP_SLUGS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The slug '{slug}' is reserved, because it means every team. "
+                "Give the team another name."
+            ),
         )
     return slug
 

@@ -135,7 +135,7 @@ The kit is the static part of the playbook. It is a set of files that a member p
 
 **The protocol that the core teaches.** It has at most 12 lines:
 
-1. Call `my_work` first, then `claim_task`.
+1. Call `my_work` first, then `claim_task`. Send your name, machine and model with the claim.
 2. Call `get_task_context`, and call `get_plan` for the order of the slices.
 3. Work in a worktree and on a branch. Put the task short id in the branch name.
 4. Post activity at least once a minute.
@@ -182,6 +182,8 @@ The brief holds no secret. The program plan (task 2546) holds the order of the p
 **The hand-off form.** When task A in project P gives work that task B in project Q needs, both tasks hold one comment that starts with `Hand-off:`. The comment names the other task number, the other project, the direction (`gives` or `needs`) and the reason in one sentence. A `blocks` link joins A to B. The person who owns Q reads the comment in `my_work` or in the plan of project Q. An agent never starts B while A is open. It posts a question on B instead.
 
 **Who writes a hand-off.** The agent that finds the dependency writes both comments and the link. Another project owner needs no permission to read the comment. A change to the other project's own task goes through a comment, and the owner of that project makes the change.
+
+**The dispatcher names its run (SW-108, Q20).** An orchestrator holds an open run on a coordination task of its own. Before a quiet stretch, it posts a `waiting` line with `on` set to `agent`. It puts its run id in each hand-off. The lane that takes the hand-off passes that id as `dispatched_by` on its claim, and writes it in the header of its notes. A lane that restarts then finds its dispatcher. An orchestrator with no run has no node on the map. Fence: advisory (R7). `test_mcp_edge_prompts.py` `TestTheDispatchRule` holds the neutral text of `work_on_task`.
 
 **Fence.** Advisory until KIT-5. The doctor of KIT-5 lists each `blocks` link that crosses a project and has no `Hand-off:` comment on both ends (test `tests/unit/test_handoff_comments.py`, new).
 

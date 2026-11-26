@@ -26,6 +26,10 @@ A read. No action runs here. These sources feed it:
    only, so the catalog NEVER calls a server. A cold cache gives no row,
    and the GET answers ``stale: true``. ``POST /studio/mcp/{server}/refresh``
    is the one member action that reads a server and fills the cache.
+   B1b-3: a tool whose text an admin has not approved is ``changed: true``
+   and class B. ``POST /studio/mcp/{server}/tools/{tool}/approve`` is the
+   admin action that approves the text of the fresh cached list. It needs
+   ``integrations:manage``, the right that connects and edits an MCP server.
 
 Source 2 is empty until a tool registers with an integration. Today the
 registry holds only tools with ``integration=None``.
@@ -34,6 +38,11 @@ registry holds only tools with ``integration=None``.
    caller's own packages. ``package_rows`` builds them for this route only.
    ``catalog_rows`` never holds one, because two packages can both hold
    ``object:items.list``, and the callers of ``catalog_rows`` key on the id.
+
+7. ``tool`` (TOF-1a): each chat tool of the CRM, Email, Projects and Calendar
+   packs, as ``tool:<name>``, class A, B or C by the one fail-closed rule of
+   ``gateway.studio.chat_tool_actions``. A row shows only for an org on
+   ``STUDIO_CHAT_TOOLS_ORGS``. No package and no door runs one.
 
 A manifest row takes ``input_schema`` from ``agent_apps.args_schema`` (AD-9).
 
@@ -64,6 +73,7 @@ not as a gate. Fence: ``tests/unit/test_studio_route_gate.py``
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Annotated, Any
@@ -75,15 +85,16 @@ from acb_common.db import current_tenant
 from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
 from acb_skills.skill_packs import action_tool
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from gateway.connections import mcp_tools
 from gateway.db import tenant_session as _tenant_session
+from gateway.routes import integrations as _integrations
 from gateway.routes.agent_apps import args_schema
 from gateway.routes.studio import flags
 from gateway.routes.workflows.engine.tool_args import parse_args_schema
 from gateway.routes.workflows.tools import list_tools
+from gateway.studio import chat_tool_actions, mcp_actions, packages_store
 from gateway.studio import logic as _logic
-from gateway.studio import mcp_actions, packages_store
 from sqlalchemy import text
 
 router = APIRouter(
@@ -196,6 +207,14 @@ def _logic_rows() -> list[dict[str, Any]]:
     } for name, module in sorted(_logic.MODULES.items())]
 
 
+def _chat_tool_rows() -> list[dict[str, Any]]:
+    """The chat tools of the packs (TOF-1a), for an org on ``STUDIO_CHAT_TOOLS_ORGS``.
+    The org is the bound tenant. A dark org gives no row and loads no tool."""
+    if not flags.chat_tools_allowed(current_tenant()):
+        return []
+    return chat_tool_actions.chat_tool_rows(defer_cold=True)  # TOF-1e: never a cold build here
+
+
 async def _mcp_rows() -> tuple[list[dict[str, Any]], bool]:
     """The MCP tools of the bound org from the cache (B1b-2), and ``stale``.
 
@@ -220,8 +239,9 @@ class CatalogRows(list):
 
 async def catalog_rows() -> CatalogRows:
     """Every row of the catalog: the door ops, the integration tools, the
-    published workflows of the bound org, the logic modules (B4a) and the MCP
-    tools (B1b-1, from the cache of B1b-2). The one source of the catalog.
+    published workflows of the bound org, the logic modules (B4a), the MCP
+    tools (B1b-1, from the cache of B1b-2) and the chat tools of the packs
+    (TOF-1a). The one source of the catalog.
     ``routes/studio/skills.py`` checks a skill's actions against it.
 
     ⚠️ It opens its own ``_tenant_session()`` for the workflows. A caller runs
@@ -229,7 +249,7 @@ async def catalog_rows() -> CatalogRows:
     read opens a session only when the cache of the org names a server."""
     mcp, stale = await _mcp_rows()
     rows = CatalogRows([*_manifest_rows(), *_integration_rows(), *await _workflow_rows(),
-                        *_logic_rows(), *mcp])
+                        *_logic_rows(), *mcp, *_chat_tool_rows()])
     rows.stale = stale
     return rows
 
@@ -376,4 +396,106 @@ async def refresh_mcp_tools(
         raise HTTPException(status_code=502, detail={
             "code": f"mcp_{done.reason}", "message": _REFRESH_FAILED, "server": done.server})
     return {"server": done.server, "ok": True, "tools": done.tools,
-            "truncated": done.truncated}
+            "truncated": done.truncated, "items": list(done.items)}
+
+
+#: The words of an approval. They never hold the text of the tool.
+_APPROVE_REFUSED = (
+    "You cannot approve a tool. Approval needs the right to manage the connections "
+    "of your organization.")
+_APPROVE_STALE = (
+    "The tool list of this server is not fresh. Refresh the server, then approve the tool.")
+_APPROVE_SOON = "This tool was approved a moment ago. Try again in {s} seconds."
+_APPROVE_DOWN = "The approval cannot be saved now. Try again later."
+_APPROVE_NO_TOOL = "The tool list of this server holds no tool of that name."
+_APPROVE_TEXT_CHANGED = (
+    "The text of this tool changed after you read it. Read the catalog again, check the "
+    "tool, then approve it.")
+_APPROVE_BAD_BODY = (
+    'Send {"expected_hash": "<text_hash>"}: the 64 hex characters of the catalog row '
+    "that you read.")
+#: The most bytes of the body of an approval.
+APPROVE_BODY_BYTES = 4096
+_HASH_RE = re.compile(r"[0-9a-f]{64}")
+
+
+async def _expected_hash(request: Request) -> str:
+    """``expected_hash`` of the JSON body, or a 422. The read stops past
+    :data:`APPROVE_BODY_BYTES`. The hash is no secret."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > APPROVE_BODY_BYTES:
+            break
+        chunks.append(chunk)
+    bad = HTTPException(status_code=422, detail={
+        "code": "mcp_expected_hash", "message": _APPROVE_BAD_BODY})
+    if size > APPROVE_BODY_BYTES:
+        raise bad
+    try:
+        body = json.loads(b"".join(chunks) or b"null")
+    except (ValueError, RecursionError):
+        raise bad from None
+    found = body.get("expected_hash") if isinstance(body, dict) else None
+    if not isinstance(found, str) or not _HASH_RE.fullmatch(found):
+        raise bad
+    return found
+
+
+@router.post("/mcp/{server}/tools/{tool}/approve")
+async def approve_mcp_tool(
+    server: str,
+    tool: str,
+    request: Request,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Approve the CURRENT text of ONE tool of an MCP server of the caller's
+    org (B1b-3).
+
+    The right is ``integrations:manage``, the right of the routes that
+    connect and edit an MCP server (``routes/integrations.py``). It is a
+    member write, not a role write. The grant ``integrations:use:mcp-<server>``
+    alone is not enough. The org and the member come from the session. The
+    approval takes the hash of the tool in the cached list, which must be
+    fresh and of the server of now (409 ``mcp_list_stale`` else). A server
+    that the org does not hold is 404 and writes nothing. One audit event
+    names the server, the tool and the hash, and no text of the tool.
+
+    **Compare and approve** (B1b-3 review). The body is
+    ``{"expected_hash": "<64 hex>"}``, the ``text_hash`` of the catalog row
+    that the admin read (422 ``mcp_expected_hash`` without it). A tool whose
+    text hashes another way now is 409 ``mcp_tool_text_changed``, and
+    nothing is written."""
+    org = getattr(user, "organization_id", None)
+    if not flags.studio_allowed(org):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    if not user.has_permission(_integrations.MANAGE_PERMISSION):
+        raise HTTPException(status_code=403, detail={
+            "code": "mcp_approve_not_allowed", "message": _APPROVE_REFUSED})
+    expected = await _expected_hash(request)
+    try:
+        done = await mcp_tools.approve_tool(str(org), server, tool, member=str(user.email),
+                                            expected_hash=expected)
+    except mcp_tools.ServerNotFound:
+        raise HTTPException(status_code=404, detail=NOT_FOUND) from None
+    except mcp_tools.ToolNotListed:
+        raise HTTPException(status_code=404, detail={
+            "code": "mcp_tool_unknown", "message": _APPROVE_NO_TOOL}) from None
+    except mcp_tools.TextChanged:
+        raise HTTPException(status_code=409, detail={
+            "code": "mcp_tool_text_changed", "message": _APPROVE_TEXT_CHANGED}) from None
+    except mcp_tools.ListNotFresh:
+        raise HTTPException(status_code=409, detail={
+            "code": "mcp_list_stale", "message": _APPROVE_STALE}) from None
+    except mcp_tools.RefreshTooSoon as soon:
+        raise HTTPException(
+            status_code=429, detail=_APPROVE_SOON.format(s=soon.retry_after),
+            headers={"Retry-After": str(soon.retry_after)}) from None
+    except Exception as exc:
+        _log.warning("studio.mcp_approve_unavailable", kind=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=_APPROVE_DOWN) from None
+    _integrations.audit_integration(
+        user, str(org), f"mcp:{done.server}", action="integration.mcp.tool_approved",
+        tool=done.tool, text_hash=done.text_hash)
+    return {"server": done.server, "tool": done.tool, "changed": False, "class": done.cls}

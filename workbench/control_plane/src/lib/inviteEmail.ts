@@ -18,8 +18,11 @@
  * Losing it costs the recipient a nudge and nothing else.
  *
  * A consequence worth stating because it is what makes the whole thing safe:
- * the link goes to a bare `/signin`, with **no query string** and therefore
- * nothing an attacker gains by intercepting the message.
+ * the link carries **no token**. Its one query parameter, `email`, is the
+ * recipient's own address, so the sign-in form opens with the address filled
+ * (OB-0c, task 1340). The sign-in page treats it as a prefill and nothing more.
+ * The code round-trip proves ownership, so a changed value costs a retype and
+ * an intercepted message gains an attacker nothing.
  *
  * ## The transport is IMPORTED, never re-implemented
  *
@@ -45,8 +48,11 @@ import {
 /** Where the sign-in page lives when the deployment declares no public URL. */
 export const INVITE_SIGNIN_FALLBACK_ORIGIN = "https://app.metorite.com";
 
-/** The path the invitee is sent to. Bare, and it stays bare — see D50.1. */
+/** The path the invitee is sent to. */
 export const INVITE_SIGNIN_PATH = "/signin";
+
+/** The one query parameter of the link: the recipient's own address. */
+export const INVITE_SIGNIN_EMAIL_PARAM = "email";
 
 /**
  * The subset of the environment this feature reads.
@@ -84,10 +90,16 @@ export function isInviteEmailConfigured(env: InviteEmailEnv): boolean {
   );
 }
 
-/** The sign-in URL an invitee is pointed at. No query string, ever (D50.1). */
-export function inviteSignInUrl(env: InviteEmailEnv): string {
+/**
+ * The sign-in URL an invitee is pointed at. It carries no token (D50.1). With
+ * `email`, the form opens with that address filled (OB-0c).
+ */
+export function inviteSignInUrl(env: InviteEmailEnv, email?: string): string {
   const origin = (env.WORKBENCH_PUBLIC_URL || "").trim().replace(/\/+$/, "");
-  return `${origin || INVITE_SIGNIN_FALLBACK_ORIGIN}${INVITE_SIGNIN_PATH}`;
+  const base = `${origin || INVITE_SIGNIN_FALLBACK_ORIGIN}${INVITE_SIGNIN_PATH}`;
+  const address = (email || "").trim();
+  if (!address) return base;
+  return `${base}?${INVITE_SIGNIN_EMAIL_PARAM}=${encodeURIComponent(address)}`;
 }
 
 /**
@@ -106,7 +118,13 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** Subject/text/html for one invite notification. */
+/**
+ * Subject/text/html for one invite notification.
+ *
+ * One button, "Join {org}", opens the sign-in form with the address filled. The
+ * HTML carries layout and no colour. The link is also written out as text, for a
+ * client that blocks buttons.
+ */
 export function inviteEmail(
   orgName: string,
   signInUrl: string,
@@ -114,14 +132,20 @@ export function inviteEmail(
   const subject = `You've been added to ${orgName} on Metorite`;
   const text =
     `You've been added to ${orgName} on Metorite.\n\n` +
-    `Sign in with this email address at ${signInUrl}\n\n` +
+    `Join ${orgName}: ${signInUrl}\n\n` +
+    `Sign in with this email address. ` +
     `There is nothing to accept — your access is already set up. ` +
     `If you were not expecting this, you can ignore this email.`;
+  const safeUrl = escapeHtml(signInUrl);
   const html =
     `<div><p>You've been added to <strong>${escapeHtml(orgName)}</strong> ` +
     `on Metorite.</p>` +
-    `<p>Sign in with this email address at ` +
-    `<a href="${signInUrl}">${signInUrl}</a>.</p>` +
+    `<p><a href="${safeUrl}" ` +
+    `style="display:inline-block;padding:10px 20px;border:1px solid;` +
+    `border-radius:6px;text-decoration:none;font-weight:600">` +
+    `Join ${escapeHtml(orgName)}</a></p>` +
+    `<p>Sign in with this email address. If the button does not work, open ` +
+    `<a href="${safeUrl}">${safeUrl}</a>.</p>` +
     `<p>There is nothing to accept — your access is already set up. ` +
     `If you were not expecting this, you can ignore this email.</p></div>`;
   return { subject, text, html };
@@ -146,7 +170,7 @@ export async function sendInviteEmail(
 ): Promise<void> {
   const { subject, text, html } = inviteEmail(
     opts.orgName,
-    inviteSignInUrl(opts.env),
+    inviteSignInUrl(opts.env, opts.to),
   );
   await send({
     to: opts.to,

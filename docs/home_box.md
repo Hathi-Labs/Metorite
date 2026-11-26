@@ -93,12 +93,21 @@ lane rules in `scripts/home_server/lanes/lane-rules.md`.
 The start note is the first prompt of the session. Put these parts in one
 plain text file on the PC:
 
-1. The lane's name, its stream and the task numbers, in priority order.
+1. The lane's name, its stream and the task numbers, in priority order. Name
+   the lane as `agent_label`, and the machine as `host`. The lane sends both
+   with each claim (task 3626, SW-105).
 2. A time window, not a hard deadline. A lane refuses a HIGH slice that
    cannot finish before a hard deadline, so it stops early.
 3. The full text of `scripts/home_server/lanes/lane-rules.md`.
 4. For the merge lane only: `scripts/home_server/lanes/lane-merge.md` before
    the lane rules.
+
+When an orchestrator writes the note, its first line names the run id of the
+orchestrator, for example `Dispatched by run <run id>`. The lane passes that id
+as `dispatched_by` on each claim. A server that does not know the input
+refuses the claim, so the lane then claims again without it. The lane keeps
+the line in the note header, so a lane that restarts finds its dispatcher
+(SW-108). A note with no orchestrator carries no such line.
 
 ### 3.3 Start the lane
 
