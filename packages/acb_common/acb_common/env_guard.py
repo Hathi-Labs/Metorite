@@ -373,6 +373,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-MCP SW-44: APP_OWNER_ROOT_ORGS names the app root of each org. A
+    # tenant must not point the list of another org at a project, so only the
+    # owner writes it.
+    "APP_OWNER_ROOT_ORGS",
     # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
     # org. The view reads the agent runs of the org, so only the owner writes it.
     "AGENTS_VIEW_ORGS",

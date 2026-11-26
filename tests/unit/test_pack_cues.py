@@ -76,6 +76,16 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
+    # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
+    # Integrations. PAR-4d (task 3936): the seats.
+    "org-admin": (
+        "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
+        "integrations, MCP servers, plugins, GitHub."),
+    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    "people": (
+        "Load for the people directory, your own row, the open work of a colleague, or the "
+        "Reach preview."),
 }
 
 

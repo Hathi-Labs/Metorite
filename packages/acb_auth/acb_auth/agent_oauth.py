@@ -1053,6 +1053,11 @@ REQUEST_READ_ROUTE: tuple[str, str] = ("GET", "/agent-access/requests/{request_i
 #: Fence: ``tests/unit/test_task_check_r8.py`` and the coverage fence.
 #: MCP-P1b-2 (spec §19.5) adds the ask of ``app_write``,
 #: :data:`REQUEST_ASK_ROUTE`. It opens a request and runs nothing.
+#: WS-MCP SW-114 adds the POST of the children of a run, the route of
+#: ``report_subagent``. It writes or ends one child run under an open run of
+#: the caller's member and connection, at most 20 open children for each run.
+#: The GET of the children stays OFF both sets. Fence:
+#: ``tests/unit/test_agent_child_runs_r8.py`` and the coverage fence.
 #: CIV-14b (spec §12.9) adds the upload of a file to a task, the route of
 #: ``upload_task_image``. For a signed agent the route takes only a png,
 #: jpeg, gif or webp image of at most :data:`AGENT_IMAGE_MAX_BYTES`, and only
@@ -1091,6 +1096,10 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/release"),
     # MCP-G15: the decision a member made outside Metorite.
     ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
+    # WS-MCP SW-114: `report_subagent`. A start or a stop of one sub-agent
+    # under an open run of the same member and connection. Class X in the
+    # chat manifest: only a signed agent sends it, and a person gets 422.
+    ("POST", "/projects/agent-runs/{run_id}/children"),
     # WS-MCP SW-32: `set_run_plan`. It replaces the plan of the agent's own
     # run, and it writes one `action` activity as a heartbeat.
     ("PUT", "/projects/agent-runs/{run_id}/plan"),
@@ -1103,6 +1112,11 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # WS-MCP SW-23: `report_check`. A pass closes the task only when the
     # caller may move it. It answers 404 while the Check flag is off.
     ("POST", "/projects/tasks/{task_id}/check-result"),
+    # WS-MCP SW-27b: `reserve_number`. One atomic statement gives the next
+    # number of a project sequence (SW-27a). The route reads the agent's
+    # reach through `resolve_visibility`, so a pinned connection reserves only
+    # in its pins. Each call burns a number, so the write cap counts it.
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
     # MCP-P1b-2 (spec §19.5, AD-4): the ask of `app_write`. It opens one
     # request for the member and runs nothing. Branch 0 takes any `<app>:write`
     # here (`request_write_scope`), and the route checks the app of its path.
@@ -1193,6 +1207,11 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: first. The edge sends a stand-in name for a stored name of another shape.
 ATTACHMENT_FILENAME_PATTERN = r"(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9._ -]{0,119}"
 
+#: SW-27b. The name of a project sequence in the reserve path. The same rule
+#: as the CHECK of migration 477 and ``NAME_RE`` of the route: a lowercase
+#: letter, then up to 39 lowercase letters, digits, ``_`` or ``-``.
+SEQUENCE_NAME_PATTERN = r"[a-z][a-z0-9_-]{0,39}"
+
 #: The path parameters of a pair of :data:`MCP_ROUTES` that are not ids, each
 #: with its pattern (MCP-P1a). The edge client refuses every other value.
 MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType({
@@ -1201,6 +1220,8 @@ MCP_PATH_SHAPES: Mapping[tuple[str, str], Mapping[str, str]] = MappingProxyType(
     REQUEST_ASK_ROUTE: MappingProxyType({"app": app_manifests.APP_ID_PATTERN}),
     ("GET", "/projects/attachments/{attachment_id}/{filename}"): MappingProxyType(
         {"filename": ATTACHMENT_FILENAME_PATTERN}),
+    ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"): MappingProxyType(
+        {"name": SEQUENCE_NAME_PATTERN}),
 })
 
 # ── The app door (MCP-P1a, spec §19.3 to §19.7) ─────────────────────────────

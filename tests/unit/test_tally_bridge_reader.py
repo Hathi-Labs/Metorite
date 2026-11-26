@@ -140,7 +140,7 @@ def test_only_the_envelope_module_names_the_request_kind_tag():
     """Rule 7, the second half: a new module cannot hand-build a request,
     because only envelope.py may name TALLYREQUEST."""
     hits = [
-        str(f.relative_to(REPO))
+        f.relative_to(REPO).as_posix()
         for f in sorted((ROOT / "tally_bridge").rglob("*.py"))
         if any("TALLYREQUEST" in s for s in _string_constants(f))
     ]
@@ -337,6 +337,18 @@ def test_a_closed_tally_is_down():
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     c = TallyClient(f"http://127.0.0.1:{port}", 2)
+    with pytest.raises(TallyDown):
+        asyncio.run(c.post(envelope.collection("BridgeCompanies", company=None)))
+
+
+def test_a_connect_that_times_out_is_tally_down():
+    """TLY-5: on Windows a closed local port times out on connect. That is
+    Tally closed (TallyDown), so the local copy answers, not a slow Tally."""
+
+    def handler(request):
+        raise httpx.ConnectTimeout("no answer to the connect", request=request)
+
+    c = TallyClient("http://127.0.0.1:9000", 2, transport=httpx.MockTransport(handler))
     with pytest.raises(TallyDown):
         asyncio.run(c.post(envelope.collection("BridgeCompanies", company=None)))
 

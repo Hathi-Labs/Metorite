@@ -209,8 +209,13 @@ _ARCHIVE_ANSWER = (
 )
 _CHILD_RUN = (
     "SW-39: a child run is a sub-agent of an open run. Only a signed agent "
-    "starts one, through its hook. SW-114 adds the edge tool, so no door op "
-    "names it."
+    "starts one, through its hook. The read of the children is no act of an "
+    "agent, so no door op names it."
+)
+_CHILD_REPORT = (
+    "The typed tool report_subagent of §9 serves this route (SW-114). Only a "
+    "signed agent starts or stops a child run, through its hook. MCP_ROUTES "
+    "stays its allowlist."
 )
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
@@ -530,8 +535,8 @@ PROJECTS_DOOR = App(
               off_door=LATER),
         # ── sequences.py (SW-27a, task 861) ──
         Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
-              reason="SW-27a: no tool reaches the reserve route yet. SW-27b (task 3893) adds the "
-              "MCP edge tool reserve_number, behind the owner's seam answer."),
+              reason="SW-27b (task 3893): the typed MCP tool reserve_number reaches this "
+              "route, as delete_task reaches the agent-delete route. The door adds nothing."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),
@@ -559,7 +564,7 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X",
               reason=_ARCHIVE_ANSWER),
         Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
-        Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_RUN),
+        Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", reason=_CHILD_REPORT),
         Route("POST", "/projects/tasks/{task_id}/agent-delete", "", "X", reason=_AGENT_DELETE),
         # ── agent_summary.py · needs_attention.py · agent_questions.py ──
         Route("GET", "/projects/{project_id}/agent-summary", "agent_summary", "A",
