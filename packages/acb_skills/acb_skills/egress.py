@@ -1564,6 +1564,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
+    # CRM-M2e (task 3951): a stage, a lead status or a lost reason. Each card
+    # shows the row and each changed field before the write.
+    "crm_edit_status": _pin("kind action name new_name status_type probability hidden"),
+    "crm_edit_lost_reason": _pin("action label new_label hidden"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter

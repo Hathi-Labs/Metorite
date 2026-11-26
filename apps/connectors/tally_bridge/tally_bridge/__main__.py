@@ -190,7 +190,7 @@ def _delete_copy(args: argparse.Namespace) -> int:
     return 0
 
 
-def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
+def _apply_windows(args: argparse.Namespace, runner: Any = None, check_folder: Any = None) -> int:
     """Make the machine match the settings (TLY-5): the sign-in task of
     TallyPrime, and one firewall rule. The installer runs it, and so does a
     person after a change of the settings."""
@@ -199,13 +199,108 @@ def _apply_windows(args: argparse.Namespace, runner: Any = None) -> int:
     run = runner or system.run
     settings = _stores(args)[0].load()
     failed = 0
+    refused = False
+    from tally_bridge.windows.acl import UnsafeTallyFolder
+
     if settings.start_tally_at_signin or _had_startup(run):
-        failed += system.apply_startup(settings.start_tally_at_signin, settings.tally_exe, run) != 0
+        try:
+            failed += (
+                system.apply_startup(
+                    settings.start_tally_at_signin, settings.tally_exe, run, check_folder
+                )
+                != 0
+            )
+        except UnsafeTallyFolder as exc:  # task 3974: the folder is not locked
+            print(str(exc), file=sys.stderr)
+            refused = True
     # Delete, then add: one rule, whatever ran before.
     run(system.firewall_off())
     failed += run(system.firewall_on()) != 0
+    if refused:
+        print("The firewall rule is applied. The sign-in task is off: see the message above.")
+        return 1
     print("Applied." if not failed else f"{failed} change(s) failed. Run as an administrator.")
     return 0 if not failed else 1
+
+
+def _machine_check(windows: bool, check_folder: Any = None) -> Any:
+    """Task 3974: for the setup page, why the sign-in task is off, or None.
+    Without ``--windows`` there is no task, so there is no check."""
+    if not windows:
+        return None
+
+    def problem(settings: Settings) -> str | None:
+        from tally_bridge.windows import acl
+
+        try:
+            (check_folder or acl.check)(settings.tally_exe)
+        except acl.UnsafeTallyFolder as exc:
+            return str(exc)
+        return None
+
+    return problem
+
+
+def _signin_guard_at_start(
+    settings: Settings, runner: Any = None, check_folder: Any = None
+) -> str | None:
+    """Task 3974: at each start of the service, check the TallyPrime folder
+    again. When a user can now change the program (a support person loosened
+    the folder after setup), remove the sign-in task. Returns the message."""
+    if not settings.start_tally_at_signin:
+        return None
+    from tally_bridge.windows import acl, system
+
+    try:
+        (check_folder or acl.check)(settings.tally_exe)
+    except acl.UnsafeTallyFolder as exc:
+        (runner or system.run)(system.startup_off())
+        logging.getLogger("tally_bridge").warning("%s", exc)
+        return str(exc)
+    return None
+
+
+def _machine_applier(
+    windows: bool, awake: Any, runner: Any = None, check_folder: Any = None
+) -> Any:
+    """The callback of the setup page (TLY-2d). It makes the machine match the
+    two switches at once, and returns an error text, or None. Without
+    ``--windows`` (a dev box) it only saves, so it returns None to the caller."""
+    if not windows:
+        return None
+
+    def startup(new: Settings) -> str | None:
+        """The schtasks part. It runs in a worker thread (two processes)."""
+        from tally_bridge.windows import system
+        from tally_bridge.windows.acl import UnsafeTallyFolder
+
+        run = runner or system.run
+        wanted = new.start_tally_at_signin or _had_startup(run)
+        try:
+            if wanted and (
+                system.apply_startup(new.start_tally_at_signin, new.tally_exe, run, check_folder)
+                != 0
+            ):
+                return "Windows did not take the sign-in task. Restart the bridge, then try again."
+        except UnsafeTallyFolder as exc:  # task 3974: the folder is not locked
+            return str(exc)
+        return None
+
+    async def apply(new: Settings) -> str | None:
+        # Keep-awake stays on this thread: the request handlers run on the
+        # thread of ``_awake_while``, which ``SetThreadExecutionState`` binds to.
+        if new.keep_awake:
+            awake.start()
+        else:
+            awake.stop()
+        # schtasks blocks for up to a second, so it runs off the event loop.
+        try:
+            return await asyncio.to_thread(startup, new)
+        except Exception as exc:
+            logging.getLogger("tally_bridge").warning("the sign-in task failed (%s)", exc)
+            return "The switches are saved, but the sign-in task did not change."
+
+    return apply
 
 
 def _had_startup(run: Any) -> bool:
@@ -386,14 +481,35 @@ def _serve(args: argparse.Namespace, stop: Any = None, need_secret: bool = True)
         return 2
     reader = TallyClient(settings.tally_url, settings.tally_timeout_s)
     live = LiveSettings(settings)
-    app = build_address_app(live, secrets, reader, store, copy)
     from tally_bridge import linkcli
 
-    link = linkcli.link_loop(settings, linkcli.link_store(args), app.inner, reader)
+    controller = linkcli.link_controller(args, live, reader, copy)
+    from tally_bridge.windows.system import KeepAwake
+
+    awake = KeepAwake()
+    app = build_address_app(
+        live,
+        secrets,
+        reader,
+        store,
+        copy,
+        link=controller,
+        on_machine_saved=_machine_applier(getattr(args, "windows", False), awake),
+        machine_check=_machine_check(getattr(args, "windows", False)),
+    )
+    if getattr(args, "windows", False):
+        _signin_guard_at_start(settings)
+    link = None
+    if controller is not None:
+        from tally_bridge.transport.link.dispatch import McpDispatcher
+
+        controller.dispatch = McpDispatcher(app.inner, settings.bind_port)
+        link = controller.run
     server = uvicorn.Server(uvicorn.Config(app, **_server_options(settings)))
     _awake_while(
         settings.keep_awake,
         lambda: asyncio.run(_serve_with_copy(server, reader, copy, live, stop, link)),
+        awake=awake,
     )
     return 0
 

@@ -236,13 +236,51 @@ fake link, `tests/unit/test_tally_bridge_link.py`.
 Link mode is off until `LINK_URL` holds the address of Metorite. The setting
 has no default.
 
+The setup page has a link step (TLY-2b): type the domain, give the code to
+your admin, then confirm the company name. The commands below do the same
+from a command line.
+
+The page also has a "Keep it running" section (TLY-2d), and it shows only
+when `LINK_URL` is set. It holds two switches. One starts TallyPrime when a
+person signs in. The other keeps the computer awake while the bridge runs.
+Each switch saves to the settings file, and the page reloads its value.
+
+The page shows the path of `tally.exe`, and it never changes it. The sign-in
+task runs that program for each person who signs in, and the person at the
+page may not be an administrator. So an administrator sets `TALLY_EXE` in the
+settings file, which users cannot write. Until then, the start switch is
+refused.
+
+Before it makes the sign-in task, the bridge checks the rights of
+`tally.exe`, its folder, each other file in that folder, and each folder
+above it (task 3974). A person who is not an administrator must not be able
+to change the program. Otherwise the program would run in the session of
+each person who signs in. A junction or a symbolic link in the path is
+refused too, because a user could replace it.
+
+When a user can change the program, the bridge refuses the task and removes
+an old one. The setup page shows why, and so does `apply-windows`. The
+message names the folder and the three `icacls` commands that lock it. For
+a folder above TallyPrime, it says to install TallyPrime under
+`C:\Program Files`. The service checks again at each start, so a folder that
+somebody opens later loses the task too.
+
+Test: `tests/unit/test_tally_bridge_folder_acl.py`. The tests mock the
+Windows rights. The test of the real reader runs on Windows only, in the
+windows-latest job. That job comes with PR 2837 (not merged yet), so until
+then nothing runs the real reader.
+
+With `--windows`, a save also makes or removes the sign-in task, off the
+event loop, and turns the keep-awake request on or off at once. When the task
+call fails, the page shows a note. Test: `tests/unit/test_tally_bridge_machine.py`.
+
 1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
    the company types it in Metorite and approves it. The program then shows
    the name of the company that approved it.
 2. `confirm-link --company "<that name>"` accepts the company. The program
    serves nothing before this step (rule j).
 3. `serve` runs the long poll beside the setup page. Each poll says whether
-   TallyPrime is up. Each request runs against the read tools of this
+   TallyPrime is up, and the time of the oldest local copy. Each request runs against the read tools of this
    process, and only on `/mcp`.
 4. `unlink` revokes the credential at Metorite and deletes it here. Use it
    to refuse a company that you do not know, or to disconnect. The uninstall
