@@ -260,6 +260,7 @@
       "tests/unit/test_app_create_slug_r8.py",
       "tests/unit/test_app_delete_workspace_r8.py",
       "tests/unit/test_app_requests_r8.py",
+      "tests/unit/test_app_rollback_review_r8.py",
       "tests/unit/test_app_user_upserts.py",
       "tests/unit/test_apps_slug_per_org_r8.py",
       "tests/unit/test_audit_tick_writers_org_r8.py",

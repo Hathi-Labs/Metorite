@@ -1324,6 +1324,13 @@ class Tool:
     #: CIV-14b fix round 1. True for ``upload_task_image``. It shows only for
     #: an organization of ``agent_oauth.image_upload_allowed`` (:func:`offered`).
     images: bool = False
+    #: SW-27c1. True for ``mark_number``. It shows only for an organization of
+    #: ``agent_oauth.sequence_marks_allowed`` (:func:`offered`).
+    marks: bool = False
+    #: EA-5. True for ``get_company_context``. It shows only for an
+    #: organization of ``agent_oauth.resources_allowed`` (:func:`offered`),
+    #: the flag of the resource ``metorite://company/context`` too.
+    resources: bool = False
 
     def describe(self, organization_id: object = None) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool. SW-23: while the Check flag
@@ -2382,6 +2389,85 @@ WHOAMI = Tool(
     not_found=TEXT_BUSY,
     run=_whoami,
     routes=(ME_ROUTE,),
+)
+
+
+# ── get_company_context (EA-5, D-EA-6) ──────────────────────────────────────
+
+#: EA-5. The text of a call while ``agent_resources_orgs`` leaves the
+#: organization out. The tool and the resource ``metorite://company/context``
+#: are dark on that one flag.
+TEXT_CONTEXT_OFF = "Company context is not on for this organization."
+
+#: The shape of an organization slug: the rule of ``_SLUG_RE`` in
+#: ``gateway/routes/signup.py``. A slug of another shape leaves as untrusted
+#: text (§9.1, mark (S)).
+_ORG_SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+#: The keys of ``get_company_context`` are the keys of this dict, and no other
+#: (D-EA-6, corrected 2026-11-25). It is an allowlist: a key that the gateway
+#: adds to ``/auth/me`` never leaves the edge.
+_COMPANY_CONTEXT_PROPERTIES: dict[str, Any] = {
+    "name": _UNTRUSTED_OR_NULL,
+    "slug": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+}
+COMPANY_CONTEXT_KEYS: tuple[str, ...] = tuple(_COMPANY_CONTEXT_PROPERTIES)
+
+_COMPANY_CONTEXT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": _COMPANY_CONTEXT_PROPERTIES,
+    "required": list(COMPANY_CONTEXT_KEYS),
+    "additionalProperties": False,
+}
+
+
+def company_context(body: Any, organization_id: object) -> dict[str, Any]:
+    """The context of D-EA-6 from one ``/auth/me`` answer: ``name`` and
+    ``slug``, and no other key.
+
+    The organization of the answer must be the organization of the token row.
+    Any other answer, an empty ``organization`` too, gives the busy text, so
+    the tool never returns the context of a second organization. The name is
+    free text (U). The slug is plain only in its shape (S).
+    """
+    org = body.get("organization") if isinstance(body, dict) else None
+    if not isinstance(org, dict):
+        raise ToolError(TEXT_BUSY)
+    found, slug = org.get("id"), org.get("slug")
+    if (not isinstance(found, str) or organization_id is None
+            or found.lower() != str(organization_id).lower()
+            or not isinstance(slug, str) or not slug):
+        raise ToolError(TEXT_BUSY)
+    name = org.get("display_name")
+    return {
+        "name": untrusted(name) if isinstance(name, str) else None,
+        "slug": shaped(slug, _ORG_SLUG_RE),
+    }
+
+
+async def _get_company_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of ``/auth/me``, the route of ``whoami``. No new pair."""
+    body = await _get(ctx, ME_ROUTE, TEXT_BUSY)
+    return company_context(body, ctx.caller.lookup.organization_id)
+
+
+GET_COMPANY_CONTEXT = Tool(
+    name="get_company_context",
+    title="Get the company context",
+    description=(
+        "Read the company that this connection acts in: the organization name"
+        " and its slug. Use it to write text that names the company. It"
+        " returns no member, no address and no setting." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.CONTEXT_READ,
+    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    output_schema=_COMPANY_CONTEXT_OUTPUT,
+    route=ME_ROUTE,
+    params={},
+    not_found=TEXT_BUSY,
+    run=_get_company_context,
+    routes=(ME_ROUTE,),
+    resources=True,
 )
 
 
@@ -6215,6 +6301,11 @@ TEXT_RESERVE_NOT_FOUND = "Project or task not found. Check both ids."
 TEXT_RESERVE_NOT_IN_PROJECT = (
     "That task is not in this project or in one of its subprojects.")
 TEXT_RESERVE_RUN = "That run is not a run of this task."
+#: SW-27c1, the owner's decision 1: the run is a run of the task, and not the
+#: caller's own run (the detail is ``agent_oauth.SEQUENCE_RUN_NOT_YOURS``).
+TEXT_RESERVE_RUN_NOT_YOURS = (
+    "That run is not your own run. Send the run_id of your own run on the task,"
+    " or no run_id.")
 TEXT_RESERVE_GONE = "The task or the run was deleted during the call. Try again."
 TEXT_RESERVE_REFUSED = (
     "Metorite refused the reservation. The project may be archived, or the"
@@ -6233,8 +6324,8 @@ _RESERVE_INPUT: dict[str, Any] = {
                     "description": "The task that the number is for. It must be"
                                    " in the project or in a subproject."},
         "run_id": {"type": "string", "pattern": _UUID_PATTERN,
-                   "description": "Optional. An agent run on that task, from"
-                                  " claim_task or start_agent_run. Send your own."},
+                   "description": "Optional. Your own agent run on that task,"
+                                  " from claim_task or start_agent_run."},
     },
     "required": ["project_id", "sequence", "task_id"],
     "additionalProperties": False,
@@ -6266,6 +6357,7 @@ async def _reserve_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
             (404, "The task or the run is gone. Try again."): TEXT_RESERVE_GONE,
             (422, "The task is not in this project."): TEXT_RESERVE_NOT_IN_PROJECT,
             (422, "The run is not a run of this task."): TEXT_RESERVE_RUN,
+            (422, agent_oauth.SEQUENCE_RUN_NOT_YOURS): TEXT_RESERVE_RUN_NOT_YOURS,
         },
         texts={422: TEXT_RESERVE_REFUSED})
     if not isinstance(row, dict):
@@ -6295,6 +6387,101 @@ RESERVE_NUMBER = Tool(
     routes=(),
     method="POST",
     annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
+# ── mark_number (SW-27c1, agent_coordination.md SW-27) ──────────────────────
+
+#: The SW-27c1 route. The agent marks a number of its own run.
+MARK_ROUTE = "/projects/reservations/{reservation_id}/mark"
+
+#: The keys of the result of ``mark_number``: the route's answer.
+MARK_KEYS: tuple[str, ...] = (
+    "reservation_id", "project_id", "sequence", "value", "task_id", "run_id",
+    "state", "reserved_at", "used_at", "released_at",
+)
+
+#: The fixed texts of the mark route's refusals (§9.2).
+TEXT_MARKS_OFF = "Marking a reserved number is turned off in this organization."
+TEXT_MARK_NOT_FOUND = "Reservation not found. Check the reservation_id."
+TEXT_MARK_NOT_YOURS = (
+    "That number is not a number of your run. Only the run that reserved a"
+    " number marks it.")
+TEXT_MARK_FINAL = (
+    "That number is already used or released, and it cannot change. A released"
+    " number never comes back.")
+
+_MARK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "reservation_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "The reservation_id that reserve_number"
+                                          " returned."},
+        "state": {"type": "string", "enum": ["used", "released"],
+                  "description": "used when the number shipped, released when"
+                                 " you will not use it. A released number is"
+                                 " burned."},
+    },
+    "required": ["reservation_id", "state"],
+    "additionalProperties": False,
+}
+
+_MARK_OUTPUT: dict[str, Any] = _object({
+    "reservation_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "sequence": {"type": "string"},
+    "value": {"type": "integer"},
+    "task_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "state": {"type": "string"},
+    "reserved_at": {"type": "string"},
+    "used_at": {"type": ["string", "null"]},
+    "released_at": {"type": ["string", "null"]},
+})
+
+
+async def _mark_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one mark to the SW-27c1 route. The same mark twice changes
+    nothing. A number that is already used or released stays as it is."""
+    _status, row = await _write(
+        ctx, "POST", MARK_ROUTE, TEXT_MARK_NOT_FOUND,
+        path_params={"reservation_id": str(args["reservation_id"])},
+        json_body={"state": str(args["state"])},
+        # By the detail, never by a bare status: a 403 of another cause (the
+        # writes flag, a lost feature) keeps its own text.
+        details={(404, agent_oauth.SEQUENCE_MARKS_OFF): TEXT_MARKS_OFF,
+                 (403, agent_oauth.SEQUENCE_NOT_YOUR_RUN): TEXT_MARK_NOT_YOURS,
+                 (409, agent_oauth.SEQUENCE_MARK_FINAL): TEXT_MARK_FINAL})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    return {key: row.get(key) for key in MARK_KEYS}
+
+
+#: The hints of ``mark_number``. A release burns the number for good, so
+#: ``destructiveHint`` is true. The same call twice changes nothing more.
+MARK_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
+
+MARK_NUMBER = Tool(
+    name="mark_number",
+    title="Mark a reserved number",
+    description=(
+        "Mark a number that your run reserved with reserve_number: used when the"
+        " work that took it shipped, or released when you will not use it. A"
+        " merged pull request of the task marks its numbers used on its own. A"
+        " released number is burned and never comes back. Only the run that"
+        " reserved a number marks it."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_MARK_INPUT,
+    output_schema=_MARK_OUTPUT,
+    route=MARK_ROUTE,
+    params={"reservation_id": "reservation_id", "state": "state"},
+    not_found=TEXT_MARK_NOT_FOUND,
+    run=_mark_number,
+    routes=(),
+    method="POST",
+    annotations=dict(MARK_ANNOTATIONS),
+    marks=True,
 )
 
 
@@ -12160,7 +12347,9 @@ READ_PLAYBOOK = Tool(
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    # EA-5: the company context follows whoami. It needs context:read and
+    # shows only for an organization of agent_resources_orgs.
+    WHOAMI, GET_COMPANY_CONTEXT, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     LIST_TEMPLATES,
@@ -12172,6 +12361,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ADD_TASK_LINK, REMOVE_TASK_LINK,
     # SW-27b: the next number of a project sequence (SW-27a route).
     RESERVE_NUMBER,
+    # SW-27c1: dark behind `sequence_marks_orgs`.
+    MARK_NUMBER,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
     # CIV-14b: one image onto a task. It shows only for an organization of
     # `mcp_image_upload_orgs`, and the gateway reads the flag too.
@@ -12198,12 +12389,17 @@ def offered(tool: Tool, organization_id: object = None) -> bool:
     tool only for an organization that ``playbook_orgs`` names (PB-3a).
     ``upload_task_image`` only for an organization that
     ``mcp_image_upload_orgs`` names (CIV-14b fix round 1). The gateway
-    refuses the upload of any other organization too."""
+    refuses the upload of any other organization too. ``get_company_context``
+    only for an organization that ``agent_resources_orgs`` names (EA-5)."""
     if tool.door and not agent_oauth.door_apps():
         return False
     if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
         return False
+    if tool.resources and not agent_oauth.resources_allowed(organization_id):
+        return False
     if tool.images and not agent_oauth.image_upload_allowed(organization_id):
+        return False
+    if tool.marks and not agent_oauth.sequence_marks_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -12288,9 +12484,15 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     if not offered(tool, ctx.caller.lookup.organization_id):
         if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
             return error_result(TEXT_PLAYBOOK_OFF)
+        if tool.resources and not agent_oauth.resources_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_CONTEXT_OFF)
         if tool.images and not agent_oauth.image_upload_allowed(
                 ctx.caller.lookup.organization_id):
             return error_result(TEXT_IMAGES_OFF)
+        if tool.marks and not agent_oauth.sequence_marks_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_MARKS_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -12481,6 +12683,9 @@ __all__ = [
     "LIST_TASK_KEYS",
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
+    "MARK_KEYS",
+    "MARK_NUMBER",
+    "MARK_ROUTE",
     "MAX_ANCESTORS",
     "MAX_ASSIGNEES",
     "MAX_BULK_UPDATES",

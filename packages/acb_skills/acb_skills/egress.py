@@ -1548,6 +1548,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+    # Each card names the list and the module, or the steps, before the write.
+    "crm_decide_suggestion": _pin("action list_name module"),
+    "crm_rerun_analysis": _pin(""),
     # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
     # open_world=True as each CRM write does, so a covered run holds it off.
     # CRM-M4a adds `kind` and `feeds`: a lead pipeline, and the deal pipeline
@@ -1555,6 +1559,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
+    # CRM-M2e (task 3951): a stage, a lead status or a lost reason. Each card
+    # shows the row and each changed field before the write.
+    "crm_edit_status": _pin("kind action name new_name status_type probability hidden"),
+    "crm_edit_lost_reason": _pin("action label new_label hidden"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter
