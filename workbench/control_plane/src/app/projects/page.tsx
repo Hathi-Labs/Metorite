@@ -1192,6 +1192,8 @@ function ProjectsWorkspace() {
     agentLenses || mapQuiet,
     selected?.id,
     mapRetry,
+    // AMR-4: the lenses read the summary, and one session's rows when it opens.
+    agentLenses,
   );
   // The last read that settled, for this organization. A load after a ready
   // read keeps the tab and the canvas, so a switch of project does not flash them.
