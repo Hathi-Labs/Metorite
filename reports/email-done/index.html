@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mark done: captures (task 3995)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; background: #14161a; color: #e7e9ee; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 32px 0 6px; border-top: 1px solid #333844; padding-top: 18px; }
+  p, li { font-size: 14px; line-height: 1.5; max-width: 900px; color: #c3c8d3; }
+  .grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  figure { margin: 0; width: 620px; max-width: 100%; }
+  figure.phone { width: 260px; }
+  img { width: 100%; height: auto; border: 1px solid #333844; border-radius: 6px; display: block; }
+  figcaption { font-size: 12px; color: #9aa1af; padding: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Mark done in Email (task 3995)</h1>
+<p>A member marks a Follow-up mail done with one act. The chips change at once, and a toast offers a move back.</p>
+<p>These captures come from the visual rig. The rig draws the real app with a stubbed API, so no gateway and no database take part. Click a picture to see it at full size.</p>
+<p><b>Not shown:</b> a real mailbox and a real provider. The local stack cannot turn this flag on, because it holds each switch with EMAIL in its name.</p>
+<main id="out"></main>
+<script>
+const LOOKS = [
+  ["dark", "Dark, 1440"], ["light", "Light, 1440"], ["compact-dark", "Compact density, dark"],
+  ["compact-light", "Compact density, light"], ["accent", "Changed accent"],
+  ["phone-dark", "Phone 390, dark"], ["phone-light", "Phone 390, light"],
+];
+const SECTIONS = [
+  ["menu", "1. The row menu", "Right-click a row, or hold it on a phone. Mark done is the first item."],
+  ["pane", "2. The Done button in the reading pane", "It sits beside the reply buttons. The key d does the same."],
+  ["bulk-bar", "3. The bar of a selection", "Tick rows. The bar holds Mark done."],
+  ["bulk-menu", "4. The menu of a selection", "Right-click a ticked row."],
+  ["toast", "5. The toast", "The chips read Done. The toast offers Move back to Follow-up."],
+  ["moved-back", "6. After Move back", "The labels of before return."],
+  ["before-menu", "Before (flag off): the row menu", "This is the menu of today."],
+  ["before-pane", "Before (flag off): the reading pane", "This is the pane of today."],
+];
+const out = document.getElementById("out");
+function figure(file, text, phone) {
+  const f = document.createElement("figure");
+  if (phone) f.className = "phone";
+  const a = document.createElement("a");
+  a.href = file;
+  const i = document.createElement("img");
+  i.src = file; i.alt = text; i.loading = "lazy";
+  i.onerror = () => { f.querySelector("figcaption").textContent = text + " (no capture)"; };
+  a.appendChild(i);
+  const c = document.createElement("figcaption");
+  c.textContent = text;
+  f.append(a, c);
+  return f;
+}
+for (const [key, title, note] of SECTIONS) {
+  const h = document.createElement("h2"); h.textContent = title;
+  const p = document.createElement("p"); p.textContent = note;
+  const g = document.createElement("div"); g.className = "grid";
+  for (const [look, label] of LOOKS) g.appendChild(figure(`${key}--${look}.png`, label, look.startsWith("phone")));
+  out.append(h, p, g);
+}
+function extra(title, note, files) {
+  const h = document.createElement("h2"); h.textContent = title;
+  const p = document.createElement("p"); p.textContent = note;
+  const g = document.createElement("div"); g.className = "grid";
+  for (const [file, label] of files) g.appendChild(figure(file, label, false));
+  out.append(h, p, g);
+}
+extra("7. A call that fails", "The gateway refuses. The labels come back, and the page says why.",
+  [["error--dark.png", "Dark, 1440"]]);
+extra("8. Keyboard: the focus on Done",
+  "Tab moves from Forward to Done. Enter then marks the mail done, and Ctrl+Z moves it back.",
+  [["focus-done--dark.png", "Dark, 1440"], ["focus-done--light.png", "Light, 1440"]]);
+extra("9. Keyboard: the row menu (a limit of before)",
+  "The menu does not take the focus, so one Tab goes to the page behind it. The code of the menu had this limit before. The key d marks a mail done from the keyboard. After Ctrl+Z the toast stays until its time ends.",
+  [["focus-menu--dark.png", "Dark, 1440"], ["focus-menu--light.png", "Light, 1440"]]);
+const notes = document.createElement("h2"); notes.textContent = "Visual review";
+const list = document.createElement("ul");
+for (const line of [
+  "Found and repaired: after Done, the reading pane kept the old labels of the open mail.",
+  "The red \"1 Issue\" badge on the light phone menu comes from the development server. The capture with the flag off shows it too.",
+  "Not opened: widths of 1280 and 1920, comfortable density, a conversation of two or more messages after Done, hover states, a real mailbox.",
+]) { const li = document.createElement("li"); li.textContent = line; list.appendChild(li); }
+out.append(notes, list);
+</script>
+</body>
+</html>
