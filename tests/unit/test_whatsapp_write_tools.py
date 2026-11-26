@@ -19,10 +19,15 @@ its mutation (R7):
 4. A 4xx says that nothing changed. A 5xx and a lost connection say that it may
    have changed. No tool sends a write twice. Mutation: answer success for any
    status -> red.
-5. A held chat holds off the seven writes and keeps each other tool. Mutation:
-   drop ``HELD_OFF_OWN_WRITES`` from ``is_held_off_write`` -> red.
+5. A marked chat and a ``no_egress`` run hold off the seven writes and keep
+   each other tool. A WhatsApp read marks no chat (task 4010). Mutation: drop
+   ``HELD_OFF_OWN_WRITES`` from ``is_held_off_write`` -> red.
 6. The copies of the gateway rules stay equal to the gateway. Mutation: change a
    default category on one side -> red.
+7. Each card states the real effect (review of cf48ec6e2): one line for each
+   name, the group snooze (task 4011), the wake promise of a Cloud number only,
+   the workflow line of a new task, a second read after Approve, and no wake
+   card from a full snoozed list.
 
 Run: ``uv run pytest tests/unit/test_whatsapp_write_tools.py -q``.
 """
@@ -81,9 +86,13 @@ class _Gateway:
 
     def __init__(self) -> None:
         self.accounts = [
-            {"id": ACC2, "display_name": "Second", "phone_number": "+91 2", "is_default": False},
-            {"id": ACC, "display_name": "Shop", "phone_number": "+91 1", "is_default": True},
+            {"id": ACC2, "display_name": "Second", "phone_number": "+91 2", "is_default": False,
+             "provider": "whatsmeow"},
+            {"id": ACC, "display_name": "Shop", "phone_number": "+91 1", "is_default": True,
+             "provider": "cloud_api"},
         ]
+        #: chat -> its number. A chat with no row here is on ``ACC``.
+        self.chat_account: dict[str, str] = {}
         self.replies = {ACC: [{"id": REPLY, "title": "Price list", "body": "Rate is 40.\nAsk us.",
                                "shortcut": "/price"}], ACC2: []}
         self.categories = {ACC: [{"id": CAT, "name": "VIP", "notify_policy": "instant",
@@ -138,8 +147,10 @@ class _Gateway:
         if path == "/whatsapp/categories":
             return httpx.Response(200, json=self.categories[query["account_id"]])
         if path == "/whatsapp/search":
+            owner = self.chat_account.get(query["chat_id"], ACC)
             rows = self.messages.get(query["chat_id"], [])
-            return httpx.Response(200, json=rows[:1])
+            return httpx.Response(
+                200, json=rows[:1] if query["account_id"] == owner else [])
         if path == "/whatsapp/chats":
             assert query == {"stream": "snoozed", "limit": "200"}
             return httpx.Response(200, json=self.snoozed)
@@ -256,7 +267,7 @@ CASES: dict[str, tuple[Callable[[Any], Any], tuple[str, str, Any], str, tuple[st
             "until": datetime.fromisoformat(UNTIL).astimezone(UTC).isoformat()}),
         "Snooze this chat?",
         ('Hides "Ravi Traders"', "Chat: Ravi Traders", f"Wakes at: {UNTIL.replace('T', ' ')}",
-         "Nothing is sent to them."),
+         "A new message from them wakes the chat sooner. Nothing is sent to them."),
     ),
     "unsnooze_whatsapp_chat": (
         lambda wa: wa.unsnooze_whatsapp_chat(SNOOZED),
@@ -271,7 +282,8 @@ CASES: dict[str, tuple[Callable[[Any], Any], tuple[str, str, Any], str, tuple[st
         "Make a task from this message?",
         ("Chat: Ravi Traders", "From: Ravi",
          "Task title: WhatsApp · Ravi: Send the quote by Friday",
-         "Send the quote by Friday", "Nothing is sent on WhatsApp."),
+         "A new task can start the workflows of your organization.",
+         "Send the quote by Friday", "This tool sends no message."),
     ),
 }
 
@@ -498,7 +510,7 @@ async def test_seed_with_each_default_there_shows_no_card(gw, wa) -> None:
     assert "already" in out
 
 
-async def test_a_group_with_no_name_takes_the_contact_name(gw, wa) -> None:
+async def test_a_chat_with_no_name_takes_the_contact_name(gw, wa) -> None:
     gw.messages[CHAT][0]["chat_name"] = ""
     _out, cards = await _with_card(
         lambda: wa.snooze_whatsapp_chat(CHAT, UNTIL), _reject)
@@ -521,7 +533,15 @@ async def test_a_second_snooze_names_the_time_it_replaces(gw, wa) -> None:
     ("update_whatsapp_category",
      lambda g: g.categories[ACC][0].update(draft_policy="never")),
     ("update_whatsapp_category", lambda g: g.categories[ACC].clear()),
-], ids=["reply-edited", "reply-gone", "category-edited", "category-gone"])
+    ("seed_whatsapp_categories",
+     lambda g: g.categories[ACC].append({"id": _id(80), "name": "Noise"})),
+    ("seed_whatsapp_categories", lambda g: g.categories[ACC].clear()),
+    ("capture_whatsapp_task",
+     lambda g: g.messages[CHAT][0].update(body_text="Send the quote by Monday")),
+    ("capture_whatsapp_task",
+     lambda g: g.messages[CHAT][0].update(body_text="Send the quote by Friday\u200b")),
+], ids=["reply-edited", "reply-gone", "category-edited", "category-gone",
+        "seed-one-added", "seed-one-gone", "message-edited", "message-now-hidden"])
 async def test_a_row_that_changed_while_the_card_waited_is_not_written(
     gw, wa, name: str, change,
 ) -> None:
@@ -533,6 +553,30 @@ async def test_a_row_that_changed_while_the_card_waited_is_not_written(
     out, cards = await _with_card(lambda: CASES[name][0](wa), answer)
     assert len(cards) == 1 and gw.writes() == []
     assert "changed while the card was open" in out
+
+
+@pytest.mark.parametrize("name", [
+    "delete_whatsapp_saved_reply", "update_whatsapp_category",
+    "seed_whatsapp_categories", "capture_whatsapp_task",
+])
+async def test_a_second_read_that_fails_writes_nothing(gw, wa, name: str) -> None:
+    def answer(rid: str) -> dict[str, Any]:
+        gw.forced["GET"] = (500, {"detail": "boom"})
+        return _approve(rid)
+
+    out, cards = await _with_card(lambda: CASES[name][0](wa), answer)
+    assert len(cards) == 1 and gw.writes() == []
+    assert out.startswith("Nothing was changed.") and "could not be read again" in out
+
+
+async def test_a_message_that_left_while_the_card_waited_is_not_captured(gw, wa) -> None:
+    def answer(rid: str) -> dict[str, Any]:
+        gw.messages[CHAT].clear()
+        return _approve(rid)
+
+    out, cards = await _with_card(lambda: CASES["capture_whatsapp_task"][0](wa), answer)
+    assert len(cards) == 1 and gw.writes() == []
+    assert out.startswith("Nothing was changed."), out
 
 
 # ── 4. The errors of the route ───────────────────────────────────────────────
@@ -648,6 +692,22 @@ def test_a_held_delegated_run_drops_the_writes_and_keeps_the_rest(wa, monkeypatc
     assert set(WRITES) <= before
     ti._apply_no_egress(agents, OWNER)
     assert _names(agents[0].default_options["tools"]) == before - set(WRITES)
+
+
+@pytest.mark.parametrize(("marked", "off"), [(True, True), (False, False)])
+def test_a_run_under_a_covered_run_holds_the_writes_only_when_marked(
+    wa, monkeypatch, marked: bool, off: bool,
+) -> None:
+    """The documents name this exception to the hold of a ``no_egress`` run."""
+    _switch(monkeypatch, "*")
+    monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
+    monkeypatch.setattr(egress, "covered_chain", lambda: True)
+    monkeypatch.setattr(egress, "chat_marked_now", lambda *_a, **_k: marked)
+    agents = [_built_agent(wa)]
+    before = _names(agents[0].default_options["tools"])
+    ti._apply_no_egress(agents, OWNER)
+    after = _names(agents[0].default_options["tools"])
+    assert after == before - (set(WRITES) if off else set())
 
 
 @pytest.mark.parametrize(("marked", "off"), [(True, True), (False, False)])
@@ -827,3 +887,93 @@ def test_each_write_matches_a_real_route_and_its_body_model() -> None:
         model = route.body_field.field_info.annotation
         assert set(body) <= set(model.model_fields), name
         model.model_validate(body)
+
+
+# ── 7. The cards state the real effect ───────────────────────────────────────
+
+
+async def test_a_name_with_new_lines_cannot_forge_the_task_card(gw, wa) -> None:
+    """The title that goes is the one line that the card shows. Mutation: drop
+    ``one_line`` from the sender of ``capture_whatsapp_task`` -> red."""
+    gw.messages[CHAT][0].update(
+        sender_name="Ravi\nTask title: fake\u2028x", chat_name="Shop\nFrom: boss")
+    out, cards = await _with_card(lambda: wa.capture_whatsapp_task(CHAT, MSG))
+    [(_method, _path, body)] = gw.writes()
+    want = "WhatsApp · Ravi Task title: fake x: Send the quote by Friday"
+    assert body["title"] == want
+    lines = cards[0]["context"].splitlines()
+    assert [ln for ln in lines if ln.startswith("Task title:")] == [f"Task title: {want}"]
+    assert [ln for ln in lines if ln.startswith("From:")] == [
+        "From: Ravi Task title: fake x"]
+    assert lines[0] == "Chat: Shop From: boss"
+    assert out.startswith("Added the task")
+
+
+@pytest.mark.parametrize(("kind", "shown"), [("group", True), ("dm", False)])
+async def test_only_a_group_snooze_card_says_that_it_can_leave_needs_reply(
+    gw, wa, kind: str, shown: bool,
+) -> None:
+    gw.messages[CHAT][0]["chat_kind"] = kind
+    _out, cards = await _with_card(
+        lambda: wa.snooze_whatsapp_chat(CHAT, UNTIL), _reject)
+    line = "This is a group chat. The snooze can take it out of Needs reply."
+    assert (line in cards[0]["context"].splitlines()) is shown
+
+
+def test_the_group_line_is_still_true_of_the_route() -> None:
+    """Task 4011: the snooze route sets the status again with no account number.
+    When the route passes one, this goes red. Then drop ``_GROUP_LINE``."""
+    from gateway.routes.whatsapp.transport import snooze
+
+    tree = ast.parse(Path(snooze.__file__).read_text(encoding="utf-8"))
+    [call] = [c for c in ast.walk(tree) if isinstance(c, ast.Call)
+              and getattr(c.func, "id", "") == "recompute_chat_status"]
+    assert "account_phone" not in {k.arg for k in call.keywords}
+
+
+@pytest.mark.parametrize(("number", "provider", "promised"), [
+    (ACC, "cloud_api", True), (ACC, "cloud", True), (ACC2, "whatsmeow", False),
+    (ACC2, "", False),
+])
+async def test_the_wake_promise_shows_for_a_cloud_number_only(
+    gw, wa, number: str, provider: str, promised: bool,
+) -> None:
+    """The bridge routes bind no organization, so no sweep clears a snooze of a
+    bridge number. Mutation: show the sentence for each number -> red."""
+    gw.chat_account[CHAT] = number
+    next(a for a in gw.accounts if a["id"] == number)["provider"] = provider
+    _out, cards = await _with_card(
+        lambda: wa.snooze_whatsapp_chat(CHAT, UNTIL), _reject)
+    context = cards[0]["context"]
+    assert ("wakes the chat sooner" in context) is promised
+    assert context.endswith("Nothing is sent to them.")
+
+
+async def test_a_full_snoozed_list_without_the_chat_shows_no_wake_card(gw, wa) -> None:
+    """Mutation: wake a chat that the full list does not hold -> red."""
+    gw.snoozed = [{"id": _id(1000 + k), "name": f"c{k}"} for k in range(200)]
+    out, cards = await _with_card(lambda: wa.unsnooze_whatsapp_chat(CHAT))
+    assert cards == [] and gw.writes() == []
+    assert "cannot confirm" in out and "Nothing was changed." in out
+    held = _id(1007)
+    out, cards = await _with_card(lambda: wa.unsnooze_whatsapp_chat(held))
+    assert len(cards) == 1 and gw.writes() == [
+        ("POST", f"/whatsapp/chats/{held}/unsnooze", {})]
+
+
+def test_the_workflow_line_is_still_true_of_the_capture() -> None:
+    """The capture path sends ``pm.task.created``, and a workflow can start on it."""
+    routes = REPO / "apps/services/gateway/gateway/routes"
+    assert 'emit("pm.task.created"' in (routes / "projects/personal.py").read_text(
+        encoding="utf-8")
+    assert '"event_type": "pm.task.created"' in (routes / "workflows/catalog.py").read_text(
+        encoding="utf-8")
+
+
+def test_a_whatsapp_read_marks_no_chat() -> None:
+    """The documents say that the card is the only guard for injected WhatsApp
+    text (task 4010). When a read starts to mark the chat, this goes red. Then
+    change those words."""
+    assert OWNER not in egress.UNTRUSTED_INPUT_AGENTS
+    for name in ("agents.py", "narrow_source.py"):
+        assert "mark_untrusted" not in (AGENT_DIR / name).read_text(encoding="utf-8"), name

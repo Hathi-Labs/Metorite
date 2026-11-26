@@ -42,7 +42,8 @@ from acb_common.tool_refusals import GatewayRefusal
 # sends (the DOCTRINE above), so each says ``open_world=False``. A run that a
 # covered Projects run calls keeps them. A future send tool must say
 # ``open_world=True``. A new write that shows a card also joins
-# ``egress.HELD_OFF_OWN_WRITES``, so a held chat holds it off.
+# ``egress.HELD_OFF_OWN_WRITES``. A WhatsApp read marks no chat (task 4010), so
+# for injected WhatsApp text the approval card is the only guard.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -762,10 +763,16 @@ async def whatsapp_link_status() -> str:
 # Each tool reads first, shows ONE card, and sends ONE write only after the
 # member approves it. None sends a message. A deny, a timeout, a closed card,
 # a run with no card and a run with no person present write nothing, because
-# ``request_confirmation`` answers no for each. In a held chat these tools are
-# off (``acb_skills.egress.HELD_OFF_OWN_WRITES``). No tool takes a member or an
+# ``request_confirmation`` answers no for each. No tool takes a member or an
 # org: the gateway scopes each route to the member of the run. Fence:
 # ``tests/unit/test_whatsapp_write_tools.py``.
+#
+# ⚠️ A WhatsApp read does NOT mark the chat as one that read outside text. So for
+# text that a stranger puts in a WhatsApp message, the approval card is the
+# only guard. The hold (``acb_skills.egress.HELD_OFF_OWN_WRITES``) drops these
+# tools only after another read marked the chat, such as an email read, or in a
+# delegated ``no_egress`` run. A run under a covered run keeps them until a read
+# marks the chat. Follow-up: task 4010.
 
 #: The limits of ``transport/saved_replies.py``. The route cuts a longer text,
 #: so the tool refuses it: the card shows the text that the route saves.
@@ -1155,6 +1162,14 @@ async def seed_whatsapp_categories(account_id: str | None = None) -> str:
         "\n".join(lines), unchanged)
     if refusal:
         return refusal
+    # The answer says what THIS write added, so the names that the number has
+    # must still be the names of the card.
+    try:
+        again = await _get("/whatsapp/categories", {"account_id": aid}) or []
+    except (RuntimeError, httpx.HTTPError) as exc:
+        return f"{_NOT_CHANGED} The categories could not be read again: {exc}"
+    if {str(r.get("name")) for r in again} != have:
+        return f"The categories changed while the card was open. {_NOT_CHANGED}"
     resp, failed = await _write(
         "POST", f"/whatsapp/accounts/{aid}/categories/bootstrap", {})
     if resp is None:
@@ -1193,21 +1208,39 @@ def _wake_time(until: str) -> tuple[datetime | None, str | None]:
     return when, None
 
 
-async def _chat_name(chat_id: str) -> str | None:
-    """The name of one chat of the member, or None when the member has no chat
-    with this id that holds a message. The search route reads only the
-    member's own numbers."""
-    rows = await _get("/whatsapp/search", {"chat_id": chat_id, "limit": 1})
-    if not rows:
+async def _chat_facts(chat_id: str) -> tuple[str, bool, str] | None:
+    """``(name, is_group, provider)`` of one chat of the member, or None when
+    the member has no chat with this id that holds a message. The search route
+    reads only the member's own numbers, one number at a time here."""
+    for account in await _get("/whatsapp/accounts") or []:
+        rows = await _get("/whatsapp/search", {
+            "chat_id": chat_id, "account_id": str(account.get("id")), "limit": 1})
+        if rows:
+            break
+    else:
         return None
     name = _shown(rows[0].get("chat_name"))
     if not name:
         ctx = await _get(f"/whatsapp/chats/{chat_id}/context")
         contact = ctx.get("contact") or {}
         name = _shown(contact.get("display_name") or contact.get("phone_number"))
+    is_group = rows[0].get("chat_kind") == "group"
     if not name:
-        return "(a chat with no name)"
-    return f"{name} (group)" if rows[0].get("chat_kind") == "group" else name
+        name = "(a chat with no name)"
+    elif is_group:
+        name = f"{name} (group)"
+    return name, is_group, str(account.get("provider") or "")
+
+
+#: The providers of a Cloud API number. Its webhook binds the organization, so
+#: the status sweep runs and a new inbound message clears the snooze
+#: (``transport/webhook.py``, ``automation/replyzero.py``). The bridge push
+#: routes bind none, so for them the card makes no such promise.
+_CLOUD_PROVIDERS = ("cloud_api", "cloud")
+_WAKES_LINE = "A new message from them wakes the chat sooner."
+#: Task 4011: the snooze route sets the reply status again with no account
+#: number, so a group chat loses its mention and can become FYI.
+_GROUP_LINE = "This is a group chat. The snooze can take it out of Needs reply."
 
 
 async def _snoozed_chats() -> list[dict[str, Any]]:
@@ -1228,9 +1261,10 @@ async def snooze_whatsapp_chat(chat_id: str, until: str) -> str:
     when, refusal = _wake_time(until)
     if when is None:
         return refusal or _NOT_CHANGED
-    name = await _chat_name(cid)
-    if name is None:
+    facts = await _chat_facts(cid)
+    if facts is None:
         return f"No chat of yours with that id holds a message. {_NOT_CHANGED}"
+    name, is_group, provider = facts
     utc = when.astimezone(UTC)
     lines = [
         f"Chat: {name}",
@@ -1242,8 +1276,10 @@ async def snooze_whatsapp_chat(chat_id: str, until: str) -> str:
         lines.append(
             f"It is snoozed now until {_shown(was.get('snoozed_until'))}. This "
             "time replaces that one.")
-    lines += ["", "A new message from them wakes the chat sooner. Nothing is sent "
-                  "to them."]
+    if is_group:
+        lines.append(_GROUP_LINE)  # task 4011
+    wakes = f"{_WAKES_LINE} " if provider in _CLOUD_PROVIDERS else ""
+    lines += ["", f"{wakes}Nothing is sent to them."]
     unchanged = f"The chat \"{name}\" was not snoozed."
     refusal = await _card(
         "Snooze this chat?",
@@ -1270,18 +1306,16 @@ async def unsnooze_whatsapp_chat(chat_id: str) -> str:
         return _bad_id("chat_id", "list_whatsapp_chats")
     snoozed = await _snoozed_chats()
     was = next((c for c in snoozed if _uuid_arg(c.get("id")) == cid), None)
-    if was is not None:
-        name = _shown(was.get("name") or was.get("wa_chat_id")) or "(a chat with no name)"
-        until = _shown(was.get("snoozed_until"))
-    else:
-        # A full read can hide an older chat, so only a short one proves that
-        # the chat is not snoozed.
-        if len(snoozed) < _CHATS_MAX:
-            return f"No snoozed chat of yours has that id. {_NOT_CHANGED}"
-        found = await _chat_name(cid)
-        if found is None:
-            return f"No chat of yours with that id holds a message. {_NOT_CHANGED}"
-        name, until = found, ""
+    if was is None:
+        # The route gives at most _CHATS_MAX chats. A full list can hide an
+        # older chat, so it proves nothing, and no card shows.
+        if len(snoozed) >= _CHATS_MAX:
+            return (f"This tool reads at most {_CHATS_MAX} snoozed chats, and this "
+                    "chat is not in them. It cannot confirm that the chat is "
+                    f"snoozed. {_NOT_CHANGED}")
+        return f"No snoozed chat of yours has that id. {_NOT_CHANGED}"
+    name = _shown(was.get("name") or was.get("wa_chat_id")) or "(a chat with no name)"
+    until = _shown(was.get("snoozed_until"))
     lines = [f"Chat: {name}"]
     if until:
         lines.append(f"Snoozed until: {until}")
@@ -1298,6 +1332,14 @@ async def unsnooze_whatsapp_chat(chat_id: str) -> str:
     if resp is None:
         return failed or _UNSURE
     return f"Woke \"{name}\". It is back in your triage streams. No message was sent."
+
+
+async def _message(chat_id: str, message_id: str) -> dict[str, Any] | None:
+    """One message of one chat of the member, or None. A read only."""
+    rows = await _get(
+        f"/whatsapp/chats/{chat_id}/messages", {"around": message_id, "window": 0})
+    return next(
+        (m for m in rows or [] if _uuid_arg(m.get("id")) == message_id), None)
 
 
 def _task_title(body: str, sender: str, chat: str) -> str:
@@ -1326,9 +1368,7 @@ async def capture_whatsapp_task(
     mid = _uuid_arg(message_id)
     if mid is None:
         return _bad_id("message_id", "search_whatsapp")
-    rows = await _get(
-        f"/whatsapp/chats/{cid}/messages", {"around": mid, "window": 0})
-    msg = next((m for m in rows or [] if _uuid_arg(m.get("id")) == mid), None)
+    msg = await _message(cid, mid)
     if msg is None:
         return f"No message of that chat has that id. {_NOT_CHANGED}"
     body = str(msg.get("body_text") or "")
@@ -1341,8 +1381,10 @@ async def capture_whatsapp_task(
     if _visible(description) != description:
         return ("The message holds a character that you cannot see, so no card "
                 f"can show it. Make the task on the WhatsApp page. {_NOT_CHANGED}")
-    sender = _visible(msg.get("sender_name"))
-    chat = _visible(msg.get("chat_name"))
+    # One line each: a name with a new line must not forge a line of the card.
+    # The title that goes is the title that the card shows.
+    sender = one_line(_visible(msg.get("sender_name")))
+    chat = one_line(_visible(msg.get("chat_name")))
     name = one_line(title or "") or _task_title(_visible(body), sender, chat)
     if len(name) > _TASK_TITLE_MAX:
         return f"A task title holds at most {_TASK_TITLE_MAX} characters. {_NOT_CHANGED}"
@@ -1352,6 +1394,7 @@ async def capture_whatsapp_task(
         f"From: {'you' if outbound else _shown(sender) or 'them'}",
         f"Sent at: {_shown(msg.get('sent_at')) or '(not known)'}",
         f"Task title: {name}",
+        "A new task can start the workflows of your organization.",
         "",
         "Task description (the first 500 characters of the message):",
         description or "(none, because the message holds no text)",
@@ -1360,10 +1403,17 @@ async def capture_whatsapp_task(
     refusal = await _card(
         "Make a task from this message?",
         "Adds one task to your own inbox. A message with an open task makes no "
-        "second task. Nothing is sent on WhatsApp.",
+        "second task. This tool sends no message.",
         context, unchanged)
     if refusal:
         return refusal
+    try:
+        again = await _message(cid, mid)
+    except (RuntimeError, httpx.HTTPError) as exc:
+        return f"{_NOT_CHANGED} The message could not be read again: {exc}"
+    # An unchanged text holds no new hidden character, so one compare covers both.
+    if again is None or str(again.get("body_text") or "") != body:
+        return f"The message changed while the card was open. {_NOT_CHANGED}"
     resp, failed = await _write(
         "POST", "/whatsapp/capture-task", {"message_id": mid, "title": name})
     if resp is None:
@@ -1376,7 +1426,8 @@ async def capture_whatsapp_task(
     if not made:
         return (f"No new task was made. An open task holds this message already: "
                 f"\"{saved}\" (task id={item}).")
-    return f"Added the task \"{saved}\" to your inbox (task id={item}). No message was sent."
+    return (f"Added the task \"{saved}\" to your inbox (task id={item}). This tool "
+            "sent no message.")
 
 
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────

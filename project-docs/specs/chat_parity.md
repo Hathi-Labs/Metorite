@@ -25,6 +25,9 @@ writes on one card. They pay seven WhatsApp rows, so the WhatsApp ceiling goes
 from 13 to 6. §6.2 names the tools and the open row. Fence:
 `tests/unit/test_whatsapp_write_tools.py`.
 
+A WhatsApp read marks no chat (task 4010). So for injected WhatsApp text, the
+approval card is the only guard of these seven writes.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -504,12 +507,22 @@ WhatsApp or a model.
 
 Each tool reads first and shows ONE card. It sends one write only after the
 member of the run approves it. A text that does not fit whole on one card gets a
-sentence and no card. The delete card and the category card read the row again
-after Approve. The tool sends nothing when the row changed.
+sentence and no card.
 
-A held chat holds off the seven writes, by `egress.HELD_OFF_OWN_WRITES`. It keeps
-the reads and the drafts. The switch is `HELD_CARD_WRITES_ORGS`, as for each held
-chat. With the switch off, each write keeps its card. Fences:
+The delete, the category change, the default categories and the task read their
+data again after Approve. The tool sends nothing when the data changed.
+
+**A WhatsApp read does not mark the chat.** So for text that a stranger puts in a
+WhatsApp message, the approval card is the only guard. Task 4010 is the
+follow-up.
+
+The hold of `egress.HELD_OFF_OWN_WRITES` drops the seven writes in two cases.
+One case is a chat that another read marked, such as an email read. The other
+case is a delegated no-egress run. A run under a covered run keeps the writes
+until a read marks the chat. In each case the reads and the drafts stay.
+
+The switch is `HELD_CARD_WRITES_ORGS`, as for each held chat. With the switch
+off, each write keeps its card. Fences:
 `tests/unit/test_whatsapp_write_tools.py` and
 `tests/unit/test_no_egress_tool_audit.py`.
 
@@ -524,7 +537,14 @@ chat. With the switch off, each write keeps its card. Fences:
   three policies. The card says so, and says what `holding` permits later. A test
   fails when a new reader appears.
 - **A task from a message** goes to the member's own inbox. The route sends the
-  event `pm.task.created`, as each capture does.
+  event `pm.task.created`, so a workflow can start. The card says so.
+- **A snooze of a group chat** can take it out of Needs reply (task 4011). The
+  card of a group chat says so.
+- **The snooze card promises a wake only for a Cloud number.** The bridge push
+  routes bind no organization. So the step that sets the status of a chat cannot
+  write for them. This comes from the code, and no test ran it on a database.
+- **A full list of snoozed chats** (200) that does not hold the chat gives no
+  wake card. The tool says that it cannot confirm the snooze.
 
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.

@@ -1781,8 +1781,16 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
 #: rule would drop them too. This table names only its seven card writes. A held
 #: chat drops them, and it keeps the reads and the drafts. Only a tool that the
 #: run of that agent holds as its own counts. ``held_card_writes_on`` is the
-#: switch, as for an owner. Fences: ``tests/unit/test_whatsapp_write_tools.py``
-#: and ``tests/unit/test_no_egress_tool_audit.py``.
+#: switch, as for an owner.
+#:
+#: ⚠️ **A WhatsApp read marks no chat** (``UNTRUSTED_INPUT_AGENTS`` does not hold
+#: the agent). So for injected WhatsApp text the approval card is the only
+#: guard. This table acts only after another read marked the chat, such as an
+#: email read, or in a delegated ``no_egress`` run. A run under a covered run
+#: keeps these tools until a read marks the chat (:func:`covered_chain`).
+#: Follow-up: task 4010.
+#: Fences: ``tests/unit/test_whatsapp_write_tools.py`` and
+#: ``tests/unit/test_no_egress_tool_audit.py``.
 HELD_OFF_OWN_WRITES: Mapping[str, frozenset[str]] = {
     "whatsapp-assistant": frozenset({
         "capture_whatsapp_task", "create_whatsapp_saved_reply",

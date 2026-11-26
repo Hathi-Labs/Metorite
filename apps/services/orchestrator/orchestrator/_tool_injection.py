@@ -3478,7 +3478,8 @@ def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
     session. ``egress.ChatHoldProvider`` holds those writes back while the chat
     is marked, and only those writes. Each egress tool of the run keeps its card.
     P-4b (task 3961): the card writes of ``egress.HELD_OFF_OWN_WRITES`` are held
-    the same way, for the WhatsApp agent.
+    the same way, for the WhatsApp agent. A WhatsApp read marks no chat (task
+    4010), so another read must mark it first.
     Off for an org that the switch does not name, and for an agent that holds no
     such write, so every other run keeps its object. A Copilot agent has its
     own guard, and a plain object holds no middleware, so each stays as it is.
