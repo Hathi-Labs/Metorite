@@ -495,62 +495,25 @@ def test_the_collision_fences_are_named():
         assert (ROOT / "tests" / "unit" / fence).is_file(), fence
 
 
-# ── The release freeze (task 3415) ──────────────────────────────────────────
+# ── The release freeze (task 3415): step 00 runs scripts/release_freeze.sh ──
+# tests/unit/test_release_freeze.py holds the cases of the rule itself.
 _NO_RUN = "true"  # gh answers, and lists no dispatch run
 
 
-@pytest.mark.parametrize("hm,slot", [((4, 20), "05:30"), ((5, 0), "05:30"), ((12, 20), "13:30"),
-                                     ((13, 29), "13:30"), ((20, 20), "21:30"), ((21, 45), "21:30")])
-def test_a_merge_inside_a_freeze_window_is_refused(repo, hm, slot):
-    res = _run(repo, PREMERGE_NOW=str(_at(*hm)), PREMERGE_RUNS_CMD=_NO_RUN)
+def test_premerge_passes_the_freeze_exit_75_through(repo):
+    res = _run(repo, PREMERGE_NOW=str(_at(20, 30)), PREMERGE_RUNS_CMD=_NO_RUN)
     assert res.returncode == 75, res.stdout  # 75: merge_bot reads it as a wait, not a BACK
-    assert "release freeze" in res.stderr and slot in res.stderr
+    assert "release freeze" in res.stderr and "21:30" in res.stderr
 
 
-@pytest.mark.parametrize("hm", [(4, 19), (6, 1), (12, 19), (14, 1), (20, 19), (22, 1), (0, 0)])
-def test_a_merge_outside_the_windows_is_allowed(repo, hm):
-    res = _run(repo, PREMERGE_NOW=str(_at(*hm)), PREMERGE_RUNS_CMD=_NO_RUN)
-    assert res.returncode == 0, res.stderr
-
-
-def test_a_started_release_run_closes_the_window_early(repo):
-    run = 'echo 2026-11-16T13:31:02Z'
-    res = _run(repo, PREMERGE_NOW=str(_at(13, 40)), PREMERGE_RUNS_CMD=run)
-    assert res.returncode == 0, res.stderr
-    # A run of the day before does not count.
-    old = 'echo 2026-11-15T13:31:02Z'
-    res = _run(repo, PREMERGE_NOW=str(_at(13, 40)), PREMERGE_RUNS_CMD=old)
-    assert res.returncode == 75
-
-
-def test_no_answer_from_gh_keeps_the_window_shut_until_the_slot(repo):
-    res = _run(repo, PREMERGE_NOW=str(_at(13, 0)), PREMERGE_RUNS_CMD="exit 1")
-    assert res.returncode == 75 and "release freeze" in res.stderr
-    res = _run(repo, PREMERGE_NOW=str(_at(13, 40)), PREMERGE_RUNS_CMD="exit 1")
-    assert res.returncode == 0, res.stderr
-
-
-def test_the_override_names_the_task_and_passes(repo):
+def test_premerge_override_names_the_task_and_passes(repo):
     res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
                PREMERGE_FREEZE_OK="3415")
     assert res.returncode == 0, res.stderr
     assert "OVERRIDDEN for task 3415" in res.stdout
 
 
-def test_the_window_closes_at_the_slot_plus_30_minutes(repo):
-    res = _run(repo, PREMERGE_NOW=str(_at(14, 0)), PREMERGE_RUNS_CMD=_NO_RUN)
-    assert res.returncode == 0, res.stderr
-    res = _run(repo, PREMERGE_NOW=str(_at(13, 59)), PREMERGE_RUNS_CMD=_NO_RUN)
-    assert res.returncode == 75
-
-
-def test_claude_md_names_the_freeze_windows():
-    text = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "04:20" in text and "12:20" in text and "20:20" in text
-
-
-@pytest.mark.parametrize("value", ["yes please", " ", "3415 x", "abc"])
-def test_the_override_must_be_a_task_number(repo, value):
+def test_premerge_refuses_an_override_that_is_not_a_task_number(repo):
     res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
-               PREMERGE_FREEZE_OK=value)
+               PREMERGE_FREEZE_OK="yes please")
     assert res.returncode == 1 and "must be a task number" in res.stderr

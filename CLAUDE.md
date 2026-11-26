@@ -223,10 +223,11 @@ delivery makes a silent failed deploy more likely, not less.
 > beside the **gate**: GitHub `pr-check`, then `premerge.sh` (D218). Then **merge
 > it**. Production takes it at the next release slot (05:30, 13:30 or 21:30 UTC).
 
-**Release freeze.** `premerge.sh` refuses a merge from 04:20, 12:20 and 20:20 UTC
-until the release run of that slot starts, or 30 minutes after the slot. A merge
-in the window cancels main's batch. Override for a Rung 0 fix:
-`PREMERGE_FREEZE_OK=<task number>`. Fence: `tests/unit/test_premerge.py`.
+**Release freeze.** `premerge.sh` and the merge bot refuse a merge from 04:20,
+12:20 and 20:20 UTC until the release run of that slot starts, or 30 minutes
+after the slot. A merge in the window can turn the last batch red, and then the
+slot ships an older commit. Override for a Rung 0 fix:
+`PREMERGE_FREEZE_OK=<task number>`. Fence: `tests/unit/test_release_freeze.py`.
 
 **Merging is not skipping the loop.** Verify always runs, and the verifier is
 never the implementer. A small slice (LOW, or STANDARD in build) skips the

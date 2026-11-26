@@ -24,6 +24,10 @@ SCRIPT = ROOT / "scripts" / "home_server" / "merge_bot.sh"
 #: CIV-31d (H1): the one reader of the auto-revert mode.
 MODE_READER = ROOT / "scripts" / "home_server" / "auto_revert_mode.sh"
 PREMERGE = ROOT / "scripts" / "premerge.sh"
+#: Task 3415: the one copy of the release freeze. The bot runs it from its own checkout.
+FREEZE = ROOT / "scripts" / "release_freeze.sh"
+OUTSIDE_FREEZE = 1794823200  # 2026-11-16 10:00 UTC
+IN_FREEZE = 1794861000  # 2026-11-16 20:30 UTC, inside the 20:20 window of the 21:30 slot
 BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash")
 
@@ -346,6 +350,8 @@ class Env:
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(SCRIPT, copy)
             shutil.copy(MODE_READER, copy.parent / MODE_READER.name)
+            # Task 3415: the bot runs the release freeze of its own checkout.
+            shutil.copy(FREEZE, src / "scripts" / FREEZE.name)
         return src / "scripts" / "home_server" / "merge_bot.sh"
 
     def run(self, home=None, script=None, **extra):
@@ -362,6 +368,9 @@ class Env:
             # the comment turns it off, so a pass of many PRs stays fast. None
             # removes the variable, and the script default (on) applies.
             "MERGE_BOT_BACK_COMMENT": "0",
+            # Task 3415: the bot runs the REAL scripts/release_freeze.sh. 10:00 UTC is
+            # outside every window, so a case does not depend on the hour that it runs.
+            "PREMERGE_NOW": str(OUTSIDE_FREEZE),
             **extra,
         }
         env = {k: v for k, v in env.items() if v is not None}
@@ -629,7 +638,7 @@ def test_p1_1_the_real_premerge_gates_a_branch_one_commit_behind(env):
     git(env.seed, "push", "-q", "origin", "main")
     # The REAL premerge.sh reads the clock for the release freeze (task 3415). 10:00 UTC is
     # outside every window, so this case does not depend on the hour that it runs.
-    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}", PREMERGE_NOW="1794823200")
+    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}", PREMERGE_NOW=str(OUTSIDE_FREEZE))
     assert "detached" not in env.log
     assert env.log == "DONE 5 abc123\n"
 
