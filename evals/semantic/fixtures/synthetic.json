@@ -1,0 +1,1045 @@
+{
+ "version": 1,
+ "note": "Every name, id and number is invented. No row comes from a real customer.",
+ "fields": {
+  "Clients": [
+   {
+    "key": "Segment",
+    "type": "select"
+   },
+   {
+    "key": "Credit_Limit",
+    "type": "currency"
+   }
+  ],
+  "Invoices": [
+   {
+    "key": "Grand_Total",
+    "type": "currency"
+   },
+   {
+    "key": "Invoice_Date",
+    "type": "date"
+   },
+   {
+    "key": "Status",
+    "type": "select"
+   },
+   {
+    "key": "Client",
+    "type": "lookup",
+    "lookup_module": "Clients"
+   },
+   {
+    "key": "Contact",
+    "type": "lookup",
+    "lookup_module": "Contacts"
+   },
+   {
+    "key": "Memo",
+    "type": "text"
+   }
+  ],
+  "Sites": [
+   {
+    "key": "Fiber_Length_Meter",
+    "type": "number"
+   },
+   {
+    "key": "Fiber_Length_Km",
+    "type": "number"
+   },
+   {
+    "key": "Opened",
+    "type": "date"
+   },
+   {
+    "key": "Site_Note",
+    "type": "text"
+   }
+  ]
+ },
+ "modules": {
+  "a": [
+   "Clients",
+   "Invoices",
+   "Sites"
+  ],
+  "b": [
+   "Invoices",
+   "Sites"
+  ]
+ },
+ "contacts": [
+  {
+   "org": "a",
+   "key": "ravi",
+   "first_name": "Ravi",
+   "last_name": "Kumar",
+   "zoho_id": "z-ct-100"
+  },
+  {
+   "org": "a",
+   "key": "meera",
+   "first_name": "Meera",
+   "last_name": "Iyer",
+   "zoho_id": "z-ct-200"
+  },
+  {
+   "org": "a",
+   "key": "native",
+   "first_name": "Nadia",
+   "last_name": "Native",
+   "zoho_id": null
+  },
+  {
+   "org": "b",
+   "key": "ravi",
+   "first_name": "Ravi",
+   "last_name": "Kumar",
+   "zoho_id": "z-ct-100"
+  }
+ ],
+ "records": [
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i1",
+   "name": "INV-001",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 1000,
+    "Invoice_Date": "2026-01-15",
+    "Status": "Paid",
+    "Client": {
+     "id": "z-cl-1",
+     "name": "Acme Ltd"
+    },
+    "Contact": {
+     "id": "z-ct-100",
+     "name": "Ravi Kumar"
+    },
+    "Memo": "first bill"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i2",
+   "name": "INV-002",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 250.5,
+    "Invoice_Date": "2026-01-20",
+    "Status": "Paid",
+    "Client": {
+     "id": "z-cl-1",
+     "name": "Acme Ltd"
+    },
+    "Contact": {
+     "id": "z-ct-100",
+     "name": "Ravi Kumar"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i3",
+   "name": "INV-003",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": "300",
+    "Invoice_Date": "2026-02-03",
+    "Status": "Overdue",
+    "Client": {
+     "id": "z-cl-2",
+     "name": "Beta Co"
+    },
+    "Contact": {
+     "id": "z-ct-100",
+     "name": "Ravi Kumar"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i4",
+   "name": "INV-004",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 1200,
+    "Invoice_Date": "2026-02-14",
+    "Status": "Paid",
+    "Client": {
+     "id": "z-cl-2",
+     "name": "Beta Co"
+    },
+    "Contact": {
+     "id": "z-ct-200",
+     "name": "Meera Iyer"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i5",
+   "name": "INV-005",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 80,
+    "Invoice_Date": "2026-03-09",
+    "Status": "Draft",
+    "Client": {
+     "id": "z-cl-3",
+     "name": "Cygnus Retail"
+    },
+    "Contact": {
+     "id": "z-ct-200",
+     "name": "Meera Iyer"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i6",
+   "name": "INV-006",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": "NA",
+    "Invoice_Date": "2026-03-21",
+    "Status": "Draft",
+    "Client": {
+     "id": "z-cl-3",
+     "name": "Cygnus Retail"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i7",
+   "name": "INV-007",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 450,
+    "Invoice_Date": "2026-03-30",
+    "Status": "Overdue",
+    "Client": {
+     "id": "z-cl-1",
+     "name": "Acme Ltd"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Invoices",
+   "ext_id": "i8",
+   "name": "INV-008",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 0,
+    "Invoice_Date": "2026-04-02",
+    "Status": "Draft",
+    "Client": {
+     "id": "z-cl-2",
+     "name": "Beta Co"
+    }
+   }
+  },
+  {
+   "org": "b",
+   "module": "Invoices",
+   "ext_id": "b1",
+   "name": "INV-B01",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Grand_Total": 99999,
+    "Invoice_Date": "2026-01-15",
+    "Status": "Paid",
+    "Client": {
+     "id": "z-cl-1",
+     "name": "Acme Ltd"
+    },
+    "Contact": {
+     "id": "z-ct-100",
+     "name": "Ravi Kumar"
+    }
+   }
+  },
+  {
+   "org": "a",
+   "module": "Clients",
+   "ext_id": "z-cl-1",
+   "name": "Acme Ltd",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Segment": "Retail",
+    "Credit_Limit": 5000
+   }
+  },
+  {
+   "org": "a",
+   "module": "Clients",
+   "ext_id": "z-cl-2",
+   "name": "Beta Co",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Segment": "Wholesale",
+    "Credit_Limit": 12000
+   }
+  },
+  {
+   "org": "a",
+   "module": "Clients",
+   "ext_id": "z-cl-3",
+   "name": "Cygnus Retail",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Segment": "Retail",
+    "Credit_Limit": 800
+   }
+  },
+  {
+   "org": "a",
+   "module": "Clients",
+   "ext_id": "z-cl-4",
+   "name": "Delta Works",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Segment": "Wholesale",
+    "Credit_Limit": "NA"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s1",
+   "name": "Site s1",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": 12,
+    "Opened": "2026-01-10",
+    "Site_Note": "north ring"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s2",
+   "name": "Site s2",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": 0,
+    "Opened": "2026-01-25",
+    "Site_Note": "spare"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s3",
+   "name": "Site s3",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": 7.5,
+    "Opened": "2026-02-08",
+    "Site_Note": "east loop"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s4",
+   "name": "Site s4",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": "NA",
+    "Opened": "2026-02-19",
+    "Site_Note": "not measured"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s5",
+   "name": "Site s5",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": "-",
+    "Opened": "2026-03-02",
+    "Site_Note": "not measured"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s6",
+   "name": "Site s6",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": "3",
+    "Opened": "2026-03-18",
+    "Site_Note": "west spur"
+   }
+  },
+  {
+   "org": "a",
+   "module": "Sites",
+   "ext_id": "s7",
+   "name": "Site s7",
+   "owner": "owner-a@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": 25,
+    "Opened": "2026-04-04",
+    "Site_Note": "south ring"
+   }
+  },
+  {
+   "org": "b",
+   "module": "Sites",
+   "ext_id": "s1",
+   "name": "Site s1",
+   "owner": "owner-b@semantic-eval.test",
+   "fields": {
+    "Fiber_Length_Meter": 500,
+    "Opened": "2026-01-10",
+    "Site_Note": "b ring"
+   }
+  }
+ ],
+ "questions": [
+  {
+   "id": "Q01",
+   "text": "How many invoices do we have?",
+   "kind": "count",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {},
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 8
+   }
+  },
+  {
+   "id": "Q02",
+   "text": "What is the sum of all invoice totals?",
+   "kind": "sum",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {},
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 3280.5
+   }
+  },
+  {
+   "id": "Q03",
+   "text": "How many invoices are Paid?",
+   "kind": "status",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Status": "Paid"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 3
+   }
+  },
+  {
+   "id": "Q04",
+   "text": "What do the Paid invoices add up to?",
+   "kind": "status",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {
+     "Status": "Paid"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 2450.5
+   }
+  },
+  {
+   "id": "Q05",
+   "text": "How many invoices for each month?",
+   "kind": "month",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {},
+    "group_field": "Invoice_Date",
+    "bucket": "month"
+   },
+   "expect": {
+    "groups": {
+     "2026-01": 2,
+     "2026-02": 2,
+     "2026-03": 3,
+     "2026-04": 1
+    }
+   }
+  },
+  {
+   "id": "Q06",
+   "text": "What is the invoice total for each month?",
+   "kind": "month",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {},
+    "group_field": "Invoice_Date",
+    "bucket": "month"
+   },
+   "expect": {
+    "groups": {
+     "2026-01": 1250.5,
+     "2026-02": 1500,
+     "2026-03": 530,
+     "2026-04": 0
+    }
+   }
+  },
+  {
+   "id": "Q07",
+   "text": "How many invoices are dated in February 2026?",
+   "kind": "range",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Invoice_Date.from": "2026-02-01",
+     "Invoice_Date.to": "2026-02-28"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 2
+   }
+  },
+  {
+   "id": "Q08",
+   "text": "How many invoices have a total from 300 to 1000?",
+   "kind": "range",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Grand_Total.from": "300",
+     "Grand_Total.to": "1000"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 3
+   }
+  },
+  {
+   "id": "Q09",
+   "text": "What do the invoices from 300 to 1000 add up to?",
+   "kind": "range",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {
+     "Grand_Total.from": "300",
+     "Grand_Total.to": "1000"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 1750
+   }
+  },
+  {
+   "id": "Q10",
+   "text": "How many sites have a fibre length of 1 meter or more?",
+   "kind": "range",
+   "query": {
+    "org": "a",
+    "module": "Sites",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Fiber_Length_Meter.from": "1"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 4
+   }
+  },
+  {
+   "id": "Q11",
+   "text": "How many sites have a fibre length of 0 meter or less?",
+   "kind": "range",
+   "query": {
+    "org": "a",
+    "module": "Sites",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Fiber_Length_Meter.to": "0"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 1
+   }
+  },
+  {
+   "id": "Q12",
+   "text": "What is the credit limit of the Wholesale clients?",
+   "kind": "sum",
+   "query": {
+    "org": "a",
+    "module": "Clients",
+    "measure": "sum",
+    "field": "Credit_Limit",
+    "filters": {
+     "Segment": "Wholesale"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 12000
+   }
+  },
+  {
+   "id": "Q13",
+   "text": "How many invoices does Acme Ltd have?",
+   "kind": "lookup_name",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Client": "Acme Ltd"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 3
+   }
+  },
+  {
+   "id": "Q14",
+   "text": "What do the invoices of Beta Co add up to?",
+   "kind": "lookup_name",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {
+     "Client": "Beta Co"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 1500
+   }
+  },
+  {
+   "id": "Q15",
+   "text": "How many invoices does the contact Ravi Kumar have, by the Metorite id?",
+   "kind": "lookup_core",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Contact": {
+      "core": "ravi"
+     }
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 3
+   }
+  },
+  {
+   "id": "Q16",
+   "text": "What do the invoices of the contact Meera Iyer add up to, by the Metorite id?",
+   "kind": "lookup_core",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "sum",
+    "field": "Grand_Total",
+    "filters": {
+     "Contact": {
+      "core": "meera"
+     }
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 1280
+   }
+  },
+  {
+   "id": "Q17",
+   "text": "How many invoices are there in each status?",
+   "kind": "status",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {},
+    "group_field": "Status",
+    "bucket": null
+   },
+   "expect": {
+    "groups": {
+     "Paid": 3,
+     "Overdue": 2,
+     "Draft": 3
+    }
+   }
+  },
+  {
+   "id": "Q18",
+   "text": "How many invoices are Cancelled?",
+   "kind": "zero",
+   "query": {
+    "org": "a",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Status": "Cancelled"
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 0
+   }
+  },
+  {
+   "id": "Q19",
+   "text": "How many invoices does the second company have?",
+   "kind": "isolation",
+   "query": {
+    "org": "b",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {},
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 1
+   }
+  },
+  {
+   "id": "Q20",
+   "text": "The second company asks for the invoices of a contact of the first company, by the Metorite id",
+   "kind": "isolation",
+   "query": {
+    "org": "b",
+    "module": "Invoices",
+    "measure": "count",
+    "field": null,
+    "filters": {
+     "Contact": {
+      "core": "ravi",
+      "org": "a"
+     }
+    },
+    "group_field": null,
+    "bucket": null
+   },
+   "expect": {
+    "total": 0
+   }
+  }
+ ],
+ "cases": [
+  {
+   "id": "C1",
+   "class": "number_range",
+   "text": "A number range on a module number field answers, and a range on a text field names a working step",
+   "steps": [
+    {
+     "query": {
+      "org": "a",
+      "module": "Sites",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Fiber_Length_Meter.from": "1"
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 4
+    },
+    {
+     "query": {
+      "org": "a",
+      "module": "Sites",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Fiber_Length_Meter.from": "1",
+       "Fiber_Length_Meter.to": "10"
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 2
+    },
+    {
+     "query": {
+      "org": "a",
+      "module": "Sites",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Site_Note.from": "1"
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 422,
+     "code": "unfit_field",
+     "has": [
+      "A range takes a date or a number field",
+      "field.Site_Note=<value>",
+      "Fiber_Length_Meter"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C2",
+   "class": "field_on_another_module",
+   "text": "A field of another module: the refusal names the module that holds it",
+   "steps": [
+    {
+     "query": {
+      "org": "a",
+      "module": "Sites",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Grand_Total.from": "1"
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 422,
+     "code": "unknown_field",
+     "has": [
+      "is on: 'module:Invoices'",
+      "Give that module as the entity"
+     ],
+     "order": [
+      "is on:",
+      "Its fields are"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C3",
+   "class": "guessed_field",
+   "text": "A guessed field name: the refusal lists the real fields nearest first",
+   "steps": [
+    {
+     "query": {
+      "org": "a",
+      "module": "Sites",
+      "measure": "sum",
+      "field": "Fiber_Length_Meter_Placeholder",
+      "filters": {},
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 422,
+     "code": "unknown_field",
+     "has": [
+      "The closest fields of module:Sites are: 'Fiber_Length_Meter'"
+     ],
+     "order": [
+      "'Fiber_Length_Meter'",
+      "'Fiber_Length_Km'"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "C4",
+   "class": "status_filter",
+   "text": "group_by=status on a module: the refusal names the working form, and the form answers",
+   "steps": [
+    {
+     "query": {
+      "org": "a",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {},
+      "group_field": null,
+      "bucket": null,
+      "group_by": "status"
+     },
+     "status": 422,
+     "code": "unfit_field",
+     "has": [
+      "group_field=<key>",
+      "Status"
+     ]
+    },
+    {
+     "query": {
+      "org": "a",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {},
+      "group_field": "Status",
+      "bucket": null
+     },
+     "status": 200,
+     "groups": {
+      "Paid": 3,
+      "Overdue": 2,
+      "Draft": 3
+     }
+    }
+   ]
+  },
+  {
+   "id": "C5",
+   "class": "core_lookup_silent_zero",
+   "text": "A lookup by the Metorite id of a core contact counts that contact's records, and the id of an org B contact counts none",
+   "steps": [
+    {
+     "query": {
+      "org": "a",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Contact": {
+        "core": "ravi"
+       }
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 3
+    },
+    {
+     "query": {
+      "org": "a",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Contact": {
+        "core": "ravi",
+        "org": "b"
+       }
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 0
+    },
+    {
+     "query": {
+      "org": "b",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Contact": {
+        "core": "ravi",
+        "org": "a"
+       }
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 0
+    },
+    {
+     "query": {
+      "org": "b",
+      "module": "Invoices",
+      "measure": "count",
+      "field": null,
+      "filters": {
+       "Contact": {
+        "core": "ravi",
+        "org": "b"
+       }
+      },
+      "group_field": null,
+      "bucket": null
+     },
+     "status": 200,
+     "total": 1
+    }
+   ]
+  }
+ ]
+}

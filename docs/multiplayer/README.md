@@ -308,8 +308,15 @@ chat_session  (already exists — becomes the room)
   + cc:room:{thread_id}  (new Redis stream — room events that outlive runs)
 ```
 
-> **Update 2026-08-01 (doc-truth pass):** the proposed `chat_session_member`
-> shipped as **`chat_session_participant`** (migration 138).
+> **Update 2026-08-01 (doc-truth pass):** the room membership that this
+> sketch calls `chat_session_member` shipped as **`chat_session_participant`**
+> (migration 138).
+>
+> **Update 2026-11-16 (WS-CO CO-11):** a table named `chat_session_member` now
+> exists, and it is not the membership. Migration 450 holds the per-member row
+> of a chat: the pin of one member today, and the topic of CO-2 later
+> (`chat_organization.md` §10). Room membership stays in
+> `chat_session_participant`.
 
 Why this and not a new abstraction:
 

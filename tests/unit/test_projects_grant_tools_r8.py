@@ -58,6 +58,7 @@ import uuid
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
@@ -201,17 +202,16 @@ async def test_r8_the_route_still_decides_without_the_flag(live, monkeypatch) ->
 
 async def test_r8_a_declined_card_writes_nothing(live, monkeypatch) -> None:
     from skill_projects import guarded
-    from skill_projects import writes as W
 
     pid = _private(live, f"op6b declined {uuid.uuid4().hex[:6]}")
     d._grant(live.seeder, pid, "group:design")
     before = _grant_rows(live, pid)
     deny(monkeypatch)
     out = await _chat(live, monkeypatch, LEAD, lambda: guarded.grant_access(pid, "org"))
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     out = await _chat(live, monkeypatch, LEAD,
                       lambda: guarded.revoke_access(pid, "group:design"))
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert _grant_rows(live, pid) == before
 
 

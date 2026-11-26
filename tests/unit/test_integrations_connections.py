@@ -248,3 +248,57 @@ async def test_a_reader_without_manage_is_never_offered_a_consent(monkeypatch) -
     assert not any(r.can_connect for r in rows.values())
     # The label is a fact about the connection, so a reader sees it too.
     assert rows["notion"].acts_as == "dana@fracktal.test"
+
+
+# -- CSY-7: PATCH /integrations/mcp/{name} also takes the description ----------
+
+
+def _mcp_client(permissions: list[str]) -> TestClient:
+    app = FastAPI()
+    app.include_router(integrations.router)
+    app.dependency_overrides[get_current_user] = lambda: UserContext(
+        email="member@example.test", role=UserRole.EMPLOYEE,
+        access=build_access(permissions), organization_id="00000000-0000-0000-0000-000000000001",
+    )
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_the_mcp_patch_body_takes_a_trimmed_description() -> None:
+    body = integrations.McpSwitchesRequest(description="  Orders of the shop.  ")
+    assert body.description == "Orders of the shop."
+    assert body.always_confirm is None and body.read_only_key is None
+    # An empty text is a value: it clears the description.
+    assert integrations.McpSwitchesRequest(description="   ").description == ""
+
+
+def test_the_mcp_patch_body_keeps_the_switches_beside_the_description() -> None:
+    body = integrations.McpSwitchesRequest(always_confirm=False, description="Data.")
+    assert body.always_confirm is False and body.description == "Data."
+
+
+@pytest.mark.parametrize("body", [{}, {"description": None}])
+def test_the_mcp_patch_with_no_field_is_422(body: dict) -> None:
+    client = _mcp_client(["feature:integrations", "integrations:manage"])
+    res = client.patch("/integrations/mcp/x", json=body)
+    assert res.status_code == 422, res.text
+
+
+def test_the_mcp_patch_with_a_too_long_description_is_422() -> None:
+    client = _mcp_client(["feature:integrations", "integrations:manage"])
+    long = "x" * (integrations.MCP_DESCRIPTION_MAX + 1)
+    assert client.patch("/integrations/mcp/x", json={"description": long}).status_code == 422
+    # A text of exactly the bound passes validation. The gateway then finds no tenant.
+    ok = client.patch("/integrations/mcp/x", json={"description": "x" * integrations.MCP_DESCRIPTION_MAX})
+    assert ok.status_code != 422
+
+
+def test_the_mcp_patch_description_must_be_a_string() -> None:
+    client = _mcp_client(["feature:integrations", "integrations:manage"])
+    assert client.patch("/integrations/mcp/x", json={"description": 5}).status_code == 422
+
+
+def test_the_mcp_patch_without_manage_is_403() -> None:
+    client = _mcp_client(["feature:integrations"])
+    res = client.patch("/integrations/mcp/x", json={"description": "Data."})
+    assert res.status_code == 403, res.text
+    assert "integrations:manage" in res.json()["detail"]

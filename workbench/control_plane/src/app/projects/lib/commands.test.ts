@@ -21,7 +21,11 @@ import {
   type Command,
   type CommandActions,
   type CommandContext,
+  DARK_GATED_MODES,
   VIEW_MODES,
+  agentsOffered,
+  isModeOffered,
+  resolveMode,
   honoursGroupBy,
   honoursLanes,
   availableCommands,
@@ -420,5 +424,45 @@ describe("the shortcuts sheet is generated, never written", () => {
     expect(shortcutSections(fake)).toEqual([
       { section: "Help", rows: [{ label: "Something new", keys: "x", icon: "Star" }] },
     ]);
+  });
+});
+
+describe("the Agents canvas (SW-112)", () => {
+  it("is the seventh and last canvas", () => {
+    expect(VIEW_MODES).toHaveLength(7);
+    expect(VIEW_MODES[VIEW_MODES.length - 1].id).toBe("agents");
+  });
+
+  it("honours no grouping and no lanes", () => {
+    expect(honoursGroupBy("agents")).toBe(false);
+    expect(honoursLanes("agents")).toBe(false);
+  });
+
+  it("is offered only while the map answers, and a dark mode resolves to the default", () => {
+    expect(isModeOffered("agents", false)).toBe(false);
+    expect(isModeOffered("agents", true)).toBe(true);
+    expect(isModeOffered("board", false)).toBe(true);
+    expect(resolveMode("agents", "dark", "board")).toBe("board");
+    // A failed read keeps the canvas, which shows a message and a way to read again.
+    expect(resolveMode("agents", "error", "board")).toBe("agents");
+    expect(resolveMode("agents", "ready", "board")).toBe("agents");
+    // A loading read keeps it only after a ready read, so a dark org never flashes the skeleton.
+    expect(resolveMode("agents", "loading", "board", "ready")).toBe("agents");
+    expect(resolveMode("agents", "loading", "board", "dark")).toBe("board");
+    expect(resolveMode("agents", "loading", "board", null)).toBe("board");
+    expect(agentsOffered("ready", null)).toBe(true);
+    expect(agentsOffered("error", "dark")).toBe(true);
+    expect(agentsOffered("dark", "ready")).toBe(false);
+    expect(agentsOffered("loading", "ready")).toBe(true);
+    expect(agentsOffered("loading", "error")).toBe(false);
+    expect(resolveMode("timeline", "dark", "board")).toBe("timeline");
+    expect(DARK_GATED_MODES).toEqual(["agents"]);
+  });
+
+  it("offers the palette command only while the map answers", () => {
+    const cmd = COMMANDS.find((c) => c.id === "view.agents");
+    const ctx = { hasProject: true } as CommandContext;
+    expect(cmd?.when?.({ ...ctx, agentsOn: false })).toBe(false);
+    expect(cmd?.when?.({ ...ctx, agentsOn: true })).toBe(true);
   });
 });

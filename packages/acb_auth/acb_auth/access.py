@@ -1002,6 +1002,12 @@ async def promote_invited_member(*, email: str) -> None:
         _log.warning(
             "invited_member_promotion_failed", email=email, error=str(exc)[:200],
         )
+    finally:
+        # OB-0d (task 1350): an earlier resolve in this process may have cached
+        # the person as invited or refused (60 s). Drop the entry AFTER the
+        # commit, in every outcome, so the first /auth/me reads the new status.
+        # A failed promotion leaves them invited, and the next read says so.
+        invalidate(email)
 
 
 # ── Identity shadow: PURGE closure (WS-29 H6 orphan-closure, D48) — DARK ──────

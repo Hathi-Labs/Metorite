@@ -32,17 +32,39 @@ resolves one), an action has no chat tool, it names more than
 slug with each hyphen as a space, as one whole phrase in the words that the member
 sent in this turn. It is layer (a) of ``tool_packs`` and makes no model
 call. The fence is ``tests/unit/test_skill_packs.py``.
+
+**A chat tool as an action (TOF-1a).** :func:`chat_tools` is the ONE scope of
+the catalog source ``tool``: each tool of a pack of :data:`CHAT_TOOL_OWNERS`,
+less the packs of :data:`CHAT_TOOL_LEFT_OUT`, a ``studio_`` name and a tool
+that a door op maps already. :func:`action_tool` maps ``tool:<name>`` to
+``<name>`` for a name in that scope, and to None for each other name. So a
+dark tool, a Studio builder tool and an ``email-setup`` tool make a skill
+fail to load with ``action_unserved``. The tool keeps its own card and guard.
+
+**A skill brings the pack of its chat tool (TOF-1b).** A skill pack adds no
+tool of its own. When the run base does not hold a tool of a ``tool:``
+action, :func:`pack_needs` names the code pack of that tool, and
+``tool_packs.choose`` adds that pack last, in the room that is left. Each
+other tool keeps the F3 rule: the run must hold it (``_skills_present``).
+:func:`build` serves a ``tool:`` action only with ``chat_tools`` True, the
+answer of ``STUDIO_CHAT_TOOLS_ORGS`` that the run reads. Else the skill
+fails to load with ``chat_tools_off``.
 """
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from acb_skills.hidden_text import strip_hidden
 
 __all__ = [
+    "CHAT_TOOL_LEFT_OUT",
+    "CHAT_TOOL_OWNERS",
+    "CHAT_TOOL_PREFIX",
     "MAX_RULES_TOKENS",
     "MIN_NAME_CHARS",
     "OBJECT_VERB_TOOLS",
@@ -51,9 +73,11 @@ __all__ = [
     "action_tool",
     "build",
     "button_tools",
+    "chat_tools",
     "estimate_tokens",
     "is_skill_slug",
     "matches",
+    "pack_needs",
     "rules_text",
     "skill_slug",
 ]
@@ -114,6 +138,88 @@ OBJECT_VERB_TOOLS: Mapping[str, str] = {
 }
 
 
+#: TOF-1a. The prefix of a chat tool action of the catalog: ``tool:<name>``.
+#: The ``uses`` grammar of ``acb_common.studio_manifest`` has no such form,
+#: so no package can name one, and the action door never runs one.
+CHAT_TOOL_PREFIX = "tool:"
+#: TOF-1a. The owners whose packs give the catalog source ``tool``: the CRM,
+#: Email and Projects assistants. The Calendar tools are the ``calendar-day``
+#: pack of the Projects assistant. An allow list, so the pack of a new owner
+#: joins only by an edit here. The Studio builder is not on it, because a
+#: skill must not hold a tool that changes Studio itself.
+CHAT_TOOL_OWNERS: frozenset[str] = frozenset(
+    {"crm-assistant", "email-assistant", "projects-assistant"})
+#: TOF-1a. The packs of those owners that give no ``tool`` row.
+#: ``email-setup`` changes the rules and the settings of the assistant.
+CHAT_TOOL_LEFT_OUT: frozenset[str] = frozenset({"email-setup"})
+#: TOF-1a. A tool name with this prefix never gives a ``tool`` row.
+_STUDIO_TOOL = "studio_"
+
+
+def _door_tools() -> frozenset[str]:
+    """The chat tools that a door op of a manifest app maps already."""
+    try:
+        from acb_common.app_manifests import door_ops, every_app
+    except ImportError:  # pragma: no cover - acb_common ships with the platform
+        return frozenset()
+    found: set[str] = set()
+    for app in every_app():
+        if app.door != "ops":
+            continue
+        for op in door_ops(app).values():
+            tool = getattr(getattr(op, "route", None), "tool", "")
+            if tool:
+                found.add(str(tool))
+    return frozenset(found)
+
+
+_Packs = tuple[tuple[str, str, tuple[str, ...]], ...]
+
+
+def _scope_key() -> tuple[_Packs, frozenset[str], frozenset[str], frozenset[str]]:
+    """The inputs of the scope, a key of :func:`_scope`: each pack with its
+    owner and its tools in the order of the registry, the door tools, the
+    owners and the packs left out."""
+    from acb_skills import skill_families
+
+    packs = tuple(
+        (str(slug), str(fam.get("owner")), tuple(fam["tools"]))
+        for slug, fam in skill_families.SKILL_FAMILIES.items() if fam.get("owner"))
+    return packs, _door_tools(), frozenset(CHAT_TOOL_OWNERS), frozenset(CHAT_TOOL_LEFT_OUT)
+
+
+@functools.lru_cache(maxsize=8)
+def _scope(packs: _Packs, doors: frozenset[str], owners: frozenset[str],
+           left_out: frozenset[str]) -> Mapping[str, str]:
+    """The scope of :func:`chat_tools` for these inputs, read only."""
+    found: dict[str, str] = {}
+    twice: set[str] = set()
+    for slug, owner, tools in packs:
+        if owner not in owners or slug in left_out:
+            continue
+        for name in map(str, tools):
+            if name.startswith(_STUDIO_TOOL) or name in doors:
+                continue
+            if name in found:
+                twice.add(name)
+            found[name] = slug
+    return MappingProxyType({n: s for n, s in found.items() if n not in twice})
+
+
+def chat_tools() -> dict[str, str]:
+    """TOF-1a. Each chat tool that the catalog serves as ``tool:<name>``,
+    mapped to the slug of its pack, in the order of the registry.
+
+    THE one scope. It reads ``skill_families`` on each call, so a new tool of
+    a pack in scope joins with no edit here. A tool is in scope when its pack
+    names an owner of :data:`CHAT_TOOL_OWNERS` and is not in
+    :data:`CHAT_TOOL_LEFT_OUT`. A ``studio_`` name, a tool that a door op maps
+    already (that door op is its one row) and a name that a second pack holds
+    too give no entry. Pure: no I/O, and no tool loads. The answer for one
+    set of inputs is kept (:func:`_scope`), so a catalog read pays it once."""
+    return dict(_scope(*_scope_key()))
+
+
 def action_tool(action_id: object) -> str | None:
     """The chat tool of the catalog action *action_id*, or None.
 
@@ -124,11 +230,16 @@ def action_tool(action_id: object) -> str | None:
       row (``Route.tool``), when the row names one.
     * ``object:<name>.<verb>``, a record action, gives the record tool of the
       verb (``OBJECT_VERB_TOOLS``). ``get`` has no tool, so it gives None.
+    * ``tool:<name>`` (TOF-1a) gives ``<name>`` when :func:`chat_tools` holds
+      it, and None for each other name.
     * Each other action has no chat tool.
     """
     if not isinstance(action_id, str):
         return None
     action = action_id.strip()
+    if action.startswith(CHAT_TOOL_PREFIX):
+        name = action[len(CHAT_TOOL_PREFIX):]
+        return name if name in _scope(*_scope_key()) else None
     if action.startswith("workflow:") and len(action) > len("workflow:"):
         return "run_workflow"
     if action.startswith("object:"):
@@ -149,6 +260,32 @@ def action_tool(action_id: object) -> str | None:
     return str(tool) if tool else None
 
 
+def pack_needs(skills: Iterable[Any], held: Iterable[str]) -> dict[str, tuple[str, ...]]:
+    """TOF-1b. The code packs that each skill of *skills* brings, by the slug
+    of the skill. THE one map. Pure: no I/O, and no tool loads.
+
+    A tool of a skill brings pack P when :func:`chat_tools` maps the tool to P
+    and *held*, the tools of the run base, does not hold the tool. A door op
+    tool, ``run_workflow`` and a record tool are not in that scope, so they
+    keep the F3 rule: the run must hold them. A name that two packs hold has
+    no entry in the scope, so it brings no pack. The packs keep the order of
+    the tools, with no repeat. A skill that brings no pack has no entry."""
+    scope = _scope(*_scope_key())
+    have = frozenset(str(name) for name in held)
+    out: dict[str, tuple[str, ...]] = {}
+    for found in skills:
+        slug = str(getattr(found, "slug", "") or "")
+        packs: list[str] = []
+        for raw in tuple(getattr(found, "tools", ()) or ()):
+            name = str(raw)
+            owner_pack = scope.get(name)
+            if owner_pack and name not in have and owner_pack not in packs:
+                packs.append(owner_pack)
+        if slug and packs:
+            out[slug] = tuple(packs)
+    return out
+
+
 def button_tools(manifest: Mapping[str, Any]) -> tuple[
         tuple[tuple[str, str, str], ...], tuple[tuple[str, str, str], ...]]:
     """F10a. Split the buttons of the views of *manifest* by chat tool.
@@ -157,7 +294,8 @@ def button_tools(manifest: Mapping[str, Any]) -> tuple[
     Pure: no I/O. Returns ``(served, unserved)``. A served item is
     ``(view_id, action_id, tool)``. An unserved item is
     ``(view_id, action_id, reason)``. The reason is one of ``undeclared``,
-    ``set`` (a set-action does not run in chat), ``door_op``, ``logic`` (no chat tool yet), ``integration``
+    ``set`` (a set-action does not run in chat), ``door_op``, ``logic`` (no chat tool yet),
+    ``mcp`` (STU-B1b-1, no chat tool yet), ``integration``
     or ``no_tool``. A plain object verb or a workflow is served.
     """
     declared: dict[str, Mapping[str, Any]] = {}
@@ -186,6 +324,8 @@ def button_tools(manifest: Mapping[str, Any]) -> tuple[
                 unserved.append((view_id, name, "integration"))
             elif uses.startswith("logic:"):
                 unserved.append((view_id, name, "logic"))
+            elif uses.startswith("mcp:"):
+                unserved.append((view_id, name, "mcp"))
             elif not (uses.startswith("object:") or uses.startswith("workflow:")):
                 unserved.append((view_id, name, "door_op"))
             elif (tool := action_tool(uses)) is None:
@@ -232,11 +372,16 @@ def rules_text(name: str, description: str, instructions: str,
 
 def build(skill_id: str, name: str, description: str, version: int,
           content_hash: str, body: Mapping[str, Any],
-          *, max_tools: int) -> SkillPack | str:
+          *, max_tools: int, chat_tools: bool = False) -> SkillPack | str:
     """The pack of one stored skill version, or the reason it fails to load.
 
     The reasons are ``no_instructions``, ``unresolved_variable``,
-    ``action_unserved``, ``too_many_tools`` and ``too_long``."""
+    ``chat_tools_off``, ``action_unserved``, ``too_many_tools`` and
+    ``too_long``.
+
+    TOF-1b: *chat_tools* is the answer of ``STUDIO_CHAT_TOOLS_ORGS`` for the
+    org of the run. The caller reads it, so this module reads no flag. With
+    False, the default, a ``tool:`` action gives ``chat_tools_off``."""
     clean_name = strip_hidden(str(name or "")).strip()
     raw_desc = body.get("description") if isinstance(body, Mapping) else None
     desc = strip_hidden(str(raw_desc if isinstance(raw_desc, str) else description or "")).strip()
@@ -250,7 +395,10 @@ def build(skill_id: str, name: str, description: str, version: int,
     actions = raw_actions if isinstance(raw_actions, list) else []
     tools: list[str] = []
     for action in actions:
-        tool = action_tool(strip_hidden(str(action)))
+        raw = strip_hidden(str(action))
+        if not chat_tools and raw.strip().startswith(CHAT_TOOL_PREFIX):
+            return "chat_tools_off"
+        tool = action_tool(raw)
         if tool is None:
             return "action_unserved"
         if tool not in tools:

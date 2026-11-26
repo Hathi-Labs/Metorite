@@ -7,6 +7,8 @@ Spec: ``project-docs/specs/knowledge_base.md`` §20.
   Seven sources: tasks, email, people, crm, artifacts, whatsapp and, from
   KR-3, knowledge.
 * ``company`` — ``GET /search/company``, the route that asks every source.
+* ``names`` — ``GET /search/names``, the route of ``resolve_name`` (FIND-5):
+  the records that hold one name, from each source with ``named``.
 
 The command bar's ``PROVIDERS`` (``routes/shell/search.py``) is a projection
 of ``REGISTRY``. No module here writes SQL or opens a session.

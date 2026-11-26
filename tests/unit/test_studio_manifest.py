@@ -291,7 +291,8 @@ def test_bad_uses_grammar():
 
 
 @pytest.mark.parametrize(
-    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000"]
+    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000",
+             "mcp:github.get_issue"]
 )
 def test_other_uses_forms_are_valid(uses):
     d = copy.deepcopy(EXAMPLE)
@@ -1295,7 +1296,7 @@ def test_the_example_names_a_registry_connection():
 
 @pytest.mark.parametrize("names", [
     [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
-    ["mcp:" + "a" * 50], ["a" * 48],
+    ["mcp:" + "a" * 50], ["a" * 48], ["api:zoho_books"],
 ])
 def test_a_connection_of_the_grammar_passes(names):
     assert validate_manifest(_with_connections(names)) == []
@@ -1304,6 +1305,8 @@ def test_a_connection_of_the_grammar_passes(names):
 @pytest.mark.parametrize("name", [
     "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
     "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+    # API-5: an API connection is api:<template id>, one name only.
+    "api:", "api:Zoho", "api:zoho-books", "api:zoho:books", "API:zoho_books",
 ])
 def test_a_bad_connection_name_is_refused_with_its_path(name):
     e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
