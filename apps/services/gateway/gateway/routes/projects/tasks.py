@@ -2744,7 +2744,7 @@ async def set_assignees(
         # `current` is not a pass: only the session member is.
         me = actor(user).strip().lower()
         scope_note = (
-            await check_claim_scope(db, user, task.project_id, current, vis)
+            await check_claim_scope(db, user, task, current, vis)
             if agent_call and me in wanted and not holds_task(user, current)
             else None
         )
@@ -2984,7 +2984,7 @@ async def claim_task(
         # outside the member's own apps, warns or is refused
         # (AGENT_CLAIM_SCOPE_MODES).
         # Before any write, so a refusal writes nothing.
-        scope_note = await check_claim_scope(db, user, seen.project_id, current, vis)
+        scope_note = await check_claim_scope(db, user, seen, current, vis)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,

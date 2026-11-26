@@ -28,6 +28,8 @@
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
+**SW-45 (own apps in `my_work` and the claim scope, task 1878) is built and dark behind `AGENT_CLAIM_SCOPE_MODES`, 2026-11-26, branch `sw45-own-apps`. It is not merged yet.**
+
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 **1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
@@ -324,6 +326,11 @@ SW-18 names the project lead as a last-resort reviewer.
   3. A warning leaves a line in the timeline, so the lead sees the claim.
   4. The mode `refuse` can follow after one week of data (Q6).
 - **A task assigned to the member always passes.** Someone chose that member.
+- **Three more passes hold for the session member only** (task 1878, 2026-11-26). Each one applies to `claim_task`, `start_agent_run` and an agent's self-add:
+  1. The member queued an open run on the task for this connection. Only the member start writes a run with `started_by` equal to the member. A run that an agent opened does not count. That covers `claim_task`, `start_agent_run` and `ask_on_task`.
+  2. The task is in the member's own personal project, the root or an Area below it.
+  3. The member created the task.
+- **In mode `refuse`, a hold outside the member's apps answers 403 `outside_apps`.** That covers `claim_task`, `ask_on_task` and an agent's own `start_agent_run`.
 - **The hard gate for a seam is GitHub.** CODEOWNERS on the seam paths makes the seam owner review the change (ONB-7, task 1872, which has no spec yet). The board only routes and warns.
 
 #### 3.10.2 Approvals to the right person (SW-46, SW-48)
@@ -1545,12 +1552,13 @@ They keep their own gates.
 - **Scope.**
   1. Read "own apps" as §3.10.1 says, through `authority.py`. No migration.
   2. `my_work` gains the group `own_app_free` (§3.10.1). Each row carries `app_project`. Assigned rows keep their order.
-  3. In mode `warn`, `claim_task` of an unassigned task outside the member's apps works. It returns a `warning` that names the lead. It writes one timeline line. In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes.
+  3. In mode `warn`, `claim_task` of an unassigned task outside the member's apps works. It returns a `warning` that names the lead. It writes one timeline line. In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes. Three more passes hold for the session member (§3.10.1). The member queued a run, or the task is in the member's personal project, or the member created it.
   4. The flag `AGENT_CLAIM_SCOPE_MODES`, a map from organization to `off`, `warn` or `refuse`, default `off` (`docs/flag_reload.md`).
 - **Done when.** R8: a member with one own app gets that app's free tasks in `own_app_free`. A claim outside it warns in `warn`, gets 403 in `refuse`, and passes in `off`. An assigned task passes in all modes.
 - **Fence.** `test_agent_claim_scope_r8.py` (new). `test_app_ownership_seam.py` (new) fails when a module other than `authority.py` names `pm_projects.lead` or `lead =`. Its allowlist holds the public walk SQL symbol of `authority.py`. An edge test for the warning text.
 - **Risk.** HIGH (a refusal on a write). **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-44. Q6.
 - **Status.** BUILT 2026-11-11, dark (task 1878). `AGENT_CLAIM_SCOPE_MODES` is empty by default, so each org reads `off`. Its one reader is `agent_oauth.claim_scope_mode`, and a SIGHUP reload of the gateway applies a change. `authority.own_apps` and `authority.app_owner` read the own apps. `pm_project_grants` holds no access level, so a grant gives a view and never makes an app the member's own. `GET /projects/my/own-app-free` (`routes/projects/claim_scope.py`) gives the free rows. It skips a task with an open blocker and a task of a filed project. The one check, `claim_scope.check_claim_scope`, reads each agent hold of a task that does not hold the session member. Another member, a colleague with a grant or an `agent:<name>` key on the task is not a pass (review, 2026-11-17). Mode `refuse` covers three routes: `claim_task`, an agent `set_assignees` that adds its own member, and an agent `start_agent_run`. The MCP edge gives the claim's refusal text and `warning` on all three. A pinned connection reads no app name and no lead above its pins. The chat `my_work` does not show the group yet.
+- **Fix round, 2026-11-26 (task 1878).** `check_claim_scope` takes the task row. It passes three more cases for the session member only. The first is a run that the member queued on the task for this connection (`claim_scope.queued_by_member`). A run of a colleague, a run that an agent opened and a run that has ended do not count. The second is a task in the member's own personal tree (`authority.in_own_personal_tree`). The third is a task that the member created (`authority.made_by_member`). In mode `refuse`, `ask_on_task` and an agent's own start outside the member's apps answer 403. The policy key `claim_scope_mode` does not read `AGENT_CLAIM_SCOPE_MODES` (`agent_policies.FLAGS_NOT_YET`), so the flag has one reader. The branch is not merged.
 
 #### SW-46 · The lead answers, and a preview goes to the lead first
 

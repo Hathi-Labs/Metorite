@@ -23,6 +23,7 @@ a change. The flip stays OWNER-GATE (`enforcement-flip`).
 `AGENT_CLAIM_SCOPE_MODES` sets the scope of an agent claim for each org
 (`agent_coordination.md` SW-45). A mode is `off`, `warn` or `refuse`, and the
 default is `off`. Its one reader is `acb_auth.agent_oauth.claim_scope_mode`.
+The policy store does not read it until SW-46 (`agent_policies.FLAGS_NOT_YET`).
 A reload applies a change. The flip stays OWNER-GATE (`enforcement-flip`).
 
 `AGENT_QUESTIONS_ORGS` changes who may answer an agent's question

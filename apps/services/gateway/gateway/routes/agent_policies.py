@@ -258,14 +258,20 @@ _CHECKS = {
 }
 
 
-#: The master flags that a key names and that are not ``Settings`` fields yet.
-#: Each reads as off until its slice adds the field: SW-67
+#: The master flags that a key names and that the store does not read yet.
+#: :func:`flag_raw` reads each one as ``""``, so its key reads as off. SW-67
 #: (``agent_lane_modes``), SW-95 (``agent_budget_modes``) and SW-75
-#: (``agent_auto_answer_orgs``). The slice that adds the field removes its name
-#: here. SW-45 added ``agent_claim_scope_modes``. Fence:
-#: ``test_agent_policies_r8.py::test_each_flag_is_a_setting_or_not_yet``.
+#: (``agent_auto_answer_orgs``) are not ``Settings`` fields yet. The slice
+#: that adds the field and wires its key removes the name here.
+#: ``agent_claim_scope_modes`` IS a field (SW-45), and its one reader is
+#: ``acb_auth.agent_oauth.claim_scope_mode``. The claim does not read the key
+#: ``claim_scope_mode``, so the store must not read the flag either. SW-46
+#: wires the key and removes the name. Fence:
+#: ``test_agent_policies_r8.py::test_each_flag_is_a_setting_or_not_yet`` and
+#: ``test_the_claim_scope_flag_is_not_read_by_the_store``.
 FLAGS_NOT_YET = frozenset({
-    "agent_lane_modes", "agent_budget_modes", "agent_auto_answer_orgs",
+    "agent_claim_scope_modes", "agent_lane_modes", "agent_budget_modes",
+    "agent_auto_answer_orgs",
 })
 
 
@@ -283,8 +289,11 @@ def _org(organization_id: Any) -> str:
 
 def flag_raw(name: str) -> str:
     """The raw value of the ``Settings`` field *name*, or ``""`` when the field
-    does not exist yet (its slice adds it). Read on each call, so a flag reload
-    applies a change with no restart."""
+    does not exist yet (its slice adds it). A name on :data:`FLAGS_NOT_YET`
+    reads as ``""`` too, also when the field exists. Read on each call, so a
+    flag reload applies a change with no restart."""
+    if name in FLAGS_NOT_YET:
+        return ""
     return str(getattr(get_settings(), name, "") or "")
 
 

@@ -2615,7 +2615,10 @@ async def start_agent_run(
     Outside the member's own apps, mode ``warn`` starts the run, writes one
     timeline line for a new run, and the answer has ``warning`` and
     ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
-    writes nothing. A replay of the same key is not checked again.
+    writes nothing. A replay of the same key is not checked again. The MCP
+    ``ask_on_task`` starts its run here, so it gets the same answer. A run
+    that the member queued here (``via is None``) lets the member's agent
+    in, and a run that an agent started does not.
     """
     task_id = _parse_uuid(task_id, "Task")
     _require_write_scope(user)
@@ -2770,7 +2773,8 @@ async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
                        vis: Any) -> dict[str, Any] | None:
     """SW-45: the scope check of an agent's start, or ``None`` for a member.
     It reads the assignees of the task. Only the session member among them
-    is a pass (review P1 of 2026-11-17)."""
+    is a pass (review P1 of 2026-11-17). The other passes are in
+    ``check_claim_scope``."""
     if via is None:
         return None
     current = {
@@ -2779,7 +2783,7 @@ async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
             {"tid": str(task.id)},
         )).fetchall()
     }
-    return await check_claim_scope(db, user, task.project_id, current, vis)
+    return await check_claim_scope(db, user, task, current, vis)
 
 
 def _with_scope_warning(result: dict[str, Any],

@@ -291,6 +291,28 @@ async def project_visible(db: Any, vis: Any, project_id: Any) -> bool:
     return found is not None
 
 
+def made_by_member(row: Any, user: Any) -> bool:
+    """True when *user* created *row*, a task or a project row. (SW-45.)
+
+    The compare of the delete rule (D-OP-12): ``created_by`` and the session
+    email, trimmed and in lower case. A caller with no email made nothing.
+    """
+    return _made_by(row, _me(user))
+
+
+async def in_own_personal_tree(db: Any, user: Any, project_id: Any) -> bool:
+    """True when *project_id* is in the personal tree of *user*. (SW-45.)
+
+    The root of the tree and each Area below it count. The answer is
+    :func:`personal_tree_owner`, the one walk of a personal tree, so a team
+    node below the tree is not in it.
+    """
+    me = _me(user)
+    if not me or not project_id:
+        return False
+    return await personal_tree_owner(db, {"id": str(project_id)}) == me
+
+
 async def may_delete_task(
     db: Any, user: Any, task: Any, *, led: frozenset[str] | None = None,
 ) -> bool:

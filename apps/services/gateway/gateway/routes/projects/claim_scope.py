@@ -13,7 +13,9 @@ no lead column of its own (``tests/unit/test_app_ownership_seam.py``).
 ``warn`` or ``refuse``. The one reader is
 ``acb_auth.agent_oauth.claim_scope_mode``. It reads the settings at each call,
 so a SIGHUP reload of the gateway applies a change. Off, the default, the
-route answers no rows and the claim does not change.
+route answers no rows and the claim does not change. The policy key
+``claim_scope_mode`` of the policy store does not read the flag yet
+(``agent_policies.FLAGS_NOT_YET``), and the claim does not read that key.
 
 **The route.** Up to :data:`OWN_APP_FREE_MAX` tasks of the own apps that the
 member can see, that have no assignee, that no open run holds and that no
@@ -28,7 +30,10 @@ The MCP ``my_work`` lists them after the assigned rows, with the reason
 task that is assigned to the session member always passes, because someone
 chose that member. A task that is assigned only to other people, to a
 colleague with a grant or to an ``agent:<name>`` key, is checked as a free
-task is (review P1 of 2026-11-17). Outside the own apps:
+task is (review P1 of 2026-11-17). Three more passes hold for the session
+member only: a run that the member queued on the task for this connection,
+a task in the member's own personal tree, and a task that the member
+created (:func:`check_claim_scope`). Outside the own apps:
 
 * ``warn``: the claim works. The answer has ``warning`` and
   ``outside_apps`` (``{"lead": <email or null>}``), and the timeline of the
@@ -47,7 +52,12 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from acb_auth.agent_oauth import claim_scope_mode
 from fastapi import Depends, HTTPException
-from gateway.routes.projects.authority import app_owner, own_apps
+from gateway.routes.projects.authority import (
+    app_owner,
+    in_own_personal_tree,
+    made_by_member,
+    own_apps,
+)
 from gateway.routes.projects.core import (
     PRIORITY_RANK_SQL,
     TaskModel,
@@ -59,7 +69,11 @@ from gateway.routes.projects.core import (
     row_to_dict,
     task_visibility_clause,
 )
-from gateway.routes.projects.filters import attach_relation_counts, unheld_clause
+from gateway.routes.projects.filters import (
+    BOUND_ORG_SQL,
+    attach_relation_counts,
+    unheld_clause,
+)
 from sqlalchemy import text
 
 #: The most ``own_app_free`` rows of one ``my_work`` (§3.10.1).
@@ -169,18 +183,31 @@ REFUSED_TEXT = (
     " or take a task from my_work.")
 
 
-async def check_claim_scope(db: Any, user: Any, project_id: Any,
+async def check_claim_scope(db: Any, user: Any, task: Any,
                             current: set[str], vis: Any) -> dict[str, Any] | None:
     """The scope check of an agent hold, before any write. (SW-45.)
 
     The ONE check of three routes, so that ``refuse`` has no second door
     (review P1): ``claim_task``, an agent's ``set_assignees`` that adds its
-    own member, and an agent's ``start_agent_run``.
+    own member, and an agent's ``start_agent_run``. *task* is the row that
+    the route loaded, with ``id``, ``project_id`` and ``created_by``.
 
-    Only a task that is assigned to the session member passes at once. An
-    assignee that is another member, a colleague with a grant or an
-    ``agent:<name>`` key is not a pass (review P1 of 2026-11-17). Otherwise
-    an agent assigns ``agent:x`` first, and then claims.
+    A task passes when one of these holds for the session member:
+
+    1. The task is assigned to the member. An assignee that is another
+       member, a colleague with a grant or an ``agent:<name>`` key is not a
+       pass (review P1 of 2026-11-17). Otherwise an agent assigns
+       ``agent:x`` first, and then claims.
+    2. The member created the task (:func:`authority.made_by_member`).
+    3. The member queued an open run on the task for this connection
+       (:func:`queued_by_member`).
+    4. The task is in an own app (:func:`authority.app_owner`).
+    5. The task is in the member's own personal tree
+       (:func:`authority.in_own_personal_tree`).
+
+    The checks with no query go first, then the one indexed read of the
+    runs, then the two walks. A hold costs at most four reads, and no read
+    for each row.
 
     ``None`` lets the hold go with no note. A dict is a hold in mode
     ``warn``: the hold goes, and the caller writes
@@ -194,13 +221,65 @@ async def check_claim_scope(db: Any, user: Any, project_id: Any,
     mode = scope_mode(user)
     if mode == "off":
         return None
+    if made_by_member(task, user):
+        return None
+    if await queued_by_member(db, user, _field(task, "id")):
+        return None
+    project_id = _field(task, "project_id")
     lead, own = await app_owner(db, user, project_id, vis=vis)
-    if own:
+    if own or await in_own_personal_tree(db, user, project_id):
         return None
     if mode == "refuse":
         raise HTTPException(status_code=403, detail={
             "error": OUTSIDE_APPS, "message": REFUSED_TEXT, "lead": lead})
     return {"lead": lead}
+
+
+def _field(row: Any, name: str) -> Any:
+    return row.get(name) if isinstance(row, dict) else getattr(row, name, None)
+
+
+#: The statuses of a run that a person queued and that is still open for
+#: its agent. ``stopping`` is out, because the member asked the run to stop.
+#: A completed, stopped, failed, abandoned or released run is out too.
+QUEUED_RUN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting")
+
+#: A run that the member queued on the task for this connection. The member
+#: start of ``agent_runs.start_agent_run`` (``via is None``) is the one
+#: writer that sets ``started_by`` to the member's email. Each run that an
+#: agent opens (a start, a claim, ``ask_on_task``, an archive request) has
+#: ``started_by`` ``mcp:<slug>``, so it never matches. The org arm is
+#: defence in depth beside FORCE RLS.
+_QUEUED_RUN_SQL = (
+    "SELECT 1 FROM pm_agent_runs r"
+    f" WHERE r.organization_id = {BOUND_ORG_SQL}"
+    "   AND r.task_id = CAST(:tid AS uuid)"
+    "   AND lower(r.member_email) = :me"
+    "   AND lower(btrim(r.started_by)) = :me"
+    "   AND r.connection_id = CAST(:cid AS uuid)"
+    "   AND r.status = ANY(:queued)"
+    " LIMIT 1"
+)
+
+
+async def queued_by_member(db: Any, user: Any, task_id: Any) -> bool:
+    """True when the session member queued an open run on *task_id* for the
+    session's own connection. (SW-45.)
+
+    The member, the connection and the tenant come from the session, never
+    from request input (R5). A colleague's run, a run that an agent started
+    and a run that has ended do not count.
+    """
+    agent = getattr(user, "agent", None)
+    connection = getattr(agent, "connection_id", None) if agent is not None else None
+    me = actor(user).strip().lower()
+    if not task_id or not connection or me in ("", "anonymous"):
+        return False
+    found = (await db.execute(text(_QUEUED_RUN_SQL), {
+        "tid": str(task_id), "me": me, "cid": str(connection),
+        "queued": list(QUEUED_RUN_STATUSES),
+    })).fetchone()
+    return found is not None
 
 
 def holds_task(user: Any, current: set[str]) -> bool:

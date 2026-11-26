@@ -610,3 +610,210 @@ class TestTheReviewReads:
             assert r.json()["outside_apps"] == {"lead": None}
             [line] = _scope_lines(live, task)
             assert line.meta["lead"] is None
+
+
+# ── Fix round of 2026-11-26: three more passes for the session member ──────
+
+
+def _queue(world, task: str, *, signed_as: str = "write") -> Any:
+    """The member start of ``start_agent_run`` (``via is None``) on the
+    connection *signed_as*: a run that a person queued for the member."""
+    return _send(world, "POST", f"/projects/tasks/{task}/agent-runs",
+                 body={"connection_id": world.c[signed_as], "body": "Do this task."},
+                 signed=None)
+
+
+def _run_row(world, task: str, **cols: Any) -> None:
+    """A run row, written by the admin with the tenant GUC set."""
+    names = ", ".join(cols)
+    marks = ", ".join(f":{k}" for k in cols)
+    world.seeder.one(
+        f"INSERT INTO pm_agent_runs (task_id, {names}) VALUES (CAST(:t AS uuid), {marks})"
+        " RETURNING id", t=task, **cols)
+
+
+def _personal(world) -> SimpleNamespace:
+    """The member's personal root and an Area below it, and the personal root
+    of OTHER with a view grant to the member. Made once."""
+    if getattr(world, "personal", None) is None:
+        a = world.seeder
+
+        def root(owner: str, name: str) -> str:
+            pid = str(a.one(
+                "INSERT INTO pm_projects (name, status, source, created_by, organization_id,"
+                " timezone, owns_statuses, personal_owner) VALUES (:n, 'active', 'manual',"
+                " :w, CAST(:o AS uuid), 'Asia/Kolkata', true, :w) RETURNING id",
+                n=name, w=owner, o=world.org))
+            a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+                  " organization_id) VALUES (CAST(:p AS uuid), :s, :w, CAST(:o AS uuid))"
+                  " RETURNING project_id", p=pid, s=MEMBER, w=owner, o=world.org)
+            world.s[pid] = _lanes(a, pid)
+            return pid
+
+        mine = root(MEMBER, "Inbox")
+        # The Area carries no stamp, so the check walks up to the root.
+        area = _sub(a, "Area", mine)
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :s, CAST(:o AS uuid))"
+              " RETURNING project_id", p=area, s=MEMBER, o=world.org)
+        world.personal = SimpleNamespace(root=mine, area=area,
+                                         other=root(OTHER, "Other inbox"))
+    return world.personal
+
+
+async def _hold(world, door: str, task: str) -> tuple[bool, str]:
+    """``(passed, text)`` of an agent hold through *door*: the MCP
+    ``claim_task`` or the agent's own ``start_agent_run``."""
+    if door == "claim":
+        result = await _claim(world, task)
+        return (not result["isError"]), result["content"][0]["text"]
+    r = await _start(world, task)
+    if r.status_code in (200, 201):
+        return True, r.text
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["error"] == "outside_apps", r.text
+    return False, r.text
+
+
+DOORS = ("claim", "start")
+
+
+class TestTheMemberPasses:
+    """Each pass in mode ``refuse``, on both doors, with a negative twin.
+
+    Mutations (R7). ``G`` as above.
+
+    * M15. ``G/claim_scope.py`` ``check_claim_scope`` drops
+      ``queued_by_member``. ``test_a_run_the_member_queued_passes``.
+    * M16. ``G/claim_scope.py`` ``_QUEUED_RUN_SQL`` drops the
+      ``started_by`` arm. ``test_a_run_an_agent_started_does_not_pass``.
+    * M17. ``G/claim_scope.py`` ``_QUEUED_RUN_SQL`` drops the member arm and
+      the ``started_by`` arm. ``test_a_colleagues_queued_run_does_not_pass``.
+      Each arm alone refuses the colleague's run, because only the member
+      start writes a run, and it writes the same email in both columns.
+    * M18. ``G/claim_scope.py`` ``QUEUED_RUN_STATUSES`` is
+      ``AGENT_RUN_OPEN_STATUSES`` or every status.
+      ``test_an_ended_run_does_not_pass``.
+    * M19. ``G/claim_scope.py`` ``_QUEUED_RUN_SQL`` drops the connection arm.
+      ``test_a_run_queued_on_another_connection_does_not_pass``.
+    * M20. ``G/claim_scope.py`` ``check_claim_scope`` drops
+      ``in_own_personal_tree``. ``test_the_own_personal_tree_passes``.
+    * M21. ``G/authority.py`` ``in_own_personal_tree`` answers True for any
+      owner. ``test_another_members_personal_project_does_not_pass``.
+    * M22. ``G/claim_scope.py`` ``check_claim_scope`` drops
+      ``made_by_member``. ``test_a_task_the_member_created_passes``.
+    * M23. ``G/authority.py`` ``made_by_member`` answers True for any
+      creator. ``test_a_task_another_member_created_does_not_pass``.
+    """
+
+    pytestmark = _DB_GATE
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_a_run_the_member_queued_passes(self, live, mode, runs_on, door):
+        mode("refuse")
+        task = _task(live, live.theirs, f"queued {door}")
+        queued = await _queue(live, task)
+        assert queued.status_code == 201, queued.text
+        passed, text_ = await _hold(live, door, task)
+        assert passed, text_
+        assert _scope_lines(live, task) == []
+        assert len(_runs(live, task)) == 1
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_a_colleagues_queued_run_does_not_pass(self, live, mode, runs_on, door):
+        """OTHER's run, even on the member's own connection."""
+        mode("refuse")
+        task = _task(live, live.theirs, f"colleague run {door}")
+        _run_row(live, task, member_email=OTHER, connection_id=live.c["write"],
+                 client_via=tw.R8_VIA, status="created", started_by=OTHER)
+        passed, text_ = await _hold(live, door, task)
+        assert not passed, text_
+        assert _assignees(live, task) == []
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_a_run_an_agent_started_does_not_pass(self, live, mode, runs_on, door):
+        """A start in ``warn`` leaves the agent's own run. In ``refuse`` it
+        opens no way in, so ``ask_on_task`` cannot either."""
+        mode("warn")
+        task = _task(live, live.theirs, f"agent run {door}")
+        first = await _start(live, task)
+        assert first.status_code == 201, first.text
+        mode("refuse")
+        passed, text_ = await _hold(live, door, task)
+        assert not passed, text_
+        assert _assignees(live, task) == []
+
+    async def test_ask_on_task_outside_is_refused(self, live, mode, runs_on):
+        mode("refuse")
+        task = _task(live, live.theirs, "ask outside")
+        result = await _mcp(live, "ask_on_task", {
+            "task_id": task, "question": "Which one?", "idempotency_key": "ask-outside-1"})
+        assert result["isError"] is True, result
+        assert result["content"][0]["text"].startswith("This task is outside your apps.")
+        assert _runs(live, task) == []
+        # The refused ask left no run, so the claim is refused too.
+        claim = await _claim(live, task)
+        assert claim["isError"] is True, claim
+
+    @pytest.mark.parametrize("status", ["completed", "released", "stopping"])
+    async def test_an_ended_run_does_not_pass(self, live, mode, runs_on, status):
+        mode("refuse")
+        task = _task(live, live.theirs, f"ended {status}")
+        queued = await _queue(live, task)
+        assert queued.status_code == 201, queued.text
+        live.seeder.one("UPDATE pm_agent_runs SET status = :s,"
+                        " ended_at = CASE WHEN :s = 'stopping' THEN NULL ELSE now() END"
+                        " WHERE task_id = CAST(:t AS uuid) RETURNING id", s=status, t=task)
+        passed, text_ = await _hold(live, "claim", task)
+        assert not passed, text_
+        assert _assignees(live, task) == []
+
+    async def test_a_run_queued_on_another_connection_does_not_pass(self, live, mode,
+                                                                    runs_on):
+        mode("refuse")
+        task = _task(live, live.theirs, "queued elsewhere")
+        queued = await _queue(live, task, signed_as="pin_mine")
+        assert queued.status_code == 201, queued.text
+        passed, text_ = await _hold(live, "claim", task)
+        assert not passed, text_
+
+    @pytest.mark.parametrize("door", DOORS)
+    @pytest.mark.parametrize("where", ["root", "area"])
+    async def test_the_own_personal_tree_passes(self, live, mode, runs_on, door, where):
+        mode("refuse")
+        tree = _personal(live)
+        project = getattr(tree, where)
+        task = _task(live, project, f"personal {where} {door}", root=tree.root)
+        passed, text_ = await _hold(live, door, task)
+        assert passed, text_
+        assert _scope_lines(live, task) == []
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_another_members_personal_project_does_not_pass(self, live, mode,
+                                                                  runs_on, door):
+        mode("refuse")
+        tree = _personal(live)
+        task = _task(live, tree.other, f"other personal {door}", root=tree.other)
+        passed, text_ = await _hold(live, door, task)
+        assert not passed, text_
+        assert "Task not found" not in text_
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_a_task_the_member_created_passes(self, live, mode, runs_on, door):
+        mode("refuse")
+        task = _task(live, live.theirs, f"mine made {door}")
+        live.seeder.one("UPDATE pm_tasks SET created_by = :w WHERE id = CAST(:t AS uuid)"
+                        " RETURNING id", w=MEMBER.upper(), t=task)
+        passed, text_ = await _hold(live, door, task)
+        assert passed, text_
+        assert _scope_lines(live, task) == []
+
+    @pytest.mark.parametrize("door", DOORS)
+    async def test_a_task_another_member_created_does_not_pass(self, live, mode,
+                                                               runs_on, door):
+        mode("refuse")
+        task = _task(live, live.theirs, f"other made {door}")
+        live.seeder.one("UPDATE pm_tasks SET created_by = :w WHERE id = CAST(:t AS uuid)"
+                        " RETURNING id", w=OTHER, t=task)
+        passed, text_ = await _hold(live, door, task)
+        assert not passed, text_
