@@ -675,6 +675,39 @@ class TestDoneWhen3TheEnd:
 
 
 @_DB_GATE
+class TestTheMemberPurge:
+    async def test_the_purge_deletes_her_capabilities_in_the_bound_org_only(self, door):
+        """The purge entry of ``admin/members.py`` runs as the NOBYPASSRLS app
+        role with org A bound. The table is RLS-exempt, so only the clause
+        keeps org B's row. Mutation: drop ``organization_id = <bound org>``
+        from the entry, and org B's row goes too."""
+        from acb_common.db import tenant_session
+        from gateway.routes.admin.members import _PURGE_DELETES, _purge_params
+        from sqlalchemy import text
+
+        w = door.world
+        mine = await _mint(w, run_id="run-purge-a")
+        theirs = await _mint(w, org=w.org_b, run_id="run-purge-b")
+        [rows] = [r for r in _PURGE_DELETES if r.table == "sandbox_capabilities"]
+        params = _purge_params(rows, uid=str(uuid.uuid4()), email=M.strip().lower())
+
+        async def purge() -> tuple[int, int]:
+            async with tenant_session(w.org_a) as db:
+                n = (await db.execute(text(rows.count_sql), params)).scalar_one()
+                gone = await db.execute(text(rows.delete_sql), params)
+                return int(n), int(gone.rowcount)
+
+        counted, deleted = await _scoped(w, purge)
+        assert counted == deleted >= 1
+        with w.admin.connect() as c:
+            left = set(c.execute(text(
+                "SELECT token_sha256 FROM sandbox_capabilities WHERE run_id LIKE 'run-purge-%'"
+            )).scalars().all())
+        assert agent_tokens.hash_token(mine.token) not in left
+        assert agent_tokens.hash_token(theirs.token) in left
+
+
+@_DB_GATE
 class TestDoneWhen8TheChecks:
     @pytest.mark.parametrize(("phase", "writes", "gap"), [
         ("smoke", "{crm:write}", "5 minutes"),
