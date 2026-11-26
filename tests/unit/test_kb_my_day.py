@@ -322,7 +322,8 @@ class TestTheCards:
 
         # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
         # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
-        assert prefs.MAX_KINDS == 31 == len(prefs.feed_kinds())
+        # 32 since AO-2 added `provider_alert`.
+        assert prefs.MAX_KINDS == 32 == len(prefs.feed_kinds())
 
 
 # ── The bump after the commit (A6) ──────────────────────────────────────────

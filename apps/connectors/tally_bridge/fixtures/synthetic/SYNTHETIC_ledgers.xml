@@ -1,0 +1,23 @@
+<!-- SYNTHETIC: written by hand from brief section 5.4, not recorded on TallyPrime. -->
+<ENVELOPE>
+ <COLLECTION>
+  <LEDGER NAME="Alpha Traders">
+   <NAME>Alpha Traders</NAME>
+   <PARENT>Sundry Debtors</PARENT>
+   <OPENINGBALANCE>-10000.00</OPENINGBALANCE>
+   <CLOSINGBALANCE>-12500.50</CLOSINGBALANCE>
+  </LEDGER>
+  <LEDGER NAME="Beta &amp; Sons">
+   <NAME>Beta &amp; Sons&#4;</NAME>
+   <PARENT>Sundry Creditors</PARENT>
+   <OPENINGBALANCE></OPENINGBALANCE>
+   <CLOSINGBALANCE>7300.00</CLOSINGBALANCE>
+  </LEDGER>
+  <LEDGER NAME="Cash">
+   <NAME>Cash</NAME>
+   <PARENT>Cash-in-Hand</PARENT>
+   <OPENINGBALANCE>-500.00</OPENINGBALANCE>
+   <CLOSINGBALANCE>-1,250.75</CLOSINGBALANCE>
+  </LEDGER>
+ </COLLECTION>
+</ENVELOPE>

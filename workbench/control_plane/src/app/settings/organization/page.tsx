@@ -13,8 +13,15 @@
  * Next page along with it.
  */
 
+import { Suspense } from "react";
+
 import OrganizationAdmin from "./OrganizationAdmin";
 
 export default function OrganizationPage() {
-  return <OrganizationAdmin />;
+  // `OrganizationAdmin` reads `?tab=` (PAR-1), which needs a Suspense boundary at build.
+  return (
+    <Suspense fallback={null}>
+      <OrganizationAdmin />
+    </Suspense>
+  );
 }

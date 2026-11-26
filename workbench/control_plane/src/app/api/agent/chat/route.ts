@@ -51,10 +51,12 @@ import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
 import { RUN_PHASE_EVENT, takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
+import { SAVED_FAILURE_CODES, failedMarker } from "@/lib/chatRunFailed";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
+import { runResumedFrameOf } from "@/lib/chatResume";
 import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
 import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
@@ -564,15 +566,30 @@ async function translateAndPersistStream(
           // chat then shows no "Done" (§4.12.4 item 5). Every other frame is
           // as before.
           if (ev.parked === true) out.parked = true;
+          // RESUME-2d: the gateway kept the run from this reader (D-RES-10).
+          // The chat does not attach to that run again (`attach_withheld`).
+          if (ev.withheld === true) out.withheld = true;
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.
+          // AO-3b: a failure whose card must survive a reload leaves its
+          // marker on the saved reply (`lib/chatRunFailed.ts`).
+          if (typeof ev.code === "string" && SAVED_FAILURE_CODES.has(ev.code)) {
+            customEvents.push(failedMarker(ev.code, typeof ev.ref === "string" ? ev.ref : null, segments.length));
+          }
           out = {
             type: "error",
             content: String(ev.message ?? "Agent run error"),
             ...(typeof ev.code === "string" ? { code: ev.code } : {}),
             ...(typeof ev.ref === "string" ? { ref: ev.ref } : {}),
           };
+        } else if (t === "RUN_STARTED") {
+          // RESUME-3b: a second start of THIS run, marked `resumed` (case A
+          // of RESUME-2b), says that the run goes on after its park. The
+          // binding above accepted it, so its run id is this reader's. The
+          // chat then keeps the reply open past an earlier `done`. A plain
+          // start sends no frame, as before.
+          out = runResumedFrameOf(ev);
         }
 
         // Forward the Redis stream ID so the frontend can track the last

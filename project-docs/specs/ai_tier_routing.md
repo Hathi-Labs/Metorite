@@ -13,6 +13,12 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
 
+**S5 item 2, the gateway's `/v1/embeddings` door, is built** (2026-11-16,
+task 3553, 2449 S2). The door calls the Router on `tier-embed` through
+`kb_index.embed.relay`. It holds no vendor client and no zero vector. A 402
+stays a 402, and an outage is a 502 with no fallback (D57.7). The other
+writers of item 2 move in later tasks.
+
 **Task 3554 (2449 S3) is built, with no flag (2026-11-16, branch
 `ai3554-no-direct-fallback`).** Outside `ACB_ENV=dev`, a chat call that the
 Router does not take raises `ConsoleRouterUnavailable("unrouted")`. The
@@ -58,6 +64,16 @@ still sends no model. `email_app_master_plan.md` §10.4.16 (EM-T15) owns it.
 turn starts on the `chat` tier while the turn-kind question runs. §4.3, §4.5
 and the box in §4.4 carry it. `AI_TURN_KIND_PARALLEL` ships empty, and a value
 on a box is the owner's (§13.1).
+
+**The delegated wait is built and dark (2026-11-17, task 3592).** A
+delegated run waited up to 3 s for the turn kind before its first request.
+With `AI_TURN_KIND_NOWAIT_ORGS` naming the org, such a run asks no question
+and starts at once on the `chat` kind. The flag ships empty, and a value on
+production is the owner's (§13.1).
+
+The member's own stream turn does not
+change: it never waited for the question, and it still asks. `ai_route.turn_kind`
+now also logs `waited_ms`. §4.3 carries the detail.
 
 **S4b build notes (2026-10-06).** Read these before S5, or before an agent
 joins the flag on a box.
@@ -228,6 +244,7 @@ joins the flag on a box.
   `PROJECTS_AGENT_MODEL`. `copilot_chat_model` does not count (§8).
 - `ai_route.turn_kind` logs the kind, the source and `latency_ms`, so the
   median that Q8 asks for can be read on a box. S2 did not measure it live.
+  Task 3592 adds `waited_ms` (§4.3).
 - With the flag unset, a dump of three projects-assistant runs (six requests
   and every event) was byte-identical on main and on the branch.
 - **Not built in S2:** a sub-agent runs no policy of its own (§4.5, last
@@ -513,13 +530,13 @@ These paths reach a vendor without the Router, whatever the flag says:
 
 | Path | Anchor | Kind |
 |---|---|---|
-| The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY` | `apps/services/gateway/gateway/main.py:2519-2543` | embed |
+| ~~The `/v1/embeddings` door calls OpenAI with `OPENAI_API_KEY`~~ Calls the Router on `tier-embed` through `kb_index.embed.relay`, task 3553 (2449 S2), 2026-11-16 | `gateway/main.py`, `embeddings` | embed |
 | Three embedding writers call `litellm.aembedding` | `email_ingestion/email_embeddings.py:85-100`, `whatsapp_ingestion/wa_embeddings.py:65-75`, `gateway/routes/tasks/capability.py:87-100` | embed |
 | Transcription through `acb_stt` | `packages/acb_stt/acb_stt/litellm_provider.py:196`, `assemblyai_provider.py:57` | transcribe |
 | Live notes mint Deepgram keys | `gateway/routes/notes/live.py:38` | transcribe |
 | ~~An integration check calls four vendor models~~ Moved to `acb_llm.client.complete`, task 3007 (2449 A6), 2026-11-12 | `gateway/routes/integrations.py`, `discover_api` | chat |
 | The prompt-cache warm-up | `gateway/main.py:854`, `_prewarm_prompt_cache` | chat |
-| ~~The streamed text helper~~ With routing on, it takes one answer from the Router, task 3541, 2026-11-16. Task 3542 makes it stream there | `acb_llm/context.py`, `acompletion_stream_text` (H-171) | chat |
+| ~~The streamed text helper~~ With routing on, it goes through the Router, task 3541, 2026-11-16. It streams there with its three bounds, task 3542, 2026-11-17 | `acb_llm/context.py`, `acompletion_stream_text` (H-171). The client is `acb_llm/routed.py`, `stream_on_router` | chat |
 
 The key tests and model lists in `gateway/routes/settings.py` reach vendor
 hosts too. They move no tenant content, so they are not AI work, and this spec
@@ -681,7 +698,30 @@ flag removes the wait for a native agent in the member's own web chat.
   reads the old request again.
 - A timeout reads as `chat`, as before, so it moves nothing.
 - The batch path, a sub-agent, a delegated run and a Copilot SDK agent still
-  wait for the answer, as before.
+  wait for the answer, as before. The next part changes that for a delegated
+  run.
+
+**The wait of a delegated run (task 3592), dark behind
+`AI_TURN_KIND_NOWAIT_ORGS`.** Production measured 20 `timeout` answers in 31
+turns on 2026-11-17, each at 3,000 ms. The flagged turn of the web chat does
+not wait for them. A delegated run does wait, and it has no seam to start again
+with a late answer.
+
+- With the flag naming the org of the run, a delegated run asks no question.
+  The source is `nowait`, and the kind is `chat`. The run starts at once.
+- A delegated run is a batch run under a parent run, or a Copilot SDK
+  sub-agent. A top-level batch run, for example WhatsApp, still asks.
+- The cheap sources stay as they are: `max`, `short` and `pinned`. The
+  keyword check still reads the effort from the member's words.
+- The cost: a `plan`, `analysis` or `code` task of a delegated run keeps the
+  agent's own tier. So a value on production is the owner's (§13.1).
+- The flagged turn of the web chat still asks the question. A late answer
+  moves nothing. A skip there would change the tier and the packs of the
+  main chat, so this part does not skip it.
+- `ai_route.turn_kind` logs `waited_ms`: the time that the run waited for
+  the answer before its first request. It is 0 when the run did not wait.
+  The other fields stay, so a count of `source=timeout` still works.
+- Fence: `tests/unit/test_turn_kind_nowait.py`.
 
 ### 4.3a The size of the work (owner, 2026-10-22)
 
@@ -1219,6 +1259,10 @@ needs restoring.
 - **`AI_TURN_KIND_PARALLEL`**, setting `ai_turn_kind_parallel: str = ""`. It
   is a comma list of agent names, or `*`. Empty means OFF. The one reader is
   `tier_policy.turn_kind_parallel_on`, and it fails closed (§4.3).
+- **`AI_TURN_KIND_NOWAIT_ORGS`**, setting `ai_turn_kind_nowait_orgs: str = ""`
+  (task 3592). It is a comma list of organization ids, or `*`. Empty means
+  OFF. The one reader is `tier_policy.turn_kind_nowait_on`, and it fails
+  closed. A reload applies a change (`docs/flag_reload.md`).
 - The UI flag must not turn on before the backend flag covers the agents the
   chat shows. A member with no picker and no policy gets Balanced for every
   step, which is today's real behaviour (§2.2). So the wrong order is safe,
@@ -1267,6 +1311,7 @@ needs restoring.
 | An existing `/chat` conversation keeps its own agent, and `?agent=` stays | `src/lib/tierRoutingControls.test.ts` | vitest |
 | The member's words give `thinking`, never `max`, in the SAME turn-kind request. A short message sends no request | `tests/unit/test_tier_policy_effort_from_text.py` | pytest |
 | The parallel start restarts only before the first output, cancels the first request cleanly, and changes nothing with the flag off | `tests/unit/test_turn_kind_parallel.py` | pytest |
+| A delegated run of a listed org asks no turn kind, every other run asks as before, and `ai_route.turn_kind` logs `waited_ms` | `tests/unit/test_turn_kind_nowait.py` | pytest |
 
 ---
 
@@ -1384,6 +1429,20 @@ tool declare its task.
 2. Embeddings: the gateway's `/v1/embeddings` and the three writers call the
    Router. The Router serves no `aembedding` door today
    (`customer_console/router.py:625-645`), so this needs one first, per D61.1.
+
+   **Built for the gateway door (task 3553, 2026-11-16).** The Console door
+   came first (CP-EMB, `customer_console.md` §6A.16). The route sends
+   `{"model": "tier-embed", "input": [...]}` and nothing else. The member
+   is the session's `user.email`, and the run context of the session proves
+   it. A deployment-key box refuses a service call, because it names no
+   member. Fences: `test_gateway_embeddings_console.py` and the lower
+   `main.py` baseline of `test_no_direct_ai_vendor_calls.py`.
+
+   ⚠️ The callers that name this door (`capability.py`, `wa_embeddings.py`,
+   Mem0) send the LLM key. The app-wide gate refuses that key on this route
+   (`test_v1_llm_key_gate.py`), so those callers get a 401 today. Graphiti
+   posts to `/embeddings`, a path that no route serves, so it gets a 404.
+   Moving each one is the rest of item 2 (tasks 3567, 3568 and 3569).
 3. Image and speech: a tool names `image` or `speak`, and the Router serves
    `tier-image` or `tier-tts`.
 4. Live notes: Deepgram keys come from the Router, or the feature moves to a
@@ -1432,7 +1491,11 @@ uv run pytest tests/unit/test_system_one_tool.py tests/unit/test_tier_policy.py 
   tests/unit/test_no_direct_ai_vendor_calls.py \
   tests/unit/test_agent_list_tier_routed.py \
   tests/unit/test_tier_policy_effort_from_text.py \
-  tests/unit/test_turn_kind_parallel.py -q
+  tests/unit/test_turn_kind_parallel.py tests/unit/test_turn_kind_nowait.py -q
+
+# The gateway embeddings door (S5 item 2, task 3553)
+uv run pytest tests/unit/test_gateway_embeddings_console.py \
+  tests/unit/test_no_embed_outside_door.py tests/unit/test_kb_one_index.py -q
 
 # The UI fences (S3)
 cd workbench/control_plane && npx tsc --noEmit && \
@@ -1458,6 +1521,7 @@ source `system_one`.
 |---|---|
 | Put an agent in `AI_TIER_ROUTING` on production | It changes what a live organization is charged |
 | Put an agent in `AI_TURN_KIND_PARALLEL` on production | A restart can bill a prompt twice, so it changes what a live organization pays |
+| Put an org in `AI_TURN_KIND_NOWAIT_ORGS` on production | A delegated `plan`, `analysis` or `code` task keeps the agent's own tier, so it changes the answer and what the org pays. With `AI_REASONING_OFF_AGENTS` naming the agent, such a task also runs with thinking off (kind `chat`, effort `auto`) |
 | Turn on `NEXT_PUBLIC_AI_TIER_ROUTING` in production | It is build-time and reaches every organization at once |
 | Bind `tier-fast` to a vendor that is not yet a sub-processor | §6.6. A covered run would send content to it |
 

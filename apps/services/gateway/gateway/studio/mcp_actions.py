@@ -18,13 +18,16 @@ The CALLER gives it two things:
 **The one class rule** (:func:`mcp_tool_class`). A tool is class A when
 ``acb_skills.permission_policy.mcp_needs_confirmation`` says that it needs no
 confirmation AND its server has no ``always_confirm``. Each other tool is
-class B. The gate of a run (``orchestrator._maf_mcp``) calls the same seam
-on the same hints, so the catalog and the gate agree. A ``destructiveHint``
-tool is a write, so it is B, and no MCP tool is class C. ⚠️ The admin's
-read-only key (``read_only_key``) lets a run skip the card, but it never
-makes a catalog row class A. The class of a row comes from the hints and
-"always confirm" only, so the catalog can be stricter than the gate and
-never looser.
+class B. A ``destructiveHint`` tool is a write, so it is B, and no MCP tool
+is class C. The class is a read test, and the preview reads class A only, so
+a preview sends nothing (I11). ⚠️ MCP-NC1 (owner directive, 2026-11-16, task
+3603): the gate of a verified member's run in Metorite
+(``orchestrator._maf_mcp``) runs a class B tool with no card, unless its
+server is set to always confirm. WhatsApp still refuses it. The admin's
+read-only key (``read_only_key``) lets such a refused run use the tool, but
+it never makes a catalog row class A. The class of a row comes from the
+hints and "always confirm" only, so the catalog can be stricter than the gate
+and never looser.
 
 **Data only.** A row holds the server key, the tool name, the description
 and the hints, and nothing else of the server: no url, no header, no scope.
@@ -38,14 +41,26 @@ A hostile server can list one name twice, first as read-only and then as a
 write. The item that needs the confirmation wins, wherever it sits in the
 list. Two items of one class keep the first. The cache of
 ``gateway.connections.mcp_tools`` and :func:`mcp_rows` call the same rule.
+
+**A changed tool is class B** (B1b-3, :func:`tool_text_hash`). An admin of
+the org approves the text of a tool: its name, its cleaned description and
+its hints. ``gateway.studio.mcp_approvals`` keeps the SHA-256 of that text.
+:func:`mcp_rows` takes the approved hashes of the org. A tool with no
+approval, or with a text that hashes another way, gets ``changed: true``,
+and its row is class B whatever its hints say. So a new tool, and a tool
+that a server changed after the approval, never reads as class A. With no
+approvals (``None``, the read failed) every tool is changed (fail closed).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol
 
 from acb_common.studio_manifest import parse_uses
+from acb_skills.hidden_text import strip_hidden
 from acb_skills.permission_policy import MCP_HINT_NAMES, mcp_needs_confirmation
 from acb_skills.skill_packs import action_tool
 
@@ -78,8 +93,10 @@ def mcp_tool_class(hints: Any, *, always_confirm: bool) -> str:
     """The ONE class rule of an MCP tool: ``A`` or ``B``.
 
     ``A`` only when the server has no "always confirm" and the live seam
-    ``mcp_needs_confirmation`` says the tool needs no confirmation. Each
-    other case, a missing hint and a damaged value too, is ``B``."""
+    ``mcp_needs_confirmation`` says the hints show a read. Each other case,
+    a missing hint and a damaged value too, is ``B``. MCP-NC1 leaves this
+    rule as it was: a member's run calls a ``B`` tool with no card, and a
+    preview still never calls one."""
     if always_confirm is not False or mcp_needs_confirmation(hints):
         return "B"
     return "A"
@@ -101,6 +118,50 @@ def action_id(server: str, tool: str) -> str | None:
 
 def _description(raw: Any) -> str:
     return raw[:DESCRIPTION_CHARS] if isinstance(raw, str) else ""
+
+
+def clean_description(raw: Any) -> str:
+    """The description of a tool as clean, capped text: the ONE cleaning.
+
+    ``strip_hidden`` runs before and after the cut, because a cut can leave
+    a joiner at the end of the text, where it is hidden. The cache of
+    ``connections.mcp_tools`` and :func:`tool_text_hash` both call it, so a
+    cached description and a raw one hash the same."""
+    if not isinstance(raw, str):
+        return ""
+    return strip_hidden(strip_hidden(raw)[:DESCRIPTION_CHARS])
+
+
+def tool_text_hash(tool: Mapping[str, Any]) -> str:
+    """The SHA-256 hex of the text of ONE tool that an admin approves (B1b-3).
+
+    The text is the tool name, its description after
+    :func:`clean_description`, and each hint of ``MCP_HINT_NAMES`` as a real
+    boolean or null (:func:`tool_hints`). It is canonical JSON with sorted
+    keys, so the order of the keys of a server never changes the hash. A
+    hidden character and a lone surrogate are cleaned out first, so the
+    hash of a cached tool equals the hash of the same raw tool."""
+    item: Mapping[str, Any] = tool if isinstance(tool, Mapping) else {}
+    name = item.get("name")
+    hints = tool_hints(item.get("annotations")) or {}
+    text = json.dumps({
+        "name": name if isinstance(name, str) else "",
+        "description": clean_description(item.get("description")),
+        "hints": {n: hints.get(n) for n in MCP_HINT_NAMES},
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def tool_changed(approved: Mapping[tuple[str, str], str] | None, server: str,
+                 tool: Mapping[str, Any]) -> bool:
+    """True when *tool* of *server* has no approval in *approved*, or its text
+    hashes another way. ``None`` (no approvals were read) is True for each
+    tool, so a failed read fails closed."""
+    if approved is None:
+        return True
+    name = tool.get("name")
+    want = approved.get((server, name)) if isinstance(name, str) else None
+    return not isinstance(want, str) or want != tool_text_hash(tool)
 
 
 def _needs_card(item: Mapping[str, Any]) -> bool:
@@ -128,7 +189,8 @@ def unique_tools(items: Iterable[Any]) -> list[Mapping[str, Any]]:
 
 
 def mcp_rows(servers: Iterable[Server],
-             tools: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
+             tools: Mapping[str, Sequence[Mapping[str, Any]]], *,
+             approved: Mapping[tuple[str, str], str] | None) -> list[dict[str, Any]]:
     """The catalog rows of the MCP tools of ONE org.
 
     *servers* is the server list of that org, from the caller (see the module
@@ -137,7 +199,12 @@ def mcp_rows(servers: Iterable[Server],
     is not a mapping, and a name that the grammar refuses give no row. Two
     items of one name give one row, with the stricter class
     (:func:`unique_tools`). The order is the server name, then the order of
-    the list."""
+    the list.
+
+    *approved* maps ``(server, tool)`` to the approved hash of the org (B1b-3).
+    A tool that :func:`tool_changed` names gets ``changed: true`` and class
+    B. ``None`` makes each tool changed. Each row carries ``text_hash``, the
+    hash of the text that it shows, so an approval names that text."""
     rows: list[dict[str, Any]] = []
     for server in sorted(servers, key=lambda s: str(s.name)):
         if server.enabled is not True:
@@ -148,11 +215,17 @@ def mcp_rows(servers: Iterable[Server],
             if uses is None:
                 continue
             hints = tool_hints(item.get("annotations"))
+            changed = tool_changed(approved, server.name, item)
+            # B1b-3 review: the hash that an admin sends back to approve
+            # exactly the text that this row shows (compare and approve).
+            text_hash = tool_text_hash(item)
             rows.append({
                 "id": uses,
                 "title": name,
                 "source": MCP_SOURCE,
-                "class": mcp_tool_class(hints, always_confirm=server.always_confirm),
+                # B1b-3: a changed tool is B, whatever its hints say.
+                "class": "B" if changed else mcp_tool_class(
+                    hints, always_confirm=server.always_confirm),
                 "input_schema": None,
                 "output_schema": None,
                 "connection": f"{MCP_SOURCE}:{server.name}",
@@ -163,5 +236,7 @@ def mcp_rows(servers: Iterable[Server],
                 "mcp_tool": name,
                 "description": _description(item.get("description")),
                 "hints": hints,
+                "changed": changed,
+                "text_hash": text_hash,
             })
     return rows

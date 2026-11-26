@@ -772,14 +772,45 @@ class TestStreaming:
         before = TestMetering._count(db, slug)
         router_mod.set_provider_call(_streaming_provider(fail_before_first=True))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": "tier-balanced", "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert TestMetering._count(db, slug) == before
-        # The stream still closes cleanly, or the client waits for a timeout.
-        assert body == b"data: [DONE]\n\n"
+        # AO-3 (2026-11-17): a status, not a 200 with a lone `[DONE]`. The
+        # old sentinel read as an empty answer, and the member saw an empty
+        # reply. The body names our class and no vendor text.
+        assert r.status_code == 503, r.text
+        assert not r.headers["content-type"].startswith("text/event-stream")
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        # The wall was the vendor's, so the meter records no refusal (§8.1).
+        assert TestMetering._refusals(db, slug) == []
+
+    def test_a_vendor_refusal_of_the_stream_names_no_vendor_text(
+            self, client, org_key):
+        """AO-3. A vendor's own words can quote the request, so the 503
+        carries our reason only. Mutation: answer ``detail=str(failed)``, and
+        the secret word reaches the body.
+
+        The refusal is a 402, the empty-account shape. AO-1 lifts a billing
+        400 to 402 only for a vendor's own sentence, so a 400 here would be a
+        terminal refusal (the AO-3 fix round), not an outage."""
+        _, key = org_key
+
+        class _Billing(Exception):
+            status_code = 402
+
+        async def _stub(**kwargs):
+            raise _Billing("SECRETWORD9 Your credit balance is too low")
+
+        router_mod.set_provider_call(_stub)
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": "tier-balanced", "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert r.status_code == 503, r.text
+        assert r.json() == {"detail": {"reason": "unavailable"}}
+        assert "SECRETWORD9" not in r.text
 
     def test_an_empty_stream_writes_no_usage_row(self, client, org_key, db):
         # A provider that opens the stream and sends nothing has delivered
@@ -962,16 +993,41 @@ class TestAStreamFailsOverBeforeItsFirstFrame:
         router_mod.set_provider_call(
             self._provider(seen, primary_fails=_BadRequest("malformed")))
 
-        with client.stream("POST", "/v1/chat/completions", headers=key, json={
-                "model": tier, "stream": True,
-                "messages": [{"role": "user", "content": "x"}]}) as r:
-            body = b"".join(r.iter_bytes())
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
 
         assert seen == [self.PRIMARY]
-        # Clause 5: a walk that ends with nothing still closes cleanly, and
-        # writes no row. `_REFUSAL_REASONS` stays closed — this wall was the
-        # vendor's, not the customer's.
-        assert body == b"data: [DONE]\n\n"
+        # AO-3 fix round: a terminal status means the request itself is
+        # wrong, so it stays a 400 (`model_refused` in the chat), never the
+        # 503 of an outage. No row is written: `_REFUSAL_REASONS` stays closed.
+        assert r.status_code == 400, r.text
+        assert "malformed" not in r.text
+        assert TestMetering._count(db, slug) == before
+
+    def test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503(
+            self, client, org_key, db, bound_tier):
+        """Mutation: return `_stream_unavailable()` for every failure, and
+        this gets a 503 and fails."""
+        slug, key = org_key
+        before = TestMetering._count(db, slug)
+        tier = bound_tier([self.PRIMARY], reads_images=None)
+        seen: list[str] = []
+
+        class _TooLarge(Exception):
+            status_code = 413
+
+        router_mod.set_provider_call(
+            self._provider(seen, primary_fails=_TooLarge("too big")))
+
+        r = client.post("/v1/chat/completions", headers=key, json={
+            "model": tier, "stream": True,
+            "messages": [{"role": "user", "content": "x"}]})
+
+        assert seen == [self.PRIMARY]
+        assert r.status_code == 413, r.text
+        assert r.status_code != 503
+        assert "too big" not in r.text
         assert TestMetering._count(db, slug) == before
 
     # ── the other side of the boundary ──

@@ -148,8 +148,13 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     # out a seat on her own entry, which the cascade of her entries deletes.
     fake.seed_rows("calendar_entry_attendees",
                    {"member_email": PRIYA, "entry_id": "entry-colleague"})
-    # ── her one private AI Studio skill (WS-STU F1) ──
-    fake.seed_rows("studio_skills", {"owner_email": PRIYA})
+    # ── her AI Studio skills (WS-STU F1 and J2d): a private one, one with
+    #    only a pending ask, and one that the org shares. Only the shared one
+    #    stays. ──
+    fake.seed_rows("studio_skills", {"owner_email": PRIYA},
+                   {"owner_email": PRIYA, "visibility": "private",
+                    "share_state": "pending", "share_version": 1},
+                   {"owner_email": PRIYA, "visibility": "org", "shared_version": 1})
     # ── her app installs (WS-PKG PKG-4): a private one that nobody else
     #    sees, a private one of the app she shared with Ravi, and two that
     #    she made for the org and for a group. Only the first one goes. ──
@@ -172,6 +177,13 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
                    {"owner_email": PRIYA, "shared": False},
                    {"owner_email": PRIYA, "shared": False},
                    {"owner_email": PRIYA, "shared": True})
+    # ── her CRM saved views (task 1570, D175.5): two private views and one
+    #    shared view, and a private view of Ravi. Only her private ones go. ──
+    fake.seed_rows("crm_views",
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": False},
+                   {"owner_email": PRIYA, "shared": True},
+                   {"owner_email": RAVI, "shared": False})
     return fake
 
 
@@ -514,20 +526,36 @@ async def test_the_response_says_what_happened_table_by_table(
         "task_accounts": 1,
         # WS-CO CO-11: the fake holds no chat pin of the member.
         "chat_member_rows": 0,
+        # WS-CO CO-17: the fake holds no approved-card row of the member.
+        "chat_card_rows": 0,
+        # WS-CO CO-4: the fake holds no shadow row of the member.
+        "chat_join_rows": 0,
+        # WS-TOF TOF-2b: the fake holds no tool failure row of the member.
+        "failure_event_rows": 0,
+        # SBX-2: the fake holds no run capability of the member.
+        "sandbox_capabilities": 0,
+        # SBX-1a: the fake holds no tool gap of the member.
+        "tool_gaps": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
         # WS-CRM CRM-M1: the fake holds no private Change history row.
         "crm_private_changes": 0,
+        # Task 1570 (D175.5): her two private CRM saved views. Her shared
+        # view and the view of Ravi stay.
+        "crm_private_views": 2,
         # WS-61 KB-2f: the fake holds no star of the member.
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
         "reminders": 2,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
-        # WS-STU F1: her one private skill. The versions go by cascade.
-        "studio_skills": 1,
+        # WS-TOF TOF-3a (F12a): the fake holds no skill run of the member.
+        "studio_skill_runs": 0,
+        # WS-STU F1 and J2d: her private skill and the skill with only a
+        # pending ask. The versions go by cascade.
+        "studio_skills": 2,
         # WS-STU AF-10a: her two private saved views.
         "studio_private_views": 2,
         # WS-PKG PKG-4: her one private install that nobody else sees. The
@@ -571,6 +599,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "shared_private_app_installs": 1,
         # WS-STU AF-10a: her one shared saved view stays with her address (D63).
         "studio_shared_views": 1,
+        # WS-STU J2d: her one skill that the org shares stays with the org.
+        "studio_shared_skills": 1,
     }
 
 
@@ -631,13 +661,14 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
     # split, by a column the schema forces on us, each asserted below.
     # `chat_session` splits on `visibility`, and `package_install` (WS-PKG
     # PKG-4) on `scope_kind` and on a grant to another person, and
-    # `studio_saved_views` (WS-STU AF-10a) on `shared`. (The retired task
-    # store was split too, until migration 217 dropped it.)
-    split = {"chat_session", "package_install", "studio_saved_views"}
+    # `studio_saved_views` (WS-STU AF-10a) on `shared`, and `studio_skills`
+    # (WS-STU J2d) on the share term of the store. (The retired task store was
+    # split too, until migration 217 dropped it.)
+    split = {"chat_session", "package_install", "studio_saved_views", "studio_skills"}
     assert not (deleted_tables & kept_tables) - split, (
         "a table is both deleted and kept; only chat_session (by visibility), "
-        "package_install (by scope_kind and grants) and studio_saved_views "
-        "(by shared) are legitimately split"
+        "package_install (by scope_kind and grants), studio_saved_views "
+        "(by shared) and studio_skills (by the share term) are legitimately split"
     )
 
 
@@ -840,29 +871,65 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
 
 
 def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
-    """WS-STU F1: the purge deletes the member's AI Studio skills.
+    """WS-STU F1 and J2d: the purge deletes the member's AI Studio skills
+    that the org does not share, and keeps the ones that it shares.
 
-    In F1 a skill is private, and only its owner reads it, so a purge leaves
-    none behind. The clause names the owner and the bound org, because the
-    same address may hold skills in another org. ``studio_skill_versions``
-    is not a row of the list: its foreign key cascades from
-    ``studio_skills``, and the schema must keep it so.
+    Only the owner reads a skill that the org does not share, so a purge
+    leaves none behind. A skill that the org shares stays with the org (the
+    orchestrator's decision of 2026-11-19, ``ai_studio_rows/J2d.md``). The
+    two clauses split on the one share term of the store, so no skill is on
+    both sides or on none. Each names the owner and the bound org, because
+    the same address may hold skills in another org.
+    ``studio_skill_versions`` is not a row of the list: its foreign key
+    cascades from ``studio_skills``, and the schema must keep it so.
 
     ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
-    above, and ``test_studio_skills_r8.py`` fails on the real database.
+    above. Dropping the ``NOT`` fails here, in the count dict, and in
+    ``test_studio_skill_share_chat_r8.py`` on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from gateway.studio.skills_store import SHARED_WITH_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
+    [kept] = [r for r in _PURGE_KEEPS if r.table == "studio_skills"]
+    tail = f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert SHARED_WITH_ORG == "(visibility = 'org' AND shared_version IS NOT NULL)"
+    assert (rows.key, rows.where) == ("studio_skills", f"NOT {SHARED_WITH_ORG} AND {tail}")
+    assert (kept.key, kept.where) == ("studio_shared_skills", f"{SHARED_WITH_ORG} AND {tail}")
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_skills") < keys.index("member_record")
+    assert "studio_skill_versions" in cascade_closure("studio_skills")
+    assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+
+
+def test_the_skill_runs_of_this_org_go_before_her_skills() -> None:
+    """WS-TOF TOF-3a (F12a, ``ai_studio_rows/F12.md``): the purge deletes the
+    runs of a skill that the member made in this org, on ``created_by``.
+
+    A run row is the member's own record of a turn, a test or a repair. The
+    clause names the member and the bound org, because the same address may
+    hold runs in another org. The entry runs before ``studio_skills``, whose
+    cascade takes the runs of a deleted skill, so the count holds each row.
+
+    Mutation: drop the entry, and this and the count dict above fail. Drop
+    the org predicate, and this fails, and so does
+    ``test_studio_skill_runs_r8.py`` as the superuser.
     """
     from gateway.routes.admin.members import _PURGE_DELETES
     from gateway.routes.tasks.settings import _BOUND_ORG
 
     from tests.unit._schema_cascade import cascade_closure
 
-    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
-    assert rows.key == "studio_skills"
-    assert rows.where == f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skill_runs"]
+    assert rows.key == "studio_skill_runs"
+    assert rows.where == f"lower(created_by) = :email AND organization_id = {_BOUND_ORG}"
     keys = [r.key for r in _PURGE_DELETES]
-    assert keys.index("studio_skills") < keys.index("member_record")
-    assert "studio_skill_versions" in cascade_closure("studio_skills")
-    assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
+    assert keys.index("studio_skill_runs") < keys.index("studio_skills")
+    assert keys.index("studio_skill_runs") < keys.index("member_record")
+    assert "studio_skill_runs" in cascade_closure("studio_skills")
 
 
 def test_the_private_saved_views_go_and_the_shared_ones_stay() -> None:
@@ -1049,12 +1116,39 @@ def test_the_chat_rows_of_this_org_go_before_her_private_chats() -> None:
     assert cascade_closure("chat_session_member") == set()
 
 
+def test_the_shadow_join_rows_of_this_org_go_before_her_private_chats() -> None:
+    """WS-CO CO-4 (``chat_organization.md`` §7 and §10): the purge deletes the
+    member's own rows of ``chat_join_log``. The clause names the member and
+    the bound org, so the rows of the same address in another org stay. It
+    runs before ``private_chat_sessions``, whose cascade takes only the rows
+    of her private chats. No table hangs off ``chat_join_log``.
+
+    Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_chat_join_shadow_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_children, cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "chat_join_log"]
+    assert rows.key == "chat_join_rows"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("chat_join_rows") < keys.index("private_chat_sessions")
+    assert keys.index("chat_join_rows") < keys.index("member_record")
+    assert "chat_join_log" not in {r.table for r in _PURGE_KEEPS}
+    assert "chat_join_log" in cascade_children("chat_session")
+    assert cascade_closure("chat_join_log") == set()
+
+
 def test_the_member_s_private_change_history_goes() -> None:
     """WS-CRM CRM-M1: the Change history rows private to the member go.
 
     A row private to the member holds the text of a private view or an own
     rule, which only the member reads, so the row goes too. The purge
-    deletes the own rules, and not the saved views. The clause keys on
+    deletes the own rules and the private saved views too (task 1570, the
+    test below). The clause keys on
     ``private_to``, not on the actor, because an admin may change a
     member's rule and that row is still the member's. The org's rows stay
     with the address, as ``app_audit`` does, and are not on the keep side.
@@ -1072,6 +1166,35 @@ def test_the_member_s_private_change_history_goes() -> None:
     assert "crm_change_log" not in {r.table for r in _PURGE_KEEPS}
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("crm_private_changes") < keys.index("member_record")
+
+
+def test_the_private_crm_views_of_this_org_go_and_the_shared_ones_stay() -> None:
+    """Task 1570 (D175.5, the owner's decision of 2026-11-04): the purge
+    deletes the member's private CRM saved views. Only the owner reads a
+    private view. A shared view stays with the address, and it is not
+    counted as kept, as the org's rows of ``crm_change_log`` are not.
+
+    The clause names ``NOT shared``, the member and the bound org. So a
+    shared view and the views of the same address in another org stay. No
+    table hangs off ``crm_views``, so the count misses no cascade.
+
+    ⚠️ Mutation-checked (2026-11-21): removing the entry fails here and in
+    the count dict above, and so does dropping ``NOT``. The purge tests (R8)
+    in ``test_crm_change_history.py`` hold the four cases on a real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "crm_views"]
+    assert gone.key == "crm_private_views"
+    assert gone.where == (
+        f"NOT shared AND lower(owner_email) = :email AND organization_id = {_BOUND_ORG}")
+    assert "crm_views" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("crm_private_views") < keys.index("member_record")
+    assert cascade_closure("crm_views") == set()
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
@@ -2042,3 +2165,58 @@ def test_the_console_mirror_swallows_both_failure_kinds() -> None:
     ]
     caught = {h.type.id for h in handlers if isinstance(h.type, ast.Name)}
     assert {"ConsoleMemberWriteUnavailable", "Exception"} <= caught, caught
+
+
+def test_the_tool_failure_rows_of_the_member_go_with_the_member() -> None:
+    """WS-TOF TOF-2b: ``failure_events.member_email`` is a person's address, so the
+    purge deletes those rows in the bound org. Mutation: drop the entry and this
+    fails, and so does ``test_every_table_keyed_by_a_member_email_is_in_the_purge``."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "failure_events"]
+    assert rows.key == "failure_event_rows"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert "failure_events" not in {r.table for r in _PURGE_KEEPS}
+    assert not {"failure_fingerprints", "failure_daily", "failure_config"} & {
+        r.table for r in _PURGE_DELETES}
+
+
+def test_the_run_capabilities_of_the_member_go_in_the_bound_org_only() -> None:
+    """SBX-2 (``agent_sandbox.md`` §12.2): a ``sandbox_capabilities`` row
+    holds the member's address. The table is RLS-exempt, so the clause names
+    the bound org itself. Without it, the purge of a member in org A would
+    delete her capabilities in org B too.
+
+    Mutation: drop the org clause, and this test fails. Drop the entry, and
+    this test, the count dict above and
+    ``test_every_table_keyed_by_a_member_email_is_in_the_purge`` fail."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "sandbox_capabilities"]
+    assert rows.key == "sandbox_capabilities"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert "sandbox_capabilities" not in {r.table for r in _PURGE_KEEPS}
+
+
+def test_the_tool_gaps_of_the_member_go_before_her_chats() -> None:
+    """SBX-1a (``agent_sandbox.md`` §7.4): the need of a ``tool_gaps`` row is
+    text about the member's work, so the purge deletes her rows in the bound
+    org. The entry runs before ``private_chat_sessions``, whose cascade takes
+    the rows of her private chats, so the count holds each row.
+
+    Mutation: drop the entry, and this and the count dict above fail, and so
+    does ``test_every_table_keyed_by_a_member_email_is_in_the_purge``."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "tool_gaps"]
+    assert rows.key == "tool_gaps"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert "tool_gaps" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("tool_gaps") < keys.index("private_chat_sessions")
+    assert "tool_gaps" in cascade_closure("chat_session")

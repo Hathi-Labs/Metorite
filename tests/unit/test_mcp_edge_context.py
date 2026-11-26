@@ -670,7 +670,9 @@ class TestMyWork:
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
                          "run_id": _uuid(6101), "held_by": None,
-                         "yours": False, "external_link": None}]
+                         "yours": False, "external_link": None,
+                         "agent_host": None, "agent_model": None,
+                         "agent_host_kind": None, "dispatched_by_run_id": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the
@@ -1220,7 +1222,8 @@ class TestTheProtocolBlock:
     async def test_the_block_shows_in_my_work_when_on(self, on):
         result = await self._result()
         # SW-43c raised the version to 2 with the line of the answer thought.
-        assert result["protocol"] == {"version": 2, "lines": list(tools.PROTOCOL_LINES)}
+        # SW-105 raised it to 3 with the ask for the label, machine and model.
+        assert result["protocol"] == {"version": 3, "lines": list(tools.PROTOCOL_LINES)}
         assert "rows" in result
 
     async def test_the_block_shows_with_no_row(self, on):
@@ -1239,6 +1242,8 @@ class TestTheProtocolBlock:
         for needle in ("slice, not the epic", "post_agent_activity", "ask_on_task",
                        "Never ask only in the terminal", "one result", "release_task",
                        "Hand off with evidence",
+                       # SW-105: the name, the machine, its kind and the model.
+                       "On each claim send agent_label, host, host_kind and model",
                        # SW-43c (agent_coordination.md §3.9, "Protocol").
                        "Before you act on an answer, post one that names its id"):
             assert needle in text, needle
@@ -1248,6 +1253,8 @@ class TestTheProtocolBlock:
     def test_each_tool_named_in_a_line_exists_and_is_a_run_tool(self):
         import re
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", " ".join(tools.PROTOCOL_LINES)))
+        # SW-105: two inputs of claim_task are named in line 1, and are no tools.
+        named -= {"agent_label", "host_kind"}
         assert named <= set(tools.TOOLS), named - set(tools.TOOLS)
         assert all(tools.TOOLS[n].runs for n in named)
 

@@ -194,6 +194,10 @@ class TestTheFormatter:
 #: second number check. Each reads one value. None checks a model's numbers
 #: against sources.
 _OTHER_PARSERS = {
+    "packages/acb_common/acb_common/number_sense.py":
+        "_amount only FORMATS a source value as crore or lakh for a sentence, and grouping "
+        "reads the SHAPE of the digit grouping. The scale words of a figure are read by "
+        "number_check.find_figures, not here (NUM-1)",
     "apps/services/gateway/gateway/routes/email/automation/insights_extract.py":
         "parse_amount reads ONE amount from a quote, and refuses a scaled one (D-EM-41)",
     "apps/services/gateway/gateway/routes/notes/copilot_policy.py":
