@@ -8,6 +8,8 @@
   work on 2026-11-15 (§0b): chains of existing actions first, code last.
   **D227** (2026-11-19, §0c) opens SBX-9 to the beta orgs, and rung 6a′ runs compute first.
   SBX-8, SBX-15a and SBX-18 are built dark (2026-11-19, §12). Nothing else is built.
+  **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
+  chat turn (SBX-20, SBX-21).
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
   of D187 were read on 2026-11-07 at `main` `f2671c706`. Re-verify every
   anchor at dispatch.
@@ -25,7 +27,7 @@
 - **Owner tasks:** #234 to #242 in the Metorite project. §1 maps each one to
   a section.
 - **Reads:** D12, D15, D16, D56, D58, D64, D83, D85, D86, D90, D93, D97,
-  D99, D100, D126, D127, D139, D146, D147, D180, D187, D227, R5 to R8.
+  D99, D100, D126, D127, D139, D146, D147, D180, D187, D227, D233, R5 to R8.
 - **Owns:**
   - tool-gap detection, and the tool lifecycle on the one Studio library
     (D187),
@@ -466,7 +468,7 @@ only. So 6a′ can reach production before 6b and 6e.
 | **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1 | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
 | **6a′. The compute run** | In the chat, a member asks for a calculation on rows that a tool returned. The chat runs pandas code in a sealed container and shows a CSV or PNG card. This is the first rung that runs code in production | SBX-8, SBX-15a, SBX-18, SBX-19 | SBX-G9 to SBX-G11, SBX-G13, WS43-G1 (BH-3, or the waiver), WS43-G2, WS43-G5, SBX-G6 |
 | **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
-| **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first | SBX-3, SBX-5 | None |
+| **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first. (D233) On no match, the chat builds and answers in the same turn, with one progress line | SBX-3, SBX-5, SBX-20, SBX-21 (D233) | None |
 | **6d. Repair, review and metering (dev-stack preview)** | A failed tool gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall. A step with no `sandbox` price row is refused | SBX-12, SBX-6, SBX-7 | None |
 | **6e. The tools half of the remote backend (dev-stack preview)** | A build, a smoke test and a run of a tool go to a second local daemon under `runsc`. A second org waits while the first holds the box | SBX-15b, BH-3 (unconditional) | The install of BH-3 on the box is WS43-G1 |
 | **6f. Production on the dedicated box, the beta orgs** | The HathiLabs org runs a tool on the real box. The same day, `tools:<org>` opens it to each beta org of the list | SBX-9 | SBX-G1, SBX-G6, SBX-G9 to SBX-G11, WS43-G1 to WS43-G5 |
@@ -532,6 +534,99 @@ that lives on a box is "not verified", because this slice reads no box.
   parses to an error, when an org in `user_tool_disabled_orgs` still runs, or
   when `tools` is absent from `MAF_CODING_TARGETS`. It is advisory until
   SBX-6 and SBX-9 build it.
+
+---
+
+## 0d. Amendment, 2026-11-26 (D233)
+
+**Asked by:** the owner, 2026-11-26, in chat to metorite-78. `work_plan.md`
+§3 records it as D233. The text below gives the meaning of the four
+decisions. It is not a quote.
+
+### The four decisions
+
+1. **AI Studio is unpaused** for the long tail of use cases. The chat builds
+   the tool that it lacks, in the sandbox, and keeps it.
+2. **The work is split.** The PC lanes build the sandbox path: rung 6 of this
+   spec, with its sub-rungs 6a to 6f (§0b, §0c). Ishaan's lanes build the
+   Studio rungs 1 to 5: save, repair, share and connected-system skills. Those
+   lanes also land the aging Studio pull requests, and keep chat parity. A PC
+   lane takes no task and no pull request of Ishaan's lanes.
+3. **Credentials go through the door.** Sandbox code acts as the member
+   through the one Metorite door (§5.1 to §5.4). The gateway calls Zoho,
+   Outlook and each other connector with the stored credential. No provider
+   token and no platform secret enters the sandbox. A read runs. A write waits
+   for the card of the member.
+4. **The member sees no seam.** While the sandbox builds and tests a tool, the
+   member sees one progress line, as for any long turn. The answer arrives as
+   usual. A card appears only when the result writes something. The new skill
+   is kept, and the chat reuses it silently.
+
+### What changes
+
+- **SBX-20 (task 3981), the background build and same-turn hand-back.** It
+  starts when the no-match path of `find_tools` answers `no_match` (§6.1,
+  D225). A `compose` answer means that a chain covers the ask, so no build
+  starts. The build, the smoke test and the first run go to a sandbox sub-run
+  inside the same chat turn. The main chat shows one progress line. When the
+  smoke test passes, the chat calls the new tool in the same turn and answers.
+- **A failure in SBX-20.** The chat answers what it can. It says plainly what
+  it could not do. The gap goes to the gap log (SBX-1, task 3800) and to the
+  tool failure log (`tool_failure_log.md`, TOF-2, task 1793). That store is
+  not built, so the SBX-20 audit decides if the slice waits for it.
+- **SBX-21 (task 3982), the progress-line contract.** The member sees one
+  line. It names no tool, and it does not use the word "sandbox". The line
+  lives in the one run status of `chat_run_continuity.md` §4.10. Its words are
+  fixed words of the client, as `RUN_PHASE_WORDS` is (`chat_failure_modes.md`,
+  CS-3b). The server sends no text that the client draws.
+- **Member copy.** The busy answer of §6.2 and §0c names "the sandbox". The
+  model can read that string, but the member must not see it. SBX-21 gives the
+  member copy.
+- **Writes.** A write still shows the normal card of §5.3.
+- **Keeping.** §6.5 stands: the tool persists only after a successful first
+  run. Then the chat reuses it silently.
+- **Approval.** §8 stands with no change. The owner of a private tool needs no
+  approval (§8.1, D180.2). The first time that a skill is kept for the org, a
+  holder of `studio:publish` approves one version.
+- **Order.** SBX-20 and SBX-21 belong to rung 6c (keep and reuse). SBX-20
+  needs SBX-3 (task 3802) and SBX-5 (task 3804). SBX-21 needs SBX-20.
+- **Dark.** SBX-20 ships behind its own per-org flag, default off. The
+  proposed name is `USER_TOOL_INLINE_ORGS`, and the SBX-20 audit confirms it.
+  SBX-21 uses the same flag. This amendment flips no flag and opens no owner
+  gate of §13.
+
+### The build card: the reading of the agent, and the open points
+
+Decision 4 says that a card appears only when the result writes something.
+§6.1, SBX-F8 and the "Build a tool" row of §8.1 ask for an approved build
+card before each build. The agent reads decision 4 as this: on the SBX-20
+path, no build card shows before the build. The three texts stay as they are
+for each other path. The owner has not confirmed this reading. The agent asks
+on task 3981. SBX-20 changes the card rule of SBX-F8 for its path only.
+
+The build card does more than ask for a yes. These defaults hold until the
+owner answers on that task.
+
+| What the card gives today | The default of the SBX-20 path | The recommendation |
+|---|---|---|
+| The warning of a marked session (§5.7) | No silent build in a marked session. The build card of §6.1 shows | Keep this default |
+| The approval of a `web:` host (§5.5) | No `web:` profile on the silent path | Keep this default |
+| The estimated credits (§10) | No estimate shows. The metering of SBX-7 and the hard cap of D19.3 still bind | Keep this default |
+| The list of packages | Only packages that the image already holds (§6.9) | Keep this default |
+
+The result card of §6.5 has the "This is wrong" control for 24 hours. The
+default keeps it as a control on the answer. It asks for no approval.
+
+**For the SBX-20 audit.** A build step has up to 600 seconds, and a run step
+up to 900 seconds (§5.6). So one chat turn can be long. The audit must show
+how the turn survives a lost stream (`chat_run_continuity.md` §4.10), and what
+the member sees when the box is busy. §6.1 refuses a gap id older than 30
+minutes (SBX-F8), and the sub-run keeps that rule.
+
+**For the SBX-2 audit.** Decision 3 names Zoho, Outlook and other connectors.
+`SANDBOX_ROUTES` starts with the CRM and email read routes (§5.2). The audit
+lists each other connector route that the door needs. A connector with no
+route stays out of reach.
 
 ---
 
@@ -1721,6 +1816,8 @@ tenancy and outward writes also get mutation testing
 | SBX-F24 | `tests/unit/test_sandbox_scope_all_orgs.py` | (D227) `tools:*` parses to an error, an org in `user_tool_disabled_orgs` still runs, or `tools` is absent from `MAF_CODING_TARGETS`. Advisory until SBX-6 and SBX-9 build it |
 | SBX-F25 | `tests/unit/test_compute_run.py` | (D227) `compute_run` takes an input that is not a `tr_` ref of its own org, member and thread, or a foreign ref does not answer "not found". A short tool result gets no ref while compute is on. One org evicts the refs of another. The output text is not framed as untrusted. A run passes the daily cap of 50 for an org or 20 for a member. A log line holds code or output text. An org outside the scope runs |
 | SBX-F26 | `tests/unit/test_sandbox_broker_compute.py` | (D227) The `compute` argv holds a mount, a network, or limits other than 1 CPU, 1g and pids 64. The tar reader accepts a link, a nested name, a type outside csv, png, json and txt, more than 5 files, a file over 1 MB or more than 3 MB in total. `compute` is absent from `MAF_CODING_TARGETS`, or `compute:*` does not parse, or an unknown target no longer raises `ValueError`. Production runs without `docker-remote` and `runsc`. A start skips the org lock |
+| SBX-F27 | `tests/unit/test_user_tool_inline_build.py` | (D233) With the flag off, a build starts in a turn without the build card. A silent build runs in a marked session, gets a `web:` profile, or starts on an answer that is not `no_match`. A failed smoke test persists a tool, or leaves no gap row. Advisory until SBX-20 builds it |
+| SBX-F28 | `tests/unit/test_user_tool_progress_line.py`, with a `vitest` half | (D233) The member sees a second progress line, a tool name or the word "sandbox" for a build in the turn. The client draws a server string. A write runs with no card. Advisory until SBX-21 builds it |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
 with the `sandbox_docker` marker, as WS43-F4 does. A skip fails that
@@ -1756,6 +1853,7 @@ the A2 model.
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
+| **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
 | **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
@@ -1776,6 +1874,8 @@ the A2 model.
 | **SBX-17** (task 3432) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
 | **SBX-18** (task 3815) | (D227) **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total`, default 1. It starts containers through the org lock of SBX-15a. `compute` is in `MAF_CODING_TARGETS`. The flip is `compute:<org>` in `MAF_CODING_SCOPE` (SBX-G13). `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the hot kill switch only, for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15a (tasks 3807, 3430), for the production guard and the lock | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, SBX-G13, WS43-G2, WS43-G5, SBX-G6). WS43-G1 (BH-3) binds it too (D127.2, §4.6). The owner decides on task 3786 to build BH-3 or waive it for rung 6a′ only. The waiver amends §4.6, and a gateway compromise then gets root on the sandbox box |
 | **SBX-19** (task 3816) | (D227) **The `compute_run(code, inputs, timeout_s)` chat tool** for the main chat agent `orchestrator`. The inputs are `tr_` refs of tool results that the turn holds, from the one spill store `tool_result_spill`, keyed by org, member and thread. A `KeepForCompute` step keeps a ref for every plain-text tool result of the turn, from 1 character to 2 MB, while compute is on for the org. It does not depend on `TOOL_RESULT_SPILL` or on the 24,000-character threshold. Eviction works for each owner. The output is framed as untrusted. Files reach the chat as artifacts through the `write_artifact` seam. A daily cap of 50 runs for each org and 20 for each member goes through `tenant_redis`. Log lines hold no code and no output text. A run writes a `usage_event` at price 0 through the one meter if that is one call, and if not, SBX-7 does it. **Done when:** SBX-F25 passes | SBX-18 | AGENT-SAFE. Dark |
+| **SBX-20** (task 3981) | (D233) **The background build and same-turn hand-back** (§0d, rung 6c). On `no_match`, the build, the smoke test and the first run go to a sandbox sub-run inside the same chat turn. The chat shows one progress line. On a smoke pass it calls the new tool in the same turn and answers. On a failure it answers what it can and says what it could not do. The gap goes to the gap log and the tool failure log. HIGH. **Done when:** on the dev stack, one turn builds, calls and answers. A failed build gives a plain answer and both log rows. With the flag off, nothing changes. Fence SBX-F27 | SBX-3, SBX-5 | AGENT-SAFE. Dark |
+| **SBX-21** (task 3982) | (D233) **The progress-line contract** (§0d, rung 6c): one line in the run status, with fixed client words, no tool name and no "sandbox". A write still shows the card of §5.3. The kept skill is reused silently. The approval of §8 does not change. HIGH. **Done when:** a test fails on a second progress line, on a tool name or on "sandbox" in member copy. Fence SBX-F28 | SBX-20 | AGENT-SAFE. Dark |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 
@@ -1966,6 +2066,10 @@ here, and each needs its own check before anyone acts on it.
   is an org lock across every target. The compute target joins the scope seam
   (SBX-G13). SBX-15 splits into 15a and 15b. An escape that stays on the box is
   an open risk for the owner.
+- 2026-11-26 — D233 (SBX-0e, task 3980). AI Studio is unpaused. PC lanes
+  take rung 6, and Ishaan's lanes take rungs 1 to 5. New slices SBX-20 and
+  SBX-21: the build in the same turn, with one progress line. §0d holds the
+  open points of the build card. Nothing built.
 - 2026-11-19 — SBX-8 and SBX-15a built dark (tasks 3807 and 3430). The broker
   takes `sandbox_runtime` and the `docker-remote` backend. The org lock binds
   every target, the compute target of SBX-18 too. Fence SBX-F21.
