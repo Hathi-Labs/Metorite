@@ -75,6 +75,8 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
  */
 const CRM_WRITES: ReadonlySet<string> = new Set([
   "create_lead", "update_deal_status", "log_activity", "convert_lead",
+  // P-3 (task 3954): a suggestion of the field map changes what a list shows.
+  "crm_decide_suggestion", "crm_rerun_analysis",
   "crm_update_record", "crm_update_task", "crm_create_pipeline",
   "crm_edit_status", "crm_edit_lost_reason",
 ]);

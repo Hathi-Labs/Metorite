@@ -178,8 +178,9 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    # 13 own tools: 11 before, and the two set-up writes of CRM-M2e (task 3951).
-    assert len(tools) == len(_M._TOOLS) == 13 + len(_T.CRM_TOOLS)
+    # 18 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
+    # and the five of the suggestions and the AI analysis (P-3, task 3954).
+    assert len(tools) == len(_M._TOOLS) == 18 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -207,6 +208,9 @@ def test_register_agent_tools_maps_names() -> None:
         "search_crm", "get_pipeline", "get_record", "get_timeline",
         "create_lead", "update_deal_status", "log_activity", "convert_lead",
         "crm_create_pipeline",
+        # P-3 (task 3954): the suggestions of the field map and the AI analysis.
+        "crm_mapping_suggestions", "crm_preview_suggestion", "crm_decide_suggestion",
+        "crm_analysis_status", "crm_rerun_analysis",
         "crm_update_record", "crm_update_task",
         "crm_edit_status", "crm_edit_lost_reason",
     } | set(_T.CRM_TOOL_NAMES)
@@ -217,6 +221,21 @@ def test_register_agent_tools_maps_names() -> None:
 # ── 2. Identity — every call names its person, or does not happen ────────────
 
 _EMPTY_LIST = {"rows": [], "total": 0}
+
+#: P-3 (task 3954): the suggestion and analysis routes, with one suggestion.
+_MAPPING_ANSWERS: dict[str, Any] = {
+    "/crm/mapping/suggestions": {
+        "suggestions": [{"slot": "deal", "version": 2, "module": "Deals_X",
+                         "label": "Commercials", "records": 3, "targets": [],
+                         "stage": None}],
+        "overlays": [],
+    },
+    "/crm/mapping/preview": {"version": 2, "entities": [], "overlay": {
+        "slot": "deal", "module": "Deals_X", "columns": ["name"],
+        "rows": [{"id": "1", "values": {"name": "Acme"}}], "total": 1,
+        "unmapped": {}, "unsorted": 0}},
+    "/crm/analysis/status": {"run": None, "allowed": True},
+}
 
 #: The deal stage vocabulary ``update_deal_status`` resolves a NAME against.
 _STATUSES = [
@@ -233,6 +252,10 @@ def _responder(call: dict) -> Any:
         return _STATUSES
     if path == "/crm/lost-reasons":
         return []
+    if path.startswith(("/crm/mapping/", "/crm/analysis/")):
+        # P-3 (task 3954): one suggestion for Deals, its preview, and a run.
+        return _MAPPING_ANSWERS.get(path, {"slot": "deal", "module": "Deals_X",
+                                           "version": 2, "id": _ID, "started": True})
     if path in ("/crm/pipelines", "/crm/modules") or path.startswith("/crm/fields/"):
         return []
     if path.endswith("/convert"):
@@ -290,6 +313,12 @@ _INVOCATIONS: dict[str, Any] = {
     "crm_search_notes": lambda: _T.crm_search_notes("pump leaks at the site"),
     # CRM-M1: the Change history of the CRM set-up.
     "crm_change_history": lambda: _T.crm_change_history(since="2026-10-27"),
+    # P-3 (task 3954): the suggestions of the field map and the AI analysis.
+    "crm_mapping_suggestions": lambda: _M.crm_mapping_suggestions(),
+    "crm_preview_suggestion": lambda: _M.crm_preview_suggestion("deals"),
+    "crm_decide_suggestion": lambda: _M.crm_decide_suggestion("approve", "deals"),
+    "crm_analysis_status": lambda: _M.crm_analysis_status(),
+    "crm_rerun_analysis": lambda: _M.crm_rerun_analysis(),
 }
 
 
@@ -420,6 +449,8 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
     writers = {"create_lead", "update_deal_status", "log_activity", "convert_lead",
                "crm_create_pipeline", "crm_update_record", "crm_update_task",
                "crm_edit_status", "crm_edit_lost_reason"}
+    # P-3 (task 3954): the two card writes of the suggestions and the analysis.
+    writers |= {"crm_decide_suggestion", "crm_rerun_analysis"}
     seen: set[str] = set()
     for fn in _M._TOOLS:
         hints = annotations.TOOL_ANNOTATIONS.get(fn.__name__)

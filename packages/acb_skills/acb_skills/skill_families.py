@@ -843,6 +843,33 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # P-1b (task 3922): a task from a mail, for the main chat. The two tools are
+    # My Tasks tools (skill_my_tasks.core), built by the Projects assistant in
+    # `_agent_tools()` only, as the calendar-day tools are. The pack follows
+    # `projects` (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "mail-tasks": {
+        "label": "Tasks from mail",
+        "summary": (
+            "Make a task from an email, or from a reply that the member sent: "
+            "draft it, then make it after one card."
+        ),
+        "description": (
+            "A tool pack: the task from a mail, for the main assistant to load "
+            "when a turn says \"make a task from this email\". One tool drafts "
+            "the task from a mail or from a reply that the member sent, and "
+            "changes nothing. One tool makes the task in the member's own task "
+            "list after one card. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_capture_from_mail",
+            "my_tasks_draft_from_mail",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
     # the other Projects packs are full in their measured turns.
     "projects-cycles": {
@@ -1172,6 +1199,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "people_me",
             "people_work",
             "reach_preview",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-1c (chat_parity.md section 6.4, task 3923, owner answer aa02d28f of
+    # 2026-11-23): the one act on a connected calendar. Sync now, and the switch
+    # that shows the member's tasks in it. Each act shows one card first. The
+    # owner is org-admin, which never runs as an agent (option a, the owner's
+    # answer on task 3923 is open). It is NOT in FOLLOWS: only the owner's pack
+    # list turns it on (tool_packs.packs_on). Fence:
+    # test_calendar_connections_pack.py.
+    "calendar-connections": {
+        "label": "Calendar connections",
+        "summary": (
+            "Sync a connected Google or Outlook calendar now, or show or hide your tasks in it."
+        ),
+        "description": (
+            "A tool pack: one act on a connected calendar, for the main assistant to load "
+            "when a turn asks to sync Google Calendar or Outlook now, or to show or hide "
+            "the member's tasks in it. Each act asks on one card first, and the route "
+            "acts as the member. To connect, reconnect or disconnect a calendar, the "
+            "member uses Calendar settings. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_calendar_connection",
         ),
         "owner": "org-admin",
         "core": False,
