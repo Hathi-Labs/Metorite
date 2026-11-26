@@ -763,15 +763,17 @@ def test_the_resume_mark_sits_inside_the_resume_gate():
 
 # ── 9. The fence of the act table ───────────────────────────────────────────
 
-#: Where each kind's tools live, and the mark of its not-acted answer.
-HOMES: dict[str, tuple[str, tuple[str, ...]]] = {
-    ac.TASK_CREATE: ("apps/skills/skill-projects/skill_projects",
+#: Where each kind's tools live, and the mark of its not-acted answer. P-1b
+#: (task 3922): a task is made in skill-my-tasks too (``my_tasks_capture_from_mail``).
+HOMES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    ac.TASK_CREATE: (("apps/skills/skill-projects/skill_projects",
+                      "apps/skills/skill-my-tasks/skill_my_tasks"),
                      ("_not_confirmed(", "card_not_done_text(")),
-    ac.TASK_UPDATE: ("apps/skills/skill-projects/skill_projects",
+    ac.TASK_UPDATE: (("apps/skills/skill-projects/skill_projects",),
                      ("_not_confirmed(", "card_not_done_text(")),
-    ac.REMINDER_SET: ("apps/skills/skill-projects/skill_projects",
+    ac.REMINDER_SET: (("apps/skills/skill-projects/skill_projects",),
                       ("_not_confirmed(", "card_not_done_text(")),
-    ac.EMAIL_SEND: ("apps/agents/agent-email-assistant", ("_not_done(", '"Not sent.')),
+    ac.EMAIL_SEND: (("apps/agents/agent-email-assistant",), ("_not_done(", '"Not sent.')),
 }
 EMAIL_AGENT = ROOT / "apps" / "agents" / "agent-email-assistant" / "agents.py"
 
@@ -801,8 +803,8 @@ def test_each_act_tool_is_a_pack_tool_with_its_not_acted_lead(tool):
     from acb_skills import skill_families as sf
 
     assert any(tool in sf.SKILL_FAMILIES[slug]["tools"] for slug in sf.pack_slugs()), tool
-    root, marks = HOMES[ac.ACT_TOOLS[tool]]
-    homes = [p for p in (ROOT / root).rglob("*.py")
+    roots, marks = HOMES[ac.ACT_TOOLS[tool]]
+    homes = [p for root in roots for p in (ROOT / root).rglob("*.py")
              if f"async def {tool}(" in p.read_text(encoding="utf-8")]
     assert len(homes) == 1, (tool, homes)
     source = homes[0].read_text(encoding="utf-8")
@@ -921,7 +923,9 @@ def test_the_guard_text_of_a_failed_write_is_unknown():
 #: The home module of each act tool that has an acted head.
 HEAD_HOMES = {"send_email": EMAIL_AGENT, "compose_reply": EMAIL_AGENT,
               "forward_email": EMAIL_AGENT, "send_draft": EMAIL_AGENT,
-              "schedule_send": EMAIL_AGENT}
+              "schedule_send": EMAIL_AGENT,
+              "my_tasks_capture_from_mail": (
+                  ROOT / "apps/skills/skill-my-tasks/skill_my_tasks/core.py")}
 
 
 @pytest.mark.parametrize("tool", sorted(ac.ACTED_HEADS))

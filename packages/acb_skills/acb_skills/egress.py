@@ -1471,6 +1471,15 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
+    # P-1b (task 3922): a task from a mail, in the member's own task list. It
+    # shows its exact fields on one card first (``skill_my_tasks.core``), with
+    # the mailbox line. In a held chat it refuses the AI path, because that
+    # card cannot show the fields. ``open_world=True``: the reply path labels
+    # the thread at the mail provider.
+    "my_tasks_capture_from_mail": _pin(
+        "account_id email_id thread_id title notes disposition next_action "
+        "assignee_name due_at defer_until context energy time_estimate_mins steps "
+        "reply_subject reply_to_message_id"),
     # The class B tools of projects-bulk.
     "create_tasks": _pin("project_id tasks"),
     "edit_comment": _pin("task_id comment_id body"),

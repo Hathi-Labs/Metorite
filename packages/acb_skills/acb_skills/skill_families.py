@@ -843,6 +843,33 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # P-1b (task 3922): a task from a mail, for the main chat. The two tools are
+    # My Tasks tools (skill_my_tasks.core), built by the Projects assistant in
+    # `_agent_tools()` only, as the calendar-day tools are. The pack follows
+    # `projects` (tool_packs.FOLLOWS), so the flag list needs no new line.
+    "mail-tasks": {
+        "label": "Tasks from mail",
+        "summary": (
+            "Make a task from an email, or from a reply that the member sent: "
+            "draft it, then make it after one card."
+        ),
+        "description": (
+            "A tool pack: the task from a mail, for the main assistant to load "
+            "when a turn says \"make a task from this email\". One tool drafts "
+            "the task from a mail or from a reply that the member sent, and "
+            "changes nothing. One tool makes the task in the member's own task "
+            "list after one card. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_capture_from_mail",
+            "my_tasks_draft_from_mail",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-39 SP-5a (task 964): the cycles (sprints) of a project. Own pack, because
     # the other Projects packs are full in their measured turns.
     "projects-cycles": {
