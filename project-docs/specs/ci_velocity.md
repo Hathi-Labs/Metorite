@@ -893,6 +893,8 @@ The slices of §8 have their own table in §8.5.
 release slots stay (D194). Testing and the merge to `main` go as fast as the
 quality allows. Task 3051 (CIV-26) holds this plan.
 
+**Land before build (2026-11-26).** The owner directive that built work must reach production before new work starts is `engineering_practice.md` §7b. It holds the claim gate, the landing sweeper, zero orphans at a stop, done means live and the "built, not live" view (tasks 4040 to 4046).
+
 ### 8.1 The rule
 
 **A PR waits only for the tests that its change can break. Each test runs once

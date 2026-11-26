@@ -251,6 +251,8 @@ The delegate (SW-29a) stores this reference. It names the member and the stamp, 
 | The session key comes only from the signed header | Built: `test_mcp_edge_signing.py` |
 | Guidance never overrides the server's rules | SW-31: a prompt fence in `test_mcp_edge_prompts.py` |
 
+**Amendment, 2026-11-26 (owner directive "land before build", `engineering_practice.md` §7b.2, task 4041).** One module may read `agent_label` for a decision: `gateway/routes/projects/claim_gate.py`. It may refuse an agent's own new claim while that label holds an old open PR. It never opens, grants or shows anything. A lane that changes its label escapes it, so it guides agents that cooperate, and it is not a security control. The label still reaches no authorization check. Fence: `tests/unit/test_agent_label_fence.py` names this one module as the allowed decision reader.
+
 ### 3.8 Metorite and Linear, side by side
 
 The source is the Linear research of 2026-10-30, the comment on epic 321. Appendix B holds the full table.

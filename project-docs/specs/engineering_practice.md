@@ -728,9 +728,10 @@ cannot drift.
 
 ## 7b. Land before build (owner directive, 2026-11-26)
 
-**Status: ACTIVE, slices dark.** Epic: WS-CIV task 1628. Spec task: 4040
-(LBB-0). Part A, the backlog itself, is task 4019 (lane-land) and task 4039
-(pc-land-core).
+**Status: ACTIVE spec. No slice is built (verified against code
+2026-11-26).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
+and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
 **Owner directive, 2026-11-26 ~16:10 UTC:** "If work has already been done,
 then we should try and see how to push it to production. There needs to be
@@ -771,15 +772,12 @@ review status, or in progress when its project has no review status.
   the deployed SHA is not, `/version` with no answer moves nothing).
 
 **Rule 2. Landing comes first (the claim gate).** §7b.2 holds the design.
-- `my_work` lists the member's own open PRs older than 24 hours before any
-  new task, with the reason `land_your_pr`.
-- `claim_task` refuses a new task while the claiming member and agent label
+- `my_work` lists the open PRs of the caller's agent label that are older
+  than 24 hours, before any new task, with the reason `land_your_pr`.
+- An agent's claim of a new task is refused while its member and agent label
   hold an open PR older than 48 hours that no merger has queued.
 - Flags: `CLAIM_GATE_SHADOW_ORGS` (log only) and `CLAIM_GATE_ORGS` (refuse).
-- Fences: `tests/unit/test_claim_gate_r8.py` (the query and the exemptions,
-  on a real database), `tests/unit/test_claim_gate_edge.py` (the refusal text
-  and the `my_work` row), and one `_READERS` line in
-  `tests/unit/test_flag_reload.py` for each flag.
+- Fences: §7b.2 "Fences".
 
 **Rule 3. The landing sweeper.** A box timer runs every 2 hours over every
 open PR: `scripts/home_server/landing_sweeper.py`.
@@ -813,12 +811,15 @@ that it pushed has a disposition.
 - "Released for other agents" is not a disposition.
 - `.claude/hooks/stop-disposition.mjs` reads the transcript. It finds each
   PR that the session pushed or opened, and blocks the Stop once for each PR
-  with no disposition. It names the PR and the two choices. It fails open, as
-  it does today.
-- The box wind-down script (`~/lanes/winddown.sh`, moved into the repo as
-  `scripts/home_server/lanes/winddown.sh`) lists each open PR of each lane it
-  stops, and refuses to stop a lane with an orphan unless `--force-orphans`.
-- Switch: `STOP_DISPOSITION_PRS=off|warn|block`, default `warn`.
+  with no disposition. It names the PR and the two choices. It fails open. Like
+  the rest of this hook, it runs only in a background job
+  (`stop-disposition.mjs`, the `CLAUDE_JOB_DIR` marker).
+- The box wind-down script is `~/lanes/winddown.sh` today, and it is not in
+  the repo. LBB-4 moves it to `scripts/home_server/lanes/winddown.sh`. It then
+  lists each open PR of each lane that it stops, and refuses to stop a lane
+  with an orphan unless `--force-orphans`.
+- Switch: `STOP_DISPOSITION_PRS=off|warn|block`, default `off`. The owner or
+  metorite-78 sets `warn`, then `block`.
 - Fences: `node .claude/hooks/stop-disposition.test.mjs` and
   `tests/unit/test_winddown.py`.
 
@@ -852,80 +853,164 @@ opens a fix task.
 
 ### 7b.2 The claim gate (rule 2)
 
+**What it is, and what it is not.** The gate guides agents that cooperate.
+It is not a security control. It reads `pm_agent_runs.agent_label`, which is
+display data (`agent_coordination.md` §3.7). A lane that changes its label
+escapes the gate. The gate never opens, grants or shows anything. It only
+refuses an agent's own new claim. `agent_coordination.md` §3.7 records this
+reader in a dated amendment, and `tests/unit/test_agent_label_fence.py`
+names `gateway/routes/projects/claim_gate.py` as the one module that may read
+the label for a decision.
+
 **The traps, and the answer to each.**
 
 1. **Every lane pushes as GitHub user vjvarada.** A count by member refuses
    every lane, because 119 PRs are open. So the gate counts by agent label.
-   A PR belongs to the agent label of the newest run on its task. The run
-   (`pm_agent_runs.agent_label`) is the record, so no ref needs a new run
-   column. A lane that adopts a PR claims its task, and the PR is then its
-   own.
+   A PR belongs to the agent label of the newest run on its task. The newest
+   run is the `pm_agent_runs` row of the task with the highest `created_at`,
+   then the highest `id`, in any status. A NULL label binds the PR to claims
+   that send no label. A lane that adopts a PR claims its task, so the PR is
+   then its own.
 2. **No deadlock.** The gate never refuses these claims:
-   - a claim of a task that holds a `pull_request` reference. That covers the
-     task of the old PR, a "Land PR N" task, and a merger's claim.
-   - a claim of a task with the tag `landing`.
-   - a claim that the claimant already holds (a second claim changes
-     nothing).
+   - a claim of a task that holds a `pull_request` reference with `merged_at`
+     NULL and `state` NULL, `open` or `draft`. That covers the task of the old
+     PR, a "Land PR N" task, and a merger's claim.
+   - a claim of a task with the tag `landing`. Tags compare with no case
+     (migration 156).
+   - a claim of a task where the caller already has an open run: the same
+     member, connection and session key, the test of `_OPEN_RUN_SQL`
+     (`agent_runs.py`). That test reads no label.
+   - a claim by a person. A person's claim sends no label and opens no agent
+     run (`agent_runs.py`, the person branch of the claim).
 3. **"Queued" lives on the box.** The gateway never reads a box file. The
    lane tells the server: after it runs `hand_over.sh` or writes a `REQUEUE`
    line, it calls `add_task_reference` again on the same PR URL with
-   `landing: "queued"`. `hand_over.sh` prints that call as its last line. A
-   `queued` mark expires after 24 hours, so a PR that the bot sent BACK counts
-   again by the next day. A lane that re-queues sends the mark again.
+   `landing: "queued"`. LBB-2 makes `hand_over.sh` print that call as its last
+   line. A `queued` mark expires after 24 hours, so a PR that the bot sent
+   BACK counts again by the next day. A lane that re-queues sends the mark
+   again. At each merge, the merger sends `landing: "gone"`.
 4. **The refusal is for an agent.** It names each PR, its age in hours, its
    task number and one next step.
 
-**The record.** One expand-only migration adds three nullable columns to
-`pm_task_refs`. No new table.
-- `landing_state TEXT NULL`, CHECK in `queued`, `parked`, `gone`.
+**The three doors.** SW-45 checks the claim scope at three doors, and the
+gate runs at the same three, right after `check_claim_scope`:
+- `claim_task` (`gateway/routes/projects/tasks.py`).
+- `set_assignees` when an agent adds itself (`tasks.py`, the call of
+  `check_claim_scope`).
+- `start_agent_run` (`gateway/routes/projects/agent_runs.py`, the call of
+  `check_claim_scope`).
+
+**The record.** One expand-only migration (R6) adds three nullable columns to
+`pm_task_refs`. No new table. The table is already tenant-scoped with FORCE
+row level security (255), so the columns inherit it (R5).
+- `landing_state TEXT NULL`, CHECK `landing_state IN ('queued', 'parked',
+  'gone')`.
 - `landing_at TIMESTAMPTZ NULL` and `landing_by TEXT NULL`.
-- `add_task_reference` takes an optional `landing` field. A repeat of the same
-  URL updates the three columns, and writes the timeline row of a reference
-  change.
-- `gone` means merged or closed, said by the lane. It never expires. `parked`
-  counts only while the task's status category is backlog or todo.
+- `add_task_reference` (the edge tool and `POST` of
+  `gateway/routes/projects/refs.py`) takes an optional `landing` field.
+  `insert_ref` changes from `ON CONFLICT ... DO NOTHING` to an update of the
+  three columns, only when `landing` is sent. `landing_by` is `actor(user)`.
+  The change writes one `link` activity with `ref_action: landing`.
+- A repeat of the same URL with no `landing` changes nothing, as today.
+- Who may write `landing`: each caller who may add a reference to the task
+  today. No new permission.
+- `gone` means merged or closed, said by the lane or the merger. It never
+  expires. A `parked` mark exempts the PR only while its task's status
+  category is backlog or todo.
 
 **A counted PR.** The gate counts a reference when each of these is true:
-- its kind is `pull_request`, and its `state` is NULL, `open` or `draft`.
-- its `merged_at` is NULL, and its task is not in a done or cancelled
-  status.
-- it is older than 48 hours, from `created_at` (24 hours for `my_work`).
-- the newest run on its task is of the claiming member, and has the claiming
-  agent label.
-- its `landing_state` is NULL, or `queued` with `landing_at` older than 24
-  hours, or `parked` on a task that is in progress.
-- no run on its task waits on a person (status `awaiting`, with an open
-  question).
+- Its kind is `pull_request`, and its `state` is NULL, `open` or `draft`.
+- Its `merged_at` is NULL.
+- Its task is visible to the caller, not archived, and not in a done or
+  cancelled status. Its project is open. (A PR on a task that the lane cannot
+  write is never counted, because the lane could not clear it.)
+- It is older than 48 hours from `created_at`, or 24 hours for `my_work`.
+- The newest run on its task (trap 1) has the caller's member and the
+  caller's agent label.
+- Its `landing_state` is NULL. Or it is `queued`, with `landing_at` older
+  than 24 hours. Or it is `parked`, on a task that is not in backlog or todo.
+- No run on its task has the status `awaiting` (a run that waits on a
+  person, with an open question).
 
-A claim with no agent label counts the runs that have no label.
-
-**The refusal.** A 409 with `detail.error = "land_your_pr"` and a list of
-up to 5 PRs: the URL, the PR number, the age in hours, the task number and a
-`next` code. The edge renders a fixed text from these values, never from text
-that a person wrote:
-- `land`: "Merge main into PR N, verify it, and queue it. Then call
+**The refusal.** A 422 through `_refuse_claim` (`tasks.py`), with
+`detail.error = "land_your_pr"`. The body lists up to 5 counted PRs, oldest
+first. Each entry has the PR number (parsed from `ref`), the age in hours,
+the task number and a `next` code. It also has the URL, but only when the
+URL matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`. The edge adds
+`land_your_pr` to its coded claim refusals (`_CLAIM_CODED`, `tools.py`),
+because `coded_statuses=(422, 403)` already carries a 422. It renders a fixed
+text from these values, never text that a person wrote. The `next` code:
+- `answer` when a run on the task has the state `answered`: "A person
+  answered on task T. Read the answer and act on it."
+- `land` otherwise: "Merge main into PR N, verify it, and queue it. Then call
   add_task_reference on task T with landing queued."
-- `answer`: "A person answered on task T. Read the answer and act on it."
-- `gone`: printed with each PR, in one line: "If PR N is merged or closed,
-  call add_task_reference on task T with landing gone."
+- Each entry also gets one line: "If PR N is merged or closed, call
+  add_task_reference on task T with landing gone."
 
-**The `my_work` row.** Reason `land_your_pr`, listed after the waiting runs
-and before `held_by_you` and `assigned`. One row for each counted PR over 24
-hours, with the task, the PR URL and its age. Both flags show the row.
+**The `my_work` row.** `my_work` takes an optional `agent_label`, as
+`claim_task` does. With no label, it lists the PRs bound to no label.
+- A new gateway read lists the counted PRs over 24 hours for the caller and
+  label: `GET /projects/agent-work/landing` in
+  `gateway/routes/projects/claim_gate.py`.
+- The edge adds `land_your_pr` to `MY_WORK_REASONS` (`tools.py`). The row
+  keys gain `pr_number`, `pr_url` (same pattern as above, else null) and
+  `age_hours`.
+- Position: after the waiting runs (`run_queued`, `run_answered`,
+  `run_stopping`), and before `held_by_you`, `check_due`, `assigned` and
+  `own_app_free`.
+- Either flag shows the row.
 
-**Flags.** `CLAIM_GATE_SHADOW_ORGS` logs `claim.gate would_refuse` with the PR
-numbers, and refuses nothing. `CLAIM_GATE_ORGS` refuses, and logs
-`claim.gate refused`. Both are reloadable `*_ORGS` flags in
-`acb_common/flag_registry.py` (PR 2380) or `settings.py`, with entries in
-`docs/flag_reload.md`. Neither is a gate on money or on a real person.
+**Flags.** Two `Settings` fields: `claim_gate_shadow_orgs` and
+`claim_gate_orgs`, in `acb_common/flag_registry.py` when PR 2380 is on main,
+else in `settings.py`. Both are reloadable `*_orgs` lists with `*`, read by
+one reader each in `claim_gate.py`, with entries in `docs/flag_reload.md`.
+- `CLAIM_GATE_SHADOW_ORGS` logs `claim.gate would_refuse` with the PR numbers,
+  and refuses nothing.
+- `CLAIM_GATE_ORGS` refuses, and logs `claim.gate refused`.
+- Neither gates money or a real person.
 
 **Who it binds.** Every member, every lane, and the lanes of each person. The
 PR body of the build tells Ishaan, because his lanes are bound too.
 
 **The flip.** Not by the builder. After the merge and a release, metorite-78
-sets `CLAIM_GATE_SHADOW_ORGS` for Hathi Labs (`02cf1f16`) and reads one day
-of `claim.gate` lines. Then it sets `CLAIM_GATE_ORGS` for Hathi Labs, and
-after one more day, `*`.
+sets `CLAIM_GATE_SHADOW_ORGS` for Hathi Labs (`02cf1f16`) and reads one day of
+`claim.gate` lines. Then it sets `CLAIM_GATE_ORGS` for Hathi Labs, and after
+one more day, `*`. Each step is gate `enforcement-flip`. The grant of
+`.claude/OWNER_GRANTS.md` ends on 2026-11-30, so a step after that date needs
+a new grant line or the owner's own hand.
+
+**Fences.**
+- `tests/unit/test_claim_gate_r8.py`, on a real database: each rule of "A
+  counted PR", each exemption of trap 2, the three doors, the shadow flag
+  refuses nothing, and the `landing` write.
+- `tests/unit/test_claim_gate_edge.py`: the refusal text for each `next` code,
+  a URL that fails the pattern is left out, and the `my_work` row and its
+  position.
+- `tests/unit/test_agent_label_fence.py`: `claim_gate.py` is the one allowed
+  decision reader of the label.
+- `tests/unit/test_flag_reload.py`: one reader test per flag, in the shape of
+  the `_READERS` table (PR 2380) or of the per-flag tests on main.
+
+**Done when.**
+1. With both flags off, every existing claim, assignee and run-start test
+   passes unchanged, and no claim reads the new query.
+2. With `CLAIM_GATE_ORGS` on, an agent claim of a new task is refused (422
+   `land_your_pr`) for a label that holds a counted PR, and the text names
+   each PR, its age, its task and the next step.
+3. Each exemption of trap 2 passes with the flag on.
+4. `my_work` lists the `land_your_pr` row in its place.
+5. `hand_over.sh` prints the `add_task_reference ... landing queued` line.
+
+**Verify with.**
+
+```
+eval "$(bash scripts/dev_db.sh --export)"
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_claim_gate_r8.py tests/unit/test_claim_gate_edge.py \
+  tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_claim.py \
+  tests/unit/test_agent_claim_scope_r8.py tests/unit/test_task_refs_route.py \
+  tests/unit/test_flag_reload.py tests/unit/test_mcp_edge_coverage.py
+```
 
 **Tier.** HIGH (the claim path is next to auth, and a migration): the
 spec-auditor, an Opus builder, an independent verifier, an Opus diff-review
@@ -933,14 +1018,25 @@ and R8 tests on a real database.
 
 ### 7b.3 Slices
 
-| Order | Slice | Task | Tier | Flag or mode |
-|---|---|---|---|---|
-| 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` |
-| 2 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` |
-| 3 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` |
-| 4 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` |
-| 5 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD | `BUILT_NOT_LIVE_ORGS` |
-| 6 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` |
+Each slice row names its anchors and its gate. The build is AGENT-SAFE for
+each slice. Each flip or `on` mode is OWNER-GATE.
+
+| Order | Rung | Slice | Task | Tier | Flag or mode | Anchors | Gate |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | LBB-2 the claim gate and the `land_your_pr` row | 4041 | HIGH | `CLAIM_GATE_SHADOW_ORGS`, `CLAIM_GATE_ORGS` | §7b.2 | build AGENT-SAFE, flip `enforcement-flip` |
+| 2 | 1 | LBB-4 zero orphans at a stop | 4042 | STANDARD | `STOP_DISPOSITION_PRS` | `.claude/hooks/stop-disposition.mjs`, `~/lanes/winddown.sh` | build AGENT-SAFE, `block` by the owner |
+| 3 | 1 | LBB-3 the landing sweeper | 4043 | HIGH (merge path) | `LANDING_SWEEPER_MODE` | `scripts/home_server/lane_handover.sh`, `merge_bot.sh` | build AGENT-SAFE, `on` and the timer are `deploy` |
+| 4 | 2 | LBB-1 done means live | 4044 | STANDARD | `LIVE_CHECK_MODE` | `GET /version`, the merger steps of `lane-merge.md` | build AGENT-SAFE, `on` is `deploy` |
+| 5 | 2 | LBB-6 built, not live, in My Day and the review | 4045 | STANDARD, UI | `BUILT_NOT_LIVE_ORGS` | `.claude/commands/delivery-review.md`, My Day "Needs you" (WS-58) | build AGENT-SAFE, D145 preview before the flip |
+| 6 | 2 | LBB-5 merge capacity follows build capacity | 4046 | HIGH (merge path) | `PREMERGE_MERGE_TEST=auto` | `scripts/premerge.sh` step 4 | build AGENT-SAFE, the default flip is the owner's |
+
+Rung 1 stops new orphans and lands the old ones. Rung 2 shows the owner what
+is live and makes merges cheaper. The demo of rung 1: on production, a lane
+with a PR older than 48 hours sees `land_your_pr` first in `my_work`, and its
+claim of a new task is refused with the PR named.
+
+Each slice other than LBB-2 gets its own "Done when" and "Verify with" lines
+in this section when its builder starts, and its own spec-auditor run.
 
 **Out of scope.** Closing a PR (the owner closes, from the close list of task
 4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
