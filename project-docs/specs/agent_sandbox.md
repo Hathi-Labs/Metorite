@@ -506,7 +506,7 @@ reading.
 | SBX-12 | Not built | Needs SBX-5 |
 | SBX-13 | Not built | `git grep metorite_door` finds nothing |
 | SBX-15a, the remote backend and the org lock | Built, dark (PR 2625, 2026-11-19) | `BACKEND_REMOTE` in `sandbox_broker.py`. `tests/unit/test_sandbox_remote_backend.py` |
-| SBX-15c, three follow-ups of 15a | Built, dark (PR 2839, 2026-11-26) | Merge `e8b692f04`. Its §12 row |
+| SBX-15c, three follow-ups of 15a | Built, dark (PR 2839, merged 2026-11-26) | Merge `e8b692f04`. Its §12 row |
 | SBX-15b, the tools half | Not built | Needs SBX-4 and WS-43g |
 | SBX-18, SBX-19, the compute run | Built, dark (PRs 2616 and 2623, 2026-11-19). No production flip. `compute_run` writes no `usage_event` yet | `acb_skills/compute_run.py`, `COMPUTE_TARGET` in `sandbox_broker.py`. Tests `test_compute_run.py` and `test_sandbox_broker_compute.py` |
 | BH-3, the broker unit (WS43-G1) | Not built. The install on the box is an owner gate, not verified | `git ls-files` lists no `acb-sandbox-broker` unit, and `tests/unit/test_sandbox_broker_socket.py` is absent. `box_hardening.md` §5 BH-3 specifies both |
@@ -2105,5 +2105,6 @@ here, and each needs its own check before anyone acts on it.
   take rung 6, and Ishaan's lanes take rungs 1 to 5. New slices SBX-20 and
   SBX-21: the build in the same turn, with one progress line. §0d holds the
   open points of the build card. Nothing built.
-- 2026-11-26 — SBX-0f (task 3996). Status refresh only: the header, six rows of
-  the §0c critical path and the §12 rows of SBX-18 and SBX-19. No rule changes.
+- 2026-11-26 — SBX-0f (task 3996). Status refresh only: the header, five rows
+  of the §0c critical path, one line anchor, the §12 rows of SBX-18 and SBX-19,
+  and the INDEX row. No rule changes.
