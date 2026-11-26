@@ -1,16 +1,36 @@
 {
-  "_note": "An eval card in USD, fitted on 2026-10-25 from four streamed calls through the production Router. Both tier-balanced and tier-powerful served deepseek-v4-pro. A streamed response carries usage.cost, the vendor's own figure, and the measure uses it. A buffered response carries none, so the measure prices it with this card. The card reproduces each probe's cost within 1 percent. completion_tokens counts the reasoning tokens.",
-  "model": "deepseek-v4-pro",
-  "usd_per_1m": {"input_miss": 0.66, "input_hit": 0.022, "output": 1.98},
-  "flash": {
-    "_note": "deepseek-flash, for a call that --tier-map sent to tier-fast. USD per 1M tokens. Input and output are the Flash list prices (0.30 and 1.20 at peak, so half off peak, and the peak factor applies on top). The cache-hit rate is DeepSeek's off-peak list price (0.006 at peak), from https://api-docs.deepseek.com/quick_start/pricing/ on 2026-10-30. It prices only a call with no usage.cost.",
-    "model": "deepseek-flash",
-    "usd_per_1m": {"input_miss": 0.15, "input_hit": 0.003, "output": 0.60}
-  },
-  "probes": [
-    {"prompt_tokens": 89, "cached_tokens": 0, "completion_tokens": 8, "cost": 0.00007458},
-    {"prompt_tokens": 3587, "cached_tokens": 0, "completion_tokens": 1, "cost": 0.0023694},
-    {"prompt_tokens": 3587, "cached_tokens": 3584, "completion_tokens": 1, "cost": 0.000082808},
-    {"prompt_tokens": 91, "cached_tokens": 0, "completion_tokens": 300, "cost": 0.00065406}
-  ]
+  "_note": "The eval card, in USD for each 1M tokens, keyed by the model that the Router names in the response (served, with no provider prefix). A call with the vendor usage.cost uses that figure. Each other call is priced by the card of its served model. A served model that is not here, or no served name, is priced at the most expensive rate of the card (spend.worst_card), and a run that meets a served model that is not here stops (TS-7a-cap, 2026-11-15). peak true: the DeepSeek peak bands double the call.",
+  "models": {
+    "deepseek-v4-pro": {
+      "_note": "Fitted on 2026-10-25 from four streamed calls through the production Router. The card reproduces each probe's cost within 1 percent. completion_tokens counts the reasoning tokens.",
+      "usd_per_1m": {"input_miss": 0.66, "input_hit": 0.022, "output": 1.98},
+      "peak": true,
+      "probes": [
+        {"prompt_tokens": 89, "cached_tokens": 0, "completion_tokens": 8, "cost": 0.00007458},
+        {"prompt_tokens": 3587, "cached_tokens": 0, "completion_tokens": 1, "cost": 0.0023694},
+        {"prompt_tokens": 3587, "cached_tokens": 3584, "completion_tokens": 1, "cost": 0.000082808},
+        {"prompt_tokens": 91, "cached_tokens": 0, "completion_tokens": 300, "cost": 0.00065406}
+      ]
+    },
+    "deepseek-flash": {
+      "_note": "Input and output are the Flash list prices (0.30 and 1.20 at peak, so half off peak, and the peak factor applies on top). The cache-hit rate is DeepSeek's off-peak list price (0.006 at peak), from https://api-docs.deepseek.com/quick_start/pricing/ on 2026-10-30.",
+      "usd_per_1m": {"input_miss": 0.15, "input_hit": 0.003, "output": 0.60},
+      "peak": true
+    },
+    "claude-haiku-5-5": {
+      "_note": "The Console provider registry (provider_registry.py, Anthropic). The pilot of 2026-11-15 reproduces the usage_event bill of 54 calls with it. The cache-hit rate is one tenth of the input rate, the Anthropic list ratio. No pilot call had a cache hit, so that rate is not checked.",
+      "usd_per_1m": {"input_miss": 0.10, "input_hit": 0.01, "output": 0.50},
+      "peak": false
+    },
+    "claude-sonnet-5-5": {
+      "_note": "The Console provider registry. The pilot of 2026-11-15 reproduces the usage_event bill of 3 email-assistant calls with it. Cache hit: one tenth of the input rate, not checked.",
+      "usd_per_1m": {"input_miss": 2.0, "input_hit": 0.2, "output": 10.0},
+      "peak": false
+    },
+    "claude-opus-5-5": {
+      "_note": "The Console provider registry. Not checked against a bill. It is the most expensive model of the card, so it sets the price of an unknown model.",
+      "usd_per_1m": {"input_miss": 4.0, "input_hit": 0.4, "output": 20.0},
+      "peak": false
+    }
+  }
 }

@@ -70,6 +70,13 @@ empty in production. So the answer is the same as before, byte for byte.
 2469, no migration). It is dark behind `NEXT_PUBLIC_MY_DAY_PEEK`, default
 OFF. PK-2 (email) and PK-3 (reminders) are not built.
 
+**MD-9 part 1 is BUILT, 2026-11-16** (LOOP-4a, task 3444, no migration). The
+feed reads the kind mutes (§6.6) and the affinity of each kind (§7). It is
+dark behind `MY_DAY_LEARN_ORGS`, default empty, so the answer keeps its
+bytes. The reach loop and the briefs read the same feed, so a mute reaches
+them too. `proactive_loop.md` §7.2 holds the pins. The rest of MD-9 is not
+built.
+
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
 MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
 Each ships dark.
@@ -1437,8 +1444,8 @@ Four rules sit on top of the score:
 
 **Fence (MD-1, MD-6a).** `tests/unit/test_feed_rank.py` holds the table, each
 term, the four rules, and a fixed seed whose order may change only with the
-table. It also holds rule 2: a `drop` answer for an overdue task leaves the
-card in Later.
+table. Rule 2 has its fence in `tests/unit/test_feed_decide.py` (TestRuleTwo): a
+`drop` answer for an overdue task leaves the card in Later.
 
 ---
 
@@ -4141,6 +4148,22 @@ Fence: `feedActs.test.ts` (§11.4).
 Affinity, mutes, "Why am I seeing this", `metric_moved`, `lead_replied`,
 `whatsapp_waiting`. "Why am I seeing this" names the judged group and weight
 in words, for example "Judged high: it moves the Q3 launch".
+
+**The learning of MD-9, proposed 2026-11-16.** `proactive_loop.md` §7 and its
+slices LOOP-4a, LOOP-4b and LOOP-5 specify the learned `affinity`, the mutes and the class
+that the learner lowers. This spec stays the owner of the feed parts.
+
+**LOOP-4a is BUILT, 2026-11-16, dark.** `state.learn_allowed` reads
+`MY_DAY_LEARN_ORGS`. For a listed org, the state join drops a muted kind
+before the order, and a needs card goes to Later at worst. The join adds the
+affinity of the main kind. `feed_decide._habits` is the one count read.
+"Why am I seeing this" is LOOP-4b, and it waits for a spec edit.
+
+The affinity of a needs card never goes below 0 in the score, so the
+per-app cut cannot drop it. The reach loop, the briefs and the chat brief read
+the same learned join. So a kind that the member mutes leaves them too. A
+muted needs card in Later is no interrupt, and it is in no brief. LOOP-5 owns
+the rest of the effect on reach (`proactive_loop.md` §7.3).
 
 ### MD-10 · Nudges outside the app — OWNER-GATE
 

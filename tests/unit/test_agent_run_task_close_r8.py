@@ -525,12 +525,17 @@ class TestTheReleaseRule:
 
 #: A run in org B that names a task of org A: the cross-org row that FORCE RLS
 #: hides from the app role. Only the RLS-bypassing admin can plant or read it.
+#: Since task 3846 the guard `pm_same_org_ref` refuses such a row for each role,
+#: so a foreign plant runs with the triggers off (`_REPLICA`): the shape of a
+#: row from before that guard.
 _PLANT_SQL = (
     "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via,"
     " status, started_by, started_at, last_activity_at, last_agent_activity_at)"
     " VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :m, :via, 'in_progress', 'agent',"
     " now(), now(), now()) RETURNING id"
 )
+_REPLICA = "SET LOCAL session_replication_role = replica"
+_ORIGIN = "SET LOCAL session_replication_role = origin"
 
 
 def _reads(c: Any, task: str, run: str) -> dict[str, Any]:
@@ -560,8 +565,10 @@ class TestTheOrgArm:
         org_b = w.p.org_b
         t = _closable(w.p, w.org, ALICE)
         with w.p.admin_engine.begin() as c:
+            c.execute(text(_REPLICA))
             foreign = str(c.execute(text(_PLANT_SQL), {
                 "o": org_b, "t": t.id, "m": STRANGER_B, "via": VIA}).scalar())
+            c.execute(text(_ORIGIN))
             c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": w.org})
             got = _reads(c, t.id, foreign)
         assert got == {"unheld": 1, "holder": None, "gate": 0, "load": 0, "pill": 0}, got
@@ -585,6 +592,7 @@ class TestTheOrgArm:
         from org B's run, and the task reads unheld."""
         t = _closable(w.p, w.org, ALICE)
         with w.p.admin_engine.begin() as c:
+            c.execute(text(_REPLICA))
             c.execute(text(_PLANT_SQL), {"o": w.p.org_b, "t": t.id, "m": STRANGER_B,
                                          "via": VIA})
         async with _session(w.p) as call:

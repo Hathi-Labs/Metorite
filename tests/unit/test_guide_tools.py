@@ -491,7 +491,7 @@ def test_a_show_in_app_refused_after_the_mark_gives_it_back(cold: _Queue) -> Non
 
 # ── the admin right ─────────────────────────────────────────────────────────
 
-def test_the_admin_check_is_the_executors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_admin_page_right_is_the_sidebars(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("agent_framework", reason="MAF not installed")
     import acb_auth
     from orchestrator import executor
@@ -505,15 +505,20 @@ def test_the_admin_check_is_the_executors(monkeypatch: pytest.MonkeyPatch) -> No
         def has(self, permission: str) -> bool:
             return permission == self.held
 
-    holds: dict[str, str] = {"p": executor._FIRST_PARTY_ADMIN_PERMISSION}
+    holds: dict[str, str] = {"p": "admin:members:read"}
 
     async def _resolve(_member: str) -> _Access:
         return _Access(holds["p"])
 
     monkeypatch.setattr(executor, "_verified_run_member", lambda: "admin@example.com")
     monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    # PAR-1c: the page right is the right of the sidebar and the page.
+    assert gt.ADMIN_PAGE_PERMISSION == "admin:members:read"
     assert asyncio.run(gt.member_is_admin()) is True
-    holds["p"] = "admin:members:read"
+    # The write right alone is not the page right, and no other right is.
+    holds["p"] = executor._FIRST_PARTY_ADMIN_PERMISSION
+    assert asyncio.run(gt.member_is_admin()) is False
+    holds["p"] = "feature:people"
     assert asyncio.run(gt.member_is_admin()) is False
 
 

@@ -148,6 +148,7 @@ def test_stop_hook_fence_runs_in_pr_check():
     wf = yaml.safe_load((ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8"))
     runs = [s.get("run", "") for job in wf["jobs"].values() for s in job.get("steps", [])]
     assert "node .claude/hooks/stop-children.test.mjs" in runs
+    assert "node .claude/hooks/stop-disposition.test.mjs" in runs
 
 
 def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():

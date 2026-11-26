@@ -85,6 +85,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_task_is_epic,
+    assert_task_project_open,
     emit,
     from_jsonb,
     load_visible_task,
@@ -497,7 +498,9 @@ async def put_epic_contract(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 404 first, so a caller who cannot see the task learns nothing more.
-        await load_visible_task(db, vis, task_id)
+        visible = await load_visible_task(db, vis, task_id)
+        # ARC-2b: a contract save writes the task, so an archived project refuses it.
+        await assert_task_project_open(db, visible)
         # The lock holds the version check and the save together.
         task = await lock_task(db, task_id)
         await _require_version(db, task, if_match, user)

@@ -748,3 +748,88 @@ def test_a_pack_from_the_open_app_alone_leaves_before_a_pack_the_words_asked_for
     assert choice.skipped == ("projects",), choice
     assert len(choice.slugs) <= tp.MAX_PACKS
     assert _total(choice, 0) <= tp.MAX_REQUEST_TOOLS
+
+
+# ── Task 3616 S1: a cap refusal says why, in one extra log line ─────────────
+
+_DETAIL_FIELDS = {
+    "pack", "reason", "live_tools", "adding", "cap", "packs", "spare", "ran", "noted",
+    "room_rule", "layer"}
+
+
+def _detail(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [e for e in logs if e["event"] == "tool_packs.load_refused_detail"]
+
+
+async def test_a_cap_packs_refusal_logs_its_detail_and_the_answer_is_the_old_text(
+    store, monkeypatch,
+) -> None:
+    """Mutation: drop the ``_refused_detail`` call at ``cap_packs`` -> no line -> red.
+    Mutation: change the answer text of the refusal -> the constant differs -> red."""
+    import structlog
+
+    _stub_owners(monkeypatch)
+    run, live, key = await _full_run((), new=("email", "crm-records", "projects"))
+    run.ran.add("email")
+    with _frame(run, key), structlog.testing.capture_logs() as logs:
+        answer, _ = await _call(_loader(run, key), REMINDERS, live)
+    assert answer == tp.LOAD_PAST_CAP.format(
+        label=REMINDERS_LABEL, packs=tp.MAX_PACKS, tools=tp.MAX_REQUEST_TOOLS,
+        slug=REMINDERS, owner=PA)
+    [line] = _detail(logs)
+    assert set(line) - {"event", "log_level"} == _DETAIL_FIELDS, "slugs and counts only"
+    assert line["reason"] == "cap_packs" and line["layer"] == "model"
+    assert line["live_tools"] == len(live) and line["cap"] == tp.MAX_REQUEST_TOOLS
+    assert line["packs"] == ["email", "crm-records", "projects"]
+    assert line["spare"] == [] and line["ran"] == ["email"] and line["noted"] == []
+    assert line["room_rule"] is True
+    assert line["adding"] == tp._tool_count(REMINDERS)
+
+
+async def test_a_cap_tools_refusal_logs_the_numbers(store, monkeypatch) -> None:
+    """Two reference packs and a full list: only the tool cap refuses. Mutation: log
+    ``len(live)`` for ``adding`` -> red. Mutation: drop the call at ``cap_tools`` -> red."""
+    import structlog
+
+    _stub_owners(monkeypatch)
+    run, live, key = await _full_run((), new=("email", "crm-records"), extra=66)
+    assert len(live) == 110
+    run.noted.add("crm-records")
+    with _frame(run, key), structlog.testing.capture_logs() as logs:
+        answer, _ = await _call(_loader(run, key), REMINDERS, live)
+    assert answer.startswith(tp.LOAD_PAST_CAP.split("{")[0])
+    [line] = _detail(logs)
+    assert line["reason"] == "cap_tools" and line["layer"] == "model"
+    assert line["live_tools"] == 110 and line["cap"] == tp.MAX_REQUEST_TOOLS
+    assert line["adding"] > 0 and line["live_tools"] + line["adding"] > line["cap"]
+    assert line["packs"] == ["email", "crm-records"] and line["noted"] == ["crm-records"]
+
+
+async def test_a_load_that_fits_logs_no_refusal_line(store, monkeypatch) -> None:
+    """Mutation: log the line before the cap check -> red."""
+    import structlog
+
+    _stub_owners(monkeypatch)
+    await _seed_sticky("email", "email-setup", "crm-records")
+    run, live, key = await _full_run(("email", "email-setup", "crm-records"))
+    with _frame(run, key), structlog.testing.capture_logs() as logs:
+        await _call(_loader(run, key), REMINDERS, live)
+    assert _detail(logs) == []
+    assert not [e for e in logs if e["event"] == "tool_packs.load_refused"]
+
+
+async def test_the_layer_c_build_logs_its_layer(store, monkeypatch) -> None:
+    """Mutation: pass no ``layer`` from ``load_early`` -> "model" -> red."""
+    import structlog
+
+    _stub_owners(monkeypatch)
+    run, live, key = await _full_run((), new=("email", "crm-records", "projects"))
+    loader = _loader(run, key)
+    loader.set_early((REMINDERS,))
+    agent = types.SimpleNamespace(default_options={"tools": live}, mcp_tools=[])
+    context = types.SimpleNamespace(tools=[], extend_tools=lambda *_a: None,
+                                    extend_instructions=lambda *_a: None)
+    with _frame(run, key), structlog.testing.capture_logs() as logs:
+        await loader.load_early(agent, context)
+    [line] = _detail(logs)
+    assert line["layer"] == "turn_kind" and line["reason"] == "cap_packs"
