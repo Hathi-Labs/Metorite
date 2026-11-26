@@ -12,7 +12,14 @@ dependencies = [
     "starlette>=0.40",
     "uvicorn>=0.30",
     "cryptography>=42",
+    # TLY-5 PR B: the Windows service. Windows only.
+    "pywin32>=306; sys_platform == 'win32'",
 ]
+
+# TLY-5: the installer build (installer/build.ps1) runs from this locked
+# group, so the shipped program holds the versions that the tests ran.
+[dependency-groups]
+build = ["pyinstaller>=6,<7"]
 
 [build-system]
 requires = ["hatchling"]

@@ -1324,6 +1324,13 @@ class Tool:
     #: CIV-14b fix round 1. True for ``upload_task_image``. It shows only for
     #: an organization of ``agent_oauth.image_upload_allowed`` (:func:`offered`).
     images: bool = False
+    #: SW-27c1. True for ``mark_number``. It shows only for an organization of
+    #: ``agent_oauth.sequence_marks_allowed`` (:func:`offered`).
+    marks: bool = False
+    #: EA-5. True for ``get_company_context``. It shows only for an
+    #: organization of ``agent_oauth.resources_allowed`` (:func:`offered`),
+    #: the flag of the resource ``metorite://company/context`` too.
+    resources: bool = False
 
     def describe(self, organization_id: object = None) -> dict[str, Any]:
         """The ``tools/list`` entry of this tool. SW-23: while the Check flag
@@ -2382,6 +2389,85 @@ WHOAMI = Tool(
     not_found=TEXT_BUSY,
     run=_whoami,
     routes=(ME_ROUTE,),
+)
+
+
+# ── get_company_context (EA-5, D-EA-6) ──────────────────────────────────────
+
+#: EA-5. The text of a call while ``agent_resources_orgs`` leaves the
+#: organization out. The tool and the resource ``metorite://company/context``
+#: are dark on that one flag.
+TEXT_CONTEXT_OFF = "Company context is not on for this organization."
+
+#: The shape of an organization slug: the rule of ``_SLUG_RE`` in
+#: ``gateway/routes/signup.py``. A slug of another shape leaves as untrusted
+#: text (§9.1, mark (S)).
+_ORG_SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+#: The keys of ``get_company_context`` are the keys of this dict, and no other
+#: (D-EA-6, corrected 2026-11-25). It is an allowlist: a key that the gateway
+#: adds to ``/auth/me`` never leaves the edge.
+_COMPANY_CONTEXT_PROPERTIES: dict[str, Any] = {
+    "name": _UNTRUSTED_OR_NULL,
+    "slug": {"anyOf": [{"type": "string"}, _UNTRUSTED_SCHEMA]},
+}
+COMPANY_CONTEXT_KEYS: tuple[str, ...] = tuple(_COMPANY_CONTEXT_PROPERTIES)
+
+_COMPANY_CONTEXT_OUTPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": _COMPANY_CONTEXT_PROPERTIES,
+    "required": list(COMPANY_CONTEXT_KEYS),
+    "additionalProperties": False,
+}
+
+
+def company_context(body: Any, organization_id: object) -> dict[str, Any]:
+    """The context of D-EA-6 from one ``/auth/me`` answer: ``name`` and
+    ``slug``, and no other key.
+
+    The organization of the answer must be the organization of the token row.
+    Any other answer, an empty ``organization`` too, gives the busy text, so
+    the tool never returns the context of a second organization. The name is
+    free text (U). The slug is plain only in its shape (S).
+    """
+    org = body.get("organization") if isinstance(body, dict) else None
+    if not isinstance(org, dict):
+        raise ToolError(TEXT_BUSY)
+    found, slug = org.get("id"), org.get("slug")
+    if (not isinstance(found, str) or organization_id is None
+            or found.lower() != str(organization_id).lower()
+            or not isinstance(slug, str) or not slug):
+        raise ToolError(TEXT_BUSY)
+    name = org.get("display_name")
+    return {
+        "name": untrusted(name) if isinstance(name, str) else None,
+        "slug": shaped(slug, _ORG_SLUG_RE),
+    }
+
+
+async def _get_company_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """One read of ``/auth/me``, the route of ``whoami``. No new pair."""
+    body = await _get(ctx, ME_ROUTE, TEXT_BUSY)
+    return company_context(body, ctx.caller.lookup.organization_id)
+
+
+GET_COMPANY_CONTEXT = Tool(
+    name="get_company_context",
+    title="Get the company context",
+    description=(
+        "Read the company that this connection acts in: the organization name"
+        " and its slug. Use it to write text that names the company. It"
+        " returns no member, no address and no setting." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.CONTEXT_READ,
+    input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    output_schema=_COMPANY_CONTEXT_OUTPUT,
+    route=ME_ROUTE,
+    params={},
+    not_found=TEXT_BUSY,
+    run=_get_company_context,
+    routes=(ME_ROUTE,),
+    resources=True,
 )
 
 
@@ -6192,6 +6278,213 @@ ADD_TASK_REFERENCE = Tool(
 )
 
 
+# ── reserve_number (SW-27b, agent_coordination.md SW-27) ────────────────────
+
+#: The SW-27a route. One atomic statement gives the next number of a named
+#: sequence of a project. No number comes back: a released one stays burned.
+RESERVE_ROUTE = "/projects/nodes/{project_id}/sequences/{name}/reserve"
+
+#: The keys of the result of ``reserve_number``: the route's answer.
+RESERVE_KEYS: tuple[str, ...] = (
+    "project_id", "sequence", "value", "reservation_id", "task_id", "run_id",
+    "reserved_at",
+)
+
+#: The name rule of the migration's CHECK and of the route (``NAME_RE``),
+#: anchored for JSON Schema. ``agent_oauth`` holds the one copy, and the
+#: edge client checks the path with it too. A bad name stops before any call.
+SEQUENCE_NAME_PATTERN = f"^{agent_oauth.SEQUENCE_NAME_PATTERN}$"
+
+#: The fixed texts of the route's refusals. The edge never sends the
+#: gateway's own detail (§9.2).
+TEXT_RESERVE_NOT_FOUND = "Project or task not found. Check both ids."
+TEXT_RESERVE_NOT_IN_PROJECT = (
+    "That task is not in this project or in one of its subprojects.")
+TEXT_RESERVE_RUN = "That run is not a run of this task."
+#: SW-27c1, the owner's decision 1: the run is a run of the task, and not the
+#: caller's own run (the detail is ``agent_oauth.SEQUENCE_RUN_NOT_YOURS``).
+TEXT_RESERVE_RUN_NOT_YOURS = (
+    "That run is not your own run. Send the run_id of your own run on the task,"
+    " or no run_id.")
+TEXT_RESERVE_GONE = "The task or the run was deleted during the call. Try again."
+TEXT_RESERVE_REFUSED = (
+    "Metorite refused the reservation. The project may be archived, or the"
+    " name does not fit: 1 to 40 lowercase letters, digits, _ or -.")
+
+_RESERVE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "project_id": {"type": "string", "pattern": _UUID_PATTERN,
+                       "description": "The project that owns the sequence."
+                                      " An id from list_projects."},
+        "sequence": {"type": "string", "pattern": SEQUENCE_NAME_PATTERN,
+                     "description": "The sequence name, such as migration or"
+                                    " decision. A new name starts at 1."},
+        "task_id": {"type": "string", "pattern": _UUID_PATTERN,
+                    "description": "The task that the number is for. It must be"
+                                   " in the project or in a subproject."},
+        "run_id": {"type": "string", "pattern": _UUID_PATTERN,
+                   "description": "Optional. Your own agent run on that task,"
+                                  " from claim_task or start_agent_run."},
+    },
+    "required": ["project_id", "sequence", "task_id"],
+    "additionalProperties": False,
+}
+
+_RESERVE_OUTPUT: dict[str, Any] = _object({
+    "project_id": {"type": "string"},
+    "sequence": {"type": "string"},
+    "value": {"type": "integer"},
+    "reservation_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "run_id": {"type": ["string", "null"]},
+    "reserved_at": {"type": "string"},
+})
+
+
+async def _reserve_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one reservation to the SW-27a route. Each call gives a new number,
+    so a retry after a lost answer burns one number and never repeats one."""
+    payload: dict[str, Any] = {"task_id": str(args["task_id"])}
+    if "run_id" in args:
+        payload["run_id"] = str(args["run_id"])
+    _status, row = await _write(
+        ctx, "POST", RESERVE_ROUTE, TEXT_RESERVE_NOT_FOUND,
+        path_params={"project_id": str(args["project_id"]),
+                     "name": str(args["sequence"])},
+        json_body=payload,
+        details={
+            (404, "The task or the run is gone. Try again."): TEXT_RESERVE_GONE,
+            (422, "The task is not in this project."): TEXT_RESERVE_NOT_IN_PROJECT,
+            (422, "The run is not a run of this task."): TEXT_RESERVE_RUN,
+            (422, agent_oauth.SEQUENCE_RUN_NOT_YOURS): TEXT_RESERVE_RUN_NOT_YOURS,
+        },
+        texts={422: TEXT_RESERVE_REFUSED})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    return {key: row.get(key) for key in RESERVE_KEYS}
+
+
+RESERVE_NUMBER = Tool(
+    name="reserve_number",
+    title="Reserve a number",
+    description=(
+        "Reserve the next number of a named sequence of a project, such as the"
+        " next migration number, for one task. One atomic call gives each"
+        " caller a different number, so two agents never take the same one."
+        " Each call takes a new number, and no number comes back, so call it"
+        " once for each number you need. Returns the value and the"
+        " reservation id."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_RESERVE_INPUT,
+    output_schema=_RESERVE_OUTPUT,
+    route=RESERVE_ROUTE,
+    params={"project_id": "project_id", "sequence": "name", "task_id": "task_id",
+            "run_id": "run_id"},
+    not_found=TEXT_RESERVE_NOT_FOUND,
+    run=_reserve_number,
+    routes=(),
+    method="POST",
+    annotations=dict(CREATE_ANNOTATIONS),
+)
+
+
+# ── mark_number (SW-27c1, agent_coordination.md SW-27) ──────────────────────
+
+#: The SW-27c1 route. The agent marks a number of its own run.
+MARK_ROUTE = "/projects/reservations/{reservation_id}/mark"
+
+#: The keys of the result of ``mark_number``: the route's answer.
+MARK_KEYS: tuple[str, ...] = (
+    "reservation_id", "project_id", "sequence", "value", "task_id", "run_id",
+    "state", "reserved_at", "used_at", "released_at",
+)
+
+#: The fixed texts of the mark route's refusals (§9.2).
+TEXT_MARKS_OFF = "Marking a reserved number is turned off in this organization."
+TEXT_MARK_NOT_FOUND = "Reservation not found. Check the reservation_id."
+TEXT_MARK_NOT_YOURS = (
+    "That number is not a number of your run. Only the run that reserved a"
+    " number marks it.")
+TEXT_MARK_FINAL = (
+    "That number is already used or released, and it cannot change. A released"
+    " number never comes back.")
+
+_MARK_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "reservation_id": {"type": "string", "pattern": _UUID_PATTERN,
+                           "description": "The reservation_id that reserve_number"
+                                          " returned."},
+        "state": {"type": "string", "enum": ["used", "released"],
+                  "description": "used when the number shipped, released when"
+                                 " you will not use it. A released number is"
+                                 " burned."},
+    },
+    "required": ["reservation_id", "state"],
+    "additionalProperties": False,
+}
+
+_MARK_OUTPUT: dict[str, Any] = _object({
+    "reservation_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "sequence": {"type": "string"},
+    "value": {"type": "integer"},
+    "task_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "state": {"type": "string"},
+    "reserved_at": {"type": "string"},
+    "used_at": {"type": ["string", "null"]},
+    "released_at": {"type": ["string", "null"]},
+})
+
+
+async def _mark_number(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one mark to the SW-27c1 route. The same mark twice changes
+    nothing. A number that is already used or released stays as it is."""
+    _status, row = await _write(
+        ctx, "POST", MARK_ROUTE, TEXT_MARK_NOT_FOUND,
+        path_params={"reservation_id": str(args["reservation_id"])},
+        json_body={"state": str(args["state"])},
+        # By the detail, never by a bare status: a 403 of another cause (the
+        # writes flag, a lost feature) keeps its own text.
+        details={(404, agent_oauth.SEQUENCE_MARKS_OFF): TEXT_MARKS_OFF,
+                 (403, agent_oauth.SEQUENCE_NOT_YOUR_RUN): TEXT_MARK_NOT_YOURS,
+                 (409, agent_oauth.SEQUENCE_MARK_FINAL): TEXT_MARK_FINAL})
+    if not isinstance(row, dict):
+        raise ToolError(TEXT_BUSY)
+    return {key: row.get(key) for key in MARK_KEYS}
+
+
+#: The hints of ``mark_number``. A release burns the number for good, so
+#: ``destructiveHint`` is true. The same call twice changes nothing more.
+MARK_ANNOTATIONS: Mapping[str, bool] = {**WRITE_ANNOTATIONS, "destructiveHint": True}
+
+MARK_NUMBER = Tool(
+    name="mark_number",
+    title="Mark a reserved number",
+    description=(
+        "Mark a number that your run reserved with reserve_number: used when the"
+        " work that took it shipped, or released when you will not use it. A"
+        " merged pull request of the task marks its numbers used on its own. A"
+        " released number is burned and never comes back. Only the run that"
+        " reserved a number marks it."
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_MARK_INPUT,
+    output_schema=_MARK_OUTPUT,
+    route=MARK_ROUTE,
+    params={"reservation_id": "reservation_id", "state": "state"},
+    not_found=TEXT_MARK_NOT_FOUND,
+    run=_mark_number,
+    routes=(),
+    method="POST",
+    annotations=dict(MARK_ANNOTATIONS),
+    marks=True,
+)
+
+
 # ── create_task and update_task (EA-6d, §9.2) ───────────────────────────────
 
 CREATE_ROUTE = "/projects/tasks"
@@ -9350,10 +9643,13 @@ AGENT_MAP_ROUTE = "/projects/agents/overview"
 #: which the edge may not import. ``test_agent_map_r8.py`` pins them equal.
 AGENT_MAP_RUNS_MAX = 300
 AGENT_MAP_SESSIONS_MAX = 300
+#: SW-110. The most child runs that one answer lists. A copy of
+#: ``agent_summary.MAP_CHILDREN_MAX``, pinned equal by ``test_agent_map_r8.py``.
+AGENT_MAP_CHILDREN_MAX = 200
 
 #: The top keys of a map answer, in the order of ``agent_summary.MAP_KEYS``.
 AGENT_MAP_KEYS: tuple[str, ...] = (
-    "people", "sessions", "runs", "lines", "count", "truncated", "viewer")
+    "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer")
 AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
     "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
     "quiet_last_at", "host", "host_kind", "host_source", "model",
@@ -9367,6 +9663,12 @@ AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
 #: dispatcher and of the agent it dispatched. A copy of ``MAP_LINE_KEYS`` of
 #: SW-107. Any other key of a line never leaves the edge.
 AGENT_MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+
+#: SW-110. The keys of one child run (a sub-agent) of a listed run. A copy of
+#: ``MAP_CHILD_KEYS`` of the gateway. Any other key of a child never leaves.
+AGENT_MAP_CHILD_KEYS: tuple[str, ...] = (
+    "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+)
 
 #: The id of a session node: the first 24 hex characters of a sha256
 #: (``agent_summary._NODE_SQL``). It holds no session key.
@@ -9412,12 +9714,20 @@ _MAP_RUN_SCHEMA = _object({
     "last_at": _NULLABLE_STRING,
 })
 _MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
+# SW-110: a sub-agent. Its name and its model are text that an agent wrote.
+_MAP_CHILD_SCHEMA = _object({
+    "child_id": _NULLABLE_STRING, "run_id": _NULLABLE_STRING, "session_id": _NULLABLE_STRING,
+    "name": _UNTRUSTED_OR_NULL, "state": _NULLABLE_STRING, "model": _UNTRUSTED_OR_NULL,
+    "age": _NULLABLE_INTEGER, "last_at": _NULLABLE_STRING,
+})
 _AGENT_MAP_OUTPUT: dict[str, Any] = _object({
     "people": {"type": "array", "items": _MAP_PERSON_SCHEMA},
     "sessions": {"type": "array", "items": _MAP_SESSION_SCHEMA},
     "runs": {"type": "array", "items": _MAP_RUN_SCHEMA},
     # SW-107 fills the lines of who dispatched whom: two node ids each.
     "lines": {"type": "array", "items": _MAP_LINE_SCHEMA},
+    # SW-110: the sub-agents (child runs) of the listed runs.
+    "children": {"type": "array", "items": _MAP_CHILD_SCHEMA},
     "count": {"type": "integer"},
     "truncated": {"type": "boolean"},
     "viewer": _NULLABLE_STRING,
@@ -9494,6 +9804,23 @@ def map_line(row: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _map_node(row.get(key)) for key in AGENT_MAP_LINE_KEYS}
 
 
+def map_child(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One child run of a listed run (SW-110), with the pinned keys only. The
+    name of the sub-agent and its model are untrusted text (§3.12.4 rule 3).
+    ``run_id`` is the parent run. A machine, a session key or an address of
+    the child does not leave."""
+    return {
+        "child_id": _id(row.get("child_id")),
+        "run_id": _id(row.get("run_id")),
+        "session_id": _map_node(row.get("session_id")),
+        "name": untrusted(row.get("name")),
+        "state": _key(row.get("state")),
+        "model": untrusted(row.get("model")),
+        "age": _int_or_none(row.get("age")),
+        "last_at": _map_time(row.get("last_at")),
+    }
+
+
 def agent_map(body: Any) -> dict[str, Any]:
     """The answer of ``get_agent_map``: the pinned keys of the gateway's map,
     each value in its shape or as untrusted text. At most
@@ -9508,10 +9835,10 @@ def agent_map(body: Any) -> dict[str, Any]:
         return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
 
     people, sessions, runs = rows("people"), rows("sessions"), rows("runs")
-    lines = rows("lines")
+    lines, children = rows("lines"), rows("children")
     viewer = body.get("viewer")
     cut = (len(runs) > AGENT_MAP_RUNS_MAX or len(sessions) > AGENT_MAP_SESSIONS_MAX
-           or len(lines) > AGENT_MAP_RUNS_MAX)
+           or len(lines) > AGENT_MAP_RUNS_MAX or len(children) > AGENT_MAP_CHILDREN_MAX)
     return {
         "people": [{"person": untrusted(p.get("person")),
                     "sessions": _map_count(p.get("sessions"))} for p in people],
@@ -9519,6 +9846,8 @@ def agent_map(body: Any) -> dict[str, Any]:
         "runs": [map_run(r) for r in runs[:AGENT_MAP_RUNS_MAX]],
         # SW-107 fills the lines. Each keeps ``from`` and ``to`` only.
         "lines": [map_line(line) for line in lines[:AGENT_MAP_RUNS_MAX]],
+        # SW-110: the sub-agents of the listed runs, each under its run_id.
+        "children": [map_child(c) for c in children[:AGENT_MAP_CHILDREN_MAX]],
         "count": _map_count(body.get("count")),
         "truncated": body.get("truncated") is True or cut,
         # The viewer level of ``agents_view.md`` §4. The gateway sets it from
@@ -9549,7 +9878,9 @@ GET_AGENT_MAP = Tool(
         " that project and its sub-projects. A run with no event for 2 hours is"
         " quiet: its session counts it, and show_quiet true lists it. The map"
         " lists at most 300 runs, and truncated is true when it cut some. count"
-        " counts every open run that you can see. The map changes nothing."
+        " counts every open run that you can see. children lists the open"
+        " sub-agents of the listed runs, each under the run_id of its run, with"
+        " its own model; count does not count them. The map changes nothing."
         + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -10783,6 +11114,156 @@ RELEASE_TASK = Tool(
 )
 
 
+# ── report_subagent (WS-MCP SW-114, §3.12.7 rule 11) ────────────────────────
+
+#: SW-114. The children of one run (SW-39). A start writes a child, and a
+#: stop ends it. The body names the event.
+RUN_CHILDREN_ROUTE = "/projects/agent-runs/{run_id}/children"
+#: The two events of a sub-agent. ``agent_runs.ChildIn.event`` holds the same.
+SUBAGENT_EVENTS: tuple[str, ...] = ("start", "stop")
+#: The most characters of ``agent_id`` and its shape. Copies of
+#: ``agent_runs.CHILD_AGENT_ID_MAX`` and ``CHILD_AGENT_ID_PATTERN``, because
+#: the edge may not import the gateway. A pin test holds each copy equal.
+SUBAGENT_ID_MAX = 64
+SUBAGENT_ID_PATTERN = r"^[A-Za-z0-9._:-]+$"
+#: The body keys of the POST, and no other (agent edge rule 18).
+SUBAGENT_BODY_KEYS: tuple[str, ...] = ("agent_id", "event", "agent_label", "model")
+#: Copies of the gateway's fixed details, read to choose a text and never
+#: sent on. A pin test holds each copy equal.
+CHILD_OTHER_CONNECTION_DETAIL = "That run belongs to another connection of yours."
+CHILD_CAP_DETAIL = (
+    "This run already has 20 open sub-agents. Stop one before you start another.")
+CHILD_KEY_USED_DETAIL = "That agent_id is the key of another run of yours."
+#: The one text of every gateway 404 of the route: an unknown or hidden
+#: run, and an organization off ``AGENT_MAP_ORGS``. The edge cannot read that
+#: flag (one reader, SW-113), so the text names both and tells them apart for
+#: nobody.
+TEXT_SUBAGENT_RUN_NOT_FOUND = (
+    "No open run of this session holds a task with that run_id, or sub-agent"
+    " reports are off for this organization. Send the run_id of your own open"
+    " run.")
+TEXT_SUBAGENT_OTHER_CONNECTION = (
+    "That run belongs to another connection of this member. Report a sub-agent"
+    " only under a run of this connection.")
+TEXT_SUBAGENT_CAP = (
+    "This run already has 20 open sub-agents. Report the stop of one before you"
+    " report another start.")
+TEXT_SUBAGENT_KEY_USED = (
+    "That agent_id is the key of another run of this member. Send the agent_id"
+    " of the sub-agent.")
+_SUBAGENT_DETAILS: Mapping[tuple[int, str], str] = {
+    (403, CHILD_OTHER_CONNECTION_DETAIL): TEXT_SUBAGENT_OTHER_CONNECTION,
+    (429, CHILD_CAP_DETAIL): TEXT_SUBAGENT_CAP,
+    (409, CHILD_KEY_USED_DETAIL): TEXT_SUBAGENT_KEY_USED,
+}
+
+_SUBAGENT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT,
+                   "description": "Your open run that the sub-agent works under. The"
+                                  " run_id from claim_task or start_agent_run."},
+        "agent_id": {"type": "string", "minLength": 1, "maxLength": SUBAGENT_ID_MAX,
+                     "pattern": SUBAGENT_ID_PATTERN,
+                     "description": (
+                         "The agent_id of the sub-agent, from the input of the"
+                         " SubagentStart or SubagentStop hook. It is the key: a"
+                         " second start with the same agent_id writes nothing.")},
+        "agent_type": {**_LABEL_INPUT, "description": (
+            "The agent_type of the sub-agent, such as verifier. People see it"
+            " under your run. It is display data only.")},
+        "event": {"type": "string", "enum": list(SUBAGENT_EVENTS), "description": (
+            "start when the sub-agent starts, stop when it ends. A stop of an"
+            " unknown or ended sub-agent changes nothing.")},
+        "model": {**_MODEL_INPUT, "description": (
+            "The model of the sub-agent, when its definition names one. It is"
+            " display data only.")},
+    },
+    "required": ["run_id", "agent_id", "agent_type", "event"],
+    "additionalProperties": False,
+}
+
+#: One child run (SW-39), as the edge shows it. The id and the times are
+#: plain. The agent type and the model are text that an agent wrote, so (U).
+SUBAGENT_CHILD_KEYS: tuple[str, ...] = (
+    "id", "status", "agent_type", "model", "started_at", "ended_at")
+_SUBAGENT_CHILD_SCHEMA = _object({
+    "id": {"type": "string"}, "status": _NULLABLE_STRING,
+    "agent_type": _UNTRUSTED_OR_NULL, "model": _UNTRUSTED_OR_NULL,
+    "started_at": _NULLABLE_STRING, "ended_at": _NULLABLE_STRING,
+})
+_SUBAGENT_OUTPUT: dict[str, Any] = _object({
+    "child": {"anyOf": [_SUBAGENT_CHILD_SCHEMA, {"type": "null"}]},
+    "created": {"type": "boolean"},
+    "ended": {"type": "boolean"},
+})
+
+
+def subagent_child(raw: Any) -> dict[str, Any] | None:
+    """The pinned keys of one child run, or ``None``. The id leaves only in
+    the shape of an id, the status only as a status of :data:`RUN_STATUSES`.
+    The agent type and the model leave as ``untrusted_text``."""
+    if not isinstance(raw, dict) or _id(raw.get("id")) is None:
+        return None
+    label, model = raw.get("agent_label"), raw.get("agent_model")
+    status = raw.get("status")
+    return {
+        "id": str(raw["id"]),
+        "status": status if status in RUN_STATUSES else None,
+        "agent_type": untrusted(label) if isinstance(label, str) else None,
+        "model": untrusted(model) if isinstance(model, str) else None,
+        "started_at": _str_or_none(raw.get("started_at")),
+        "ended_at": _str_or_none(raw.get("ended_at")),
+    }
+
+
+async def _report_subagent(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST one event of a sub-agent (SW-114). The body holds the keys of
+    :data:`SUBAGENT_BODY_KEYS` only, and ``agent_type`` goes as
+    ``agent_label``. The gateway takes the member, the connection and the
+    organization from the signed context. Each refusal maps to a fixed text."""
+    _refuse_nul(args, ("agent_type", "model"))
+    payload: dict[str, Any] = {"agent_id": str(args["agent_id"]),
+                               "event": str(args["event"]),
+                               "agent_label": str(args["agent_type"])}
+    if args.get("model") is not None:
+        payload["model"] = str(args["model"])
+    _, body = await _write(
+        ctx, "POST", RUN_CHILDREN_ROUTE, TEXT_SUBAGENT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body=payload,
+        details=_SUBAGENT_DETAILS)
+    found = body if isinstance(body, dict) else {}
+    return {"child": subagent_child(found.get("run")),
+            "created": found.get("created") is True,
+            "ended": found.get("ended") is True}
+
+
+REPORT_SUBAGENT = Tool(
+    name="report_subagent",
+    title="Report a sub-agent",
+    description=(
+        "Report that a sub-agent of this session starts or stops, under your"
+        " own open run. People then see the sub-agent under your run. A hook"
+        " of your client calls it, and you do not need to call it yourself."
+        " The run must be of this connection, and it must hold its task."
+        " A run holds at most 20 open sub-agents. A sub-agent holds no task"
+        " and no claim. It works only where the agent map is on for the"
+        " organization, and elsewhere it answers not found." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_SUBAGENT_INPUT,
+    output_schema=_SUBAGENT_OUTPUT,
+    route=RUN_CHILDREN_ROUTE,
+    params={"run_id": "run_id", "agent_id": "agent_id", "agent_type": "agent_label",
+            "event": "event", "model": "model"},
+    not_found=TEXT_SUBAGENT_RUN_NOT_FOUND,
+    run=_report_subagent,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
 # ── The app door (MCP-P1a, spec §19.4) ──────────────────────────────────────
 #
 # Four fixed tools serve each app of ``acb_common.app_manifests``. The
@@ -11866,7 +12347,9 @@ READ_PLAYBOOK = Tool(
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
 TOOLS: Mapping[str, Tool] = {t.name: t for t in (
-    WHOAMI, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
+    # EA-5: the company context follows whoami. It needs context:read and
+    # shows only for an organization of agent_resources_orgs.
+    WHOAMI, GET_COMPANY_CONTEXT, LIST_PROJECTS, GET_PROJECT, LIST_MEMBERS, LIST_TAGS, LIST_TASKS,
     BOARD_STATS, GET_PLAN, GET_TASK, GET_TASK_TIMELINE,
     SEARCH_TASKS, GET_TASK_CONTEXT, MY_WORK, GET_ATTACHMENT, LIST_PROJECT_UPDATES,
     LIST_TEMPLATES,
@@ -11876,6 +12359,10 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     SET_TASK_STATUS, ADD_TASK_REFERENCE, CREATE_TASK, UPDATE_TASK, UPDATE_TASKS,
     ADD_COMMENT, UPDATE_COMMENT, DELETE_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     ADD_TASK_LINK, REMOVE_TASK_LINK,
+    # SW-27b: the next number of a project sequence (SW-27a route).
+    RESERVE_NUMBER,
+    # SW-27c1: dark behind `sequence_marks_orgs`.
+    MARK_NUMBER,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS, POST_PROJECT_UPDATE,
     # CIV-14b: one image onto a task. It shows only for an organization of
     # `mcp_image_upload_orgs`, and the gateway reads the flag too.
@@ -11884,7 +12371,10 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     REPORT_CHECK,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
     ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
-    RELEASE_TASK, SET_RUN_PLAN, DELETE_TASK,
+    RELEASE_TASK, SET_RUN_PLAN,
+    # WS-MCP SW-114: a hook reports a sub-agent. On the runs flag, as RELEASE_TASK.
+    REPORT_SUBAGENT,
+    DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
     READ_PLAYBOOK,
 )}
@@ -11899,12 +12389,17 @@ def offered(tool: Tool, organization_id: object = None) -> bool:
     tool only for an organization that ``playbook_orgs`` names (PB-3a).
     ``upload_task_image`` only for an organization that
     ``mcp_image_upload_orgs`` names (CIV-14b fix round 1). The gateway
-    refuses the upload of any other organization too."""
+    refuses the upload of any other organization too. ``get_company_context``
+    only for an organization that ``agent_resources_orgs`` names (EA-5)."""
     if tool.door and not agent_oauth.door_apps():
         return False
     if tool.playbook and not agent_oauth.playbook_allowed(organization_id):
         return False
+    if tool.resources and not agent_oauth.resources_allowed(organization_id):
+        return False
     if tool.images and not agent_oauth.image_upload_allowed(organization_id):
+        return False
+    if tool.marks and not agent_oauth.sequence_marks_allowed(organization_id):
         return False
     if tool.runs and not agent_oauth.runs_enabled():
         return False
@@ -11989,9 +12484,15 @@ async def call(tool: Tool, ctx: Context, arguments: Any) -> dict[str, Any]:
     if not offered(tool, ctx.caller.lookup.organization_id):
         if tool.playbook and not agent_oauth.playbook_allowed(ctx.caller.lookup.organization_id):
             return error_result(TEXT_PLAYBOOK_OFF)
+        if tool.resources and not agent_oauth.resources_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_CONTEXT_OFF)
         if tool.images and not agent_oauth.image_upload_allowed(
                 ctx.caller.lookup.organization_id):
             return error_result(TEXT_IMAGES_OFF)
+        if tool.marks and not agent_oauth.sequence_marks_allowed(
+                ctx.caller.lookup.organization_id):
+            return error_result(TEXT_MARKS_OFF)
         if tool.door and not agent_oauth.door_apps():
             return error_result(TEXT_APPS_OFF)
         if tool.runs and not agent_oauth.runs_enabled():
@@ -12033,6 +12534,8 @@ __all__ = [
     "AGENT_DELETE_TITLE",
     "AGENT_DELETE_TITLE_MAX",
     "AGENT_LINK_TYPES",
+    "AGENT_MAP_CHILDREN_MAX",
+    "AGENT_MAP_CHILD_KEYS",
     "AGENT_MAP_KEYS",
     "AGENT_MAP_LINE_KEYS",
     "AGENT_MAP_ROUTE",
@@ -12180,6 +12683,9 @@ __all__ = [
     "LIST_TASK_KEYS",
     "LONG_POLL_REQUEST_MARGIN_S",
     "LONG_POLL_TOOL_MARGIN_S",
+    "MARK_KEYS",
+    "MARK_NUMBER",
+    "MARK_ROUTE",
     "MAX_ANCESTORS",
     "MAX_ASSIGNEES",
     "MAX_BULK_UPDATES",
@@ -12240,16 +12746,22 @@ __all__ = [
     "REMOVE_TASK_LINK",
     "REPORT_CHECK",
     "REPORT_CHECK_KEYS",
+    "REPORT_SUBAGENT",
     "REQUEST_ASK_ROUTE",
     "REQUEST_READ_ROUTE",
     "REQUEST_TASK_ARCHIVE",
+    "RESERVE_KEYS",
+    "RESERVE_NUMBER",
+    "RESERVE_ROUTE",
     "RUN_ACTIVITY_KEYS",
+    "RUN_CHILDREN_ROUTE",
     "RUN_KEYS",
     "RUN_STATES",
     "RUN_STATUSES",
     "SEARCH_HIT_KEYS",
     "SEARCH_TASKS",
     "SECRET_WORDS",
+    "SEQUENCE_NAME_PATTERN",
     "SESSION_TEXTS",
     "SET_ASSIGNEES",
     "SET_ASSIGNEES_KEYS",
@@ -12257,6 +12769,9 @@ __all__ = [
     "SET_TASK_STATUS",
     "START_AGENT_RUN",
     "STATUS_KEYS",
+    "SUBAGENT_BODY_KEYS",
+    "SUBAGENT_CHILD_KEYS",
+    "SUBAGENT_EVENTS",
     "SUBTASK_KEYS",
     "SUBTASK_NOT_BELOW",
     "SUBTASK_WORDS",
@@ -12471,6 +12986,7 @@ __all__ = [
     "listed",
     "listed_for",
     "looks_like_text",
+    "map_child",
     "map_line",
     "map_run",
     "map_session",

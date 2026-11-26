@@ -473,6 +473,19 @@ connect routes, the poll and `github.installation_of` ask it, so the lazy
 readers follow the list too. A reload applies a change, and the flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`HOME_TOOLS_ORGS` gives the chat of each listed org the five Home tools
+(`chat_parity.md` §6.4, PAR-8b, task 3903). They read the Home feed, Needs
+you, the brief, the quick find and the Home settings. They change a Home card,
+a Home setting and the default sidebar, and send a test notification. `*`
+lists every org, and the default is empty. Empty means no chat holds the
+tools, and the tool count does not move.
+
+Its one reader is `acb_skills.home_tools.home_tools_on`. The build of the
+orchestrator asks it at the start of each run, so a reload applies to the next
+run. Any value other than empty is OWNER-GATE, and only the owner flips it.
+The five tools join each request, so the flip takes the trade of the tool cap
+in `chat_parity.md`, PAR-8b facts for the owner.
+
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
 upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
@@ -555,6 +568,14 @@ names `field_filters`, and each other answer stays byte for byte.
 Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
 plan write, each facts read and each module total ask it. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`SEQUENCE_MARKS_ORGS` lets an outside agent mark each number that its own run reserved
+`used` or `released` (`mark_number`, `agent_coordination.md` SW-27c1). Off, the
+mark route answers 404 for a signed agent, and the edge hides the tool. Its one
+reader is `acb_auth.agent_oauth.sequence_marks_allowed`. The gateway asks it at
+each call, so a reload applies a change there. The edge reads its flags at
+start, so set the same value for both units and restart the agent edge. Any
+value other than empty is gate `enforcement-flip`.
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves

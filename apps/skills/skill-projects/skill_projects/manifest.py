@@ -538,8 +538,16 @@ MANIFEST: tuple[Route, ...] = (
         "/projects/nodes/{project_id}/sequences/{name}/reserve",
         "",
         "X",
-        "SW-27a: an agent reserves a number over MCP once SW-27b (task 3893) adds "
-        "reserve_number. The chat has no need to reserve a number.",
+        "SW-27b (task 3893): the MCP door only. An outside agent reserves a number "
+        "through reserve_number. The chat has no need to reserve a number.",
+    ),
+    Route(
+        "POST",
+        "/projects/reservations/{reservation_id}/mark",
+        "",
+        "X",
+        "SW-27c1 (task 3938): the MCP door only. The agent of the run marks its "
+        "number through mark_number. A person's release comes with SW-27c3.",
     ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
@@ -587,7 +595,9 @@ MANIFEST: tuple[Route, ...] = (
     # WS-64 OP-6e (D-OP-13): only the run's member answers, on the task card.
     # The chat lists the request (`waiting_agent_requests`) and links the card.
     Route("POST", "/projects/agent-runs/{run_id}/archive-approval", "", "X", _CARD_ANSWER_REASON),
-    # SW-39: the child runs of a run. Not a chat act (see the reason).
+    # SW-39: the child runs of a run. Not a chat act (see the reason). SW-114:
+    # the POST is a pair of MCP_WRITE_ROUTES, the route of `report_subagent`,
+    # and `test_mcp_edge_coverage.py` names it in CLASS_X_WRITES.
     Route("GET", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     Route("POST", "/projects/agent-runs/{run_id}/children", "", "X", _CHILD_RUN_REASON),
     # WS-55 EA-6h (EA3-51). The ONE destructive pair of MCP_WRITE_ROUTES. It

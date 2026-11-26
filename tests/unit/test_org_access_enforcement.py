@@ -390,6 +390,15 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "and no member from the request "
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
+        "/shell/setup": (
+            "OB-1a. It needs no feature, as `/shell/feed/prefs` needs none. Each "
+            "step of `setup_status.REGISTRY` carries its own permission and "
+            "feature, and the route passes the session's own checks, so a "
+            "member never sees a step of an app they lack. It reads rows of the "
+            "caller only, in the bound tenant, and a signed agent gets 404. The "
+            "route takes no member and no org from the request "
+            "(`test_setup_status_r8.py`, `test_setup_status_source.py`)."
+        ),
         "/shell/waiting": (
             "WS-AP AP-1a. `WAITING_ORGS` answers 404 first, and a signed agent "
             "gets 404. Each provider in `waiting.PROVIDERS` checks the features "

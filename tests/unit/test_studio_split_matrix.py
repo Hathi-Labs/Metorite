@@ -41,6 +41,10 @@ field changed, in BOTH columns: in
 107 tools, so ``projects-cycles`` (6 tools) no longer fits the cap of 110, and
 the loader does not offer it.
 
+P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
+surface and another owner. :func:`_allowed` leaves it out, as it leaves out
+``org-admin``, so no row of the golden file changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a
@@ -208,8 +212,12 @@ def _allowed(workflows: bool) -> frozenset[str]:
     both lists: the matrix holds the split of TS-1b. The dark ``studio-repair``
     (TOF-3a F12c, two tools, no surface) is out for the same reason. Only an
     owner ``TOOL_PACKS`` line turns it on, and the run drops it from the allow
-    list while the org is off its switches (``_tool_injection._apply_tool_packs``)."""
-    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair"}
+    list while the org is off its switches (``_tool_injection._apply_tool_packs``).
+    The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
+    for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
+    surface, owner ``org-admin``) is out for the same reason."""
+    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
+                                          "people"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

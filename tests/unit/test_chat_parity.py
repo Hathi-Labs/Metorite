@@ -686,12 +686,16 @@ def test_a_ceiling_above_its_baseline_names_the_task_that_pays_it() -> None:
         cp.DEBT_CEILING, cp.P0_CEILING, _ceiling_comments(), cp.WAVES) == []
 
 
-def test_eight_ceilings_went_up_since_p0() -> None:
-    """The count that the owner met on 2026-11-13. A ceiling may go down, and one that
+def test_five_ceilings_are_above_p0() -> None:
+    """The owner met eight on 2026-11-13. Email, the shell and the integrations are
+    under their baselines now, so five are left. A ceiling may go down, and one that
     goes up here must name its task. Mutation: raise a ceiling and the test above is red."""
     up = sorted(a for a, v in cp.DEBT_CEILING.items() if v > cp.P0_CEILING[a])
-    assert up == ["calendar", "chat", "email", "integrations", "knowledge", "settings",
-                  "shell", "studio"]
+    # PAR-8b (task 3903) took the shell below its baseline (16 to 7).
+    # P-2c (task 3919) took email below its baseline (14 to 10). PAR-6a (task
+    # 3109) took the integrations below their baseline (22 to 4).
+    # PAR-3 (task 3105) took Knowledge below its baseline (17 to 15).
+    assert up == ["calendar", "chat", "settings", "studio"]
 
 
 def test_a_raise_with_no_task_in_its_comment_is_found() -> None:
@@ -702,9 +706,10 @@ def test_a_raise_with_no_task_in_its_comment_is_found() -> None:
 
 
 def test_a_raise_that_names_a_task_of_another_wave_is_found() -> None:
-    comments = {**_ceiling_comments(), "email": "added a row. Paid by task 3112."}  # P-1, not P-2
+    # P-2c (task 3919) took email below its baseline, so the case reads settings (P-8).
+    comments = {**_ceiling_comments(), "settings": "added a row. Paid by task 3112."}  # P-1, not P-8
     assert [m.split(":")[0] for m in raises_without_a_task(
-        cp.DEBT_CEILING, cp.P0_CEILING, comments, cp.WAVES)] == ["email"]
+        cp.DEBT_CEILING, cp.P0_CEILING, comments, cp.WAVES)] == ["settings"]
 
 
 def test_a_ceiling_at_or_below_its_baseline_needs_no_task() -> None:

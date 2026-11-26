@@ -155,6 +155,148 @@ How it copies:
   `as_of`.
 - `profit_and_loss` takes 366 days or less.
 
+## On Windows (TLY-5)
+
+On a customer's machine, pass `--windows` to each command. The program then
+keeps its files under `%ProgramData%\TallyBridge`:
+
+| File | What it holds |
+|---|---|
+| `settings.json` | The settings. It holds no secret |
+| `secrets.bin` | The read token hash and the setup secret hash, protected by DPAPI at machine scope |
+| `copy.key` | The key of the local copy, protected by DPAPI at machine scope |
+
+A file that DPAPI cannot read (a new machine, a damaged file) reads as empty.
+The bridge then asks for a new setup link, and the local copy starts again.
+
+Two settings keep Tally reachable (`integrations_console.md` §3.8.13). Each
+one is off until the customer turns it on:
+
+| Setting | What it does |
+|---|---|
+| `START_TALLY_AT_SIGNIN` with `TALLY_EXE` | A Task Scheduler task starts TallyPrime when any person signs in, as that person. The task names the Users group, so it does not depend on the administrator who installed it. TallyPrime loads the companies of its own start-up setting |
+| `KEEP_AWAKE` | While the bridge runs, it asks Windows not to sleep. It changes no power plan |
+
+Two commands change the machine. Run each one as an administrator:
+
+- `python -m tally_bridge apply-windows --windows` makes the sign-in task
+  match the setting. It also makes one firewall rule that blocks TCP 9000
+  (Tally) and 8765 (the bridge) from the network. Windows does not filter
+  loopback, so the bridge still reaches Tally.
+- `python -m tally_bridge uninstall-windows --windows` removes the task, the
+  firewall rule, the stored hashes, the copy key and the local copy.
+
+### The service and the installer (TLY-5 PR B)
+
+The program runs as the Windows service `TallyBridge`. It starts with Windows,
+before anyone signs in. Windows starts it again 5 s, 15 s and 60 s after a
+crash, and the count resets after a day. The service serves with the product
+stores of `--windows`. It starts with no token and no setup key, and both
+guards refuse every request until a key exists.
+
+To build the installer on a Windows machine with `uv` and Inno Setup 6:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1 -Version 0.1.0
+```
+
+The build installs only the versions in `uv.lock`, PyInstaller included (the
+`build` dependency group). The output is `dist\TallyBridgeSetup-0.1.0.exe`. It
+is not signed yet, because signing waits for the owner's certificate (brief
+§10 question 8). The installer does these steps in this order:
+
+1. Before it copies a file, it takes back `%ProgramData%\TallyBridge`. Only
+   SYSTEM and the administrators have any right there. A user cannot read
+   the folder, because DPAPI at machine scope lets any reader unprotect the
+   link credential (TLY-2). A fresh install removes whatever was at that
+   path, a link too, and makes a new folder. An upgrade refuses a folder that is a link. If this step fails,
+   the setup stops. The service runs as LocalSystem and trusts its settings.
+2. An upgrade then stops the running service.
+3. It installs the service, which starts with Windows.
+4. It sets the restart rule.
+5. It runs `apply-windows`.
+6. It starts the service.
+7. It makes the setup key (`setup-link --wait --url-file`). That step waits
+   until the service answers, and writes the address to a file in the
+   installer's temporary folder.
+8. It opens that address as the person who signed in, never in the
+   browser of an administrator.
+
+The uninstall stops and removes the service, then runs `uninstall-windows`.
+It also deletes `%ProgramData%\TallyBridge`. A stop gives open requests 10 s,
+well inside the 30 s that Windows waits.
+
+## Link mode (TLY-2a, rung 2)
+
+In link mode the program calls out to Metorite over HTTPS. The office opens
+no port and runs no tunnel (`integrations_console.md` §3.8, D232). The
+Metorite side (LNK-1 to LNK-3) is not built yet, so the tests run against a
+fake link, `tests/unit/test_tally_bridge_link.py`.
+
+Link mode is off until `LINK_URL` holds the address of Metorite. The setting
+has no default.
+
+The setup page has a link step (TLY-2b): type the domain, give the code to
+your admin, then confirm the company name. The commands below do the same
+from a command line.
+
+The page also has a "Keep it running" section (TLY-2d), and it shows only
+when `LINK_URL` is set. It holds two switches. One starts TallyPrime when a
+person signs in. The other keeps the computer awake while the bridge runs.
+Each switch saves to the settings file, and the page reloads its value.
+
+The page shows the path of `tally.exe`, and it never changes it. The sign-in
+task runs that program for each person who signs in, and the person at the
+page may not be an administrator. So an administrator sets `TALLY_EXE` in the
+settings file, which users cannot write. Until then, the start switch is
+refused.
+
+Before it makes the sign-in task, the bridge checks the rights of
+`tally.exe`, its folder, each other file in that folder, and each folder
+above it (task 3974). A person who is not an administrator must not be able
+to change the program. Otherwise the program would run in the session of
+each person who signs in. A junction or a symbolic link in the path is
+refused too, because a user could replace it.
+
+When a user can change the program, the bridge refuses the task and removes
+an old one. The setup page shows why, and so does `apply-windows`. The
+message names the folder and the three `icacls` commands that lock it. For
+a folder above TallyPrime, it says to install TallyPrime under
+`C:\Program Files`. The service checks again at each start, so a folder that
+somebody opens later loses the task too.
+
+Test: `tests/unit/test_tally_bridge_folder_acl.py`. The tests mock the
+Windows rights. The test of the real reader runs on Windows only, in the
+windows-latest job. That job comes with PR 2837 (not merged yet), so until
+then nothing runs the real reader.
+
+With `--windows`, a save also makes or removes the sign-in task, off the
+event loop, and turns the keep-awake request on or off at once. When the task
+call fails, the page shows a note. Test: `tests/unit/test_tally_bridge_machine.py`.
+
+1. `pair --domain example.com` shows a code such as `WDJB-MJHT`. An admin of
+   the company types it in Metorite and approves it. The program then shows
+   the name of the company that approved it.
+2. `confirm-link --company "<that name>"` accepts the company. The program
+   serves nothing before this step (rule j).
+3. `serve` runs the long poll beside the setup page. Each poll says whether
+   TallyPrime is up, and the time of the oldest local copy. Each request runs against the read tools of this
+   process, and only on `/mcp`.
+4. `unlink` revokes the credential at Metorite and deletes it here. Use it
+   to refuse a company that you do not know, or to disconnect. The uninstall
+   runs it too.
+
+On Windows (`--windows`), DPAPI keeps the link credential in
+`%ProgramData%\TallyBridge\link.bin`. DPAPI at machine scope lets any local
+process unprotect it, so the rights of that folder protect it. The installer
+gives only SYSTEM and the administrators any right there. A user can neither
+read the folder nor write to it. `test_tally_bridge_installer.py` is its
+fence. On a dev box, `--dev-link-file` keeps the credential in a plain file
+(DEV ONLY).
+
+A disconnect by the admin deletes the credential at the next poll. A cut
+link comes back by itself, after a wait that grows to 60 s.
+
 ## Fixtures
 
 - `fixtures/synthetic/`: answers that we wrote by hand. Each file name starts
