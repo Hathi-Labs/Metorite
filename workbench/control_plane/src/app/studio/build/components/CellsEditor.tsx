@@ -23,7 +23,9 @@ import { useState, type DragEvent } from "react";
 
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
-import { FREE_GRID, GRID_BACK_WHY, presetOptions, setPageLayout, setRegionViews } from "@/lib/studio/layoutEdit";
+import {
+  FREE_GRID, GRID_BACK_WHY, PRESET_DROPS_NOTE, presetDrops, presetOptions, setPageLayout, setRegionViews,
+} from "@/lib/studio/layoutEdit";
 import type { LayoutName } from "@/lib/studio/manifest";
 import { IDLE, begin, drop, end, hover, isOver, leave, listEnd, type DragState } from "@/lib/studio/cellDrag";
 import type { DragItem } from "@/lib/studio/dropModel";
@@ -71,6 +73,8 @@ export default function CellsEditor({ page, views, manifest, act, locked, onRemo
   const [tabTitle, setTabTitle] = useState("");
   const [pick, setPick] = useState<Record<string, string>>({});
   const [ds, setDs] = useState<DragState>(IDLE);
+  // The views that the last switch to a preset left out (LY-8b): the note says so, nothing goes silently.
+  const [dropped, setDropped] = useState(0);
   const pid = page.id;
 
   const start = (e: DragEvent<HTMLElement>, item: DragItem, label: string) => {
@@ -135,7 +139,11 @@ export default function CellsEditor({ page, views, manifest, act, locked, onRemo
     <div className={rowClass}>
       <SelectButton label={`Layout preset of the ${pid} page`} value={page.preset?.layout ?? FREE_GRID} widthClass="w-48"
         disabled={locked} options={presetOptions()}
-        onChange={(v) => act((m) => setPageLayout(m, pid, v === FREE_GRID ? null : (v as LayoutName)))} />
+        onChange={(v) => {
+          const layout = v === FREE_GRID ? null : (v as LayoutName);
+          setDropped(presetDrops(manifest, pid, layout));
+          act((m) => setPageLayout(m, pid, layout));
+        }} />
     </div>
   );
   if (page.preset) {
@@ -144,6 +152,9 @@ export default function CellsEditor({ page, views, manifest, act, locked, onRemo
     return (
       <div className="flex flex-col gap-2" data-preset={p.layout}>
         {toggle}
+        {dropped > 0 ? (
+          <p role="status" className={noteClass}>{`${PRESET_DROPS_NOTE} Views left out: ${dropped}.`}</p>
+        ) : null}
         {presetPicker}
         <p className={noteClass}>{PRESET_NOTE}</p>
         {p.regions.map((r) => {

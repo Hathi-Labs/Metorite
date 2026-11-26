@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { FREE_GRID, fillRegions, presetOptions, regionChoices, setPageLayout, setRegionViews } from "./layoutEdit";
+import { FREE_GRID, fillRegions, presetDrops, presetOptions, regionChoices, setPageLayout, setRegionViews } from "./layoutEdit";
 import { LAYOUTS } from "./manifest";
 
 const deepFreeze = <T,>(x: T): T => {
@@ -85,6 +85,22 @@ describe("setPageLayout", () => {
     for (const j of [null, undefined, 5, "x", [], {}, { pages: 5 }, { pages: [null] }]) {
       expect(setPageLayout(j, "p", "board")).toBe(j);
     }
+  });
+});
+
+describe("presetDrops (LY-8b: nothing goes silently)", () => {
+  it("counts the views that a switch to a preset leaves out, the same count as fillRegions", () => {
+    const m = grid(["t1", "t2"]);
+    expect(presetDrops(m, "p", "table_workspace")).toBe(1);
+    const after = setPageLayout(m, "p", "table_workspace") as { pages: { regions: Record<string, string[]> }[] };
+    expect(Object.values(after.pages[0].regions).flat()).toEqual(["t1"]);
+  });
+  it("is 0 for the free grid, an unknown page and the current preset", () => {
+    const m = grid(["t1", "t2"]);
+    expect(presetDrops(m, "p", null)).toBe(0);
+    expect(presetDrops(m, "nope", "table_workspace")).toBe(0);
+    const preset = setPageLayout(m, "p", "table_workspace");
+    expect(presetDrops(preset, "p", "table_workspace")).toBe(0);
   });
 });
 

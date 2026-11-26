@@ -105,13 +105,30 @@ export function setPageLayout(m: unknown, pageId: string, layout: LayoutName | n
   }
   if (!(LAYOUTS as readonly string[]).includes(layout)) return m;
   if (current === layout) return m;
-  const source = current
-    ? Object.values(isObj(at.page.regions) ? at.page.regions : {}).flatMap((v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []))
-    : gridViews(at.page);
-  const { regions } = fillRegions(layout, source, blocksOf(at.m));
+  const { regions } = fillRegions(layout, presetSource(at.page, current), blocksOf(at.m));
   const { tabs: _t, cells: _c, side: _s, ...rest } = at.page;
   void _t; void _c; void _s;
   return keepCounts(m, withPage(at, { ...rest, layout, regions }));
+}
+
+/** The views of a page that a switch to a preset places: the region views, or the grid views. */
+function presetSource(page: Obj, current: string): string[] {
+  return current
+    ? Object.values(isObj(page.regions) ? page.regions : {}).flatMap((v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []))
+    : gridViews(page);
+}
+
+/**
+ * How many views a switch of this page to `layout` leaves out, because they fit no region.
+ * The picker shows `PRESET_DROPS_NOTE` with this count, so nothing goes silently. 0 for the
+ * free grid, an unknown preset, the current preset or an unknown page.
+ */
+export function presetDrops(m: unknown, pageId: string, layout: LayoutName | null): number {
+  const at = pageAt(m, pageId);
+  if (!at || layout === null || !(LAYOUTS as readonly string[]).includes(layout)) return 0;
+  const current = str(at.page.layout);
+  if (current === layout) return 0;
+  return fillRegions(layout, presetSource(at.page, current), blocksOf(at.m)).dropped;
 }
 
 /** The views that one region may take: the declared views of its block, not yet in the region. */
