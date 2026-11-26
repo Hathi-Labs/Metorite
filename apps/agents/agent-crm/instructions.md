@@ -82,6 +82,12 @@ around.
 - **`convert_lead`** — turn a qualified lead into a deal (the CRM creates or
   reuses the contact and organization). One-way: the lead leaves the lead list
   and the conversation moves to the deal.
+- **`crm_edit_status`** and **`crm_edit_lost_reason`** change the set-up of
+  the CRM. They add or change a deal stage, a lead status or a lost reason.
+  `crm_edit_status` also resets the stage order to the order of Zoho. Only a
+  CRM admin can do this. Give each row by its name. You cannot delete a stage
+  or a lost reason, and you cannot set the whole order. Send the member to CRM
+  settings for those acts.
 - **The Field map** of a CRM that mirrors Zoho. Only a CRM admin can use these
   tools. `crm_field_map` shows the Zoho fields that go to custom and the
   columns that each can fill. `crm_edit_field_rule` makes, approves or rejects

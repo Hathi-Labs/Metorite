@@ -138,10 +138,27 @@ def firewall_off() -> list[str]:
     return ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={FIREWALL_RULE}"]
 
 
-def apply_startup(enabled: bool, tally_exe: str, runner: Runner = run) -> int:
-    """Make or remove the sign-in task, to match the setting."""
+def apply_startup(
+    enabled: bool,
+    tally_exe: str,
+    runner: Runner = run,
+    check_folder: Callable[[str], None] | None = None,
+) -> int:
+    """Make or remove the sign-in task, to match the setting.
+
+    Task 3974: before it makes the task, it checks that only administrators
+    can change the program (``acl.check``). When a user can, it removes any
+    old task and raises ``acl.UnsafeTallyFolder``: the task never runs a
+    program that a user could replace."""
     if not enabled:
         return runner(startup_off())
+    from tally_bridge.windows import acl
+
+    try:
+        (check_folder or acl.check)(tally_exe)
+    except acl.UnsafeTallyFolder:
+        runner(startup_off())
+        raise
     path = write_startup_xml(tally_exe)
     try:
         return runner(startup_on(path))

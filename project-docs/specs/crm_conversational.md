@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). Task 1570 is built (2026-11-21, in review, no migration, no flag). A member purge deletes the member's private CRM saved views, and a shared view stays (D175.5).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). Task 1570 is built (2026-11-21, in review, no migration, no flag). A member purge deletes the member's private CRM saved views, and a shared view stays (D175.5). CRM-M2e is partly built (2026-11-25, task 3951, in review, no migration, no flag): the chat adds and changes a stage, a lead status and a lost reason, and resets the Zoho order. The delete and the PUT of the order wait.**
 
 **Task 3953 (2026-11-25, in review, no migration, no flag).** It built the field rules of CRM-M2f and the mapping plans of CRM-M2i. The chat reads the Field map and the plan, one page at a time. It makes, approves, rejects, drafts and restores on one card.
 
@@ -318,7 +318,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2b | Edit a record field, complete a task and set a due date. Built |
 | CRM-M2c | Create a deal, a contact and an organization. Delete a record and an activity. Undo a change from the change history |
 | CRM-M2d | Add and remove a contact of a deal. Edit a record of a custom module |
-| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete |
+| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete. Add, change and reset are built (task 3951): `crm_edit_status` and `crm_edit_lost_reason`. The two deletes and the PUT of the order wait, because the CRM agent sends no `DELETE` and no `PUT` (`apps/AGENTS.md`). They need an owner decision |
 | CRM-M2f | Fields, sections, layout, field rules and the module catalogue. The field rules are built (task 3953): `crm_field_map` and `crm_edit_field_rule` |
 | CRM-M2g | Saved views, record names, labels, access and the settings |
 | CRM-M2h | Business rules and the open questions of the AI |

@@ -445,8 +445,9 @@ def test_every_crm_card_answers_a_steer_apart_from_its_decline():
     cards = [fn for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)
              and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_confirmation"
                      for n in ast.walk(fn))]
-    # 11: 7 before, and the four writes of the Field map and its plan (task 3953).
-    assert len(cards) == 11, [fn.name for fn in cards]
+    # 13: 7 before, crm_edit_status and crm_edit_lost_reason of CRM-M2e (task 3951),
+    # and the four writes of the Field map and its plan (task 3953). 7 + 2 + 4 = 13.
+    assert len(cards) == 13, [fn.name for fn in cards]
     for fn in cards:
         declines = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                     and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)

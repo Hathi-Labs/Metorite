@@ -60,6 +60,8 @@
     "crm_search_notes",
     "crm_change_history",
     "crm_create_pipeline",
+    "crm_edit_status",
+    "crm_edit_lost_reason",
     "crm_field_map",
     "crm_edit_field_rule",
     "crm_list_mapping_plans",

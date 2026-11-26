@@ -450,7 +450,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 64 | P-3 | 3678, 3953 (task 3953 paid 8) |
+| crm | 74 | 59 | P-3 | 3678 (task 3951 paid 5, task 3953 paid 8) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -474,8 +474,13 @@ took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12.
 
-The total of `DEBT_CEILING` is 321. The "Today" column above does not show
-these changes.
+The "Today" column above does not show these changes. The crm row is
+different. After the date of the table, task 3951 took crm from 72 to 67,
+and task 3953 took it from 67 to 59. The crm row shows those two changes.
+
+The total of `DEBT_CEILING` is 308. The rows of the table add up to 412 in
+the P-0 column and to 375 in the "Today" column. The totals 427 and 424 above
+are readings of 2026-11-22, and they do not change.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -646,7 +651,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 64 (72 before task 3953) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 59 (72 before tasks 3951 and 3953) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the

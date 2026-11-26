@@ -123,10 +123,11 @@ def test_a_crm_read_is_evidence_and_a_crm_write_is_a_write() -> None:
     src = CRM_AGENT.read_text(encoding="utf-8")
     hints = {m.group(2): m.group(1)
              for m in re.finditer(r"@_annotate_risk\(([^)]*)\)\s*\n\s*async def (\w+)", src)}
-    # 17: 8 before, crm_create_pipeline of CRM-M3a, crm_update_record and
-    # crm_update_task of CRM-M2b, and the two reads and four writes of the
-    # Field map and its plan (CRM-M2f, CRM-M2i, task 3953).
-    assert len(hints) == 17
+    # 19: 8 before, crm_create_pipeline of CRM-M3a, crm_update_record and
+    # crm_update_task of CRM-M2b, crm_edit_status and crm_edit_lost_reason of
+    # CRM-M2e (task 3951), and the two reads and four writes of the Field map
+    # and its plan (CRM-M2f, CRM-M2i, task 3953). 8 + 1 + 2 + 2 + 6 = 19.
+    assert len(hints) == 19
     wrong = []
     for name, hint in sorted(hints.items()):
         want = "evidence" if "read_only=True" in hint else "write"

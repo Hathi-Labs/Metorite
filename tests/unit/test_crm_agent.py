@@ -178,9 +178,10 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    # 17 own tools: 11 before, and the six of the Field map and its plan
-    # (CRM-M2f, CRM-M2i, task 3953).
-    assert len(tools) == len(_M._TOOLS) == 17 + len(_T.CRM_TOOLS)
+    # 19 own tools: 11 before, the two set-up writes of CRM-M2e (task 3951),
+    # and the six of the Field map and its plan (CRM-M2f, CRM-M2i, task 3953).
+    # 11 + 2 + 6 = 19.
+    assert len(tools) == len(_M._TOOLS) == 19 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -209,6 +210,7 @@ def test_register_agent_tools_maps_names() -> None:
         "create_lead", "update_deal_status", "log_activity", "convert_lead",
         "crm_create_pipeline",
         "crm_update_record", "crm_update_task",
+        "crm_edit_status", "crm_edit_lost_reason",
         "crm_field_map", "crm_edit_field_rule", "crm_list_mapping_plans",
         "crm_draft_mapping_plan", "crm_approve_mapping_plan", "crm_restore_mapping_plan",
     } | set(_T.CRM_TOOL_NAMES)
@@ -308,6 +310,10 @@ _INVOCATIONS: dict[str, Any] = {
     # CRM-M2b: the record edit and the task change.
     "crm_update_record": lambda: _M.crm_update_record("deals", _ID, {"amount": 5}),
     "crm_update_task": lambda: _M.crm_update_task(_ID, completed=True),
+    # CRM-M2e (task 3951): a stage and a lost reason of the CRM set-up.
+    "crm_edit_status": lambda: _M.crm_edit_status("deal", "change", "Negotiation",
+                                                  new_name="Talks"),
+    "crm_edit_lost_reason": lambda: _M.crm_edit_lost_reason("add", "Budget cut"),
     # CRM-M2f and CRM-M2i (task 3953): the Field map and its plan.
     "crm_field_map": lambda: _M.crm_field_map("deals"),
     "crm_edit_field_rule": lambda: _M.crm_edit_field_rule(
@@ -464,6 +470,7 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
     annotations = pytest.importorskip("acb_skills.tool_annotations")
     writers = {"create_lead", "update_deal_status", "log_activity", "convert_lead",
                "crm_create_pipeline", "crm_update_record", "crm_update_task",
+               "crm_edit_status", "crm_edit_lost_reason",
                "crm_edit_field_rule", "crm_draft_mapping_plan",
                "crm_approve_mapping_plan", "crm_restore_mapping_plan"}
     seen: set[str] = set()

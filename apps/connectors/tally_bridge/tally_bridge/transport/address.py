@@ -49,6 +49,7 @@ def build_address_app(
     copy: CopyStore | None = None,
     link: object | None = None,
     on_machine_saved: Callable[[Settings], str | None] | None = None,
+    machine_check: Callable[[Settings], str | None] | None = None,
 ) -> ASGIApp:
     """The app of address mode: ``/mcp``, ``/health`` and the setup page.
 
@@ -89,6 +90,7 @@ def build_address_app(
             link=link,
             # TLY-2d: the entry point applies the machine switches.
             on_machine_saved=on_machine_saved,
+            machine_check=machine_check,
         )
     )
     guard = BearerGuard(app, secrets)

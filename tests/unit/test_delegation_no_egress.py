@@ -114,6 +114,9 @@ EXPECTED_OPEN_WORLD = frozenset({
     # but it says open_world as each CRM write does, so a covered run holds it off.
     "crm_create_pipeline",
     "crm_update_record", "crm_update_task",
+    # crm-assistant, CRM-M2e (task 3951): the set-up writes of stages and lost
+    # reasons. They never queue for Zoho, and say open_world as each CRM write does.
+    "crm_edit_status", "crm_edit_lost_reason",
     # crm-assistant, CRM-M2f and CRM-M2i (task 3953): a field rule and the
     # mapping plan. They never queue for Zoho, and say open_world as each CRM
     # write does.

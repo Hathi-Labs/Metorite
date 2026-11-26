@@ -123,6 +123,7 @@
     $("machine-start").checked = !!m.start_tally_at_signin;
     $("machine-exe").textContent = m.tally_exe || "not set";
     $("machine-awake").checked = !!m.keep_awake;
+    if (m.problem) { $("machine-line").textContent = m.problem; }
   }
 
   $("machine-save").addEventListener("click", function () {

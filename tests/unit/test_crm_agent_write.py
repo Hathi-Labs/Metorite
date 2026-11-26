@@ -110,7 +110,8 @@ _LEAD = {"id": _LEAD_ID, "lead_name": "Ravi Menon", "email": "ravi@acme.test",
 
 _WRITE_TOOLS = ["create_lead", "update_deal_status", "log_activity",
                 "convert_lead", "crm_create_pipeline", "crm_update_record",
-                "crm_update_task", "crm_edit_field_rule", "crm_draft_mapping_plan",
+                "crm_update_task", "crm_edit_status", "crm_edit_lost_reason",
+                "crm_edit_field_rule", "crm_draft_mapping_plan",
                 "crm_approve_mapping_plan", "crm_restore_mapping_plan"]
 
 #: WS-CRM CRM-M3a: the pipelines and the plan that the gateway answers.
@@ -193,6 +194,13 @@ def _field_map(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+def _by_prefix(call: dict) -> Any:
+    """The pipelines (CRM-M3a), and the Field map and its plan (task 3953)."""
+    if call["path"].startswith("/crm/pipelines"):
+        return _pipelines(call)
+    return _field_map(call)
+
+
 def _responder(call: dict) -> Any:
     """The gateway, as far as these tools can tell.
 
@@ -226,10 +234,12 @@ def _responder(call: dict) -> Any:
         return {"id": str(uuid4()), **body}
     if path == "/crm/leads" and method == "POST":
         return {**body, "id": _NEW_LEAD_ID, "owner_email": _USER}
-    if path.startswith("/crm/pipelines"):
-        return _pipelines(call)
-    if path.startswith(("/crm/field-rules", "/crm/mapping/plans")):
-        return _field_map(call)
+    if path.startswith(("/crm/pipelines", "/crm/field-rules", "/crm/mapping/plans")):
+        return _by_prefix(call)
+    if path.startswith(("/crm/statuses/", "/crm/lost-reasons")) and method in ("POST", "PATCH"):
+        # CRM-M2e (task 3951): the set-up writes answer the row they wrote.
+        made = path.rsplit("/", 1)[-1] if method == "PATCH" else str(uuid4())
+        return {"id": made, **body}
     if method == "PATCH" and path.count("/") == 3:
         return {"id": path.rsplit("/", 1)[-1], "name": "Acme AMC",
                 "first_name": "Ravi", **body}
@@ -267,6 +277,12 @@ _CALLS: dict[str, Any] = {
         {"amount": 300000, "expected_close_date": "2026-12-31"},
     ),
     "crm_update_task": lambda: _M.crm_update_task(_TASK_ID, completed=True),
+    "crm_edit_status": lambda: _M.crm_edit_status(
+        "deal", "change", "Negotiation", new_name="Talks",
+    ),
+    "crm_edit_lost_reason": lambda: _M.crm_edit_lost_reason(
+        "change", "Price", new_label="Too expensive",
+    ),
     # CRM-M2f and CRM-M2i (task 3953): a field rule and the mapping plan.
     "crm_edit_field_rule": lambda: _M.crm_edit_field_rule(
         "add", "deals", "industry code", "next_step",
@@ -302,6 +318,8 @@ _CARD_MUST_NAME: dict[str, str] = {
     "crm_create_pipeline": "AMC contracts",  # the pipeline being made
     "crm_update_record": "Acme AMC",   # the deal being edited
     "crm_update_task": "Send quote",   # the task being changed (its subject)
+    "crm_edit_status": "Negotiation",  # the stage being changed
+    "crm_edit_lost_reason": "Price",   # the lost reason being changed
     "crm_edit_field_rule": "Industry code",      # the field being mapped
     "crm_draft_mapping_plan": "«Segment»",       # the field of the change
     "crm_approve_mapping_plan": "«Segment»",     # the rule the approve adds

@@ -80,12 +80,14 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The ten CRM writes that a held chat keeps. Each says ``open_world=True``
-#: and keeps saying it. CRM-M2f and CRM-M2i (task 3953) added the three class
-#: B writes of the Field map.
+#: The twelve CRM writes that a held chat keeps. Each says ``open_world=True``
+#: and keeps saying it. CRM-M2e (task 3951) added the two set-up writes of
+#: stages and lost reasons. CRM-M2f and CRM-M2i (task 3953) added the three
+#: class B writes of the Field map. 7 + 2 + 3 = 12.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
+    "crm_edit_status", "crm_edit_lost_reason",
     "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_restore_mapping_plan",
 })
 #: The CRM writes that a held chat drops. The approve of a plan is class C and
