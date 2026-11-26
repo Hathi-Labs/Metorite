@@ -422,3 +422,72 @@ async def test_no_image_starts_nothing(
     with bound_run(ORG), pytest.raises(sb.SandboxUnavailable):
         await broker.acquire()
     assert not docker.runs()
+
+
+# ── WS-43g1: the egress flags (§7.3, task 4009) ──────────────────────────────
+
+
+def _egress_grant(org: str = ORG) -> sb.EgressGrant:
+    return sb.EgressGrant(
+        token="tok-" + "q" * 40, org=org, run="run-1", agent="agent-x",
+        approver="member@example.com", hosts=("pypi.org",), expires_at=0.0,
+        network=sb.egress_network_name(org),
+    )
+
+
+def _argv_for(handle: sb.SandboxHandle, broker: sb.SandboxBroker, **extra: Any) -> list[str]:
+    from acb_common import get_settings
+
+    return sb.build_run_argv(
+        binding=handle.binding, mounts=sb.mount_list(handle.binding, broker.git_cover()),
+        uid=1000, gid=1000, image=PINNED_IMAGE, limits=sb.Limits.from_settings(get_settings()),
+        start_id="0" * 32, **extra,
+    )
+
+
+async def test_a_grant_changes_only_the_network_and_the_proxy_settings(
+    broker: sb.SandboxBroker,
+) -> None:
+    """The egress argv keeps every flag and mount of rule 6, and gains no port."""
+    with bound_run(ORG) as ws:
+        (ws / ".git").mkdir()
+        handle = await broker.acquire()
+    plain = _argv_for(handle, broker)
+    granted = _argv_for(handle, broker, egress=_egress_grant())
+    assert flag_values(granted, "--network") == [sb.egress_network_name(ORG)]
+    assert mounts_of(granted) == mounts_of(plain)
+    assert any(m.endswith("target=/workspace/.git,readonly") for m in mounts_of(granted))
+    env = dict(v.split("=", 1) for v in flag_values(granted, "--env"))
+    base = dict(v.split("=", 1) for v in flag_values(plain, "--env"))
+    added = {k: v for k, v in env.items() if k not in base}
+    url = f"http://grant:tok-{'q' * 40}@{sb.EGRESS_PROXY_NAME}:{sb.EGRESS_PROXY_PORT}"
+    assert added == dict.fromkeys(("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"), url)
+    strip = {"--network", "--env"}
+    def rest(argv: list[str]) -> list[str]:
+        return [a for i, a in enumerate(argv) if a not in strip and argv[i - 1] not in strip]
+    assert rest(granted) == rest(plain)
+    for flag in ("-p", "--publish", "-P", "--privileged", "--cap-add", "--env-file", "-e"):
+        assert flag not in granted
+
+
+async def test_an_egress_grant_is_refused_where_no_grant_may_go(
+    broker: sb.SandboxBroker, tmp_path: Path,
+) -> None:
+    with bound_run(ORG):
+        handle = await broker.acquire()
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=_egress_grant("another-org"))
+    with pytest.raises(sb.SandboxRefused):
+        sb.build_run_argv(
+            binding=handle.binding, mounts=(), uid=1000, gid=1000, image=PINNED_IMAGE,
+            limits=sb.Limits("1", "1g", 256, 256), start_id="0" * 32,
+            workspace_tmpfs_mb=512, egress=_egress_grant(),
+        )
+    compute = sb.RunBinding(
+        org=ORG, agent=sb.COMPUTE_AGENT, thread="t", instance="", workspace=tmp_path,
+    )
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        sb.build_run_argv(
+            binding=compute, mounts=(), uid=1000, gid=1000, image=PINNED_IMAGE,
+            limits=sb.Limits("1", "1g", 256, 256), start_id="0" * 32, egress=_egress_grant(),
+        )

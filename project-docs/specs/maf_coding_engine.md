@@ -835,6 +835,32 @@ method field reads `CONNECT`.
 `upload.pypi.org` is not on the list. The production list reaches third
 parties, so the owner sets it (WS43-G4).
 
+**The door forward (WS-43g1, task 4009).** The door client of
+`agent_sandbox.md` §12.3 calls `http://metorite-api.sandbox`. The proxy
+forwards that one name to the gateway.
+
+- The door name is a host on the grant's list, like any other host. Rules 1,
+  2 and 3 apply to it.
+- The proxy forwards a plain HTTP request for the exact name
+  `metorite-api.sandbox`, on port 80, to the address in
+  `sandbox_egress_door_upstream`. That value is an IP address and a port.
+- The proxy does no DNS lookup for the door. So rules 4 and 5 do not apply to
+  it. Only the broker sets its private address, and no request can name one.
+- The proxy refuses the door when the setting is empty or holds a name, for a
+  `CONNECT`, and for a request with no `X-Sandbox-Capability` header.
+- The proxy adds no header and holds no key. It removes
+  `Proxy-Authorization` and the hop-by-hop headers. It sets
+  `Connection: close`, so each connection carries one request.
+
+**The settings.** Each default keeps egress off.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `sandbox_egress_enabled` | `False` | Off: the broker refuses each grant, and makes no proxy and no egress network |
+| `sandbox_egress_allow_hosts` | `pypi.org,files.pythonhosted.org` | The hosts that a grant may name. A grant names an entry exactly |
+| `sandbox_egress_door_upstream` | empty | The IP address and port of the door upstream. Empty refuses the door |
+| `sandbox_egress_grant_ttl_seconds` | 1800 | The longest life of a grant. The run's end revokes it first |
+
 ### 7.4 The tools
 
 **`run_command(command, timeout_s=60)`.** It lives in
@@ -2613,7 +2639,7 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 
 **Gate.** AGENT-SAFE. It ships dark.
 
-### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲
+### WS-43g — Egress: the proxy, the approved grant and the host firewall 🔲 · 🔨 **WS-43g1 built 2026-11-26, dark, on branch `mt-abaa42b0-ws43g1-egress` (task 4009)**
 
 **Scope.**
 
@@ -2641,6 +2667,38 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
    back on `--network none`.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
+9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
+   address in `sandbox_egress_door_upstream`. It does no DNS lookup for it,
+   and it adds no header. With the setting empty, it refuses that name.
+
+**WS-43g1, the first slice (task 4009).** The audit of 2026-11-26 narrowed
+WS-43g to an agent-safe first slice. It ships dark.
+
+- In:
+  - `sandbox/egress_proxy.py`, with the five rules of §7.3, the door forward
+    and one JSON log line per request.
+  - The proxy container. It runs as uid 65534, with `--cap-drop ALL` and no
+    `-p`.
+  - A per-organization `--internal` network, and the grants file under
+    `sandbox_state_dir`.
+  - `grant_egress()` and `revoke_egress()`. Each recreates the container
+    through `mount_list`. The run's end revokes. `sweep()` removes the proxy
+    and the networks.
+  - The four settings of §7.3. Each default keeps egress off.
+  - `sandbox/host_firewall.sh`, written and tested. Nothing applies it.
+  - `grant_egress()` refuses on `docker-remote`.
+- Out:
+  - WS-43g2: the live `request_network_access`, the `timeout_s` parameter
+    and the approval card (done-when 4 to 6).
+  - WS-43g3: the firewall script applied in CI (done-when 8).
+  - The proxy baked into the image, and egress on `docker-remote`.
+  - Each flag flip and each act on a box.
+- Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
+- Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
+  and the network. Its card half waits for WS-43g2.
+
+**Status, 2026-11-26.** WS-43g1 is built dark on branch
+`mt-abaa42b0-ws43g1-egress` (task 4009). WS-43g2 and WS-43g3 are not built.
 
 **Verification.**
 
@@ -6043,7 +6101,7 @@ The order is: CA-1 first. Then CA-2 and CA-3. Then the rest, as each
 - **Risk.** HIGH (code execution). The sandbox stays the boundary (D130).
   Blocked by CA-1.
 
-#### CA-4 (task 1032) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
+#### CA-4 (task 1032, live task 4009) — Network: egress proxy, web fetch, web search, package install. This is WS-43g.
 
 **Since D148, the web service has its own owner.** `web_research.md` owns the fetch guard, the readers and the search providers. CA-4 owns the coding session's egress proxy and its profiles, and its `web_fetch` and `web_search` call that one service.
 
