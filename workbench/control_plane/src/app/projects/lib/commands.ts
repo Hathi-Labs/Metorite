@@ -56,6 +56,11 @@ export const VIEW_MODES = [
   { id: "table", icon: "Table", key: "t" },
   { id: "calendar", icon: "Calendar", key: "c" },
   { id: "timeline", icon: "Milestone", key: "m" },
+  // WS-39 SP-3a — the Backlog canvas: the planned cycles over the backlog.
+  // Only a Sprints node in an org that `PROJECTS_SPRINTS_ORGS` holds offers
+  // it. `lib/viewTabs.ts::canvasesFor` decides, and every surface that lists
+  // the canvases reads that answer.
+  { id: "backlog", icon: "ListTodo", key: "k" },
   // SW-112: the agent map of the project's subtree. Last, and dark means
   // absent: it is on offer only while the map read answers (`isModeOffered`).
   { id: "agents", icon: "Network", key: "a" },
@@ -123,6 +128,7 @@ export function resolveMode(
  * | calendar | —                                | —                |
  * | agents   | — (a map, not a task canvas)     | —                |
  * | overview | — (a roll-up, not a task canvas) | —                |
+ * | backlog  | — (cycles over a priority list)  | —                |
  *
  * ⚠️ These HIDE a control, they do not clear the value. Switching to
  * Calendar and back must not silently drop the grouping somebody chose, and

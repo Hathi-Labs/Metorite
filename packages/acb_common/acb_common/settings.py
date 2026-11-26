@@ -1915,6 +1915,21 @@ class Settings(FlagRegistry):
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    # MCP-G17f (external_agent_access.md §5.5, task 4032, owner directive
+    # 2026-11-26): the grace window of a refresh token, in seconds. A refresh
+    # token that its own client spent less than this many seconds ago gets a
+    # new pair of the same connection, and it does not revoke the connection.
+    # Two sessions that share one login and refresh at once then both keep
+    # the board. 0, the default, turns the window off: rule 5 of
+    # `acb_auth.agent_tokens` holds as before, and each reuse revokes.
+    # `acb_auth.agent_oauth.refresh_reuse_grace_s` is the one reader. It
+    # reads a value below 0 as 0, and a value above
+    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (60) as 60. The env key is
+    # `AGENT_REFRESH_REUSE_GRACE_S`. It is not a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-agent-edge`, which
+    # runs the token endpoint (`docs/flag_reload.md`). 🔴 A change on a box
+    # is gate `enforcement-flip`.
+    agent_refresh_reuse_grace_s: int = 0
     agent_code_ttl_s: int = 60
     agent_connection_idle_ttl_s: int = 90 * 24 * 3600
     agent_client_unused_ttl_s: int = 24 * 3600
