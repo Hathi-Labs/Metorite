@@ -52,8 +52,9 @@ logs ``via`` ``chat`` or ``whatsapp``. The Undo of a new rule removes it, and
 the Undo of a change writes the old words, each through the helper of the
 route and its owner checks. ``DELETE /crm/rules/{id}`` logs in PR 2.
 
-Fences: ``tests/unit/test_crm_rules.py``, ``tests/unit/test_crm_rules_r8.py``
-and ``tests/unit/test_crm_change_history.py``.
+Fences: ``tests/unit/test_crm_answer_first.py``,
+``tests/unit/test_crm_answer_first_r8.py`` and
+``tests/unit/test_crm_change_history.py``.
 """
 
 from __future__ import annotations

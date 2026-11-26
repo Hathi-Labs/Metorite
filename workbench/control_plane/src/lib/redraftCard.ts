@@ -36,7 +36,7 @@
 import { diffKeys } from "@/app/knowledge/lib/wordDiff";
 import { tabLabel } from "@/lib/cardTabs";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
-import { isNewMail, newMailTicksMoved, startTicks, tickedFor, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
+import { isNewMail, newMailTicksMoved, startTicks, tickedFor, type LinkChange, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
 
 /**
  * The member's version of an open new-mail card, as a steer carries it. The
@@ -394,4 +394,39 @@ export function changedText(c: Changes): string {
  */
 export function keptOutText(names: readonly string[]): string {
   return names.length ? `Unticked earlier in this chat: ${names.join(", ")}. Tick the box to include them.` : "";
+}
+
+
+// ── The line about the card that this card replaces (HRD-8b) ────────────────
+
+/**
+ * The words of the line on a card that is not the same as the one it replaces.
+ * They are a proposal, in plain words (`chat_failure_modes.md` HRD-8b, task
+ * 3459), and the owner may change them. They are in one place on purpose.
+ */
+export const NOT_THE_SAME_LEAD = "This card is not the same as the one before it.";
+export const CHECK_TRAIL = "Check it before you send.";
+
+const ACT_WORDS: Record<string, string> = { new: "a new mail", forward: "a forward", reply: "a reply" };
+
+function peopleWords(label: "To" | "Cc" | "Bcc", p: { added: string[]; removed: string[] }): string {
+  const parts = [`The ${label} list changed.`];
+  if (p.added.length) parts.push(`Added to ${label}: ${p.added.join(", ")}.`);
+  if (p.removed.length) parts.push(`Removed from ${label}: ${p.removed.join(", ")}.`);
+  return parts.join(" ");
+}
+
+/**
+ * The line for a card whose act kind, To, Cc or Bcc differ from the card it
+ * replaces, or "" when nothing differs. It reads the gateway's `changed`, never
+ * a claim of the model, and it names no word of a mail.
+ */
+export function changedLinkLine(changed: LinkChange | undefined): string {
+  if (!changed) return "";
+  const parts: string[] = [];
+  if (changed.act) parts.push(`The card before it was ${ACT_WORDS[changed.act.was]}. This card is ${ACT_WORDS[changed.act.now]}.`);
+  if (changed.to) parts.push(peopleWords("To", changed.to));
+  if (changed.cc) parts.push(peopleWords("Cc", changed.cc));
+  if (changed.bcc) parts.push(peopleWords("Bcc", changed.bcc));
+  return parts.length ? [NOT_THE_SAME_LEAD, ...parts, CHECK_TRAIL].join(" ") : "";
 }

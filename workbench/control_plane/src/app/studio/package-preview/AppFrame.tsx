@@ -24,11 +24,14 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioBlockState from "@/components/studio/StudioBlockState";
+import StudioCalendar from "@/components/studio/StudioCalendar";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
 import StudioNewButton from "@/components/studio/StudioNewButton";
 import StudioForm from "@/components/studio/StudioForm";
 import StudioRecord from "@/components/studio/StudioRecord";
+import StudioTree from "@/components/studio/StudioTree";
 import StudioAppFrame from "@/components/studio/StudioAppFrame";
 import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Button from "@/components/ui/Button";
@@ -36,7 +39,7 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import SelectButton from "@/components/ui/SelectButton";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, moreLine, sourceKey } from "@/lib/studio/dataDoor";
-import { floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
+import { floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 import { buildHref } from "@/lib/studio/packageDraft";
 import {
   activeCount, barOf, barTarget, chipsOf, clearedBar, layoutsFor, searchKeyOf, toListArgs, withFilter,
@@ -45,6 +48,9 @@ import {
 import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
+import { pluralOf } from "@/lib/studio/blockState";
+import { hideNode, parseHidden, showAll, toggleHidden } from "@/lib/studio/columnModel";
+import ColumnsMenu from "@/components/studio/layouts/ColumnsMenu";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -103,6 +109,34 @@ function FilteredList({ source, door, active, onClear, children }: {
     <div className={PANEL}>
       <EmptyState icon="SearchX" message="No match" hint="No record fits the search and the filters."
         action={{ label: "Clear filters", icon: "X", onClick: onClear }} />
+    </div>
+  );
+}
+
+/**
+ * The table of a page with a preset (STU-LY-2). It draws the shared states of `StudioBlockState`
+ * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
+ * It reads the same cached key as the block's own read, so this adds no second read.
+ */
+function LayoutList({ source, door, active, noun, onClear, children }: {
+  source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
+  active: number; noun: string; onClear: () => void; children: React.ReactNode;
+}) {
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  const n = rows.data?.length ?? 0;
+  const failed = Boolean(rows.error) && rows.data === undefined;
+  const state = (
+    <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
+      forbidden={false} rows={n} filtersActive={active > 0} noun={noun}
+      onClearFilters={onClear} onRetry={rows.refresh} />
+  );
+  if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  return (
+    <div className="space-y-2">
+      <p role="status" className="text-xs text-muted-foreground">
+        {`${n} ${noun}${active > 0 ? " match the filters" : ""}`}
+      </p>
+      {children}
     </div>
   );
 }
@@ -169,14 +203,37 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     go((s) => openRecord(s, link.object, link.id));
   };
 
+  // The Columns menu (STU-LY-2b) lists the columns of the main table of a table workspace.
+  const tableColumns = useMemo(() => {
+    if (built.page.layout !== "table_workspace") return [] as { key: string; label: string }[];
+    const v = detail.views.find((x) => x.id === built.page.regions.main?.[0]);
+    const m = v ? mapView(v, ctx) : null;
+    const f = m && m.kind === "node" ? (m.node.props.data as { fields?: { key: string; label?: string }[] } | undefined)?.fields : undefined;
+    return Array.isArray(f) ? f.map((x) => ({ key: x.key, label: x.label || x.key })) : [];
+  }, [built.page.layout, built.page.regions, detail.views, ctx]);
+  const tableHeader = tableColumns.length > 1 ? (
+    <ColumnsMenu columns={tableColumns} hidden={parseHidden(state.hide)}
+      onToggle={(k) => update((s) => toggleHidden(s, k, tableColumns))} onShowAll={() => update(showAll)} />
+  ) : undefined;
+
   const renderView = (id: string) => {
     const view = detail.views.find((v) => v.id === id);
     const model = view ? mapView(view, ctx) : null;
     if (!model) return null;
     switch (model.kind) {
       case "node": {
-        const node = <GenerativeUINode spec={model.node} />;
-        const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        // The columns that a member hid in a table workspace (STU-LY-2b).
+        const spec = built.page.layout === "table_workspace" && id === built.page.regions.main?.[0]
+          ? hideNode(model.node, parseHidden(state.hide)) : model.node;
+        const node = <GenerativeUINode spec={spec} />;
+        const src = spec.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        if (built.page.layout === "table_workspace" && src && id === built.page.regions.main?.[0]) {
+          const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
+          return (
+            <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
+              noun={pluralOf(object?.label || object?.name || "")} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
         if (!bar || id !== bar.lens.view || !src) return node;
         return (
           <FilteredList source={src} door={door} active={activeCount(bar.fields, bar.value)}
@@ -194,6 +251,12 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
               submitLabel="Add record" savedMessage="Record added" />
           </div>
         );
+      case "tree":
+        return <div className={PANEL}><StudioTree model={model} door={door} /></div>;
+      case "calendar":
+        // The block draws its own card. A record link opens in the panel through `onLinkClick`.
+        return <StudioCalendar model={model} door={door}
+          onOpenRecord={(rid) => go((s) => openRecord(s, model.object, rid))} />;
       case "detail":
         return <DetailCell model={model} door={door} selected={state.selected} onPick={setSelected} />;
     }
@@ -207,6 +270,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
     }), detail.objects, controls.actions, controls.owner),
   [cells, detail.views, detail.objects, controls.actions, controls.owner]);
   // The rail replaces the page picker. An app with one page draws neither (nothing to pick).
+  // The floor view draws no rail, and only there the picker comes back (`floorPages`, STU-D23a-2).
   const railed = hasRail(built.pages);
   // The rail hides a page whose object the viewer cannot read (rule 5), then counts the rows that remain (rule 6).
   const sections = useMemo(() => {
@@ -233,10 +297,16 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <DeletePackageButton id={pkg} onDeleted={onDeleted} />
     </>
   ) : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>;
+  // The floor view has no rail, so its page picker comes first in the toolbar (STU-D23a-2). It
+  // offers the rows of the rail and picks through `setPage`, as a row of the rail does.
+  const floorPick = floorPages(parts, sections);
   // The floor view keeps "New <Object>" and drops the end-date bar. With no part left, no toolbar row.
-  const toolbarShown = parts.lifetime || adds.length > 0 || (isMobile && ownerBar !== null);
+  const toolbarShown = parts.lifetime || adds.length > 0 || (isMobile && ownerBar !== null) || floorPick !== null;
   const toolbar = (
     <>
+      {floorPick ? (
+        <SelectButton label="Page" value={built.page.id} widthClass="w-48" options={floorPick} onChange={setPage} />
+      ) : null}
       {parts.lifetime ? <PackageLifetimeBar pkg={pkg} /> : null}
       {adds.map((b) => {
         const o = detail.objects.find((x) => x.name === b.object);
@@ -258,6 +328,7 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       <StudioPage bare title={detail.name.trim() || "App"}
         manifest={manifest} pageId={built.page.id} state={state} onTab={setTab}
         onCloseSide={() => setSelected(null)} renderView={renderView} toolbar={toolbarShown ? toolbar : undefined}
+        tableHeader={tableHeader}
         record={opened && recordObject ? {
           title: titled && titled.id === opened.id ? titled.text : recordObject.label || recordObject.name,
           full: recordFull(parts, opened.full),

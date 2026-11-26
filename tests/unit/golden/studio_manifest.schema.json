@@ -100,6 +100,52 @@
       "title": "CellDef",
       "type": "object"
     },
+    "ConnectionNeed": {
+      "additionalProperties": false,
+      "description": "STU-I9a. One connection that the app needs, with the account it uses.\n\n``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With\nnone, :func:`connection_as` gives the default of the connector list.\n``scopes`` are the scopes that the app asks for. They are a declaration\nonly: no credential is read from them.",
+      "properties": {
+        "as": {
+          "anyOf": [
+            {
+              "enum": [
+                "org",
+                "member"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "As"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "scopes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scopes"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ConnectionNeed",
+      "type": "object"
+    },
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
@@ -235,10 +281,46 @@
           "default": null,
           "title": "Options"
         },
+        "pad": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pad"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefix"
+        },
         "required": {
           "default": false,
           "title": "Required",
           "type": "boolean"
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reset"
         },
         "to": {
           "anyOf": [
@@ -275,7 +357,8 @@
             "duration",
             "quantity",
             "percent",
-            "barcode"
+            "barcode",
+            "autonumber"
           ],
           "title": "Type",
           "type": "string"
@@ -469,6 +552,17 @@
           "title": "Name",
           "type": "string"
         },
+        "record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "rules": {
           "items": {
             "additionalProperties": true,
@@ -507,6 +601,37 @@
           "title": "Id",
           "type": "string"
         },
+        "layout": {
+          "anyOf": [
+            {
+              "enum": [
+                "table_workspace",
+                "list_detail",
+                "board",
+                "dashboard",
+                "work_queue",
+                "approval_queue"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout"
+        },
+        "regions": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "maxProperties": 6,
+          "title": "Regions",
+          "type": "object"
+        },
         "side": {
           "anyOf": [
             {
@@ -543,6 +668,31 @@
         "id"
       ],
       "title": "PageDef",
+      "type": "object"
+    },
+    "RecordDef": {
+      "additionalProperties": false,
+      "properties": {
+        "tabs": {
+          "items": {
+            "enum": [
+              "details",
+              "lines",
+              "related",
+              "files"
+            ],
+            "type": "string"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Tabs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tabs"
+      ],
+      "title": "RecordDef",
       "type": "object"
     },
     "RuntimeDef": {
@@ -890,7 +1040,8 @@
             "processFlow",
             "checklist",
             "map",
-            "markdown"
+            "markdown",
+            "tree"
           ],
           "title": "Block",
           "type": "string"
@@ -1090,7 +1241,14 @@
     },
     "connections": {
       "items": {
-        "type": "string"
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/$defs/ConnectionNeed"
+          }
+        ]
       },
       "title": "Connections",
       "type": "array"

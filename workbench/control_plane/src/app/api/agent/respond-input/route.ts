@@ -19,7 +19,6 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
 import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
 import { malformedDecline, otherAccountRefusal } from "@/lib/respondInput";
 
@@ -41,15 +40,12 @@ interface RespondInputRequest {
 }
 
 export async function POST(req: NextRequest) {
+  // One identity rule, the one of every other route: `requireIdentity` answers 401 when
+  // auth is on and nobody is signed in, and it gives the dev member when auth is off
+  // (the local stack, `scripts/dev_up.sh`). A second `auth()` check here made the dev
+  // stack answer 401 to each card (task 3826).
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
-  const session = await auth();
-  if (!session) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
 
   let body: RespondInputRequest;
   try {

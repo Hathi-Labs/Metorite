@@ -102,6 +102,22 @@ def compatible(
     return have <= allowed
 
 
+def claim_target(
+    claimed: dict[str, str], target_key: str, source_key: str,
+) -> str | None:
+    """Claim ``target_key`` for ``source_key``. The ONE collision rule.
+
+    Returns ``None`` when the claim succeeds. Returns the source key that
+    already holds the target when it does not. ``resolve_field_map`` and the
+    caller-supplied ``field_map`` check in ``move._plan`` both use it.
+    """
+    holder = claimed.get(target_key)
+    if holder is not None:
+        return holder
+    claimed[target_key] = source_key
+    return None
+
+
 def resolve_field_map(
     source_defs: list[dict[str, Any]],
     dest_defs: list[dict[str, Any]],
@@ -156,12 +172,11 @@ def resolve_field_map(
             orphans.append(definition)
             continue
         target_key = str(target["field_key"])
-        if target_key in claimed:
+        if claim_target(claimed, target_key, key) is not None:
             # Contested. The loser is an ORPHAN, which means the member is told
             # its value will be dropped instead of losing it silently.
             orphans.append(definition)
             continue
-        claimed[target_key] = key
         mapping[key] = target_key
     return mapping, orphans
 

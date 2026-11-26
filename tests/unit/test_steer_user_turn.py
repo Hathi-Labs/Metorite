@@ -59,6 +59,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, CLOSED_BY_YOUR_MESSAGE, card_outcome_text
 from agent_framework import (
     Agent,
     AgentSession,
@@ -327,7 +328,7 @@ def test_projects_card_closes_and_the_model_redrafts(stream: bool):
             title="Create this task?", detail=f"{title} · {', '.join(assignees)}",
             context=f"title: {title}\nassignees: {', '.join(assignees)}")
         if not ok:
-            return writes.CANCELLED
+            return card_outcome_text(CARD_DECLINED)
         written.append(list(assignees))
         return f"Created task {title} for {', '.join(assignees)}."
 
@@ -377,8 +378,8 @@ def test_projects_card_closes_and_the_model_redrafts(stream: bool):
     after_close = client.requests[1]
     assert _role(after_close[-1]) == "user"
     assert after_close[-1].text == f"[steer from {MEMBER}] {STEER_TEXT}"
-    assert writes.CARD_REVISED in _tools(after_close), "the closed card says why"
-    assert writes.CANCELLED not in _tools(after_close), "a closed card is no decline"
+    assert card_outcome_text(CLOSED_BY_YOUR_MESSAGE) in _tools(after_close), "the closed card says why"
+    assert card_outcome_text(CARD_DECLINED) not in _tools(after_close), "a closed card is no decline"
     assert not any(STEER_TEXT in t for t in _tools(after_close)), "no tool result carries it"
     assert written == [["Kiran", "Veena"]]
 
@@ -435,15 +436,18 @@ def test_every_crm_card_closes_on_a_steer():
 
 def test_every_crm_card_answers_a_steer_apart_from_its_decline():
     """Each CRM card answers a card that wrote nothing through ``_not_written``,
-    with its decline AND the words of a closed card. A plain ``if not answer``
-    reads the closed card as a decline, and the model then drops the member's
-    change in silence."""
+    with the words of what it did not write. ``_not_written`` tells a closed
+    card from a decline (HRD-7: the one table of card outcomes gives both). A
+    plain ``if not answer`` reads the closed card as a decline, and the model
+    then drops the member's change in silence."""
     src = (ROOT / "apps/agents/agent-crm/agents.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     cards = [fn for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)
              and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_confirmation"
                      for n in ast.walk(fn))]
-    assert len(cards) == 7, [fn.name for fn in cards]
+    # 11: 7 before, crm_edit_status and crm_edit_lost_reason of CRM-M2e (task 3951),
+    # and crm_decide_suggestion and crm_rerun_analysis (task 3954).
+    assert len(cards) == 11, [fn.name for fn in cards]
     for fn in cards:
         declines = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                     and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)
@@ -454,8 +458,8 @@ def test_every_crm_card_answers_a_steer_apart_from_its_decline():
         assert getattr(ret.value.func, "id", "") == "_not_written", fn.name
         assert ast.unparse(ret.value.args[0]) == "answer", fn.name
         kw = {k.arg: ast.unparse(k.value) for k in ret.value.keywords}
-        assert "Cancelled" in kw["declined"], fn.name
-        assert kw["unchanged"] != kw["declined"], fn.name
+        # HRD-7: no card writes a decline of its own. The table gives it.
+        assert set(kw) == {"unchanged"}, fn.name
         assert not DECLINE.search(kw["unchanged"]), f"{fn.name}: {kw['unchanged']}"
 
 
@@ -469,18 +473,20 @@ def test_the_crm_closed_card_text_names_no_decline():
     assert not DECLINE.search(out), out
     assert "No lead was created for Veena Rao." in out
     assert "their own chat message" in out and "new card" in out
-    words = {"declined": "Cancelled — no lead.", "unchanged": "No lead was created."}
+    words = {"unchanged": "No lead was created."}
     assert crm._not_written(at.REVISED, **words) == crm._closed_by_chat("No lead was created.")
     assert crm._not_written(at.REVISED_ROWS, **words) == crm._closed_by_chat("No lead was created.")
-    assert crm._not_written(False, **words) == "Cancelled — no lead."
-    assert crm._not_written(None, **words) == "Cancelled — no lead."
+    # HRD-7: any other card that wrote nothing takes the words of the one table.
+    declined = at.card_outcome_text(at.CARD_DECLINED, "No lead was created.")
+    assert crm._not_written(False, **words) == declined
+    assert crm._not_written(None, **words) == declined
 
 
 @pytest.mark.parametrize("with_rows", [False, True], ids=["one-card", "rows-card"])
 def test_a_projects_card_answers_a_steer_apart_from_a_decline(with_rows: bool):
     """``writes._confirm`` closes each card on a steer, the card with rows
     too. The tool then writes nothing, and the model reads
-    ``writes.CARD_REVISED``, never the decline."""
+    ``card_outcome_text(CLOSED_BY_YOUR_MESSAGE)``, never the decline."""
     from skill_projects import writes
     from skill_projects.refusals import refusals_as_text
 
@@ -492,7 +498,7 @@ def test_a_projects_card_answers_a_steer_apart_from_a_decline(with_rows: bool):
         ok = await writes._confirm(title="Make these?", detail="two tasks",
                                    context="title: Task A", rows=rows)
         if not ok:
-            return writes.CANCELLED
+            return card_outcome_text(CARD_DECLINED)
         written.append(ok)
         return "Made."
 
@@ -512,9 +518,9 @@ def test_a_projects_card_answers_a_steer_apart_from_a_decline(with_rows: bool):
 
     out = asyncio.run(run())
     assert written == [], "a closed card writes nothing"
-    assert out == writes.CARD_REVISED
-    assert writes.CARD_REVISED != writes.CANCELLED
-    assert not DECLINE.search(writes.CARD_REVISED), writes.CARD_REVISED
+    assert out == card_outcome_text(CLOSED_BY_YOUR_MESSAGE)
+    assert card_outcome_text(CLOSED_BY_YOUR_MESSAGE) != card_outcome_text(CARD_DECLINED)
+    assert not DECLINE.search(card_outcome_text(CLOSED_BY_YOUR_MESSAGE)), card_outcome_text(CLOSED_BY_YOUR_MESSAGE)
     assert "only Task A" not in out, "the steer is not in the tool result"
 
 

@@ -12,7 +12,7 @@
 
 import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
-import { AGENT_STRIP, type AgentFocus, type AgentSummary } from "./agentRuns";
+import { AGENT_STRIP, type AgentFocus, type AgentSummary, HOLD_FILTERS, type HoldFocus } from "./agentRuns";
 import { type Filters } from "./grouping";
 import { hasMoreTasks } from "./paging";
 
@@ -58,7 +58,8 @@ export interface ActiveChip {
     | { kind: "filters"; patch: Partial<Filters> }
     | { kind: "waitingOnMe" }
     | { kind: "epic" }
-    | { kind: "agentWork" };
+    | { kind: "agentWork" }
+    | { kind: "holdFocus" };
 }
 
 export interface ChipInput {
@@ -67,6 +68,8 @@ export interface ChipInput {
   agentWork: boolean;
   /** SP-2a — the epic the board is narrowed to, when one is chosen. */
   epic?: { id: string; label: string };
+  /** SW-5: "Held by an agent" or "Free", or none. */
+  holdFocus?: HoldFocus | null;
   me: string;
   /** Turns an address into the name a member reads. */
   labelOf?: (address: string) => string;
@@ -81,6 +84,7 @@ export function activeChips({
   waitingOnMe,
   agentWork,
   epic,
+  holdFocus = null,
   me,
   labelOf = (address) => address,
 }: ChipInput): ActiveChip[] {
@@ -121,6 +125,10 @@ export function activeChips({
   }
   if (agentWork) {
     chips.push({ key: "agent", label: "Agent work", clear: { kind: "agentWork" } });
+  }
+  if (holdFocus) {
+    const found = HOLD_FILTERS.find((item) => item.focus === holdFocus);
+    chips.push({ key: "hold", label: found?.label ?? holdFocus, clear: { kind: "holdFocus" } });
   }
   if (filters.archived) {
     chips.push({ key: "archived", label: "Archived", clear: { kind: "filters", patch: { archived: false } } });

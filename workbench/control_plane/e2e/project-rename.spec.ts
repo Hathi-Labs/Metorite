@@ -17,22 +17,54 @@ import { expect, test, type Page } from "@playwright/test";
  * have to simulate the event order in their head.
  */
 
+// ⚠️ The roots of the tree are SPACES, so the project under test sits one level
+// down, inside a space. Folds start CLOSED: `openTree` picks the space, then
+// the project, which opens each in turn and reveals the subproject.
 const TREE = {
   rows: [
     {
-      id: "p-root",
-      name: "Delivery",
+      id: "p-space",
+      name: "Studio",
       status: "active",
       children: [
-        { id: "p-child", name: "Firmware", status: "active", children: [] },
+        {
+          id: "p-root",
+          name: "Delivery",
+          status: "active",
+          children: [
+            { id: "p-child", name: "Firmware", status: "active", children: [] },
+          ],
+        },
       ],
     },
   ],
-  total: 2,
+  total: 3,
 };
 
 /** PATCH bodies the page sent, in order. Empty means nothing was written. */
 type Sent = { id: string; body: Record<string, unknown> }[];
+
+/**
+ * Open the tree down a path of row names, and keep it open. A pick opens a row
+ * that holds others, but two things can undo it: a pick that lands before the
+ * page has hydrated (a cold dev compile) opens nothing, and the fold store
+ * closes every row when the member identity binds late (`resumed`). So each
+ * pass re-picks whatever is hidden from the top, then waits a beat and checks
+ * that the last row stayed.
+ */
+async function reveal(page: Page, path: string[]) {
+  const row = (name: string) => page.getByText(name, { exact: true }).first();
+  await expect(async () => {
+    for (let i = 1; i < path.length; i++) {
+      if (!(await row(path[i]).isVisible())) {
+        await row(path[i - 1]).click({ timeout: 3000 });
+        await expect(row(path[i])).toBeVisible({ timeout: 3000 });
+      }
+    }
+    await page.waitForTimeout(1500);
+    await expect(row(path[path.length - 1])).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 60000 });
+}
 
 async function openTree(page: Page): Promise<Sent> {
   const sent: Sent = [];
@@ -40,7 +72,6 @@ async function openTree(page: Page): Promise<Sent> {
 
   await page.goto("/");
   await page.evaluate(() => {
-    localStorage.setItem("cc-theme", "fluent");
     localStorage.setItem("theme", "dark");
   });
 
@@ -48,7 +79,12 @@ async function openTree(page: Page): Promise<Sent> {
     route.fulfill({
       json: {
         ...TREE,
-        rows: [{ ...TREE.rows[0], name: currentName }],
+        rows: [
+          {
+            ...TREE.rows[0],
+            children: [{ ...TREE.rows[0].children[0], name: currentName }],
+          },
+        ],
       },
     }),
   );
@@ -63,13 +99,15 @@ async function openTree(page: Page): Promise<Sent> {
     // The refetch after a rename must see the NEW name, or the assertion that
     // the row updated would be testing the stub rather than the page.
     if (typeof body.name === "string") currentName = body.name;
-    return route.fulfill({ json: { ...TREE.rows[0], name: currentName } });
+    return route.fulfill({
+      json: { ...TREE.rows[0].children[0], name: currentName },
+    });
   });
 
   await page.goto("/projects");
-  await expect(page.getByText("Delivery").first()).toBeVisible({
-    timeout: 15000,
-  });
+  // Picking Delivery opens it, so Firmware shows and Delivery is the selection
+  // the quick-add placeholder names.
+  await reveal(page, ["Studio", "Delivery", "Firmware"]);
   return sent;
 }
 
@@ -168,6 +206,9 @@ test.describe("project rename", () => {
     // `selected.name` keeps the old value. The quick-add placeholder is the
     // cheapest reachable one; `projectName={selected.name}` feeds two more.
     await openTree(page);
+    // ⚠️ The top composer renders on the TIMELINE canvas only (the board, list,
+    // table and calendar carry their own in-place QuickAdd), so open Timeline.
+    await page.getByText("Timeline", { exact: true }).first().click();
     const composer = page.getByLabel("New task title");
     await expect(composer).toHaveAttribute("placeholder", /Delivery/);
 

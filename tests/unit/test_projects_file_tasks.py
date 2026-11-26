@@ -40,6 +40,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -304,7 +305,7 @@ async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.file_tasks(_moves((T1, WEB), (T2, OPS), (T3, SALES)))
-    assert out == W.CANCELLED
+    assert out == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

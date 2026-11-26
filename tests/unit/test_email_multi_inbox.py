@@ -477,7 +477,8 @@ async def test_a_declined_card_sends_nothing(chat) -> None:
     chat.answer = False
     out = await agents.send_email("box-b", body="Hi", to=["kim@contoso.test"],
                                   subject="S")
-    assert "Send cancelled" in out
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:") and "The email was not sent." in out
     assert chat.posts == []
 
 
