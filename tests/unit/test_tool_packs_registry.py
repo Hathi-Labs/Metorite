@@ -106,7 +106,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
+        "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
         "studio-share", "org-admin", "people",
     )
     for slug in ("email", "email-setup"):
@@ -278,7 +278,7 @@ PRODUCTION_TOOL_PACKS = (
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
 FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
-                       "calendar-day"})
+                       "calendar-day", "mail-tasks"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -324,6 +324,7 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
                           "projects-authority": "projects",
                           "projects-cycles": "projects",  # WS-39 SP-5a
                           "calendar-day": "projects",
+                          "mail-tasks": "projects",  # P-1b (task 3922)
                           "studio-more": "studio"}  # WS-67 TS-1b
     assert set(tp.FOLLOWS) == FOLLOWERS | {"studio-more"}
     for follower, parent in tp.FOLLOWS.items():
@@ -340,7 +341,7 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
     assert tp.with_followers({"projects"}) == {
-        "projects", "projects-authority", "projects-cycles", "calendar-day"}
+        "projects", "projects-authority", "projects-cycles", "calendar-day", "mail-tasks"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()
@@ -598,13 +599,17 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     orchestrator does not hold it. Mutation: add a tool the owner lacks, or
     drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
-    # 25: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
-    # and crm_create_pipeline of CRM-M3a.
-    assert len(scope) == 25, "non-vacuity: the owner declares 25 tools"
+    # 32: 22 since CRM-M1, crm_update_record and crm_update_task of CRM-M2b,
+    # crm_create_pipeline of CRM-M3a, the two set-up writes of CRM-M2e (task
+    # 3951), and the five tools of the suggestions and the AI analysis (P-3,
+    # task 3954). The owner chooses the pack of a tool, so those seven are in
+    # no pack yet: with the 12 shared reads, 19 tools are in no pack.
+    assert len(scope) == 32, "non-vacuity: the owner declares 32 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
-    assert len(scope - set(family["tools"])) == 12
+    assert scope - set(family["tools"]) >= {"crm_edit_status", "crm_edit_lost_reason"}
+    assert len(scope - set(family["tools"])) == 19
     assert "crm_change_history" in family["tools"]
     assert "crm_change_history" not in _orchestrator_scope()
 

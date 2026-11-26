@@ -1425,6 +1425,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
 
+    # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
+    #
+    # `org_id=root_project_id` pairs with a comma between pairs. A root is the
+    # project whose direct children are the apps of the org, for example
+    # "Metorite Application". An org may name more than one root. Empty means
+    # off, the default: the Needs attention kind `no_lead` ("App project with
+    # no lead") lists nothing. A pair with no `=`, or a root that is not a
+    # UUID, names nothing. The one reader is
+    # `gateway.routes.projects.needs_attention.app_roots_of`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_needs_attention_r8.py.
+    app_owner_root_orgs: str = ""
+
     # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -3087,6 +3100,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""
+    # SW-27c1 (agent_coordination.md SW-27, task 3938): the organizations where
+    # an outside agent may mark a number of a project sequence `used` or
+    # `released` (`mark_number`). The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, keeps it dark:
+    # the edge hides the tool, and the mark route answers 404 for a signed
+    # agent. `acb_auth.agent_oauth.sequence_marks_allowed` is the one reader.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    sequence_marks_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as

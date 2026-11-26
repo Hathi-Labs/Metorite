@@ -6,7 +6,7 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
-**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is built, 2026-11-25. SW-27c1, SW-27c3 and SW-27d are open.**
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is merged, 2026-11-25 (`c61dc98d6`). SW-27c1 (`mark_number`, task 3938) is built and dark, 2026-11-25. SW-27c3 and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
@@ -28,7 +28,7 @@
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
-**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 **1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
 
@@ -1402,7 +1402,13 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
     5. One MCP tool, `mark_number`, takes `state` `used` or `released`.
     6. Needs attention shows a reserved number whose task is done or cancelled (`filters.task_closed_sql`). It has no flag, and the owner previews it before the merge.
   - **SW-27c2** (task 3894): a merge marks the numbers used. `github_sync.apply_pull_request` is the one write path of the webhook, the poll and the lazy read. It calls `mark_reservations_used` in the transaction of the write, for the tasks whose reference moved INTO `merged`. It runs apart from `github_merge.on_merged`, because that rule skips a task that is already done or that a person runs. **Done when:** a merge marks the task's reserved numbers used, with `used_at`. A close with no merge marks nothing. A number reserved after the merge stays reserved. A released number stays released, and another task's number does not move. A second delivery does not change `used_at`. A task that is already done is still marked. No migration, no flag and no UI. **Scope: an org on the GitHub App.** The token path of TR-1 (`refs.refresh_from_github`) writes the state with its own UPDATE and marks no number. It serves an org with a token row, and every org while `GITHUB_APP_ENABLED` is off. Merge-to-Done (§12) has the same limit. SW-27c3 must not show such a number as a false alarm. The table now has two writers: the reserve route and `github_sync.mark_reservations_used`. The comment of migration 477 names only the first. Fence: `test_sequence_merge_r8.py` (U1 to U6 and U3b, five named mutations) and `test_github_merge_r8.py`. STANDARD, built with Opus, because the seam is shared (`github_integration.md` §12.1).
-  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The MCP tool `mark_number`, and the own-run rule at reserve time. It starts after SW-27c2.
+  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The route `POST /projects/reservations/{reservation_id}/mark` takes `state` `used` or `released`. The MCP tool `mark_number` calls it, and the pair is in `MCP_WRITE_ROUTES`.
+    - Only a signed agent marks, and only the numbers that its own run reserved (`checks.own_run`: the same member, client, connection and session). A person gets 403. A person's release is SW-27c3.
+    - The reserve route checks decision 1 too. A named run must be the caller's own, so a person names no run. This tightens SW-27a.
+    - The same mark twice changes nothing. A number that is already used or released cannot change (409). A released number is burned.
+    - **Dark.** The flag `sequence_marks_orgs` is empty by default. Its one reader is `agent_oauth.sequence_marks_allowed`. Off, the edge hides the tool, and the route answers 404 for a signed agent (`docs/flag_reload.md`).
+    - **Done when:** the own run marks used, and a second mark changes nothing. A released number cannot become used. Another connection, or a number with no run, gets "not yours". A person gets 403. The flag off hides the tool and the route. A number outside the pins, or one that does not exist, is not found. The reserve refuses a run that is not the caller's.
+    - Fence: `test_mcp_edge_reserve_r8.py` (r6, r6b, m1 to m6, four named mutations), `test_project_sequences_r8.py` and `test_mcp_edge_coverage.py`. STANDARD, built with Opus, because it edits `MCP_ROUTES`.
   - **SW-27c3** (task 3939): decisions 2, 4 and 6. The Needs attention kind, and a person's release. Seams: `routes/projects/needs_attention.py`, `needsAttention.ts`, the chat tool `needs_attention`, and `external_agent_access.md` §12.7. SW-26 also plans a kind. It starts after SW-27c1.
   - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
   - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
@@ -1537,6 +1543,7 @@ They keep their own gates.
 - **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test app project with open tasks and no lead shows the row.
 - **Fence.** `test_needs_attention_r8.py` holds the kind. The board moves are advisory, because no test reads production data (R7).
 - **Risk.** HIGH (a grant write). **Gate.** AGENT-SAFE for the code. OWNER-GATE for the lead writes on production (CLAUDE.md §3a rule 3).
+- **Built (item 4, the code part), 2026-11-07.** The Needs attention kind `no_lead` ("App projects with no lead") is in `needs_attention.py`. It lists a direct child of an app root with open tasks and no lead of its own. Only a caller who passes `authority.may_write_grant` gets the row. Its one act is Open project. `authority.no_lead_sql` holds the lead test. The flag `APP_OWNER_ROOT_ORGS` holds `org_id=root_project_id` pairs, and it is empty by default, so the kind is dark. A SIGHUP reload applies a change. Items 1 to 3 (the board moves and the lead writes) and the flag value stay with the owner.
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
