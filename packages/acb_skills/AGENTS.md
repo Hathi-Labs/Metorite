@@ -50,6 +50,7 @@ not write a second copy of that seam. A bare test file name is under
    - A tool with no context fails closed, and never falls back to the cwd or a temp dir. Fence: `test_h201_run_context.py`.
    - In a shared agent's tenant dir, `outputs/` and `inputs/` are the thread's own folders. `agent_paths.is_other_thread_rel` is the ONE rule for another chat's folder. Fence: `test_h227_thread_scope.py`.
    - `agent_paths.is_blocked_rel` is the ONE secret-name rule. Fence: `test_package_artifacts.py`.
+   - `agent_paths.BROKER_AGENT_NAMES` (`user-tool`, `compute`) are the agent names of the broker steps (SBX-4b1, `agent_sandbox.md` §12.4 decision 11). `register_agent` refuses each with 409, because a registered agent with one of them would share the container key of a broker step. Fence: `test_user_tool_build.py`.
 5a. skill_families.py -- the skill-family registry (spec `skills_registry.md`).
    - `SKILL_FAMILIES` must cover EVERY tool that `orchestrator._tool_injection` injects, each in exactly ONE family. The `core` family equals `_CORE_STANDARD_TOOL_NAMES`. Fence: `test_skills_registry.py`.
    - This module never imports the orchestrator or the gateway. `build_catalog()` takes its renderer and tokenizer as parameters.

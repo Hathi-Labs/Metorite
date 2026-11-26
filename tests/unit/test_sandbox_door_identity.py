@@ -487,6 +487,178 @@ def test_a_websocket_style_call_with_no_request_never_runs_the_sibling(monkeypat
     assert state.lookups == []
 
 
+# ── SBX-4b1 done-when 1 and 2: the refusal counter (§12.4 decision 9) ──────
+
+#: The real lookup, before ``kit.arm_door`` puts its stand-in in place.
+_REAL_LOOKUP = sandbox_capabilities.lookup
+
+
+def _real_lookup(monkeypatch, row) -> None:
+    """Run the REAL ``lookup`` over a canned row, so the note of the hash on
+    the open record is the store's own code, not the kit's."""
+    from types import SimpleNamespace
+
+    from acb_auth import agent_tokens
+
+    canned = SimpleNamespace(
+        token_sha256=row.token_sha256, organization_id=row.organization_id,
+        member_email=row.member_email, run_id=row.run_id, thread_id=row.thread_id,
+        app_id=row.app_id, version=row.version, phase=row.phase,
+        read_scopes=list(row.read_scopes), write_scopes=list(row.write_scopes),
+        expires_at=row.expires_at, seconds_left=row.seconds_left)
+
+    async def _run(work):
+        return canned
+
+    monkeypatch.setattr(sandbox_capabilities, "lookup", _REAL_LOOKUP)
+    monkeypatch.setattr(agent_tokens, "_run", _run)
+
+
+def _keys(state, namespace: str) -> dict[str, int]:
+    return {k: v for k, v in state.redis.counts.items() if f":{namespace}:" in k}
+
+
+_REFUSALS = [
+    ("POST", "/crm/leads", None, 403, sandbox_capabilities.READ_ONLY),
+    ("GET", "/crm/export/all.zip", None, 403, sandbox_capabilities.ROUTE_EXCLUDED),
+    ("GET", "/crm/aggregate", None, 404, sandbox_capabilities.ROUTE_UNKNOWN),
+    ("GET", "/crm/leads", ("projects:read",), 403, sandbox_capabilities.SCOPE),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "scopes", "status", "code"), _REFUSALS)
+def test_the_door_counts_each_scope_refusal(
+    monkeypatch, armed_tripwire, method, path, scopes, status, code,
+):
+    """SBX-4b1 done-when 1. Each of the four codes adds 1 to the refusal
+    counter of the token hash, in the org of the row, with the life of the
+    call counter. The line ``sandbox.door.call`` holds no token and no hash.
+
+    Mutation: drop the mark in ``log_door_call``, or the note in ``lookup``,
+    and no key exists -> red."""
+    import structlog
+    from acb_auth.agent_tokens import hash_token
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    cap = kit.capability(read_scopes=scopes) if scopes else kit.capability()
+    state = kit.arm_door(monkeypatch, cap=cap)
+    _real_lookup(monkeypatch, state.row)
+    with structlog.testing.capture_logs() as logs:
+        answer = _send(door, method, path, kit.headers())
+    assert answer.status_code == status
+    assert answer.json() == {"detail": code}
+    refusals = _keys(state, sandbox_capabilities.REFUSALS_NAMESPACE)
+    assert refusals == {
+        f"cc:{kit.ORG_A}:{sandbox_capabilities.REFUSALS_NAMESPACE}:{state.row.token_sha256}": 1}
+    [ttl] = [v for k, v in state.redis.ttls.items() if k in refusals]
+    assert ttl == state.row.seconds_left + sandbox_capabilities.CALLS_GRACE_S
+    assert _keys(state, sandbox_capabilities.CALLS_NAMESPACE) == {}
+    lines = [line for line in logs if line.get("event") == "sandbox.door.call"]
+    assert [line["code"] for line in lines] == [code]
+    for line in logs:
+        text = repr(line)
+        assert kit.RAW not in text and kit.RAW[5:] not in text
+        assert hash_token(kit.RAW) not in text
+
+
+@pytest.mark.parametrize(("path", "query", "status"), [
+    ("/crm/leads", "", 200),
+    ("/crm/leads", "limit=101", 422),
+    ("/crm/leads", "a=1&a=2", 422),
+])
+def test_the_door_counts_no_admitted_call_and_no_422(
+    monkeypatch, armed_tripwire, path, query, status,
+):
+    """SBX-4b1 done-when 1: an admitted call and a 422 of the query count no
+    refusal. ``door_counts`` reads the call count and a refusal count of 0."""
+    import asyncio
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    _real_lookup(monkeypatch, state.row)
+    answer = _send(door, "GET", path, kit.headers(), query=query)
+    assert answer.status_code == status
+    assert _keys(state, sandbox_capabilities.REFUSALS_NAMESPACE) == {}
+    counts = asyncio.run(sandbox_capabilities.door_counts(kit.ORG_A, state.row.token_sha256))
+    assert counts == sandbox_capabilities.DoorCounts(
+        calls=1 if status == 200 else 0, refusals=0)
+
+
+def test_door_counts_reads_the_refusals_of_one_token(monkeypatch, armed_tripwire):
+    """``door_counts`` reads the refusal count in the org of the run binding.
+    A count of another org is not the count of this org."""
+    import asyncio
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    _real_lookup(monkeypatch, state.row)
+    for _ in range(2):
+        assert _send(door, "POST", "/crm/leads", kit.headers()).status_code == 403
+    assert _send(door, "GET", "/crm/leads", kit.headers()).status_code == 200
+    got = asyncio.run(sandbox_capabilities.door_counts(kit.ORG_A, state.row.token_sha256))
+    assert got == sandbox_capabilities.DoorCounts(calls=1, refusals=2)
+    other = asyncio.run(sandbox_capabilities.door_counts(kit.ORG_B, state.row.token_sha256))
+    assert other == sandbox_capabilities.DoorCounts(calls=0, refusals=0)
+    with pytest.raises(ValueError):
+        asyncio.run(sandbox_capabilities.door_counts("not-a-uuid", state.row.token_sha256))
+    state.redis.down = True
+    with pytest.raises(ConnectionError):
+        asyncio.run(sandbox_capabilities.door_counts(kit.ORG_A, state.row.token_sha256))
+
+
+def test_a_refusal_with_no_live_row_counts_nothing(monkeypatch, armed_tripwire):
+    """A 401 has no row, so no hash is on the record and no key exists."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch, flag=kit.ORG_B)
+    _real_lookup(monkeypatch, state.row)
+    assert _send(door, "POST", "/crm/leads", kit.headers()).status_code == 401
+    assert state.redis.counts == {}
+
+
+def test_the_refusal_count_lands_before_the_answer(monkeypatch, armed_tripwire):
+    """SBX-4b1 done-when 2. An outer ASGI layer reads the store at the moment
+    that ``http.response.start`` of the refusal leaves the middleware. The
+    count is already 1 then.
+
+    Mutation: move the INCR after ``send(message)``, or into the ``finally``
+    only, and the snapshot reads 0 -> red."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    _real_lookup(monkeypatch, state.row)
+    seen: list[dict[str, int]] = []
+    inner = door.app
+
+    async def outer(scope, receive, send):
+        async def watch(message):
+            if message.get("type") == "http.response.start":
+                seen.append(_keys(state, sandbox_capabilities.REFUSALS_NAMESPACE))
+            await send(message)
+
+        await inner(scope, receive, watch)
+
+    with TestClient(outer) as client:
+        answer = client.post("/crm/leads", headers=kit.headers())
+    assert answer.status_code == 403
+    assert [sum(s.values()) for s in seen] == [1]
+
+
+def test_a_redis_failure_at_the_refusal_count_keeps_the_refusal(monkeypatch, armed_tripwire):
+    """The residual of decision 9: a Redis failure loses one count, and the
+    refusal still answers. The warning names the error class only."""
+    import structlog
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    _real_lookup(monkeypatch, state.row)
+    state.redis.down = True
+    with structlog.testing.capture_logs() as logs:
+        answer = _send(door, "POST", "/crm/leads", kit.headers())
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": sandbox_capabilities.READ_ONLY}
+    failed = [line for line in logs if line.get("event") == "sandbox.door_refusal_count_failed"]
+    assert [line["error"] for line in failed] == ["ConnectionError"]
+
+
 # ── the digest of the capability store ──────────────────────────────────────
 
 #: SHA-256 of the normalised AST of ``acb_auth/sandbox_capabilities.py``, by
@@ -494,10 +666,15 @@ def test_a_websocket_style_call_with_no_request_never_runs_the_sibling(monkeypat
 #: diff-reviewer review and the independent verification of
 #: ``external_agent_access.md`` §10.1, as the branch-0 digest.
 _STORE_DIGESTS: dict[tuple[int, int], str] = {
-    # SBX-2 (2026-11-26): the first pin. CPython 3.12.12 and 3.13.2 gave it.
-    # The diff-reviewer review and the independent verification are OWED.
-    (3, 12): "4b7b1023e4bf925bf157fd821c792b0f6497410f36243ce218eef35e7de6b382",
-    (3, 13): "35c1dc2efa306098723237a202bda3fc91e58455c277d6114da641ba6dd7db2e",
+    # SBX-2 (2026-11-26): the first pin was 4b7b1023... (3.12) and
+    # 35c1dc2e... (3.13).
+    # SBX-4b1 (task 3986, 2026-11-26): the refusal counter of §12.4 decision
+    # 9 (the note in `lookup`, the mark in `log_door_call`, `count_refusal`
+    # and `door_counts`). CPython 3.12.16 and 3.13.18 gave it. The Opus
+    # diff-reviewer review and the independent verification are OWED, and
+    # the commit that carries them names them.
+    (3, 12): "a226cce603ff9e613d6ce99dc5a1f1eda4f9c6b5e5b6ef786abbc512137bec11",
+    (3, 13): "ac7483eb0fee46d5a277cbe890607e3cea41632287024bd23ed9ac71dd1a8a27",
 }
 
 
