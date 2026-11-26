@@ -1301,7 +1301,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             active={replyMode === "forward"}
           />
           {canMarkDone && email.threadId && (
-            // An icon like its neighbours, so the bar stays one row at 390 px.
+            // An icon like its neighbours. Print moves into the menu below.
             <TBtn
               icon={themedIcon("Check")}
               label="Mark done"
@@ -1416,9 +1416,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
           </div>
 
-          <Divider />
+          {/* With Mark done on, Print moves into the "..." menu, so the bar
+              stays one row at 390 px (task 3995). */}
+          {!canMarkDone && (
+            <>
+              <Divider />
 
-          <TBtn icon={themedIcon("Printer")} label="Print" onClick={() => window.print()} />
+              <TBtn icon={themedIcon("Printer")} label="Print" onClick={() => window.print()} />
+            </>
+          )}
         </div>
 
         {/* More menu */}
@@ -1457,6 +1463,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
                     label: "Download email",
                     run: () => downloadEml(),
                   },
+                  ...(canMarkDone
+                    ? [{ label: "Print", run: () => window.print() }]
+                    : []),
                 ].map((item) => (
                   <button
                     key={item.label}

@@ -1,6 +1,6 @@
 # Email App — Master Plan (single source of truth)
 
-> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built, not merged, with fix round 2. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
+> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built, not merged, with fix round 3. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
 > **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Built, not merged, dark behind `CHAT_DRAFT_CHOICE_ORGS`. A trash of a draft reads Drafts, and the answer names each draft that stays.
 
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
@@ -388,7 +388,9 @@ click-driven path already covers everyone the user cares about.
 **Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
 **Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
 Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
-No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
+Fix round 3 closes F1 to F6 and V1: the lock order, a reopen, a reply before a move back,
+the reminder, and the bar on a phone. No migration. Dark behind `EMAIL_MARK_DONE_ORGS`,
+which is empty (off) by default.
 
 **One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
 A bulk act sends one call for each conversation, as a pair of `account_id` and
@@ -400,11 +402,14 @@ Done does these steps in the request:
 2. It writes status `DONE`, reason `Marked done by you`, and the newest stored
    message. `last_message_at` becomes the **anchor**. The anchor is the newest
    `received_at` of the mail that the automation has seen (D8, below).
-3. It removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local rows.
-   It adds "Done" to the latest inbound message. A draft is no inbound message,
-   so no label goes on a draft (D3). The provider gets the same change in a
-   background job.
+3. It tries to take the message rows of the thread with `NOWAIT`. When it gets
+   them, it removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local
+   rows, and it adds "Done" to the latest inbound message. A draft is no inbound
+   message, so no label goes on a draft (D3). When a writer holds a row, the
+   request does not wait, and the label job of step 5 does this step.
 4. It closes each open task that came from the thread, as before.
+5. A background job of the request sets the local labels when step 3 could not.
+   Then it makes the provider show them.
 
 **The hold.** A thread is held while its status is `DONE`, its reason is the mark,
 and no message from another person is newer than the anchor. The sender decides,
@@ -425,24 +430,74 @@ one definition. While a thread is held:
   ask the hold for each thread (D1, D5). A held proposal or repair becomes
   `SKIPPED`, and History says why.
 
-**The races (fix round 2).** One mechanism closes each race, in three parts:
+**The locks (fix round 3, F1 and F2).** The member's request must not wait for
+provider or model I/O, and it must not deadlock. Fix round 2 failed both. Mark done
+locked the status row and then the message rows. The follow-up scan and the rules
+runner locked a message row, held it across their I/O, and then wrote the status row.
+On a real database the two orders made a deadlock. A writer that held a row also
+made the click wait for its whole block, so its second ask of the hold could not
+see the click.
+
+We weighed three designs:
+
+- **No row across I/O.** No writer holds a row of a thread across its I/O. This
+  needs a rewrite of the actions of the runner, because each action writes its
+  local label in the same block as its provider call.
+- **One lock order, the status row first.** This stops the deadlock. The click
+  still waits for the I/O of each writer that holds the status row.
+- **A lock of the thread for each block.** A transaction lock lasts until the
+  commit, so it is held across the I/O too. A session lock does not end the row
+  locks of the block.
+
+We chose a mix, because no single design meets both rules at a small cost:
+
+1. **The request waits only for the status row.** It takes the message rows with
+   `NOWAIT` (`mark_done._take_thread_rows`). A lock that never waits is in no
+   cycle, so the request cannot deadlock.
+2. **A writer takes the status row last.** With the flag on, the rules runner,
+   Process past and the status backfill run the label reconcile first. Then they
+   write the status row, and the block commits
+   (`replyzero.project_and_reconcile`). The runner stamps its mail before the
+   status row too. The follow-up scan writes each row of a thread in a short
+   block of its own, and no short block is open across I/O. So the request waits
+   at most for one statement and a commit.
+3. **A label job never waits.** It takes the message rows with `NOWAIT`, and it
+   tries again after 0.2, 0.5, 1, 2, 4 and 8 seconds (`SETTLE_DELAYS`). The
+   writer that holds the rows asks the hold after its I/O, so the job then
+   leaves them to that writer and to the sweep.
+
+The approval of a proposal and the repair of a failed run write no status row, so
+they keep their blocks. A click during their I/O does not wait for them now. Their
+second ask then sees it (F5).
+
+A commit ends the `SET LOCAL` tenant of a block. So each short block is a new
+`_tenant_session()` with the tenant of the context, and no block calls `commit()`.
+
+**The races.** One mechanism closes each race, in three parts:
 
 1. **Ask again after the I/O.** After a provider call or a model call, an
    automated writer asks the hold again. When the thread is held now, the writer
-   puts "Done" back at once (`mark_done.recheck_after_io`). The runner, the
+   puts "Done" back at once, and it sends the whole state of the thread to the
+   provider (`mark_done.recheck_after_io`). The runner, its reconcile, the
    follow-up scan, an approval and a repair do this (D1, D5, D6). The scan drafts
    no nudge for a thread that is held now.
 2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
-   finds each held thread with an open label. It puts "Done" back here and at the
-   provider. An import or a folder load gives the learner no delta, so only the
-   sweep heals its label (D9).
-3. **A generation on each label job.** The generation is the `classified_at` of
-   the status row. Each label job carries the generation of the write that made it.
-   A job that finds a newer generation sends the labels of that newer write
-   (`_converge`). So an older Done job cannot undo a move back (D2a).
+   finds each held thread with an open local label. It puts "Done" back here and
+   at the provider. An import or a folder load gives the learner no delta, so only
+   the sweep heals its label (D9).
+3. **The provider shows the committed rows.** A label job reads the committed
+   local labels, sends each message that is not a draft its whole set, and reads
+   them again. While the read differs from what it sent, it sends again
+   (`mark_done.converge`). A writer commits before it sends, so the last read
+   sees each later write. So an older Done job cannot undo a move back (D2a), a
+   reopen or a dismiss (F3).
 
 A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
 move back end it too. A reply that the member sends does not end it.
+
+A reopen with the flag on writes the reason `Reopened by you` (F3). So it is a write
+of the member, as a move back is, and its label job pushes its labels. The chat tool
+`mark_thread_done` with `done=false` sends the same body.
 
 Only the act of the member stores the mark. An automated write that gives those words
 as its reason stores `Auto-classified`, because a model writes that reason over the
@@ -455,8 +510,13 @@ latest inbound message. With `follow_up` it puts "Follow-up" on the latest messa
 that is not a draft. It opens no task that Done closed, and no cleanup label.
 
 The write asks the hold in its own `WHERE`. When new mail or another write changed
-the thread after Done, the answer is 409 and nothing changes (D4). The app then
-drops the undo step and reads the rows again.
+the thread after Done, the answer is 409 and nothing changes (D4). A message of the
+member that is newer than the anchor gives 409 too, because the state of before is
+no longer true (F4). A new draft does not count. The app then drops the undo step
+and reads the rows again.
+
+An automated write on a held row keeps `follow_up_reminded_at` too (F6). It still
+moves `last_message_id`, and before this round that move set a new nudge.
 
 For 10 minutes after a move back, the label job may not have run yet (D2b). In
 that time the sync reads a conversation label that disagrees with the status as
@@ -482,9 +542,10 @@ the app shows these surfaces:
   The toast closes when the step ran, from either control.
 
 On a phone the "Done" button is an icon with the name "Mark done", as Reply and
-Forward are. ⚠️ Open defect: at 390 px the bar still has two rows, and the Print
-icon goes to the second row (capture of 2026-11-26). Email claims the undo scope only
-with the flag on. The flag off leaves the history of another surface alone (D10).
+Forward are. With the flag on, Print moves from the bar of the pane into its "..."
+menu, so the bar has one row at 390 px (V1). The flag off keeps Print in the bar.
+Email claims the undo scope only with the flag on. The flag off leaves the history
+of another surface alone (D10).
 
 **Accepted limits.**
 
@@ -497,15 +558,27 @@ with the flag on. The flag off leaves the history of another surface alone (D10)
 - The self set holds the address of each mailbox of the member. Mail from an alias
   that no mailbox names ends the hold, as mail of another person does.
 - A label that lands between the last ask and the commit of a writer stays until the
-  next sync cycle, when the sweep removes it.
-- The follow-up scan holds its block across its model calls. A Mark done of a
-  thread that the scan wrote in that block waits for the scan to commit.
+  next sync cycle, when the sweep removes it. The sweep reads the local labels only.
+- The request still waits for a writer that has written the status row and has not
+  committed. That writer does no I/O before its commit.
+- Two automated writers on one thread at once can still wait for the I/O of each
+  other, as before this feature. The member's request is not one of them.
+- The follow-up scan asks the hold just before its draft call. A Mark done that
+  lands during that one provider call still gets the nudge draft.
+- A label job sends each message of the thread that is not a draft its whole set of
+  conversation labels. That is one provider call for each message, and Outlook
+  reads the message first.
+- When a writer holds the rows at each try of a label job, the provider shows the
+  old labels until that writer asks again, or until the sweep.
 - A reopen with `done=false` and no `restore` reads the folder of the latest dated
   message, as before. A nudge draft there makes it Needs Reply.
 
 **Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
 the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
-D1 to D9 on a real database. The others are
+D1 to D9 and F1 to F6 on a real database. Its F1 and F2 tests run the real scan and
+the real rules job in one task and the click in another, at three points each. They
+assert that the click answers while the writer waits in its I/O, and that the
+database counted no deadlock. The others are
 `src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
 `src/app/email/components/markDoneMenu.test.ts` (the menu order).
 

@@ -22,7 +22,7 @@ Mutations this file catches (R7):
   ``test_a_mark_done_during_the_follow_up_scan_stays_done``;
 * ``mark_done.heal_held`` does nothing ->
   ``test_the_sweep_heals_a_label_that_came_with_no_delta``;
-* ``push_labels`` ignores the generation ->
+* ``mark_done.converge`` sends once and does not read the labels again ->
   ``test_an_older_done_job_does_not_undo_a_move_back``;
 * ``owned_sql`` leaves out a recent move back ->
   ``test_a_sync_before_the_job_of_a_move_back_keeps_the_move_back``;
@@ -35,7 +35,20 @@ Mutations this file catches (R7):
 * ``approve_execution`` or ``retry_failed_executions`` skips the ask ->
   ``test_approve_and_repair_run_no_rule_in_a_held_thread``;
 * the reconcile puts a label on a draft ->
-  ``test_mark_done_sets_the_status_and_the_labels_in_one_call``.
+  ``test_mark_done_sets_the_status_and_the_labels_in_one_call``;
+* the request waits for a message row, or a writer holds the status row or a
+  message row across its I/O (F1, F2) ->
+  ``test_a_click_during_the_follow_up_scan_never_waits_and_stays_done`` and
+  ``test_a_click_during_the_rules_job_never_waits_and_stays_done``. Each
+  asserts that the database counted no deadlock;
+* a label job sends a diff and stops when another write owns the row (F3) ->
+  ``test_a_later_write_of_the_member_beats_an_older_done_job``;
+* the move back ignores a reply of the member (F4) ->
+  ``test_a_move_back_after_the_members_own_reply_changes_nothing``;
+* the approval or the repair skips its ask after the I/O (F5) ->
+  ``test_a_hold_that_begins_during_an_approval_or_a_repair_ends_done``;
+* an automated write on a held row re-arms the reminder (F6) ->
+  ``test_an_automated_write_on_a_held_row_keeps_the_reminder``.
 
 Run::
 
@@ -376,16 +389,21 @@ async def test_mark_done_sets_the_status_and_the_labels_in_one_call(
 async def test_the_provider_hears_the_removals_after_the_request(
     db, monkeypatch, provider,
 ):
+    """The label job makes the mail server show the committed local labels,
+    one whole set for each message that is not a draft."""
     _flag(monkeypatch, db.org_b)
     box = _account(db.admin_engine, org=db.org_b, owner=ME)
-    thread, _first, sent, _undated, _nudge = _follow_up_thread(db, box)
+    thread, first, sent, undated, nudge = _follow_up_thread(db, box)
+    _seed_remote(db, provider, first, sent, undated, nudge)
 
     await _resolve(db, box, thread)
 
-    pmid = _message(db, sent).provider_message_id
-    removed = {lab for p, _add, rem in provider.calls if p == pmid for lab in rem}
-    assert removed == {"Awaiting Reply", "Follow-up"}
-    assert any("Done" in add for _p, add, _rem in provider.calls)
+    assert provider.remote[_pmid(db, sent)] & _CONVERSATION == set()
+    assert provider.remote[_pmid(db, first)] & _CONVERSATION == {"Done"}
+    _remote_matches_mirror(db, provider, first, sent, undated, nudge)
+    # No label call reaches a draft (D3).
+    drafts = {_pmid(db, undated), _pmid(db, nudge)}
+    assert not [c for c in provider.calls if c[0] in drafts]
 
 
 async def test_an_older_done_job_does_not_undo_a_move_back(
@@ -685,7 +703,9 @@ async def test_a_label_that_a_resync_brings_back_goes_again(
         async with _as_member(db, db.org_b):
             await sync.learn_from_label_change_events(box, [(change, [])])
         assert not _labels(db, sent) & _OPEN, returned
-        assert {lab for _p, _a, rem in provider.calls for lab in rem} == set(returned)
+        removed = {lab for p, _a, rem in provider.calls
+                   if p == _pmid(db, sent) for lab in rem}
+        assert set(returned) <= removed, returned
 
     _set_labels(db, sent, ["Needs Reply"])
     async with _as_member(db, db.org_b):
@@ -1178,3 +1198,382 @@ async def test_inbound_mail_that_waits_for_its_rules_ends_the_hold(
 
         assert _row(db, box, thread).status == status, processed
         assert ("Needs Reply" in _labels(db, unseen)) is (not processed)
+
+
+# ── 6. The locks (fix round 3) ───────────────────────────────────────────────
+#
+# Two connections: the real scan or the real rules job in one task, the click
+# of the member on the SAME thread in another. A fake I/O call stops the writer
+# at a chosen point. The click must answer while the writer still waits in its
+# I/O, so the request waits for no provider call and no model call (F1, F2).
+
+#: The longest time that a click may take while a writer waits in its I/O.
+_CLICK_S = 10
+
+
+def _deadlocks(db) -> int:
+    with db.admin_engine.connect() as c:
+        c.execute(text("SELECT pg_stat_clear_snapshot()"))
+        return int(c.execute(text(
+            "SELECT deadlocks FROM pg_stat_database "
+            "WHERE datname = current_database()")).scalar_one() or 0)
+
+
+async def _no_deadlock(db, before: int, caps: list[dict]) -> None:
+    """No deadlock in the database, and no writer or job failed."""
+    # The server counts a deadlock when the stats of the backend flush.
+    await asyncio.sleep(1.2)
+    assert _deadlocks(db) == before, "the database counted a deadlock"
+    failed = [e for e in caps if e.get("log_level") in ("warning", "error")
+              and (e.get("event", "").endswith("_failed")
+                   or "deadlock" in json.dumps(e, default=str).lower())]
+    assert failed == [], failed
+
+
+def _quick_jobs(monkeypatch) -> None:
+    from gateway.routes.email.automation import mark_done
+
+    monkeypatch.setattr(mark_done, "SETTLE_DELAYS",
+                        (0, 0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 3.2), raising=False)
+
+
+async def _click_during(db, box: str, thread: str, entered: asyncio.Event,
+                        release: asyncio.Event, writer: asyncio.Task, *,
+                        jobs: bool = True) -> dict:
+    """The member clicks Mark done while *writer* waits in its I/O. The click
+    must answer before the I/O ends. Its label job then runs beside the
+    writer, as it does after a real answer."""
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        got, done_jobs = await asyncio.wait_for(
+            _resolve(db, box, thread, run_jobs=False), _CLICK_S)
+        job = asyncio.create_task(done_jobs()) if jobs else None
+    finally:
+        release.set()
+    await asyncio.wait_for(writer, 60)
+    if job is not None:
+        await asyncio.wait_for(job, 60)
+    return got
+
+
+def _scan_threads(db, box: str) -> tuple[str, str, str, str, str]:
+    """Two Awaiting threads in the Follow-up list. The scan reads T first,
+    because its last message is newer. Returns ``(T, inbound of T, sent of T,
+    U, sent of U)``."""
+    t, u = (f"{p}-{uuid.uuid4().hex[:6]}" for p in "tu")
+    inbound = _mail(db, box, t, days_ago=9)
+    sent = _mail(db, box, t, days_ago=7, folder="sent",
+                 categories=["Awaiting Reply"])
+    other = _mail(db, box, u, days_ago=8, folder="sent",
+                  categories=["Awaiting Reply"])
+    _status_row(db, box, t, "AWAITING", sent, reason="r", days_ago=7)
+    _status_row(db, box, u, "AWAITING", other, reason="r", days_ago=8)
+    _follow_up_settings(db, box, auto_draft=True)
+    return t, inbound, sent, u, other
+
+
+def _assert_done(db, provider: _Provider, box: str, thread: str,
+                 *message_ids: str) -> None:
+    """The final state of a thread that the member marked done: the status,
+    the local labels and the mail server."""
+    row = _row(db, box, thread)
+    assert (row.status, row.reason) == ("DONE", "Marked done by you")
+    assert not _all(db, *message_ids) & _OPEN
+    assert "Done" in _all(db, *message_ids)
+    _remote_matches_mirror(db, provider, *message_ids)
+
+
+@pytest.mark.parametrize("timing", ["label", "model", "later_thread"])
+async def test_a_click_during_the_follow_up_scan_never_waits_and_stays_done(
+    db, monkeypatch, provider, timing,
+):
+    """(F1, F2) The real scan, and a Mark done of the thread T in its work:
+    during the Follow-up label call of T, during the model call of the nudge
+    of T, and while the scan waits in the I/O of a later thread U after it
+    wrote T. The click answers at once. No deadlock, and T ends Done here and
+    at the mail server, with no nudge drafted after the click."""
+    import structlog
+    from gateway.routes.email.automation import followups
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    t, inbound, sent, u, other = _scan_threads(db, box)
+    _seed_remote(db, provider, inbound, sent, other)
+    pmid_sent, pmid_other = _pmid(db, sent), _pmid(db, other)
+
+    async def _nudge(email, *_a, **_kw):
+        if timing == "model" and email.get("thread_id") == t:
+            entered.set()
+            await release.wait()
+        return "Any news on this?"
+
+    monkeypatch.setattr(followups, "_agent_draft_reply", _nudge)
+    if timing == "label":
+        provider.pause = (lambda p, add, _r: p == pmid_sent and "Follow-up" in add,
+                          entered, release)
+    elif timing == "later_thread":
+        provider.pause = (lambda p, add, _r: p == pmid_other and "Follow-up" in add,
+                          entered, release)
+    _flag(monkeypatch, db.org_b)
+    _quick_jobs(monkeypatch)
+    before = _deadlocks(db)
+
+    with structlog.testing.capture_logs() as caps:
+        async with _as_member(db, db.org_b):
+            scan = asyncio.create_task(
+                followups._maybe_send_follow_up_reminders(box))
+            await _click_during(db, box, t, entered, release, scan)
+            got = scan.result()
+
+    await _no_deadlock(db, before, caps)
+    assert got["scanned"] == 2, got  # the block of the scan did not fail
+    _assert_done(db, provider, box, t, inbound, sent)
+    # A nudge of T exists only when the scan drafted it before the click.
+    assert provider.drafts == ([t, u] if timing == "later_thread" else [u])
+    assert "Follow-up" in _labels(db, other)
+    assert _row(db, box, u).status == "AWAITING"
+
+
+def _runner_thread(db, box: str) -> tuple[str, str, str]:
+    """A thread whose new inbound mail waits for the rules job. A static rule
+    of Needs Reply matches its sender, with two label actions. Returns
+    ``(thread, sent, inbound)``."""
+    thread = f"r-{uuid.uuid4().hex[:6]}"
+    sent = _mail(db, box, thread, days_ago=3, folder="sent",
+                 categories=["Awaiting Reply"])
+    inbound = _mail(db, box, thread, days_ago=0.001)
+    _status_row(db, box, thread, "AWAITING", sent, reason="r", days_ago=3)
+    # The status was written after the mail arrived, so the mail is under the
+    # anchor of a Done (D8), and the hold begins at the click.
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE email_thread_status SET classified_at = now() "
+            "WHERE account_id = CAST(:a AS uuid) AND thread_id = :t"),
+            {"a": box, "t": thread})
+    with db.admin_engine.begin() as c:
+        rid = str(c.execute(text(
+            "INSERT INTO email_rules (account_id, name, system_type, "
+            "from_pattern, enabled, organization_id) VALUES (CAST(:a AS uuid), "
+            "'Needs Reply', 'REPLY', :f, true, CAST(:o AS uuid)) RETURNING id"),
+            {"a": box, "f": THEM, "o": db.org_b}).scalar_one())
+        for label in ("Needs Reply", "Customer"):
+            c.execute(text(
+                "INSERT INTO email_actions (rule_id, type, label, "
+                "organization_id) VALUES (CAST(:r AS uuid), 'LABEL', :l, "
+                "CAST(:o AS uuid))"), {"r": rid, "l": label, "o": db.org_b})
+    return thread, sent, inbound
+
+
+@pytest.mark.parametrize("timing", ["ask", "action", "reconcile"])
+async def test_a_click_during_the_rules_job_never_waits_and_stays_done(
+    db, monkeypatch, provider, timing,
+):
+    """(F1, F2) The real rules job (Block R, the ask, Block W), and a Mark
+    done of the thread in its work: during the rule-match ask (no block
+    open), during the label call of the rule's action (the block holds the
+    message rows), and during the provider call of the reconcile (before the
+    status row, with the flag on). The click answers at once. No deadlock,
+    and the thread ends Done here and at the mail server."""
+    import structlog
+    from gateway.routes.email.automation import replyzero, runner
+
+    async def _says_reply(*_a, **_kw):
+        return "REPLY", True
+
+    monkeypatch.setattr(replyzero, "_llm_determine_thread_status", _says_reply)
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, sent, inbound = _runner_thread(db, box)
+    _seed_remote(db, provider, sent, inbound)
+    pmid_in = _pmid(db, inbound)
+    if timing == "ask":
+        real_ask = runner.ask_rule_match
+
+        async def _ask(*a, **kw):
+            entered.set()
+            await release.wait()
+            return await real_ask(*a, **kw)
+
+        monkeypatch.setattr(runner, "ask_rule_match", _ask)
+    elif timing == "action":
+        # The second action: the first one already wrote its local label, so
+        # the block holds the row of the inbound mail.
+        provider.pause = (lambda p, add, _r: p == pmid_in and "Customer" in add,
+                          entered, release)
+    else:
+        # The reconcile takes "Awaiting Reply" off the sent mail.
+        pmid_sent = _pmid(db, sent)
+        provider.pause = (
+            lambda p, _a, rem: p == pmid_sent and "Awaiting Reply" in rem,
+            entered, release)
+    _flag(monkeypatch, db.org_b)
+    _quick_jobs(monkeypatch)
+    before = _deadlocks(db)
+
+    with structlog.testing.capture_logs() as caps:
+        async with _as_member(db, db.org_b):
+            job = asyncio.create_task(runner._run_rules_job(box, 50, False, ME))
+            await _click_during(db, box, thread, entered, release, job)
+
+    await _no_deadlock(db, before, caps)
+    _assert_done(db, provider, box, thread, sent, inbound)
+    assert _message(db, inbound).rules_processed_at is not None
+
+
+@pytest.mark.parametrize("body", [{"done": False}, {"dismiss": True}],
+                         ids=["reopen", "dismiss"])
+async def test_a_later_write_of_the_member_beats_an_older_done_job(
+    db, monkeypatch, provider, body,
+):
+    """(F3) The label job of Done is inside its first provider call when the
+    member reopens the thread (the chat tool sends the same body) or
+    dismisses it. The mail server ends with the labels of the later write,
+    and a reopen says so in its reason."""
+    _flag(monkeypatch, db.org_b)
+    _quick_jobs(monkeypatch)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread = f"o-{uuid.uuid4().hex[:6]}"
+    first = _mail(db, box, thread, days_ago=6, categories=["Needs Reply"])
+    _status_row(db, box, thread, "NEEDS_REPLY", first, reason="r", days_ago=6)
+    _seed_remote(db, provider, first)
+    entered, release = asyncio.Event(), asyncio.Event()
+    provider.pause = (lambda _p, add, _r: "Done" in add, entered, release)
+    _done, done_jobs = await _resolve(db, box, thread, run_jobs=False)
+
+    async with _as_member(db, db.org_b):
+        job = asyncio.create_task(done_jobs())
+        try:
+            await asyncio.wait_for(entered.wait(), 30)
+            await asyncio.wait_for(_resolve(db, box, thread, **body), 30)
+        finally:
+            release.set()
+        await asyncio.wait_for(job, 30)
+
+    assert "Done" not in provider.remote[_pmid(db, first)]
+    assert "Done" not in _labels(db, first)
+    _remote_matches_mirror(db, provider, first)
+    row = _row(db, box, thread)
+    want = ("NEEDS_REPLY", "Reopened by you") if "done" in body else (
+        "FYI", "Dismissed by the user")
+    assert (row.status, row.reason) == want
+
+
+async def test_a_move_back_after_the_members_own_reply_changes_nothing(
+    db, monkeypatch, provider,
+):
+    """(F4) The member replied after Done. The state of before is no longer
+    true, so a move back answers 409 and the thread stays held."""
+    from fastapi import HTTPException
+    from gateway.routes.email.automation import mark_done
+
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread = f"m-{uuid.uuid4().hex[:6]}"
+    first = _mail(db, box, thread, days_ago=6, categories=["Needs Reply"])
+    _status_row(db, box, thread, "NEEDS_REPLY", first, reason="r", days_ago=6)
+    done, _ = await _resolve(db, box, thread)
+    assert done["previous"] == {"status": "NEEDS_REPLY", "follow_up": False}
+    _mail(db, box, thread, days_ago=-0.001, folder="sent")
+    # A new draft alone does not count.
+    _mail(db, box, thread, days_ago=-0.002, folder="drafts")
+    before = _row(db, box, thread)
+
+    with pytest.raises(HTTPException) as refused:
+        await _resolve(db, box, thread, done=False, restore=done["previous"])
+
+    assert refused.value.status_code == 409
+    assert tuple(_row(db, box, thread)) == tuple(before)
+    async with _session(db) as s:
+        assert await mark_done.thread_is_held(s, box, thread)
+
+
+async def test_a_move_back_with_only_a_new_draft_still_works(
+    db, monkeypatch, provider,
+):
+    """(F4) The control: a draft is not a reply."""
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread = f"m-{uuid.uuid4().hex[:6]}"
+    first = _mail(db, box, thread, days_ago=6, categories=["Needs Reply"])
+    _status_row(db, box, thread, "NEEDS_REPLY", first, reason="r", days_ago=6)
+    done, _ = await _resolve(db, box, thread)
+    _mail(db, box, thread, days_ago=-0.002, folder="drafts")
+    got, _ = await _resolve(db, box, thread, done=False, restore=done["previous"])
+    assert got["done"] is False
+    assert _row(db, box, thread).status == "NEEDS_REPLY"
+
+
+@pytest.mark.parametrize("path", ["approve", "repair"])
+async def test_a_hold_that_begins_during_an_approval_or_a_repair_ends_done(
+    db, monkeypatch, provider, path,
+):
+    """(F5) The approval of a proposal and the repair of a failed run ask
+    the hold before they run, and the member clicks during their label call.
+    They ask again after it, so the label of the rule does not stay. The
+    label job of the click does not run here, so only that second ask can
+    put "Done" back."""
+    _flag(monkeypatch, db.org_b)
+    from gateway.routes.email.automation import runner
+
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread = f"p-{uuid.uuid4().hex[:6]}"
+    first = _mail(db, box, thread, days_ago=6)
+    _status_row(db, box, thread, "NEEDS_REPLY", first, reason="r", days_ago=6)
+    rid = _rule(db, box, f"NR-{path}", "Needs Reply", None)
+    with db.admin_engine.begin() as c:
+        eid = str(c.execute(text(
+            "INSERT INTO email_executed_rules (account_id, rule_id, "
+            "rule_name, message_id, provider_message_id, thread_id, subject, "
+            "from_address, status, automated, actions_taken, action_errors, "
+            "organization_id) VALUES (CAST(:a AS uuid), CAST(:r AS uuid), "
+            "'x', CAST(:m AS uuid), :p, :t, 's', :f, :st, true, '{}', "
+            "CAST('[]' AS jsonb), CAST(:o AS uuid)) RETURNING id"),
+            {"a": box, "r": rid, "m": first, "p": _pmid(db, first),
+             "t": thread, "f": THEM,
+             "st": "PENDING" if path == "approve" else "FAILED",
+             "o": db.org_b}).scalar_one())
+    entered, release = asyncio.Event(), asyncio.Event()
+    provider.pause = (lambda _p, add, _r: "Needs Reply" in add, entered, release)
+
+    async def _work():
+        if path == "approve":
+            return await runner.approve_execution(
+                eid, user=_user(db.org_b, "feature:email"))
+        return await runner.retry_failed_executions(box, limit=10, user_email=ME)
+
+    async with _as_member(db, db.org_b):
+        work = asyncio.create_task(_work())
+        await _click_during(db, box, thread, entered, release, work, jobs=False)
+
+    row = _row(db, box, thread)
+    assert (row.status, row.reason) == ("DONE", "Marked done by you")
+    assert _labels(db, first) == {"Done"}
+    assert provider.remote[_pmid(db, first)] == {"Done"}
+
+
+async def test_an_automated_write_on_a_held_row_keeps_the_reminder(
+    db, monkeypatch, provider,
+):
+    """(F6) An automated write moves ``last_message_id`` of a held row. It
+    must not re-arm the follow-up reminder, so "Move back" gives no second
+    nudge."""
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    thread, first, *_ = _follow_up_thread(db, box)
+    await _resolve(db, box, thread)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE email_thread_status SET follow_up_reminded_at = now() "
+            "WHERE account_id = CAST(:a AS uuid) AND thread_id = :t"),
+            {"a": box, "t": thread})
+    assert _row(db, box, thread).mid != first
+
+    await _project(db, box, first, "REPLY")
+
+    with db.admin_engine.connect() as c:
+        got = c.execute(text(
+            "SELECT status, last_message_id::text AS mid, follow_up_reminded_at "
+            "FROM email_thread_status WHERE account_id = CAST(:a AS uuid) "
+            "AND thread_id = :t"), {"a": box, "t": thread}).one()
+    assert (got.status, got.mid) == ("DONE", first)
+    assert got.follow_up_reminded_at is not None

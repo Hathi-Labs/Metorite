@@ -1606,9 +1606,8 @@ async def _project_thread_status_for_backfill(
     thread's block, so a failed thread rolls back only its own writes.
     """
     from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-        _reconcile_thread_labels,
         conversation_match_proposes,
-        project_reply_status_from_matches,
+        project_and_reconcile,
     )
     tids = list(latest_by_thread)
     # Threads with mail newer than what this run saw — skip them.
@@ -1631,12 +1630,11 @@ async def _project_thread_status_for_backfill(
             continue
         try:
             async with _tenant_session() as db:
-                keep_label = await project_reply_status_from_matches(
-                    db, account_id, row, matches)
-                # EM-G11c2 (G5): a manual conversation rule proposes.
-                if keep_label and not conversation_match_proposes(matches):
-                    await _reconcile_thread_labels(
-                        db, provider, account_id, tid, keep_label)
+                # EM-G11c2 (G5): a manual conversation rule proposes. Task
+                # 3995: with the flag on, the status row is the last write.
+                await project_and_reconcile(
+                    db, provider, account_id, row, matches,
+                    labels=not conversation_match_proposes(matches))
         except Exception as exc:  # noqa: BLE001 — one thread must not abort the rest
             _log.warning("email.past_project_status_failed",
                          account_id=account_id, thread_id=tid,
@@ -1891,6 +1889,59 @@ def _classify_unavailable(account_id: str, r: Any, exc: Exception) -> None:
                  error=str(exc)[:160])
 
 
+
+async def _project_and_stamp(
+    db: Any, provider: Any, account_id: str, r: Any,
+    matches: list[dict[str, Any]], *, dry_run: bool, projected_threads: set[str],
+) -> None:
+    """The tail of Block W of :func:`_run_rules_job`: the Reply Zero
+    projection of the thread, then the watermark stamp."""
+    # Task 3995 (§6.6 "The locks"): with the flag on, the
+    # status row is the last write of the block, so the stamp
+    # goes first. One commit holds both, so the order inside
+    # the block changes nothing that a reader sees.
+    status_last = mark_done.mark_done_on()
+    if status_last:
+        await _stamp_processed_watermark(
+            db, r.id, provider=provider, dry_run=dry_run)
+    # Reply Zero: project this thread's status from the matched
+    # rule (latest message per thread only). Read-only of the
+    # mailbox — runs even when the provider failed to
+    # authenticate.
+    if not dry_run and r.thread_id \
+            and r.thread_id not in projected_threads:
+        projected_threads.add(r.thread_id)
+        # The savepoint keeps a failed projection from aborting
+        # the row block, so the watermark stamp below still
+        # lands.
+        try:
+            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
+                conversation_match_proposes,
+                project_and_reconcile,
+            )
+            async with _savepoint(db):
+                # Collapse the thread to that one conversation
+                # label, clearing any stale Reply / Awaiting /
+                # FYI / Follow-up left on earlier messages
+                # (inbox-zero mutually-exclusive labels).
+                # EM-G11c2 (G5): a manual conversation rule
+                # proposes, so its label waits too.
+                await project_and_reconcile(
+                    db, provider, account_id, r, matches,
+                    labels=provider is not None
+                    and not conversation_match_proposes(matches))
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("email.project_reply_status_failed",
+                         account_id=account_id,
+                         error=str(exc)[:160])
+    # Stamp the watermark LAST — after Reply Zero projection —
+    # and only when the run could actually act (guarded inside
+    # the helper).
+    if not status_last:
+        await _stamp_processed_watermark(
+            db, r.id, provider=provider, dry_run=dry_run)
+
+
 async def _rules_job_provider(acc: Any) -> tuple[Any, Any]:
     """The provider and the key store of the rules job, or ``(None, None)``
     with no account row. The provider authenticates here, with no session
@@ -2078,46 +2129,9 @@ async def _run_rules_job(
                         account_id=account_id, cold_blocker=cold_blocker,
                         log_no_match=not skipped,
                     )
-                    # Reply Zero: project this thread's status from the matched
-                    # rule (latest message per thread only). Read-only of the
-                    # mailbox — runs even when the provider failed to
-                    # authenticate.
-                    if not dry_run and r.thread_id \
-                            and r.thread_id not in projected_threads:
-                        projected_threads.add(r.thread_id)
-                        # The savepoint keeps a failed projection from aborting
-                        # the row block, so the watermark stamp below still
-                        # lands.
-                        try:
-                            from gateway.routes.email.automation.replyzero import (  # noqa: PLC0415
-                                _reconcile_thread_labels,
-                                conversation_match_proposes,
-                                project_reply_status_from_matches,
-                            )
-                            async with _savepoint(db):
-                                keep_label = await project_reply_status_from_matches(
-                                    db, account_id, r, matches)
-                                # Collapse the thread to that one conversation
-                                # label, clearing any stale Reply / Awaiting /
-                                # FYI / Follow-up left on earlier messages
-                                # (inbox-zero mutually-exclusive labels).
-                                # EM-G11c2 (G5): a manual conversation rule
-                                # proposes, so its label waits too.
-                                if keep_label and provider is not None \
-                                        and not conversation_match_proposes(
-                                            matches):
-                                    await _reconcile_thread_labels(
-                                        db, provider, account_id, r.thread_id,
-                                        keep_label)
-                        except Exception as exc:  # noqa: BLE001
-                            _log.warning("email.project_reply_status_failed",
-                                         account_id=account_id,
-                                         error=str(exc)[:160])
-                    # Stamp the watermark LAST — after Reply Zero projection —
-                    # and only when the run could actually act (guarded inside
-                    # the helper).
-                    await _stamp_processed_watermark(
-                        db, r.id, provider=provider, dry_run=dry_run)
+                    await _project_and_stamp(
+                        db, provider, account_id, r, matches,
+                        dry_run=dry_run, projected_threads=projected_threads)
             except LLMUnavailable as exc:
                 # From Block R, from the ask, or from the resolver at the head
                 # of Block W, before any write. The block rolls back, so the

@@ -139,7 +139,10 @@ async def test_with_the_flag_on_only_an_automated_upsert_holds(monkeypatch) -> N
     assert "held_m" not in await _upsert()
     for kwargs in ({"preserve_done": True}, {"guard": True}):
         sql = await _upsert(**kwargs)
-        assert sql.count("held_m.received_at >") == 4, kwargs
+        # Five kept values: the status, the anchor, the reason, the time and
+        # the reminder (F6).
+        assert sql.count("held_m.received_at >") == 5, kwargs
+        assert "follow_up_reminded_at = CASE WHEN (" in sql, kwargs
         # The message id still moves, so the backfill does not ask again.
         assert "last_message_id = EXCLUDED.last_message_id," in sql
 
@@ -171,6 +174,7 @@ async def test_with_the_flag_off_the_hold_reads_nothing(monkeypatch) -> None:
     assert await mark_done.reclean_returned_labels("a", [(object(), [])]) == set()
     assert await mark_done.heal_held("a") == 0
     assert await mark_done.recheck_after_io(db, None, "a", ["t"]) == set()
+    assert await mark_done.recheck_in_own_block(None, "a", ["t"]) == set()
     assert db.statements == []
 
 
@@ -181,3 +185,5 @@ def test_the_hold_reads_the_sender_and_the_move_back_asks_the_hold() -> None:
     restore = mark_done._restore_sql()
     assert "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid" in restore
     assert mark_done.held_sql("email_thread_status") in restore
+    # F4: a newer message that is not a draft refuses the move back.
+    assert "AND NOT EXISTS (SELECT 1 FROM email_messages newer" in restore

@@ -102,8 +102,14 @@ async def _upsert_thread_status(
             "CASE WHEN email_thread_status.status = 'DONE' "
             "AND EXCLUDED.status <> 'NEEDS_REPLY' THEN 'DONE' "
             "ELSE EXCLUDED.status END")
-    status_expr, at_expr, reason_expr, classified_expr = (
-        mark_done.upsert_expressions(preserve_done or guard, status_expr))
+    # Re-arm the follow-up reminder whenever the thread changes hands.
+    reminder_expr = """CASE
+               WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
+                 OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
+               THEN NULL ELSE email_thread_status.follow_up_reminded_at END"""
+    status_expr, at_expr, reason_expr, classified_expr, reminder_expr = (
+        mark_done.upsert_expressions(
+            preserve_done or guard, status_expr, reminder_expr))
     if preserve_done or guard:
         reason = mark_done.automated_reason(reason)
     params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
@@ -130,10 +136,7 @@ async def _upsert_thread_status(
              last_message_at = {at_expr},
              reason = {reason_expr}, classified_at = {classified_expr},
              -- Re-arm the follow-up reminder whenever the thread changes hands.
-             follow_up_reminded_at = CASE
-               WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
-                 OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
-               THEN NULL ELSE email_thread_status.follow_up_reminded_at END{returning}"""
+             follow_up_reminded_at = {reminder_expr}{returning}"""
     ), params)
     if not guard:
         return True
@@ -388,6 +391,19 @@ async def project_reply_status_from_matches(
     (e.g. "Reply") when a conversation rule matched — so the caller can
     reconcile the mutually-exclusive thread labels — else None. Best-effort;
     caller commits. Only call for inbound mail (sends → ``_mark_thread_replied``)."""
+    plan = await _projection_of(db, account_id, message_row, matches)
+    if plan is None:
+        return None
+    await _write_projection(db, account_id, message_row, plan)
+    return plan[2]
+
+
+async def _projection_of(
+    db: Any, account_id: str, message_row: Any, matches: list[dict[str, Any]],
+) -> tuple[str, str, str | None] | None:
+    """The READ half of :func:`project_reply_status_from_matches`: the
+    ``(status, reason, label)`` that the projection writes, or None for a row
+    with no thread. It writes nothing."""
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
         return None
@@ -406,15 +422,59 @@ async def project_reply_status_from_matches(
     if status in ("NEEDS_REPLY", "AWAITING") and await _thread_is_self_only(
             db, account_id, thread_id):
         chosen, status, reason = "FYI", "FYI", SELF_ONLY_REASON
+    return (status, reason or "Auto-classified",
+            _THREAD_STATUS_MAP[chosen][1] if chosen else None)
+
+
+async def _write_projection(
+    db: Any, account_id: str, message_row: Any,
+    plan: tuple[str, str, str | None],
+) -> None:
+    """The WRITE half of :func:`project_reply_status_from_matches`."""
+    status, reason, _label = plan
     # preserve_done: this is an AUTOMATED inbound re-projection — never let a
     # trailing FYI/notification silently re-open a thread the user marked DONE
     # (only a genuine NEEDS_REPLY re-opens it). A non-empty reason keeps the row
     # from looking like an un-determined blank so the backfill doesn't re-chew it.
     await _upsert_thread_status(
-        db, account_id, thread_id, status, message_row.id,
+        db, account_id, message_row.thread_id, status, message_row.id,
         getattr(message_row, "received_at", None),
-        reason or "Auto-classified", preserve_done=True)
-    return _THREAD_STATUS_MAP[chosen][1] if chosen else None
+        reason, preserve_done=True)
+
+
+async def project_and_reconcile(
+    db: Any, provider: Any, account_id: str, message_row: Any,
+    matches: list[dict[str, Any]], *, labels: bool,
+) -> str | None:
+    """The projection of the status, then the reconcile of the labels when
+    *labels* is true and a conversation rule matched. Returns the label.
+
+    With the flag off this is the order of before. Task 3995, with
+    ``EMAIL_MARK_DONE_ORGS`` on (§6.6 "The locks"): the reconcile, with its
+    provider calls, runs FIRST, and the status row is the LAST write. So the
+    block holds the status row across no I/O and waits for no row after it,
+    and a Mark done waits at most for the commit. The reconcile asks the hold
+    as before, and an automated write keeps a held row, so the result is the
+    same.
+    """
+    if not mark_done.mark_done_on():
+        keep_label = await project_reply_status_from_matches(
+            db, account_id, message_row, matches)
+        if keep_label and labels:
+            await _reconcile_thread_labels(
+                db, provider, account_id, message_row.thread_id, keep_label)
+        return keep_label
+    plan = await _projection_of(db, account_id, message_row, matches)
+    if plan is None:
+        return None
+    if plan[2] and labels:
+        await _reconcile_thread_labels(
+            db, provider, account_id, message_row.thread_id, plan[2])
+        # The hold may have begun during the provider calls of the reconcile.
+        await mark_done.recheck_after_io(
+            db, provider, account_id, [message_row.thread_id])
+    await _write_projection(db, account_id, message_row, plan)
+    return plan[2]
 
 
 # The thread-status judgment is hard to do well on a weak model (it's a
@@ -2851,8 +2911,6 @@ async def _maybe_classify_threads(
                     matches = await resolve_classification(
                         db, account_id, r, plan, asked, provider=provider,
                         status=status)
-                    keep_label = await project_reply_status_from_matches(
-                        db, account_id, r, matches)
                     # Collapse the thread to that ONE conversation label. This
                     # backfill wrote the status row but never reconciled the
                     # labels, so earlier messages kept whatever they were
@@ -2863,10 +2921,12 @@ async def _maybe_classify_threads(
                     # disagree.
                     # EM-G11c2: with Auto-run OFF, the status row is the
                     # only write. No label changes, local or upstream.
-                    if keep_label and writes \
-                            and not conversation_match_proposes(matches):
-                        await _reconcile_thread_labels(
-                            db, provider, account_id, r.thread_id, keep_label)
+                    # Task 3995: with the flag on, the status row is the last
+                    # write (``project_and_reconcile``).
+                    await project_and_reconcile(
+                        db, provider, account_id, r, matches,
+                        labels=bool(writes)
+                        and not conversation_match_proposes(matches))
             except LLMUnavailable as exc:
                 # Classifier down for this one — skip it (this backfill writes
                 # no watermark, so the gap query re-selects it next cycle)
@@ -3040,13 +3100,13 @@ async def resolve_thread(
     mailbox from the model fail closed.
 
     Task 3995, with ``EMAIL_MARK_DONE_ORGS`` on: Done writes a HELD status and
-    returns ``previous``, and ``restore`` moves the thread back
-    (``mark_done.resolve_marked``). With the flag off ``restore`` is ignored."""
+    returns ``previous``, ``restore`` moves the thread back, and a reopen is a
+    write of the member (``mark_done.resolve_marked``). With the flag off
+    ``restore`` is ignored."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
-        if (mark_done.mark_done_on() and not req.dismiss
-                and (req.done or req.restore is not None)):
+        if mark_done.mark_done_on() and not req.dismiss:
             return await mark_done.resolve_marked(
                 db, background, account_id=req.account_id,
                 thread_id=req.thread_id, done=req.done, restore=req.restore,

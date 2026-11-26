@@ -15,13 +15,24 @@ flag on, and the **hold** that makes the choice stay:
 - A new inbound message ends the hold. So does a write of the member (Fix,
   reopen, dismiss, or "Move back").
 
-**One mechanism heals each race** (fix round 2). An automated writer that asked
-the hold before its provider call asks again after it, and puts "Done" back
-(:func:`settle_now`). Each sync cycle sweeps the held threads that still wear
-an open label (:func:`heal_held`). A label job carries the **generation** of
-the write that made it, the ``classified_at`` of the status row. A job that
-finds a newer generation pushes the state of that newer write
-(:func:`_converge`), so an older job cannot win.
+**The locks** (fix round 3, spec §6.6 "The locks"). The member's request
+must not wait for provider or model I/O, and it must not deadlock:
+
+- The request WAITS only for the status row. It takes the message rows of the
+  thread with ``NOWAIT`` (:func:`_take_thread_rows`). When a writer holds one,
+  the request leaves the local labels to its label job.
+- An automated writer takes the status row LAST in its block, after each
+  message row and each I/O, or in a block of its own. So the request waits at
+  most for one statement and a commit.
+- A label job takes the message rows with ``NOWAIT`` too, and tries again
+  later. A lock that never waits is in no cycle.
+
+**One mechanism heals each race.** An automated writer that asked the hold
+before its I/O asks again after it, and puts "Done" back
+(:func:`recheck_after_io`). Each sync cycle sweeps the held threads that still
+wear an open label (:func:`heal_held`). A label job makes the provider show
+the committed local labels, then reads them again, and sends again while they
+changed (:func:`converge`). So no older job wins.
 
 ⚠️ ``replyzero`` imports this module, so this module imports ``replyzero``
 inside its functions only.
@@ -29,10 +40,10 @@ inside its functions only.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -59,8 +70,12 @@ RESTORED_REASON = "Moved back by you"
 #: put the labels of the move back again reads the Follow-up choice here.
 RESTORED_FOLLOW_UP_REASON = "Moved back to Follow-up by you"
 
+#: The reason after a reopen (``done=false`` with no ``restore``). A reopen is
+#: a write of the member, as a move back is, so its labels are the member's.
+REOPENED_REASON = "Reopened by you"
+
 #: The reasons of a write of the member through this module.
-_RESTORED_REASONS = (RESTORED_REASON, RESTORED_FOLLOW_UP_REASON)
+_RESTORED_REASONS = (RESTORED_REASON, RESTORED_FOLLOW_UP_REASON, REOPENED_REASON)
 _MEMBER_REASONS = (MANUAL_DONE_REASON, *_RESTORED_REASONS)
 
 #: How long after a move back the sync reads a label that disagrees with the
@@ -97,6 +112,17 @@ _NOT_DONE_LABELS = tuple(lab for lab in _CONVERSATION_LABELS if lab != "Done")
 
 #: How many held threads one sweep puts right.
 _HEAL_LIMIT = 50
+
+#: The waits, in seconds, of a label job of the member before each try to take
+#: the message rows. A writer that holds them asks the hold after its I/O, so
+#: after the last try the job leaves the rows to that writer and the sweep.
+SETTLE_DELAYS: tuple[float, ...] = (0, 0.2, 0.5, 1, 2, 4, 8)
+
+#: The reads of :func:`converge`: one push, and the reads that check it.
+_CONVERGE_ROUNDS = 3
+
+#: SQLSTATE ``lock_not_available``: a ``NOWAIT`` found the row locked.
+_LOCK_NOT_AVAILABLE = "55P03"
 
 
 # ── The flag ─────────────────────────────────────────────────────────────────
@@ -211,26 +237,31 @@ async def held_label(
 
 
 def upsert_expressions(
-    automated: bool, status_expr: str,
-) -> tuple[str, str, str, str]:
+    automated: bool, status_expr: str, reminder_expr: str,
+) -> tuple[str, str, str, str, str]:
     """The SET expressions of the status upsert for ``status``,
-    ``last_message_at``, ``reason`` and ``classified_at``.
+    ``last_message_at``, ``reason``, ``classified_at`` and
+    ``follow_up_reminded_at``. *reminder_expr* is the plain expression of the
+    last one.
 
-    An automated write keeps all four values of a held row. It still moves
+    An automated write keeps all five values of a held row. It still moves
     ``last_message_id``, so the backfill does not select the thread again.
-    With the flag off, or for a write of the member, the expressions are the
-    plain ones, so the statement is the statement of before.
+    The reminder stays too, so that move does not re-arm a nudge (F6). With
+    the flag off, or for a write of the member, the expressions are the plain
+    ones, so the statement is the statement of before.
     """
-    plain = (status_expr, "EXCLUDED.last_message_at", "EXCLUDED.reason", "now()")
+    plain = (status_expr, "EXCLUDED.last_message_at", "EXCLUDED.reason", "now()",
+             reminder_expr)
     if not (automated and mark_done_on()):
         return plain
     held = held_sql("email_thread_status")
-    status, at, reason, classified = (
+    status, at, reason, classified, reminded = (
         f"CASE WHEN {held} THEN email_thread_status.{column} ELSE {new} END"
         for column, new in zip(
-            ("status", "last_message_at", "reason", "classified_at"), plain,
+            ("status", "last_message_at", "reason", "classified_at",
+             "follow_up_reminded_at"), plain,
             strict=True))
-    return status, at, reason, classified
+    return status, at, reason, classified, reminded
 
 
 def automated_reason(reason: str) -> str:
@@ -322,60 +353,138 @@ async def settle_labels(
     return changes
 
 
-async def _provider_ids(
-    db: Any, account_id: str, message_ids: list[str],
-) -> dict[str, str]:
+# ── Taking the rows of a thread ──────────────────────────────────────────────
+
+def _lock_busy(err: BaseException) -> bool:
+    """True when *err*, or a driver error under it, is SQLSTATE 55P03.
+    SQLAlchemy wraps the driver error, so the check walks ``orig`` and
+    ``__cause__``."""
+    seen: BaseException | None = err
+    for _ in range(5):
+        if seen is None:
+            return False
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if code == _LOCK_NOT_AVAILABLE:
+            return True
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return False
+
+
+async def _take_thread_rows(db: Any, account_id: str, thread_id: str) -> bool:
+    """Lock each message row of the thread for this block, or none of them.
+
+    ``NOWAIT``: when another block holds one of the rows, this returns False
+    at once, and the block goes on with no lock. A lock that never waits is in
+    no cycle, so the member's request and the label jobs cannot deadlock with
+    a writer (§6.6 "The locks"). Inside a savepoint, so a refusal does not
+    abort the block.
+    """
+    try:
+        async with _savepoint(db):
+            await db.execute(text(
+                "SELECT id FROM email_messages "
+                "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid "
+                "ORDER BY id FOR UPDATE NOWAIT"
+            ), {"aid": account_id, "tid": thread_id})
+    except Exception as exc:
+        if _lock_busy(exc):
+            return False
+        raise
+    return True
+
+
+# ── The provider: it shows the local labels ──────────────────────────────────
+
+async def _mirror_state(
+    db: Any, account_id: str, thread_id: str,
+) -> dict[str, frozenset[str]]:
+    """The conversation labels of each message of the thread, by provider id,
+    as *db* reads them. A draft is left out: no conversation label goes on a
+    draft (D3), and the provider gives a draft a new id at each save."""
     rows = (await db.execute(text(
-        "SELECT id, provider_message_id FROM email_messages "
-        "WHERE account_id = CAST(:aid AS uuid) "
-        "AND id = ANY(CAST(:ids AS uuid[]))"
-    ), {"aid": account_id, "ids": message_ids})).fetchall()
-    return {str(r.id): r.provider_message_id for r in rows}
+        "SELECT provider_message_id, categories FROM email_messages "
+        "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid "
+        "AND provider_message_id IS NOT NULL "
+        "AND LOWER(COALESCE(folder, '')) <> 'drafts'"
+    ), {"aid": account_id, "tid": thread_id})).fetchall()
+    return {r.provider_message_id: frozenset(
+        lab for lab in (r.categories or []) if lab in _CONVERSATION_LABELS)
+        for r in rows}
 
 
-async def _send(provider: Any, pmids: dict[str, str], changes: list[LabelChange]) -> None:
-    for change in changes:
-        pmid = pmids.get(change.message_id)
-        if not pmid:
-            continue
-        # One bad message must not stop the rest.
+async def _push_state(provider: Any, state: dict[str, frozenset[str]]) -> None:
+    """Send each message its whole set of conversation labels: the ones it
+    has, and the removal of the rest. Best effort for each message."""
+    for pmid, labels in sorted(state.items()):
         with contextlib.suppress(Exception):
             await provider.set_labels(
-                pmid, add=list(change.add), remove=list(change.remove))
+                pmid, add=sorted(labels),
+                remove=[lab for lab in _CONVERSATION_LABELS if lab not in labels])
 
 
-async def settle_now(
-    db: Any, provider: Any, account_id: str, thread_id: str,
-) -> None:
-    """Put "Done" back on a held thread inside the caller's block, and tell
-    *provider* at once. An automated writer calls this when the hold began
-    while it did provider I/O. *provider* may be None (the mirror only)."""
-    changes = await settle_labels(db, account_id, thread_id, "Done")
-    if provider is None or not changes:
-        return
-    pmids = await _provider_ids(db, account_id, [c.message_id for c in changes])
-    await _send(provider, pmids, changes)
+async def converge(provider: Any, account_id: str, thread_id: str) -> None:
+    """Make the provider show the COMMITTED local labels of the thread.
 
+    It reads them in a block of its own, sends them with no block open, and
+    reads them again. While the read differs from what it sent, it sends
+    again, up to :data:`_CONVERGE_ROUNDS` reads. A writer that changed the
+    labels committed before it sent them, so the last read sees each such
+    change. So an older job never leaves its labels at the provider over the
+    labels of a newer write, of the member or of a writer (D2a, F3).
+    """
+    sent: dict[str, frozenset[str]] | None = None
+    for _ in range(_CONVERGE_ROUNDS):
+        async with _tenant_session() as db:
+            state = await _mirror_state(db, account_id, thread_id)
+        if state == sent:
+            return
+        await _push_state(provider, state)
+        sent = state
+
+
+# ── The writers: ask the hold again after the I/O ────────────────────────────
 
 async def recheck_after_io(
     db: Any, provider: Any, account_id: str, thread_ids: list[str],
 ) -> set[str]:
-    """Ask the hold again after provider I/O, and settle each thread that is
-    held now. Returns those threads. No read with the flag off."""
+    """Ask the hold again after provider or model I/O, inside the writer's
+    block, and settle each thread that is held now: "Done" goes back in the
+    block, and *provider* gets the whole state of the thread at once.
+    *provider* may be None (the local labels only). Returns those threads.
+    No read with the flag off.
+
+    The member's request does not wait for the rows of a writer, so it
+    commits during the I/O, and this ask sees it (F2)."""
     held = await held_threads(db, account_id, sorted({t for t in thread_ids if t}))
     for thread_id in sorted(held):
-        await settle_now(db, provider, account_id, thread_id)
+        await settle_labels(db, account_id, thread_id, "Done")
+        if provider is not None:
+            await _push_state(
+                provider, await _mirror_state(db, account_id, thread_id))
     return held
 
 
-# ── The label jobs and their generation ──────────────────────────────────────
+async def recheck_in_own_block(
+    provider: Any, account_id: str, thread_ids: list[str],
+) -> set[str]:
+    """:func:`recheck_after_io` for a writer that holds no row: each held
+    thread settles in a short block of its own, and the provider hears the
+    committed state with no block open (:func:`converge`). The follow-up scan
+    uses this with the flag on. No block with the flag off."""
+    ids = sorted({t for t in thread_ids if t})
+    if not ids or not mark_done_on():
+        return set()
+    async with _tenant_session() as db:
+        held = await held_threads(db, account_id, ids)
+    for thread_id in sorted(held):
+        async with _tenant_session() as db:
+            await settle_labels(db, account_id, thread_id, "Done")
+        if provider is not None:
+            await converge(provider, account_id, thread_id)
+    return held
 
-async def _generation(db: Any, account_id: str, thread_id: str) -> datetime | None:
-    return (await db.execute(text(
-        "SELECT classified_at FROM email_thread_status "
-        "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid"
-    ), {"aid": account_id, "tid": thread_id})).scalar()
 
+# ── The label job of the member ──────────────────────────────────────────────
 
 async def _provider_for(account_id: str) -> tuple[Any, Any] | None:
     async with _tenant_session() as db:
@@ -400,7 +509,7 @@ async def _own_labels(
     db: Any, account_id: str, thread_id: str,
 ) -> tuple[str, bool] | None:
     """The label and the Follow-up choice of a row that the member owns, or
-    None when an automated writer wrote the row last."""
+    None when another write wrote the row last."""
     row = (await db.execute(text(
         "SELECT s.status, s.reason FROM email_thread_status s "
         "WHERE s.account_id = CAST(:aid AS uuid) AND s.thread_id = :tid "
@@ -416,61 +525,51 @@ async def _own_labels(
     return label, row.reason == RESTORED_FOLLOW_UP_REASON
 
 
-async def _converge(provider: Any, account_id: str, thread_id: str) -> None:
-    """Make the provider show the labels of the newest write of the member.
-
-    It settles the mirror first, then sends each message its whole set of
-    conversation labels, because an older job may have left any of them. It
-    does nothing when an automated writer wrote the row last: that writer
-    sends its own labels.
-    """
-    async with _tenant_session() as db:
-        own = await _own_labels(db, account_id, thread_id)
-        if own is None:
-            return
-        await settle_labels(db, account_id, thread_id, own[0], follow_up=own[1])
-        rows = (await db.execute(text(
-            "SELECT provider_message_id, categories FROM email_messages "
-            "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid"
-        ), {"aid": account_id, "tid": thread_id})).fetchall()
-    for r in rows:
-        labels = set(r.categories or [])
-        add = [lab for lab in _CONVERSATION_LABELS if lab in labels]
-        remove = [lab for lab in _CONVERSATION_LABELS if lab not in labels]
-        with contextlib.suppress(Exception):
-            await provider.set_labels(r.provider_message_id, add=add, remove=remove)
+async def _settle_mirror(
+    account_id: str, thread_id: str, delays: tuple[float, ...],
+) -> bool:
+    """Put the labels of the member's last write on the local rows, in a
+    short block. It takes the rows with ``NOWAIT``, and waits *delays* between
+    tries. True when the rows are right, or when another write owns them now.
+    False when a writer held the rows at each try: that writer asks the hold
+    after its I/O, and the sweep heals what is left."""
+    for delay in delays:
+        if delay:
+            await asyncio.sleep(delay)
+        async with _tenant_session() as db:
+            own = await _own_labels(db, account_id, thread_id)
+            if own is None:
+                return True
+            if not await _take_thread_rows(db, account_id, thread_id):
+                continue
+            await settle_labels(db, account_id, thread_id, own[0], follow_up=own[1])
+            return True
+    _log.info("email.mark_done_rows_busy", account_id=account_id)
+    return False
 
 
 async def push_labels(
-    account_id: str, thread_id: str, changes: list[LabelChange],
-    generation: datetime | None,
+    account_id: str, thread_id: str,
+    delays: tuple[float, ...] | None = None,
 ) -> None:
-    """Background: apply *changes* at the provider. Best effort.
+    """Background, after a write of the member: the local labels, then the
+    provider. Best effort.
 
-    *generation* is the ``classified_at`` of the write that made the changes.
-    A newer write of the status owns the labels. So a job that finds a newer
-    generation, before or after its calls, pushes the state of that write
-    instead (:func:`_converge`). The provider calls run with no session open.
-    It reads each provider message id again, because Outlook gives a message
-    a new id on a move.
+    It settles the local rows to the member's LAST write, not to the write
+    that queued it (:func:`_settle_mirror`). Then the provider shows the
+    committed rows (:func:`converge`). The provider calls run with no block
+    open. *delays* defaults to :data:`SETTLE_DELAYS`.
     """
-    if not changes:
-        return
     try:
+        settled = await _settle_mirror(
+            account_id, thread_id, SETTLE_DELAYS if delays is None else delays)
+        if not settled:
+            return
         got = await _provider_for(account_id)
         if got is None:
             return
         provider, store = got
-        async with _tenant_session() as db:
-            now = await _generation(db, account_id, thread_id)
-            pmids = await _provider_ids(
-                db, account_id, [c.message_id for c in changes])
-        if now == generation:
-            await _send(provider, pmids, changes)
-            async with _tenant_session() as db:
-                now = await _generation(db, account_id, thread_id)
-        if now != generation:
-            await _converge(provider, account_id, thread_id)
+        await converge(provider, account_id, thread_id)
         if provider.credentials_dirty():
             async with _tenant_session() as db:
                 await _persist_rotated_creds(db, store, account_id, provider)
@@ -483,7 +582,7 @@ async def push_labels(
 
 async def owned_among(account_id: str, thread_ids: list[str]) -> set[str]:
     """The threads of *thread_ids* whose labels the member owns now: each held
-    one, and each one that a move back wrote inside
+    one, and each one that a move back or a reopen wrote inside
     :data:`PENDING_PUSH_WINDOW`. A block of its own. No block with the flag off.
     """
     ids = [t for t in thread_ids if t]
@@ -500,19 +599,9 @@ async def owned_among(account_id: str, thread_ids: list[str]) -> set[str]:
 
 async def settle_owned(account_id: str, thread_id: str) -> None:
     """Put the labels of the member's last write back on the thread, here and
-    at the provider. Best effort."""
-    try:
-        async with _tenant_session() as db:
-            own = await _own_labels(db, account_id, thread_id)
-            if own is None:
-                return
-            changes = await settle_labels(
-                db, account_id, thread_id, own[0], follow_up=own[1])
-            generation = await _generation(db, account_id, thread_id)
-        await push_labels(account_id, thread_id, changes, generation)
-    except Exception as exc:
-        _log.warning("email.mark_done_settle_failed",
-                     account_id=account_id, error=str(exc)[:160])
+    at the provider. One try: the sync does not wait for a busy row, and the
+    next cycle tries again. Best effort."""
+    await push_labels(account_id, thread_id, delays=(0,))
 
 
 async def reclean_returned_labels(account_id: str, changes: list) -> set[str]:
@@ -631,7 +720,9 @@ def _done_upsert_sql() -> str:
 def _restore_sql() -> str:
     """The write of a move back. Its WHERE asks the hold in the write itself,
     so a move back of a thread that new mail or another write changed since
-    Done finds no row (D4)."""
+    Done finds no row (D4). A message of the member that is newer than the
+    anchor finds no row either (F4): the member replied after Done, so the
+    state of before is no longer true. A draft does not count."""
     return f"""
     UPDATE email_thread_status SET
         status = :st,
@@ -643,6 +734,23 @@ def _restore_sql() -> str:
         classified_at = now()
     WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid
       AND {held_sql('email_thread_status')}
+      AND NOT EXISTS (SELECT 1 FROM email_messages newer
+                       WHERE newer.account_id = email_thread_status.account_id
+                         AND newer.thread_id = email_thread_status.thread_id
+                         AND LOWER(COALESCE(newer.folder, '')) <> 'drafts'
+                         AND newer.received_at > COALESCE(
+                             email_thread_status.last_message_at,
+                             CAST('-infinity' AS timestamptz)))
+    RETURNING classified_at
+"""
+
+
+#: The write of a reopen with the flag on. The status is the one of before
+#: (``replyzero.resolve_thread``). The reason makes it a write of the member.
+_REOPEN_SQL = """
+    UPDATE email_thread_status SET status = :st, reason = :reason,
+        classified_at = now()
+    WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid
     RETURNING classified_at
 """
 
@@ -684,23 +792,39 @@ class ThreadRestore(BaseModel):
     follow_up: bool = False
 
 
+async def _settle_in_request(
+    db: Any, account_id: str, thread_id: str, keep_label: str,
+    *, follow_up: bool = False,
+) -> None:
+    """The local labels, inside the request, when no writer holds a row of
+    the thread. When one does, the request does not wait: the label job
+    settles them after the writer commits (:func:`push_labels`)."""
+    if await _take_thread_rows(db, account_id, thread_id):
+        await settle_labels(db, account_id, thread_id, keep_label,
+                            follow_up=follow_up)
+
+
 async def resolve_marked(
     db: Any, background: BackgroundTasks, *, account_id: str, thread_id: str,
     done: bool, restore: ThreadRestore | None, user_email: str,
 ) -> dict[str, Any]:
-    """``POST /email/reply-zero/resolve`` with the flag on, for Mark done and
-    for "Move back". The route checked the member and the thread first.
+    """``POST /email/reply-zero/resolve`` with the flag on, for Mark done,
+    "Move back" and a reopen. The route checked the member and the thread
+    first.
 
-    The status and the local labels change inside the request, so the list and
-    its counts are right when the answer arrives. A move back of a thread that
-    is no longer held answers 409 and writes nothing.
+    The request waits only for the status row (§6.6 "The locks"). It writes
+    the status. Then it takes the message rows with ``NOWAIT``, and when it
+    gets them it sets the local labels, so the list is right when the answer
+    arrives. When a writer holds a row, the label job sets them after that
+    writer commits. Either way the provider hears in the label job. A move
+    back of a thread that is no longer held answers 409 and writes nothing.
     """
     params = {"aid": account_id, "tid": thread_id}
     if done:
         previous = await _previous_state(db, account_id, thread_id)
-        generation = (await db.execute(text(_done_upsert_sql()), {
-            **params, "reason": MANUAL_DONE_REASON})).scalar()
-        changes = await settle_labels(db, account_id, thread_id, "Done")
+        await db.execute(text(_done_upsert_sql()), {
+            **params, "reason": MANUAL_DONE_REASON})
+        await _settle_in_request(db, account_id, thread_id, "Done")
         # Done closes each open task of the thread, as before. It runs last and
         # in a savepoint, so its failure cannot undo the writes above.
         from gateway.routes.tasks.email_link import propagate_thread_done_to_tasks
@@ -709,20 +833,52 @@ async def resolve_marked(
             async with _savepoint(db):
                 await propagate_thread_done_to_tasks(
                     db, user_email, account_id, thread_id)
-        background.add_task(push_labels, account_id, thread_id, changes, generation)
+        background.add_task(push_labels, account_id, thread_id)
         return {"ok": True, "thread_id": thread_id, "done": True,
                 "previous": previous}
     if restore is None:
-        raise ValueError("a move back needs the state to restore")
+        return await _reopen(db, background, account_id, thread_id)
     reason = RESTORED_FOLLOW_UP_REASON if restore.follow_up else RESTORED_REASON
-    generation = (await db.execute(text(_restore_sql()), {
+    written = (await db.execute(text(_restore_sql()), {
         **params, "st": restore.status, "reason": reason})).scalar()
-    if generation is None:
+    if written is None:
         raise HTTPException(status_code=409, detail=MOVED_ON_DETAIL)
-    changes = await settle_labels(
+    await _settle_in_request(
         db, account_id, thread_id, _RESTORE_LABELS[restore.status],
         follow_up=restore.follow_up)
-    background.add_task(push_labels, account_id, thread_id, changes, generation)
+    background.add_task(push_labels, account_id, thread_id)
+    return {"ok": True, "thread_id": thread_id, "done": False}
+
+
+async def _reopen(
+    db: Any, background: BackgroundTasks, account_id: str, thread_id: str,
+) -> dict[str, Any]:
+    """A reopen (``done=false`` with no ``restore``) with the flag on (F3).
+
+    The status is the one of before: Awaiting when the latest dated message
+    is in Sent, else Needs Reply. The reason :data:`REOPENED_REASON` makes it
+    a write of the member, so the label job pushes its labels over each older
+    job, and the hold ends. With no status row, nothing is written, and the
+    labels follow the reconcile of before.
+    """
+    from gateway.routes.email.automation.replyzero import _reconcile_labels_bg
+
+    latest = (await db.execute(text(
+        "SELECT folder FROM email_messages "
+        "WHERE account_id = CAST(:aid AS uuid) AND thread_id = :tid "
+        "ORDER BY received_at DESC NULLS LAST LIMIT 1"
+    ), {"aid": account_id, "tid": thread_id})).fetchone()
+    status = "AWAITING" if (
+        latest and (latest.folder or "").lower() == "sent") else "NEEDS_REPLY"
+    written = (await db.execute(text(_REOPEN_SQL), {
+        "aid": account_id, "tid": thread_id, "st": status,
+        "reason": REOPENED_REASON})).scalar()
+    if written is None:
+        background.add_task(
+            _reconcile_labels_bg, account_id, thread_id, _RESTORE_LABELS[status])
+        return {"ok": True, "thread_id": thread_id, "done": False}
+    await _settle_in_request(db, account_id, thread_id, _RESTORE_LABELS[status])
+    background.add_task(push_labels, account_id, thread_id)
     return {"ok": True, "thread_id": thread_id, "done": False}
 
 
