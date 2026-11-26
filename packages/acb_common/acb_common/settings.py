@@ -1472,6 +1472,18 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agent_map_r8.py.
     agent_map_orgs: str = ""
 
+    # ── Agents: the lenses of the Agents view (WS-MCP AMR-1, §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the Agents canvas of Projects draws the Board, Graph and
+    # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
+    # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
+    # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_auth_me_shell_r8.py.
+    agent_lenses_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

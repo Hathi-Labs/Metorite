@@ -388,6 +388,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-MCP SW-102: AGENT_MAP_ORGS opens the map read of the agent runs for
     # an org. The map reads the runs of the org, so only the owner writes it.
     "AGENT_MAP_ORGS",
+    # WS-MCP AMR-1: AGENT_LENSES_ORGS shows the new Agents view to the members
+    # of an org. The owner previews it first, so only the owner writes it.
+    "AGENT_LENSES_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.

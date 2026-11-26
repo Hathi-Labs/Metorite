@@ -12,6 +12,8 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.**
+
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
 **SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
@@ -872,6 +874,26 @@ of agent graph view as well, in addition to the timeline, list, board, etc.
 - **A link that another person opens.** The Remote Control docs name no way for another account to open a local session. A cloud session of a Team or Enterprise plan with Team visibility opens for teammates. For a local session, the steer of SW-64 is the way in for another person.
 - **The model of a sub-agent.** The hook input has no model. A child run reads "Not reported" unless its agent definition names a model.
 - **The tasks of SW-64 and SW-86.** A board search on 2026-11-19 did not find tasks 1910 and 1931. Read task 3378 before rung M5 starts, and file new tasks if the slices are gone.
+
+#### 3.12.8 The lenses and the phone view (AMR-1 to AMR-3, 2026-11-26)
+
+The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler phone view. The new view replaces the map of SW-103 on the Agents canvas of a project. The lens of Agents at work keeps that map. The flag `AGENT_LENSES_ORGS` keeps the new view dark.
+
+- **One toolbar.** Four state filters show their counts: Needs you, Working, Waiting and Idle. A person filter and a find box follow. One switch selects Board, Graph or List.
+- **Idle starts off.** The idle sessions of a group fold into one line.
+- **The Graph.** It has four columns: person, orchestrator, session, and the wait of the session. This clarifies the tree of §3.12.2 for this view.
+- **A session node.** It is the task card of the board, with the agent edge of `lib/agentCardLook.ts`.
+- **The lines.** A dispatch line is neutral. A line to "You" takes the warning colour. A line to another wait takes the accent colour.
+- **The layout.** A pure function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
+- **No invented line.** "You" holds the sessions of the viewer that read `waiting_on_person`. Another wait comes from `waiting_on` and `waiting_until` of a listed run. AMR-1 adds those two fields to the map read.
+- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting, and its line goes to "A person". The `waiting_on_person` state is the fact of that line.
+- **A find.** The Graph also draws the orchestrator of a match, as context. Board and List show the matches only.
+- **A wait with no field.** It draws no line. The read has no field for one session that needs another session, so the view draws no such line.
+- **Details.** A click opens a dock at the right. A narrow window uses the shared `Modal`.
+- **The acts.** The view only reads (rule 7 of §3.12.7). The details show the run panel (`AgentRunPanel`) of one task. That panel has no Steer control before SW-86, so a member writes to an agent in its reply box.
+- **The phone, 760 pixels and under.** It shows three counts, then the questions that wait on the member, then the people. The oldest question comes first.
+- **One level for each screen.** A person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
+- **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The graph does not draw on a phone.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
@@ -2227,6 +2249,30 @@ They keep their own gates.
 - **Risk.** HIGH (visibility across the organization, as SW-102). **Gate.** AGENT-SAFE, dark. **Depends on.** SW-102.
 - **Built and dark, 2026-11-21.** The tool sends `shape=map` to the overview route under the session of the member. The pair `GET /projects/agents/overview` joins `MCP_ROUTES`, and the route is the one route of SW-102. The edge does not read `AGENT_MAP_ORGS`. The gateway gives one 404 for a flag that is off and for a hidden project, so the tool gives one text for both (`tools.TEXT_MAP_NOT_FOUND`). With the runs flag off, the tool gives the empty map, as the read of the UI does. A line keeps `from` and `to` only, each a node id, and the edge drops every other key. The cut at 300 lines sets `truncated` too. The tip `prompts.MAP_RULE` is held back: no prompt shows it yet. The edge does not read `AGENT_MAP_ORGS`, so it cannot show the tip only where the map works. **The slice that flips `AGENT_MAP_ORGS` adds the tip to the work step of `work_on_task`**, and changes `TestTheMapTip`.
 
+#### AMR-1 · The Graph lens of the Agents view
+
+- **Metorite task.** To make (the board was not reachable on 2026-11-26). Epic 321.
+- **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
+- **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
+- **Fence.** `lib/agentLenses.test.ts`, `lib/agentGraph.test.ts`, `components/AgentLenses.test.ts`, `tests/unit/test_agent_map_r8.py` and `tests/unit/test_auth_me_shell.py`.
+- **Risk.** STANDARD UI, with a change to the read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** SW-112, SW-107.
+
+#### AMR-2 · The Board and List lenses, and the toolbar
+
+- **Metorite task.** To make. Epic 321.
+- **Scope.** The toolbar of §3.12.8, and the Board and List lenses over the same model. The words and the icons of a state come from `AGENT_STATES` and the board lanes.
+- **Done when.** Each lens shows the same sessions under the same filters.
+- **Fence.** `lib/agentLenses.test.ts` and `components/AgentLenses.test.ts`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark. **Depends on.** AMR-1.
+
+#### AMR-3 · The phone view of the Agents view
+
+- **Metorite task.** To make. Epic 321.
+- **Scope.** The phone view of §3.12.8.
+- **Done when.** At 390 pixels, no graph draws. A question that waits on the member takes an answer on its card. A session opens in the bottom sheet.
+- **Fence.** `components/AgentLenses.test.ts`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark. **Depends on.** AMR-1.
+
 #### SW-39 · Child runs
 
 - **Metorite task.** 3799. The id SW-39 is older (§3.11.9). It had no row and no task until 2026-11-19.
@@ -2499,6 +2545,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-111 | Its row, after Q21 |
 | SW-101b | The command of SW-101 |
 | SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
+| AMR-1 to AMR-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py`, `npx vitest run src/app/projects src/lib/shell/shellPrefs.test.ts src/lib/theme` in `workbench/control_plane`, then `visual-review` |
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-114 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py`, and `node --test` on the hook tests |
@@ -2691,4 +2738,5 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-09.** Replan (task 2518). It sets the queue order of SW-68, the lane scope of SW-67 and the pull start of SW-100 (new). It parks nine slices (Later epic, task 2543). SW-51 takes the member view of agents (WS-AGA).
 - **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
+- **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.

@@ -26,6 +26,7 @@ import {
   type Place,
   placeOfRow,
 } from "./agentPlace";
+import { type AgentWaitingOn, WAITING_ON_LABELS } from "./agentRuns";
 import { outcomeWord } from "./agentsAtWork";
 
 export type MapSessionState = "waiting_on_person" | "waiting" | "working" | "quiet";
@@ -66,6 +67,9 @@ export interface MapRun {
   quiet: boolean;
   age: number | null;
   last_at: string | null;
+  /** AMR-1. What a waiting run waits on, and until when. `null` for a run that does not wait. */
+  waiting_on: AgentWaitingOn | null;
+  waiting_until: string | null;
 }
 
 export interface MapLine {
@@ -240,6 +244,13 @@ function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/** One of the words of `WAITING_ON_LABELS`, else `null`. An older gateway sends none. */
+function waitingOn(value: unknown): AgentWaitingOn | null {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(WAITING_ON_LABELS, value)
+    ? (value as AgentWaitingOn)
+    : null;
+}
+
 function whole(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
@@ -312,6 +323,8 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
       quiet: row.quiet === true,
       age: typeof row.age === "number" && Number.isFinite(row.age) ? row.age : null,
       last_at: text(row.last_at) || null,
+      waiting_on: waitingOn(row.waiting_on),
+      waiting_until: text(row.waiting_until) || null,
     });
   }
 
