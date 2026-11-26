@@ -1,5 +1,5 @@
 -- ============================================================================
--- 505_pm_task_refs_landing.sql — the landing mark of a pull request reference
+-- 508_pm_task_refs_landing.sql — the landing mark of a pull request reference
 -- (LBB-2, the claim gate).
 --
 -- What: `pm_task_refs` gains three nullable columns: `landing_state`,
