@@ -118,6 +118,8 @@ def test_the_default_gh_call_reads_the_title_of_each_dispatch_run():
 def test_premerge_and_the_bot_run_this_one_script():
     premerge = (ROOT / "scripts" / "premerge.sh").read_text(encoding="utf-8")
     assert '"$(dirname "$LEDGER_CHECK")/release_freeze.sh"' in premerge
+    bot = (ROOT / "scripts" / "home_server" / "merge_bot.sh").read_text(encoding="utf-8")
+    assert '"$ROOT/scripts/release_freeze.sh"' in bot
 
 
 def test_claude_md_names_the_freeze_windows():
