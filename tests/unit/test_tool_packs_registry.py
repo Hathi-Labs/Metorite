@@ -106,8 +106,8 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
-        "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
-        "studio-share", "org-admin", "people",
+        "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
+        "studio-share", "org-admin", "people", "calendar-connections",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -278,7 +278,7 @@ PRODUCTION_TOOL_PACKS = (
     "projects-bulk,projects-reminders")
 #: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
 FOLLOWERS = frozenset({"projects-reports", "projects-authority", "projects-cycles",
-                       "calendar-day"})
+                       "calendar-day", "mail-tasks"})
 
 
 def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
@@ -324,6 +324,7 @@ def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
                           "projects-authority": "projects",
                           "projects-cycles": "projects",  # WS-39 SP-5a
                           "calendar-day": "projects",
+                          "mail-tasks": "projects",  # P-1b (task 3922)
                           "studio-more": "studio"}  # WS-67 TS-1b
     assert set(tp.FOLLOWS) == FOLLOWERS | {"studio-more"}
     for follower, parent in tp.FOLLOWS.items():
@@ -340,7 +341,7 @@ def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() 
     -> red."""
     assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
     assert tp.with_followers({"projects"}) == {
-        "projects", "projects-authority", "projects-cycles", "calendar-day"}
+        "projects", "projects-authority", "projects-cycles", "calendar-day", "mail-tasks"}
     assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
     assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
     assert tp.with_followers(()) == frozenset()
@@ -561,7 +562,8 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
         # WS-STU J2d: studio-share holds one tool of about 360 characters, so it
         # has its own floor. The mutation (the rules block alone) prices 0 more.
         # TOF-3a F12c: studio-repair holds two short tools, so it has that floor too.
-        floor = 300 if slug in ("studio-share", "studio-repair") else 1000
+        # P-1c (task 3923): calendar-connections holds one tool, so it has that floor too.
+        floor = 300 if slug in ("studio-share", "studio-repair", "calendar-connections") else 1000
         assert by_slug[slug]["token_cost"] > len(tp.rules_for(slug)) + floor, slug
 
 
@@ -880,9 +882,10 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # WS-STU J2d: the dark share pack is the last Studio pack, so the cap drops it
     # first of them. TOF-3a F12c: the dark repair pack is just before it. PAR-2a:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
-    # people pack of the same owner comes last.
-    assert list(tp.PACKS)[-7:-2] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-2:] == ["org-admin", "people"]
+    # people pack of the same owner comes next. P-1c (task 3923): the dark
+    # calendar-connections pack of that owner comes last.
+    assert list(tp.PACKS)[-8:-3] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-3:] == ["org-admin", "people", "calendar-connections"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
 
@@ -1423,9 +1426,11 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     assert family["owner"] == ORG_ADMIN and sf.is_pack("org-admin") and family["core"] is False
     assert tuple(family["tools"]) == ORG_ADMIN_TOOLS
     cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
-    # P-5b-1 (task 3114): the same owner holds the people pack too.
-    assert set(cfg["own_tool_scope"]) == set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
-    assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people")
+    # P-5b-1 (task 3114): the same owner holds the people pack too. P-1c (task
+    # 3923): and the one act of the dark calendar-connections pack.
+    assert set(cfg["own_tool_scope"]) == (set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
+                                          | {"my_tasks_calendar_connection"})
+    assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "calendar-connections")
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != "org-admin":
             assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug

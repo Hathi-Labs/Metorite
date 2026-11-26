@@ -45,6 +45,15 @@ P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
 surface and another owner. :func:`_allowed` leaves it out, as it leaves out
 ``org-admin``, so no row of the golden file changed.
 
+P-1b (task 3922) added the pack ``mail-tasks`` of two tools. It follows
+``projects``, so :func:`_allowed` holds it. Each row whose loader offer held
+the Projects packs gained ``mail-tasks`` in ``offered``, in BOTH columns. No
+other field of a row changed.
+
+P-1c (task 3923) added the dark pack ``calendar-connections`` of one tool,
+with no surface and the owner ``org-admin``. :func:`_allowed` leaves it out
+for the same reason, so no row of the golden file changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a
@@ -215,9 +224,11 @@ def _allowed(workflows: bool) -> frozenset[str]:
     list while the org is off its switches (``_tool_injection._apply_tool_packs``).
     The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
     for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
-    surface, owner ``org-admin``) is out for the same reason."""
+    surface, owner ``org-admin``) is out for the same reason. The dark
+    ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
+    ``org-admin``) is out for the same reason."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
-                                          "people"}
+                                          "people", "calendar-connections"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
