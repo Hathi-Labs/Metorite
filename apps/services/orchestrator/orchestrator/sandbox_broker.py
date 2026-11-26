@@ -123,8 +123,17 @@ APP_BUILDER_TARGET = "app_builder"
 PROJECTS_AGENT = "projects-assistant"
 PROJECTS_TARGET = "projects"
 COMPUTE_TARGET = "compute"
+#: The ``tools`` target of a user tool (SBX-4a, ``agent_sandbox.md`` §6.2 and
+#: §0c item 4). It is in the set, so a ``tools:`` entry of ``MAF_CODING_SCOPE``
+#: parses and every other target stays on (fence SBX-F24). An unknown target
+#: turns every target off. The target is inert: :meth:`SandboxBroker.acquire`
+#: refuses it, and only ``build_tool`` of SBX-4b will start it.
+TOOLS_TARGET = "tools"
+#: The broker's agent name of a user-tool run, the middle part of the
+#: container key (organization, ``user-tool``, thread) of §6.2.
+USER_TOOL_AGENT = "user-tool"
 MAF_CODING_TARGETS = frozenset(
-    {"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET, COMPUTE_TARGET}
+    {"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET, COMPUTE_TARGET, TOOLS_TARGET}
 )
 
 #: The ``compute`` target (SBX-18, ``agent_sandbox.md`` section 0c, rung 6a').
@@ -287,8 +296,8 @@ class SandboxUnavailable(SandboxError):
 def parse_maf_coding_scope(raw: str) -> frozenset[tuple[str, str]]:
     """``{(target, org)}`` from a comma list of ``<target>:<org>`` entries.
 
-    A target is ``code_task``, ``app_builder``, ``projects`` (D86, §16.3) or
-    ``compute`` (SBX-18).
+    A target is ``code_task``, ``app_builder``, ``projects`` (D86, §16.3),
+    ``compute`` (SBX-18) or ``tools`` (SBX-4a).
     An org is one organization id, or ``*`` for every organization. Raises
     :class:`ValueError` on an unknown target or an entry with no org, so a
     typo never turns on a target that nobody named.
@@ -328,11 +337,15 @@ def maf_coding_scope_allows(target: str, org: str) -> bool:
 
 def target_for_agent(agent: str) -> str:
     """``app_builder`` for app-builder, ``projects`` for projects-assistant,
-    ``compute`` for the broker's own ``compute`` name, and ``code_task`` for
-    every other agent. ``compute`` is in no scope, so a real agent that bears
-    that name gets no container from :meth:`SandboxBroker.acquire`."""
+    ``compute`` for the broker's own ``compute`` name, ``tools`` for the
+    broker's own ``user-tool`` name (SBX-4a), and ``code_task`` for every
+    other agent. :meth:`SandboxBroker.acquire` refuses ``compute`` and
+    ``tools``, so a real agent that bears one of those names gets no
+    container."""
     if agent == COMPUTE_AGENT:
         return COMPUTE_TARGET
+    if agent == USER_TOOL_AGENT:
+        return TOOLS_TARGET
     if agent == APP_BUILDER_AGENT:
         return APP_BUILDER_TARGET
     if agent == PROJECTS_AGENT:
@@ -2821,6 +2834,10 @@ class SandboxBroker:
         binding = read_run_binding()
         if binding.target == COMPUTE_TARGET:
             raise SandboxRefused("The compute target starts only through run_compute.")
+        if binding.target == TOOLS_TARGET:
+            # SBX-4a: the target is in the scope set, and nothing starts it
+            # yet. build_tool of SBX-4b is the one way in.
+            raise SandboxRefused("The tools target starts only through build_tool.")
         if not maf_coding_scope_allows(target_for_agent(binding.agent), binding.org):
             raise SandboxRefused(
                 "MAF_CODING_SCOPE does not name this target for this organization, "
