@@ -509,6 +509,10 @@ chat, settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
+P-6 (Workflows) paid its first parity rows through `ai_studio.md` rows E13a
+(ceiling 24 to 22) and E13b (22 to 18). PAR-8a (§6.4) paid the other 18. E13c
+owns the arm of one trigger, and its chat tool is open (STB-6, task 2134).
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
 
