@@ -34,6 +34,9 @@ METERED_CLIENTS = {
     # The workflow agent node calls the orchestrator run_agent, which builds
     # its client in orchestrator/agents.py (checked above).
     f"{GW}/routes/workflows/service.py": ("orchestrator.executor", "run_agent"),
+    # TOF-3b F4b: a skill test runs the orchestrator's stream run, which
+    # builds its client in orchestrator/agents.py (checked above).
+    f"{GW}/studio/skill_tests.py": ("orchestrator.executor", "run_agent_stream"),
 }
 
 STUDIO_DIRS = (f"{GW}/routes/studio", f"{GW}/studio", f"{GW}/package_host")

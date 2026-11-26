@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386).**
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). CRM-M2a is built (2026-11-08, in review): the CRM route manifest and its ratchet. CRM-M2b is built (2026-11-07, in review): the chat edits a record field, completes a task and sets a due date. CRM-M3a is built and ships dark behind `CRM_PIPELINES_ORGS` (2026-11-07, no migration). CRM-M4a is built and ships dark behind the same flag (2026-11-08, migration 386). Task 1570 is built (2026-11-21, in review, no migration, no flag). A member purge deletes the member's private CRM saved views, and a shared view stays (D175.5). CRM-M2e is partly built (2026-11-25, task 3951, in review, no migration, no flag): the chat adds and changes a stage, a lead status and a lost reason, and resets the Zoho order. The delete and the PUT of the order wait. Task 3954 (P-3) is built (2026-11-25, in review, no migration, no flag): the chat reads, previews, uses, dismisses and undoes a field map suggestion, and reads and starts the AI analysis. That pays the suggestion rows of CRM-M2i, the re-run of CRM-M2k and the analysis read of CRM-M2l.**
 
 Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
@@ -99,7 +99,7 @@ D133 says an admin approves each change that the AI proposes. D164 keeps that ru
 
 Four rules hold at every level.
 
-1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after.
+1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after. Four routes do not log a row yet: the approve, dismiss and undo of a field map suggestion, and the re-run of the AI analysis. task 3971 adds those rows.
 2. **An AI proposal never applies by itself.** It is a card in "Needs your input" (§20.17 of `crm_platform.md`, D134).
 3. **A named sales lead** is a member who holds the `lead` role in an `org_group` of the sales team (`infra/postgres/138_groups_and_session_participants.sql:55`).
 4. **D131 stays.** D131 governs automations that Mira runs. The ladder governs changes to the CRM's own set-up. A bulk change and a delete ask in both.
@@ -140,7 +140,7 @@ Two facts are not in the repo. The production flag values are not in the repo. S
 Two Metorite tasks come before the slices that name them. Neither is a slice of this spec.
 
 - **#1443, nine small defects from the 2026-11-02 audit.** Risk tier STANDARD. Item 1 comes first. The items are in §6.1. CRM-M3 and CRM-M5 wait for items 1, 5, 6 and 7. CRM-M7 waits for items 2, 3 and 4.
-- **#1444, an outside MCP result carries no untrusted mark before it reaches a write.** Risk tier HIGH, "Verify first". **CRM-M9 cannot start until #1444 is closed.** The audit found no untrusted mark in `apps/services/orchestrator/orchestrator/_maf_mcp.py`. With packs off, a result reaches `crm-assistant` as text. The confirm card is then the only guard between third-party text and a CRM write. Its fence is a test that an instruction inside an MCP result cannot cause a write without its card.
+- **#1444, an outside MCP result carries no untrusted mark before it reaches a write.** Risk tier HIGH, "Verify first". **CRM-M9 cannot start until #1444 is closed.** The audit found no untrusted mark in `apps/services/orchestrator/orchestrator/_maf_mcp.py`. With packs off, a result reaches `crm-assistant` as text. The confirm card is then the only guard between third-party text and a CRM write. Its fence is a test that an instruction inside an MCP result cannot cause a write without its card. **BUILT, 2026-11-21:** each MCP result of a native MAF run (`_maf_mcp.py`) reaches the model inside the one untrusted frame (`chat_connected_systems.md` §3.5). Fence: `test_mcp_result_untrusted_frame.py`, which holds the write-card test.
 
 ### 6.1 The nine defects
 
@@ -258,7 +258,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 - **Undo.** `POST /crm/change-history/{id}/undo` writes the stored "before" through the write helper of the route. Each module registers the Undo of its own areas. The Undo refuses with a plain reason in six cases. The change cannot be undone, or it is undone already. The CRM mode changed since. The thing changed again since. The thing is gone or holds records. Another stage, lead status or lost reason holds the old name now (`name_taken`, fix round 2).
 - **The check before an Undo.** Each Undo reads its thing `FOR UPDATE` first. Then it compares the current values with the "after" of the row, for a create too. So the Undo of a create refuses with `changed_since` when the thing changed after the create. An Undo of an admin area needs an admin now, even for the member who made the change.
 - **Who reads.** An admin reads each row that is not private to another member. A member who is not an admin reads only their own changes. A private view and a member's own rule are private to that member. An Undo row has the same readers as the row it undoes, because `log_change` copies the `private_to` of that row (fix round 2).
-- **A member purge.** The purge deletes the rows that are private to the member (`crm_private_changes` in `routes/admin/members._PURGE_DELETES`). So a row and its Undo go together, and the count is the number of rows that go. The org's rows that the member made stay with the address, as the audit log does. The purge does not delete the member's private saved views (`crm_views`). Fences: `tests/unit/test_admin_member_purge.py` and the purge tests (R8) in `tests/unit/test_crm_change_history.py`.
+- **A member purge.** The purge deletes the rows that are private to the member (`crm_private_changes` in `routes/admin/members._PURGE_DELETES`). So a row and its Undo go together, and the count is the number of rows that go. The org's rows that the member made stay with the address, as the audit log does. The purge also deletes the member's private saved views in the bound org (`crm_private_views`, task 1570, D175.5). A shared view stays with the address. Fences: `tests/unit/test_admin_member_purge.py` and the purge tests (R8) in `tests/unit/test_crm_change_history.py`.
 - **Through what.** Each PR 1 route writes `ui`. The confirm of a rule writes `chat` or `whatsapp`. CRM-M2 passes `chat` from its tools.
 - **The ladder.** `approved_by` is the actor in PR 1. A member's own rule is at the `own` level, and an org rule at the `team` level. The approval card is CRM-M2.
 - **The chat read.** `crm_change_history` reads `GET /crm/change-history` as the member. The CRM assistant holds it, and the `crm-records` pack holds it for the one assistant. The orchestrator's base does not hold it. The base was at the 110-tool cap beside the email pack and the Projects core pack. One more tool there dropped the Projects pack from a mixed turn (`tests/unit/test_projects_packs.py`). A turn that names the CRM, or that runs on the CRM page, loads the pack. Fence: `tests/unit/test_tool_packs_choice.py::test_a_crm_history_question_loads_the_pack_that_holds_the_read`.
@@ -314,14 +314,14 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 | CRM-M2b | Edit a record field, complete a task and set a due date. Built |
 | CRM-M2c | Create a deal, a contact and an organization. Delete a record and an activity. Undo a change from the change history |
 | CRM-M2d | Add and remove a contact of a deal. Edit a record of a custom module |
-| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete |
+| CRM-M2e | Stages and lost reasons: add, rename, order, reset and delete. Add, change and reset are built (task 3951): `crm_edit_status` and `crm_edit_lost_reason`. The two deletes and the PUT of the order wait, because the CRM agent sends no `DELETE` and no `PUT` (`apps/AGENTS.md`). They need an owner decision |
 | CRM-M2f | Fields, sections, layout, field rules and the module catalogue |
 | CRM-M2g | Saved views, record names, labels, access and the settings |
 | CRM-M2h | Business rules and the open questions of the AI |
-| CRM-M2i | Mapping plans, field suggestions and the conversion mapping |
+| CRM-M2i | Mapping plans, field suggestions and the conversion mapping. The suggestions and the preview are built (task 3954): `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_decide_suggestion`. The approve, dismiss and undo log no Change history row yet. task 3971 adds the rows |
 | CRM-M2j | Rename a pipeline, add a stage and remove a stage |
-| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again |
-| CRM-M2l | The reads of the setup screens, the digests and the exports |
+| CRM-M2k | Connect, sync, import, cut over, reset and run the analysis again. The re-run is built (task 3954): `crm_rerun_analysis`. The re-run logs no Change history row yet. task 3971 adds the row |
+| CRM-M2l | The reads of the setup screens, the digests and the exports. The analysis read is built (task 3954): `crm_analysis_status`. It is a read, so it logs no Change history row |
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 
@@ -365,7 +365,7 @@ MCP-P2a (`external_agent_access.md` §19.13, task 866) later sets the door op of
 - **Change history.** One `pipeline` row at the `company` level, with the name and the ordered stages in "after". Each new stage logs its own `deal_stage` row. The Undo deletes the pipeline, and refuses with the count while a deal names it. It also deletes each stage that the create made, through `admin.delete_status_in`, and logs one row for each stage. A stage that another pipeline holds stays. A new stage that holds a record refuses the Undo, and the refusal names the stage and the count.
 - **The stages of a plan.** A list that names a hidden stage, or a stage that Zoho no longer lists, gets a plain refusal (409 `stage_hidden` or `stage_gone`). A copy keeps such a stage of its source, and the plan marks it hidden. Only a visible stage counts as the open, won or lost stage. A new stage with no type is `won` or `lost` when its whole name is "Won", "Closed Won", "Lost" or "Closed Lost". The dialog row takes that type as the member types the name. A member who sets it back to Open sends `open`. A row with the name of a CRM stage shows the type of that stage. It sends no type, because that stage keeps its own. The dialog and the chat card show the type of each stage.
 - **The plan that the member saw.** The chat card sends the planned stage ids with the create. When the plan of the create differs, the create refuses with 409 `plan_changed`, and nothing is made.
-- **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper.
+- **Through what.** The row says `chat` only when the request carries `X-Actor-Via: chat:crm-assistant` beside the internal bearer (`change_log.via_of`). The BFF forwards no header of the browser, so a browser cannot claim `chat`. A CRM-M2 tool reuses this helper. The four routes of the suggestions and the analysis that the chat calls (task 3954) log no row yet, so no row says `chat` for them. task 3971 adds the rows.
 - **The chat tool.** `crm_create_pipeline(name, stages, copy_from)` takes names, reads the preview, and asks on one card before the create. The `crm-records` pack holds it. A run of an org off the flag drops it (`_tool_injection.PIPELINE_WRITES`).
 - **Settings.** "New pipeline" on the Native Deal stages card, for an admin, while `GET /crm/mode` says `pipeline_create`.
 

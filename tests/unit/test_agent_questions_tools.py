@@ -194,7 +194,8 @@ def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     calls = _gateway(monkeypatch)
     asked = deny(monkeypatch)
     said = _run(skill_projects.answer_agent_question(RUN, answer="x"))
-    assert "Cancelled" in said and len(asked) == 1
+    # HRD-7: the words of a declined card, from the one table.
+    assert said.startswith("Declined:") and len(asked) == 1
     assert writes(calls) == []
 
 

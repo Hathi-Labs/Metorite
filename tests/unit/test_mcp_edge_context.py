@@ -670,7 +670,9 @@ class TestMyWork:
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
                          "run_id": _uuid(6101), "held_by": None,
-                         "yours": False, "external_link": None}]
+                         "yours": False, "external_link": None,
+                         "agent_host": None, "agent_model": None,
+                         "agent_host_kind": None, "dispatched_by_run_id": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the
@@ -1109,11 +1111,16 @@ class TestTheAttachments:
         assert not [p for p in board.paths() if p.endswith("/attachments")]
 
     async def test_g17_the_route_is_read_only_on_the_allowlist(self):
+        """MCP-G18 kept the list a read. CIV-14b (spec §12.9) adds ONE write of
+        the same template, the POST of ``upload_task_image``. The detach
+        (``DELETE .../attachments/{attachment_id}``) stays off the edge."""
         from acb_auth import agent_oauth
         pair = ("GET", tools.ATTACHMENTS_ROUTE)
         assert pair in agent_oauth.MCP_ROUTES and pair not in agent_oauth.MCP_WRITE_ROUTES
-        assert not [m for m, t in agent_oauth.MCP_ROUTES
-                    if t.endswith("/attachments") and m != "GET"]
+        assert [m for m, t in agent_oauth.MCP_ROUTES
+                if t.endswith("/attachments") and m != "GET"] == ["POST"]
+        assert ("POST", tools.ATTACHMENTS_ROUTE) in agent_oauth.MCP_WRITE_ROUTES
+        assert not [p for p in agent_oauth.MCP_ROUTES if p[0] == "DELETE" and "/attachments" in p[1]]
 
     async def test_g17_no_agent_text_names_a_removal(self):
         assert "delet" not in tools.GET_TASK_CONTEXT.description.lower()
@@ -1215,7 +1222,8 @@ class TestTheProtocolBlock:
     async def test_the_block_shows_in_my_work_when_on(self, on):
         result = await self._result()
         # SW-43c raised the version to 2 with the line of the answer thought.
-        assert result["protocol"] == {"version": 2, "lines": list(tools.PROTOCOL_LINES)}
+        # SW-105 raised it to 3 with the ask for the label, machine and model.
+        assert result["protocol"] == {"version": 3, "lines": list(tools.PROTOCOL_LINES)}
         assert "rows" in result
 
     async def test_the_block_shows_with_no_row(self, on):
@@ -1234,6 +1242,8 @@ class TestTheProtocolBlock:
         for needle in ("slice, not the epic", "post_agent_activity", "ask_on_task",
                        "Never ask only in the terminal", "one result", "release_task",
                        "Hand off with evidence",
+                       # SW-105: the name, the machine, its kind and the model.
+                       "On each claim send agent_label, host, host_kind and model",
                        # SW-43c (agent_coordination.md §3.9, "Protocol").
                        "Before you act on an answer, post one that names its id"):
             assert needle in text, needle
@@ -1243,6 +1253,8 @@ class TestTheProtocolBlock:
     def test_each_tool_named_in_a_line_exists_and_is_a_run_tool(self):
         import re
         named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", " ".join(tools.PROTOCOL_LINES)))
+        # SW-105: two inputs of claim_task are named in line 1, and are no tools.
+        named -= {"agent_label", "host_kind"}
         assert named <= set(tools.TOOLS), named - set(tools.TOOLS)
         assert all(tools.TOOLS[n].runs for n in named)
 

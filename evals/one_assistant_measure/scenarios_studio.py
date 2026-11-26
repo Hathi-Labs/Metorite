@@ -34,11 +34,34 @@ APP_ASK = "Make me a small app to log visitor badges."
 PLAIN_ASK = "Give me a one-line thank-you note for the team."
 MAIL_ASK = "What does Priya want about the board order?"
 
+#: TS-5b. What the model passes to ``find_tools`` on the ``search`` arm. A test ranks
+#: each query with ``tool_search.rank`` and needs the expected tool in the top 5. The
+#: words of the member ("make me a small app ...") do NOT rank ``studio_draft``: the
+#: query "make a new app" gives ``studio_app_read`` first, so the model that wrote the
+#: spec example would miss. The draft query names the act, as a model asked for a tool
+#: would ("draft a new app" ranks ``studio_draft`` first).
+SKILLS_QUERY = "list my saved skills"
+APP_QUERY = "draft a new app"
+
 #: A tool that the member's own skills answer. The two drafts of the fixture.
 _DRAFTS = (r"Weekly digest writer", r"Meeting notes tidy")
-#: The skill that is live. A list of drafts must not name it.
+#: The skill that is live. A list of drafts must not call it a draft. It may name it as
+#: published (``checks.calls_live_skill_a_draft``).
 _LIVE = r"Quote follow-up"
 _SKILLS_ANSWER = "Two skills are still drafts: Weekly digest writer and Meeting notes tidy."
+
+
+#: TS-5b. The words of the cap chat, the pack that each loads BY WORDS
+#: (``tool_packs.matched_layer``, a test proves it), and the tool that the turn runs. A pack is
+#: sticky only after one of its tools ran (``tool_packs.note_used``), so each turn runs one.
+#: After turn 3 the run holds three packs, the cap (``tool_packs.MAX_PACKS``): the CRM pack
+#: by the surface and by its words, and the email and reminders packs, sticky from turns 2 and 3.
+CAP_TURNS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
+    ("Show my open deals.", "crm-records", "get_pipeline", {}),
+    ("Check my inbox for Priya.", "email", "query_inbox", {"from_email": "priya"}),
+    ("What reminders do I have?", "projects-reminders", "list_reminders", {}),
+)
+_CAP_CANNOT = "I cannot read your saved skills in this chat."
 
 
 def _studio(sid: str, title: str, turns: tuple[Turn, ...], **kw: object) -> Scenario:
@@ -57,12 +80,13 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     Check("ran_tool", ("studio_skill_list",), "read_the_skills"),
                     Check("right_pack", pack_of("studio_skill_list")),
                     Check("answer_all", _DRAFTS, "names_the_drafts"),
-                    Check("answer_none", (_LIVE,), "leaves_out_the_live_skill"),
+                    # TS-5b: the answer may NAME the live skill, as published.
+                    Check("drafts_listed_fairly", (_DRAFTS, (_LIVE,))),
                     Check("found_tool"),
                     Check("search_round"),
                     Check("no_unasked_write", 0),
                 ),
-                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER),
+                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER, find=(SKILLS_QUERY,)),
             ),
         ),
     ),
@@ -84,6 +108,7 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     (("studio_draft", {"brief": "Log visitor badges"}),),
                     "I drafted a Visitor badges app. Tell me what it should hold, "
                     "and I will add it.",
+                    find=(APP_QUERY,),
                 ),
             ),
         ),
@@ -124,6 +149,10 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                 Plan(
                     (("studio_draft", {"brief": "Skills"}), ("studio_skill_list", {})),
                     "I cannot read saved skills in this chat.",
+                    # The search arm: the find answers FIND_NONE (the pack is not a
+                    # candidate for this member), the model heeds it and calls no tool.
+                    find=(SKILLS_QUERY,),
+                    search_calls=(),
                 ),
             ),
         ),
@@ -159,10 +188,59 @@ STUDIO_SCENARIOS: tuple[Scenario, ...] = (
                     Check("search_round"),
                     Check("no_unasked_write", 0),
                 ),
-                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER),
+                Plan((("studio_skill_list", {}),), _SKILLS_ANSWER, find=(SKILLS_QUERY,)),
+            ),
+        ),
+    ),
+    # TS-5b. THE CASE THAT THE TOOL-SEARCH DESIGN EXISTS FOR. Turns 1 to 3 each load one
+    # pack by words (CRM, email, reminders) and run one of its tools, so the packs are
+    # sticky and the run holds MAX_PACKS = 3 packs after turn 3. Turn 4 asks the words of
+    # ``stu_skills``, which no pack matches, so Studio does not load by words. The pack
+    # loader (``load_skill_tools``) has NO room: ``plan_loader`` offers nothing at 3 held
+    # packs. On the ``pack`` arm the model has no way to a Studio tool. On the ``search`` arm
+    # ``find_tools`` is in the request, and a found tool takes no place of MAX_PACKS
+    # (``tool_packs._admit_found``), so the model finds ``studio_skill_list`` in ``studio-more``.
+    _studio(
+        "stu_cap",
+        "Three packs held by words, then a Studio read at the cap",
+        (
+            *(
+                Turn(
+                    words,
+                    (
+                        # An email tool is an email call (``called``), any other is a work tool.
+                        Check("called" if slug == "email" else "ran_tool", (tool,), "ran_the_tool"),
+                        Check("no_unasked_write", 0),
+                    ),
+                    Plan(((tool, args),), f"Done with {slug}."),
+                )
+                for words, slug, tool, args in CAP_TURNS
+            ),
+            Turn(
+                SKILLS_ASK,
+                (
+                    # The search arm: the model finds the tool and the tool runs.
+                    Check("ran_tool", ("studio_skill_list",), "read_the_skills", arms=("search",)),
+                    Check("found_tool", arms=("search",)),
+                    Check("search_round", arms=("search",)),
+                    Check("drafts_listed_fairly", (_DRAFTS, (_LIVE,)), arms=("search",)),
+                    # The pack arm: no loader, so no Studio tool runs, and the answer says so.
+                    Check("no_studio_ran", arms=("pack",)),
+                    Check("not_searched", None, "no_load_offered", arms=("pack",)),
+                    Check("answer_all", (r"cannot",), "says_it_cannot", arms=("pack",)),
+                    Check("answer_none", _DRAFTS, "lists_no_skill", arms=("pack",)),
+                    Check("no_unasked_write", 0),
+                ),
+                Plan(
+                    (),
+                    _CAP_CANNOT,
+                    find=(SKILLS_QUERY,),
+                    search_calls=(("studio_skill_list", {}),),
+                    search_answer=_SKILLS_ANSWER,
+                ),
             ),
         ),
     ),
 )
 
-__all__ = ["STUDIO_SCENARIOS"]
+__all__ = ["CAP_TURNS", "STUDIO_SCENARIOS"]

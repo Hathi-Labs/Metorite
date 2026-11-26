@@ -2,23 +2,46 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 474 and 724.
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-68a (the plan order of `my_work`) is built, 2026-11-08. The rest of SW-68 is open. The replan of 2026-11-09 (task 2518) sets the queue order, the lane scope and pull start (SW-100, new). It parks SW-17, SW-20, SW-22, SW-69, SW-74, SW-75, SW-89, SW-90 and SW-92. SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b (change an answer) is built and dark, 2026-11-11. SW-43c (the chat tools and the agent text) is built, 2026-11-11, and the flag can go on. SW-32 (a plan on each run) is built, dark behind the runs flag, 2026-11-11, branch `mt-f4ce39a1-run-plan`, task 1049. It is not merged yet. SW-16a (the link tools) is built, 2026-11-08. SW-16b (the write fence) is open.**
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
+
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is merged, 2026-11-25 (`c61dc98d6`). SW-27c1 (`mark_number`, task 3938) is built and dark, 2026-11-25. SW-27c3 and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
+**SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
+
+**SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
+
+**SW-107 (who dispatched a run) is built, 2026-11-21 (task 3628). migration 472. The map read of SW-102 now gives the lines.**
+
+**SW-107b (the index that serves the delete of a dispatcher run) is built, 2026-11-23 (task 3860). migration 498.**
+
+**SW-39 (child runs) is built, 2026-11-22 (task 3799). migration 475.**
+
+**SW-114 (the edge tool `report_subagent`) is built and dark behind `AGENT_MAP_ORGS`, 2026-11-22 (task 3797), with no migration. The edge lists the tool for every org, and the tool answers not found where the flag is off. The hooks of the plugin are not built.**
+
+**SW-110 (task 3631): the half for child runs is built and dark behind `AGENT_MAP_ORGS`, 2026-11-23, with no migration. The machine heartbeat card is not built, because it waits on SW-77 (task 1923).**
+
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
-**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 **1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
+
+**Task 3617 planned the orchestration map (§3.12, §5.12) on 2026-11-17.** It is a Map view of the fleet, with the machine, the model and who dispatched whom. The owner decides Q19 to Q22. **SW-102 (the map read, with `project_id`) is built and dark, 2026-11-20 (task 3623). The flag is `AGENT_MAP_ORGS`. SW-113 (the edge tool `get_agent_map`) is built and dark behind the same flag, 2026-11-21 (task 3796).**
+
+**Built and dark:** SW-102, SW-103 (the Map view), SW-104 (the machine and the model on each run) and SW-106 (the map shows them). SW-107 (who dispatched a run), SW-112 (the Agents view of a project) and SW-113 (the map in the MCP) are built and dark too. SW-114 (the writer of sub-agents) is built and dark behind `AGENT_MAP_ORGS`. Its hooks wait for SW-82. SW-105, SW-108 and SW-109 are built, as their rows say. SW-110 has its child-run half built and dark, its machine card waits on SW-77, and SW-111 is open.
+
+**Task 3794 amended the map on 2026-11-19 (§3.12.7).** The map is also the Agents view of each project and sub-project. It adds the kind of machine, a writer for sub-agents, the map in the MCP and the way into a session. The kind of machine is built (SW-104 and SW-106). The map in the MCP (SW-113) and the tool of the writer (SW-114) are built. The hooks of the writer and the way into a session are open.
+
 
 **Board row:** **WS-MCP** in `work_plan.md` §2.1. **Metorite:** epic 321 (Agent swarm coordination), task 331 (SW-0). **Owner directives:** D135 (2026-10-28), and the owner's ask of 2026-10-30. The owner asked to "build out the Projects app-related tasks and the MCP-related tasks completely". The goal is "full capability for agent orchestration".
 
@@ -102,7 +125,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 | **Lease** | The execution slot of a task: its one open run. It holds while the run's newest activity is newer than two hours | the index `pm_agent_runs_one_open_per_task` (migration 289), `filters.lease_held_sql` | Yes (EA-14a) |
 | **Delegate** | The one agent that a task is handed to, beside its assignees | `pm_tasks`, new columns | No. SW-29a |
 | **Guidance** | The org's written rules for agents, at the org, a space or a project | a new tenant table | No. SW-31 |
-| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan`, a new column | No. SW-32 |
+| **Plan** | A checklist on a run that the agent keeps current | `pm_agent_runs.plan` (migration 481) | Built, 2026-11-11 (SW-32), not merged |
 | **Wait record** | A named owner and action for a task that waits on a person or a system | `pm_tasks`, new columns | No. SW-9 |
 | **Strand** | The fingerprint of a run with no live path, and later its recovery record | `pm_agent_run_strands` (migration 305) | Built, dark (SW-10a) |
 | **Handoff note** | Four short texts when an agent stops: done, left, evidence, next | a `response` activity with `content.handoff` | No. SW-24 |
@@ -219,6 +242,7 @@ The delegate (SW-29a) stores this reference. It names the member and the stamp, 
 | Limit | Fence |
 |---|---|
 | A label never reaches an authorization check | SW-7b: a structural test that no module of `acb_auth` and no visibility seam reads `agent_label` (`tests/unit/test_agent_label_fence.py`) |
+| The machine, the model and the dispatcher never reach an authorization check | SW-104 and SW-107 extend `tests/unit/test_agent_label_fence.py` to `agent_host`, `agent_host_kind`, `agent_model` and `dispatched_by_run_id` (§3.12.4) |
 | A delegate never widens what an agent can see | SW-29a: an R8 test that a delegate on a task the agent's member cannot see gives the agent nothing |
 | The session key comes only from the signed header | Built: `test_mcp_edge_signing.py` |
 | Guidance never overrides the server's rules | SW-31: a prompt fence in `test_mcp_edge_prompts.py` |
@@ -509,7 +533,7 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 | **A queue that knows capacity** | SW-30a hands a task to an agent. SW-45 lists free tasks in own apps. SW-49 caps what waits on a person. Task 1731 starts a session for an answered or queued run | **SW-68.** One queue route ranks the candidates for a box and a lane: runs in flight, then ready slices by least slack, then priority. It names the reason for each task that cannot start: lane full, review cap, box memory, account limit, CI lane busy, release cut-off |
 | **Path and area claims below the task** | SW-26 reads the changed files of open pull requests. SW-27 reserves numbers. SW-52 adds `owned_paths` for seams. SW-45 warns on a claim outside an app | **SW-69.** An agent declares the paths it will touch before it edits. Overlap warns at once and writes an affects note (SW-25). SW-26 confirms later from the pull request |
 | **Agent-to-agent requests through the task** | SW-25 is a one-way affects note. SW-30a hands a task over. SW-16 lets an agent make tasks inside a fence. AP-8 and AP-16 are asks between people, and from an agent to one person | **SW-65.** A typed request from the task of one agent to the task of another, with a reply. The exchange is a comment on both tasks. No free chat exists |
-| **Each sub-agent as a child run** | Task 1065 (SW-39) plans child run rows under the parent task. It has no spec text yet, and SW-0c (task 1069) copies the research | No new slice. P10 adds one constraint to SW-39: a child run is excluded from the index `pm_agent_runs_one_open_per_task` (migration 289), or the child cannot start. See §3.11.9 |
+| **Each sub-agent as a child run** | Task 1065 (SW-39) plans child run rows under the parent task. It has no spec text yet, and SW-0c (task 1069) copies the research. **Updated 2026-11-19:** task 1065 is not on the board. SW-39 is task 3799, with its row in §5.12 | No new slice. P10 adds one constraint to SW-39: a child run is excluded from the index `pm_agent_runs_one_open_per_task` (migration 289), or the child cannot start. See §3.11.9 |
 | **A delivery pipeline on each task** | SW-23 (a Check), SW-54 (required checks), SW-57 (evidence of a pull request), SW-59 (run role), SW-18 and SW-55 (review), GH-5 and GH-6 (checks and merge). Each is one signal. No one view joins them | **SW-71.** Nine stages with evidence, joined from those signals. The risk tier is a field. **SW-70** adds the brief, the input contract |
 | **A live check after the release** | GH-6 moves an agent-worked task to Done on merge. It is dark. CLAUDE.md rule 8 says to verify delivery by evidence | **SW-72.** The release step reports the deployed commit and the merged pull requests. The `live` stage passes when the deployed commit holds the merge. Q14 sets whether Done waits for it |
 | **A production act record** | CLAUDE.md §3a rule 2 asks for a report of each production act in the message. The gateway writes one audit row for each door call (#150) | **SW-73.** A tool writes the act, the box, the evidence and the rollback to the task |
@@ -668,8 +692,8 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 
 #### 3.11.9 Notes on slices of other lanes
 
-- **SW-39 (task 1065), child runs.** The index `pm_agent_runs_one_open_per_task` allows one open run for each task. A child run of a sub-agent needs a `parent_run_id` and a `kind`. The index must exclude `kind = 'child'`, in the same migration. Dispatch SW-39 with that constraint. A child holds no lease and no claim, and it shows under its parent only.
-- **SW-38 (task 1064) and SW-42 (task 1068)** have no spec text. SW-95 uses the stop signal of SW-38, and SW-98 builds on SW-42. Both wait until SW-0c (task 1069) or their own slice writes the text.
+- **SW-39 (task 3799 since 2026-11-19, with its row in §5.12), child runs.** The index `pm_agent_runs_one_open_per_task` allows one open run for each task. A child run of a sub-agent needs a `parent_run_id` and a `kind`. The index must exclude `kind = 'child'`, in the same migration. Dispatch SW-39 with that constraint. A child holds no lease and no claim, and it shows under its parent only.
+- **SW-38 (task 1064)** has a short row in §5.11 since SW-0d. **SW-42 (task 1068)** has no spec text. SW-98 builds on SW-42, and it waits until SW-0c (task 1069) or its own slice writes the text.
 - **SW-0c (task 1069)** copies the Hyperagent research into the section that task 1069 names. P10 does not do that work.
 - **SW-60 (task 1902).** SW-66 reads its column `waiting_ref_id` as a built-in condition. SW-60 needs no change. SW-66 has its own flag.
 - **DX-11** of `external_agent_dispatch.md` is the local runner. One line there now points to SW-78.
@@ -681,6 +705,203 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 - **How the release step knows the pull request numbers.** This repository squashes with `(#N)` in the subject. Another organization may not. The endpoint takes a list, and the script that builds the list is the organization's.
 - **The account state of a box.** The runner reads it from the box's own client. The way may change by Claude Code version. SW-77 marks the field as best effort.
 - **The edge budget.** The edge has one database connection (`external_agent_access.md` pooler budget). SW-64 adds no extra gateway call, but measure it at dispatch.
+
+### 3.12 The orchestration map (SW-101 to SW-111, 2026-11-17)
+
+**The ask.** On 2026-11-17 the owner asked for a map in Projects (task 3617). It shows the whole orchestration of many agents across many people. For each agent, it names the machine where the agent runs, the person who runs it, its model and its task. The owner asked for a plan only. Nothing is built.
+
+**The answer.** The map is a second view of the fleet, beside the list of the "Agents at work" lens (AGA-8). That lens is the Fleet panel of MCP rung 3 (demo task 2897). The map adds no nav pane, no second route and no new table. It draws a tree from left to right: a person, each session of that person, and the task of each run.
+
+Today the board does not hold three facts: the machine, the model and who dispatched whom. Each one gets an optional field that the agent sends, and a rung of its own.
+
+#### 3.12.1 What the board holds today
+
+Read on 2026-11-17, from the code and from the 50 newest open runs of HathiLabs (`list_agent_runs`).
+
+| Fact | Today | Where it lives | The gap |
+|---|---|---|---|
+| The person | Yes | `pm_agent_runs.member_email` | Nothing |
+| The client | Yes | `pm_agent_runs.client_via`, for example `mcp:claude.ai:claude-code` | All sessions of one client share one stamp. The stamp does not tell one machine from another |
+| The session and its name | Yes | `pm_agent_runs.session_key` (migration 302, on since SW-7a) and `agent_label` (SW-7b, migration 418) | Nothing |
+| The task and its state | Yes | `pm_agent_runs.task_id` and the run states of §3.2 | Nothing |
+| The machine | Only for a box token | `agent_connection.credential` is `oauth` or `box` (EA-19a). SW-50 (task 1883) plans to show the connection name of a box token | A session that signs in with OAuth has no machine. On 2026-11-17, the 50 newest open runs of HathiLabs all carried one client stamp, and none of them named its machine |
+| The model | No | Nothing stores it. AGA-9 leaves the model out of a built-in agent's run on purpose (`agent_summary.py`) | A field and a writer |
+| Who dispatched whom | No | A hand-off between two sessions happens outside Metorite. The run lines say only "at the orchestrator's ask" | A field. The HathiLabs orchestrator held no run on 2026-11-17, so it has no node |
+| A sub-agent | No | SW-39 (task 1065) plans child runs with `parent_run_id` (§3.11.9). A board search on 2026-11-17 did not find task 1065, so read its state before SW-110 starts. **2026-11-19:** SW-39 is task 3799, with its row in §5.12 | SW-39 |
+| The health of a machine | No | SW-77 (task 1923, in progress) plans the heartbeat of a box | SW-77 |
+
+#### 3.12.2 What the map shows
+
+- **Where it lives.** A switch "List | Map" in the "Agents at work" lens of Projects (`AgentsAtWork.tsx`). It adds no nav pane (§2.2). **Amended 2026-11-19 (§3.12.7 rule 2):** the same map is also the Agents view of each project and sub-project.
+- **The tree.** From left to right: a person, each session of that person, and the task of each run. From rung M3, an orchestrator's session sits to the left of the sessions that it dispatched, also across people. From rung M4, a session opens into its sub-agents.
+- **A session node.** It shows the name (`agent_label`, else "Unnamed session"), the client, the machine, the model, the state chip and the time of the last event. The node key is the person, the connection and the name. So a lane that restarts under the same name keeps its node. A session with no name keys on its session key. The node id is an opaque hash, and the session key never leaves the server.
+- **A task node.** It shows the task number, the title, the run state, the age and the last line. A click opens the task. A click on a session opens its run panel, where the controls already are.
+- **Quiet runs fold.** A run with no event for 2 hours folds into one line under its session, for example "12 quiet runs, newest 3 h ago". A run that is `waiting` does not fold. The switch "Show quiet runs" opens them, and an ended run leaves the map. On 2026-11-17, most of the 50 newest open runs of HathiLabs were stale. Without the fold, the map is a wall of old work.
+- **An orchestrator in a quiet stretch.** An orchestrator works in bursts between events. Before a long wait, it posts `waiting` on `agent` (1045a). So its node reads "waiting" with its last event time. The map never calls a quiet run lost. Only the stranded sweep (SW-10a) marks a run stranded.
+- **Group by machine.** From rung M2, a switch groups the sessions by machine, so the owner sees what runs on each box.
+- **Read only.** No control on the map acts on an agent. A layout function places the nodes, and the map stores no position. **Clarified 2026-11-19 (§3.12.7 rule 7):** a click on a session opens its run panel. The panel holds Open session, Steer and the controls of SW-86.
+- **Fresh.** The map reads again every 30 seconds while the tab is visible, and when the tab gets focus. It adds no event stream.
+- **Size.** The read gives at most 300 runs. Past that, it sets `truncated` and gives the count.
+- **Phone width.** Below 640 pixels, the same tree shows as an indented outline, not a canvas.
+
+#### 3.12.3 The three new facts, and who writes them
+
+**The machine and the model (SW-104).** `claim_task` and `start_agent_run` take two optional inputs, `host` and `model`, beside `agent_label`. The agent sends the same values on each claim and each start. The gateway cleans each value as it cleans `agent_label`, with no control character and at most 60 characters. Two nullable columns on `pm_agent_runs` hold them.
+
+The connection name of a box token wins over `host`, and the map marks that machine "checked". A machine that the agent names itself reads "reported".
+
+**The writer (SW-105).** The agent knows its model and the name of its machine. The protocol block (SW-56), the `work_on_task` steps and the playbook ask each session to send its name, its machine and its model. The plugin of SW-82 can fill them when it ships. A session that sends nothing reads "Not reported".
+
+**Who dispatched whom (SW-107).** `claim_task` and `start_agent_run` take one more optional input, `dispatched_by`. It is the run id of the session that handed the task out. A nullable column `dispatched_by_run_id` holds it.
+
+The gateway keeps it only when the run is in the caller's organization, is not the run itself, and makes no loop within 5 steps. A bad value never fails the claim. The result drops the value and carries a `warning`.
+
+**The orchestrator's rule (SW-108).** An orchestrator holds a run on a coordination task of its own, and posts `waiting` before each quiet stretch. Each hand-off names its run id. The lane sends that id as `dispatched_by`, and keeps it in its note header. So a lane that restarts finds its dispatcher. An orchestrator with no run has no node, and its lanes show as roots under their people.
+
+**A line outlives a run.** A line joins the dispatcher's session node, not its run. So a new run of the same orchestrator keeps the lines of its earlier runs. The lease rule stays (§3.1). If the lease of a coordination task ends, the orchestrator's next claim takes the task back, and the map keeps its node.
+
+#### 3.12.4 The rules
+
+1. **D12 holds, and an unseen run leaves no trace.** The map reads the runs through the `seen` text of the overview (`_SEEN_RUNS_SQL`, AGA-7). A person shows only with a run that the viewer can see. A line to a run that the viewer cannot see drops with its node. The map then names no session, person or machine of that run. Fence: `tests/unit/test_agent_map_r8.py` (new).
+2. **The new facts grant nothing.** `agent_host`, `agent_host_kind` (2026-11-19), `agent_model` and `dispatched_by_run_id` are display data, as `agent_label` is (D140.2). No authorization check and no visibility seam reads them. Fence: `tests/unit/test_agent_label_fence.py`, extended to the four columns (§3.7).
+3. **Each read treats them as untrusted text.** Each MCP read gives them as `untrusted_text`. The chat read frames them as data.
+4. **No model name for Metorite's own agents.** A built-in or org agent never shows a model or a tier name (the lean rule of AGA-9). If they join the map (Q21), the machine reads "Metorite" and the model reads "Metorite AI".
+5. **No address.** The map never shows `last_seen_addr` or any other network address of a machine.
+6. **One look.** The state chips come from `agentStateChip` of `statusAccent.ts`. The canvas is `@xyflow/react`, which Workflows already uses. No layout library joins. A pure function places the nodes, and a vitest proves it.
+7. **Chat parity.** The assistant answers "which agents run where, and on what?" from the same read. It is a class A read in `skill_projects/manifest.py`.
+
+#### 3.12.5 The ladder (D211)
+
+The map track follows MCP rung 3 (demo task 2897), which gives the list. Each rung ends in a demo on production. Rung M1 uses only facts that exist today.
+
+| Rung | What the owner sees on production | Slices |
+|---|---|---|
+| **M1. Who runs what** (demo task 3619) | Projects, Agents at work, Map, and the Agents view of any project (amended 2026-11-19). Each person, each session by name, and the task of each run with its state. Quiet runs fold into one line. A click on a session opens its run panel | SW-101, SW-102, SW-103, SW-112 |
+| **M2. Where, and on which model** (demo task 3620) | Each session shows its machine and its model, for example "box-loop · metorite-home · Sonnet 5.5". A badge shows the kind of machine: computer, server or cloud (2026-11-19). A switch groups the map by machine | SW-104, SW-105, SW-106. Q19 |
+| **M3. Who dispatched whom** (demo task 3621) | The orchestrator sits at the left, with a line to each lane that it dispatched, also a lane of another person. An orchestrator reads the same map through the MCP (2026-11-19) | SW-107, SW-108, SW-109, SW-113. Q20 |
+| **M4. Sub-agents and machines** (demo task 3622) | A lane opens into its implementer, its verifier and its reviewer, each with its model. A machine opens its health card | SW-39 (task 3799), SW-114, SW-110. It needs SW-77 |
+| **M5. Steer from the map** (demo task 3798, 2026-11-19) | Open a project, then Agents, then a session. Send a steer, and the next line of the lane answers it. Open session goes into a Claude Code session of the viewer's own account | SW-64, SW-86. Q22 |
+| Later | Metorite's own agents join the map | SW-111. Q21 |
+
+#### 3.12.6 What this section could not settle
+
+- **A longer lease for a coordination run.** The lease rule stays. When the stranded sweep is on (SW-10b), it may flag a quiet coordination run. 1045a keeps a run `waiting` for up to 120 minutes after each post. If that is not enough, a later slice may exempt a run that posts `waiting`.
+- **A model that changes during a run.** A session sends its model at each claim. A change in the middle of a run shows at the next claim.
+- **The cost of each agent.** Cost stays "unknown" (§3.6).
+- **SW-51.** The map read of SW-102 holds the rows that SW-51 groups. Item 6 of SW-51 says how SW-51 reads the same data.
+
+#### 3.12.7 The Agents view on each project, the place, and the way into a session (task 3794, 2026-11-19)
+
+The owner asked for this on 2026-11-19, in chat. The words are the owner's, so they sit in a block that the linter does not read.
+
+```text
+an agent-person graph in the projects app, where we can see all the
+different agents and the location of those agents (particularly which VPS
+or which computer they're connected to, and who is orchestrating that
+particular agent across). We are able to see what subagents are being
+orchestrated by a particular orchestrator. [...] so that we might, if
+wanted, go to that particular session of the agent and steer it from there.
+[...] For every project and sub-project, we should be able to see this kind
+of agent graph view as well, in addition to the timeline, list, board, etc.
+```
+
+**The answer.** §3.12 already plans the map: the person, the session, the task, the machine, the model and who dispatched whom. This ask adds four things. The map becomes a view of each project and sub-project. The machine gets a kind, and sub-agents get a writer. The MCP gets a read of the map, and the way into a session joins the map.
+
+**Who owns what.** This section owns the Agents canvas of each project (SW-112). `agents_view.md` (WS-AGA) still owns the member view and its read `GET /projects/agents/overview` (AGA-7). SW-102 adds `project_id` to that read, so a change to the route follows both specs.
+
+**What already serves the ask.** Read on 2026-11-19, from origin/main `fe470c832` and from a board search by another session.
+
+| The ask | Today | Slices |
+|---|---|---|
+| Which agent works on which task, and for whom | Planned, rung M1. Nothing is built | SW-102, SW-103 |
+| Which machine, and which model | Planned, rung M2. The kind of machine is new | SW-104 to SW-106 |
+| Which orchestrator dispatched which agent | Planned, rung M3 | SW-107 to SW-109 |
+| The sub-agents of each agent | Planned with no writer. SW-39 had no row and no task. It is now task 3799 | SW-39, SW-114, SW-110 |
+| A view on each project and sub-project | Not planned. The map lived only in Agents at work | SW-112 (new) |
+| The map in the MCP | Not planned. Only a chat read, and new fields on `list_agent_runs` | SW-113 (new) |
+| A link into the session | Built. A run keeps an `external_link` (CIV-14a), and `AgentRunPanel.tsx` draws it with its host | No slice |
+| A steer to the agent | Planned. The notice of SW-64 and the Steer control of SW-86. A board search on 2026-11-19 did not find their tasks 1910 and 1931. Task 3378 lists where the board audit of 2026-11-12 moved old slices | SW-64, SW-86 |
+
+**The rules.**
+
+1. **One map, two scopes.** The Agents view of a project draws the map of SW-103 from the read of SW-102. The read takes an optional `project_id`. With it, the scope is the runs on the visible tasks of that project and its sub-projects. The read uses the subtree and visibility text of `GET /projects/{project_id}/agent-summary` (`_SUMMARY_SQL`). A project that the viewer cannot see answers 404. Without `project_id`, the read is the fleet map of Agents at work.
+2. **A seventh canvas.** The canvases of Projects are Overview, Board, List, Table, Calendar and Timeline (`VIEW_MODES` in `lib/commands.ts`). SW-112 adds `agents`, with the key sequence `v a`, which is free on 2026-11-19. It is a canvas, not a saved view type. The check on `pm_views.view_type` allows `list` and `board` only (`146_projects.sql`), so the slice needs no migration. The canvas has no group-by and no lanes, and My Tasks shows no Agents tab.
+3. **The tab shows only where agents work.** The Agents tab shows when the scope has an agent run that the viewer can see, at any age. The Overview hides its agent panels by the same rule (`overviewShown` in `lib/overviewLive.ts`, RA-3). With the flag off, the tab draws nothing, as the lens does today.
+4. **A line that leaves the project.** An orchestrator often holds its run on a task of another project. The viewer may see that run (§3.12.4 rule 1). Then its session shows at the left edge, with the mark "Outside this project". Its tasks do not show. When the viewer cannot see that run, the line drops, and nothing names the run.
+5. **The kind of machine.** SW-104 takes a third optional input, `host_kind`, with one of three values:
+   - `computer`: the PC or laptop of a person.
+   - `server`: a VPS or a box, such as metorite-home.
+   - `cloud`: a hosted agent sandbox, such as Claude Code on the web.
+
+   The kind is reported display data under the rules of §3.12.4. A box token sets `server` and the mark "checked". The map draws the machine as a badge on the session node: the icon of the kind, then the name. "Group by machine" groups by the kind, then by the name.
+6. **The name of a machine.** The agent sends a short name that its member chooses, such as "VJ laptop". The plugin sends the host name of the OS only when the member set no name. The map shows no network address (§3.12.4 rule 5).
+7. **The canvas acts on nothing, and the run panel holds every act.** A click on a session node opens its run panel (`AgentRunPanel.tsx`). The panel holds three ways in:
+   - **Open session.** The `external_link` of the run, with its host. With Remote Control on, the link of a Claude Code session is `https://claude.ai/code/<session id>`. The Remote Control docs show a session in the Claude apps of the account that runs it, and name no way in for another account. So for any other viewer, the panel says "Opens for the Claude account of <member>".
+   - **Steer.** A notice of SW-64. The agent reads it at its next Metorite call, on any machine, with no link.
+   - **The controls of SW-86.** Pause, Take over, and Hand to another agent.
+8. **A steer names its target and reaches one run.** Before it sends, the steer form names the session, the person, the machine and the task. A steer to an orchestrator does not reach its sub-agents. A child run takes no steer, so a person steers its parent.
+9. **What waits on a person comes first.** Under each person, a session that waits on the viewer sorts first, then a working session, then a quiet one. The chips stay those of §3.12.4 rule 6.
+10. **The writer of the name, the machine, the model and the link.** Claude Code gives each value to a hook:
+    - The `SessionStart` hook input carries `model`, and it can be absent. The status line input carries `model.display_name`.
+    - The hook reads the host name from the OS.
+    - While Remote Control is on, `CLAUDE_CODE_BRIDGE_SESSION_ID` holds the id in the session URL (Claude Code 2.1.199 or later).
+
+    The `SessionStart` hook of the plugin (SW-82) gives these values to the agent as context. The agent sends them on each claim and each start (SW-105). The session-start hook of this repository can do the same before the plugin ships.
+11. **The writer of sub-agents.** A sub-agent of Claude Code makes no claim, so two hooks of the plugin report it: `SubagentStart` and `SubagentStop`. Their input carries `session_id`, `agent_id` and `agent_type`, and no model (Claude Code docs, `hooks`, read 2026-11-19). SW-114 checks the fields at dispatch. The hook reads the run id of the parent from the local cache of SW-83. It calls the new edge tool `report_subagent`, which writes or ends a child run of SW-39 (SW-114).
+12. **The map in the MCP.** The edge tool `get_agent_map` gives the read of SW-102 to an agent (SW-113). The read has the scope and the visibility of the member of the agent. An orchestrator reads it before it dispatches, to see which sessions work on which project. Each name, machine and model in it is `untrusted_text` (§3.12.4 rule 3).
+13. **The map is not an org chart.** It draws who dispatched whom, from the facts that agents report. No agent hires an agent, and no line grants anything (§2.2, §3.12.4 rule 2).
+
+**Ideas from other products.** Appendix C compares eleven products. None of them shows the person, the machine, the dispatcher, the sub-agents and a steer in one view. This section takes five ideas:
+
+- A session state from the last event, with quiet runs folded (Linear, VS Code). §3.12.2 already folds quiet runs.
+- A child run with a parent run id (LangSmith run trees). SW-39.
+- The machine as a badge on the agent, not as a node of its own (VS Code, Claude Code Remote Control). Rule 5.
+- Read only for other people by default, with one switch for a steer (Cursor team follow-ups). Q22.
+- What waits on a person comes first (Linear `awaitingInput`, Happy). Rule 9.
+
+**What this section could not settle.**
+
+- **The way a hook calls Metorite.** The docs do not say whether a hook of the type `mcp_tool` calls through the MCP connection of its session. If it does not, the hook uses the type `http` with the bearer of the plugin's MCP config. SW-114 checks this on a real Claude Code at dispatch.
+- **A link that another person opens.** The Remote Control docs name no way for another account to open a local session. A cloud session of a Team or Enterprise plan with Team visibility opens for teammates. For a local session, the steer of SW-64 is the way in for another person.
+- **The model of a sub-agent.** The hook input has no model. A child run reads "Not reported" unless its agent definition names a model.
+- **The tasks of SW-64 and SW-86.** A board search on 2026-11-19 did not find tasks 1910 and 1931. Read task 3378 before rung M5 starts, and file new tasks if the slices are gone.
+
+### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
+
+**Source.** The repository `KKKKhazix/agent-autoloop` (third party, MIT, TypeScript, created 2026-11-03). The notes are the comment "Research notes, 2026-11-09 (agent-autoloop)" on epic 321. They come from the English README, the protocol doc, the Claude plugin and the MCP command of that repository.
+
+**What it does.** One local hub runs command-line agents (Claude Code, Codex, ACP) in rounds. A cron time, a webhook or an issue becomes an event. A rule in `rules.json` picks the agent, the folder, the skill and the access. A worker runs one round as `claude -p --resume <session> --output-format stream-json`. Then the process exits. The last message of the agent is a receipt. An answer or a timer starts the next round in the same session. SQLite holds all state as an append-only fact log.
+
+**What we already plan.**
+
+| agent-autoloop | Metorite |
+|---|---|
+| An `ask` card. The answer resumes the session | `ask_on_task` and the answer watcher of CIV-14f (task 1731) |
+| "A round never waits". The agent exits during a wait | SW-60 (CI park, task 1902) and SW-66 (park on a merge, a run or a time, task 1912) |
+| Each round ends with one receipt | SW-61 dispositions (task 1903) |
+| The worker starts the rounds | SW-78 runner (task 1924) and SW-79 recover (task 1925) |
+| An `ask` key: no second card while one is open | SW-74 merged questions (task 1920) |
+| Pause a rule | SW-96 kill switch (task 1942) |
+| Outside text never enters the prompt | `untrusted_text` on each MCP field |
+| Delivery: review, CI, merge, deploy, check the live version | lane-merge, `stop_the_line.sh`, SW-71 and SW-72 |
+
+**What we take.** Each item changes one slice. §5.11 holds the text.
+
+1. **A hop limit (SW-95).** An event that an agent causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap, the hub records the event, starts nothing and sends one notice. The old guards catch a repeated call and a write rate. They do not catch a chain of agent, task and agent. SW-30a and SW-65 make that chain possible.
+2. **Retry in the same session, with backoff (SW-78).** A failed round retries after 5 minutes. The wait doubles up to 1 hour. The owner hears at the 3rd failure in a row. The retries stop at the 10th. A round that resumed and then broke retries in the SAME session, so done work is not done again.
+3. **Usage for each round (SW-38).** The `result` line of `stream-json` gives `usage` and `total_cost_usd`. On a resumed session, Claude Code reports the cost of the whole session. So the runner subtracts the total from before the round. A field that is not reported stays unknown, never zero.
+4. **Rules decide where an agent runs (SW-67 and SW-78).** The hub refuses an event that carries `cwd`, `agent` or `access`. For SW-78, the lane record sets the worktree, the model and the permission mode. The task text never sets them.
+
+**What we do not take.**
+
+- **The tool itself.** It is a second system for cards, channels and dispatch. Metorite owns all three, and the owner approves only in Metorite.
+- **Its install path and its access.** The installer pipes a script from GitHub into the shell. Its `full` access runs Claude Code with `bypassPermissions`.
+- **Its delivery plugin.** It merges on a label. Our gate forbids `--auto` and needs a green check that someone read.
+- **Its deterministic kernel and simulation suite.** The engineering is good. We do not need it.
+
+**Not verified.** We did not install or run it. The star count (about 4.2k) and its test claims come from its README.
+
+**Fence.** Advisory (R7). The slices above name their own fences.
 
 ---
 
@@ -835,6 +1056,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 #### SW-5 · Show the lease on the board and in the MCP tools
 
 - **Built.** `held_by` on `get_task` and `list_tasks`, the `unheld` filter, the fixed text of a 409 `task_held`, and the Release button (EA-14a).
+- **Status (2026-11-22).** Built on branch `sw5-lease-holder`, a merge of the owner's `mt-1e216ad0-sw5-lease-holder`. The card draws "Worked by <client> (<label>) for <member> since <time>" (`agentHolder.ts`). The run panel draws main's line "Held by <who>" with the client (`heldByLine`, SW-4), and no start time. The board has the buttons "Held by an agent" and "Free". They send `agent_focus=held` and `agent_focus=free`, and the gateway reads `unheld_clause` for both (`HOLD_FOCI`). The MCP tools `get_task` and `list_tasks` carry the hold facts as `held_by` on main (EA-14a). The `claim_task` and `start_agent_run` descriptions carry "A 409 means another agent holds this task. Do not retry. Pick another task." Not built: the structured holder in the 409. Main hides the holder from the agent on purpose (`tools.py`), by owner decision. Open: the `visual-review` pass and the owner preview.
 - **Scope left.**
   1. List what EA-13g already draws. Read `agentCardLook.ts` and `TaskBoard.tsx`. By `external_agent_access.md` §12.2 item 7, the card draws an edge for each run state. For `working` and `answered` it draws a live line with the client glyph and `agent_note`. It draws "Needs you" with the question, and "<client> idle". The panel has the Release button (EA-14a). That list names no member and no start time for the holder.
   2. Add only what is missing: a holder line on the card and in the task panel, "Worked by <client> for <member> since <time>".
@@ -1037,6 +1259,15 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** An agent sets and updates a plan over the MCP, and the card shows the progress. Tests cover the replace, the caps and a step text that is untrusted.
 - **Fence.** `test_agent_runs_r8.py`, the edge coverage fence, and a vitest for the card line.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
+- **Status.** BUILT, 2026-11-11, task 1049, branch `mt-f4ce39a1-run-plan`. It is not merged yet.
+- **As built (SW-32).**
+  - **The column.** Migration `481_agent_run_plan.sql` adds `pm_agent_runs.plan JSONB NULL` and the CHECK `pm_agent_runs_plan_shape` (an array of at most 30). No default, no backfill. The ledger number was 423 on 2026-11-12. On 2026-11-22 main held 475 and open pull requests held 476 to 480, so the file is 481. `premerge.sh` checks it again.
+  - **The route.** `PUT /projects/agent-runs/{run_id}/plan` with `{steps}` (`agent_runs.set_run_plan`). The pair is in `MCP_WRITE_ROUTES`. Only an agent calls it, and `_write_activity` refuses a run of another member (403) and a run that ended (409). Over 30 steps, a step over 200 characters, an empty step and an unknown status are 422. An empty list clears the plan. The route sits behind the runs flag (`agent_runs_enabled`), and the slice adds no flag of its own.
+  - **The activity.** Each call writes one `action` activity, `set_run_plan`, with the counts `steps`, `completed` and `in_progress` as strings. The step text stays out of every activity and every comment. The cap of 20 ephemeral rows trims the old plan lines, as it trims any thought.
+  - **The tool.** `set_run_plan(run_id, steps)` in `agent_edge/tools.py`. The run that each run tool returns now holds `plan`, with each step text as untrusted text.
+  - **The card.** `GET` task rows carry `agent_plan: {done, total, step}` (`filters.plan_summary_of`). `done` counts `completed` and `canceled`, so a plan that dropped a step can still read "7 of 7". `step` is the first `inProgress` step, cut to 80 characters. The live line of a working card reads "Claude Code · <step> · 3 of 7" (`agentCardLook`). The run panel draws the list (`AgentRunPlan.tsx`).
+  - **The coding harness (CA-2).** CA-2 is not built. It writes the same plan through the same route when it lands.
+  - **Fences.** `test_agent_runs_r8.py::TestTheRunPlan` (R8), `test_mcp_edge_run_plan.py`, the write pairs in `test_mcp_edge_coverage.py`, and the vitests `agentCardLook.test.ts` and `AgentRunPlan.test.ts`.
 
 #### SW-33 · Structured questions
 
@@ -1159,6 +1390,30 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Done when.** R8: 20 parallel calls get 20 different numbers, as the NOBYPASSRLS role. A second org never sees or moves the first org's sequence.
 - **Fence.** A new R8 suite, `test_project_sequences_r8.py`, and `test_tenant_coverage.py`.
 - **Risk.** HIGH (a new tenant table, concurrency). **Gate.** AGENT-SAFE.
+- **Owner answers (task 861, 2026-11-22, prompt e6f9f76c).** The contributor fleet may add the migration. A released number stays burned: no code lowers `last_value`, so no number comes back. A reservation is `used` on the agent's call, or when a pull request that the task references merges.
+- **Slices.**
+  - **SW-27a** (this row's first slice): migration `477_pm_project_sequences.sql` (473 went to PR 2757) (`pm_project_sequences`, `pm_sequence_reservations`, FORCE RLS, no member email), and the route `POST /projects/nodes/{project_id}/sequences/{name}/reserve` in `apps/services/gateway/gateway/routes/projects/sequences.py`. One statement reserves: `INSERT ... ON CONFLICT DO UPDATE SET last_value = last_value + 1 RETURNING`. The caller sees the task, and the task is in the project or its subtree. Fence: `test_project_sequences_r8.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py`.
+  - **SW-27b** (task 3893): the MCP edge tool `reserve_number` (`agent_edge/tools.py`, `MCP_ROUTES`, the manifest). The owner said yes on 2026-11-23. The pair is in `MCP_WRITE_ROUTES`, so `projects:write`, the nonce and the write cap apply. The route reads the reach of the agent through `resolve_visibility`, so a pinned connection reserves only in its pins. Each call takes a new number, so the tool is not idempotent. Fences: `test_mcp_edge_reserve_r8.py` (R8: two calls at once get two numbers, the pins, a read-only token, a second org) and `test_mcp_edge_coverage.py`.
+  - **SW-27c** (task 3894): the `used` and `released` marks, and the Needs attention kind for an unused reservation on a closed task. The audit of 2026-11-24 cut it into three slices. The owner took all six recommendations on 2026-11-25 (answer eaa5ee55 on task 3894):
+    1. A reservation names only the caller's own run, by the rule of `checks._own_run`: the same member, client, connection and session. The reserve route checks this too (SW-27c1).
+    2. A release follows the Release rule of `agent_runs.may_end_run`: the run's member, an assignee of the task or an org admin. An agent releases only the numbers of its own run.
+    3. A merge marks each `reserved` number of the task used. The number must be reserved at or before the merge. A closed pull request that did not merge marks nothing.
+    4. The chat release comes later. Its route goes in PENDING_OP6 (D-OP-9).
+    5. One MCP tool, `mark_number`, takes `state` `used` or `released`.
+    6. Needs attention shows a reserved number whose task is done or cancelled (`filters.task_closed_sql`). It has no flag, and the owner previews it before the merge.
+  - **SW-27c2** (task 3894): a merge marks the numbers used. `github_sync.apply_pull_request` is the one write path of the webhook, the poll and the lazy read. It calls `mark_reservations_used` in the transaction of the write, for the tasks whose reference moved INTO `merged`. It runs apart from `github_merge.on_merged`, because that rule skips a task that is already done or that a person runs. **Done when:** a merge marks the task's reserved numbers used, with `used_at`. A close with no merge marks nothing. A number reserved after the merge stays reserved. A released number stays released, and another task's number does not move. A second delivery does not change `used_at`. A task that is already done is still marked. No migration, no flag and no UI. **Scope: an org on the GitHub App.** The token path of TR-1 (`refs.refresh_from_github`) writes the state with its own UPDATE and marks no number. It serves an org with a token row, and every org while `GITHUB_APP_ENABLED` is off. Merge-to-Done (§12) has the same limit. SW-27c3 must not show such a number as a false alarm. The table now has two writers: the reserve route and `github_sync.mark_reservations_used`. The comment of migration 477 names only the first. Fence: `test_sequence_merge_r8.py` (U1 to U6 and U3b, five named mutations) and `test_github_merge_r8.py`. STANDARD, built with Opus, because the seam is shared (`github_integration.md` §12.1).
+  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The route `POST /projects/reservations/{reservation_id}/mark` takes `state` `used` or `released`. The MCP tool `mark_number` calls it, and the pair is in `MCP_WRITE_ROUTES`.
+    - Only a signed agent marks, and only the numbers that its own run reserved (`checks.own_run`: the same member, client, connection and session). A person gets 403. A person's release is SW-27c3.
+    - The reserve route checks decision 1 too. A named run must be the caller's own, so a person names no run. This tightens SW-27a.
+    - The same mark twice changes nothing. A number that is already used or released cannot change (409). A released number is burned.
+    - **Dark.** The flag `sequence_marks_orgs` is empty by default. Its one reader is `agent_oauth.sequence_marks_allowed`. Off, the edge hides the tool, and the route answers 404 for a signed agent (`docs/flag_reload.md`).
+    - **Done when:** the own run marks used, and a second mark changes nothing. A released number cannot become used. Another connection, or a number with no run, gets "not yours". A person gets 403. The flag off hides the tool and the route. A number outside the pins, or one that does not exist, is not found. The reserve refuses a run that is not the caller's.
+    - Fence: `test_mcp_edge_reserve_r8.py` (r6, r6b, m1 to m6, four named mutations), `test_project_sequences_r8.py` and `test_mcp_edge_coverage.py`. STANDARD, built with Opus, because it edits `MCP_ROUTES`.
+  - **SW-27c3** (task 3939): decisions 2, 4 and 6. The Needs attention kind, and a person's release. Seams: `routes/projects/needs_attention.py`, `needsAttention.ts`, the chat tool `needs_attention`, and `external_agent_access.md` §12.7. SW-26 also plans a kind. It starts after SW-27c1.
+  - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
+  - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
+- **Non-goals.** No number comes back. No sequence spans two projects or two orgs. Neither table holds a member email.
+- **Rung.** Multi-agent safety (§ order list item 6): it ends the R1 class of number clash at its source. Its demo: two agents reserve a migration number at the same moment and get two numbers.
 
 #### SW-35 · Triage suggestions
 
@@ -1199,12 +1454,14 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** As task 871. The session-start hook prints the six steps of CLAUDE.md "Work under a Metorite task", and the tasks that this member's sessions hold. A PreToolUse hook on `gh pr create` reminds an agent when the body has no task URL. It warns in build and blocks in a `harden` pull request.
 - **Done when.** A `gh pr create` with no task URL gets the reminder, and the hook tests cover both paths.
 - **Risk.** LOW. **Gate.** OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30.
+- **Built (task 871), 2026-11-22, without the settings entry.** The session-start hook prints the rule in three lines, and a live read names the tasks that the member's sessions hold (reason `held_by_you`). The new hook `pr-task-url.mjs` warns with `additionalContext`, and refuses with exit 2 when `TASK_URL_BLOCK=1`. It sets no `permissionDecision`. It cannot read a body that comes from a pipe or an unset variable, so it stays silent then. `next-ticket.md` step 7 and `handoff.md` point at CLAUDE.md §4. The grant opens `guard-write` for the owner's agents only. So the contributor's fleet did not edit `.claude/settings.json`. The hook does not run until the owner adds its entry. The entry is a `PreToolUse` entry with matcher `Bash` and the command `node "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-task-url.mjs"`.
 
 #### SW-19a · The session-start hook reads Metorite
 
 - **Scope.** As task 862. `session-handoff.mjs` reads `my_work` and the `check_due` rows with a short timeout. With no answer or no credential, it prints the snapshot of SW-19b with its date. It never blocks a session and never prints a token.
 - **Fence.** `node .claude/hooks/session-handoff.test.mjs`.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-23 and SW-19b.
+- **Built (task 862), 2026-11-22.** The hook reads `my_work` with the box token in `METORITE_BOX_TOKEN` and a 4 s budget. A row with the reason `check_due` is a Check that is due. A session with no box token, no answer or any error gets the HANDOFF.md snapshot with its date and the reason. A hook cannot use the OAuth sign-in of Claude Code, so a laptop session always gets the snapshot. SW-19b is not built, so `HANDOFF.md` is still the queue of cross-session actions. A live read adds its rows above those entries and never replaces them. The token goes only to `mcp.metorite.com` over https or to this machine.
 
 #### SW-19b · Retire HANDOFF.md as a source
 
@@ -1286,6 +1543,7 @@ They keep their own gates.
 - **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test app project with open tasks and no lead shows the row.
 - **Fence.** `test_needs_attention_r8.py` holds the kind. The board moves are advisory, because no test reads production data (R7).
 - **Risk.** HIGH (a grant write). **Gate.** AGENT-SAFE for the code. OWNER-GATE for the lead writes on production (CLAUDE.md §3a rule 3).
+- **Built (item 4, the code part), 2026-11-07.** The Needs attention kind `no_lead` ("App projects with no lead") is in `needs_attention.py`. It lists a direct child of an app root with open tasks and no lead of its own. Only a caller who passes `authority.may_write_grant` gets the row. Its one act is Open project. `authority.no_lead_sql` holds the lead test. The flag `APP_OWNER_ROOT_ORGS` holds `org_id=root_project_id` pairs, and it is empty by default, so the kind is dark. A SIGHUP reload applies a change. Items 1 to 3 (the board moves and the lead writes) and the flag value stay with the owner.
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
@@ -1362,6 +1620,7 @@ They keep their own gates.
   3. A Fleet tab in the Agents panel (SW-8). No new nav pane.
   4. A class A chat read in `skill_projects/manifest.py`.
   5. The member view of agents (WS-AGA) folds into this tab (replan of 2026-11-09). AGA-1 and AGA-7 to AGA-10 become sections of the Fleet tab, and the rest of the AGA tree is parked.
+  6. The map read of SW-102 (§3.12) holds the rows that this slice groups. If SW-102 lands first, SW-51 reads it and adds no `group_by` of its own.
 - **Done when.** R8 with two members and two apps under two different roots: the owner sees both apps and the lead sees only theirs. No row shows a task the viewer cannot see. `visual-review` passes at four widths.
 - **Fence.** `test_projects_agent_focus_r8.py`, `test_projects_chat_coverage.py`, and a vitest for the tab.
 - **Risk.** HIGH (visibility across the organization, as AP-12). **Gate.** AGENT-SAFE. D145 owner preview, because the tab is a new screen. **Depends on.** SW-8, SW-45, SW-50.
@@ -1459,6 +1718,7 @@ They keep their own gates.
 - **Done when.** Hook tests with transcript fixtures: a claim with no disposition blocks once and then passes. A claim with a release passes. A claim with a 409 passes. A session with no claim passes. An interactive session passes. The message holds the four names.
 - **Fence.** `node .claude/hooks/stop-children.test.mjs` (the test file of the hook, extended). `test_mcp_edge_context.py` holds the protocol line of SW-56. A hook that cannot read the transcript passes and logs, so it never traps a session.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30. **Depends on.** PR 1763 (task 1828), SW-56.
+- **As built (2026-11-25).** `.claude/hooks/stop-disposition.mjs` holds the check. `stop-children.mjs` calls it, so the Stop entry that exists needs no edit, and no `guard-write` is used. The background marker is `CLAUDE_JOB_DIR`. A `waiting` post counts as a park on `ci`, or with `wake_on` (SW-66). The SW-56 block already carries the question line (protocol version 3), so the server is unchanged. Fence: `node .claude/hooks/stop-disposition.test.mjs`, run in pr-check.
 
 #### SW-62 · The first sweep writes one digest, and the owner can release the runs of ended sessions
 
@@ -1609,9 +1869,9 @@ They keep their own gates.
 #### SW-78 · The runner
 
 - **Metorite task.** 1924.
-- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
+- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a run on the server for a queued or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). SW-77 defines the scope. Release 2 depends on SW-77. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. **Retry (widened by SW-0d, §3.13).** A failed round retries in the same session, with backoff: 5 minutes, doubling up to 1 hour. The owner gets a notice at the 3rd failure in a row, and the retries stop at the 10th. The runner does not stop the old session until the new start succeeds. The lane record sets the worktree, the model and the permission mode. The task text never sets them. It keeps the secret in the box's secret store and reads no OAuth token. Later it also starts a session for a ready slice that has no run (pull start, SW-100).
 - **Workstation order (D195 Q7).** The first path for a non-developer is one workstation with this runner (path B of the design): EA-19 first, then this slice. Cloud agents (WS-56) come later. Advisory (R7).
-- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll. **Pull start (SW-100, task 2527).** A fake queue of three ready slices and a lane with two free slots gives two starts. An empty queue gives none. A queue that reads `account_limit`, `box_memory` or `review_cap` gives none. The runner test of SW-100 holds these cases, and release 2 is not done until it passes.
+- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one start for one run, with the read-only token, and no wake of an old session. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll. A fake `claude` that fails 3 times gives one notice. It fails 10 times and then gets no new start. Each retry uses the same session id. **Pull start (SW-100, task 2527).** A fake queue of three ready slices and a lane with two free slots gives two starts. An empty queue gives none. A queue that reads `account_limit`, `box_memory` or `review_cap` gives none. The runner test of SW-100 holds these cases, and release 2 is not done until it passes.
 - **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path. The pull-start cases above run in the runner test of SW-100.
 - **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. Minting the second token on a live box is an owner act. The install on the home box is `deploy`. **Depends on.** Release 1: task 1731 and EA-19. Release 2: also SW-77, SW-64, SW-67 and SW-68.
 
@@ -1756,12 +2016,20 @@ They keep their own gates.
   - **Pause.** A member writes `agents_paused` for self with the value true only. A resume or a clear by a member gets 403, so a member cannot lift a pause that an admin holds. An admin writes both.
   - **Not yet.** `agent_policies.FLAGS_NOT_YET` names each master flag that is not a `Settings` field yet. The slice that adds the field takes its name off the list.
 
+#### SW-38 · Usage for each round
+
+- **Metorite task.** 1064.
+- **Scope.** Run-time and credit caps for each agent, a stop signal, and cost on the roster (§3.13, SW-0d). The runner reads the usage of a round from the `result` line of `stream-json`: `usage` (input, output and cache tokens) and `total_cost_usd`. On a resumed session, Claude Code reports the cost of the whole session. So the runner subtracts the session total from before the round. A field that is not reported stays unknown, never zero. SW-95 uses the stop signal of this slice.
+- **Done when.** A fake `stream-json` of a resumed session gives the cost of the round and not of the session. A result line with no cost gives "unknown".
+- **Fence.** Advisory (R7) until the slice writes its test. The slice names the test file at dispatch.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** SW-78.
+
 #### SW-95 · Day budgets and loop guards
 
 - **Metorite task.** 1941.
-- **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store.
-- **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed.
-- **Fence.** `test_agent_budgets_r8.py` (new).
+- **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store. **A hop limit (widened by SW-0d, §3.13).** A run or a task that an agent's action causes carries `hops + 1`. The count carries through answers and timers, and an agent cannot reset it. Past the cap from the policy store, Metorite starts no run and writes one notice.
+- **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed. A chain of runs past the hop cap starts no run, and writes one notice.
+- **Fence.** `test_agent_budgets_r8.py` (new). The hop cases run in the same file.
 - **Risk.** HIGH (it stops runs). **Gate.** AGENT-SAFE dark. The master flag is `AGENT_BUDGET_MODES`, default off, and the policy `budget_mode` is at or below it. The flip to `stop` is OWNER-GATE `enforcement-flip`, and the slice registers the flag in `work_plan.md` §6. **Depends on.** SW-38 (task 1064), SW-94, SW-67.
 
 #### SW-96 · A kill switch
@@ -1811,6 +2079,180 @@ They keep their own gates.
 | A VS Code panel | The fleet beside the editor | SW-82 and SW-86 in use |
 | Moving the grant window into the policy store | `OWNER_GRANTS.md` as data | An owner decision (Q17) |
 | A login-to-member map for GitHub | Needed to let a merge by the lead land in Done (SW-55) | Nothing plans it |
+
+### 5.12 The orchestration map
+
+**Source.** §3.12 and the owner's ask of 2026-11-17 (task 3617). Each slice below has a task in Backlog under epic 321, and each slice blocks the demo task of its rung. The common rules of §5.11 hold. Each new input of an MCP tool is optional, so an old client works with no change. The map and its read stay behind `AGENT_MAP_ORGS`, default none.
+
+**Amended 2026-11-19 (task 3794).** SW-112, SW-113 and SW-114 are new, and SW-39 gets its row here. SW-102, SW-104 and SW-105 widen their scope.
+
+#### SW-101 · The plan of the map
+
+- **Metorite task.** 3617.
+- **Scope.** §3.12, §5.12, §7.2, §8.2, item 6 of SW-51, one row of §3.7, the INDEX row, and a task for each slice and each rung.
+- **Done when.** The doc tests pass, and each slice row names its task.
+- **Fence.** `test_index_completeness.py`, `test_doc_names_resolve.py`, `test_index_union.py` and `node .claude/hooks/ste-lint.mjs`.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** None.
+
+#### SW-101b · The plan of the Agents view, the place and the way into a session
+
+- **Metorite task.** 3794.
+- **Scope.** §3.12.7 and Appendix C. The amended lines of §3.12.2 and §3.12.5, and the wider scope of SW-102, SW-104 and SW-105. The rows SW-112, SW-113, SW-39 and SW-114, with their rows in §7.2. Q22, the INDEX row, and a task for each new slice and rung.
+- **Done when.** The doc tests pass, and each new row names its task.
+- **Fence.** The fence of SW-101.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-101.
+
+#### SW-102 · The map read
+
+- **Metorite task.** 3623.
+- **Scope.** A `shape=map` answer on `GET /projects/agents/overview` in `agent_summary.py` (AGA-7). It reads the runs through the same `seen` text, `_SEEN_RUNS_SQL`. It gives people, session nodes with the key of §3.12.2, runs, and lines once SW-107 fills them. It counts quiet runs, and lists them only when asked. It gives at most 300 runs, with `truncated`. One function reads `AGENT_MAP_ORGS`. Off, the shape answers 404, as the dark overview does. A class A chat read joins `skill_projects/manifest.py`. Add no second route. **Amended 2026-11-19 (§3.12.7 rule 1):** the read also takes an optional `project_id`. It then reads the runs on the visible tasks of that project and its sub-projects, through the subtree and visibility text of `_SUMMARY_SQL`. A project that the caller cannot see answers 404.
+- **Done when.** R8 with two organizations, an admin, a lead and a member. Each sees only the runs that the overview gives them. A person with no visible run has no node. No answer holds a session key. The 301st run sets `truncated`. With `project_id`, a member who cannot see the project gets 404, and the runs of a sub-project show in the scope of its parent.
+- **Fence.** `tests/unit/test_agent_map_r8.py` (new), `tests/unit/test_observability_two_org_r8.py`, `tests/unit/test_projects_chat_coverage.py`.
+- **Risk.** HIGH (visibility across the organization, as SW-51). **Gate.** AGENT-SAFE, dark. **Depends on.** AGA-7 (built).
+- **Built and dark, 2026-11-20.** The route already holds a class A row in `skill_projects/manifest.py`, with the tool `agents_list` in `PLANNED`. The manifest keys on the method and the path, so the slice adds no new row and no new tool name. `lines` is an empty list until SW-107 stores `dispatched_by_run_id`.
+- **The flags.** `shape=map` needs `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. The route checks `AGENTS_VIEW_ORGS` first. With either flag off, the map answers the same 404, and the plain overview does not change. The flip of `AGENT_MAP_ORGS` is OWNER-GATE (`enforcement-flip`).
+- **The query.** The quiet opt-in is `show_quiet=true`. `truncated` counts the listed runs only, so many quiet runs can give a `count` over 300 with `truncated` false. A bad value of `shape`, `project_id` or `show_quiet` gets the same 404, after the flags.
+
+#### SW-103 · The Map view
+
+- **Metorite task.** 3624.
+- **Scope.** The switch "List | Map" in `AgentsAtWork.tsx`. `@xyflow/react`, read only, with pan and zoom. The pure function `layoutAgentMap` in `lib/agentMap.ts` places the nodes from left to right. A side sheet shows the facts of a node, and opens the task or the run panel. Below 640 pixels, the tree shows as an indented outline. Dark means absent, as in the lens today.
+- **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent. The layout gives the same positions for the same input, and no two nodes overlap.
+- **Fence.** `lib/agentMap.test.ts` (new), a vitest for the switch, `src/lib/theme/conformance.test.ts`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview, because the map is a new view. **Depends on.** SW-102.
+- **Built and dark, 2026-11-21.** The switch, the canvas, the outline and the side sheet are in the code. The side sheet shows the facts of a node and its tasks, and it opens the task. It does not open a run panel, because `AgentRunPanel` reads a task and not a session. The map shows only while `shape=map` answers, so `AGENT_MAP_ORGS` off hides it. The visual review and the owner preview are open.
+
+#### SW-104 · The machine and the model on each run
+
+- **Metorite task.** 3625.
+- **Scope.** Two nullable columns on `pm_agent_runs`: `agent_host` and `agent_model`. Each has a length CHECK, added NOT VALID and then validated. The inputs `host` and `model` on `claim_task` and `start_agent_run`, cleaned as `agent_label` is. `get_agent_run`, `list_agent_runs`, the `my_work` rows and the map read give them as `untrusted_text`. The connection name of a box token wins over `host` (SW-50). **Amended 2026-11-19 (§3.12.7 rule 5):** a third optional input, `host_kind`, takes `computer`, `server` or `cloud`. A nullable column `agent_host_kind` holds it, with a CHECK in the same migration. A box token sets `server`.
+- **Done when.** R8: a claim with both values stores them, and a later claim replaces them. A control character gets 422 at the schema. A run with no value reads null.
+- **Fence.** `tests/unit/test_agent_run_place_model_r8.py` (new), `tests/unit/test_agent_label_fence.py` (extended), `tests/unit/test_mcp_edge_coverage.py`.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** Q19. The map read needs SW-102.
+- **Built (task 3625), 2026-11-21.** Migration 470 adds the three columns. The map read is not built, because SW-102 is not on main. No box token wire exists yet (SW-50), so the claim and the start read the name of the box connection when they write.
+
+#### SW-105 · The agent sends its name, machine and model
+
+- **Metorite task.** 3626.
+- **Scope.** The protocol block of SW-56, the `work_on_task` steps and `orchestration_playbook.md` ask each session to send `agent_label`, `host` and `model` on each claim and each start. In this repository, `.claude/commands/next-ticket.md` and the lane prompts of `docs/home_box.md` say the same. The plugin of SW-82 fills them when it ships. **Amended 2026-11-19 (§3.12.7 rule 10):** the session also sends `host_kind`, and an `external_link` built from `CLAUDE_CODE_BRIDGE_SESSION_ID` while Remote Control is on. The `SessionStart` hook of the plugin gives the values to the agent as context. The session-start hook of this repository can do the same first.
+- **Done when.** A new session on the PC and one on metorite-home each show a machine and a model on the map.
+- **Fence.** `tests/unit/test_mcp_edge_prompts.py` for the protocol line. The text in this repository is advisory (R7).
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-104.
+- **Built (task 3626), 2026-11-21.** Line 1 of the protocol block asks for `agent_label`, `host`, `host_kind` and `model` (protocol version 3, and the sixth line stays free). The claim step of `work_on_task` and of the queued-work message says the same. The text in this repository (`next-ticket.md`, `home_box.md`, `lane-rules.md`, the playbook) asks for it. The `SessionStart` hook of this repository does not give the values yet.
+
+#### SW-106 · The map shows the machine and the model
+
+- **Metorite task.** 3627.
+- **Scope.** A session node shows its machine and its model. The machine reads "checked" for a box token, and "reported" otherwise. The run panel line shows them too. A switch groups the map by machine. A run with no value reads "Not reported".
+- **Built and dark, 2026-11-22.** A session node shows its machine, its kind, a "checked" or "reported" mark and its model, and "Not reported" for none. The switch "Group by machine" puts a machine node between each person and the sessions. The map read gained `host`, `host_kind`, `host_source` and `model` on each session node, from the newest run that the viewer may see. A box token (`agent_connection.credential = 'box'`) sets "checked".
+- **Built, notes.** The run panel makes no "checked" claim, because the run read has no box proof. Its line shows only when a run has a value. So "Not reported" shows for one field only when the other has a value. This slice is stacked on SW-103. The visual review and the owner preview are open.
+- **Done when.** `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
+- **Fence.** `lib/agentMap.test.ts`, `lib/agentCardLook.test.ts`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-104.
+
+#### SW-107 · Who dispatched a run
+
+- **Metorite task.** 3628.
+- **Scope.** A nullable column `pm_agent_runs.dispatched_by_run_id`, a reference to `pm_agent_runs (id)` with `ON DELETE SET NULL`. The input `dispatched_by` on `claim_task` and `start_agent_run`. The gateway reads the named run under the caller's session, so RLS hides a run of another organization. It drops the value when the run is unknown, is the run itself, or makes a loop within 5 steps. The result then carries a `warning`, and the claim works. The map read gives a line from the dispatcher's session node to the run's session node.
+- **Done when.** R8: a run of the same organization links. A run id of another organization, the run itself and a loop each drop with a warning, and the claim passes. A viewer who cannot see the dispatcher's run gets no line and no node for it.
+- **Fence.** `tests/unit/test_agent_run_dispatch_r8.py` (new), `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py` (extended).
+- **Risk.** HIGH (a migration, and a reference from one run to another). **Gate.** AGENT-SAFE. **Depends on.** SW-102, Q20.
+- **Built (task 3628), 2026-11-21.** Migration 472 adds the column and its key. The claim, the start, the runs wire and the `my_work` rows carry the value. The value leaves as an id, not as untrusted text, because the column is a uuid that the gateway checked.
+- **The map line (built, 2026-11-21).** The map read gives `lines`, each with `from` and `to`, two session nodes. A line shows only when the viewer can see both runs through `seen`, and both nodes are on the map. A line joins session nodes, so an ended dispatcher run keeps its line while its session has a node. The read takes one step and never walks the chain. Fence: `tests/unit/test_agent_map_r8.py` (`TestTheLines`).
+- **Two concurrent claims can make a loop.** Each claim passes the loop check, and neither sees the other's write. A lock would be costly for display data. So each reader that walks the dispatchers, such as SW-109, must stop after 5 steps.
+- **The cost of the delete (SW-107b, task 3860).** Without an index, each delete of a run makes Postgres scan `pm_agent_runs` to set the lines of that run to NULL. An organization delete makes one scan for each run.
+- **Decision (owner, 2026-11-23).** A plain partial index in a migration, with a `lock_timeout`, and one narrow exemption in the label fence. Not `CREATE INDEX CONCURRENTLY`.
+- **Built (task 3860), 2026-11-23.** Migration 498 adds `pm_agent_runs_dispatched_by` on `dispatched_by_run_id`, with `WHERE dispatched_by_run_id IS NOT NULL`. The label fence takes this one index, word for word, and refuses each other index that names a label column. Fence: `tests/unit/test_agent_run_dispatch_index_r8.py` (the plan uses the index, and a run delete scans no table) and `tests/unit/test_agent_label_fence.py` (the exemption).
+
+#### SW-108 · The orchestrator holds a run and names it
+
+- **Metorite task.** 3629.
+- **Scope.** `orchestration_playbook.md` and the `work_on_task` steps say three things. An orchestrator holds a run on a coordination task of its own. It posts `waiting` on `agent` before a quiet stretch. It puts its run id in each hand-off. The lane sends that id as `dispatched_by`, and keeps it in its note header. In this repository, `.claude/commands/next-ticket.md`, `docs/home_box.md` and the lane note template say the same. No HathiLabs rule enters the product text (D186.2).
+- **Done when.** The HathiLabs orchestrator and two of its lanes show their lines on the map.
+- **Fence.** Advisory (R7). The fence of `orchestration_playbook.md` §4 keeps HathiLabs rules out of the product text.
+- **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-107.
+- **Built (task 3629), 2026-11-22.** The step `DISPATCH_RULE` of `work_on_task` (runs flag on only), a paragraph of `orchestration_playbook.md` §6b, `next-ticket.md` and the note rule of `docs/home_box.md`. This slice does not change `lane-rules.md`, the lane rules of the owner's fleet. Q20 is decided. So the row builds before the map shows the lines (SW-109).
+
+#### SW-109 · The map draws who dispatched whom
+
+- **Metorite task.** 3630.
+- **Scope.** A line from an orchestrator's session node to each session that it dispatched, also across people. The layout puts an orchestrator to the left of its lanes. A lane with no dispatcher stays a root under its person. A quiet orchestrator reads "waiting" with its last event time.
+- **Done when.** `visual-review` passes at four widths. One line joins the sessions of two people. A loop in the data gives no loop in the layout.
+- **Fence.** `lib/agentMap.test.ts`.
+- **Built and dark, 2026-11-22.** Each depth, at most 4, is one session column, and the tasks of a session sit one step right of it. A dashed arrow joins a dispatcher to each lane, and the lane has no person line. A line that closes a loop drops. A quiet session reads "Waiting" with its last event time when one of its lanes is not quiet. The visual review and the owner preview are open.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-103, SW-107.
+
+#### SW-110 · Sub-agents and machine health on the map
+
+- **Metorite task.** 3631.
+- **Scope.** A session opens into the child runs of SW-39 (§3.11.9), each with its model. A machine node opens the heartbeat card of SW-77: memory, load, sessions and the time of its last report. The sessions of a machine with no report for 3 minutes read "offline", as SW-77 says.
+- **Done when.** `visual-review` passes at four widths. A child run shows only under a parent that the viewer can see.
+- **Fence.** `tests/unit/test_agent_map_r8.py` (extended), `lib/agentMap.test.ts`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-39 (task 3799), SW-114, SW-77 (task 1923).
+- **Built and dark, 2026-11-23: the half for child runs.** The map read gives `children`, the open child runs of the runs that it lists. Each child has its name, its state, its own model or null, and its age. A child shows only under a listed run of `live`, so the `seen` text decides the parent. The answer gives no machine, connection, session key or address of a child. `count` counts the parent runs only. The cap is 200 children, with `truncated`.
+- **The edge and the view.** The edge tool `get_agent_map` gives the same list, and it gives each name and model as `untrusted_text`. On the map, a session with children has a "Show N sub-agents" button. Open, the children of a session fill a grid right of its task column. Each column holds 8 rows at most. The children of one task sit together, oldest first. A line joins each child to its task. The canvas fits the view again when a session opens or closes. The phone outline lists the children under their task. The slice adds no migration and no flag. `AGENT_MAP_ORGS` keeps it dark.
+- **Not built.** The machine heartbeat card and the "offline" state of a machine wait on SW-77 (task 1923). The visual review at four widths and the owner preview are open. Nobody saw the children of a real lane on the map, because the hooks of SW-114 are not built.
+
+#### SW-111 · Metorite's own agents on the map (Later)
+
+- **Metorite task.** 3632.
+- **Scope.** Built-in and org agents join the map from the live presence that AGA-7 reads. The machine reads "Metorite". The model reads "Metorite AI", never a model or tier name.
+- **Done when.** Its row, after Q21.
+- **Risk.** STANDARD. **Gate.** Q21. **Depends on.** SW-103.
+
+#### SW-112 · The Agents view on each project and sub-project
+
+- **Metorite task.** 3795.
+- **Scope.** §3.12.7 rules 1 to 4 and rule 9. Add `agents` to `VIEW_MODES` in `lib/commands.ts`, with an icon of `lib/icons.tsx` and the key sequence `v a`. The canvas mounts the map of SW-103 with the id of the open project. The tab shows by rule 3. A session of another project shows at the left edge by rule 4. `lib/chatView.ts` takes the mode, so the chat can open the view. The tests that list the modes change in the same PR: `commands.test.ts`, `ViewTabs.test.ts` and `myTasks.test.ts`.
+- **Done when.** A project with runs in two sub-projects shows the sessions of both. The view of one sub-project shows only its own. A project with no visible run shows no Agents tab. A session that waits on the viewer sorts first. `visual-review` passes at four widths, in light mode, at compact density and under a changed accent.
+- **Fence.** `lib/agentMap.test.ts` (from SW-103), `lib/commands.test.ts`, `components/ViewTabs.test.ts`, `src/lib/theme/conformance.test.ts` and `tests/unit/test_chat_parity.py`.
+- **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark behind `AGENT_MAP_ORGS`. D145 owner preview, because the view is new. **Depends on.** SW-103, and SW-102 with `project_id`.
+- **Built and dark, 2026-11-21.** The Agents tab is the seventh canvas, with the key sequence `v a`. It draws the map of SW-103 for the selected project through `project_id`. The tab and the palette command drop out while the map read answers 404, 401 or 403. A failed read keeps the tab and shows a message with a "Read again" button. A saved view cannot hold `agents`, because `pm_views.view_type` allows `list` and `board` only. Rule 3 ("a project with no visible run shows no tab") and rule 4 ("Outside this project") are NOT built. An empty map shows the empty state instead, and the owner decides. This slice is stacked on SW-103 and needs that slice first. The visual review and the owner preview are open.
+
+#### SW-113 · The map in the MCP
+
+- **Metorite task.** 3796.
+- **Scope.** §3.12.7 rule 12. A read tool `get_agent_map` on the edge, with the optional inputs `project_id` and `show_quiet`. It joins the tool allowlist with the scope `projects:read`. It calls the read of SW-102 under the session of the member, and adds no second query. Each name, machine and model leaves as `untrusted_text`. It gives at most 300 runs, with `truncated`. A tip in the `work_on_task` steps tells an orchestrator to read the map before it dispatches.
+- **Done when.** R8 through the edge: a member gets the same nodes as the read of the UI. A project that the member cannot see gives the not-found error. No answer holds a session key. With `AGENT_MAP_ORGS` off, the tool answers as the dark read does.
+- **Fence.** `tests/unit/test_mcp_edge_coverage.py`, `tests/unit/test_agent_map_r8.py` (from SW-102, extended) and `tests/unit/test_mcp_edge_prompts.py`.
+- **Risk.** HIGH (visibility across the organization, as SW-102). **Gate.** AGENT-SAFE, dark. **Depends on.** SW-102.
+- **Built and dark, 2026-11-21.** The tool sends `shape=map` to the overview route under the session of the member. The pair `GET /projects/agents/overview` joins `MCP_ROUTES`, and the route is the one route of SW-102. The edge does not read `AGENT_MAP_ORGS`. The gateway gives one 404 for a flag that is off and for a hidden project, so the tool gives one text for both (`tools.TEXT_MAP_NOT_FOUND`). With the runs flag off, the tool gives the empty map, as the read of the UI does. A line keeps `from` and `to` only, each a node id, and the edge drops every other key. The cut at 300 lines sets `truncated` too. The tip `prompts.MAP_RULE` is held back: no prompt shows it yet. The edge does not read `AGENT_MAP_ORGS`, so it cannot show the tip only where the map works. **The slice that flips `AGENT_MAP_ORGS` adds the tip to the work step of `work_on_task`**, and changes `TestTheMapTip`.
+
+#### SW-39 · Child runs
+
+- **Metorite task.** 3799. The id SW-39 is older (§3.11.9). It had no row and no task until 2026-11-19.
+- **Scope.** §3.11.9 and §3.12.7 rule 11. One migration on `pm_agent_runs` (R1, R6):
+  - A nullable `parent_run_id`, a reference to `pm_agent_runs (id)` with `ON DELETE CASCADE`.
+  - A `kind` with the default `run` and a CHECK for `run` or `child`, added NOT VALID and then validated.
+  - The index `pm_agent_runs_one_open_per_task` (migration 289) excludes `kind = 'child'`, in the same migration.
+
+  A child run holds no lease and no claim, and it has no session key of its own. It keeps the name of its agent type in `agent_label`, and its model in `agent_model` once SW-104 lands. It ends when its parent ends. A viewer sees a child only under a parent that the viewer can see.
+- **Done when.** R8: a child starts under an open parent while the parent holds the task. A second normal run on the task still gets the lease refusal. A parent of another organization is refused. A parent that ends ends its open children. A viewer who cannot see the parent sees no child.
+- **Fence.** `tests/unit/test_agent_child_runs_r8.py` (new), `tests/unit/test_agent_runs_r8.py` and `tests/unit/test_tenant_coverage.py`.
+- **Risk.** HIGH (a migration, and the lease index). **Gate.** AGENT-SAFE. **Depends on.** None.
+- **Built (task 3799), 2026-11-22.** Migration 475 adds `kind` and `parent_run_id`, with ON DELETE CASCADE and an index on the parent. A child has no task and no app. So every read of task runs leaves it out: the lists, the holder, `unheld`, `my_work`, the counts, the sweep and the map.
+- **The lease index.** The file builds the new index, then drops the old one, then renames the new one, in one statement. So no writer sees the table with no lease index. `pm_agent_runs_one_open` needs no change, because a child has no task.
+- **The write path.** `POST /projects/agent-runs/{run_id}/children` starts a child, and `GET` on the same path reads the children. The parent must be an open task run of the same member and connection, and it must hold its task. Every miss gets one 404 with the same text. A person gets 422.
+- **The end.** `_move_run` and `_take_over` end the open children of a run that ends. The child takes the parent's status.
+- **Not built.** The edge tool, the replay key and the cap of 20 children are SW-114. The pair is not in `MCP_WRITE_ROUTES`, so no agent token reaches the route until SW-114 adds it.
+
+#### SW-114 · The plugin reports sub-agents
+
+- **Metorite task.** 3797.
+- **Scope.** §3.12.7 rule 11. A write tool `report_subagent` on the edge, with the inputs `run_id`, `agent_id`, `agent_type`, `event` (`start` or `stop`) and an optional `model`. It writes or ends a child run of SW-39 under an open run of the same connection. `agent_id` is the key, so a replayed start writes nothing. A run can hold at most 20 open children. The plugin of SW-82 gets `SubagentStart` and `SubagentStop` hooks that call the tool, with the run id from the cache of SW-83. In this repository, the same two hooks go in `.claude/settings.json`, and that edit needs the `guard-write` grant (CLAUDE.md §3a).
+- **Done when.** R8: a start writes one child, a replayed start writes none, and a stop ends the child. A run of another connection gives 403. The 21st open child gives 429. On a real Claude Code with the plugin, a lane shows its implementer and its verifier under it on the map.
+- **Fence.** `tests/unit/test_agent_child_runs_r8.py` (from SW-39), `tests/unit/test_mcp_edge_coverage.py`, and a `node` test for each hook.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE, dark. At dispatch, check the hook path of §3.12.7 ("The way a hook calls Metorite"). **Depends on.** SW-39, SW-82, SW-83.
+- **The gate as built.** The route is dark behind `AGENT_MAP_ORGS`, the flag of the map. The edge cannot read that flag, so the edge lists the tool for every org on the runs and writes flags. Where the flag is off, the gateway answers the 404 of an unknown run before any read, lock or write. The edge gives one not-found text for every 404.
+- **Built (task 3797), 2026-11-22: the tool and the gateway rules.** The edge tool `report_subagent` sends one POST to `/projects/agent-runs/{run_id}/children`. The body holds `agent_id`, `event`, `agent_label` and `model`. The pair is now in `MCP_WRITE_ROUTES`. It stays class X in the chat manifest, so the chat never sends it. The tool shows while the runs flag and the writes flag are on. The route works only for an org on `AGENT_MAP_ORGS`.
+- **The key.** The child keeps `child:<parent id>:<agent_id>` in `idempotency_key`. The unique index of migration 267 is on the organization, the member and the key, and it takes a row with no task. So the slice adds no migration. A replayed start writes nothing and answers the first child with 200.
+- **The stop.** A stop gives the open child the status `completed` and `ended_at`. A stop of an unknown or ended child answers 200 and changes nothing. The UPDATE names the parent, the key and the member, so a stop never ends another run.
+- **The cap and the refusals.** The start of a 21st open child answers 429 with a fixed text. An own run of another connection answers 403. A run of another member keeps the one 404, so the 403 tells a member only about the member's own run.
+- **Not built.** The `SubagentStart` and `SubagentStop` hooks, the plugin of SW-82, the run id cache of SW-83, and the hook entries in `.claude/settings.json`. The plugin and the cache do not exist yet. The settings edit needs the `guard-write` grant. Nobody checked the hook path of §3.12.7 on a real Claude Code, so the map of a real lane is not proven.
+- **Review notes for the hooks.**
+  - Each sub-agent costs two writes of the write cap of the connection, 120 in 10 minutes. The parent's own writes share that cap, so a lane with many sub-agents can hit it. Only the open children have a cap of 20. The total children of a run have no cap.
+  - A `start_agent_run` whose key is `child:<parent>:<agent_id>` gets 409 when it tries again. That key space is the member's own.
+  - A start with the `agent_id` of a stopped child answers the ended child, 200 with `created` false. If Claude Code uses an `agent_id` again when it resumes a sub-agent, the map shows that sub-agent as ended. Check this when the hooks are built.
 
 ---
 
@@ -1963,14 +2405,14 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-23 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_check_r8.py` (new) `tests/unit/test_mcp_edge_coverage.py` |
 | SW-24 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py tests/unit/test_agent_runs_r8.py` |
 | SW-26 | `uv run pytest -q -p no:cacheprovider tests/unit/test_conflict_radar_r8.py` (new) `tests/unit/test_needs_attention_r8.py` |
-| SW-27 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_sequences_r8.py` (new) `tests/unit/test_tenant_coverage.py` |
+| SW-27 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_sequences_r8.py` (new) `tests/unit/test_tenant_coverage.py` `tests/unit/test_mcp_edge_reserve_r8.py` `tests/unit/test_sequence_merge_r8.py` `tests/unit/test_github_merge_r8.py` |
 | SW-28 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py`, and the edge reminder test (new) |
 | SW-29a | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_delegate_r8.py` (new) `tests/unit/test_tenant_coverage.py` |
 | SW-30a | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_delegate_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | SW-31 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_guidance_r8.py` (new) `tests/unit/test_tenant_coverage.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-32 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_mcp_edge_coverage.py` |
 | SW-33 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_agent_runs_r8.py` |
-| SW-34a, SW-34b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py`, and the read-only walk (new) |
+| SW-34a, SW-34b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_resources.py`, and the read-only walk (new) |
 | SW-35 | `uv run pytest -q -p no:cacheprovider tests/unit/test_triage_suggestions.py` (new) |
 | SW-36 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_update_draft.py` (new) |
 | SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
@@ -2022,12 +2464,35 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-92 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py` |
 | SW-93 | The analytics tests beside `analytics_agent_runs.py` |
 | SW-94 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_policies_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
+| SW-38 | None yet. The text is advisory (R7) |
 | SW-95 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_budgets_r8.py` (new) |
 | SW-96 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_pause_r8.py tests/unit/test_mcp_edge_coverage.py` (new file first) |
 | SW-97 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_audit_export_r8.py` (new) |
 | SW-98 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_lessons_r8.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-99 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py tests/unit/test_needs_attention_r8.py` |
 | SW-100 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_queue_r8.py tests/unit/test_runner_no_secret.py` (new files first), and the runner tests in `scripts/home_server/` (new) |
+
+### 7.2 Verify commands for the map
+
+| Slice | Command |
+|---|---|
+| SW-101 | `uv run pytest -q -p no:cacheprovider tests/unit/test_index_completeness.py tests/unit/test_doc_names_resolve.py tests/unit/test_index_union.py`, and `node .claude/hooks/ste-lint.mjs project-docs/specs/agent_coordination.md` |
+| SW-102 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_observability_two_org_r8.py tests/unit/test_projects_chat_coverage.py` (new file first) |
+| SW-103 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `visual-review` |
+| SW-104 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_place_model_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py` (new file first) |
+| SW-105 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py` |
+| SW-106 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/agentCardLook.test.ts` in `workbench/control_plane`, then `visual-review` |
+| SW-107 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_r8.py tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
+| SW-107b | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_dispatch_index_r8.py tests/unit/test_agent_label_fence.py` (new file first) |
+| SW-108 | None. The text is advisory (R7) |
+| SW-109 | `npx vitest run src/app/projects/lib/agentMap.test.ts` in `workbench/control_plane`, then `visual-review` |
+| SW-110 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py`, and the vitest of SW-109 |
+| SW-111 | Its row, after Q21 |
+| SW-101b | The command of SW-101 |
+| SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
+| SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
+| SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
+| SW-114 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py`, and `node --test` on the hook tests |
 
 ---
 
@@ -2062,6 +2527,17 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | Q16 | May a policy answer a question for a member after a deadline? | **Build it dark, off by default, for reversible questions only.** Never for a preview, a review, an auth question, a `confirm` option or a HIGH task. The minimum is 4 hours. The other option is never to build it | SW-75 |
 | Q17 | Does the grant window move from `OWNER_GRANTS.md` into the policy store? | **No, not now.** The guard stays a file that only the owner writes. It is listed as an option for later | SW-94 |
 | Q18 | May the runner use a wider scope, or a second token, to post the heartbeat and start sessions? | **Decided 2026-11-06: a second token with a narrow scope (`box:runner`) for the runner. The read-only token stays for the watcher.** Minting it on a live box is an owner act. The other option was: the runner stays a read-only watcher | SW-78, later releases |
+
+### 8.2 Owner questions of the map (2026-11-17)
+
+**Open.** The recommended answers hold until the owner answers. A slice that waits on a question says so.
+
+| # | Question | Recommendation | Blocks |
+|---|---|---|---|
+| Q19 | May an agent report the name of its own machine and its model? The map shows such a machine as "reported", because no box token proves it. Since 2026-11-19, the same question covers the kind of machine: computer, server or cloud (§3.12.7 rule 5) | **Yes.** On 2026-11-17, the 50 newest open runs of HathiLabs all carried one client stamp, and none of them named its machine. Without a report, no session on the map has a machine. The value grants nothing | SW-104, SW-105, SW-106 |
+| Q20 | Must an orchestrator hold a run on a coordination task to show on the map? | **Yes, for now.** It needs no new table. The other way is a session record that the edge writes on each MCP call. That way needs a new table, and a write on the edge's one database connection. Look again if orchestrators skip the rule | SW-107, SW-108, SW-109 |
+| Q21 | Do Metorite's own agents, such as chat sub-agents and Studio and workflow agents, join the map? | **Later, after rung M3.** Their machine reads "Metorite", and their model reads "Metorite AI", never a model or tier name | SW-111 |
+| Q22 | Who may steer a run from the map? SW-64 allows the member of the run and the app lead. May an owner or an admin of the organization also steer any run that they can see? (§3.12.7 rule 8) | **Yes.** The notice names the sender. The agent follows a steer from its member, the app lead, an owner or an admin, and takes any other steer as information. Cursor keeps a teammate read only until an admin turns on team follow-ups (Appendix C) | Rung M5 (SW-64, SW-86) |
 
 ---
 
@@ -2153,6 +2629,49 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 
 ---
 
+## Appendix C. Agent graph products (2026-11-19)
+
+**Source.** A web survey of 2026-11-19 for task 3794, from the pages of each vendor where one exists. A cell that no page of the vendor confirmed reads "Not confirmed". Many pages carry no date.
+
+| Product | What it shows | Where an agent runs | Parent and child | Steer | What we take |
+|---|---|---|---|---|---|
+| GitHub Agent HQ (2025-10-28) | One list of agents across GitHub, VS Code and the phone | Local, or the cloud on Actions | Not confirmed | Direct and track agents from any device | An agent has an identity, a policy and an audit trail, as a person does |
+| VS Code agent sessions | One list, with the state, the harness and the changed files | Local, a background CLI, or the cloud | A nested chat shows under its parent | Open a session and send a follow-up. Archive, and Mark as done | The harness on each row, and an archive filter |
+| Cursor cloud agents | A web list of agents | A cloud VM for each agent | Hook events only | Read only for teammates. An admin turns on team follow-ups | Q22 |
+| Linear agent sessions | A session panel on an issue | Not modeled. Only external links | A delegate on the issue | A follow-up prompt | A state from the last activity, with `stale` |
+| LangSmith and Langfuse | A run tree, and an agent graph | Not per machine | `parent_run_id` and `trace_id` | None | SW-39 |
+| Datadog AI agent monitoring | A graph of one trace, with hand-offs as lines | Not confirmed | Lines only inside one trace | None | A hand-off is a line |
+| Microsoft Agent 365 (2025-11-18) | A registry, and a map of agents, people and data | Not confirmed | Not confirmed | Not confirmed | The registry first, the map second |
+| Paperclip | An org chart of agents, with budgets | Adapters for Claude Code, Codex and others | A manager for each agent | Pause, reassign, resume and end | Pause and resume. Not its org chart (§2.2) |
+| Claude Code Remote Control and agent view | The sessions of one account | The machine of the member. The terminal keeps running | The progress of a sub-agent shows in its session | A message from the phone or the web, for the same account | The link of §3.12.7 rule 7 |
+| Happy | The sessions of one person, on the phone | The machine of the person, through a relay | Not confirmed | A guest that the owner invites can steer | A push when an agent waits on input |
+| Vibe Kanban and Claude Squad | A board or a list, with one worktree for each agent | A local tmux session or worktree | Flat | Attach, pause and resume | Pause and resume as plain verbs (SW-86) |
+
+**Traps that these products show.**
+
+- **Stale sessions fill the view.** So the map folds quiet runs (§3.12.2).
+- **A machine name tells who and where.** So the member chooses the name (§3.12.7 rule 6).
+- **A steer can reach the wrong agent.** So the form names its target (§3.12.7 rule 8).
+
+**Pages read.**
+
+- https://github.blog/news-insights/company-news/welcome-home-agents/
+- https://code.visualstudio.com/docs/agents/sessions/chat-sessions
+- https://cursor.com/docs/background-agents
+- https://linear.app/developers/agent-interaction
+- https://docs.smith.langchain.com/reference/data_formats/run_data_format
+- https://langfuse.com/changelog/2025-11-05-langfuse-for-agents
+- https://www.datadoghq.com/blog/monitor-ai-agents/
+- https://github.com/paperclipai/paperclip
+- https://code.claude.com/docs/en/remote-control
+- https://code.claude.com/docs/en/agent-view
+- https://code.claude.com/docs/en/hooks
+- https://github.com/slopus/happy
+- https://github.com/BloopAI/vibe-kanban
+- https://github.com/smtg-ai/claude-squad
+
+---
+
 ## Changelog
 
 - **2026-10-30.** Written for SW-0 (Metorite task 331), from epic 321, its phase tasks, the slice tasks and the code at `9d41f51d4`. Records D140.
@@ -2161,3 +2680,6 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-06, evening.** The owner accepted Q1 to Q12. §3.10.11 and SW-60 to SW-63 answer the board audit of task 1900. Q13 is new.
 - **2026-11-06, night.** P10 amendment for task 1906. It adds §3.11, D186 (§4.2), §5.0b, the slices SW-64 to SW-99 (§5.11), §7.1, Q14 to Q17 (§8.1), and the new spec `orchestration_playbook.md`. It adds no code. Three Opus audit rounds fixed 32, 34 and 16 defects.
 - **2026-11-09.** Replan (task 2518). It sets the queue order of SW-68, the lane scope of SW-67 and the pull start of SW-100 (new). It parks nine slices (Later epic, task 2543). SW-51 takes the member view of agents (WS-AGA).
+- **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
+- **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
+- **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.

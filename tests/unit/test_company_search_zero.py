@@ -427,10 +427,11 @@ class TestTheMeaningKey:
 
 class TestOneEmbedTask:
     def test_a_door_slower_than_one_wait_still_lands(self, meaning, apps, monkeypatch):  # noqa: F811
-        # Knowledge waits 0.05 s only. The door takes 0.3 s. The six sources
-        # before Knowledge take about 0.4 s, and the task runs under them.
+        # Knowledge waits 0.05 s only. The door takes 0.1 s. HRD-4 runs four
+        # sources at once, so Knowledge takes a slot after the first four
+        # (about 0.07 s), and the task has run under them.
         monkeypatch.setattr(kb_query, "QUERY_EMBED_TIMEOUT_S", 0.05)
-        meaning["door_delay"] = 0.3
+        meaning["door_delay"] = 0.1
         apps.delay = 0.06
         answer = run("acme")
         assert answer["meaning"] == "ran"
