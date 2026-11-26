@@ -94,7 +94,7 @@ say()  { printf 'premerge: %s\n' "$*"; }
 fail() { printf 'premerge: FAIL. %s\n' "$*" >&2; exit 1; }
 # out_of_time <what> [knob]: the budget left a stage with no verdict. Main's version had no
 # budget and could still block here, so this is a FAIL, never a pass.
-out_of_time() { fail "$1. There is no verdict, so the merge is not proven. Run premerge again when the box is quieter, or raise PREMERGE_TOTAL_BUDGET${2:+ or $2}."; }
+out_of_time() { fail "$1. The merge is not proven. Run premerge again when the box is quieter, or raise PREMERGE_TOTAL_BUDGET${2:+ or $2}."; }
 left0() { local r; r=$(remaining); echo $(( r > 0 ? r : 0 )); }
 
 cd "$(git rev-parse --show-toplevel)"
