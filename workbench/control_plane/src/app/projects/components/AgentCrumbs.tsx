@@ -30,7 +30,8 @@ export function AgentCrumbs({
   question: { at: number; total: number; onGo: (by: number) => void } | null;
 }) {
   return (
-    <div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-1" data-agent-crumbs="">
+    // `shrink-0`: with a minimum height, the column would squeeze a wrapped bar onto the canvas.
+    <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-3 py-1" data-agent-crumbs="">
       <nav aria-label="Agent levels" className="flex min-w-0 flex-wrap items-center gap-0.5">
         {crumbs.map((crumb, i) => (
           <span key={`${i}:${crumb.label}`} className="flex min-w-0 items-center gap-0.5">

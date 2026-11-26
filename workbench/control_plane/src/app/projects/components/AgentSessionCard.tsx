@@ -75,7 +75,7 @@ export function SubCount({ session }: { session: Pick<LensSession, "subs"> }) {
   );
 }
 
-const CHIP = "max-w-[65%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
+const CHIP = "max-w-[80%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
 
 /** The raised face of a card inside an agent edge. */
 export const CARD_FACE =
@@ -178,9 +178,10 @@ export function SessionCard({
 /** "1 needs you · 2 working", with the need in the warning tone. */
 export function CountLine({ counts }: { counts: LensCounts }) {
   return (
-    <span className="flex min-w-0 gap-2 truncate text-[11px] text-muted-foreground">
+    // A block, not a flex row: only inline text gets the ellipsis when it is cut.
+    <span className="block min-w-0 truncate text-[11px] text-muted-foreground">
       {countWords(counts).map((part) => (
-        <span key={part.state} className={part.state === "you" ? "text-warning" : undefined}>
+        <span key={part.state} className={part.state === "you" ? "mr-2 text-warning" : "mr-2"}>
           {part.text}
         </span>
       ))}

@@ -145,7 +145,8 @@ describe("a question of another member (EA3-50)", () => {
   it("pins the first run of the details, so a re-read does not swap the panel", () => {
     const source = readFileSync(new URL("./AgentDetails.tsx", import.meta.url), "utf-8");
     expect(source).toContain("useState<string | null>(() => firstRun(session)?.run_id ?? null)");
-    expect(source).toContain("session.runs.find((r) => r.run_id === picked) ?? firstRun(session)");
+    // AMR-4: the rows come from the read of the session, else from the map.
+    expect(source).toContain("runs.find((r) => r.run_id === picked) ?? firstRun({ runs })");
   });
 });
 
