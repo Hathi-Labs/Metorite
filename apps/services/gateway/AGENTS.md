@@ -802,6 +802,15 @@ Every on-box caller reaches the gateway over loopback (`GATEWAY_BASE_URL`,
 `GATEWAY_URL`, `COPILOT_LLM_BASE_URL`, `WHATSAPP_BRIDGE_GATEWAY_URL`). That is
 why the strip is safe. Do not point one of them at the public hostname.
 
+**The sandbox door (SBX-2, `agent_sandbox.md` §12.2).** Code in the sandbox
+sends `X-Sandbox-Capability` to the existing CRM and Projects GET routes. The
+sibling of branch 0 in `acb_auth/deps.py` decides each such request, and
+`gateway/sandbox_door.py` (`SandboxDoorLimits`, inside `TenantScopeMiddleware`)
+caps the answer of an admitted call at 4 MB and writes `sandbox.door.call`.
+The door adds no route. `SANDBOX_DOOR_ORGS` keeps it off by default. The
+public Caddy vhost must strip each `X-Sandbox-` header before the flip (an
+owner act on the SBX-9 checklist).
+
 ### Adding a new endpoint
 1. Create or extend a route file in routes/
 2. Register the router in main.py
