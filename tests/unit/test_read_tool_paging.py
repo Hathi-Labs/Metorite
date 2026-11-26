@@ -308,6 +308,11 @@ ALLOWED: dict[str, str] = {
         "No person is lost: the note of an edited card names at most ten people and says 'and N more'. The write already took every person (EAC-1b).",
     "apps/skills/skill-projects/skill_projects/writes.py::_note_item::flat[:_NOTE_ITEM_MAX - 1]":
         "The member's words, cut as one string. It is not a list of rows (EAC-1b).",
+    "apps/agents/agent-email-assistant/agents.py::_capped_lines::lines[:cap]":
+        "No row is lost in silence: a cut list of card lines ends with '+N more' (task 3977).",
+    "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
+        "The card says 'The card lists N of M matching drafts'. A draft that it does not "
+        "list has no tick, so it stays in Drafts (task 3977).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -339,7 +344,9 @@ ALLOWED: dict[str, str] = {
 #: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
 #: and cuts one text of the member to 120 characters (94).
-ALLOWED_CEILING = 94
+#: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
+#: draft pick card counts the drafts that it does not list (96).
+ALLOWED_CEILING = 96
 
 
 def _stringy(node: ast.AST) -> bool:

@@ -9817,7 +9817,7 @@ AGENT_MAP_SESSION_KEYS: tuple[str, ...] = (
 )
 AGENT_MAP_RUN_KEYS: tuple[str, ...] = (
     "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
-    "last_at",
+    "last_at", "waiting_on", "waiting_until",
 )
 
 #: The keys of one line of who dispatched whom: the node id of the
@@ -9873,6 +9873,8 @@ _MAP_RUN_SCHEMA = _object({
     "task_number": _NULLABLE_INTEGER, "title": _UNTRUSTED_OR_NULL,
     "state": _NULLABLE_STRING, "quiet": {"type": "boolean"}, "age": _NULLABLE_INTEGER,
     "last_at": _NULLABLE_STRING,
+    # AMR-1: what a waiting run waits on (a fixed word), and until when.
+    "waiting_on": _NULLABLE_STRING, "waiting_until": _NULLABLE_STRING,
 })
 _MAP_LINE_SCHEMA = _object({"from": _NULLABLE_STRING, "to": _NULLABLE_STRING})
 # SW-110: a sub-agent. Its name and its model are text that an agent wrote.
@@ -9955,6 +9957,8 @@ def map_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "quiet": _bool(row.get("quiet")),
         "age": _int_or_none(row.get("age")),
         "last_at": _map_time(row.get("last_at")),
+        "waiting_on": _map_word(row.get("waiting_on"), frozenset(agent_oauth.RUN_WAITING_ON)),
+        "waiting_until": _map_time(row.get("waiting_until")),
     }
 
 

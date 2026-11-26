@@ -1151,11 +1151,11 @@ owner and the board set its order (D118), and a customer waits for it.
 
 | Order | Slice | Task | Tier | Needs | State |
 |---|---|---|---|---|---|
-| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | Not made yet | HIGH | The answer on where it runs. SBX-15a | Not built |
-| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | Not made yet | HIGH | DOC-1 | Not built |
-| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | Not made yet | HIGH | DOC-1 | Not built |
-| 4 | DOC-4: the result goes on an email draft in the same turn | Not made yet | STANDARD | DOC-2 | Not built |
-| 5 | The demo of the rung, on production | Not made yet | none | DOC-2 to DOC-4 | Not built |
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | 4027 | HIGH | The answer on where it runs. SBX-15a | Not built |
+| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | 4028 | HIGH | DOC-1 | Not built |
+| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | 4029 | HIGH | DOC-1 | Not built |
+| 4 | DOC-4: the result goes on an email draft in the same turn | 4030 | STANDARD | DOC-2 | Not built |
+| 5 | The demo of the rung, on production | 4031 | none | DOC-2 to DOC-4 | Not built |
 
 #### Acceptance
 
