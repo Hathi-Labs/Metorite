@@ -157,6 +157,21 @@ def test_a_second_credential_is_401_and_branch_1a_never_runs(
     assert door.ran == [] and door.after == [None]
 
 
+@pytest.mark.parametrize("extra", [
+    {"X-Agent-Connection": "44444444-4444-4444-4444-444444444444"},
+    {"X-Actor-Via": "mcp:client.example"},
+])
+def test_the_sibling_runs_before_branch_0(monkeypatch, armed_tripwire, extra):
+    """A capability with a header of branch 0 is the sibling's. Branch 0
+    would answer the anonymous context, and the default deny lets that
+    through on a template of its ``public`` list. The sibling raises."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", kit.PUBLIC_PATH, kit.headers(**extra))
+    assert answer.status_code == 401
+    assert door.ran == [], "the public route did not run"
+
+
 # ── done-when 7: the seat ───────────────────────────────────────────────────
 
 
