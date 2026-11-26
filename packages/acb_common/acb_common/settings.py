@@ -437,6 +437,20 @@ class Settings(BaseSettings):
     # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
+    # `integration_access_orgs` (WS-54 ACC-1, task 3987, 2026-11-26) lists
+    # the organization ids whose admins may read and set who can use each
+    # integration (`integrations_console.md` §3.9.4), in the grammar of
+    # `crm_orgs`, or `*`. Default empty means NO organization: both routes
+    # of `routes/admin/integration_access.py` answer 404. It gates the two
+    # routes only. The resolver applies a stored rule whatever the flag
+    # says, so a flag change never widens access. The one reader is
+    # `gateway.routes.admin._common.integration_access_allowed`, and it takes
+    # the org of the session. A `*_ORGS` key, so a SIGHUP reload applies it
+    # (`docs/flag_reload.md`). The flip waits for the owner preview, and it
+    # is gate `enforcement-flip`. Fences:
+    # tests/unit/test_integration_access_rules.py,
+    # tests/unit/test_flag_reload.py.
+    integration_access_orgs: str = ""
     # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
     # the organization ids that may write and read the semantic model of a
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
@@ -1472,6 +1486,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agent_map_r8.py.
     agent_map_orgs: str = ""
 
+    # ── Agents: the lenses of the Agents view (WS-MCP AMR-1, §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the Agents canvas of Projects draws the Board, Graph and
+    # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
+    # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # AMR-4: on, the map read also answers `detail=summary` and `session=`,
+    # through the same reach rule as the map.
+    # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
+    # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_auth_me_shell_r8.py.
+    agent_lenses_orgs: str = ""
+
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -1628,6 +1656,20 @@ class Settings(BaseSettings):
     # what the chat can do and spends model tokens.
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
+
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
 
     # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
     #
@@ -2592,6 +2634,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
@@ -2770,6 +2819,18 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). A production flip is gate
     # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
     chat_card_revise_orgs: str = ""
+
+    # ── The chat asks which draft (tasks 3977 and 3978) ──
+    #
+    # CHAT_DRAFT_CHOICE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each trash is as before. On,
+    # `manage_inbox(action="trash")` on a draft reads Drafts, shows each
+    # matching draft as an unticked row, and the answer counts what left Drafts
+    # and names what stays. The one reader is
+    # `acb_skills.draft_choice.draft_choice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_email_draft_choice.py.
+    chat_draft_choice_orgs: str = ""
 
     # ── A paste is framed as data (HRD-14b, chat_failure_modes.md §4.7b) ──
     #

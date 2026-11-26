@@ -32,14 +32,22 @@
  *    map a row only while the org is on `STUDIO_CHAT_TOOLS_ORGS`, so a turn of
  *    an org with no `tool:` row gets no offer (fail closed).
  * 5. The viewer did not answer an offer on this message in this page.
+ * 6. No saved skill ran on this turn (task 3830). The stream carries no mark
+ *    of a skill, so the card asks the gateway whether a skill of the member
+ *    matches the typed words (`POST /studio/skills/match`, the matcher of the
+ *    turn itself). A match, an unknown answer and a failed read all show no
+ *    offer.
  *
- * ⚠️ **No tool argument and no tool result goes into the draft.** A model or
- * another person wrote that text. A stored skill goes into the prompt of each
- * later turn that loads it, so an argument in the draft would be a stored
- * prompt injection. The text comes from the viewer's typed words through
- * `skillStarter.starterFor`. The actions are catalog ids, in call order. A
- * workflow id of an argument only picks a row, and the draft holds the id of
- * that row. A result is only searched for the success mark of its tool.
+ * ⚠️ **No tool argument and no tool result goes into the draft, except an
+ * id.** A model or another person wrote that text. A stored skill goes into
+ * the prompt of each later turn that loads it, so an argument in the draft
+ * would be a stored prompt injection. The text comes from the viewer's typed
+ * words through `skillDraft.ts`: a short name, a description, and one
+ * numbered step for each call. A step names its tool, and a target only when
+ * the argument of an allow-listed key has the shape of an id
+ * (`skillDraft.targetOf`). The actions are catalog ids, each once. A workflow
+ * id of an argument only picks a row, and the draft holds the id of that row.
+ * A result is only searched for the success mark of its tool.
  *
  * **The answer.** Save sends ONE `POST /api/studio/skills` through the
  * `create` that the card passes (`skillsApi.createSkill`), with the name in
@@ -59,10 +67,14 @@ import { bareToolName, refusedText } from "@/lib/toolSteps";
 import { refusedResult } from "./recordsCard";
 import { WORDS, placeOfFailure } from "./skillErrors";
 import { MAX_ACTIONS, pickableActions } from "./skillForm";
-import { NAME_MAX, starterFor } from "./skillStarter";
+import { jobDescription, jobInstructions, jobName, targetOf } from "./skillDraft";
+import { NAME_MAX } from "./skillStarter";
 import type { CatalogAction, Reply, Skill, SkillBody, SkillVersion } from "./skillsApi";
 
-/** The fewest finished calls of a turn that earn an offer (rule 3). */
+/**
+ * The fewest finished CALLS of a turn that earn an offer (rule 3). It counts
+ * calls and not distinct tools: three reads of one tool are three steps.
+ */
 export const MIN_CALLS = 3;
 
 /** The title of the card. A short question, and the text is in the body. */
@@ -239,11 +251,20 @@ export interface OfferTurn {
   calls: readonly OfferCallLike[] | undefined;
 }
 
-/** One action of the draft: a catalog row. */
+/**
+ * One CALL of the turn, as one row and one step of the draft (TOF rung 1,
+ * task 3832). Two calls of one tool are two rows, and they share one catalog
+ * id. The skill holds each id once (`body.actions`), and the steps hold each
+ * call.
+ */
 export interface OfferAction {
   id: string;
   title: string;
   cls: string;
+  /** The bare name of the tool of the call. */
+  tool: string;
+  /** An id that the call named, or "" (`skillDraft.targetOf`). */
+  target: string;
 }
 
 /** The skill that Save creates. Its parts are the parts that the card shows. */
@@ -386,8 +407,9 @@ function workflowIdOf(args: Record<string, unknown> | undefined): string {
 }
 
 /**
- * Rule 4. The catalog rows of the calls, in call order and each once, or
- * null when one call maps to no row. Only a row that a skill may hold maps a
+ * Rule 4. The catalog rows of the calls, in call order with one row for each
+ * call (a repeated tool is a repeated row), or null when one call maps to no
+ * row. Only a row that a skill may hold maps a
  * call (`pickableActions`: no package row, no class X).
  */
 export function mapCalls(
@@ -401,7 +423,6 @@ export function mapCalls(
     byTool.set(tool, [...(byTool.get(tool) ?? []), row]);
   }
   const out: OfferAction[] = [];
-  const seen = new Set<string>();
   for (const call of calls) {
     const found = byTool.get(bareToolName(call.name)) ?? [];
     let row: CatalogAction | undefined;
@@ -412,32 +433,50 @@ export function mapCalls(
       row = found[0];
     }
     if (!row) return null;
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    out.push({ id: row.id, title: String(row.title || row.id), cls: String(row.class) });
+    const tool = bareToolName(call.name);
+    // A workflow call is named by its row id, which `workflowIdOf` checked.
+    const target = row.source === "workflow" ? row.id.slice("workflow:".length).toLowerCase() : targetOf(tool, call.args);
+    out.push({ id: row.id, title: String(row.title || row.id), cls: String(row.class), tool, target });
   }
-  return out.length > 0 && out.length <= MAX_ACTIONS ? out : null;
+  return out.length > 0 && out.length <= MAX_ACTIONS && actionIds(out).length <= MAX_ACTIONS ? out : null;
+}
+
+/** The catalog ids of the rows, each once, in the order of the first call. */
+export function actionIds(rows: readonly OfferAction[]): string[] {
+  return [...new Set(rows.map((r) => r.id))];
 }
 
 /**
- * The draft of the skill. The text comes from the viewer's typed words only,
- * and the actions are catalog ids. No argument and no result reaches it.
+ * The draft of the skill (`skillDraft.ts`, no model call). The name and the
+ * text come from the viewer's typed words. Each call is one numbered step,
+ * with the tool and an id target. The actions are catalog ids, each once. No
+ * other argument and no result reaches it.
  */
 export function offerDraft(words: string, actions: readonly OfferAction[]): SkillDraft {
-  const fields = starterFor(words);
+  const calls = actions.map((a) => ({ tool: a.tool, target: a.target }));
+  const description = jobDescription(words, calls);
   return {
-    name: fields.name,
-    description: fields.description,
-    body: { description: fields.description, instructions: fields.instructions, actions: actions.map((a) => a.id) },
+    name: jobName(words),
+    description,
+    body: { description, instructions: jobInstructions(words, calls), actions: actionIds(actions) },
   };
 }
 
-/** The offer of a turn, or null when the card shows nothing (rules 1 to 5). */
+/**
+ * The offer of a turn, or null when the card shows nothing (rules 1 to 5).
+ * *skillRan* is rule 6 (task 3830): true when a saved skill of the member
+ * matched the words of this turn, so the calls came from that skill. Then no
+ * offer shows. null means the answer is not known yet, or the read failed, and
+ * it shows no offer either (fail closed). The default is false for the pure
+ * rules. The card passes the real answer.
+ */
 export function skillOffer(
   turn: OfferTurn,
   catalog: readonly CatalogAction[] | null | undefined,
   answered: boolean,
+  skillRan: boolean | null = false,
 ): SkillOffer | null {
+  if (skillRan !== false) return null;
   if (!offerAsks(turn, answered) || !catalog || !turn.prompt) return null;
   if (!onlyReadRows(turn.calls ?? [], catalog)) return null;
   const actions = mapCalls(turn.calls ?? [], catalog);

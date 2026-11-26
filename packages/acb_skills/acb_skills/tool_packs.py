@@ -79,6 +79,7 @@ __all__ = [
     "PACKS_KEY",
     "PACK_ONLY_OWNERS",
     "PACK_ONLY_REFUSED",
+    "PACK_OUTSIDE_TEXT",
     "PACK_RUN_KEY",
     "PACK_SLUG_ATTR",
     "SURFACE",
@@ -105,6 +106,7 @@ __all__ = [
     "handoff_ended",
     "load_tool",
     "loadable",
+    "marks_chat",
     "matched_layer",
     "note_used",
     "owner_packs",
@@ -1811,6 +1813,119 @@ PACKS: dict[str, Pack] = {
         delegation_refusal=_NOTES_DELEGATION_REFUSED,
     ),
 }
+
+# ── The pack tools that read outside text (task 2492) ───────────────────────
+
+#: Each tool of a pack whose owner reads stranger text
+#: (``egress.UNTRUSTED_INPUT_AGENTS``), and when its answer brings text that a
+#: stranger wrote into the model's context. ``_tool_injection._pack_call``
+#: marks the chat session BEFORE the tool body runs for each call that
+#: :func:`marks_chat` names (EM-G11f3). Before task 2492 every call marked,
+#: so a send held the chat that only sent.
+#:
+#: * ``True``: the answer can hold outside text: a body, a subject, a sender
+#:   name, a thread, a file text, a snippet, a learned pattern, or a draft
+#:   that the drafter wrote from a mail. Each call marks.
+#: * ``False``: the answer holds only the member's own data (a mailbox label,
+#:   a count, an id), the model's own arguments and the server's own words.
+#:   A card can show outside text to the member, but the answer that the
+#:   model reads holds none. No call marks.
+#: * A tuple of argument names: a call marks when it passes one of them with
+#:   a value. ``send_email`` with ``reply_to_email_id`` names the addresses
+#:   that the server took from the headers of the original mail.
+#:
+#: When in doubt, ``True``. A tool that the map does not name marks (fail
+#: closed). Fence: ``tests/unit/test_pack_outside_text.py`` holds each tool of
+#: each such pack to one entry here.
+PACK_OUTSIDE_TEXT: Mapping[str, bool | tuple[str, ...]] = {
+    # The ``email`` pack.
+    "bulk_manage_inbox": False,  # counts and the model's own filter
+    "cancel_scheduled_send": False,  # fixed words, or the server's refusal
+    "compose_reply": True,  # the subject and the recent reply of the thread
+    "create_label": False,  # the model's own label name
+    "digest": True,  # subjects and senders
+    "draft_reply": True,  # the drafter's text from the mail, and its subject
+    "edit_draft": True,  # the draft's subject, which can be "Re: <subject>"
+    "find_contact": True,  # names from the headers of mail
+    "find_follow_ups": True,  # subjects and senders
+    "find_priority": True,  # subjects and senders
+    "forward_email": True,  # the subject and the file names of the mail
+    "get_account_overview": True,  # top senders and subjects
+    "list_accounts": False,  # the member's own mailboxes and counts
+    "list_artifacts": True,  # file names that a mail can have named
+    "list_labels": True,  # a label name that a rule or a sort can have made
+    "list_scheduled_sends": True,  # draft subjects and failure text
+    # Task 3977: a trash with CHAT_DRAFT_CHOICE_ORGS on answers a MESSAGES
+    # block of the subjects, the people and the text of drafts and mail.
+    "manage_inbox": True,
+    "mark_thread_done": False,  # fixed words; the subject stays on the card
+    "narrow_and_read": True,  # mail text
+    "present_email_groups": True,  # subjects and senders
+    "query_inbox": True,  # mail text
+    "query_insights": True,  # mail text
+    "read_email": True,  # mail text
+    "read_email_attachment": True,  # file text
+    "read_thread": True,  # mail text
+    "reclassify_reply_zero": False,  # fixed words
+    # HRD-10d-2: with CHAT_CARD_PRECONDITION_ORGS on, a 409 of a changed
+    # draft answers its subject, its people, the start of its text and its
+    # file names (``_send_changed_text``). A draft can quote a stranger.
+    "schedule_send": True,
+    "send_draft": True,
+    "send_email": ("reply_to_email_id",),  # a reply names derived addresses
+    "snooze_email": True,  # the subject of the mail
+    "sync_account": False,  # a count
+    # The ``email-setup`` pack.
+    "apply_settings_to_mailboxes": False,  # the member's own mailboxes
+    "auto_categorize_inbox": True,  # senders and categories of mail
+    "categorize_senders": True,  # senders
+    "copy_rules": True,  # rule names that a learned rule can carry
+    "create_rule": False,  # the model's own rule and the own mailbox
+    "create_rules_from_prompt": True,  # rule names that a model wrote
+    "delete_knowledge": False,  # the id
+    "delete_rule": False,  # the id
+    "forget_pattern": True,  # a pattern learned from mail
+    "generate_writing_style": True,  # a style read from sent mail and quotes
+    "get_rules_and_settings": True,  # rules and patterns learned from mail
+    "install_default_rules": False,  # the preset names and the own mailbox
+    "learn_rule_pattern": True,  # a pattern learned from a mail
+    "list_knowledge": True,  # entries that a mail can have filled
+    "list_patterns": True,  # patterns learned from mail
+    "list_rule_history": True,  # subjects and senders of the acted mail
+    "list_senders": True,  # senders
+    "resolve_execution": True,  # the subject and the sender of the act
+    "rule_guidance": True,  # guidance and policy lines
+    "run_rules": True,  # subjects and senders of the acted mail
+    "save_knowledge": False,  # the model's own title and the own mailbox
+    "set_sender_status": True,  # the sender lines of the server
+    "test_rule_match": True,  # subjects and senders of the matched mail
+    "unsubscribe_sender": True,  # unsubscribe targets that a mail names
+    "update_account": False,  # the member's own mailbox
+    "update_assistant_settings": False,  # the own mailbox, or the server's words
+    "update_rule": True,  # the stored rule name
+    "voice_profile": True,  # a voice read from sent mail and quotes
+}
+
+
+def marks_chat(owner: str, tool: str, args: Mapping[str, Any] | None = None) -> bool:
+    """True when a call of *tool* of a pack of *owner* must mark the chat
+    session before its body runs (task 2492).
+
+    An owner outside ``egress.UNTRUSTED_INPUT_AGENTS`` gives False, because
+    its tools read no stranger text. For an owner inside it, the entry of
+    :data:`PACK_OUTSIDE_TEXT` decides, with the call's own arguments *args*.
+    A tool that the map does not name gives True (fail closed)."""
+    try:
+        from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
+    except ImportError:
+        return True
+    if str(owner or "") not in UNTRUSTED_INPUT_AGENTS:
+        return False
+    rule = PACK_OUTSIDE_TEXT.get(str(tool or ""), True)
+    if isinstance(rule, bool):
+        return rule
+    given = args or {}
+    return any(bool(given.get(name)) for name in rule)
 
 #: A pack that follows a parent pack, and that parent. The pack is on wherever
 #: its parent is on (:func:`packs_on`), and off wherever an admin turned the
@@ -4868,6 +4983,17 @@ FIND_UNAVAILABLE = (
 #: the repo. This module never imports the orchestrator.
 SchemaMeasure = Callable[[Sequence[Any]], int]
 
+#: SBX-1a (``agent_sandbox.md`` §6.1): the hook of the no-match path of
+#: ``find_tools``. It takes the query and the live tool list, and gives one
+#: sentence to add to :data:`FIND_NONE`, or None. The caller passes
+#: ``orchestrator.tool_gap_path.make_gap_hook()``, so this module imports no
+#: gateway code.
+GapHook = Callable[[str, Sequence[Any]], Awaitable[str | None]]
+
+#: The longest wait for the gap hook, in seconds. Past it the answer is
+#: :data:`FIND_NONE` alone.
+FIND_GAP_TIMEOUT_S = 8.0
+
 
 @dataclass(frozen=True)
 class FindCandidates:
@@ -5081,11 +5207,18 @@ class FindTools(FunctionMiddleware):
 
     A found tool never joins :meth:`PackRun.holds`, and the search writes no
     sticky state (TS-4 owns it).
+
+    SBX-1a (``agent_sandbox.md`` §6.1): *on_gap* is the hook of the no-match
+    path. It runs only where step 3 ranked no tool, never after a refusal of
+    step 1, 2, 4 or 5. With no hook, the answer is :data:`FIND_NONE` byte for
+    byte. The hook has :data:`FIND_GAP_TIMEOUT_S` seconds. A text answer
+    follows :data:`FIND_NONE` after a blank line. None, a timeout or a fault
+    gives :data:`FIND_NONE`, and a fault logs its class only.
     """
 
     def __init__(
         self, *, candidates: FindCandidates, run_key: str, record: PackRun,
-        build: PackBuilder, measure: SchemaMeasure,
+        build: PackBuilder, measure: SchemaMeasure, on_gap: GapHook | None = None,
     ) -> None:
         from acb_skills import tool_search
 
@@ -5094,6 +5227,7 @@ class FindTools(FunctionMiddleware):
         self.record = record
         self._build = build
         self._measure = measure
+        self._on_gap = on_gap
         self.tool = find_tool(candidates.packs)
         self._lock = run_lock(record)
         self._index = tool_search.build_index(dict(candidates.descriptions))
@@ -5227,11 +5361,11 @@ class FindTools(FunctionMiddleware):
         ctx, run, live = gate
         self.searches += 1
         room = FIND_TOOLS_MAX - len(self.found)
-        ranked = self.rank(_query_argument(getattr(context, "arguments", None)), live, run,
-                           min(FIND_LIMIT, room))
+        query = _query_argument(getattr(context, "arguments", None))
+        ranked = self.rank(query, live, run, min(FIND_LIMIT, room))
         if not ranked:
             _log.info("tool_packs.find_none", searches=self.searches)
-            return FIND_NONE
+            return await self._no_match(query, live)
         got = await self._gather(ranked, ctx, run, live)
         if not got.made:
             return "\n\n".join(got.refusals) or _refused(
@@ -5246,6 +5380,24 @@ class FindTools(FunctionMiddleware):
                          error=type(exc).__name__)
             return FIND_UNAVAILABLE
         return self._answer(picked, got, why, len(live))
+
+    async def _no_match(self, query: str, live: Sequence[Any]) -> str:
+        """SBX-1a: the answer when the rank gave no tool. :data:`FIND_NONE`,
+        then the sentence of the gap hook when it gives one. A cancel of the
+        run passes through. Each other fault gives :data:`FIND_NONE`."""
+        hook = self._on_gap
+        if hook is None:
+            return FIND_NONE
+        try:
+            told = await asyncio.wait_for(hook(query, live), FIND_GAP_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # TimeoutError too: the search answers as before
+            _log.warning("tool_packs.find_gap_failed", error=type(exc).__name__)
+            return FIND_NONE
+        if not isinstance(told, str) or not told.strip():
+            return FIND_NONE
+        return f"{FIND_NONE}\n\n{told}"
 
     def _answer(self, picked: Sequence[str], got: _Gathered, why: str, live: int) -> str:
         """Step 7 of the class text, after the add: the record of this run

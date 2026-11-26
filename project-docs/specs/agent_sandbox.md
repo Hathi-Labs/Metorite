@@ -8,7 +8,15 @@
   work on 2026-11-15 (§0b): chains of existing actions first, code last.
   **D227** (2026-11-19, §0c) opens SBX-9 to the beta orgs, and rung 6a′ runs compute first.
   SBX-8, SBX-15a, SBX-18 and SBX-19 are built dark (2026-11-19), and SBX-15c
-  too (merged 2026-11-26). No other build slice is on `main` (read 2026-11-26).
+  too (merged 2026-11-26). SBX-1a is built dark and merged (2026-11-26,
+  task 3800, `2c3f6ae0c`), behind `user_tool_find_enabled`. SBX-1b is
+  built dark and merged (2026-11-26, task 3984, `ab2928139`).
+  SBX-2 is built dark and merged (2026-11-26, §12.2, `209884bac`): only tests
+  mint, and `SANDBOX_DOOR_ORGS` is empty. SBX-13 is built and merged
+  (2026-11-26, §12.3, `0dc23db0f`). SBX-4a (task 3803, PR 2862) is open. §12.4
+  holds the spec of SBX-4b (task 3986). No other build slice of this spec is on
+  `main` (read 2026-11-26 at `3064753ee`). The SBX-1 audit (2026-11-26, §12.1)
+  splits SBX-1 into SBX-1a and SBX-1b.
   **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
   chat turn (SBX-20, SBX-21).
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
@@ -196,8 +204,8 @@ records them.
    catalog actions, and asks the one decide question. Then it writes the
    `tool_gaps` row. It says if a chain can do the job, or if a new tool is
    necessary. SBX-1 builds no second finder. The guards SBX-F7, SBX-F18 and
-   SBX-F23 bind the no-match path. The SBX-1 audit decides how the path keeps
-   the `tool_scope` gate.
+   SBX-F23 bind the no-match path. The SBX-1 audit decided how the path keeps
+   the `tool_scope` gate (§12.1 decision 1).
 2. **One failure store.** Task 1793 (the tool failure log) and IR-4 (issue
    reports, epic 475) each planned a store. Each grouped errors by
    fingerprint into one task. They have one store and one fingerprint now,
@@ -466,7 +474,7 @@ only. So 6a′ can reach production before 6b and 6e.
 
 | Rung | The demo | Slices | Gate |
 |---|---|---|---|
-| **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1 | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
+| **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1a, SBX-1b | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
 | **6a′. The compute run** | In the chat, a member asks for a calculation on rows that a tool returned. The chat runs pandas code in a sealed container and shows a CSV or PNG card. This is the first rung that runs code in production | SBX-8, SBX-15a, SBX-18, SBX-19 | SBX-G9 to SBX-G11, SBX-G13, WS43-G1 (BH-3, or the waiver), WS43-G2, WS43-G5, SBX-G6 |
 | **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
 | **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first. (D233) On no match, the chat builds and answers in the same turn, with one progress line | SBX-3, SBX-5, SBX-20, SBX-21 (D233) | None |
@@ -495,16 +503,16 @@ reading.
 
 | Needs | Status | Evidence |
 |---|---|---|
-| SBX-1 | Not built | `git grep tool_gaps` finds no code or SQL |
-| SBX-2 | Not built | `git grep SANDBOX_ROUTES` finds nothing |
+| SBX-1 | SBX-1a built dark and merged (2026-11-26, task 3800, `2c3f6ae0c`). SBX-1b built dark and merged (2026-11-26, task 3984, `ab2928139`), behind the 404 of the route | §12 rows SBX-1a and SBX-1b |
+| SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, merged 2026-11-26, `209884bac`). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
 | SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
-| SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26 | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
+| SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26. §12.4 specifies SBX-4b | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
 | SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
 | SBX-8 | Built, dark (PR 2625, 2026-11-19). The cost of gVisor is not measured | `RUNTIME_RUNSC` in `sandbox_broker.py` |
 | SBX-12 | Not built | Needs SBX-5 |
-| SBX-13 | Built, read only (task 3428, 2026-11-26). The image on a box is WS43-G2. The proof with the real door moves to SBX-4 (§12.3) | `apps/services/orchestrator/sandbox/metorite_door.py`. `tests/unit/test_sandbox_door_client.py` (SBX-F22) |
+| SBX-13 | Built, read only (task 3428, merged 2026-11-26, `0dc23db0f`). The image on a box is WS43-G2. The proof with the real door moves to SBX-4b (§12.3, §12.4) | `apps/services/orchestrator/sandbox/metorite_door.py`. `tests/unit/test_sandbox_door_client.py` (SBX-F22) |
 | SBX-15a, the remote backend and the org lock | Built, dark (PR 2625, 2026-11-19) | `BACKEND_REMOTE` in `sandbox_broker.py`. `tests/unit/test_sandbox_remote_backend.py` |
 | SBX-15c, three follow-ups of 15a | Built, dark (PR 2839, merged 2026-11-26) | Merge `e8b692f04`. Its §12 row |
 | SBX-15b, the tools half | Not built | Needs SBX-4 and WS-43g |
@@ -1019,6 +1027,9 @@ platform key. Five rules make that true.
 - It reaches the container in one environment variable, `METORITE_API_TOKEN`.
   The egress grant token of `maf_coding_engine.md` §7.3 uses the same path
   in its design. WS-43g is not built, so no such token exists in code yet.
+- (SBX-4b, §12.4 decision 4) The build phase mints no capability. A door
+  call from a build command gets 401. The smoke command gets one, and each
+  round of the smoke test mints its own.
 - A thief who copies it out of the container gets little. It opens only the
   door, as that member, for the step's scopes, until it expires. Each write
   still waits for that member's card.
@@ -1052,8 +1063,8 @@ wait for that call.
   the member's browser. So each permission check, each 404 for a row the
   member cannot see, and FORCE RLS at the `get_db()` seam apply unchanged.
   The door adds no SQL and no second permission model.
-- **The stamp.** Each request carries `X-Actor-Via: sandbox:<tool slug>@v<n>`,
-  set by the door from the capability row. `record_activity` copies it into
+- **The stamp.** Each request carries `X-Actor-Via: sandbox:<tool slug>:v<n>`
+  (the recommendation of §12.2 decision 12, SBX-3 confirms), set by the door from the capability row. `record_activity` copies it into
   `meta.via` (D-PM-36). The timeline then reads "by Priya, through the tool
   `quote-pdf` v3".
 - **Limits.** 600 requests per step and 4 MB per response, both new. A page
@@ -1109,6 +1120,11 @@ code cannot change it.
 | `run` | The door, and the package hosts for a reinstall from the tool's own lock with hashes | The smoke and run steps |
 | `web:<hosts>` | Each host the member approved on a card, by exact name | A step that needs a third-party host |
 
+- (SBX-4b, §12.4 decision 3) **The smoke test opens one host at a time.**
+  The install runs with the two PyPI hosts only. The smoke command runs with
+  the door only. This is the recommendation, and the owner confirms it
+  (SBX-Q2 residual, task 3986). PyPI publishes its download counts, so a
+  package host is a channel while a capability is live.
 - **The default is `run`** for a stored tool, and `build` for a build.
   Nothing else is open. A host off the profile answers 403 at the proxy.
 - **The proxy rules of WS-43g stand:**
@@ -1177,57 +1193,101 @@ radius. Only the card stops a write the member did not mean.
 ### 6.1 Gap detection and reuse (#234, #240)
 
 > **D225 (2026-11-15).** The finder is the no-match path of `find_tools`
-> (D222), not a second tool. Where this section, §7.4 and §12.1 say
-> `find_tool`, read that path. SBX-1 rewrites the text when it is
-> dispatched. §0b holds the decision.
+> (D222), not a second tool. The SBX-1 audit of 2026-11-26 fixed the shape
+> below, and §12.1 lists its eleven decisions. An older line that says
+> `find_tool` means this path.
 
 **The rule.** The assistant may build a tool only when two things hold. One
-`find_tool` call in the same run answered `no_match`. The member approved
-the build card.
+`find_tools` call in the same run wrote a `tool_gaps` row with the outcome
+`no_match`. The member approved the build card.
 
-**`find_tool(need)`.** A new platform tool on the general agent
-(`orchestrator`, D99). (D187) It runs five checks in this order:
+**Where the path runs (§12.1 decision 1).** The path is the branch of
+`tool_packs.FindTools._find` where the rank gave no tool. It needs no
+`tool_scope` entry, because `find_tools` never enters `_all_tools`. The gate
+of `find_tools` is stricter than a scope entry:
 
-1. **The library (D187).** A lexical search over the name and the
-   description of the Studio packages that the member can see. The member
-   owns some of them. The others come from the installs that reach the
-   member (`package_host.md` §5.2), or are `system` packages. A paused or
-   archived install does not count. The search uses Postgres full text at
-   query time, with at most 5 candidates, and a `system` package first.
-2. **The run's own tools.** The names and descriptions of the tools in the
-   run's scope after injection, and the skills catalog of WS-23.
-3. **The compose check (D187).** It reads at most 20 rows of the Studio
-   action catalog that the member can call. A lexical match on the title
-   picks them (`catalog_rows` at `routes/studio/actions.py:149`, and
-   `package_rows` at `:203`). Can a Studio skill or workflow of these
-   actions do the need, with no code? Studio builds those with no sandbox
-   (`ai_studio.md` §19.3, kind `none`).
-4. **One typed question** on `tier-decide` (D93, D100). (D187) It asks:
-   "Can one of these tools do this need? Or can these catalog actions do it
-   with no code? Answer with a tool name, `compose`, `none` or `unsure`."
-   One question serves checks 1 to 3, so the lookup costs one call to
-   `tier-decide`.
-5. **The record.** One `tool_gaps` row with the candidates, the answer and
-   the outcome.
+- `executor._start_pack_turn` admits only the agent `orchestrator`, in a run
+  that is not delegated. The room is the member's solo room with cards, with
+  a thread, a bound org and a verified member.
+- `executor._apply_pack_turn` offers the finder only in that run. A WhatsApp
+  turn gets no finder.
+- `tool_packs.tool_search_on` must name the org (`TOOL_SEARCH_ORGS`).
+- SBX-1 adds two more conditions. The setting `user_tool_find_enabled` is on,
+  and `_studio_member_open()` is true: `STUDIO_ORGS` names the org, and the
+  member holds `feature:studio`.
 
-| Answer | What `find_tool` returns | What the assistant does |
-|---|---|---|
-| A platform tool | `existing`, with its name | Uses that tool |
-| A stored tool | `reuse`, with its package id and version (D187) | Calls `run_tool` (§6.4) |
-| `compose` (D187) | `compose`, with the catalog action ids | Offers a Studio skill or workflow. No sandbox starts |
-| `unsure` | The candidates, and no gap id | Tries a candidate first, or asks the member |
-| `none` | `no_match`, with a gap id | May offer a build |
+**The hook (§12.1 decision 2).** `FindTools` takes an optional hook
+`on_gap(query, live)`, as it takes the builder and the measure. So
+`tool_packs` imports no gateway code. With no hook, the answer stays
+`FIND_NONE` byte for byte. The description of `find_tools` does not change,
+so the prefix of the cache stays stable. The orchestrator module `tool_gap_path`
+makes the hook. It runs these steps in this order:
+
+1. **The gate.** `_studio_member_open()` must be true. The org, the member,
+   the thread and the run come from the run context only, never from a tool
+   argument. An empty query writes no row.
+2. **The compose check (D187, decision 7).** `routes/studio/actions.catalog_rows`
+   runs before any session of the hook opens. `package_search.callable_catalog`
+   then keeps a `manifest` row only when the member holds the feature of its
+   app. It keeps a `logic` row only when the member holds `studio`. It drops
+   each `workflow`, `integration`, `mcp` and `tool` row (fail closed). A
+   lexical match on the title picks at most 20 rows. The check never calls
+   `package_rows`.
+3. **The library (D187, decision 6).** `package_search.search_visible` reads
+   two sources in one session. The first is the packages that the member owns
+   (`packages_store.list_summaries`), live and not archived. The second is
+   the installs that reach the member (`resolve.visible_installs`), at a
+   version. That read drops a paused, archived or expired install. The text
+   of a hit is its name and its description, or the `name` and `purpose` of
+   the manifest of an install. Python ranks the hits. A hit must share 2 or
+   more content stems with the need, and the search keeps 5 at most.
+4. **The run's own tools.** The 5 tools of the live list that share the most
+   stems with the need. A tool of an MCP server does not count, because its
+   name is not first-party text.
+5. **One typed question** (D93, D100, decisions 4 and 5). One
+   `decide_tools.ask_typed` call holds two items, with the purpose
+   `tools.gap`. The first item picks the answer. The second item picks the
+   category: one key of `skill_families.SKILL_FAMILIES`, or `other`. The
+   call runs only when `decide_tools.typed_choices_on()` is true, and no
+   session is open while it runs. `sure_choice` reads each answer.
+6. **The record.** One `tool_gaps` row, through `gateway/studio/tool_gaps.record_gap`,
+   in its own session.
+7. **The log line.** `sandbox.tool.gap` of §9.1, with no need text.
+8. **The answer.** `FIND_NONE`, then one fixed sentence for the outcome.
+
+A fault or a timeout of 8 seconds in the hook gives `FIND_NONE` and no row.
+The log line `tool_packs.find_gap_failed` names the error class only.
+
+**What the model sees (decision 8).** The decide context holds the need,
+ids and fixed sentences only: `pkg:<uuid>` with a count of shared words, the
+first-party names of the live tools, and the catalog action ids. No text that
+a member wrote in a package reaches it. The `candidates` column holds ids
+only.
+
+**The answers (decision 3).**
+
+| The pick of the first item | `answer` | `outcome` | What the assistant does |
+|---|---|---|---|
+| `pkg:<app_id>` | `tool` | `reuse`, with `app_id` set | Tells the member about the app. `run_tool` comes with SBX-5 (§6.4) |
+| `tool:<name>`, a live tool of the run | `tool` | `existing` | Uses that tool |
+| `compose` (D187). The question offers it only with 1 or more callable rows | `compose` | `compose` | Offers a Studio skill or workflow of the action ids. No sandbox starts |
+| `none` | `none` | `no_match` | Says that no tool does this yet. SBX-4 may then offer a build |
+| `unsure`, no engine, or a pick below the threshold | `unsure` | `unsure` | Tries a candidate first, or asks the member |
+
+SBX-1 returns no gap id. SBX-4 adds the gap id to the answer.
 
 **A failed built-in tool (D187).** When a platform tool failed in this run,
 the assistant passes its name as `failed_tool`. The checks skip that tool,
-and the gap row names it (§6.7, level c).
+and the gap row names it (§6.7, level c). SBX-14 adds this. SBX-1 writes
+`failed_tool` as NULL.
 
 **Who the library search can see (D187).** The library search reads one
-organization only. It keeps a package in three cases only: the viewer owns
-it live, an install reaches the viewer, or it is a `system` package. It never
-runs a bare full-text query over `apps`. Such a query would leak the private
-package of another member into the candidates and the decide prompt
-(SBX-F23).
+organization only. It keeps a package in two cases only: the viewer owns it
+live, or an install at a version reaches the viewer. It never runs a bare
+query over `apps`. Such a query would leak the private package of another
+member into the candidates and the decide context (SBX-F23). A `system`
+package is not in the search, because `system_contributions()` holds no name
+or description. The `system` case comes back with the first system tool (§6.8).
 
 **The build card.** Before a build, the member sees one card:
 
@@ -1239,6 +1299,11 @@ package of another member into the candidates and the decide prompt
   outside your organization."
 
 On a refusal, the gap row reads `declined`, and nothing starts.
+
+(SBX-4b, §12.4 decision 12) The card of SBX-4b shows the `need` of the gap
+row and the read scopes. It also shows the line "may download Python
+packages from PyPI". It shows no credit estimate, because SBX-7 and the
+price are not built.
 
 **Why a fence and not a prompt.** `build_tool` takes the gap id. It refuses a
 gap id that is not `no_match`, not from this run, or older than 30 minutes
@@ -1258,6 +1323,11 @@ gap id that is not `no_match`, not from this run, or older than 30 minutes
   `user_tool_max_total` (default 1 and 1) and against the broker's own caps.
   At a cap, the tool answers "the sandbox is busy, try again in a minute".
 - **No fallback to the host,** as the broker's rule 14 says.
+- (SBX-4b, §12.4 decisions 1 and 2) `build_tool` starts the container through
+  `acquire_tool`, not `acquire()`. The mounts come from a sibling of the
+  run-data dir, `.run-data/<org slug>/<thread slug>.user-tool/`. Its
+  `outputs/` folder is `/workspace/outputs`, not the output folder of the
+  thread.
 
 **Short-lived, one for each thread (D187).** No member has a sandbox of
 their own. A container serves the steps of one thread: the build, the smoke
@@ -1273,6 +1343,10 @@ into a fresh run-data dir (§6.4).
 (`maf_coding_engine.md` §7.6). It gets `run_command`, the file tools over the
 run-data dir, and the `build` profile. It must write one package in the MAF
 skill format, so the existing `SkillsProvider` can load it.
+
+(SBX-4b, §12.4 decision 3) The session runs its commands with
+`--network none`. The step engine opens the `build` hosts for the install of
+each round only.
 
 (D187) The session runs on the one coding harness of CA-14 (D139), with the
 profile `tool_builder`. The model is a setting (§6.9). The five files become
@@ -1490,9 +1564,10 @@ packages. `requirements.txt` beside it pins each one with a hash.
 | The data toolkit | duckdb. Only `sandbox/data_engine.py` imports it |
 
 **Nothing installs at run time** (`requirements.in:16`). A build may install
-an allowlisted package through the egress proxy, under the `build` profile
-(§5.5). That proxy is WS-43g, and it is spec only. `ai_studio.md` §19.5 holds
-the rules of such an install (B8).
+any wheel that its lock pins with a hash, through the egress proxy (§5.5,
+§12.4 decision 6). SBX-5 owns the package rules of `ai_studio.md` §19.5,
+and no tool persists without them. B8 states those rules for Studio. The
+proxy is WS-43g1 (task 4009, PR 2887), not merged on 2026-11-26.
 
 **The door client (new).** One small Python module in the image,
 `metorite_door`. A tool imports it to call Metorite as the member.
@@ -1564,7 +1639,7 @@ Each column of the dropped `user_tools` table has a home:
 | `approved_by`, `approved_at` | The approval record of `ai_studio.md` J2 and `package_host.md` PKG-11 |
 | `disabled_by`, `disabled_at`, `disabled_reason` | An install in `paused`, and its audit row with the reason |
 | `last_run_at` | The newest `user_tool_runs` row of the package |
-| `search` | Postgres full text at query time, over the packages that the member can see. No index until a measurement asks for one |
+| `search` | (§12.1 decision 6) A rank in Python at query time, over the two reads of `package_search.search_visible`: the live packages that the member owns, and the installs that reach the member. No SQL full text, and no index until a measurement asks for one |
 
 ### 7.2 A version and its files (D187)
 
@@ -1618,6 +1693,9 @@ approver reads them on the approval card (§8.1).
 
 ### 7.3 `user_tool_runs` — one row for each step
 
+> **SBX-4 adds this table** (§12.1 decision 9). SBX-1 adds `tool_gaps` only,
+> because no step runs before SBX-4.
+
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` | Primary key |
@@ -1626,7 +1704,8 @@ approver reads them on the approval card (§8.1).
 | `gap_id` | `uuid` | Null |
 | `repair_of` | `uuid` | (D187) Null. The failed run that this repair answers (§6.7) |
 | `signal` | `text` | (D187) Null. `'exit_code'`, `'schema'` or `'door_5xx'`, the signal of a failed run (§6.7) |
-| `member_email`, `thread_id`, `run_id` | `text` | The member, the chat thread, the agent run |
+| `member_email`, `run_id` | `text` | The member and the agent run |
+| `thread_id` | `text` | Null. The chat thread. It references `chat_session (id)` with ON DELETE SET NULL, so a Delete of the chat keeps the row (§12.4 decision 10) |
 | `phase` | `text` | `'build'`, `'smoke'` or `'run'` |
 | `backend` | `text` | `'docker-runc'`, `'docker-runsc'`, `'remote-runsc'` (D187) or `'e2b'` |
 | `outcome` | `text` | `'succeeded'`, `'failed'`, `'timeout'`, `'refused'` or `'cancelled'` |
@@ -1638,21 +1717,29 @@ approver reads them on the approval card (§8.1).
 | `error_class` | `text` | Null. A fixed list, never free text |
 | `started_at`, `ended_at` | `timestamptz` | |
 
-### 7.4 `tool_gaps` — one row for each `find_tool` call
+### 7.4 `tool_gaps` — one row for each no-match call of `find_tools`
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` | Primary key |
-| `organization_id` | `uuid` | Not null. RLS |
-| `member_email`, `thread_id`, `run_id` | `text` | |
-| `need` | `text` | At most 280 characters, written by the model. It stays in the tenant |
-| `category` | `text` | One slug from a fixed list of about 30, chosen by the decide question. It carries no tenant text |
-| `candidates` | `text[]` | The tool names that the checks found |
+| `organization_id` | `uuid` | Not null. RLS. The column DEFAULT is the bound tenant, so the writer passes no org |
+| `member_email` | `text` | Not null, lower case. The verified member of the run |
+| `thread_id` | `text` | Not null. It references `chat_session (id)` with ON DELETE CASCADE, as 459 does (§12.1 decision 11). The writer selects the chat under the bound tenant, so a chat of another org, or no chat, gives no row |
+| `run_id` | `text` | Not null. The agent run |
+| `need` | `text` | 1 to 280 characters, written by the model. It stays in the tenant |
+| `category` | `text` | One key of `skill_families.SKILL_FAMILIES`, or `other` (§12.1 decision 4). The CHECK holds the shape `^[a-z0-9-]{1,40}$`, and a Python test pins the set. It carries no tenant text |
+| `candidates` | `text[]` | At most 10 ids: `pkg:<uuid>`, a first-party tool name or a catalog action id (decision 8). No id holds a space |
 | `answer` | `text` | `'tool'`, `'compose'` (D187), `'none'` or `'unsure'` |
-| `outcome` | `text` | `'existing'`, `'reuse'`, `'compose'` (D187), `'no_match'`, `'declined'`, `'built'` or `'build_failed'` |
-| `app_id` | `uuid` | (D187) Null. The package that answered or that the build made |
-| `failed_tool` | `text` | (D187) Null. The name of a failed platform tool (§6.7, level c). A platform name, never tenant text |
+| `outcome` | `text` | `'existing'`, `'reuse'`, `'compose'` (D187), `'no_match'`, `'unsure'`, `'declined'`, `'built'` or `'build_failed'` (decision 3). SBX-1 writes the first five |
+| `app_id` | `uuid` | (D187) Null. The package that answered or that the build made. No foreign key |
+| `failed_tool` | `text` | (D187) Null. The name of a failed platform tool (§6.7, level c). A platform name, never tenant text. SBX-14 writes it |
 | `created_at` | `timestamptz` | |
+
+`gateway/studio/tool_gaps.py` is the one module that runs SQL on the table.
+The index `(organization_id, created_at DESC)` serves the gap view. The member
+purge (`routes/admin/members.py`) deletes the rows of a leaver, because the
+need is text about the member's work. A Delete of the chat deletes its rows
+(the cascade).
 
 ### 7.5 `sandbox_capabilities` — the capability lookup
 
@@ -1695,7 +1782,7 @@ runs code.
 | Add a repair version (D187) | A member whose run of an installed tool failed (§6.7, level b) | The rules of §6.7. The version runs for that member only |
 | Move the pin of an install (D187) | A holder of `studio:publish` | The approver reads the diff of the files |
 | Disable a tool | Its owner, or a holder of `studio:publish` (D187) | Each install goes to `paused`. Running steps finish, and no new step starts |
-| Revoke a tool | A holder of `studio:publish` (D187) | Each install goes to `archived`, and `find_tool` never returns it again |
+| Revoke a tool | A holder of `studio:publish` (D187) | Each install goes to `archived`. `resolve.visible_installs` drops an archived install, so the no-match path of `find_tools` never returns it again (§12.1 decision 6) |
 
 **(D187) A code package needs the approval at each scope past private.**
 `package_host.md` §6.1 lets a member with `feature:studio` install a package
@@ -1745,7 +1832,8 @@ seam that owns the act. A version and a rollback write `app_audit` through
 `packages_store.py`. A share, an approval, a pin, a pause and an archive
 write the record of J2 and PKG-11. The row holds the actor, the package, the
 version and the reason. Each write that a tool makes carries the stamp
-`sandbox:<slug>@v<n>` in `meta.via` (§5.2).
+`sandbox:<slug>:v<n>` in `meta.via` (§5.2). This form is the recommendation
+of §12.2 decision 12, and SBX-3 confirms it.
 
 ---
 
@@ -1769,7 +1857,10 @@ No line holds input data, output data, a need text or a token.
 ### 9.2 The tool-gap counter
 
 - **For the organization.** An approver sees the gaps of their own
-  organization: the need, the category and the outcome.
+  organization: the need, the category and the outcome. The route is
+  `GET /studio/tool-gaps` (§12.1 decision 10). It gives the counts by outcome
+  and by category for 30 days, and the 50 newest rows. SBX-1b shows them on
+  `/studio`.
 - **For our team.** The Operator Console sees counts by `category` and
   outcome, across organizations, and nothing else. D64.5 lets an operator
   reach the commercial record only, so no `need` text leaves the tenant.
@@ -1828,8 +1919,8 @@ tenancy and outward writes also get mutation testing
 | SBX-F4 | `tests/unit/test_sandbox_no_secrets.py` | The container's environment or file system holds a provider token of the org, `GATEWAY_INTERNAL_TOKEN`, the Router key, the session secret, the signing key or a database URL. It has a `sandbox_docker` half |
 | SBX-F5 | `tests/unit/test_sandbox_egress_profiles.py` | A host off the profile passes, a step with a read scope gets a `web:` profile while SBX-Q2 has its default, a marked session gets one, or the code changes its own profile |
 | SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | The door's identity step skips a branch 0 step, reads the member from a header, falls through to branch 1a, or a refused request leaves a tenant bound. Its source is pinned by digest, as branch 0's is |
-| SBX-F7 | `tests/unit/test_user_tool_injection.py` | `find_tool`, `build_tool` or `run_tool` reaches an agent with no `tool_scope`, a run whose org the scope does not name, or a run with no chat for `build_tool` |
-| SBX-F8 | `tests/unit/test_tool_gap_detection.py` | `build_tool` runs with no gap id, with a gap id that is not `no_match`, from another run, or older than 30 minutes, or with no approved build card |
+| SBX-F7 | `tests/unit/test_user_tool_injection.py` | (§12.1 decision 1) The find half: the no-match hook reaches a run with `user_tool_find_enabled` off, an org off `STUDIO_ORGS` or `TOOL_SEARCH_ORGS`, a member without `feature:studio`, a delegated run, an agent other than `orchestrator` or a WhatsApp turn. `find_tools` or the hook is in `_collect_injectable_platform_tools()`. The hook takes the org, the member, the thread or the run from a tool argument. The build half: `build_tool` or `run_tool` reaches an agent with no `tool_scope`, a run whose org the scope does not name, or a run with no chat for `build_tool` |
+| SBX-F8 | `tests/unit/test_tool_gap_detection.py` | The record half (SBX-1): a no-match call writes no row or two rows, a row does not follow the map of §12.1 decision 3, or a ranked call, a refusal, a fault or a timeout writes a row. The build half (SBX-4): `build_tool` runs with no gap id, with a gap id that is not `no_match`, from another run, or older than 30 minutes, or with no approved build card |
 | SBX-F9 | `tests/unit/test_user_tool_registry.py` | R8, on a real database as the NOBYPASSRLS role. (D187) A package persists after a failed smoke test or a failed first run. A failed build leaves a file, a blob or a package. RLS shows a package or a `tool_gaps` row to another org. A private tool shows to another member |
 | SBX-F10 | `tests/unit/test_user_tool_versions_immutable.py` | (D187) Any code issues an `UPDATE` of `app_versions.files`, or the trigger of §7.2 lets one through on a real database |
 | SBX-F11 | WS43-F1, `tests/unit/test_sandbox_broker_seam.py`, extended | A module outside `sandbox_broker.py` imports `e2b` or starts a `docker` process, or the `tools` target falls back to the host |
@@ -1839,12 +1930,12 @@ tenancy and outward writes also get mutation testing
 | SBX-F15 | `tests/unit/test_sandbox_log_lines.py` | A log line of §9.1 holds input data, output data, a need text or a token, or the operator view returns a `need` text |
 | SBX-F16 | `tests/unit/test_sandbox_metering.py` | A step ends with no usage event, or a step starts for an org at its hard cap. (D227) Or a step starts while the `sandbox` price row is missing |
 | SBX-F17 | `tests/unit/test_user_tool_repair.py` | (D187) A repair starts on a signal outside §6.7, or one failed run gets a second repair build. A repair changes a schema or a scope. A level (b) version runs for a member who is not its author, or moves a pin or the `live_version` of another member |
-| SBX-F18 | `tests/unit/test_tool_compose_check.py` | (D187) `find_tool` answers `no_match` when the decide answer is `compose`, `build_tool` takes a `compose` gap, or the compose check offers a catalog row that the member cannot call. `find_tool` opens a session while `catalog_rows` runs. It proves done-when 9 of §12.1 |
+| SBX-F18 | `tests/unit/test_tool_compose_check.py` | (D187) The no-match path writes `no_match` when the decide answer is `compose`, `build_tool` takes a `compose` gap, or the compose check offers a catalog row that the member cannot call. A `workflow`, `integration`, `mcp` or `tool` row reaches the decide context. The hook opens a session while `catalog_rows` runs. It proves done-when 6 and 9 of §12.1 |
 | SBX-F19 | `tests/unit/test_no_platform_patch_at_run_time.py` | (D187) A level (c) path writes into the repository or calls `attempt_self_mutation`. A failure report holds error text or code with no consent row of the member |
 | SBX-F20 | `tests/unit/test_tool_adoption_counts.py` | (D187) The view of §6.8 returns a value that is not a count, a category slug, a built-in tool name or an error class, or it names an organization |
 | SBX-F21 | `tests/unit/test_sandbox_remote_backend.py` | (D187) The `docker-remote` backend binds a mount of the gateway host, runs `runc` in production mode, or gives `DOCKER_HOST` to a child that is not `docker`. It has a `sandbox_docker` half |
 | SBX-F22 | `tests/unit/test_sandbox_door_client.py` | (D187) The door client reads an env value other than `METORITE_API_TOKEN`, calls a host other than the door name, or the image lacks it |
-| SBX-F23 | `tests/unit/test_user_tool_registry.py`, R8 half | (D187) The library search reads across organizations, or runs a bare full-text query over `apps`. A private package of another member reaches `candidates`, the decide prompt or the gap row. A paused or archived install still comes back. It proves done-when 7 of §12.1 |
+| SBX-F23 | `tests/unit/test_user_tool_registry.py`, R8 half | (D187) The library search reads across organizations, or reads `apps` with no owner filter. A private package of another member reaches `candidates`, the decide context or the gap row. A paused or archived install still comes back. A draft with no live version comes back. It proves done-when 5 and 7 of §12.1 |
 | SBX-F24 | `tests/unit/test_sandbox_scope_all_orgs.py` | (D227) `tools:*` parses to an error, an org in `user_tool_disabled_orgs` still runs, or `tools` is absent from `MAF_CODING_TARGETS`. Advisory until SBX-6 and SBX-9 build it |
 | SBX-F25 | `tests/unit/test_compute_run.py` | (D227) `compute_run` takes an input that is not a `tr_` ref of its own org, member and thread, or a foreign ref does not answer "not found". A short tool result gets no ref while compute is on. One org evicts the refs of another. The output text is not framed as untrusted. A run passes the daily cap of 50 for an org or 20 for a member. A log line holds code or output text. An org outside the scope runs |
 | SBX-F26 | `tests/unit/test_sandbox_broker_compute.py` | (D227) The `compute` argv holds a mount, a network, or limits other than 1 CPU, 1g and pids 64. The tar reader accepts a link, a nested name, a type outside csv, png, json and txt, more than 5 files, a file over 1 MB or more than 3 MB in total. `compute` is absent from `MAF_CODING_TARGETS`, or `compute:*` does not parse, or an unknown target no longer raises `ValueError`. Production runs without `docker-remote` and `runsc`. A start skips the org lock |
@@ -1886,11 +1977,13 @@ the A2 model.
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
-| **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
-| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
+| **SBX-1a** (task 3800) | (D187) (D225) `tool_gaps` (§7.4). The no-match path of `find_tools` with the library check and the compose check (§6.1), not a second tool. The gap log line of §9.1, and the route `GET /studio/tool-gaps` for an approver. No code runs anywhere. §12.1 holds the full slice and the eleven audit decisions. `user_tool_runs` moved to SBX-4 (decision 9) | SBX-0b | AGENT-SAFE. HIGH tier: a FORCE RLS table and the chat tool seam. Dark behind `user_tool_find_enabled`. 🔨 **BUILT dark** (2026-11-26, branch `mt-8f625471-sbx1-tool-gaps`): migration 504, the hook, the store, the library search and the route. The flip is the `enforcement-flip` of rung 6a |
+| **SBX-1b** (task 3984) | A read-only "Tool gaps" section on `/studio`, for a holder of `studio:publish`. It reads `GET /studio/tool-gaps` through the `/api/studio/[[...path]]` proxy. It shows the counts by outcome and by category, and the newest rows. Frontend only, with no new route | SBX-1a | AGENT-SAFE. STANDARD. Dark. 🔨 **BUILT dark** (2026-11-26, branch `sbx1b-gap-view`): `app/studio/components/ToolGaps.tsx`. A 404 or a 403 draws nothing. The panel draws a skeleton or an error line only in a browser that saw a 200 before, so a dark org never sees it |
+| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
-| **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
-| **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
+| **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
+| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4 | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name | AGENT-SAFE. Dark. No production container (task 3786) |
+| **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
 | **SBX-8** (task 3807) | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack. 🔨 **BUILT dark** (2026-11-19, branch `mt-97db21a4-sbx15-remote-runsc`): the setting `sandbox_runtime`, default `runc`. `runsc` adds `--runtime=runsc` to `docker run`, and an unknown value refuses each start. Fences: WS43-F2 and SBX-F21. **Not measured:** no local daemon has `runsc`, so the cost of gVisor waits for a box with it | the broker (D227), not SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
@@ -1910,81 +2003,139 @@ the A2 model.
 | **SBX-20** (task 3981) | (D233) **The background build and same-turn hand-back** (§0d, rung 6c). On `no_match`, the build, the smoke test and the first run go to a sandbox sub-run inside the same chat turn. The chat shows one progress line. On a smoke pass it calls the new tool in the same turn and answers. On a failure it answers what it can and says what it could not do. The gap goes to the gap log and the tool failure log. HIGH. **Done when:** on the dev stack, one turn builds, calls and answers. A failed build gives a plain answer and both log rows. With the flag off, nothing changes. Fence SBX-F27 | SBX-3, SBX-5 | AGENT-SAFE. Dark |
 | **SBX-21** (task 3982) | (D233) **The progress-line contract** (§0d, rung 6c): one line in the run status, with fixed client words, no tool name and no "sandbox". A write still shows the card of §5.3. The kept skill is reused silently. The build and run calls of the SBX-20 path send no §4.11 line. The SBX-20 flag stays off until this slice merges. The approval of §8 does not change. HIGH. **Done when:** a test fails on a second progress line, on a tool name or on "sandbox" in member copy. Fence SBX-F28 | SBX-20 | AGENT-SAFE. Dark |
 
-### 12.1 SBX-1 — the first dispatchable slice
+### 12.1 SBX-1a — the first dispatchable slice
 
-**Scope (D187).** The tables of §7.3 and §7.4, with the generated RLS.
-`find_tool` on the general agent, with the five checks of §6.1. The
-`sandbox.tool.gap` log line. A read route for an approver's gap view.
+**Scope.** The table of §7.4, with RLS. The no-match path of `find_tools`
+with the checks of §6.1. The `sandbox.tool.gap` log line. The read route
+`GET /studio/tool-gaps` for an approver.
 
 No container starts, no capability exists, and no code runs.
 
-**Not in SBX-1 (D187).** No column of `app_versions` changes, because SBX-5
-adds the files (§7.2). `sandbox_capabilities` comes with SBX-2. The library
-check finds no tool module until SBX-5, so it finds packages of every kind.
+**Not in SBX-1a.** No column of `app_versions` changes, because SBX-5 adds
+the files (§7.2). `sandbox_capabilities` comes with SBX-2, and
+`user_tool_runs` with SBX-4. The library check finds no tool module until
+SBX-5, so it finds packages of every kind. SBX-1b draws the gap view.
 
-**Why first.** It answers #234, #235 and the counter half of #242. It costs
-nothing, needs no owner act after the board row, and gives the team real gap
+**Why first.** It answers #234 and the counter half of #242. It costs
+nothing, needs no owner act except the flag flip, and gives the team real gap
 counts before anyone spends on a runtime. (D187) The compose check sends a
 need to Studio before any sandbox exists.
 
-**The flag.** `user_tool_find_enabled`, default off. Off, the general agent
-holds no `find_tool`.
+**The flag.** `user_tool_find_enabled`, default off. A change needs a
+restart. Off, `_make_finder` passes no hook, so the no-match answer is
+`FIND_NONE` byte for byte. Off, nothing writes a row, asks the decide engine
+or reads the catalog. The flip on production is the `enforcement-flip` of
+rung 6a (§0c).
 
-**Files (re-verify at dispatch).**
+**The audit decisions (2026-11-26).** The SBX-1 audit fixed these eleven
+points. The text of §6.1, §7 and §11 follows them.
 
-- New: `apps/services/gateway/gateway/routes/user_tools.py`, the gap view
-  route.
-- New: `packages/acb_skills/acb_skills/user_tool_tools.py`, `find_tool`.
-- Changed: `packages/acb_common/acb_common/settings.py`, the flag.
-- Read, not changed (D187): `apps/services/gateway/gateway/package_host/resolve.py`
-  (`read_installs` at :316, `system_contributions` at :311), and
-  `apps/services/gateway/gateway/routes/studio/actions.py` (`catalog_rows` at :149,
-  `package_rows` at :203).
-- New (D187): `apps/services/gateway/gateway/studio/package_search.py`, with one
-  read function `search_visible(db, viewer, groups, query, limit=5)`. It is the ONE
-  library search. It keeps a package only when one of three conditions holds:
-  1. The viewer owns it, it is not archived, and it has a live version.
-  2. `read_installs` returns an install for it.
-  3. It is a `system` package.
+1. **The gate holds by construction.** `find_tools` never enters
+   `_all_tools`, so a `tool_scope` entry would only log
+   `executor.tool_scope_unknown_entry`. The gate of `find_tools` is
+   stricter (§6.1). SBX-1a adds `user_tool_find_enabled` and
+   `_studio_member_open()`. They take the place of the 404 of `STUDIO_ORGS`
+   and the feature gate, which an in-process call of `catalog_rows` skips.
+2. **The one no-match site** is `if not ranked:` in `FindTools._find`. The
+   hook comes in as the builder and the measure do, so `tool_packs` imports
+   no gateway code. With no hook, the answer is `FIND_NONE` byte for byte.
+   `_FIND_DESCRIPTION` and `find_tool()` do not change.
+3. **The map of an answer.** `pkg:<app_id>` gives `tool` and `reuse`, with
+   `app_id`. `tool:<name>`, a live tool of the run, gives `tool` and
+   `existing`. `compose` gives `compose` and `compose`. The question offers
+   it only with 1 or more callable rows. `none` gives `none` and `no_match`.
+   `unsure`, no engine or a pick below the threshold gives `unsure` and
+   `unsure`. The `outcome` CHECK holds all eight values. SBX-1a returns no
+   gap id.
+4. **The category.** A second item of the same question picks one key of
+   `skill_families.SKILL_FAMILIES`, or `other`. No answer gives `other`.
+   The CHECK holds the shape only, and a Python test pins the set.
+5. **The engine.** `decide_tools.ask_typed(context, [answer, category],
+   purpose="tools.gap")`, only when `decide_tools.typed_choices_on()` is
+   true. `sure_choice` reads each answer. SBX-1a adds no entry to
+   `gateway/decide_features.py`.
+6. **The library check** reads `packages_store.list_summaries` and
+   `resolve.visible_installs` only. It keeps an owned package that is live
+   and not archived, and an install at a version. Python ranks by the count
+   of shared content stems, keeps 2 or more, and keeps 5 at most. A
+   `system` package leaves the check.
+7. **The compose check** calls `catalog_rows()` before any session of the
+   hook opens. `callable_catalog(features, rows)` keeps a `manifest` row when
+   `in_app_path.member_features()` holds the feature of its app, and a
+   `logic` row when it holds `studio`. It drops every other row. At most 20
+   rows, by a lexical match on the title. It never calls `package_rows`.
+8. **The model sees ids and fixed sentences only.** No text that a member
+   wrote in a package. `candidates` holds ids only.
+9. **`user_tool_runs` moves to SBX-4.**
+10. **The route** `GET /studio/tool-gaps` lives in `routes/studio/`, not in
+    a new `routes/user_tools.py`. The `/api/studio/[[...path]]` proxy of the
+    Control Plane forwards it.
+11. **`thread_id` references `chat_session (id)`** with ON DELETE CASCADE,
+    as 459 does.
 
-  It never selects from `apps` across members. `find_tool` imports it inside the
-  function, as `history_tools.py:201` does for `gateway.rooms`.
-- New (D187): a member filter for the compose check, in `package_search.py`:
-  `callable_catalog(user, rows)`. It drops a row that `user.can_use_feature` refuses.
-  Call `catalog_rows()` and `package_rows()` BEFORE a session is open. Their docstrings
-  require it.
-- Changed (D187): `_tool_injection.py`, in the `decide_tool_for` block near :2303. Add
-  `find_tool` to `_all_tools` only when `user_tool_find_enabled` is on.
-- Changed: the gateway router list and `tests/unit/test_studio_route_gate.py`
-  `EXPECTED_ROUTES` if the gap view route sits under `/studio`. The route requires
-  the `studio:publish` verb (§8.1) and reads one org only.
-- New tests: `test_tool_gap_detection.py`, `test_tool_compose_check.py`,
-  `test_user_tool_registry.py`, `test_user_tool_injection.py` and
-  `test_sandbox_log_lines.py`, all under `tests/unit/`.
-- New: the migration, at the next free number at build time. (D187) It adds
-  `tool_gaps` and `user_tool_runs` only.
-- New: the fences SBX-F7 (its `find_tool` half), SBX-F8 (its record half),
-  SBX-F9 (its RLS half), SBX-F15 (its gap half), SBX-F18 and SBX-F23 (D187).
+**Files.**
+
+- New: `infra/postgres/504_tool_gaps.sql`. The lane booked the number for
+  this task (R1). Check it again at merge.
+- New: `apps/services/gateway/gateway/studio/tool_gaps.py`, the one writer
+  and reader: `record_gap` and `gap_summary`.
+- New: `apps/services/gateway/gateway/studio/package_search.py`:
+  `search_visible(db, *, viewer, query, limit=5)` and
+  `callable_catalog(features, rows)`.
+- New: `apps/services/gateway/gateway/routes/studio/tool_gaps.py`, the route.
+- New: `apps/services/orchestrator/orchestrator/tool_gap_path.py`:
+  `make_gap_hook()` and the hook.
+- Changed: `packages/acb_skills/acb_skills/tool_packs.py` (`FindTools`
+  takes `on_gap`), `packages/acb_skills/acb_skills/tool_search.py` (the pure
+  helper `shared_stems`), `apps/services/orchestrator/orchestrator/_tool_injection.py`
+  (`_make_finder` passes the hook), `packages/acb_common/acb_common/settings.py`
+  (the flag), `apps/services/gateway/gateway/routes/admin/members.py` (the
+  purge) and the generated tenancy phases.
 
 **Done when.**
 
 1. The migration applies on a fresh dev database and on a copy of the
    current schema, and `test_tenant_coverage.py` passes.
 2. As the NOBYPASSRLS role, org A cannot read a `tool_gaps` row of org B.
-3. With the flag off, no agent holds `find_tool`.
-4. With the flag on, `find_tool` writes one `tool_gaps` row for each call,
-   with `answer` and `outcome` set.
-5. (D187) A published Studio package of the member that matches the need comes back
-   as `reuse`. The test makes it with `create_package`, then `publish_version`. A draft
-   with no live version never comes back as `reuse`.
-6. (D187) A need that two catalog actions cover comes back as `compose`. Its
-   gap row reads `compose`, never `no_match`, so no later build can take it.
-7. (D187) As member B, a private package of member A with no install that reaches B never
-   comes back. It is not in `candidates`, in the decide prompt or in the gap row. An
-   org-scope install of A's package does come back. A paused or archived install does not.
-8. The log line holds no `need` text.
-9. (D187) A catalog row that the caller's `can_use_feature` refuses never reaches the compose
-   check. `find_tool` opens no session while `catalog_rows` runs.
+3. With the flag off, the finder gets no hook. The no-match answer equals
+   `FIND_NONE` byte for byte. No row, no decide call and no catalog read.
+4. With the flag on, each no-match call of `find_tools` writes one row,
+   mapped by decision 3. A call that ranked a tool writes none. A call that
+   a cap, the budget, the MCP rule or "unavailable" stopped writes none.
+5. (D187) A published Studio package of the member that matches the need
+   comes back as `reuse`, with `app_id`. The test makes it with
+   `create_package`, then `publish_version`. A draft with no live version
+   never comes back.
+6. (D187) A need that two callable catalog rows cover gives a `compose`
+   row, never `no_match`.
+7. (D187) As member B, a private package of member A with no install that
+   reaches B never comes back. It is not in `candidates`, in the decide
+   context or in the row. An org install of A's package does come back. A
+   paused install does not.
+8. The `sandbox.tool.gap` line holds no need text.
+9. (D187) A catalog row whose feature the member lacks never reaches the
+   decide context. No session of the hook is open while `catalog_rows` runs.
+10. No row for a delegated run, an agent other than `orchestrator`, a
+    WhatsApp turn, an org off `TOOL_SEARCH_ORGS` or `STUDIO_ORGS`, or a
+    member without `feature:studio`. Neither `find_tools` nor the hook is in
+    `_collect_injectable_platform_tools()`. The org, the member, the thread
+    and the run come from the run context only.
+11. No engine answer, or a pick below the threshold, gives `unsure`,
+    `unsure` and `other`. The category is always a key of
+    `SKILL_FAMILIES` or `other`.
+12. The route answers 404 for an org off `STUDIO_ORGS` or with the flag
+    off, and 403 without `studio:publish`. The 200 holds the counts by
+    outcome and by category for 30 days, and the 50 newest rows with the
+    need, the category, the outcome and `created_at` only. Rows of org B
+    never show.
+13. A fault, or a timeout after 8 seconds, in the hook gives `FIND_NONE` and
+    no row. The log line names the error class only.
+
+**Fences.** SBX-F7 (the find half), `test_user_tool_injection.py`. SBX-F8
+(the record half), `test_tool_gap_detection.py`. SBX-F9 (the RLS half) and
+SBX-F23, `test_user_tool_registry.py` (R8, in the must-run list). SBX-F15
+(the gap half), `test_sandbox_log_lines.py`. SBX-F18,
+`test_tool_compose_check.py`.
 
 **Verification commands.**
 
@@ -2185,8 +2336,9 @@ anonymous, and that route's own check refuses it.
 The sibling does not call `_bind_session_member`, because no row of
 `SANDBOX_ROUTES` calls a model (decision 2).
 
-**The log level.** A refusal before step 3 logs at info, because anybody on
-the network can cause it. A refusal after step 3 logs at warning, as
+**The log level.** A refusal before step 4 logs at info, because anybody on
+the network can cause it. That includes step 3: an unknown, expired or
+revoked token. A refusal at step 4 or later logs at warning, as
 `_UNSIGNED_REFUSALS` (`deps.py:436`) splits branch 0.
 
 **The digest.** The two new functions that see the request,
@@ -2198,10 +2350,13 @@ the ONE digest pin (`_BRANCH_ZERO_DIGESTS`, `:1210`) cover the sibling.
 - Why not a second pin: the scan already refuses a request handed to a
   function outside `_BRANCH_ZERO`. A second pin for the same boundary would
   be a second fence that drifts.
-- The scan's header list gains `x-sandbox-capability`. It also gains the
-  four header names that the sibling reads only to refuse: `authorization`,
-  `x-user-email`, `x-user-role` and `x-actor-via`. The sibling reads the
-  `x-agent-` prefix through the header names, as branch 0 does.
+- The sibling gets its own header set in the scan: `x-sandbox-capability`,
+  and the header names that it reads only to refuse: `authorization`,
+  `x-user-email` and `x-user-role` (`x-actor-via` is in the shared set
+  already). Only `_is_sandbox_request` and `_sandbox_user` may name them, so
+  the scan still refuses such a read in `_agent_user`. The tripwire allows
+  them only while the sibling runs. The sibling reads the `x-agent-` prefix
+  through the header names, as branch 0 does.
 - `_TRIGGER_PREFIX` (`test_tenant_request_binding.py:360`) becomes a tuple:
   `("x-agent-", "x-sandbox-")`.
 - The ContextVar of decision 9 stays. The scan allows only
@@ -2475,7 +2630,7 @@ holds `@`. `ACTOR_VIA_PATTERN` (`agent_oauth.py:983`,
   `revoked_step` or `swept`), `expires_at` and the count of read scopes.
 - `sandbox.door.call`: org, run, phase, method, route template, status, the
   refusal code or `allowed`, `call_n` (the counter after the call) and the
-  answer bytes. A refusal before step 3 has no org and no run.
+  answer bytes. A refusal before step 4 has no org and no run.
 - No line holds the token, its hash, a header value, a query value or an
   answer body. SBX-4 copies `call_n` and the bytes into `user_tool_runs`.
 - SBX-2 writes no audit row for a read. §8.4 names the acts that write one.
@@ -2590,7 +2745,8 @@ also get mutation testing (`engineering_practice.md` §4).
 ### 12.3 SBX-13 — the door client `metorite_door`
 
 **Board.** Metorite task 3428. Risk tier STANDARD: one module in the image,
-and no gateway change. It depends on SBX-2.
+and no gateway change. Its end-to-end proof needs SBX-2. It may merge
+before SBX-2.
 
 **Scope.** One module that a tool imports to read Metorite as the member,
 through the door of §12.2. It goes in the sandbox image, read-only. It uses
@@ -2677,8 +2833,10 @@ class Door:
   the key of the answer that holds the rows. The builder reads them from the
   route. `page_size` is at most 100, the door cap.
 - SBX-F22 fails when a path of that table is not in `SANDBOX_ROUTES`. The
-  test imports `acb_common.app_manifests.SANDBOX_ROUTES`, and a skip is not
-  allowed. So whichever of SBX-2 and SBX-13 merges second adds this check.
+  test imports `acb_common.app_manifests.SANDBOX_ROUTES` when it exists.
+  SBX-13 may merge first. Then SBX-2 adds the check that each path of
+  `PAGED_ROUTES` of `metorite_door` is in `SANDBOX_ROUTES`. When SBX-2 merges
+  first, the test of SBX-13 makes the check, and a skip is not allowed.
 - It stops on an empty page, on a page shorter than `page_size`, or after
   `max_pages`. It yields each row. It never asks for a page above the door
   cap.
@@ -2771,6 +2929,593 @@ A skip fails the slice. The `sandbox_docker` half runs on
 | # | Test file | What it holds |
 |---|---|---|
 | SBX-F22 | `tests/unit/test_sandbox_door_client.py` | Done when 1 to 6. Its `sandbox_docker` half holds 5 and 6 |
+
+### 12.4 SBX-4b — build_tool, the build session and the smoke test
+
+**Board.** SBX-4b1 is Metorite task 3986. SBX-4b2 is Metorite task 4049.
+Risk tier HIGH. Code runs in a container that holds a live read capability.
+The slice also adds a FORCE RLS table, a migration and a chat tool.
+
+The anchors below were read on 2026-11-26 at `main` `3064753ee`, on PR 2862
+(SBX-4a) and on PR 2887 (WS-43g1). Each anchor names its source: **main**,
+**PR 2862** or **PR 2887**. Re-verify each anchor at dispatch.
+
+**The split.** SBX-4b is two pull requests, because one Opus builder cannot
+hold all of it in one round. Each half has its own proof.
+
+- **SBX-4b1 (task 3986), the step engine.** The start path, the mounts, the
+  grants, the capability, the package check, the install, the smoke test and
+  the round cap (decisions 1 to 8). Also three parts with no open PR below
+  them: (a) the door refusal counter, (b) `user_tool_runs`, and (c) the
+  reserved agent names. A fixture package stands in for the model.
+- **SBX-4b2 (task 4049), the chat half.** `build_tool`, the build card, the
+  gap id in the answer of the no-match path, and the build session on the
+  one harness. Also the outcome of the gap row and the line
+  `sandbox.tool.build`.
+
+**What can start now.** Parts (a), (b) and (c) of SBX-4b1 need no open PR. A
+builder can dispatch them now. Part (c) pins the literal `"user-tool"`
+until PR 2862 merges, and then uses `USER_TOOL_AGENT`. The step engine
+(decisions 1 to 8) waits for PR 2862 and PR 2887. SBX-4b2 waits for SBX-4b1.
+
+**Depends on.**
+
+- **SBX-4a** (task 3803, PR 2862, open): `TOOLS_TARGET`, `USER_TOOL_AGENT`
+  and the refusal in `acquire()`.
+- **WS-43g1** (task 4009, PR 2887, open, built dark): `grant_egress`,
+  `revoke_egress`, `check_grant_hosts`, the forward of `DOOR_HOST` and
+  `sandbox_egress_door_upstream`. pip needs it to reach PyPI. `metorite_door`
+  needs it to reach the door name.
+- **SBX-1a, SBX-2 and SBX-13**, on `main`: the gap row, the capability and
+  the door, and the door client.
+- **Not SBX-3.** SBX-3 is NO-GO until the owner picks a design. So SBX-4b
+  holds no write. The smoke capability holds no write scope. The package
+  check refuses a `tool.json` with a write scope.
+
+**Why not a half with no network.** A half with image packages only and no
+door misses the demo of rung 6b. That demo reads two pages through the door
+(§0c), and SBX-13 moved its real-door proof here (§12.3). Such a half also
+needs a second start path, which WS-43g1 replaces at once. So SBX-4b waits
+for WS-43g1, and no slice takes the half with no network.
+
+**Scope.** SBX-4b1 and SBX-4b2 as above, on the Docker backend, on the dev
+stack, dark. No production box gets `tools:<org>` in `MAF_CODING_SCOPE`
+before SBX-9.
+
+**Not in SBX-4b.**
+
+- No `run_tool`, no persist, no reuse and no `app_versions.files`. SBX-5
+  owns them. A pass of the smoke test keeps nothing (§6.5).
+- No write and no held write (SBX-3).
+- No `usage_event` and no credit check. Task 3806 asks the owner which
+  credential writes the sandbox usage row. SBX-7 owns the meter. The column
+  `user_tool_runs.credits` stays NULL (§7.3). The build card shows no
+  estimate.
+- No `docker-remote` and no `runsc` start of the target. SBX-15b owns them.
+  `REMOTE_TARGETS` keeps `code_task` only (PR 2862).
+- No production container and no flip. Task 3786 (BH-3, the escape risk) is
+  open. SBX-4b runs in `sandbox_docker` tests and on the dev stack only.
+- No `web:` profile, and no `registry.npmjs.org`. A tool is Python only.
+- No age check, no advisory check, no licence check and no layer. These are
+  the package rules of `ai_studio.md` §19.5. SBX-5 is their single owner,
+  and no tool persists without them (the SBX-5 row).
+- No silent build. SBX-20 owns the path with no card (§0d).
+- No change to `deps.py`, so the branch-0 digest stays.
+
+#### The decisions
+
+**1. The start path.** `acquire()` keeps its refusal of `tools` (PR 2862).
+SBX-4b1 adds one way in, as `run_compute` does for `compute` (main).
+
+- `read_tool_binding()` sits beside `read_compute_binding()`
+  (`sandbox_broker.py:849`, main). It sets the agent to `USER_TOOL_AGENT`.
+  So the container key is (org, `user-tool`, thread), as §6.2 says.
+- The org, the member and the thread come from the run binding only (R5).
+- `SandboxBroker.acquire_tool()` starts or reuses that container. It
+  refuses unless `maf_coding_scope_allows(TOOLS_TARGET, org)` is true.
+- Two new settings cap it: `user_tool_max_per_org` and
+  `user_tool_max_total`, each with the default 1 (§5.6). At a cap it raises
+  `SandboxBusy`.
+- One build runs at a time in a thread. The step engine holds a lock of
+  (org, thread). A second build in the thread gets "busy".
+- Only the step engine calls `acquire_tool()`. A source scan in SBX-F11
+  fails on a second caller.
+
+**2. The mounts.** `mount_list` (`sandbox_broker.py:1122`, main) gets a
+`tools` branch. It mounts no working dir of an agent and no tenant dir.
+
+`projects_mounts` mounts the run-data dir of the same thread read-write
+(`sandbox_broker.py:1115`, main). A folder inside that dir is still inside
+that mount. So the `tools` branch mounts a sibling dir outside it:
+`.run-data/<org slug>/<thread slug>.user-tool/`, called `<tool-data>` below.
+
+| Host source | Container target | Mode |
+|---|---|---|
+| `<tool-data>/` | `/workspace/.run` | Read-write |
+| `<tool-data>/outputs/` | `/workspace/outputs` | Read-write |
+
+- `RunBinding` gains `tool_data_rel`, beside `run_data_rel`
+  (`agent_paths.run_data_rel`, main). A thread slug ends in 8 hex digits,
+  so `<thread slug>.user-tool` is never the slug of another thread.
+
+- The package lives in `/workspace/.run/pkg/`. The lock installs into
+  `/workspace/.run/site/`. The smoke input is `/workspace/.run/input.json`.
+- `/workspace/outputs` is not the `outputs/` folder of the member. So a build
+  or a smoke test never writes a member file. SBX-5 decides the outputs of a
+  real run.
+- Each build starts with an empty `pkg/`.
+- Each round deletes `site/`, `outputs/` and `input.json` first.
+- The run end deletes `<tool-data>` too. `_note_run_data` (main) records
+  the rel of `<tool-data>` for the thread. `end_run` (main) removes it with
+  `_remove_run_data`, as it removes the run-data dir (`maf_coding_engine.md`
+  §16.3). The startup sweep `remove_all_run_data` removes the whole
+  `.run-data` dir, so it covers `<tool-data>` with no change.
+- Today the map of `_note_run_data` holds ONE rel for each (workspace,
+  thread) key. The step engine changes it to hold a set of rels for each
+  key, and a `tools` binding adds `tool_data_rel`. Without the change, two
+  bindings of one key overwrite each other's rel.
+
+**3. The grants of a round.** The build card is the approval of the member.
+The build session runs its commands with `--network none`. Each round of the
+smoke test then moves through two grants:
+
+1. `grant_egress` with `pypi.org` and `files.pythonhosted.org`. The install
+   of decision 6 runs.
+2. `grant_egress` again with `metorite-api.sandbox` only. The smoke command
+   runs.
+3. `revoke_egress`. The container goes back to `--network none`. This step
+   also runs on a failure and on a cancel.
+
+- **The recommendation, owner confirms (SBX-Q2 residual).** No package host
+  is open while a capability is live. PyPI publishes its download counts as
+  a public dataset. So a package name that the code asks for can carry data
+  out. The owner answers on task 3986. Until then, SBX-4b builds the
+  narrow grant of step 2.
+- `EGRESS_TARGETS` (PR 2887) gains `TOOLS_TARGET`. `projects` and `compute`
+  stay out.
+- `check_grant_hosts` (PR 2887) refuses the door name while
+  `sandbox_egress_door_upstream` is empty. So a stack with no door upstream
+  refuses the build before any start.
+
+**This edits the seam of PR 2887.** `_grant_inputs` (PR 2887, about line
+3980) compares the name of `read_run_binding()` with the name of the handle.
+A `tools` handle has the key (org, `user-tool`, thread), so that check
+refuses it. SBX-4b1 changes `_grant_inputs`: for a `tools` handle it compares
+with `read_tool_binding()`. The org and the member still come from the run
+binding.
+
+**The network depends on task 4009.** WS-43g1 puts each org on one egress
+network, and inter-container traffic (ICC) is on. So a `tools` container
+sits next to the `code_task` containers of other members of the org. The
+recommendation: no inter-container traffic on the `tools` path. The owner
+decides on task 4009, and this spec does not.
+
+**4. The capability reaches the smoke command only.**
+
+- The build phase mints no capability. A door call from a build command gets
+  401 (§5.1). The session gets the list of `SANDBOX_ROUTES` and their read
+  scopes as text.
+- Each round mints one capability: `phase="smoke"`, the read scopes of
+  `tool.json`, no write scope and `ttl_s=180` (`sandbox_capabilities.mint`,
+  main).
+- `SandboxBroker.exec` gains `env_file`. The broker writes the token to a
+  file of mode 0600 in a folder of mode 0700.
+- The broker passes that file with `docker exec --env-file`, and deletes it
+  when the command ends. This is the path of the grant token of PR 2887. No
+  process list shows the token.
+- **No build process lives at the smoke command.** The grant of step 2
+  recreates the container through `_restart` (PR 2887). So each process of
+  the build ends before the token arrives. No build process can read
+  `/proc/<pid>/environ` of the smoke command.
+- The round ends with `revoke_step(org=…, run_id=…, phase="smoke")` (main).
+  This also runs on a failure or a cancel.
+
+**5. The package check.** `check_package(pkg_dir, approved_scopes)` runs on
+the host, in a new module `acb_skills/user_tool_build.py`. It reads through
+the safe opener and follows no link. It refuses a package when:
+
+- the package lacks one of the five files of §6.3,
+- the package holds a sixth top-level name or a file that is not regular,
+- the package holds more than 262144 bytes (the cap of §7.2),
+- `tool.json` is not one JSON object with `input_schema`, `output_schema`,
+  `read_scopes` and `write_scopes`,
+- a read scope is not in `SANDBOX_READ_SCOPES` (main),
+- a read scope is not in the set that the member approved on the card,
+- `write_scopes` is not empty,
+- `smoke.json` holds no `input` that is valid under `input_schema`,
+- `SKILL.md` has no `name` and `description` front matter,
+- a lock line is not `<name>==<version>` with a `--hash=sha256:<64 hex>`,
+- the lock has more than 20 lines.
+
+An empty lock is valid: the tool then uses the image packages only. Each
+refusal has one fixed code, and the model hears that code only.
+
+**6. The install.** The step engine runs pip, never the model. The command is
+`pip install --require-hashes --only-binary :all: --no-deps --target
+/workspace/.run/site -r /workspace/.run/pkg/requirements.lock`.
+
+- `--no-deps` makes the lock hold each indirect package too (§19.5 of
+  `ai_studio.md`).
+- The install has 180 s, the limit of §19.5.
+- `site/` must hold 300 MiB or less after the install, the layer cap of
+  §19.5. Above it the round fails with `install_too_large`.
+- The broker's workspace quota (`sandbox_workspace_quota_mb`) bounds each
+  download on the disk.
+
+**7. The smoke test.** `run_smoke(handle, pkg)` runs one round:
+
+1. The package check (decision 5), and the install with grant 1.
+2. It writes the `input` of `smoke.json` to `/workspace/.run/input.json`.
+3. It moves to grant 2, and mints the capability (decision 4).
+4. It runs `python3 /workspace/.run/pkg/main.py` with a timeout of 120 s.
+   The env holds `PYTHONPATH=/workspace/.run/site` and `PYTHONNOUSERSITE=1`.
+5. It reads the door counts (decision 9), and revokes the capability.
+
+The round passes when the four conditions of §6.3 hold:
+
+| Condition | The test of SBX-4b |
+|---|---|
+| 1. The exit code is 0 | `ExecResult` exit code 0 |
+| 2. The output matches the output schema | `/workspace/outputs/result.json` is one JSON value, valid under `output_schema`. The check uses `jsonschema`, a new direct dependency of `acb_skills`. Today `uv.lock` holds it only as an indirect package |
+| 3. The step stayed inside its limits | No timeout, no exit code 137, a call count of 600 or less, and the broker's quota check passed |
+| 4. No call hit a route outside the declared scopes | The refusal count of the token is 0 (decision 9). A read error of the count fails the round |
+
+A smoke test in SBX-4b writes nothing. A write gets 403 `sandbox_read_only`
+from the door of SBX-2, and the refusal counts under condition 4. §5.3 names
+the code `smoke_is_read_only`. No code holds that name today, and SBX-3
+decides it.
+
+**8. The round cap and the time.**
+
+- A round is one call of `run_smoke` for one build. A build has at most 3
+  rounds. The step engine holds the count, not the model.
+- The fourth call raises `SmokeRoundsExhausted` before any command, and the
+  build fails.
+- The whole build has 600 s (`user_tool_step_seconds_build`, new, §5.6).
+  The session, the installs and the rounds all count against it.
+- Each round has the smoke budget of §5.6, 180 s, for steps 2 to 5. The
+  install of step 1 counts against the build budget only.
+- Past a budget the broker kills the step, and its row reads `timeout`.
+
+**9. The door refusal counter.** Condition 4 needs a count that the code
+cannot hide. A tool can catch a `DoorError` and still exit 0.
+
+- `sandbox_capabilities.lookup` (main) notes the token hash and the org of a
+  live row on the open `DoorCall` record.
+- `sandbox_capabilities.log_door_call` (main) marks that record as refused
+  for one of four codes. The codes are `sandbox_read_only`,
+  `sandbox_route_excluded`, `sandbox_route_unknown` and `sandbox_scope`.
+- `SandboxDoorLimits` (`gateway/sandbox_door.py`, main) then adds 1 to the
+  Redis key `sandbox_door_refusals` of the token hash. It uses the tenant
+  Redis wrapper of the row's org, with the life of the call counter.
+- **The pass-through path changes.** Today a request that the door did not
+  admit passes through byte for byte. Now the middleware makes the INCR
+  before it forwards `http.response.start` of a refused request.
+- `sandbox_capabilities.door_counts(org, token_sha256)` reads the call count
+  (`CALLS_NAMESPACE`, main) and the refusal count. Each round has its own
+  token, so no round sees the count of another round.
+- `deps.py` does not change, so the branch-0 digest of
+  `test_tenant_request_binding.py` stays. The store digest of
+  `test_sandbox_door_identity.py` changes. Its commit names the Opus
+  diff-reviewer review and the independent verification, as SBX-2 did.
+- **Residual, open until SBX-5.** A Redis failure at the INCR loses one
+  count. The refused call returned no data. SBX-5 must close this residual
+  before it persists a tool.
+
+**10. `user_tool_runs`.** SBX-4b1 adds the table of §7.3 in the next free
+migration (R1). Book the number with `~/lanes/reserve_migration.sh` first.
+
+- FORCE RLS through the generated migration, and an entry in
+  `test_tenant_coverage.py`.
+- `thread_id` is nullable, and references `chat_session (id)` with ON DELETE
+  SET NULL. A run row is the record of a step that ran code, and SBX-7 adds
+  its credits. A Delete of the chat must not delete that record. The writer
+  still selects the chat under the bound tenant, so a chat of another org
+  gives no row.
+- One module, `gateway/studio/user_tool_runs.py`, runs the SQL.
+- It writes one `build` row for each build, and one `smoke` row for each
+  round. SBX-4b writes no `run` row.
+- A refusal of `check_package` writes a `smoke` row with the outcome
+  `refused`, and `error_class` holds the fixed code of decision 5.
+- `backend` is `docker-runc` on the dev stack (§7.3).
+- SBX-4b fills `api_reads`, `wall_ms`, `outcome`, `exit_code` and
+  `error_class`. It writes the three write counts as 0. `cpu_ms`,
+  `peak_mem_mb`, `egress_bytes` and `credits` stay NULL.
+- The member purge (`routes/admin/members.py`, `_PersonRows`, main) deletes
+  the rows of a leaver, as it does for `tool_gaps`. SBX-7 reviews this rule
+  when credits land.
+- The row writes no `usage_event`. SBX-7 adds the meter after task 3806.
+
+**11. The reserved names.** The broker names `user-tool` and `compute` are
+reserved at agent registration.
+
+- `acb_skills/agent_paths.py` (main) gains `BROKER_AGENT_NAMES =
+  frozenset({"user-tool", "compute"})`.
+- Both names pass `AGENT_NAME_RE` (`agent_paths.py:131`, main). So the
+  regex alone does not stop them.
+- `register_agent` (`routes/agent.py:2250`, main) adds the set to its
+  `reserved` set (`:2275`). A request for either name gets 409.
+- A test pins the set to `COMPUTE_AGENT` (`sandbox_broker.py:137`, main) and
+  to the literal `"user-tool"`. After PR 2862 merges, the test reads
+  `USER_TOOL_AGENT`.
+- The reason: a real agent with either name shares the container key of a
+  broker step (§6.2).
+
+**12. `build_tool` (SBX-4b2).** One chat tool,
+`build_tool(gap_id, read_scopes, brief)`, for the agent `orchestrator`, in
+`acb_skills/user_tool_build.py`.
+
+- **Offered** only when four things hold. `MAF_CODING_SCOPE` names
+  `tools:<org>`. `user_tool_find_enabled` is on. `SANDBOX_DOOR_ORGS` names
+  the org. `sandbox_egress_enabled` is on.
+- A `_build_tool_withheld()` step in `_tool_injection.py` follows
+  `_compute_withheld()` (main). It holds the rules of SBX-F7.
+- SBX-F7: the agent has a `tool_scope`, the scope names the org, and the run
+  has a chat. A WhatsApp turn and a delegated run do not get the tool.
+- **The gap id.** The tool reads the row through `gateway/studio/tool_gaps.py`
+  (main) under the bound tenant. It refuses a row whose outcome is not
+  `no_match`, or whose `run_id` is not this run (SBX-F8).
+- It also refuses a row older than 30 minutes, or a row that already has a
+  `build` row in `user_tool_runs` (SBX-F8).
+- **The card.** `request_confirmation` (`acb_skills/ask_tools.py:2822`,
+  main) shows the card of §6.1 with `non_interactive_default="deny"`.
+- The card shows the `need` of the gap row, never the words of the model. It
+  shows the read scopes of the call and the line "may download Python
+  packages from PyPI".
+- It shows the line of a marked session when `egress.session_is_marked` is
+  true. It shows no credit estimate.
+- A refusal sets the gap to `declined`, and nothing starts. An approval
+  fixes the approved read scopes, and `check_package` holds the package to
+  them.
+- `brief` goes to the build session only. It never reaches the card.
+- **The answer of the no-match path.** `tool_gap_path.sentence` (main) adds
+  the gap id to the `no_match` sentence, so the model can pass it. SBX-1a
+  returned no gap id (§6.1).
+
+**13. The build session (SBX-4b2).** It runs on `coding_harness_agent`
+(`code_session.py:365`, main), the one harness of CA-14, with the profile
+`tool_builder` (§6.3, §6.9).
+
+- Its tools are the file tools over `/workspace/.run/pkg`, `run_command`
+  and `smoke_test`.
+- This `run_command` is a wrapper of the step engine on the handle of
+  `acquire_tool`. It is not `sandbox_tools.run_command`.
+- `smoke_test` calls `run_smoke`.
+- A tool pin like `_session_tool_pin` (`code_session.py:397`, main)
+  withholds and refuses each other tool.
+- The model is the setting `user_tool_build_model` (§6.9). Its default is
+  `tier-balanced`, as for `code_task`.
+- The session ends when a round passes, when the cap of decision 8 stops
+  it, or at 600 s.
+
+**14. The outcome of the gap row (SBX-4b2).** A new store call
+`set_gap_outcome` in `tool_gaps.py` moves a row from `no_match` to
+`declined` or `build_failed`, and from no other outcome. A smoke pass leaves
+`no_match`. SBX-5 writes `built` after the first good run (§6.5). The
+`build` row of `user_tool_runs` stops a second build of the same gap.
+
+**15. The log line.** `sandbox.tool.build` of §9.1: org, run, gap id,
+outcome, wall ms and smoke rounds. No need text, no code and no token.
+
+**16. The settings of the dev-stack demo.** The demo of rung 6b needs all of
+these on the dev stack. None of them is set on a production box.
+
+- `MAF_CODING_SCOPE` holds `tools:<org>`.
+- `SANDBOX_DOOR_ORGS` names the org.
+- `sandbox_egress_enabled` is on.
+- `sandbox_egress_door_upstream` holds the address of the dev gateway.
+- `user_tool_find_enabled` is on, with `STUDIO_ORGS` and `TOOL_SEARCH_ORGS`.
+
+#### Files (re-verify at dispatch)
+
+SBX-4b1:
+
+- Changed: `apps/services/orchestrator/orchestrator/sandbox_broker.py`.
+  `read_tool_binding`, `acquire_tool`, the `tools` branch of `mount_list`,
+  `env_file` on `exec`, and `TOOLS_TARGET` in `EGRESS_TARGETS` (PR 2887).
+  `_grant_inputs` (PR 2887) takes the tool binding (decision 3).
+- Changed: `packages/acb_common/acb_common/settings.py`.
+  `user_tool_max_per_org`, `user_tool_max_total` and
+  `user_tool_step_seconds_build`.
+- New: `packages/acb_skills/acb_skills/user_tool_build.py`. `check_package`,
+  `run_smoke`, the round cap and the step engine. Changed:
+  `packages/acb_skills/pyproject.toml`, with `jsonschema`.
+- Changed: `packages/acb_auth/acb_auth/sandbox_capabilities.py`, for the
+  refusal note and `door_counts`. Changed:
+  `apps/services/gateway/gateway/sandbox_door.py`.
+- New: `apps/services/gateway/gateway/studio/user_tool_runs.py`, and the
+  migration `infra/postgres/<n>_user_tool_runs.sql` with its generated RLS.
+- Changed: `packages/acb_skills/acb_skills/agent_paths.py` and
+  `apps/services/gateway/gateway/routes/agent.py` (decision 11).
+- Changed: `apps/services/gateway/gateway/routes/admin/members.py`, one
+  `_PersonRows` entry.
+
+SBX-4b2:
+
+- Changed: `packages/acb_skills/acb_skills/user_tool_build.py`, for
+  `build_tool` and the build session.
+- Changed: `apps/services/orchestrator/orchestrator/_tool_injection.py`
+  (`_build_tool_withheld`).
+- Changed: `apps/services/orchestrator/orchestrator/tool_gap_path.py` (the
+  gap id) and `apps/services/gateway/gateway/studio/tool_gaps.py`
+  (`set_gap_outcome`).
+- Changed: `packages/acb_common/acb_common/settings.py`, for
+  `user_tool_build_model`.
+
+#### Done when
+
+Each item names its test. The builder sees each test fail first.
+
+SBX-4b1, part (a), the door refusal counter:
+
+1. The door counts a refusal for each of the four codes of decision 9. It
+   counts none for an admitted call or a 422. The line `sandbox.door.call`
+   of a refusal holds no token and no token hash.
+   `test_sandbox_door_identity.py::test_the_door_counts_each_scope_refusal`.
+2. The count exists before the client reads the status of the refusal.
+   `test_sandbox_door_identity.py::test_the_refusal_count_lands_before_the_answer`.
+3. The store digest changes in a commit that names the review:
+   `tests/unit/test_sandbox_door_identity.py::test_the_digest_of_the_capability_store_is_pinned`.
+   The branch-0 digest does not change:
+   `tests/unit/test_tenant_request_binding.py::test_branch_zero_digest_is_pinned`.
+
+SBX-4b1, part (b), `user_tool_runs`:
+
+4. R8, on a real database as the NOBYPASSRLS role: org B cannot see a row
+   of org A. `tests/unit/test_user_tool_registry.py::test_user_tool_runs_rls`.
+5. R8: a Delete of the chat sets `thread_id` to NULL and keeps the row. A
+   chat of another org gives no row.
+   `test_user_tool_registry.py::test_a_chat_delete_keeps_the_run_row`.
+6. The member purge deletes the rows of a leaver.
+   `test_user_tool_registry.py::test_the_member_purge_deletes_run_rows`.
+
+SBX-4b1, part (c), the reserved names:
+
+7. `register_agent` answers 409 for `user-tool` and `compute`.
+   `test_user_tool_build.py::test_the_broker_agent_names_are_reserved_at_registration`.
+
+SBX-4b1, the step engine:
+
+8. A `sandbox_docker` test builds a fixture tool through the step engine,
+   with a fixed package in place of the model.
+   `test_user_tool_build.py::test_a_fixture_tool_builds_and_passes_its_smoke_test`.
+9. In that test, the package has the five files of §6.3. Its lock pins one
+   small wheel that the image lacks, with its hash. The install reaches PyPI
+   through the proxy.
+10. In that test, the fixture reads two pages through `metorite_door`, the
+    proxy and the door kit (`tests/unit/_sandbox_door_kit.py`). Smoke
+    conditions 1 to 4 pass. This is the real-door proof of §12.3.
+11. `check_package` refuses a package that lacks each one of the five files,
+    and a lock line with no hash. `test_user_tool_build.py::test_a_package_without_each_file_is_refused`
+    and `::test_a_lock_line_without_a_hash_is_refused`.
+12. The fourth `run_smoke` of one build raises `SmokeRoundsExhausted`, and
+    no command runs. `test_user_tool_build.py::test_a_fourth_smoke_round_is_refused`.
+13. A fixture tool with `projects:read` only calls `GET /crm/leads`, catches
+    the `DoorError` and exits 0. The round fails on condition 4.
+    `test_user_tool_build.py::test_a_call_outside_the_declared_scopes_fails_the_smoke_test`.
+14. A fixture tool that sends a POST fails condition 4. The door answers 403
+    `sandbox_read_only`. `test_user_tool_build.py::test_a_write_in_the_smoke_test_fails_it`.
+15. `check_package` refuses a write scope, and a read scope outside the
+    approved set. `test_user_tool_build.py::test_a_scope_outside_the_approval_is_refused`.
+16. Each condition fails alone: exit 1, a `result.json` off the schema, a
+    timeout, and one refusal.
+    `test_user_tool_build.py::test_each_smoke_condition_fails_alone`.
+17. A round deletes `site/`, `outputs/` and `input.json` first, and a build
+    starts with an empty `pkg/`.
+    `test_user_tool_build.py::test_each_round_starts_clean`.
+18. An install past 180 s, or a `site/` over 300 MiB, fails the round. A
+    second build in the same thread gets "busy".
+    `test_user_tool_build.py::test_the_install_and_the_thread_limits`.
+19. R8: the step engine revokes the capability after each round, also after
+    a failure. `test_sandbox_capability.py::test_the_smoke_round_revokes_its_capability`.
+20. The token never shows in the `docker exec` argv, and the env file is
+    gone after the command.
+    `test_sandbox_broker_tools.py::test_the_smoke_token_reaches_the_command_by_env_file_only`.
+21. A background process that a build command starts does not live at the
+    smoke command. A `sandbox_docker` test reads `/proc` in the smoke command.
+    `tests/unit/test_sandbox_no_secrets.py::test_no_build_process_lives_at_the_smoke_command`.
+22. The env of the smoke command holds `METORITE_API_TOKEN` and no platform
+    secret of §5.4. A build command holds no `METORITE_API_TOKEN`.
+    `test_sandbox_no_secrets.py::test_the_tools_container_holds_no_secret`
+    (SBX-F4, first part, with a `sandbox_docker` half).
+23. The `tools` container mounts the two dirs of decision 2 and nothing
+    else. No source of it lies inside a source of `projects_mounts` for the
+    same thread, and no source of `projects_mounts` lies inside one of it.
+    `end_run` removes `<tool-data>`.
+    `test_sandbox_broker_tools.py::test_the_tools_mounts_do_not_overlap_projects`.
+24. The install runs with the two PyPI hosts only. The smoke command runs
+    with the door name only. The step revokes on a pass and on a failure.
+    `tests/unit/test_sandbox_egress_profiles.py::test_the_round_grants_are_narrow`
+    (SBX-F5, first part).
+25. With `sandbox_egress_door_upstream` empty, the build refuses before any
+    start. A `tools` handle passes `_grant_inputs`, and a handle of another
+    run fails it. `test_sandbox_egress_profiles.py::test_the_tools_grant_takes_the_tool_binding`.
+26. `acquire()` still refuses `tools`, and a source scan finds no caller of
+    `acquire_tool` outside the step engine.
+    `test_sandbox_broker_seam.py::test_only_the_step_engine_starts_a_tool_container`.
+27. Each step writes its row: one `build` row, one `smoke` row for each
+    round, and `refused` for a failed package check.
+    `test_user_tool_build.py::test_each_step_writes_one_run_row`.
+
+SBX-4b2:
+
+28. `build_tool` refuses a gap that is not `no_match`, from another run,
+    older than 30 minutes, or with a build row. It refuses with no approved
+    card. `tests/unit/test_tool_gap_detection.py::test_build_tool_refuses_each_bad_gap`
+    (SBX-F8, build half).
+29. `build_tool` does not reach an agent with no `tool_scope`, a run whose
+    org the scope does not name, or an org off `SANDBOX_DOOR_ORGS`.
+    `tests/unit/test_user_tool_injection.py::test_build_tool_reaches_only_the_gated_run`
+    (SBX-F7, build half).
+30. In the same test, a delegated run, a WhatsApp turn and a run with no chat
+    do not get the tool.
+31. The card shows the `need` of the gap row and the read scopes. The
+    `brief` of the model is not on the card.
+    `test_user_tool_build.py::test_the_card_shows_the_gap_need_and_the_scopes`.
+32. The `no_match` answer holds the gap id, and the other answers do not.
+    `test_tool_gap_detection.py::test_the_no_match_answer_holds_the_gap_id`.
+33. A refused card sets `declined`. A failed build sets `build_failed`. A
+    pass leaves `no_match`. `set_gap_outcome` refuses each other move.
+    `test_tool_gap_detection.py::test_the_build_moves_the_gap_outcome`.
+34. The line `sandbox.tool.build` holds no need text, no code and no token.
+    `tests/unit/test_sandbox_log_lines.py::test_the_build_line_holds_no_text`.
+35. The session pin refuses a tool outside the session tools.
+    `test_user_tool_build.py::test_the_build_session_holds_its_own_tools_only`.
+36. A scripted `sandbox_docker` test runs the chat path end to end with a
+    stub model. The model calls `build_tool`, writes the package and calls
+    `smoke_test`. The tool reads two pages through the door and passes.
+    `test_user_tool_build.py::test_the_chat_builds_a_read_only_tool_end_to_end`.
+
+The owner preview of rung 6b on the dev stack is a separate D145 step. It
+uses the settings of decision 16. It is not a test.
+
+#### Verification commands
+
+SBX-4b1:
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_user_tool_build.py tests/unit/test_sandbox_broker_tools.py tests/unit/test_sandbox_broker_seam.py tests/unit/test_sandbox_no_secrets.py tests/unit/test_sandbox_egress_profiles.py tests/unit/test_sandbox_capability.py tests/unit/test_sandbox_door_identity.py tests/unit/test_sandbox_door_log_lines.py tests/unit/test_tenant_request_binding.py tests/unit/test_user_tool_registry.py tests/unit/test_tenant_coverage.py tests/unit/test_spawn_hardening.py -q -rs
+timeout 1800 uv run pytest tests/unit/test_user_tool_build.py tests/unit/test_sandbox_no_secrets.py -q -rs -m sandbox_docker
+uv run ruff check packages/acb_skills/acb_skills/user_tool_build.py packages/acb_skills/acb_skills/agent_paths.py packages/acb_auth apps/services/gateway/gateway/sandbox_door.py apps/services/gateway/gateway/studio apps/services/gateway/gateway/routes/agent.py apps/services/orchestrator/orchestrator/sandbox_broker.py
+uv run mypy packages/acb_skills/acb_skills/user_tool_build.py packages/acb_auth/acb_auth/sandbox_capabilities.py apps/services/orchestrator/orchestrator/sandbox_broker.py apps/services/gateway/gateway/studio/user_tool_runs.py
+bash scripts/premerge.sh
+```
+
+SBX-4b2:
+
+```bash
+timeout 900 uv run pytest tests/unit/test_tool_gap_detection.py tests/unit/test_user_tool_injection.py tests/unit/test_sandbox_log_lines.py tests/unit/test_user_tool_build.py -q -rs
+timeout 1800 uv run pytest tests/unit/test_user_tool_build.py -q -rs -m sandbox_docker
+uv run ruff check packages/acb_skills/acb_skills/user_tool_build.py apps/services/orchestrator/orchestrator/_tool_injection.py apps/services/orchestrator/orchestrator/tool_gap_path.py apps/services/gateway/gateway/studio/tool_gaps.py
+uv run mypy packages/acb_skills/acb_skills/user_tool_build.py apps/services/orchestrator/orchestrator/tool_gap_path.py apps/services/gateway/gateway/studio/tool_gaps.py
+bash scripts/premerge.sh
+```
+
+A run with any skipped test fails the slice. R8 needs the database. The
+`sandbox_docker` half runs on `.github/workflows/sandbox-docker.yml`, as §11
+says.
+
+#### Fences
+
+| # | Test file | What it holds in SBX-4b |
+|---|---|---|
+| SBX-F12 | `tests/unit/test_user_tool_build.py` | Done when 7 to 18, 27, 31, 35 and 36. New file |
+| SBX-F11 | `tests/unit/test_sandbox_broker_seam.py`, extended | Done when 26 |
+| SBX-F4 | `tests/unit/test_sandbox_no_secrets.py` | Done when 21 and 22, the first part. New file, with a `sandbox_docker` half |
+| SBX-F5 | `tests/unit/test_sandbox_egress_profiles.py` | Done when 24 and 25, the first part. New file |
+| SBX-F1 | `tests/unit/test_sandbox_capability.py` | Done when 19 |
+| SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | Done when 1 to 3, and the new store digest |
+| SBX-F9 | `tests/unit/test_user_tool_registry.py`, R8 half | Done when 4 to 6 |
+| SBX-F8 | `tests/unit/test_tool_gap_detection.py` | Done when 28, 32 and 33, the build half |
+| SBX-F7 | `tests/unit/test_user_tool_injection.py` | Done when 29 and 30, the build half |
+| SBX-F15 | `tests/unit/test_sandbox_log_lines.py` | Done when 34 |
+| — | `tests/unit/test_sandbox_broker_tools.py` (PR 2862) | Done when 20 and 23 |
+| — | `tests/unit/test_tenant_coverage.py` | The entry of `user_tool_runs` |
+
+These fences are on tenancy, a capability and code that runs. So they also
+get mutation testing (`engineering_practice.md` §4).
 
 ---
 
@@ -2890,3 +3635,33 @@ here, and each needs its own check before anyone acts on it.
   of SBX-20 on task 3981 (answer `8c7fc3a3`). §0d, SBX-F27 and D233 record it.
 - 2026-11-26 — SBX-13 built (task 3428). The door client `metorite_door` is in
   the sandbox image, read only. Fence SBX-F22. The §0c row of SBX-13 says so.
+- 2026-11-26 — SBX-2 built dark (task 3801). Migration 503 adds
+  `sandbox_capabilities`. The sibling of branch 0 reads `X-Sandbox-Capability`,
+  and `SANDBOX_ROUTES` opens 68 GET rows. The flag `SANDBOX_DOOR_ORGS` stays
+  off. The member purge deletes her capabilities. SBX-F22 now reads the real set.
+- 2026-11-26 — The SBX-1 audit (task 3800). §6.1, the `search` row of §7.1,
+  §7.4, the Revoke row of §8.1, the rows SBX-F7, SBX-F8, SBX-F18 and SBX-F23,
+  and §12.1 follow its eleven decisions. SBX-1 splits into SBX-1a (the store,
+  the path and the route) and SBX-1b (the gap view on `/studio`, task 3984).
+  `user_tool_runs` moves to SBX-4. The header and the critical path of §0c
+  now say that SBX-18 and SBX-19 are built dark.
+- 2026-11-26 — SBX-1a built dark (task 3800). Migration 504 adds `tool_gaps`.
+  `FindTools` takes the hook `on_gap`, and `orchestrator/tool_gap_path.py` is
+  the no-match path. `gateway/studio/tool_gaps.py` writes and reads the rows,
+  and `GET /studio/tool-gaps` serves an approver. The flag
+  `user_tool_find_enabled` stays off.
+- 2026-11-26 — SBX-1b built dark (task 3984). The Studio page shows a read-only
+  Tool gaps section. It draws nothing while the route answers 404 or 403. A
+  failed first read in a browser that never saw a 200 draws nothing too.
+- 2026-11-26 — SBX-4b spec (task 3986). §12.4 specifies `build_tool`, the
+  build session and the smoke test. SBX-4b1 (task 3986) is the step engine,
+  and SBX-4b2 (task 4049) is the chat half. SBX-4b waits for WS-43g1 (PR
+  2887). No slice takes a half with no network. The §12 table gets the rows
+  SBX-4a and SBX-4b. The header and three rows of §0c name the merges of
+  SBX-1a, SBX-1b, SBX-2 and SBX-13. §5.2 and §8.4 show the stamp form of
+  §12.2 decision 12, which SBX-3 confirms.
+- 2026-11-26 — SBX-4b audit fixes (tasks 3986 and 4049). The round opens one
+  host at a time, and the owner confirms it (SBX-Q2 residual). The `tools`
+  mounts use their own subfolder. The door counts a refusal by token. The
+  run rows keep a deleted chat as NULL. §5.1, §5.5, §6.1, §6.2, §6.9 and the
+  SBX-5 row follow §12.4.

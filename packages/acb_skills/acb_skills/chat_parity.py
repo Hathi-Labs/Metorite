@@ -687,6 +687,12 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
     ),
     # ── AI Studio ──
+    "POST /api/studio/skills/match": (
+        "stream",
+        "The card \"Save this as a skill?\" asks whether a saved skill matches the words of a finished turn, "
+        "so it shows no offer for a turn that ran a skill (task 3830). No member click sends it. It reads "
+        "only, and it answers a boolean. The chat loads a matched skill on its own.",
+    ),
     "GET /api/studio/packages/{}/lifetime": (
         "stream",
         "The app page reads the end date of the private install of the owner, to draw the end-date bar "
@@ -1050,6 +1056,8 @@ DEBT: dict[str, str] = {
     "POST /api/studio/packages/{}/restore": "P-9",
     # STU-G5: the Publish dialog reads the live version with its manifest. G1d (chat reads versions) pays it.
     "GET /api/studio/packages/{}/versions/{}": "P-9",
+    # SBX-1b (task 3984): the Tool gaps section of /studio reads the gap view of the org. A later chat read tool pays it.
+    "GET /api/studio/tool-gaps": "P-9",
     # ── Tasks ──
     # The owner decides: retire the /tasks button, or build a tool with a card.
     "POST /api/tasks/ai/backfill-context": "P-1",
@@ -1338,7 +1346,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 10,  # PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge, and PAR-4d (task 3936) paid the five seat rows with read_seats and set_seat (17 to 10).
     "integrations": 4,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. PAR-6a (task 3109) paid 17 rows with the org-admin pack and made the MCP add a secret exemption (22 to 4). The grant change, the decision, the plugin install and the custom API wait for the owner (task 3932).
-    "studio": 3,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). Paid by task 3115.
+    "studio": 4,  # PKG-10e-2 added Keep and Restore of the end-date bar (task 2971), paid by P-9 (1 to 3). G5 adds the version read. A5c-2 paid the two delete requests of BETA-1. B2c-2b adds no debt: its writes are ALSO rows of the door route. STU-K1a-ui (task 1203) added the template list and the one-step install, which STU-K1d (task 2967) paid with studio_template_list and studio_create_from_template (5 to 3). SBX-1b (task 3984) added the tool-gaps read (3 to 4). Paid by task 3115.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new

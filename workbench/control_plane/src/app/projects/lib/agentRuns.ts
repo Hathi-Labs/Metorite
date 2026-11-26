@@ -1298,6 +1298,12 @@ export const AGENT_LANES: readonly { key: string; label: string }[] = [
   { key: "none", label: "No agent" },
 ];
 
+/**
+ * AMR-4: the word of an ended state that the Agents view draws. It is not a
+ * lane of `AGENT_LANES`, so the "Agent work" board gets no new column.
+ */
+export const AGENT_ENDED_WORDS: Record<string, string> = { completed: "Done" };
+
 /** The lane key of a task row: its state, or `none`. An unknown state is `none`. */
 export function agentLaneKey(state?: string | null): string {
   return state && AGENT_LANES.some((lane) => lane.key === state) ? state : "none";
