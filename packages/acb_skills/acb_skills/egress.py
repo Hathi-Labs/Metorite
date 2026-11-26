@@ -94,6 +94,7 @@ __all__ = [
     "HELD_CARD_SEND_TOOLS",
     "HELD_CARD_WRITE_TOOLS",
     "HELD_CLASS_C_TOOLS",
+    "HELD_OFF_OWN_WRITES",
     "HELD_OFF_PACK_WRITES",
     "HELD_OWNER_CHAT_FILES",
     "HELD_PARAM_REASONS",
@@ -1774,6 +1775,24 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
 }
 
 
+#: P-4b (task 3961). The own writes of an agent that is NOT in
+#: :data:`HELD_WRITE_OWNERS`, that a held chat holds off by name. The WhatsApp
+#: agent has drafts and a transcribe that say no ``read_only=True``, so the owner
+#: rule would drop them too. This table names only its seven card writes. A held
+#: chat drops them, and it keeps the reads and the drafts. Only a tool that the
+#: run of that agent holds as its own counts. ``held_card_writes_on`` is the
+#: switch, as for an owner. Fences: ``tests/unit/test_whatsapp_write_tools.py``
+#: and ``tests/unit/test_no_egress_tool_audit.py``.
+HELD_OFF_OWN_WRITES: Mapping[str, frozenset[str]] = {
+    "whatsapp-assistant": frozenset({
+        "capture_whatsapp_task", "create_whatsapp_saved_reply",
+        "delete_whatsapp_saved_reply", "seed_whatsapp_categories",
+        "snooze_whatsapp_chat", "unsnooze_whatsapp_chat",
+        "update_whatsapp_category",
+    }),
+}
+
+
 @functools.lru_cache(maxsize=1)
 def _owner_tool_names() -> frozenset[str]:
     """Each tool of a pack of :data:`HELD_WRITE_OWNERS`, less the packs that
@@ -1818,11 +1837,15 @@ def is_held_off_write(item: Any, *, owner: str | None = None) -> bool:
     tools (``_tool_injection._covered_hold``). Fails closed: a tool with no
     annotation counts as a write. With the org off (:func:`held_card_writes_on`)
     it is False for each tool, because a held chat then drops what it dropped
-    before the slice.
+    before the slice. P-4b: it is True too for an own write of *owner* that
+    :data:`HELD_OFF_OWN_WRITES` names.
     """
     from acb_skills.tool_packs import CHAT_FILE_TOOLS
 
     name = item if isinstance(item, str) else tool_name(item)
+    if name in HELD_OFF_OWN_WRITES.get(str(owner or ""), frozenset()):
+        return (not isinstance(item, str) and not _platform_owned(item, name)
+                and held_card_writes_on())
     if name in CHAT_FILE_TOOLS or name in HELD_OWNER_CHAT_FILES or not (
             name in _owner_tool_names() or _own_tool_of(item, name, owner)):
         return False

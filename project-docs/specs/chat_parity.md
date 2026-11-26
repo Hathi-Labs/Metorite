@@ -19,6 +19,12 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-4b (task 3961, the WhatsApp writes) is BUILT, 2026-11-26, in review, with
+no flag and no migration.** The WhatsApp agent gets seven tools, and each one
+writes on one card. They pay seven WhatsApp rows, so the WhatsApp ceiling goes
+from 13 to 6. §6.2 names the tools and the open row. Fence:
+`tests/unit/test_whatsapp_write_tools.py`.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -479,8 +485,46 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 `list_whatsapp_categories`, `list_whatsapp_templates`,
 `list_whatsapp_saved_replies`, `whatsapp_rules_preview`, `list_whatsapp_calls`,
 `whatsapp_call_events`, `whatsapp_call_diagnostics`, `whatsapp_connection_info`
-and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
-debt.
+and `whatsapp_link_status`. None sends a message. P-4b paid seven write rows after
+it.
+
+**P-4b (task 3961) is BUILT, 2026-11-26, with no flag.** Seven write tools of the
+WhatsApp agent pay seven rows (13 to 6). None sends a message, and no tool calls
+WhatsApp or a model.
+
+| Tool | Gateway route |
+|---|---|
+| `create_whatsapp_saved_reply` | `POST /whatsapp/saved-replies` |
+| `delete_whatsapp_saved_reply` | `DELETE /whatsapp/saved-replies/{}` |
+| `update_whatsapp_category` | `PATCH /whatsapp/categories/{}` |
+| `seed_whatsapp_categories` | `POST /whatsapp/accounts/{}/categories/bootstrap` |
+| `snooze_whatsapp_chat` | `POST /whatsapp/chats/{}/snooze` |
+| `unsnooze_whatsapp_chat` | `POST /whatsapp/chats/{}/unsnooze` |
+| `capture_whatsapp_task` | `POST /whatsapp/capture-task` |
+
+Each tool reads first and shows ONE card. It sends one write only after the
+member of the run approves it. A text that does not fit whole on one card gets a
+sentence and no card. The delete card and the category card read the row again
+after Approve. The tool sends nothing when the row changed.
+
+A held chat holds off the seven writes, by `egress.HELD_OFF_OWN_WRITES`. It keeps
+the reads and the drafts. The switch is `HELD_CARD_WRITES_ORGS`, as for each held
+chat. With the switch off, each write keeps its card. Fences:
+`tests/unit/test_whatsapp_write_tools.py` and
+`tests/unit/test_no_egress_tool_audit.py`.
+
+**P-4b, the facts for the owner.**
+
+- **The link code stays debt.** `POST /api/me/whatsapp-link/code` returns a
+  single-use code. The person who sends it from a phone links that phone to the
+  member (`whatsapp_assistant_channel.md` §5.2). So it is a credential, and no
+  tool sends it. No kind of §2 fits a route that makes a credential. Decide: a
+  ruling that `secret` covers it, or a HIGH slice.
+- **A category policy sends nothing today.** Only the rule preview reads the
+  three policies. The card says so, and says what `holding` permits later. A test
+  fails when a new reader appears.
+- **A task from a message** goes to the member's own inbox. The route sends the
+  event `pm.task.created`, as each capture does.
 
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
@@ -488,9 +532,10 @@ date. For the debt of today, read `DEBT_CEILING`.
 Seven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13.
+and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13,
+and task 3961 took it to 6.
 
-The total of `DEBT_CEILING` is 304. The "Today" column above does not show
+The total of `DEBT_CEILING` is 290. The "Today" column above does not show
 these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
