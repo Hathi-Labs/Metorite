@@ -499,7 +499,7 @@ reading.
 | Needs | Status | Evidence |
 |---|---|---|
 | SBX-1 | Not built | `git grep tool_gaps` finds no code or SQL |
-| SBX-2 | Not built | `git grep SANDBOX_ROUTES` finds nothing |
+| SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, 2026-11-26). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
 | SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
 | SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26 | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |

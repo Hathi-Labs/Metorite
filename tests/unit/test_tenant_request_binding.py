@@ -1271,9 +1271,11 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # trigger prefix becomes a tuple. The tripwire wraps the sibling too. The
     # pins before it were 3.12 ``acb6431c…aff7c0624`` and 3.13
     # ``caf1fed0…dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6``. CPython 3.12.12
-    # and 3.13.2 gave the new pins. This pin needs the diff-reviewer review
-    # and the independent verification of external_agent_access.md §10.1.
-    # Both are OWED: the builder did neither, and the merge waits for both.
+    # and 3.13.2 gave the new pins. The diff-reviewer review (Opus) gave
+    # APPROVE on 6f43f4210, and it traced the sibling before branch 0 with no
+    # fall-through. The independent verification (Opus) of e4a27a373 passed
+    # each code item of §12.2, with 4 of 4 mutants caught. The pins did not
+    # change after either one (lane-sbx, 2026-11-26).
     (3, 12): "01b17a9f6a3a6b89bc60773370aa7e90bf42217e574c9f94ccd229530cf06a71",
     (3, 13): "46de0ff1199ee3c585a1db0423081ec454ac57944d166e6a3a5af28990246f7a",
 }
