@@ -368,6 +368,13 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "people_me": ("show my person record", "what does my people profile say?"),
     "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
     "reach_preview": ("show me the reach preview", "what would reach send me now?"),
+    # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
+    # The pack is dark, and EVERY names each pack, so this table reads the pack
+    # set of a box whose TOOL_PACKS line names it.
+    "my_tasks_calendar_connection": ("sync my google calendar", "sync my outlook calendar",
+                                     "show my tasks in google calendar",
+                                     "stop sending my tasks to outlook",
+                                     "send my tasks to google calendar"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

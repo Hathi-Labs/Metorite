@@ -1175,6 +1175,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # P-1c (chat_parity.md section 6.4, task 3923, owner answer aa02d28f of
+    # 2026-11-23): the one act on a connected calendar. Sync now, and the switch
+    # that shows the member's tasks in it. Each act shows one card first. The
+    # owner is org-admin, which never runs as an agent (option a, the owner's
+    # answer on task 3923 is open). It is NOT in FOLLOWS: only the owner's pack
+    # list turns it on (tool_packs.packs_on). Fence:
+    # test_calendar_connections_pack.py.
+    "calendar-connections": {
+        "label": "Calendar connections",
+        "summary": (
+            "Sync a connected Google or Outlook calendar now, or show or hide your tasks in it."
+        ),
+        "description": (
+            "A tool pack: one act on a connected calendar, for the main assistant to load "
+            "when a turn asks to sync Google Calendar or Outlook now, or to show or hide "
+            "the member's tasks in it. Each act asks on one card first, and the route "
+            "acts as the member. To connect, reconnect or disconnect a calendar, the "
+            "member uses Calendar settings. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_calendar_connection",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
