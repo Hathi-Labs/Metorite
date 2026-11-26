@@ -437,6 +437,20 @@ class Settings(BaseSettings):
     # waits for the rung 1 demo, and it is gate `enforcement-flip`. Fence:
     # tests/unit/test_api_templates.py.
     api_connections_orgs: str = ""
+    # `integration_access_orgs` (WS-54 ACC-1, task 3987, 2026-11-26) lists
+    # the organization ids whose admins may read and set who can use each
+    # integration (`integrations_console.md` §3.9.4), in the grammar of
+    # `crm_orgs`, or `*`. Default empty means NO organization: both routes
+    # of `routes/admin/integration_access.py` answer 404. It gates the two
+    # routes only. The resolver applies a stored rule whatever the flag
+    # says, so a flag change never widens access. The one reader is
+    # `gateway.routes.admin._common.integration_access_allowed`, and it takes
+    # the org of the session. A `*_ORGS` key, so a SIGHUP reload applies it
+    # (`docs/flag_reload.md`). The flip waits for the owner preview, and it
+    # is gate `enforcement-flip`. Fences:
+    # tests/unit/test_integration_access_rules.py,
+    # tests/unit/test_flag_reload.py.
+    integration_access_orgs: str = ""
     # `connection_model_orgs` (WS-SEM SEM-12, task 3742, 2026-11-19) lists
     # the organization ids that may write and read the semantic model of a
     # connection (`semantic_model.md` §10.4), in the grammar of `crm_orgs`,
@@ -3251,6 +3265,21 @@ class Settings(BaseSettings):
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    # MCP-G17f (external_agent_access.md §5.5, task 4032, owner directive
+    # 2026-11-26): the grace window of a refresh token, in seconds. A refresh
+    # token that its own client spent less than this many seconds ago gets a
+    # new pair of the same connection, and it does not revoke the connection.
+    # Two sessions that share one login and refresh at once then both keep
+    # the board. 0, the default, turns the window off: rule 5 of
+    # `acb_auth.agent_tokens` holds as before, and each reuse revokes.
+    # `acb_auth.agent_oauth.refresh_reuse_grace_s` is the one reader. It
+    # reads a value below 0 as 0, and a value above
+    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (60) as 60. The env key is
+    # `AGENT_REFRESH_REUSE_GRACE_S`. It is not a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-agent-edge`, which
+    # runs the token endpoint (`docs/flag_reload.md`). 🔴 A change on a box
+    # is gate `enforcement-flip`.
+    agent_refresh_reuse_grace_s: int = 0
     agent_code_ttl_s: int = 60
     agent_connection_idle_ttl_s: int = 90 * 24 * 3600
     agent_client_unused_ttl_s: int = 24 * 3600

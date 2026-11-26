@@ -37,7 +37,8 @@
 # pr-check tested exactly what lands. Off: PREMERGE_MERGE_TEST=0 or --no-tests.
 #
 # EXIT 0: merge now. EXIT 1: merge origin/main into the branch, fix, push, and
-# wait for pr-check. Fence: tests/unit/test_premerge.py.
+# wait for pr-check. EXIT 75: the release freeze (step 00). Wait, and run it again
+# later. Fence: tests/unit/test_premerge.py.
 # ════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -81,6 +82,20 @@ fi
 git rev-parse -q --verify MERGE_HEAD >/dev/null && fail "a merge is already in progress here."
 
 [ "${PREMERGE_SKIP_FETCH:-0}" = 1 ] || git fetch -q origin "${BASE#origin/}"
+
+# ── 00. The release freeze (CIV, task 3415) ────────────────────────────────
+# No merge from 04:20, 12:20 and 20:20 UTC until the release run of that slot
+# starts, or slot + 30 minutes. scripts/release_freeze.sh is the ONE copy of the
+# rule, and merge_bot.sh runs it too. Exit 75 = frozen: wait, it is not a defect
+# of the branch. Override: PREMERGE_FREEZE_OK=<task number>.
+# Fence: tests/unit/test_release_freeze.py.
+freeze_rc=0
+bash "$(dirname "$LEDGER_CHECK")/release_freeze.sh" || freeze_rc=$?
+case "$freeze_rc" in
+  0) ;;
+  75) exit 75 ;;
+  *) fail "the release freeze check failed (exit $freeze_rc)." ;;
+esac
 base="$(git merge-base HEAD "$BASE")"
 
 # ── 0. A reverted patch does not land again unchanged (CIV-31) ─────────────

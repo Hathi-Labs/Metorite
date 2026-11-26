@@ -18,13 +18,32 @@ from types import SimpleNamespace
 
 import pytest
 import structlog
-from acb_auth import agent_tokens, sandbox_capabilities
+from acb_auth import agent_tokens, deps, sandbox_capabilities
 from fastapi.testclient import TestClient
 
 from tests.unit import _sandbox_door_kit as kit
 
 HASH = agent_tokens.hash_token(kit.RAW)
 QUERY_VALUE = "q7secretvalue"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give each module of the door a fresh logger proxy.
+
+    configure_logging sets cache_logger_on_first_use. A module `_log` that
+    an earlier test of the batch used keeps the processor list of THAT
+    configure call, and capture_logs edits the CURRENT list. So in a full
+    batch, the line of a cached `_log` never reaches capture_logs, and a
+    shard that runs this file early passes. The fix of
+    test_permission_policy.py, for each door module. Mutation: drop this
+    fixture, and the full batch fails at
+    test_a_failed_lookup_logs_the_class_of_the_error_only again.
+    """
+    monkeypatch.setattr(deps, "_log", structlog.get_logger("acb_auth.deps"))
+    monkeypatch.setattr(
+        sandbox_capabilities, "_log", structlog.get_logger("acb_auth.sandbox"),
+    )
 
 
 def _clean(logs: list[dict], *secrets: str) -> None:
