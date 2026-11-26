@@ -245,15 +245,28 @@ def test_a_picker_that_does_not_finish_is_unproven_not_a_hang(repo):
     assert not (repo.parent / "pytest-args").exists(), "no test may run after a picker timeout"
 
 
-def test_no_tests_start_when_the_budget_is_spent(repo):
+def test_a_short_budget_still_runs_the_picked_tests(repo):
+    """Review of PR 2407 at e349723573, P1: the tests always get at least 60 s, as on main.
+    At 250 s, what is left after the picker minus two re-runs is under 60 s."""
     _stub_picker(repo, _PICKER_CRLF)
     _advance_main(repo, "other.py")
     fake = _fake_pytest(repo)
-    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="100",
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="250",
                PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
     assert res.returncode == 0, res.stderr
-    assert "UNPROVEN. No test ran: only" in res.stdout
-    assert not (repo.parent / "pytest-args").exists()
+    args = (repo.parent / "pytest-args").read_text(encoding="utf-8")
+    assert "tests/a.py|" in args and "timeout 60s" in res.stdout
+
+
+def test_a_short_budget_still_runs_the_affected_tests(repo):
+    """The same floor for a caller that sets PREMERGE_AFFECTED_CMD: the tests run, a red blocks."""
+    _both_sides_change_shared(repo)
+    marker = repo.parent / "affected-ran"
+    res = _run(repo, PREMERGE_TOTAL_BUDGET="250", PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}; {_FAILS}",
+               PREMERGE_RERUN_CMD="true")
+    assert marker.exists(), res.stdout
+    assert res.returncode == 1, res.stdout
+    assert "tests/t.py::test_a" in res.stderr
 
 
 def test_a_picker_that_needs_the_kill_is_unproven_too(repo):
@@ -266,16 +279,20 @@ def test_a_picker_that_needs_the_kill_is_unproven_too(repo):
     assert "UNPROVEN. The picker had no verdict" in res.stdout
 
 
-def test_a_spent_budget_runs_no_picker_and_no_tsc(repo):
-    """Finding 1 and 2 of the review of PR 2407: the picker and the baseline run took their full cap."""
+def test_a_short_budget_skips_the_type_check_and_still_runs_the_tests(repo):
+    """Finding 1 and 2 of the review of PR 2407: the picker and the baseline run took their full cap.
+    At 150 s the type check cannot keep PREMERGE_RESERVE, so it does not start. The picker and
+    the tests still run (the tests get at least 60 s)."""
     _frontend_pair(repo)
     _stub_picker(repo, _PICKER_CRLF)
     marker = repo.parent / "tsc-ran"
+    fake = _fake_pytest(repo)
     res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="150",
-               PREMERGE_TSC_CMD=f"touch {marker.as_posix()}", PREMERGE_PYTEST_CMD="false")
+               PREMERGE_TSC_CMD=f"touch {marker.as_posix()}", PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
     assert res.returncode == 0, res.stderr
     assert not marker.exists()
-    assert "UNPROVEN" in res.stdout
+    assert "UNPROVEN. The type check did not run" in res.stdout
+    assert (repo.parent / "pytest-args").exists()
 
 
 def test_each_stage_says_how_long_it_took(repo):
@@ -412,6 +429,22 @@ def test_a_baseline_that_gives_no_verdict_does_not_block(repo):
     res = _run(repo, PREMERGE_TSC_CMD=cmd)
     assert res.returncode == 0, res.stderr
     assert "UNPROVEN. The type check of" in res.stdout
+
+
+@pytest.mark.timeout(300)
+def test_a_long_merged_type_check_leaves_the_baseline_enough_time(repo):
+    """Review of PR 2407 at e349723573, P1: the merged tsc spent the budget down to
+    PREMERGE_RESERVE, the baseline got the same cap minus RESERVE, said UNPROVEN, and a type
+    error that only the merge has passed with exit 0. A FAIL needs no later stage, so the
+    baseline keeps only 20 s. Budget 270 and reserve 200 give the merged run about 70 s. It
+    takes 52 s, so the old baseline cap is under 20 s and the new one is about 190 s."""
+    _frontend_pair(repo)
+    cmd = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then sleep 52; '
+           'echo "src/a.ts(3,5): error TS2739: Type is missing the property layout"; exit 1; fi')
+    res = _run(repo, PREMERGE_TOTAL_BUDGET="270", PREMERGE_RESERVE="200", PREMERGE_TSC_CMD=cmd)
+    assert "type check on the merge result" in res.stdout, res.stdout
+    assert res.returncode == 1, res.stdout
+    assert "error TS2739" in res.stderr
 
 
 def test_a_lockfile_change_runs_npm_ci_even_with_node_modules(repo):
