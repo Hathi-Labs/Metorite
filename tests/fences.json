@@ -460,6 +460,7 @@
       "tests/unit/test_team_scope_isolation_r8.py",
       "tests/unit/test_tool_failure_tasks_r8.py",
       "tests/unit/test_user_settings_per_org_r8.py",
+      "tests/unit/test_user_tool_registry.py",
       "tests/unit/test_workflows_author_gate_r8.py",
       "tests/unit/test_workflows_human_step_r8.py",
       "tests/unit/test_workflows_lifecycle_rls_r8.py",
