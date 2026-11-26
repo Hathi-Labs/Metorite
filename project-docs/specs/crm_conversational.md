@@ -103,7 +103,7 @@ D133 says an admin approves each change that the AI proposes. D164 keeps that ru
 
 Four rules hold at every level.
 
-1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after. Four routes do not log a row yet: the approve, dismiss and undo of a field map suggestion, and the re-run of the AI analysis. task 3971 adds those rows.
+1. **Every change lands in Change history** (CRM-M1), with who, when, through what, before and after. Four routes do not log a row yet: the approve, dismiss and undo of a field map suggestion, and the re-run of the AI analysis. task 3971 adds those rows. The field rule and mapping plan writes of task 3953 log no row yet either.
 2. **An AI proposal never applies by itself.** It is a card in "Needs your input" (§20.17 of `crm_platform.md`, D134).
 3. **A named sales lead** is a member who holds the `lead` role in an `org_group` of the sales team (`infra/postgres/138_groups_and_session_participants.sql:55`).
 4. **D131 stays.** D131 governs automations that Mira runs. The ladder governs changes to the CRM's own set-up. A bulk change and a delete ask in both.
