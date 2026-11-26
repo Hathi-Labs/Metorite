@@ -380,6 +380,9 @@ const WRITE: readonly string[] = [
   "crm_update_task",
   // WS-CRM CRM-M3a: a new deal pipeline, on one card.
   "crm_create_pipeline",
+  // WS-CRM CRM-M2e (task 3951): a stage, a lead status or a lost reason.
+  "crm_edit_status",
+  "crm_edit_lost_reason",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
   "profile_remember",
   "profile_forget",
