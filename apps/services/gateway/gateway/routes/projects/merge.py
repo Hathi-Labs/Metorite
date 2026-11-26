@@ -62,6 +62,7 @@ from gateway.routes.projects.core import (
     TaskModel,
     _tenant_session,
     actor,
+    assert_task_project_open,
     emit,
     load_visible_task,
     now,
@@ -70,6 +71,7 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     touch_task,
+    transient_as_409,
     update_row,
 )
 from gateway.routes.projects.filters import attach_agent_state
@@ -134,6 +136,7 @@ async def _load_mergeable(db: Any, vis: Any, task_id: str, target: Any) -> Any:
     downstream knows how to draw.
     """
     source = await load_visible_task(db, vis, task_id)
+    await assert_task_project_open(db, source)
     if str(source.id) == str(target.id):
         raise HTTPException(
             status_code=422, detail="A task cannot be merged into itself.",
@@ -437,6 +440,7 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
 
 
 @router.post("/tasks/{task_id}/merge")
+@transient_as_409
 async def merge_tasks(
     task_id: str, payload: MergeIn,
     user: UserContext = Depends(get_current_user),
@@ -460,6 +464,7 @@ async def merge_tasks(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         target = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, target)
         # ⚠️ Merging INTO a stub would chain two redirects, and every reader
         # would have to walk the chain. Refused with the end of it named, so
         # the answer is one click away rather than a puzzle.

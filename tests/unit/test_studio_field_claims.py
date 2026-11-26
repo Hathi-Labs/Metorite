@@ -19,7 +19,7 @@ c. An unknown record kind, a bad key, a refused type or part, an unknown
    ``keep_private_install`` raise it before the store runs.
 d. The copies in ``studio_manifest.py`` equal the tuples of
    ``field_values.py``.
-e. The R8 twin is in both ``--must-run`` lists.
+e. The R8 twin is in the ``r8.must_run`` list of tests/fences.json.
 
 **R7: mutations that go red here.** M1: let ``_field_claims`` take any
 record kind. M2: skip the duplicate check. M3: return an empty payload.
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -148,7 +149,7 @@ def test_a_bad_field_key_is_refused(key: Any) -> None:
     _refused(_manifest({**_WARRANTY, "key": key}), "bad_field_key")
 
 
-@pytest.mark.parametrize("kind", ["relation", "file", "warranty", None])
+@pytest.mark.parametrize("kind", ["relation", "file", "autonumber", "warranty", None])
 def test_a_refused_or_unknown_type_is_refused(kind: Any) -> None:
     _refused(_manifest({**_WARRANTY, "type": kind}), "bad_field")
 
@@ -250,18 +251,8 @@ def test_the_validator_and_claims_of_refuse_the_same_entries() -> None:
 # ── e. The R8 twin runs in CI ───────────────────────────────────────────────
 
 
-def _must_run(workflow: str) -> list[str]:
-    lines = (_ROOT / ".github" / "workflows" / workflow).read_text(
-        encoding="utf-8").splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "--must-run \\")
-    listed: list[str] = []
-    for line in lines[start + 1:]:
-        listed.append(line.strip().removesuffix("\\").strip())
-        if not line.rstrip().endswith("\\"):
-            break
-    return listed
-
-
-@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
-def test_the_r8_twin_is_in_the_must_run_list(workflow: str) -> None:
-    assert "tests/unit/test_studio_field_claims_r8.py" in _must_run(workflow)
+def test_the_r8_twin_is_in_the_must_run_list() -> None:
+    """CIV-33c-2: pr-check.yml and deploy.yml read the R8 lists from the
+    ``r8`` key of tests/fences.json."""
+    fences = json.loads((_ROOT / "tests" / "fences.json").read_text(encoding="utf-8"))
+    assert "tests/unit/test_studio_field_claims_r8.py" in fences["r8"]["must_run"]

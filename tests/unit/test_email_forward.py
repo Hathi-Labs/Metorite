@@ -509,6 +509,10 @@ def chat(monkeypatch):
 
     async def fake_post(path, body):
         rec.posts.append((path, body))
+        if path == "/email/metorite-files/resolve":
+            # Task 2491: the check of each workspace file before the card.
+            # Each file of these tests resolves.
+            return {"files": [], "refused": []}
         return {"id": "sent-1", "ok": True, "subject": "Fwd: BQ quote",
                 "attachments": ["quote.pdf", "rates.xlsx"]}
 

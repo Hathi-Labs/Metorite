@@ -92,7 +92,7 @@ async def _seed_sticky_email(store: Any) -> None:
     store.calls.clear()
 
 
-def _drive(monkeypatch, run_id: str) -> dict[str, Any]:
+def _drive(monkeypatch, run_id: str, words: str = WORDS) -> dict[str, Any]:
     """One turn of the member's own web chat with the orchestrator.
 
     It returns the first request body of the model, the arguments of the
@@ -152,11 +152,11 @@ def _drive(monkeypatch, run_id: str) -> dict[str, Any]:
 
     async def _collect() -> list[str]:
         return [line async for line in ex.run_agent_stream(
-            "orchestrator", {"message": WORDS}, run_id=run_id, thread_id=SESSION,
+            "orchestrator", {"message": words}, run_id=run_id, thread_id=SESSION,
             organization_id=ORG, session_user=MEMBER, shows_cards=True, solo_room=True,
         )]
 
-    with member_typed(WORDS):
+    with member_typed(words):
         events = parse_frames(asyncio.run(_collect()))
     return {"events": events, "body": model.bodies[0] if model.bodies else {},
             "asked": asked}
@@ -255,3 +255,86 @@ async def test_flag_off_no_hand_off_is_refused(store, monkeypatch) -> None:
         assert tp.delegation_refusal(EA) is None
         assert agent_tools._pack_refusal(EA) is None
         assert ex._pack_delegation_refusal(EA) is None
+
+
+#: P-5b-1 (task 3114): words of the dark ``people`` pack, under 12 words.
+PEOPLE_WORDS = "Search the people directory and show my person record"
+PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview",
+                # P-5b-2 (task 3943): the five self writes of the same pack.
+                "update_my_profile", "set_my_skills", "set_my_credentials",
+                "add_my_absence", "remove_my_absence")
+
+
+def test_flag_off_the_people_pack_reaches_no_chat(store, monkeypatch) -> None:
+    """OD4 A (owner answer on task 3114, 2026-11-25): the ``people`` pack is
+    off while ``TOOL_PACKS`` is empty. The real stream run of the orchestrator,
+    with words of the pack, holds none of its tools and reads no pack state.
+    Mutation: put ``people`` in ``FOLLOWS``, in a default list, or in the core
+    tools of the orchestrator -> a people tool joins the request -> red."""
+    _flag(monkeypatch, False)
+    assert "people" in tp.PACKS and "people" not in tp.FOLLOWS
+    assert tp.matched_layer("people", PEOPLE_WORDS) is not None, "the words name the pack"
+    assert tp.packs_on(ORG) == frozenset()
+    off = _drive(monkeypatch, "run-p5b1-off-1", PEOPLE_WORDS)
+    kinds = [e.get("type") for e in off["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, off["events"]
+    names = _tool_names(off["body"])
+    assert names, "non-vacuity: the request holds tools"
+    assert not set(PEOPLE_TOOLS) & set(names), sorted(set(PEOPLE_TOOLS) & set(names))
+    assert "PEOPLE TOOLS." not in off["body"]["messages"][0]["content"]
+    assert _pack_calls(store) == []
+
+
+def test_flag_on_the_same_people_turn_holds_the_people_tools(store, monkeypatch) -> None:
+    """Non-vacuity of the case above: the owner's own line, ``people``, turns
+    the pack on for the same turn. Mutation: the pack builds no tool -> red."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "people", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    on = _drive(monkeypatch, "run-p5b1-on-1", PEOPLE_WORDS)
+    kinds = [e.get("type") for e in on["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, on["events"]
+    names = _tool_names(on["body"])
+    assert set(PEOPLE_TOOLS) <= set(names), names
+    assert "PEOPLE TOOLS." in on["body"]["messages"][0]["content"]
+
+
+#: P-1c (task 3923): words of the dark ``calendar-connections`` pack.
+CONNECTION_WORDS = "Sync my google calendar and show my tasks in google calendar"
+CONNECTION_TOOLS = ("my_tasks_calendar_connection",)
+
+
+def test_flag_off_the_calendar_connections_pack_reaches_no_chat(store, monkeypatch) -> None:
+    """Owner answer aa02d28f (task 3923, 2026-11-23): a new small pack, dark.
+    The real stream run of the orchestrator, with words of the pack, holds
+    none of its tools and reads no pack state while ``TOOL_PACKS`` is empty.
+    Mutation: put ``calendar-connections`` in ``FOLLOWS``, in a default list,
+    or in the core tools of the orchestrator -> the act joins the request -> red."""
+    _flag(monkeypatch, False)
+    slug = "calendar-connections"
+    assert slug in tp.PACKS and slug not in tp.FOLLOWS
+    assert tp.matched_layer(slug, CONNECTION_WORDS) is not None, "the words name the pack"
+    assert tp.packs_on(ORG) == frozenset()
+    off = _drive(monkeypatch, "run-p1c-off-1", CONNECTION_WORDS)
+    kinds = [e.get("type") for e in off["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, off["events"]
+    names = _tool_names(off["body"])
+    assert names, "non-vacuity: the request holds tools"
+    assert not set(CONNECTION_TOOLS) & set(names)
+    assert "CALENDAR CONNECTION TOOLS." not in off["body"]["messages"][0]["content"]
+    assert _pack_calls(store) == []
+
+
+def test_flag_on_the_same_connection_turn_holds_the_act(store, monkeypatch) -> None:
+    """Non-vacuity of the case above: the owner's own line,
+    ``calendar-connections``, turns the pack on for the same turn. Mutation:
+    the pack builds no tool -> red."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "calendar-connections", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    on = _drive(monkeypatch, "run-p1c-on-1", CONNECTION_WORDS)
+    kinds = [e.get("type") for e in on["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, on["events"]
+    names = _tool_names(on["body"])
+    assert set(CONNECTION_TOOLS) <= set(names), names
+    assert "CALENDAR CONNECTION TOOLS." in on["body"]["messages"][0]["content"]

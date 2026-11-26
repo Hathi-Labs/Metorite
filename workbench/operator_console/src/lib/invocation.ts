@@ -9,7 +9,9 @@
 //
 // 📌 **VOX-2 (2026-11-08).** `transcribe` takes a litellm verb or
 // `native_sarvam`, and a `sarvam/` model on `transcribe` takes `native_sarvam`
-// only (`catalog.check_model_for_invocation` with the task).
+// only (`catalog.check_model_for_invocation` with the task). VOX-6
+// (2026-11-08) added `native_assemblyai`, which follows the same rule for an
+// `assemblyai/` model.
 //
 // 🔴 **Six constants here are copies:** `VERBS`, `NATIVE_PREFIX`,
 // `NATIVE_TASKS` and `NATIVE_ONLY_TASKS` from `catalog.py`, and
@@ -23,7 +25,8 @@
  *  2026-09-23 (CP-13b): TypeSafe's Jev has no litellm verb, so the Console
  *  calls it through its own handler. `native_aimlapi` joined on 2026-09-24
  *  (CP-13h): the same Jev through the AI/ML API reseller. `native_sarvam`
- *  joined on 2026-11-08 (VOX-2): Sarvam speech to text. */
+ *  joined on 2026-11-08 (VOX-2): Sarvam speech to text. `native_assemblyai`
+ *  joined the same day (VOX-6): AssemblyAI Sync speech to text. */
 export const VERBS = [
   "acompletion",
   "aembedding",
@@ -33,6 +36,7 @@ export const VERBS = [
   "native_typesafe",
   "native_aimlapi",
   "native_sarvam",
+  "native_assemblyai",
 ] as const;
 
 export type Verb = (typeof VERBS)[number];
@@ -57,6 +61,7 @@ export const NATIVE_PROVIDER: Readonly<Record<string, string>> = {
   native_typesafe: "typesafe",
   native_aimlapi: "aimlapi",
   native_sarvam: "sarvam",
+  native_assemblyai: "assemblyai",
 };
 
 /** The ONE job each native verb serves (VOX-2). A copy of each handler's
@@ -65,6 +70,7 @@ export const NATIVE_TASK_OF: Readonly<Record<string, string>> = {
   native_typesafe: "decide",
   native_aimlapi: "decide",
   native_sarvam: "transcribe",
+  native_assemblyai: "transcribe",
 };
 
 const isNative = (verb: string) => verb.startsWith(NATIVE_PREFIX);

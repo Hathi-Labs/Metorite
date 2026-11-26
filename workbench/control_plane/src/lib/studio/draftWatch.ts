@@ -84,6 +84,8 @@ export interface DraftWatch {
   off: boolean;
   loading: boolean;
   refresh: () => void;
+  /** Take a draft that the page just saved, and drop any read that is still in flight (STU-G3c). */
+  adopt: (next: PackageDraft) => void;
 }
 
 export function useDraftWatch(pkg: string | null): DraftWatch {
@@ -115,6 +117,12 @@ export function useDraftWatch(pkg: string | null): DraftWatch {
     );
   }, [pkg]);
 
+  const adopt = useCallback((next: PackageDraft) => {
+    seq.current++;
+    setDraft((prev) => nextDraft(prev, next));
+    setStale(null);
+  }, []);
+
   useEffect(() => {
     const seqs = seq;
     const stop = startWatch({
@@ -131,5 +139,5 @@ export function useDraftWatch(pkg: string | null): DraftWatch {
     };
   }, [refresh]);
 
-  return { draft, stale, off, loading, refresh };
+  return { draft, stale, off, loading, refresh, adopt };
 }

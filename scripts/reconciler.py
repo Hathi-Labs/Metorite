@@ -17,10 +17,25 @@ from datetime import datetime, timezone
 
 import structlog
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_graph import get_session, repo
 
 _log = structlog.get_logger(__name__)
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a row with no org and the bind is on.
+
+    Task 2221 slice 2. This job opens the unbound ``get_session`` and binds
+    no tenant. Each ``escalation`` row holds a task title, a customer name or
+    a deal value. The ``run_summary`` row counts those records. So each row
+    is tenant data, and none is a pure system row. With no org and
+    ``ACB_GRAPH_TENANT_BIND`` on, ``refuse_tenantless`` skips it, and it never
+    lands under the operator org. With the bind off, the row stays as before.
+    Fence: ``tests/unit/test_audit_tick_writers_org.py``.
+    """
+    if not refuse_tenantless(event):
+        record(event)
 
 
 def _isoformat(dt: datetime | None) -> str | None:
@@ -47,7 +62,7 @@ def run(*, task_days: int = 14, deal_days: int = 14) -> dict[str, int]:
                 "updated_at": _isoformat(t.updated_at),
                 "cite": f"[task:{t.id}]",
             }
-            record(
+            _audit(
                 AuditEvent(
                     actor="job:reconciler",
                     action="escalation",
@@ -79,7 +94,7 @@ def run(*, task_days: int = 14, deal_days: int = 14) -> dict[str, int]:
                 "value_inr": str(d.value_inr) if d.value_inr is not None else None,
                 "cite": f"[deal:{d.id}]",
             }
-            record(
+            _audit(
                 AuditEvent(
                     actor="job:reconciler",
                     action="escalation",
@@ -90,7 +105,7 @@ def run(*, task_days: int = 14, deal_days: int = 14) -> dict[str, int]:
             counts["quiet_deals"] += 1
 
     # One summary audit event so we can tell when a run happened even if zero findings.
-    record(
+    _audit(
         AuditEvent(
             actor="job:reconciler",
             action="run_summary",

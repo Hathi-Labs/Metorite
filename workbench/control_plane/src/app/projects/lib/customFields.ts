@@ -222,6 +222,8 @@ const FIELD_LABELS: Record<string, string> = {
   project_id: "Project",
   archived_at: "Archived",
   visibility: "Visibility",
+  // SW-23 — the Check of the task, a read-only command.
+  check_text: "Check",
   // ── The project node ──
   name: "Name",
   status: "Status",

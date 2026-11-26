@@ -1,9 +1,9 @@
-"""WS-STU C2a — the object query on a real database (R8).
+"""WS-STU C2a and C2b — the object query and the aggregate on a real database (R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a row. Code:
-``gateway/studio/objects_store.query_records`` and
-``acb_common/studio_query.py``. ``test_studio_query.py`` holds the hermetic
-half.
+Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a and C2b rows.
+Code: ``gateway/studio/objects_store.query_records`` and
+``aggregate_records``, and ``acb_common/studio_query.py``.
+``test_studio_query.py`` holds the hermetic half.
 
 The store runs on a phase-4 promoted scratch database, as the app role with no
 BYPASSRLS, so FORCE RLS binds each statement and each plan. Two organizations.
@@ -45,6 +45,19 @@ k. A field that turns cold during a call gives the right page. The store reads
    the fields again, once, and then stops with a clear error (round 2).
 l. The guard reads the snapshot of the page, so a bulk insert during a call
    cannot pass it (round 2).
+
+**Acceptance (C2b).**
+
+m. Count, sum and average, with no group and by each group type. A select
+   is in the order of its options, and the group with no value comes last. A
+   text groups by its whole text. A checkbox has two states. A date and a
+   datetime group by day or by month in UTC, also on a session clock of India.
+   A group or a measure on a field that is not hot gives ``query_not_indexed``,
+   and the guard of a cold filter holds. A money sum of two currencies is
+   refused, also when each group holds one. The 50 groups with the most
+   records stay, and the rest fold into ``other``. Another package, object or
+   org reads nothing. On 50,000 records the plan reads the hot index and no
+   table. A timeout and a field that turns cold stop the aggregate.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -88,6 +101,20 @@ l. The guard reads the snapshot of the page, so a bulk insert during a call
 * R3. ``objects_store``: make ``_GUARD_GATE`` ``TRUE``, and run the count in a
   statement of its own before the page.
   ``test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard`` goes red.
+* A1. ``objects_store._TEXT_KEY``: make it ``"gk.v_text"``.
+  ``test_r8_a_long_text_groups_by_the_whole_text`` goes red.
+* A2. ``objects_store._BUCKET_KEY``: drop `` AT TIME ZONE 'UTC'``.
+  ``test_r8_a_date_groups_by_day_or_month_in_utc`` goes red.
+* A3. ``objects_store._GROUP_KEY``: make the checkbox key ``"gk.v_bool"``.
+  ``test_r8_a_checkbox_group_has_two_states`` goes red.
+* A4. ``objects_store._read_aggregate``: drop the check of ``v.n``.
+  ``test_r8_a_group_field_that_turns_cold_during_an_aggregate_is_refused``
+  goes red.
+* A5. ``objects_store._one_currency``: ``return low`` before the check.
+  ``test_r8_a_money_sum_of_two_currencies_is_refused`` goes red.
+* A6. ``objects_store.build_aggregate``: make ``r.rk <= :groups`` read
+  ``r.rk > 0``. ``test_r8_fifty_groups_stay_and_the_rest_fold_into_other``
+  goes red.
 """
 
 from __future__ import annotations
@@ -97,6 +124,8 @@ import json
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import date, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -107,6 +136,7 @@ pytest.importorskip("sqlalchemy")
 from acb_common import studio_fields as sf
 from acb_common import studio_query
 from acb_common.db import tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_query import QueryError
 from gateway.studio import objects_store as store
 from sqlalchemy import text
@@ -122,6 +152,9 @@ pytestmark = _DB_GATE
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc2.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 _TABLES = ("studio_records", "studio_record_hot")
 
 _PACKAGE_INSERT = (
@@ -263,10 +296,11 @@ _CASES: dict[str, list[tuple[str, Any, set[str]]]] = {
     ],
 }
 _KEY_OF = {f["type"]: f["key"] for f in _TYPED}
-# `relation` (C7b) is the one type outside this table. `visit` holds 8 hot fields, which is
-# the cap of an object, so a hot relation cannot join it. `test_studio_rollup_r8.py` runs each
-# op of a relation on a hot field and on a cold twin.
-assert set(_CASES) | {"relation"} == set(studio_query.OPS_BY_TYPE)
+# `relation` (C7b) and `person` (C8a) are the types outside this table. `visit` holds 8 hot
+# fields, which is the cap of an object, so neither can join it. `test_studio_rollup_r8.py`
+# runs each op of a relation on a hot field and on a cold twin, and
+# `test_studio_row_rules_r8.py` runs the ops of a hot person field.
+assert set(_CASES) | {"relation", "person"} == set(studio_query.OPS_BY_TYPE)
 
 #: The big object: 50,000 records. `n` is missing on each tenth record.
 _BIG_FIELDS: list[dict[str, Any]] = [
@@ -324,7 +358,7 @@ async def _create(org: str, obj: store.StudioObject, rows: dict[str, dict[str, A
     out: dict[str, str] = {}
     async with tenant_session(org) as db:
         for label, data in rows.items():
-            rec = await store.create_record(db, ANA, obj.id, data, package_id=obj.package_id)
+            rec = await store.create_record(db, ANA, obj.id, data, package_id=obj.package_id, viewer=_VIEWER)
             assert rec is not None
             out[label] = rec.id
     return out
@@ -387,7 +421,7 @@ def world(promoted):  # noqa: F811
 
 async def _query(org: str, obj: store.StudioObject, **kw: Any) -> store.RecordPage | None:
     async with tenant_session(org) as db:
-        return await store.query_records(db, package_id=obj.package_id, object_id=obj.id, **kw)
+        return await store.query_records(db, package_id=obj.package_id, object_id=obj.id, **kw, viewer=_VIEWER)
 
 
 def _labels(world: Any, page: store.RecordPage | None) -> set[str]:
@@ -509,8 +543,8 @@ def test_r8_a_query_names_its_package(world) -> None:
     async def go() -> list[Any]:
         async with tenant_session(world.a) as db:
             return [
-                await store.query_records(db, package_id=world.pkg_a2, object_id=world.visit.id),
-                await store.query_records(db, package_id=world.pkg_a, object_id=world.other_pkg.id),
+                await store.query_records(db, package_id=world.pkg_a2, object_id=world.visit.id, viewer=_VIEWER),
+                await store.query_records(db, package_id=world.pkg_a, object_id=world.other_pkg.id, viewer=_VIEWER),
             ]
 
     assert _run(world.p.app_url, go) == [None, None]
@@ -553,10 +587,10 @@ def test_r8_a_query_reads_its_own_object_only(world) -> None:
 def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
     async def go() -> tuple[Any, Any]:
         async with tenant_session(world.b) as db:
-            theirs = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            theirs = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             mine = await store.query_records(db, package_id=world.pkg_b,
                                              object_id=world.visit_b.id, filter=[
-                {"field": "name", "op": "eq", "value": "Alpha"}])
+                {"field": "name", "op": "eq", "value": "Alpha"}], viewer=_VIEWER)
         return theirs, mine
 
     theirs, mine = _run(world.p.app_url, go)
@@ -595,9 +629,9 @@ def test_r8_the_session_stays_usable_after_a_refusal(world) -> None:
         async with tenant_session(world.b) as db:
             with pytest.raises(QueryError):
                 await store.query_records(db, package_id=world.pkg_b, object_id=world.big.id,
-                                          filter=[{"field": "cold", "op": "eq", "value": "c5"}])
+                                          filter=[{"field": "cold", "op": "eq", "value": "c5"}], viewer=_VIEWER)
             return await store.get_record(db, world.visit_b.id, world.b_ids["r2"],
-                                          package_id=world.pkg_b)
+                                          package_id=world.pkg_b, viewer=_VIEWER)
 
     rec = _run(world.p.app_url, go)
     assert rec is not None and rec.data["name"] == "beta 50% off_now"
@@ -640,9 +674,9 @@ def test_r8_a_query_past_the_timeout_stops_with_query_timeout(world, monkeypatch
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(db, package_id=world.pkg_b, object_id=world.big.id,
-                                          filter=[{"field": "t", "op": "contains", "value": "zzz"}])
+                                          filter=[{"field": "t", "op": "contains", "value": "zzz"}], viewer=_VIEWER)
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
-                                         package_id=world.pkg_b)
+                                         package_id=world.pkg_b, viewer=_VIEWER)
             return stopped.value.code, rec, await _timeout(db)
 
     code, rec, after = _run(world.p.app_url, go)
@@ -657,12 +691,12 @@ def test_r8_the_old_timeout_is_back_after_a_query(world) -> None:
     async def go() -> tuple[str, str, str]:
         async with tenant_session(world.a) as db:
             await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
-            page = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            page = await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             assert page is not None and page.total == 8
             set_before = await _timeout(db)
         async with tenant_session(world.a) as db:
             plain = await _timeout(db)
-            await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id)
+            await store.query_records(db, package_id=world.pkg_a, object_id=world.visit.id, viewer=_VIEWER)
             return set_before, plain, await _timeout(db)
 
     set_before, plain, plain_after = _run(world.p.app_url, go)
@@ -680,9 +714,12 @@ def _nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _explain(world: Any, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+def _explain(world: Any, sql: str, params: dict[str, Any],
+             seqscan: bool = True) -> list[dict[str, Any]]:
     async def go() -> Any:
         async with tenant_session(world.b) as db:
+            if not seqscan:
+                await db.execute(text("SELECT set_config('enable_seqscan', 'off', true)"))
             return (await db.execute(text("EXPLAIN (ANALYZE, FORMAT JSON) " + sql), params)).scalar_one()
 
     raw = _run(world.p.app_url, go)
@@ -794,10 +831,10 @@ def test_r8_a_text_eq_reads_the_text_index(world) -> None:
 ])
 def test_r8_a_number_or_checkbox_filter_is_bounded_to_its_field(world, key: str, op: str,
                                                                  value: Any) -> None:
-    """The known gap. No `numeric` comparison is LEAKPROOF, and `v_bool` has
-    no index. So the app role reads the hot rows of the one field, through
-    the field prefix of a hot index, and no more. The page and its total read
-    them in one statement, so the bound is twice the field."""
+    """With the flag OFF, the known gap. No `numeric` comparison is LEAKPROOF,
+    and `v_bool` has no index. So the app role reads the hot rows of the one
+    field, through the field prefix of a hot index, and no more. The page and
+    its total read them in one statement, so the bound is twice the field."""
     nodes = _page_plan(world, filter=[{"field": key, "op": op, "value": value}])
     _no_seq_scan(nodes)
     scans = _hot_scans(nodes)
@@ -805,6 +842,316 @@ def test_r8_a_number_or_checkbox_filter_is_bounded_to_its_field(world, key: str,
                          if n["Node Type"] != "Bitmap Heap Scan"), scans
     assert _rows_read(nodes) <= 2 * BIG
     assert _records_read(nodes) <= _PAGE
+
+
+@pytest.fixture(autouse=True)
+def _c2c_scratch_objects(request):
+    """The C2c tests define small objects with a hot field. An org holds at
+    most 24 hot fields, so each such test drops its objects at the end."""
+    yield
+    if not request.node.name.startswith("test_r8_c2c") or "world" not in request.fixturenames:
+        return
+    world = request.getfixturevalue("world")
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM studio_objects WHERE name IN ('edge', 'legacy', 'tiny', 'fill') "
+                       "AND organization_id IN (CAST(:a AS uuid), CAST(:b AS uuid))"),
+                  {"a": world.a, "b": world.b})
+
+
+@pytest.mark.parametrize(("op", "value", "bound"), [
+    ("lte", 500, 2 * 500),
+    ("eq", 123, 2 * 2),
+    ("in", [5, 6, 7], 2 * 3),
+    ("gte", 49_990, 2 * 11),
+])
+def test_r8_c2c_a_number_filter_reads_the_float8_index_when_the_flag_is_on(
+        world, monkeypatch, op: str, value: Any, bound: int) -> None:
+    """C2c. With the flag ON, `v_num_f8` takes the index condition as the app
+    role, because the float8 comparisons are LEAKPROOF. `lte 500` reads at
+    most 1,000 hot rows (twice the 500 values, for the page and its total, and
+    450 rows hold a number), not the 45,000 of the
+    field. The exact `v_num` test stays as a filter."""
+    monkeypatch.setattr(store, "_f8_on", lambda: True)
+    nodes = _page_plan(world, filter=[{"field": "n", "op": op, "value": value}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_num_f8_idx", "v_num_f8"), \
+        [(n["Node Type"], n.get("Index Name")) for n in nodes]
+    assert _rows_read(nodes) <= max(bound, 2 * 500)
+    assert _records_read(nodes) <= _PAGE
+
+
+def test_r8_c2c_the_count_reads_the_float8_index_too(world, monkeypatch) -> None:
+    monkeypatch.setattr(store, "_f8_on", lambda: True)
+    nodes = _count_plan(world, [{"field": "n", "op": "lte", "value": 500}], studio_query.TOTAL_CAP)
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_num_f8_idx", "v_num_f8")
+    assert _rows_read(nodes) <= 500
+
+
+_EDGE_VALUES: list[Any] = [0, -1, 1, 0.0001, 0.1, 0.3, 0.30000000000000004, 500,
+                           999999999999999, 999999999999999.9]
+#: Exact numerics that one float8 holds for two values. They are written with
+#: SQL, because a JSON number would be rounded to a float first.
+_COLLIDING = ["0.1000000000000000001", "0.0999999999999999999", "0.3000000000000000001"]
+_EDGE_QUERY_VALUES: list[Any] = [0, -1, 1, 0.0001, 0.1, 0.3, 0.30000000000000004, 500,
+                                 999999999999999, 999999999999999.9]
+
+
+def _edge_filters() -> list[list[dict[str, Any]]]:
+    out: list[list[dict[str, Any]]] = []
+    for v in _EDGE_QUERY_VALUES:
+        for op in ("eq", "ne", "lt", "lte", "gt", "gte"):
+            out.append([{"field": "x", "op": op, "value": v}])
+        out.append([{"field": "x", "op": "gte", "value": v}, {"field": "x", "op": "lte", "value": v}])
+    out.append([{"field": "x", "op": "in", "value": [0.1, 0.3, 1]}])
+    out.append([{"field": "x", "op": "in", "value": [0, 999999999999999, 999999999999999.9]}])
+    out.append([{"field": "x", "op": "gte", "value": 0.0001}, {"field": "x", "op": "lte", "value": 0.3}])
+    out.append([{"field": "x", "op": "gt", "value": -1}, {"field": "x", "op": "lt", "value": 1}])
+    return out
+
+
+def _holds(op: str, stored: Decimal, value: Any) -> bool:
+    bound = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
+    return {"eq": stored == bound, "ne": stored != bound, "lt": stored < bound,
+            "lte": stored <= bound, "gt": stored > bound, "gte": stored >= bound}[op]
+
+
+def test_r8_c2c_the_flag_off_and_on_give_the_same_records(world, monkeypatch) -> None:
+    """C2c. Each op, on edge values and on numerics that one float8 holds for
+    two values, gives the same records with the float8 test off and on, and
+    the records that Python finds on the stored numerics."""
+    async def seed() -> tuple[store.StudioObject, dict[str, Decimal]]:
+        obj = await _define(world.a, world.pkg_a, "edge", [{"key": "x", "type": "number", "hot": True}])
+        rows: dict[str, dict[str, Any]] = {f"v{i}": {"x": v} for i, v in enumerate(_EDGE_VALUES)}
+        rows.update({f"c{i}": {"x": 1} for i in range(len(_COLLIDING))})
+        rows["none"] = {}
+        ids = await _create(world.a, obj, rows)
+        async with tenant_session(world.a) as db:
+            for i, v in enumerate(_COLLIDING):
+                await db.execute(text(
+                    "UPDATE studio_record_hot SET v_num = CAST(:v AS numeric) "
+                    "WHERE record_id = CAST(:r AS uuid) AND field_key = 'x'"), {"v": v, "r": ids[f"c{i}"]})
+            got = (await db.execute(text(
+                "SELECT record_id, v_num, v_num_f8 FROM studio_record_hot "
+                "WHERE object_id = CAST(:o AS uuid) AND field_key = 'x'"), {"o": obj.id})).all()
+        # The trigger filled the float8 copy of each row, also after the UPDATE.
+        assert got and all(r[2] is not None and r[2] == float(r[1]) for r in got)
+        return obj, {str(r[0]): r[1] for r in got}
+
+    async def ids_of(obj: store.StudioObject, flt: list[dict[str, Any]]) -> set[str]:
+        page = await _query(world.a, obj, filter=flt, limit=100)
+        assert page is not None
+        return {r.id for r in page.records}
+
+    async def go() -> list[str]:
+        obj, stored = await seed()
+        wrong: list[str] = []
+        proper_subset = False
+        for flt in _edge_filters():
+            monkeypatch.setattr(store, "_f8_on", lambda: False)
+            off = await ids_of(obj, flt)
+            monkeypatch.setattr(store, "_f8_on", lambda: True)
+            on = await ids_of(obj, flt)
+            want = {rid for rid, v in stored.items() if all(
+                (c["value"] is not None) and (
+                    any(_holds("eq", v, x) for x in c["value"]) if c["op"] == "in"
+                    else _holds(c["op"], v, c["value"])) for c in flt)}
+            if off != on or on != want:
+                wrong.append(f"{flt}: off={len(off)} on={len(on)} want={len(want)}")
+            proper_subset = proper_subset or 0 < len(on) < len(stored)
+        assert proper_subset
+        return wrong
+
+    assert _run(world.p.app_url, go) == []
+
+
+def _backfill_script() -> Any:
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_studio_num_f8",
+        Path(__file__).resolve().parents[2] / "scripts" / "backfill_studio_num_f8.py")
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return script
+
+
+def test_r8_c2c_the_flag_waits_for_the_copy_and_a_pre_432_row_is_never_dropped(
+        world, monkeypatch) -> None:
+    """P2b. A row from before migration 433 has a NULL copy, and a float8 test
+    would drop it. So the store honours the flag for an org only when no row
+    lacks its copy. Before the backfill the query uses the exact SQL and
+    returns the row. After it, the float8 SQL returns the same records. A
+    value beyond float8 range takes the infinity of its sign (the trigger does
+    not raise), so the float8 test keeps it too."""
+    from acb_common.studio_flags import num_f8_org  # noqa: F401  (the name the store holds)
+
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)
+    script = _backfill_script()
+    seen: list[bool] = []
+    real = store._q_num_f8
+
+    def spy(*a: Any, **k: Any) -> str:
+        seen.append(True)
+        return real(*a, **k)
+
+    monkeypatch.setattr(store, "_q_num_f8", spy)
+
+    async def seed() -> tuple[store.StudioObject, dict[str, str]]:
+        obj = await _define(world.a, world.pkg_a, "legacy", [{"key": "x", "type": "number", "hot": True}])
+        ids = await _create(world.a, obj, {"old": {"x": 5}, "new": {"x": 6}, "big": {"x": 7}, "lo": {"x": 2}})
+        async with tenant_session(world.a) as db:
+            # A column list without v_num: the trigger does not fire. This is a pre-433 row.
+            await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
+                                  "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["old"]})
+            # Beyond float8 range: the trigger must not raise.
+            await db.execute(text("UPDATE studio_record_hot SET v_num = CAST('1e400' AS numeric) "
+                                  "WHERE record_id = CAST(:r AS uuid)"), {"r": ids["big"]})
+            got = dict((await db.execute(text(
+                "SELECT record_id::text, v_num_f8 FROM studio_record_hot "
+                "WHERE object_id = CAST(:o AS uuid)"), {"o": obj.id})).all())
+        assert got[ids["old"]] is None and got[ids["big"]] == float("inf")
+        assert got[ids["new"]] == 6.0 and got[ids["lo"]] == 2.0
+        return obj, ids
+
+    async def read(obj: store.StudioObject, label: dict[str, str]) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for op, v in (("lte", 5), ("lt", 6), ("gte", 6), ("gt", 5), ("eq", 5), ("in", [5, 7])):
+            page = await _query(world.a, obj, filter=[{"field": "x", "op": op, "value": v}], limit=50)
+            assert page is not None
+            out[op] = {label[r.id] for r in page.records}
+        return out
+
+    async def go() -> tuple[dict[str, set[str]], dict[str, set[str]], bool, bool]:
+        obj, ids = await seed()
+        label = {v: k for k, v in ids.items()}
+        store._F8_READY.clear()
+        before = await read(obj, label)            # not ready: the exact SQL
+        used_before = bool(seen)
+        await script._fill(world.a, 100, 0)
+        store._F8_READY.clear()
+        after = await read(obj, label)             # ready: the float8 SQL
+        return before, after, used_before, bool(seen)
+
+    before, after, used_before, used_after = _run(world.p.app_url, go)
+    assert not used_before and used_after
+    assert before == after
+    assert before["lte"] == {"old", "lo"} and before["gte"] == {"new", "big"}
+    assert before["eq"] == {"old"} and before["in"] == {"old"}
+    store._F8_READY.clear()
+
+
+def test_r8_c2c_a_slow_guard_stays_inside_the_deadline_and_fails_closed(
+        world, monkeypatch) -> None:
+    """P2. The guard gets at most its cap of the call's budget. A guard that
+    sleeps longer than the cap times out, is cached as not ready, and the
+    call returns the records of the exact SQL inside its one deadline."""
+    import time
+
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)
+    monkeypatch.setattr(store, "_F8_GUARD_CAP_S", 0.2)
+    monkeypatch.setattr(store, "_F8_READY_SQL", (
+        "SELECT current_setting('app.tenant_id', true), "
+        "(SELECT count(*) FROM (SELECT pg_sleep(3)) s) >= 0"))
+    store._F8_READY.clear()
+
+    async def go() -> tuple[float, set[str], float]:
+        start = time.monotonic()
+        page = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        first = time.monotonic() - start
+        start = time.monotonic()
+        again = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        assert _labels(world, again) == _labels(world, page)
+        return first, _labels(world, page), time.monotonic() - start
+
+    first, labels, second = _run(world.p.app_url, go)
+    assert first < 2.0 and second < 1.0  # the second call pays no guard
+    assert labels == {"r1", "r2"}
+    ready, _ = store._F8_READY[world.a]
+    assert ready is False
+    store._F8_READY.clear()
+
+
+def test_r8_c2c_the_guard_caches_only_for_the_org_it_counted(world, monkeypatch) -> None:
+    """P3. The cache key is the org of the tenant seam, and the guard counts the
+    org of the session GUC. When the two differ, nothing is cached and the
+    query uses the exact SQL."""
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.b)  # the session is org A
+    store._F8_READY.clear()
+
+    async def go() -> set[str]:
+        page = await _query(world.a, world.visit, filter=[
+            {"field": "hours", "op": "lte", "value": 5}], limit=100)
+        return _labels(world, page)
+
+    assert _run(world.p.app_url, go) == {"r1", "r2"}
+    assert store._F8_READY == {}
+    monkeypatch.setattr(store, "num_f8_org", lambda: world.a)  # now they agree
+    assert _run(world.p.app_url, go) == {"r1", "r2"}
+    assert store._F8_READY[world.a][0] is True
+    store._F8_READY.clear()
+
+
+def test_r8_c2c_a_value_below_float8_range_does_not_raise(world) -> None:
+    """P3. The cast of 1e-330 raises in float8. The trigger and the backfill
+    take 0.0, and the clamp is monotone (direct SQL only)."""
+    async def go() -> list[tuple[Any, ...]]:
+        obj = await _define(world.a, world.pkg_a, "tiny", [{"key": "x", "type": "number", "hot": True}])
+        ids = await _create(world.a, obj, {"a": {"x": 1}, "b": {"x": 2}})
+        async with tenant_session(world.a) as db:
+            for rid, v in ((ids["a"], "1e-330"), (ids["b"], "-1e-330")):
+                await db.execute(text("UPDATE studio_record_hot SET v_num = CAST(:v AS numeric) "
+                                      "WHERE record_id = CAST(:r AS uuid)"), {"v": v, "r": rid})
+            got = [tuple(r) for r in (await db.execute(text(
+                "SELECT v_num_f8 FROM studio_record_hot WHERE object_id = CAST(:o AS uuid)"),
+                {"o": obj.id})).all()]
+            # The backfill CASE on the same values, after the copy is cleared.
+            await db.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL "
+                                  "WHERE object_id = CAST(:o AS uuid)"), {"o": obj.id})
+            await store.fill_num_f8_batch(db, store.NUM_F8_START, 1000)
+            again = [tuple(r) for r in (await db.execute(text(
+                "SELECT v_num_f8 FROM studio_record_hot WHERE object_id = CAST(:o AS uuid)"),
+                {"o": obj.id})).all()]
+        return got + again
+
+    assert all(r == (0.0,) for r in _run(world.p.app_url, go))
+
+
+def test_r8_c2c_the_trigger_and_the_backfill_fill_the_float8_copy(world) -> None:
+    """The backfill fills a row with no copy, reports 0 remaining, and fills
+    no row of another org. A second run fills nothing."""
+    # The admin engine is sync, and it skips FORCE RLS, so it can null the copies.
+    obj_other: dict[str, Any] = {}
+
+    async def seed() -> None:
+        obj_other["obj"] = await _define(world.a, world.pkg_a, "fill",
+                                         [{"key": "x", "type": "number", "hot": True}])
+        await _create(world.a, obj_other["obj"], {f"r{i}": {"x": i} for i in range(7)})
+        other = await _define(world.b, world.pkg_b, "fill", [{"key": "x", "type": "number", "hot": True}])
+        await _create(world.b, other, {"o": {"x": 9}})
+        obj_other["other"] = other
+
+    _run(world.p.app_url, seed)
+    oid, bid = obj_other["obj"].id, obj_other["other"].id
+    with world.p.admin_engine.begin() as c:
+        # A column list that skips v_num: the trigger does not fire.
+        c.execute(text("UPDATE studio_record_hot SET v_num_f8 = NULL WHERE object_id IN "
+                       "(CAST(:a AS uuid), CAST(:b AS uuid))"), {"a": oid, "b": bid})
+
+    script = _backfill_script()
+    first = _run(world.p.app_url, lambda: script._fill(world.a, 3, 0))
+    second = _run(world.p.app_url, lambda: script._fill(world.a, 3, 0))
+    with world.p.admin_engine.begin() as c:
+        mine = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
+                              "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": oid}).scalar_one()
+        theirs = c.execute(text("SELECT count(*) FROM studio_record_hot WHERE object_id = "
+                                "CAST(:o AS uuid) AND v_num_f8 IS NULL"), {"o": bid}).scalar_one()
+    assert first["remaining"] == 0 and first["filled"] >= 7 and first["batches"] >= 3
+    assert second == {"batches": 0, "filled": 0, "remaining": 0}
+    assert mine == 0 and theirs == 1
 
 
 @pytest.mark.parametrize(("filter", "cap"), [
@@ -912,12 +1259,12 @@ def test_r8_a_write_between_two_reads_never_puts_a_record_twice(world) -> None:
         async def clear_b() -> None:
             async with tenant_session(world.a) as other:
                 assert await store.update_record(other, ANA, race.id, ids["b"], {"v": None},
-                                                 package_id=race.package_id)
+                                                 package_id=race.package_id, viewer=_VIEWER)
 
         async with tenant_session(world.a) as db:
             spy = _Spy(db, clear_b)
             page = await store.query_records(spy, package_id=race.package_id, object_id=race.id,
-                                             sort={"field": "v"}, limit=10)
+                                             sort={"field": "v"}, limit=10, viewer=_VIEWER)
         return spy.fired, ids, page
 
     fired, ids, page = _run(world.p.app_url, go)
@@ -950,7 +1297,7 @@ def test_r8_a_slow_statement_leaves_less_time_for_the_next(world, monkeypatch) -
         async with tenant_session(world.b) as db:
             spy = _Spy(db)
             page = await store.query_records(spy, package_id=world.pkg_b,
-                                             object_id=world.visit_b.id, filter=_COLD_B)
+                                             object_id=world.visit_b.id, filter=_COLD_B, viewer=_VIEWER)
         return spy.timeouts, page
 
     timeouts, page = _run(world.p.app_url, go)
@@ -968,9 +1315,9 @@ def test_r8_a_call_with_no_time_left_runs_no_more_statements(world, monkeypatch)
             spy = _Spy(db)
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(spy, package_id=world.pkg_b,
-                                          object_id=world.visit_b.id, filter=_COLD_B)
+                                          object_id=world.visit_b.id, filter=_COLD_B, viewer=_VIEWER)
             rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
-                                         package_id=world.pkg_b)
+                                         package_id=world.pkg_b, viewer=_VIEWER)
         return stopped.value.code, spy.statements, rec
 
     code, statements, rec = _run(world.p.app_url, go)
@@ -1041,7 +1388,7 @@ def test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page(world) -
         async with tenant_session(world.a) as db:
             spy = _Spy(db, unhot, marker="FROM studio_object_fields")
             page = await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
-                                             filter=[{"field": "status", "op": "eq", "value": "open"}])
+                                             filter=[{"field": "status", "op": "eq", "value": "open"}], viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, obj.id)
         return spy.fired, page
@@ -1069,7 +1416,7 @@ def test_r8_a_sort_field_that_turns_cold_during_a_query_is_refused(world) -> Non
             spy = _Spy(db, unhot, marker="FROM studio_object_fields")
             with pytest.raises(QueryError) as stopped:
                 await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
-                                          sort={"field": "rank"})
+                                          sort={"field": "rank"}, viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, obj.id)
         return spy.fired, stopped.value
@@ -1132,7 +1479,7 @@ def test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard(world) -> None:
             spy = _Spy(db, insert, marker="SELECT t.n", before=True)
             with pytest.raises(QueryError) as refused:
                 await store.query_records(spy, package_id=crowd.package_id, object_id=crowd.id,
-                                          filter=filter)
+                                          filter=filter, viewer=_VIEWER)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, crowd.id)
         return page, spy.fired, refused.value
@@ -1140,3 +1487,364 @@ def test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard(world) -> None:
     page, fired, err = _run(world.p.app_url, go)
     assert page.total == 50
     assert fired and err.code == "query_not_indexed" and err.field == "cold"
+
+
+# ── m. The aggregate (C2b) ──────────────────────────────────────────────────
+
+_HOURS = [{"op": "count"}, {"op": "sum", "field": "hours"}, {"op": "average", "field": "hours"}]
+D = Decimal
+
+
+async def _agg(org: str, obj: store.StudioObject, **kw: Any) -> store.AggregateResult | None:
+    async with tenant_session(org) as db:
+        return await store.aggregate_records(db, package_id=obj.package_id, object_id=obj.id, **kw, viewer=_VIEWER)
+
+
+def _groups(result: store.AggregateResult | None) -> list[tuple[Any, int, tuple[Any, ...]]]:
+    assert result is not None
+    return [(g.key, g.count, g.values) for g in result.groups]
+
+
+def _refused_agg(world: Any, org: str, obj: Any, **kw: Any) -> QueryError:
+    async def go() -> QueryError:
+        with pytest.raises(QueryError) as refused:
+            await _agg(org, obj, **kw)
+        return refused.value
+
+    return _run(world.p.app_url, go)
+
+
+def test_r8_count_sum_and_average_with_no_group(world) -> None:
+    """With no group, the total holds each measure over every record that the
+    filter keeps. A sum with no value is 0, and an average with no value is None."""
+    async def go() -> list[Any]:
+        return [
+            await _agg(world.a, world.visit, measures=_HOURS),
+            await _agg(world.a, world.visit, filter=[
+                {"field": "status", "op": "eq", "value": "done"}], measures=_HOURS),
+            await _agg(world.a, world.visit, filter=[
+                {"field": "name", "op": "eq", "value": "nobody"}], measures=_HOURS),
+            await _agg(world.a, world.visit),
+        ]
+
+    every, done, none, plain = _run(world.p.app_url, go)
+    assert (every.total.count, every.total.values) == (8, (8, D("21.5"), D("5.375")))
+    assert (every.groups, every.other, every.folded) == ((), None, 0)
+    assert (done.total.count, done.total.values) == (1, (1, D(5), D(5)))
+    assert (none.total.count, none.total.values) == (0, (0, D(0), None))
+    assert plain.total.values == (8,) and plain.currencies == (None,)
+
+
+def test_r8_each_aggregate_by_a_select_in_the_order_of_its_options(world) -> None:
+    """`status` holds planned (r1), done (r2) and on site (r3). The five other
+    records have no value, so they form the group None, and it comes last."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit,
+                                                group_by={"field": "status"}, measures=_HOURS))
+    assert _groups(result) == [
+        ("planned", 1, (1, D(1), D(1))),
+        ("on site", 1, (1, D("5.5"), D("5.5"))),
+        ("done", 1, (1, D(5), D(5))),
+        (None, 5, (5, D(10), D(10))),
+    ]
+    assert (result.total.count, result.total.values) == (8, (8, D("21.5"), D("5.375")))
+    assert (result.other, result.folded) == (None, 0)
+
+
+def test_r8_a_checkbox_group_has_two_states(world) -> None:
+    """A record with no value of `paid` joins `false`, as `eq false` matches it."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "paid"}))
+    assert _groups(result) == [(False, 6, (6,)), (True, 2, (2,))]
+
+
+def test_r8_a_long_text_groups_by_the_whole_text(world) -> None:
+    """`v_text` holds 256 characters, and L1, L2 and the prefix share them.
+    Each is its own group, as `eq` tells them apart."""
+    result = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "name"}))
+    groups = _groups(result)
+    assert {k for k, _, _ in groups} == {"Alpha", "beta 50% off_now", "Gamma", "back\\slash",
+                                         L1, L2, _PREFIX, None}
+    assert all(n == 1 for _, n, _ in groups) and groups[-1][0] is None
+
+
+def test_r8_a_number_and_an_email_group(world) -> None:
+    hours = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "hours"}))
+    assert _groups(hours) == [(D(1), 1, (1,)), (D(5), 1, (1,)), (D("5.5"), 1, (1,)),
+                              (D(10), 1, (1,)), (None, 4, (4,))]
+    mail = _run(world.p.app_url, lambda: _agg(world.a, world.visit, group_by={"field": "mail"}))
+    assert _groups(mail) == [("a@x.test", 1, (1,)), ("b@y.test", 1, (1,)), (None, 6, (6,))]
+
+
+@pytest.mark.parametrize(("key", "bucket", "want"), [
+    ("day", "day", [("2026-01-01", 1), ("2026-01-05", 1), ("2026-01-10", 1), ("2026-02-01", 1),
+                    (None, 4)]),
+    ("day", None, [("2026-01-01", 1), ("2026-01-05", 1), ("2026-01-10", 1), ("2026-02-01", 1),
+                   (None, 4)]),
+    ("day", "month", [("2026-01", 3), ("2026-02", 1), (None, 4)]),
+    # r3 is at 23:59:59Z, and r4 at 2026-02-01T00:00+05:30, which is 18:30 UTC on 31 January.
+    ("at", "day", [("2026-01-01", 1), ("2026-01-05", 2), ("2026-01-31", 1), (None, 4)]),
+    ("at", "month", [("2026-01", 4), (None, 4)]),
+])
+def test_r8_a_date_groups_by_day_or_month_in_utc(world, key: str, bucket: str | None,
+                                                  want: list[tuple[Any, int]]) -> None:
+    """The session is on the clock of India, and the buckets stay in UTC."""
+    group = {"field": key} if bucket is None else {"field": key, "bucket": bucket}
+
+    async def go() -> Any:
+        async with tenant_session(world.a) as db:
+            await db.execute(text("SELECT set_config('TimeZone', 'Asia/Kolkata', true)"))
+            return await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.visit.id, group_by=group, viewer=_VIEWER)
+
+    assert [(k, n) for k, n, _ in _groups(_run(world.p.app_url, go))] == want
+
+
+def test_r8_a_money_sum_of_two_currencies_is_refused(world) -> None:
+    """r1 and r2 hold INR, and r3 holds USD. A sum that adds r3 to an INR
+    amount is refused, also when each group holds one currency. The sentence
+    names no currency, and the session stays usable."""
+    fee = [{"op": "count"}, {"op": "sum", "field": "fee"}]
+
+    async def go() -> tuple[QueryError, QueryError, Any]:
+        async with tenant_session(world.a) as db:
+            with pytest.raises(QueryError) as whole:
+                await store.aggregate_records(db, package_id=world.pkg_a,
+                                              object_id=world.visit.id, measures=fee, viewer=_VIEWER)
+            with pytest.raises(QueryError) as grouped:
+                await store.aggregate_records(db, package_id=world.pkg_a, object_id=world.visit.id,
+                                              group_by={"field": "status"}, measures=fee, viewer=_VIEWER)
+            rec = await store.get_record(db, world.visit.id, world.ids["r1"], package_id=world.pkg_a, viewer=_VIEWER)
+        return whole.value, grouped.value, rec
+
+    whole, grouped, rec = _run(world.p.app_url, go)
+    for err in (whole, grouped):
+        assert err.code == "query_op_not_allowed" and err.field == "fee"
+        assert "`fee`" in err.message and "USD" not in err.message and "INR" not in err.message
+    assert rec is not None and rec.data["name"] == "Alpha"
+
+
+def test_r8_a_money_sum_of_one_currency_names_it(world) -> None:
+    fee = [{"op": "count"}, {"op": "sum", "field": "fee"}]
+    inr = [{"field": "status", "op": "in", "value": ["planned", "done"]}]
+
+    async def go() -> list[Any]:
+        return [
+            await _agg(world.a, world.visit, filter=inr, measures=fee),
+            await _agg(world.a, world.visit, filter=inr, group_by={"field": "status"}, measures=fee),
+            await _agg(world.a, world.visit, filter=[{"field": "fee", "op": "is_empty"}],
+                       measures=fee),
+        ]
+
+    both, grouped, empty = _run(world.p.app_url, go)
+    assert (both.total.values, both.currencies) == ((2, 600), (None, "INR"))
+    assert _groups(grouped) == [("planned", 1, (1, 100)), ("done", 1, (1, 500))]
+    assert grouped.currencies == (None, "INR")
+    assert (empty.total.values, empty.currencies) == ((5, 0), (None, None))
+
+
+@pytest.mark.parametrize(("group_by", "measures", "field"), [
+    ({"field": "c_status"}, None, "c_status"),
+    (None, [{"op": "sum", "field": "c_hours"}], "c_hours"),
+    (None, [{"op": "average", "field": "c_hours"}], "c_hours"),
+    (None, [{"op": "sum", "field": "c_fee"}], "c_fee"),
+])
+def test_r8_a_group_or_a_measure_on_a_field_that_is_not_hot_is_refused(
+        world, group_by: Any, measures: Any, field: str) -> None:
+    err = _refused_agg(world, world.a, world.visit, group_by=group_by, measures=measures)
+    assert err.code == "query_not_indexed" and err.field == field
+    assert f"`{field}`" in err.message and "Turn it hot" in err.message
+
+
+def test_r8_an_aggregate_keeps_the_guard_of_a_cold_filter(world) -> None:
+    """A cold filter on 50,000 records is refused. After a hot filter that
+    leaves 900 records, it runs: 10 records hold `cold` = c5, and each is odd."""
+    err = _refused_agg(world, world.b, world.big, filter=[
+        {"field": "cold", "op": "eq", "value": "c5"}], group_by={"field": "b"})
+    assert err.code == "query_not_indexed" and err.field == "cold"
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, filter=[
+        {"field": "n", "op": "lte", "value": 1000},
+        {"field": "cold", "op": "eq", "value": "c5"}], group_by={"field": "b"}))
+    assert _groups(result) == [(False, 10, (10,))]
+
+
+def test_r8_an_aggregate_reads_its_own_package_object_and_org(world) -> None:
+    """A package that does not hold the object, and another org, read nothing.
+    `trip` is in the same package and holds hours too."""
+    async def go() -> list[Any]:
+        async with tenant_session(world.a) as db:
+            out = [await store.aggregate_records(db, package_id=world.pkg_a2, object_id=world.visit.id, viewer=_VIEWER),
+                   await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.other_pkg.id, viewer=_VIEWER),
+                   await store.aggregate_records(db, package_id=world.pkg_a,
+                                                 object_id=world.visit.id, measures=_HOURS, viewer=_VIEWER)]
+        async with tenant_session(world.b) as db:
+            out.append(await store.aggregate_records(db, package_id=world.pkg_a,
+                                                     object_id=world.visit.id, viewer=_VIEWER))
+            out.append(await store.aggregate_records(db, package_id=world.pkg_b,
+                                                     object_id=world.visit_b.id, measures=_HOURS, viewer=_VIEWER))
+        return out
+
+    wrong_pkg, wrong_obj, mine, theirs, org_b = _run(world.p.app_url, go)
+    assert (wrong_pkg, wrong_obj, theirs) == (None, None, None)
+    assert mine.total.values == (8, D("21.5"), D("5.375"))
+    assert org_b.total.values == (2, D(6), D(3))
+
+
+def test_r8_the_built_aggregate_of_another_package_reads_nothing(world) -> None:
+    """The statement itself checks the package, also with a true object id."""
+    fields = [sf.parse_field_spec(f) for f in _FIELDS]
+    agg = studio_query.parse_aggregate(fields, None, {"field": "status"}, _HOURS)
+
+    async def go() -> list[tuple[int, int]]:
+        out = []
+        async with tenant_session(world.a) as db:
+            for pid in (world.pkg_a, world.pkg_a2):
+                sql, params = store.build_aggregate(agg, object_id=world.visit.id, package_id=pid)
+                rows = (await db.execute(text(sql), params)).all()
+                out.append((int(rows[0][2]), int(rows[0][3])))
+        return out
+
+    assert _run(world.p.app_url, go) == [(4, 8), (0, 0)]
+
+
+def _big_n(g: int) -> int | None:
+    return g if g % 10 else None
+
+
+def _big_day(g: int) -> int:
+    return (3 * g) // 1440
+
+
+def test_r8_fifty_groups_stay_and_the_rest_fold_into_other(world) -> None:
+    """Record g is at 3g minutes, so the 105 days hold 479, then 480 each, and
+    81 on the last day. The 50 days with the most records stay: 2 January to
+    20 February, in time order. The other 55 days fold into `other`."""
+    measures = [{"op": "count"}, {"op": "sum", "field": "n"}, {"op": "average", "field": "n"}]
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, group_by={"field": "d"},
+                                                measures=measures))
+    groups = _groups(result)
+    assert len(groups) == studio_query.MAX_GROUPS == 50
+    assert [k for k, _, _ in groups][:2] == ["2026-01-02", "2026-01-03"]
+    assert groups[-1][0] == "2026-02-20" and all(n == 480 for _, n, _ in groups)
+    assert result.folded == 55 and result.other is not None and result.other.count == 26_000
+    kept_days = set(range(1, 51))
+    every = [g for g in range(1, BIG + 1)]
+    n_all = [_big_n(g) for g in every if _big_n(g) is not None]
+    n_other = [_big_n(g) for g in every if _big_day(g) not in kept_days and _big_n(g) is not None]
+    assert result.total.values == (BIG, D(sum(n_all)), D(sum(n_all)) / D(len(n_all)))
+    assert result.other.values == (26_000, D(sum(n_other)), D(sum(n_other)) / D(len(n_other)))
+    assert sum(g.values[1] for g in result.groups) + result.other.values[1] == result.total.values[1]
+
+
+def test_r8_a_month_group_of_50000_records(world) -> None:
+    result = _run(world.p.app_url, lambda: _agg(world.b, world.big, group_by={
+        "field": "d", "bucket": "month"}, measures=[{"op": "count"}, {"op": "sum", "field": "n"}]))
+    months: dict[str, list[int]] = {}
+    for g in range(1, BIG + 1):
+        day = date(2026, 1, 1) + timedelta(days=_big_day(g))
+        months.setdefault(f"{day.year:04d}-{day.month:02d}", []).append(g)
+    want = [(m, len(gs), (len(gs), D(sum(g for g in gs if _big_n(g) is not None))))
+            for m, gs in sorted(months.items())]
+    assert _groups(result) == want
+    assert [n for _, n, _ in want] == [14_879, 13_440, 14_880, 6_801]
+
+
+def _agg_plan(world: Any, filter: Any, group_by: Any, measures: Any,
+              seqscan: bool = True) -> list[dict[str, Any]]:
+    fields = [sf.parse_field_spec(f) for f in _BIG_FIELDS]
+    agg = studio_query.parse_aggregate(fields, filter, group_by, measures)
+    sql, params = store.build_aggregate(agg, object_id=world.big.id, package_id=world.pkg_b)
+    return _explain(world, sql, params, seqscan=seqscan)
+
+
+def test_r8_an_aggregate_of_50000_records_reads_the_hot_index_and_no_table_scan(world) -> None:
+    """A hot filter keeps each of the 50,000 records. The candidates come from
+    the hot time index, and each reads its group and its value by the key of
+    the hot table. No scan reads a table, and no record is read."""
+    nodes = _agg_plan(world, [{"field": "d", "op": "gte", "value": "2026-01-01"}],
+                      {"field": "d", "bucket": "month"}, [{"op": "sum", "field": "n"}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_ts_idx", "v_ts")
+    assert _uses(nodes, "studio_record_hot_pkey")
+    assert _rows_read(nodes) <= 3 * BIG
+    assert _records_read(nodes) == 0
+
+
+def test_r8_an_aggregate_with_no_filter_reads_each_record_of_its_object_once(world) -> None:
+    """With no filter, the candidates are the records of the object, in no
+    order. Each reads its two hot rows by the key of the hot table.
+
+    ⚠️ Here `studio_records` holds this object and almost nothing else. So the
+    planner may read it by a Seq Scan, which its estimate makes cheaper. The
+    read stays the object, and with `enable_seqscan` off the same statement
+    reads the records by an index, so no part of it defeats an index. In
+    production the object is a small share of a table of many tenants. With
+    the order of the id, the planner sorted the whole object too."""
+    group, measures = {"field": "d", "bucket": "month"}, [{"op": "sum", "field": "n"}]
+    nodes = _agg_plan(world, None, group, measures)
+    assert _uses(nodes, "studio_record_hot_pkey")
+    assert not [n for n in nodes if n["Node Type"] == "Seq Scan"
+                and n.get("Relation Name") == "studio_record_hot"]
+    assert all(rows <= BIG for rows in _sort_inputs(nodes))
+    assert _rows_read(nodes) <= 2 * BIG
+    assert _records_read(nodes) <= BIG + 100
+    forced = _agg_plan(world, None, group, measures, seqscan=False)
+    _no_seq_scan(forced)
+    assert _records_read(forced) <= BIG + 100
+
+
+def test_r8_a_filtered_aggregate_reads_the_hot_time_index(world) -> None:
+    """One day holds 480 of the 50,000 records. The candidates come from the
+    time index, each reads two hot rows by the key, and no record is read."""
+    nodes = _agg_plan(world, [{"field": "d", "op": "eq", "value": "2026-02-01"}],
+                      {"field": "b"}, [{"op": "average", "field": "n"}])
+    _no_seq_scan(nodes)
+    assert _uses(nodes, "studio_record_hot_ts_idx", "v_ts")
+    assert _rows_read(nodes) <= 3 * 480
+    assert _records_read(nodes) == 0
+
+
+def test_r8_an_aggregate_past_the_timeout_stops_with_query_timeout(world, monkeypatch) -> None:
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 1)
+    monkeypatch.setattr(store, "_clock", lambda: 0.0)
+
+    async def go() -> tuple[str, Any, str]:
+        async with tenant_session(world.b) as db:
+            await db.execute(text("SELECT set_config('statement_timeout', '42s', true)"))
+            with pytest.raises(QueryError) as stopped:
+                await store.aggregate_records(db, package_id=world.pkg_b, object_id=world.big.id,
+                                              group_by={"field": "t"}, viewer=_VIEWER)
+            rec = await store.get_record(db, world.visit_b.id, world.b_ids["r1"],
+                                         package_id=world.pkg_b, viewer=_VIEWER)
+            return stopped.value.code, rec, await _timeout(db)
+
+    code, rec, after = _run(world.p.app_url, go)
+    assert code == "query_timeout"
+    assert rec is not None and after == "42s"
+
+
+def test_r8_a_group_field_that_turns_cold_during_an_aggregate_is_refused(world) -> None:
+    """A second session turns `rank` cold and commits after the store read the
+    fields. Its hot rows go, so each record would join the group with no
+    value. The statement sees that, so the store reads the fields again and
+    refuses the group."""
+    async def go() -> tuple[bool, QueryError]:
+        obj = await _define(world.a, world.pkg_a, "cooling_group", [
+            {"key": "rank", "type": "number", "hot": True}])
+        await _create(world.a, obj, {"a": {"rank": 3}, "b": {"rank": 1}, "c": {"rank": 1}})
+
+        async def unhot() -> None:
+            async with tenant_session(world.a) as other:
+                assert await store.set_field_hot(other, obj.id, "rank", False)
+
+        async with tenant_session(world.a) as db:
+            spy = _Spy(db, unhot, marker="FROM studio_object_fields")
+            with pytest.raises(QueryError) as stopped:
+                await store.aggregate_records(spy, package_id=obj.package_id, object_id=obj.id,
+                                              group_by={"field": "rank"}, viewer=_VIEWER)
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, obj.id)
+        return spy.fired, stopped.value
+
+    fired, err = _run(world.p.app_url, go)
+    assert fired
+    assert err.code == "query_not_indexed" and err.field == "rank"

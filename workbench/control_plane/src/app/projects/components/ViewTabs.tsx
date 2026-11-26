@@ -54,6 +54,8 @@ export interface ViewTabsProps {
   /** False while nothing is filtered, regrouped or reshaped: nothing to save. */
   canAddView: boolean;
   addViewHint?: string;
+  /** SW-112: canvases withheld from the row. A dark canvas is absent, not greyed. */
+  hiddenModes?: readonly ViewMode[];
   /** Classes for the outer box, so the page can move the row below the title in a narrow pane. */
   className?: string;
 }
@@ -122,6 +124,7 @@ export function ViewTabs({
   onDeleteView,
   canAddView,
   addViewHint,
+  hiddenModes,
   className = "",
 }: ViewTabsProps) {
   const box = useRef<HTMLDivElement | null>(null);
@@ -159,13 +162,13 @@ export function ViewTabs({
 
   const canvasOptions = useMemo(
     () =>
-      VIEW_MODES.map((entry) => ({
+      VIEW_MODES.filter((entry) => !hiddenModes?.includes(entry.id)).map((entry) => ({
         id: entry.id as ViewMode,
         icon: entry.icon,
         label: sentenceCase(entry.id),
         key: entry.key as string,
       })),
-    []
+    [hiddenModes]
   );
   const specs: TabSpec[] = useMemo(
     () => [

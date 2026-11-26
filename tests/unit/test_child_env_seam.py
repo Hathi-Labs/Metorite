@@ -60,6 +60,12 @@ EXEMPT_FILES: dict[str, str] = {
 #: ``acb_common`` (a BH-D1 exception). Each spawn there must still pass
 #: ``env=``, and only from the named local function. file -> (function, reason).
 LOCAL_ALLOWLISTS: dict[str, tuple[str, str]] = {
+    "apps/connectors/tally_bridge/tally_bridge/windows/system.py": (
+        "child_env",
+        "the Tally bridge is a standalone program on the customer's Windows "
+        "machine. It imports nothing of the monorepo "
+        "(test_tally_bridge_fences.py), so it keeps its own short allowlist",
+    ),
     "apps/services/orchestrator/mutation_runner.py": (
         "child_env",
         "runs in the mutation container, whose image holds only "
@@ -718,14 +724,17 @@ def test_the_fence_accepts(name: str) -> None:
 
 
 _REAL = "apps/services/gateway/gateway/routes/apps/durability.py"
+#: The env of the checkpoint git. WS-43h gave it more names, over lines, so
+#: each mutation keeps the dict as a dummy argument and the file still parses.
+_REAL_ENV = "env=child_env(extra={"
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("env=child_env(),", "env=None,"),
-        ("env=child_env(),", "env=child_env(extra=dict(os.environ)),"),
-        ("env=child_env(),", ""),
+        (_REAL_ENV, "env=None, _x=({"),
+        (_REAL_ENV, "env=child_env(extra=dict(os.environ), _x={"),
+        (_REAL_ENV, "_x=({"),
     ],
     ids=["env-None", "extra-os-environ", "env-removed"],
 )

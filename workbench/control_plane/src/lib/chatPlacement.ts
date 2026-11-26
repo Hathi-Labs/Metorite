@@ -47,8 +47,17 @@ import { bareToolName } from "@/lib/toolSteps";
 export type Placement = "ask" | "evidence" | "write" | "answer";
 
 /** Tools whose result the member must answer. The chat draws them itself
- *  (`AgentChat`'s confirmation queue and question cards). */
-const ASK: readonly string[] = ["request_confirmation", "ask_questions", "ask_user"];
+ *  (`AgentChat`'s confirmation queue and question cards). The record writes
+ *  of AI Studio first ask, and their result is a request that waits: its
+ *  card is `components/studio/StudioToolCards.tsx` (STU-B2c-2c). */
+const ASK: readonly string[] = [
+  "request_confirmation",
+  "ask_questions",
+  "ask_user",
+  "studio_record_create",
+  "studio_record_update",
+  "studio_record_delete",
+];
 
 /**
  * Tools that draw a card the model chose. `emit_generative_ui` is here, and
@@ -68,6 +77,10 @@ const ANSWER: readonly string[] = [
   "my_tasks_plan_day",
   "my_tasks_replan_day",
   "my_tasks_rollover",
+  // AI Studio (STU-F5a): a read of the records draws a live table, a view of
+  // the read like `render_tasks`. Its text result is for the model, and its
+  // card (`components/studio/StudioRecordsCard.tsx`) never writes.
+  "studio_record_list",
 ];
 
 /** Reads. Projects names are manifest class A (held by the Python fence). */
@@ -93,6 +106,13 @@ const EVIDENCE: readonly string[] = [
   "watchers",
   "project_access",
   "project_authorities",
+  // WS-39 LP-1a: the updates of a project.
+  "list_project_updates",
+  // WS-39 SP-5a: the cycles of a project, and the status of one cycle.
+  "list_cycles",
+  "cycle_detail",
+  // WS-39 TPL-1a: the templates of the organization.
+  "list_templates",
   "my_decisions",
   "project_views",
   "recurrence",
@@ -110,6 +130,7 @@ const EVIDENCE: readonly string[] = [
   "report_recipients",
   "waiting_agent_requests",
   "needs_attention",
+  "agent_questions",
   "report_render",
   "open_in_app",
   "show_view",
@@ -158,10 +179,23 @@ const EVIDENCE: readonly string[] = [
   "get_pipeline",
   "get_record",
   "get_timeline",
+  // P-3 (task 3954): the suggestions of the field map and the AI analysis.
+  "crm_mapping_suggestions",
+  "crm_preview_suggestion",
+  "crm_analysis_status",
   // ── Every data agent (WS-48, `acb_skills/narrowing.py`) ────────────────
   // `narrow_and_read` searches, picks and reads, and changes nothing. One
   // name serves the email and the WhatsApp agents.
   "narrow_and_read",
+  // ── AI Studio (the `studio` pack, `read_only=True`) ────────────────────
+  // STB-6a: the workflows, one workflow, or (STU-E4b) the human steps of one run.
+  "studio_workflow_read",
+  // PAR-8a: the runs of a workflow, the check of a draft, and the parts of a step.
+  "studio_workflow_runs",
+  "studio_workflow_check",
+  "studio_workflow_catalog",
+  // PAR-9 (task 3950): the Custom Apps of the App Workshop, read only.
+  "custom_app_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */
@@ -175,6 +209,11 @@ const WRITE: readonly string[] = [
   "update_task",
   "assign",
   "comment",
+  // WS-39 LP-1a: one update of a project, with its health.
+  "post_project_update",
+  // WS-39 SP-5a: plan a cycle, and put tasks in it or take them out.
+  "create_cycle",
+  "plan_cycle",
   "add_subtasks",
   "link_tasks",
   "unlink_tasks",
@@ -188,7 +227,11 @@ const WRITE: readonly string[] = [
   "link_tasks_batch",
   // Several edits, a different change for each task, one card with rows.
   "update_tasks",
+  // SP-8a: the contract of an epic, one card.
+  "set_epic_contract",
   "watch",
+  // WS-55 EA-18d: the member answers one agent question, one card.
+  "answer_agent_question",
   "complete",
   "defer",
   "unarchive_task",
@@ -244,7 +287,17 @@ const WRITE: readonly string[] = [
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  // WS-39 LP-1a: the delete of a project update, class C.
+  "delete_project_update",
+  // WS-39 SP-5a: a cycle starts and a cycle closes, class C.
+  "start_cycle",
+  "close_cycle",
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  "save_as_template",
+  "create_project_from_template",
   "answer_decision",
+  // SW-43c: the member's own answer to an agent, taken back or changed. Class C.
+  "change_agent_answer",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
@@ -328,11 +381,17 @@ const WRITE: readonly string[] = [
   "update_deal_status",
   "log_activity",
   "convert_lead",
+  // P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+  "crm_decide_suggestion",
+  "crm_rerun_analysis",
   // WS-CRM CRM-M2b: a field of a record, and a task done or due.
   "crm_update_record",
   "crm_update_task",
   // WS-CRM CRM-M3a: a new deal pipeline, on one card.
   "crm_create_pipeline",
+  // WS-CRM CRM-M2e (task 3951): a stage, a lead status or a lost reason.
+  "crm_edit_status",
+  "crm_edit_lost_reason",
   // ── The assistant profile (WS-63 PZ-6a): each acts at once, with Undo ──
   "profile_remember",
   "profile_forget",

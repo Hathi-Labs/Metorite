@@ -611,7 +611,8 @@ async def test_with_the_switch_off_the_run_is_todays_read_only_run(
 
     assert _creates(env) == []
     (output,) = env.world.agent.outputs
-    assert output.startswith("Cancelled"), "the card was not refused"
+    # HRD-7: no card could show, in the words of the one table.
+    assert output.startswith("Not shown:"), "the card was not refused"
     assert env.acts.calls == 0 and env.acts.rows == {}
     assert env.prov.buttons == []
     (seen,) = env.world.agent.seen
@@ -791,7 +792,7 @@ async def test_writes_are_switched_on_per_org(
     await _ask(env)   # the member's org is ORG_A
     assert _creates(env) == [] and env.acts.rows == {} and env.prov.buttons == []
     (output,) = env.world.agent.outputs
-    assert output.startswith("Cancelled")
+    assert output.startswith("Not shown:")
     (seen,) = env.world.agent.seen
     assert seen["payload"]["system_context"] == bot_run.SCOPE_RULE_NATIVE
 

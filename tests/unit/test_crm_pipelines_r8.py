@@ -516,7 +516,9 @@ async def test_get_pipelines_has_the_contract_shape(q) -> None:
     body = got.json()
     assert [p["name"] for p in body] == ["Standard", "Renewals"]
     first = body[0]
-    assert set(first) == {"id", "name", "is_default", "position", "ext_url", "stages"}
+    # CRM-M4a adds `kind`. A deal pipeline names no feed, so that key stays out.
+    assert set(first) == {"id", "name", "is_default", "position", "ext_url", "stages", "kind"}
+    assert first["kind"] == "deal"
     assert first["is_default"] is True and body[1]["is_default"] is False
     assert first["ext_url"] == "https://crm.zoho.in/crm/orgA/tab/Potentials"
     assert [s["name"] for s in first["stages"]] == ["Qualify", "Won It"]

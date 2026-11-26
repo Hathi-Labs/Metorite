@@ -55,6 +55,7 @@ import { usePathname } from "next/navigation";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
+import { useFloor } from "@/lib/floorContext";
 import { PANES, type NavPane } from "@/lib/nav";
 import { contextPane, shellBarOn } from "@/lib/shell/registry";
 
@@ -202,15 +203,24 @@ export function AppTopBar({
   );
 }
 
+/**
+ * The touch size of the back link, in the floor view of a Studio app only (STU-D23a-2). A
+ * `Button` of the same size grows to 40 px on a touch screen. This link is not a `Button`, so it
+ * adds the same classes itself. It adds them only inside the floor view (`lib/floorContext.ts`):
+ * on every other page its classes stay as they were, also on a phone.
+ */
+export const BACK_LINK_FLOOR = " pointer-coarse:h-10 pointer-coarse:w-10";
+
 /** The way back out of a sub-page, such as Teams back to Organisation. */
 function BackLink({ back }: { back: AppTopBarBack }) {
+  const floor = useFloor();
   return (
     <>
       <Link
         href={back.href}
         aria-label={back.label}
         title={back.label}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground tech-transition hover:bg-secondary hover:text-foreground"
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground tech-transition hover:bg-secondary hover:text-foreground${floor ? BACK_LINK_FLOOR : ""}`}
       >
         <Icon name="ArrowLeft" size={15} />
       </Link>

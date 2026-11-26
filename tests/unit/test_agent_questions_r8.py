@@ -614,6 +614,8 @@ class TestTheRead:
             [row] = got.json()["rows"]
             assert row["why"] == "my_agent" and row["can_answer"] is True
             assert [o["id"] for o in row["question"]["options"]] == ["approve", "decline"]
+            # EA-18b: a typed request carries its expiry, and a free question does not.
+            assert row["question"]["expires_at"]
             for reader in (w.creator, w.assignee, w.owner, w.admin, w.manager, w.viewer):
                 got = await _list(call, reader)
                 assert got.json()["rows"] == [], reader.email
@@ -622,6 +624,12 @@ class TestTheRead:
                 got = await _list(call, reader, scope="everyone")
                 assert got.json()["rows"] == [], reader.email
                 assert got.json()["counts"]["everyone"] == 0, reader.email
+
+    async def test_a_free_question_carries_no_expiry(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            [row] = await _rows(call, w.creator)
+            assert "expires_at" not in row["question"]
 
     async def test_a_question_on_a_closed_task_does_not_show(self, w):
         """It is a ``dangling`` row of Needs attention, and the sweep closes it."""
@@ -1305,6 +1313,29 @@ class TestTheFocus:
 
 
 @_DB_GATE
+class TestTheRunWireCanAnswer:
+    """EA-18b. ``GET /agent-runs/{id}`` says if the reader may answer, from the
+    one rule of the write route, so the run panel never offers a refused button."""
+
+    async def test_can_answer_follows_the_write_rule_for_each_reader(self, w):
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            for reader in (w.creator, w.assignee, w.member, w.owner, w.admin, w.manager):
+                got = await call(reader, "GET", f"/projects/agent-runs/{run}")
+                assert got.json()["run"]["can_answer"] is True, reader.email
+            got = await call(w.viewer, "GET", f"/projects/agent-runs/{run}")
+            assert got.status_code == 200, got.text
+            assert got.json()["run"]["can_answer"] is False
+
+    async def test_with_the_flag_off_the_key_is_absent(self, w, monkeypatch):
+        _flag_off(monkeypatch)
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            got = await call(w.viewer, "GET", f"/projects/agent-runs/{run}")
+            assert "can_answer" not in got.json()["run"]
+
+
+@_DB_GATE
 class TestTheFlags:
 
     async def test_a7_with_the_flag_off_the_route_answers_404(self, w, monkeypatch):
@@ -1387,3 +1418,76 @@ class TestTheFlags:
             # The gates hold with the runs flag off too.
             assert (await _list(call, w.viewer, scope="everyone")).status_code == 403
             assert (await _list(call, w.creator, project=w.space["id"])).status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# R8: the My Day card (EA-18c). The real provider, on the real tables.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+async def _card_signals(user: Any) -> tuple[Any, list[Any]]:
+    """The real ``agent_questions`` provider for *user*: its ``Found`` and
+    signals. It opens the Projects app's own session, so the tenant is bound
+    here as the middleware binds it."""
+    from gateway.routes.shell import needs
+
+    scope = bind_tenant(user.organization_id)
+    try:
+        found = await needs.REGISTRY["agent_questions"].run(user)
+        return found, found.signals()
+    finally:
+        release_tenant(scope)
+
+
+@_DB_GATE
+class TestTheMyDayCard:
+
+    async def test_the_card_counts_what_the_list_counts_and_shows_the_3_oldest(self, w):
+        async with _session(w.p) as call:
+            runs = []
+            for task in (w.task, w.task_other, w.task_third, w.task_held):
+                runs.append(await _ask(w, call, task=task))
+            listed = (await _list(call, w.creator)).json()
+            found, [signal] = await _card_signals(w.creator)
+            # One number in all three doors: the list's own `counts.mine`.
+            assert listed["counts"]["mine"] == 4
+            assert found.total == signal.facts["total"] == 4
+            # The 3 oldest, in the list's own order.
+            oldest = [r["activity_id"] for r in listed["rows"][:3]]
+            assert [q["activity_id"] for q in signal.facts["questions"]] == oldest
+            assert signal.title == "4 agent questions wait for you"
+            assert signal.facts["questions"][0]["path"]  # the project path, or the task title
+            assert signal.facts["questions"][0]["options"]
+
+    async def test_a_member_with_no_open_question_sees_no_card(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            # The viewer created nothing, holds no task and is not the run's member.
+            found, signals = await _card_signals(w.viewer)
+            assert found.total == 0 and signals == []
+
+    async def test_a_reader_of_another_org_sees_no_card(self, w):
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            found, signals = await _card_signals(w.b_member)
+            assert found.total == 0 and signals == []
+
+    async def test_an_answered_question_leaves_the_card(self, w):
+        async with _session(w.p) as call:
+            run, _ = await _ask(w, call)
+            _, signals = await _card_signals(w.creator)
+            assert len(signals) == 1
+            done = await _act(call, w.creator, run, type="prompt", selected=["pg"],
+                              idempotency_key=_key())
+            assert done.status_code == 201, done.text
+            found, signals = await _card_signals(w.creator)
+            assert found.total == 0 and signals == []
+
+    async def test_with_the_flag_off_the_source_reads_absent(self, w, monkeypatch):
+        from gateway.routes.shell import needs
+
+        async with _session(w.p) as call:
+            await _ask(w, call)
+            _flag_off(monkeypatch)
+            with pytest.raises(needs.SourceAbsent):
+                await _card_signals(w.creator)

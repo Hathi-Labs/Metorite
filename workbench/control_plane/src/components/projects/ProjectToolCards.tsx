@@ -47,6 +47,7 @@ import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
 import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projectsEvents";
+import { cardOutcomeOf, memberLineOf, NOT_DONE_AT_CARD } from "@/lib/cardOutcomes";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -96,6 +97,13 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
   project_authorities: { icon: "Users", label: "Authority pages" },
+  // WS-39 LP-1a: the updates of a project, newest first.
+  list_project_updates: { icon: "Megaphone", label: "Project updates" },
+  // WS-39 SP-5a: the cycles of a project, and one cycle.
+  list_cycles: { icon: "Calendar", label: "Cycles" },
+  cycle_detail: { icon: "Calendar", label: "Cycle" },
+  // WS-39 TPL-1a: the templates of the organization.
+  list_templates: { icon: "LayoutList", label: "Templates" },
   my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
@@ -144,6 +152,13 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
+  // WS-39 LP-1a: one update of a project, with its health.
+  post_project_update: { icon: "Megaphone", label: "Project update posted" },
+  // WS-39 SP-5a: the cycle writes.
+  create_cycle: { icon: "Calendar", label: "Cycle planned" },
+  plan_cycle: { icon: "ListTree", label: "Cycle tasks changed" },
+  start_cycle: { icon: "Play", label: "Cycle started" },
+  close_cycle: { icon: "CircleCheck", label: "Cycle closed" },
   add_subtasks: { icon: "ListTree", label: "Subtasks added" },
   link_tasks: { icon: "Link", label: "Tasks linked" },
   unlink_tasks: { icon: "Unlink", label: "Link removed" },
@@ -154,6 +169,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   file_tasks: { icon: "MoveRight", label: "Tasks filed" },
   link_tasks_batch: { icon: "Link", label: "Tasks linked" },
   update_tasks: { icon: "PenLine", label: "Tasks updated" },
+  // SP-8a: the contract of an epic, one card.
+  set_epic_contract: { icon: "ClipboardCheck", label: "Epic contract saved" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -203,7 +220,14 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   revoke_access: { icon: "UserMinus", label: "Access removed" },
   pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  // WS-39 LP-1a: the delete of a project update.
+  delete_project_update: { icon: "Trash2", label: "Project update deleted" },
+  // WS-39 TPL-1a: an org-wide template, and a project made from one.
+  save_as_template: { icon: "LayoutList", label: "Template saved" },
+  create_project_from_template: { icon: "FolderPlus", label: "Project made from a template" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
+  // SW-43c: the member's own answer to an agent, taken back or changed.
+  change_agent_answer: { icon: "PenLine", label: "Answer to the agent changed" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
@@ -275,11 +299,24 @@ export function announceChange(eventId: string): void {
 }
 
 /**
- * The first line of a cancelled write, verbatim from `writes.py::CANCELLED`.
- * `ProjectToolCards.test.ts` reads that file and holds the two equal, so an
- * edit on either side fails a test instead of painting a decline green.
+ * The one text of a write that did nothing, from before HRD-7. A stored chat
+ * still holds it, so a replay draws it as "Cancelled" too. A new result
+ * starts with a lead of the one table of card outcomes
+ * (`lib/cardOutcomes.ts`), and no Python module writes this text now
+ * (`tests/unit/test_card_outcome_vocabulary.py`).
  */
-export const CANCELLED = "Cancelled — nothing was changed.";
+export const LEGACY_CANCELLED = "Cancelled — nothing was changed.";
+
+/**
+ * True when *text* is the answer of a card that did nothing: a lead of
+ * `NOT_DONE_AT_CARD`, or the text of before HRD-7. A card that the member's
+ * own chat message closed is not one: it keeps its "Not done" receipt,
+ * because it is no decline.
+ */
+export function cancelledAtCard(text: string): boolean {
+  const outcome = cardOutcomeOf(text);
+  return text.startsWith(LEGACY_CANCELLED) || (outcome !== null && NOT_DONE_AT_CARD.has(outcome));
+}
 
 /**
  * The class C tools: the guarded acts (archive, merge, bulk edit, delete a
@@ -320,11 +357,19 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  "delete_project_update",
+  "start_cycle",
+  "close_cycle",
   "answer_decision",
+  // SW-43c
+  "change_agent_answer",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",
   "promote_reminder",
+  // WS-39 TPL-1a
+  "save_as_template",
+  "create_project_from_template",
 ]);
 
 /**
@@ -759,7 +804,7 @@ export function classifyActionResult(
   // its status is "error". It is still a refusal, not a fault: it keeps the
   // muted "Not done" receipt it drew before the stream marked it.
   if (status === "error") return /^Refused:/.test(text) ? "refused" : "failed";
-  if (text.startsWith(CANCELLED)) return "cancelled";
+  if (cancelledAtCard(text)) return "cancelled";
   // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
   // exists, and the receipt says what did not happen. It is not a success.
   if ((receiptIdOf(text) || UNKNOWN_LINE.test(text)) && STOPPED_LINE.test(text)) return "partial";
@@ -808,7 +853,8 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = forPeopleFenced(result);
+  // HRD-7: a card outcome shows its head only. Its next step is for the model.
+  const detail = forPeopleFenced(memberLineOf(result));
   const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed"
@@ -840,8 +886,10 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // list: the parent of new subtasks prints its id with no row.
   const linkOut = (outcome === "done" || outcome === "partial") && !!rowId && !tasks.some((t) => t.id === rowId);
   // A receipt whose whole body is one short line draws it on the title row:
-  // "Not done  Nothing was created." is one row, not two.
-  const aside = tasks.length === 0 && !linkOut && oneLine(detail) ? detail : "";
+  // "Not done  Nothing was created." is one row, not two. A card outcome
+  // (HRD-7) is a sentence or two, so it draws under the title: on a phone, a
+  // line beside the title cut "Cancelled" to "Ca…".
+  const aside = tasks.length === 0 && !linkOut && oneLine(detail) && cardOutcomeOf(result) === null ? detail : "";
   // A receipt is a card of the transcript: its arrival rolls up the long
   // cards above it (`components/RollupCard.tsx`). It is short, so it draws
   // no toggle of its own. Its title row is the header (`header="own"`).
@@ -1058,7 +1106,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   const tasks = kind.rows === "task" ? parseTaskRows(result) : [];
   const words = kind.rows === "task" ? [] : parseVocabRows(result);
   const rows: readonly unknown[] = kind.rows === "task" ? tasks : words;
-  const head = forPeopleFenced(withoutLegend(result).split(NL)[0] ?? "");
+  const head = forPeopleFenced(withoutLegend(memberLineOf(result)).split(NL)[0] ?? "");
   const notes = batchNotes(result);
   const icon =
     outcome === "failed" ? "X"
@@ -1081,8 +1129,9 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   // its count and the rows' names on one line. That row is the card's own
   // (`header="own"`), so there is one title and one toggle.
   // No rows and one short line (a refusal, "Nothing was created."): the line
-  // sits on the title row, and the card is one row.
-  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) ? head : "";
+  // sits on the title row, and the card is one row. A card outcome (HRD-7)
+  // draws under the title, so a phone never cuts the title.
+  const aside = rows.length === 0 && notes.length === 0 && oneLine(head) && cardOutcomeOf(result) === null ? head : "";
   const names = kind.rows === "task"
     ? tasks.map((r) => `${r.number} ${unfenced(r.title)}`)
     : words.map((r) => r.name);

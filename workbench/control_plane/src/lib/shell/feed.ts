@@ -30,6 +30,11 @@
  * summary counts the feed's open cards of Now and Needs you
  * (`feedNeedsCount`), and "The rest is handled." needs `handledClaim`.
  *
+ * **Why am I seeing this** (LOOP-4b, `proactive_loop.md` §7.2 W4). A card of
+ * an org that learns carries `why_seen`, and `readCard` keeps its strings.
+ * When the visit holds a card in another group, `visitCards` drops the first
+ * sentence, because that sentence names the group.
+ *
  * Fence: `feed.test.ts`, `feedState.test.ts` and `feedHandled.test.ts`.
  */
 import { PROJECTS_CACHE } from "@/app/projects/lib/api";
@@ -139,7 +144,41 @@ export interface FeedCard {
   visits?: number;
   /** The state fingerprint that `POST /api/shell/feed/state` sends back (§6.8 item 1). */
   state_fp?: string;
+  /**
+   * "Why am I seeing this" (LOOP-4b, `proactive_loop.md` §7.2 W1 and W4): the
+   * server's sentences about this card, and the first one names its group. Only
+   * an org that learns gets it. Absent, the card has no such menu item.
+   */
+  why_seen?: string[];
 }
+
+/**
+ * The card of the agent questions that wait on the member (WS-55 EA-18c,
+ * `external_agent_access.md` §12.8). ONE card, keyed `questions:mine`. The
+ * gateway writes its why line (project path, the oldest question, its options,
+ * and how many more wait) and its one `answer` act, a link to the list in
+ * Projects (`?app=questions`). The answer runs the list's own write (D100,
+ * D101), so this file draws no answer and keeps no copy of the rules. `AiWaitingCard`
+ * is the chat's card, and it is not this one.
+ */
+export const AGENT_QUESTIONS_KIND = "agent_questions";
+export const AGENT_QUESTIONS_SIGNAL = "questions:mine";
+export const AGENT_QUESTIONS_HREF = "/projects?app=questions";
+
+/**
+ * EA-18e (task 2964, D100, D101). The one act that opens inside its card on
+ * My Day: the `answer` act of the agent-questions card. The gateway still sends
+ * it as a link (`open`, to `AGENT_QUESTIONS_HREF`), so an old client and the
+ * door stay as they were. The column draws it as an `expand` act: the list of
+ * questions opens under the card, and the answer runs the Questions list's own
+ * write. Pure, so a test fences it.
+ */
+export const isExpandAct = (card: Pick<FeedCard, "kind">, act: Pick<FeedAct, "id" | "way">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND && act.id === "answer" && act.way === "open";
+
+/** True for the card of the agent questions. */
+export const isAgentQuestionsCard = (card: Pick<FeedCard, "kind">): boolean =>
+  card.kind === AGENT_QUESTIONS_KIND;
 
 /** Who closed a Handled entry: the `by` table of the MD-2c ticket (§16). */
 export type HandledByKind = "you" | "person" | "agent" | "system" | "rules";
@@ -298,6 +337,12 @@ export function sendable(card: Pick<FeedCard, "signal_id" | "state_fp">): boolea
   return !!card.state_fp && STATE_FP.test(card.state_fp) && SIGNAL_ID.test(card.signal_id);
 }
 
+/** The sentences of `why_seen` (LOOP-4b): the strings only, and no key for an empty list. */
+function readWhy(raw: unknown): Pick<FeedCard, "why_seen"> {
+  const lines = Array.isArray(raw) ? raw.filter((l): l is string => typeof l === "string" && !!l) : [];
+  return lines.length > 0 ? { why_seen: lines } : {};
+}
+
 function readCard(raw: unknown): FeedCard | null {
   const c = raw as Record<string, unknown> | null;
   if (!c || typeof c !== "object") return null;
@@ -320,6 +365,7 @@ function readCard(raw: unknown): FeedCard | null {
     href: inApp(c.href) ?? "",
     acts: Array.isArray(c.acts) ? c.acts.map(readAct).filter((a): a is FeedAct => a !== null) : [],
     ...readState(c),
+    ...readWhy(c.why_seen),
   };
 }
 
@@ -611,13 +657,20 @@ export function carries(answer: Pick<FeedAnswer, "sources">, app: string): boole
   return answer.sources[app as FeedApp] === "failed";
 }
 
+/** The card with no `why_seen` key. The card itself does not change. */
+function withoutWhy(card: FeedCard): FeedCard {
+  const { why_seen, ...rest } = card;
+  return why_seen ? rest : card;
+}
+
 /**
  * The answer, with the cards of each source that failed (§6.1). They come
  * from the last raw answer in which that source read `ok`, and only for
  * `CARRY_MS` after it. After that they leave, and the caveat line stays. A
  * card that `next` holds, or that `forget` holds, never comes from the carry.
- * Calendar is a source too. The kept cards follow the new ones, and `groups`
- * counts them.
+ * A carried card drops `why_seen` (LOOP-4b, W4), because a time or visit
+ * sentence of an older answer can be false now. Calendar is a source too. The
+ * kept cards follow the new ones, and `groups` counts them.
  */
 export function carryCards(
   lastOkCards: ReadonlyMap<string, OkCards>,
@@ -628,7 +681,9 @@ export function carryCards(
   const kept: FeedCard[] = [];
   for (const [app, ok] of lastOkCards) {
     if (!carries(next, app) || next.fetchedAt - ok.at > CARRY_MS) continue;
-    for (const c of ok.cards) if (!have.has(c.signal_id) && !forget.has(c.signal_id)) kept.push(c);
+    for (const c of ok.cards) {
+      if (!have.has(c.signal_id) && !forget.has(c.signal_id)) kept.push(withoutWhy(c));
+    }
   }
   if (kept.length === 0) return next;
   const cards = [...next.cards, ...kept];
@@ -661,6 +716,17 @@ export function startVisit(cards: readonly FeedCard[]): Visit {
 }
 
 /**
+ * A card that the visit draws in `group`, not in the group of the answer. The
+ * first sentence of `why_seen` names the group of the answer, so it goes
+ * (LOOP-4b, W4). An empty list goes too.
+ */
+function holdGroup(card: FeedCard, group: FeedGroupId): FeedCard {
+  const { why_seen, ...rest } = card;
+  const kept = why_seen?.slice(1) ?? [];
+  return kept.length > 0 ? { ...rest, group, why_seen: kept } : { ...rest, group };
+}
+
+/**
  * The cards of a new answer, as the visit draws them. A card that the visit
  * knows keeps its place and its group, and takes the new content. A card that
  * the visit does not know waits: it is `fresh`, and the pill counts it. A card
@@ -674,7 +740,7 @@ export function visitCards(visit: Visit, cards: readonly FeedCard[]): { cards: F
     if (taken.has(card.signal_id)) continue;
     taken.add(card.signal_id);
     const at = visit.place.get(card.signal_id);
-    if (at) known.push({ card: at.group === card.group ? card : { ...card, group: at.group }, index: at.index });
+    if (at) known.push({ card: at.group === card.group ? card : holdGroup(card, at.group), index: at.index });
     else fresh.push(card);
   }
   known.sort((a, b) => a.index - b.index);
@@ -1039,6 +1105,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   agent_asks: "Waiting for your answer",
   // WS-ALN ALN-2b: a question that waits on me by name.
   decision: "Waiting for your decision",
+  // WS-55 EA-18c: the agent questions that wait on me (the "For me" list).
+  agent_questions: "Waiting for your answer",
   // WS-53 CRM-Q28 item 14: the weekly CRM digest is ready in Reports.
   digest_ready: "Weekly digest",
   // WS-53 CRM-Q32-4: new questions about the CRM data, for a CRM admin.
@@ -1054,6 +1122,8 @@ export const FEED_KIND_LABELS: Readonly<Record<string, string>> = {
   reminder_due: "Reminder",
   reminder_check: "Check-back",
   reminder_unconfirmed: "Unconfirmed",
+  // AO-2: an AI vendor account is out of credit or low, for the operator's admins.
+  provider_alert: "AI vendor alert",
 };
 
 /**
@@ -1128,7 +1198,10 @@ export function feedFailedLines(
     if (state !== "failed") continue;
     const app = sourceApp(sourceApps, source);
     // The noun follows the SOURCE (reminders, time blocks), the name its app.
-    if (Object.hasOwn(APP_NAMES, app)) needsFailed[isFailedSource(source) ? source : (app as FailedSource)] = "failed";
+    // A source that `failedLines` words by itself goes first: `providers`
+    // (AO-2) has no app of the client, and its line must not drop.
+    if (isFailedSource(source)) needsFailed[source] = "failed";
+    else if (Object.hasOwn(APP_NAMES, app)) needsFailed[app as FailedSource] = "failed";
     else others.add(app);
   }
   const lines = failedLines(needsFailed);

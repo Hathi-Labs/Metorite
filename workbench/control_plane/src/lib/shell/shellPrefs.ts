@@ -31,6 +31,11 @@
  *   answer to the question that the server refuses STAYS for this page
  *   (`keep`), so a fault never traps the member in the question. The browser
  *   copy keeps only what the server confirmed.
+ * - **The org default does not flash** (PKG-17b). It has its own browser
+ *   copy per account (`orgLayout.ts`), and that copy draws the first frame.
+ *   With no copy yet, `loading` stays true for a member with null pins until
+ *   the org default answers, for `ORG_LAYOUT_WAIT_MS` at most
+ *   (`orgLayoutSettled`). A member with their own pins never waits.
  */
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useSession } from "next-auth/react";
@@ -42,7 +47,8 @@ import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { setGuideAllowed, setGuideHold } from "./guide";
-import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
+import { ORG_LAYOUT_WAIT_MS, orgDefaultFor, orgLayoutSettled, useOrgLayout } from "./orgLayout";
+import { EMPTY_SHELL, STARRABLE, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
 
@@ -81,6 +87,16 @@ onClear(() => {
   helloPendingHere = false;
   // A new member: the guide waits for their own read (GD-5a).
   setGuideAllowed(null);
+  // A new member: Module Studio is off until their own read says so (STU-Q15a).
+  setModuleRuns(false);
+  // A new member: the skill offer is off until their own read says so (TOF-1d).
+  setSkillOffer(false);
+  // A new member: the chat pin is off until their own read says so (CO-11).
+  setChatPin(false);
+  // A new member: the chat topics are off until their own read says so (CO-2b).
+  setChatTopics(false);
+  // A new member: the Agents lenses are off until their own read says so (AMR-1).
+  setAgentLenses(false);
 });
 
 /** Tests only: start a new page. */
@@ -123,6 +139,253 @@ export function guideOn(body: unknown): boolean {
   return !!body && typeof body === "object" && (body as { guide?: unknown }).guide === true;
 }
 
+// ── Module runs (WS-STU STU-Q15a, `ai_studio.md` §14) ──────────────────────
+//
+// `module_runs` is a fact of the server, as `guide` is: `MODULE_RUN_ORGS` on
+// the gateway holds the member's org. A code module of Module Studio runs on
+// the box, and the box is not a sandbox, so the switch ships off. `/studio`
+// shows the Module Studio tab only when it is true (`studioLibraryView`). The
+// shell read is the one writer. Before the read answers, after a failed read
+// and after a member change, it reads as off.
+
+let moduleRunsHere = false;
+const moduleRunsListeners = new Set<() => void>();
+
+function setModuleRuns(on: boolean): void {
+  if (moduleRunsHere === on) return;
+  moduleRunsHere = on;
+  moduleRunsListeners.forEach((l) => l());
+}
+
+/**
+ * The module runs switch in an answer: true only when the gateway says
+ * `module_runs: true`. A missing field, as from an older gateway, is off.
+ */
+export function moduleRunsOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { module_runs?: unknown }).module_runs === true;
+}
+
+/** What the last shell read of this page said about module runs. */
+export function moduleRunsAllowed(): boolean {
+  return moduleRunsHere;
+}
+
+/** Live: whether the member's org may run code modules (STU-Q15a). */
+export function useModuleRunsOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      moduleRunsListeners.add(l);
+      return () => {
+        moduleRunsListeners.delete(l);
+      };
+    },
+    moduleRunsAllowed,
+    () => false,
+  );
+}
+
+// ── The skill offer (WS-TOF TOF-1d, `ai_studio.md` §14) ────────────────────
+//
+// `skill_offer` is a fact of the server, as `module_runs` is:
+// `STUDIO_SKILL_OFFER_ORGS` on the gateway holds the member's org, and so does
+// `STUDIO_ORGS`. It replaces the build-time `NEXT_PUBLIC_SKILL_OFFER`, so a
+// flip needs no rebuild and holds for the listed orgs only. The chat draws the
+// card "Save this as a skill?" only when it is true, and it reads no catalog
+// for the offer before. The shell read is the one writer. Before the read
+// answers, after a failed read and after a member change, it reads as off.
+
+let skillOfferHere = false;
+const skillOfferListeners = new Set<() => void>();
+
+function setSkillOffer(on: boolean): void {
+  if (skillOfferHere === on) return;
+  skillOfferHere = on;
+  skillOfferListeners.forEach((l) => l());
+}
+
+/**
+ * The skill offer switch in an answer: true only when the gateway says
+ * `skill_offer: true`. A missing field, as from an older gateway, is off.
+ */
+export function skillOfferOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { skill_offer?: unknown }).skill_offer === true;
+}
+
+/** What the last shell read of this page said about the skill offer. */
+export function skillOfferAllowed(): boolean {
+  return skillOfferHere;
+}
+
+/**
+ * Live: whether the chat may offer to save a finished turn as a skill. The
+ * server snapshot is the live value too: no shell read runs on the server, so
+ * it is false there, and a test that sets it draws the card in static markup.
+ */
+export function useSkillOfferOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      skillOfferListeners.add(l);
+      return () => {
+        skillOfferListeners.delete(l);
+      };
+    },
+    skillOfferAllowed,
+    skillOfferAllowed,
+  );
+}
+
+/** Tests only: set what the shell read said about the skill offer. */
+export function __setSkillOfferForTests(on: boolean): void {
+  setSkillOffer(on);
+}
+
+// ── The chat pin (WS-CO CO-11, `chat_organization.md` §18) ─────────────────
+//
+// `chat_pin` is a fact of the server, as `module_runs` is: `CHAT_PIN_ORGS` on
+// the gateway holds the member's org. The chat list shows Pin, Unpin and the
+// Pinned group only when it is true. The shell read is the one writer. Before
+// the read answers, after a failed read and after a member change, it reads
+// as off.
+
+let chatPinHere = false;
+const chatPinListeners = new Set<() => void>();
+
+function setChatPin(on: boolean): void {
+  if (chatPinHere === on) return;
+  chatPinHere = on;
+  chatPinListeners.forEach((l) => l());
+}
+
+/**
+ * The chat pin switch in an answer: true only when the gateway says
+ * `chat_pin: true`. A missing field, as from an older gateway, is off.
+ */
+export function chatPinOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { chat_pin?: unknown }).chat_pin === true;
+}
+
+/** What the last shell read of this page said about the chat pin. */
+export function chatPinAllowed(): boolean {
+  return chatPinHere;
+}
+
+/** Live: whether the member may pin a chat (CO-11). */
+export function useChatPinOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      chatPinListeners.add(l);
+      return () => {
+        chatPinListeners.delete(l);
+      };
+    },
+    chatPinAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the chat pin. */
+export function __setChatPinForTests(on: boolean): void {
+  setChatPin(on);
+}
+
+// ── The chat topics (WS-CO CO-2b, `chat_organization.md` §6) ───────────────
+//
+// `chat_topics` is a fact of the server, as `chat_pin` is: `CHAT_TOPICS_ORGS`
+// on the gateway holds the member's org. The chat list shows the topic
+// groups, and the chat shows the topic chip, only when it is true. The shell
+// read is the one writer. Before the read answers, after a failed read and
+// after a member change, it reads as off.
+
+let chatTopicsHere = false;
+const chatTopicsListeners = new Set<() => void>();
+
+function setChatTopics(on: boolean): void {
+  if (chatTopicsHere === on) return;
+  chatTopicsHere = on;
+  chatTopicsListeners.forEach((l) => l());
+}
+
+/**
+ * The chat topics switch in an answer: true only when the gateway says
+ * `chat_topics: true`. A missing field, as from an older gateway, is off.
+ */
+export function chatTopicsOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { chat_topics?: unknown }).chat_topics === true;
+}
+
+/** What the last shell read of this page said about the chat topics. */
+export function chatTopicsAllowed(): boolean {
+  return chatTopicsHere;
+}
+
+/** Live: whether the member's chats sort into topics (CO-2b). */
+export function useChatTopicsOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      chatTopicsListeners.add(l);
+      return () => {
+        chatTopicsListeners.delete(l);
+      };
+    },
+    chatTopicsAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the chat topics. */
+export function __setChatTopicsForTests(on: boolean): void {
+  setChatTopics(on);
+}
+
+// ── The Agents lenses (WS-MCP AMR-1, `agent_coordination.md` §5.12) ────────
+//
+// `agent_lenses` is a fact of the server, as `chat_topics` is:
+// `AGENT_LENSES_ORGS` on the gateway holds the member's org. The Agents view
+// of Projects draws its Board, Graph and List lenses only when it is true. The
+// shell read is the one writer. Before the read answers, after a failed read
+// and after a member change, it reads as off.
+
+let agentLensesHere = false;
+const agentLensesListeners = new Set<() => void>();
+
+function setAgentLenses(on: boolean): void {
+  if (agentLensesHere === on) return;
+  agentLensesHere = on;
+  agentLensesListeners.forEach((l) => l());
+}
+
+/**
+ * The lenses switch in an answer: true only when the gateway says
+ * `agent_lenses: true`. A missing field, as from an older gateway, is off.
+ */
+export function agentLensesOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { agent_lenses?: unknown }).agent_lenses === true;
+}
+
+/** What the last shell read of this page said about the Agents lenses. */
+export function agentLensesAllowed(): boolean {
+  return agentLensesHere;
+}
+
+/** Live: whether the Agents view draws its new lenses (AMR-1). */
+export function useAgentLensesOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      agentLensesListeners.add(l);
+      return () => {
+        agentLensesListeners.delete(l);
+      };
+    },
+    agentLensesAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the Agents lenses. */
+export function __setAgentLensesForTests(on: boolean): void {
+  setAgentLenses(on);
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
@@ -136,6 +399,16 @@ export async function readShellPrefs(): Promise<StoredShell> {
   if (layout.answered === null && shellNavOn() && !askedHere) setGuideHold(true);
   // The one read tells the guide whether its entries may show (GD-5a).
   setGuideAllowed(guideOn(body));
+  // And it tells `/studio` whether the Module Studio tab shows (STU-Q15a).
+  setModuleRuns(moduleRunsOn(body));
+  // And it tells the chat whether it may offer to save a turn as a skill (TOF-1d).
+  setSkillOffer(skillOfferOn(body));
+  // And it tells the chat list whether it shows Pin and the Pinned group (CO-11).
+  setChatPin(chatPinOn(body));
+  // And it tells the chat whether it shows the topic groups and chip (CO-2b).
+  setChatTopics(chatTopicsOn(body));
+  // And it tells the Agents view of Projects whether it draws the lenses (AMR-1).
+  setAgentLenses(agentLensesOn(body));
   return layout;
 }
 
@@ -154,12 +427,39 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * The hello mark (`buddy_hello_at`, BUD-1) is never sent either: the hello
  * route alone writes it, first write wins, and the server keeps it.
  */
+/**
+ * The most hrefs `pins` or `known` may hold in a save. The gateway refuses a
+ * longer list with a 422 (`max_length=64`, `routes/admin/me.py`). System panes
+ * come first and installs are cut, so a hide on a system pane always stays.
+ */
+export const KNOWN_MAX = 64;
+
+function capSystemFirst<T extends readonly string[] | null>(list: T): T | string[] {
+  if (!list || list.length <= KNOWN_MAX) return list;
+  return [...list.filter((h) => STARRABLE.has(h)), ...list.filter((h) => !STARRABLE.has(h))].slice(0, KNOWN_MAX);
+}
+
+/**
+ * After a save whose answer lacks `href`, the server dropped the star (a stale
+ * or foreign install). It drops the href from `pins` and from `known`, so rule
+ * 4 would show it as new. Put it in `known` and out of `pins` on the screen.
+ */
+export function keepDroppedHidden(saved: StoredShell, href: string): StoredShell {
+  const patched: StoredShell = {
+    ...saved,
+    pins: (saved.pins ?? []).filter((h) => h !== href),
+    known: [...new Set([...(saved.known ?? []), href])],
+  };
+  put(SHELL_PREFS_PATH, patched);
+  return patched;
+}
+
 export function bodyFor(
   next: StoredShell | null,
 ): (Omit<StoredShell, "chat_first_message_at" | "tour_seen_at" | "buddy_hello_at"> & { chat_first_message_at?: string }) | null {
   if (!next) return null;
   const { preset, answered, pins, known, cardOrder, newOrder, chat_first_message_at } = next;
-  const rest = { preset, answered, pins, known, cardOrder, newOrder };
+  const rest = { preset, answered, pins: capSystemFirst(pins), known: capSystemFirst(known), cardOrder, newOrder };
   return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
 }
 
@@ -468,7 +768,11 @@ export interface ShellPrefsState {
   fresh: StoredShell | undefined;
   /** What to draw. The role's preset when nothing is known. */
   layout: ShellLayout;
-  /** True while nothing is known: no read answered, and no copy. */
+  /**
+   * True while nothing is known: no read answered, and no copy. Also true
+   * while the org default holds the shell (`orgLayoutSettled`): null pins,
+   * no copy and no answer of the org default, for `ORG_LAYOUT_WAIT_MS` at most.
+   */
   loading: boolean;
   /** True when the last read failed and nothing else is known. */
   failed: boolean;
@@ -529,13 +833,29 @@ export function useShellPrefs(): ShellPrefsState {
     if (scope && layout) writeCachedLayout(scope, layout);
   }, [scope, res.data]);
 
+  // The org default (PKG-17b): a fallback for a member with no stored choice.
+  // Its browser copy draws the first frame. With no copy, the hold below
+  // waits for the read, for `ORG_LAYOUT_WAIT_MS` at most.
+  const org = useOrgLayout(enabled, scope);
+  const [orgWaited, setOrgWaited] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setOrgWaited(true), ORG_LAYOUT_WAIT_MS);
+    return () => clearTimeout(t);
+  }, []);
   const fresh = enabled ? (unsaved ?? res.data) : undefined;
   const stored = enabled ? (fresh ?? cached) : undefined;
+  const orgHold =
+    stored !== undefined &&
+    !orgLayoutSettled({
+      storedPins: stored.pins,
+      orgState: org.state,
+      elapsedMs: orgWaited ? ORG_LAYOUT_WAIT_MS : 0,
+    });
   return {
     stored,
     fresh,
-    layout: shellLayout(stored, access.roles ?? []),
-    loading: enabled && stored === undefined && res.loading,
+    layout: shellLayout(stored, access.roles ?? [], orgDefaultFor(org.layout, access.roles ?? [])),
+    loading: enabled && ((stored === undefined && res.loading) || orgHold),
     failed: enabled && stored === undefined && !res.loading && res.error !== null,
     enabled,
     answered: enabled && !res.loading && (res.data !== undefined || res.error !== null),

@@ -295,6 +295,7 @@ def _load_runner():
     return mod
 
 
+@pytest.mark.usefixtures("no_copilot_cli_download")
 class TestTheMutationSandbox:
     """🔴 ``mutation_runner.py`` runs in a container with no ``acb_llm`` and
     called gateway ``/v1`` with only the LLM key.
@@ -362,11 +363,14 @@ class TestTheMutationSandbox:
         import copilot
 
         rpc_calls: list = []
+        created_evt: list = []  # holds the Event, built inside the running loop
 
         class _Rpc:
             async def request(self, method, params=None, **_kw):
                 rpc_calls.append((method, params or {}))
                 if method == "session.create":
+                    if created_evt:
+                        created_evt[0].set()
                     return {"sessionId": params["sessionId"]}
                 return {"messageId": "m-1"}
 
@@ -387,11 +391,12 @@ class TestTheMutationSandbox:
         runner = _load_runner()
 
         async def go():
+            created_evt.append(asyncio.Event())
             task = asyncio.ensure_future(runner.main())
-            for _ in range(200):
-                if any(m == "session.create" for m, _ in rpc_calls):
-                    break
-                await asyncio.sleep(0.01)
+            # Wait on wall time, not a loop count: a loaded runner stretched
+            # 200 x sleep(0.01) past its ~2 s budget (task 2472).
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(created_evt[0].wait(), timeout=30)
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
@@ -901,15 +906,15 @@ class TestNoNewMemberlessCallSite:
     def test_no_OpenAI_client_is_built_outside_the_attribution_seam(self):
         """🔴 graphiti built a bare ``AsyncOpenAI`` against gateway ``/v1``,
         so every extraction reached the Router with no member. Only
-        ``attributed_openai`` may build one. ``main.py``'s embeddings client
-        calls the vendor directly and never meets the Router.
+        ``attributed_openai`` may build one. ``main.py`` left this set in
+        task 3553 (2449 S2): its ``/v1/embeddings`` route calls the Router
+        and builds no client.
 
         Mutation-checked 2026-09-28: restore the bare ``AsyncOpenAI`` in
         ``graphiti_client.py`` and this fails.
         """
         allowed = {
             "packages/acb_llm/acb_llm/attribution.py",
-            "apps/services/gateway/gateway/main.py",
         }
         offenders = [
             f"{path}:{line}"

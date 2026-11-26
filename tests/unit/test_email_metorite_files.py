@@ -83,7 +83,7 @@ def stores(monkeypatch, tmp_path):
         state["reads"].append(("task-file", user.email, attachment_id))
         return state["task_files"].get(attachment_id)
 
-    def artifacts(refs: Any, email: str | None = None) -> list[dict[str, Any]]:
+    def artifacts(refs: Any, email: str | None = None, **_kw: Any) -> list[dict[str, Any]]:
         out = []
         for r in refs:
             state["reads"].append(("artifact", email, f"{r.agent}:{r.path}"))

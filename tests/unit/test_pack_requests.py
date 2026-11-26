@@ -16,9 +16,9 @@ Run: ``uv run pytest tests/unit/test_pack_requests.py -q``.
 from __future__ import annotations
 
 import pytest
-
 from acb_skills import skill_families as sf
 from acb_skills import tool_packs as tp
+
 from tests.unit.test_tool_packs_choice import EVERY, MEMBER, ORG, SESSION
 
 #: The base of the real run, in tools (the staging shape of OA-8e).
@@ -166,6 +166,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unlink_tasks": ("unlink these two tasks",),
     "update_project": ("change the project deadline",),
     "waiting_agent_requests": ("which agent requests are waiting for me?",),
+    # SW-43c: the member's own answer to an agent.
+    "change_agent_answer": ("change my answer to the agent to Not now",),
     # -- projects-structure --
     "capture_intake": ("capture this into the intake queue",),
     "create_area": ("create an area called Health",),
@@ -228,7 +230,39 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- projects-authority (WS-ALN ALN-4) --
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
-    "unpin_authority": ("remove the authority page of the project",),
+    "unpin_authority": ("remove the authority page of the project",
+                        # CO-11b (task 3563): the three phrases that took the
+                        # place of the bare "unpin".
+                        "unpin this page from the project",
+                        "unpin the page from the board", "unpin a page"),
+    # WS-39 LP-1a: the updates of a project sit in the same pack.
+    "list_project_updates": ("show the project updates of Website Relaunch",),
+    "post_project_update": ("post a project update: the vendor slipped a week",),
+    "delete_project_update": ("remove my last project update",),
+    # WS-39 TPL-1a: the project templates of the organization.
+    "list_templates": ("which project templates do we have?",),
+    "save_as_template": ("save this project as a template",),
+    "create_project_from_template": ("use the project template Install kit for the Acme job",
+                                     "start the Acme job from the template Install kit"),
+    # WS-39 SP-5a: the cycles pack.
+    "list_cycles": ("show the cycles of Website Relaunch",),
+    "cycle_detail": ("how is the current sprint of Website Relaunch going?",),
+    "create_cycle": ("plan a new cycle on Website Relaunch from Monday to Friday",),
+    "plan_cycle": ("add these six tasks to the next cycle",),
+    "start_cycle": ("start the planned cycle of Website Relaunch",),
+    "close_cycle": ("close the active cycle and send the unfinished tasks to the backlog",),
+    # SP-8a: the contract of an epic sits in the authority pack.
+    "set_epic_contract": ("set the epic contract of this epic",),
+    # WS-55 EA-18d: the authority pack holds the question tools. The phrasings are
+    # the ones of the review: none may load the plan pack alone.
+    "agent_questions": ("what agent questions wait on me?",
+                        "which questions wait on me?"),
+    "answer_agent_question": (
+        "answer the agent question: use the staging box",
+        "give my answer to the agent on the extruder task: use the staging box",
+        "the agent asked me which box to use. tell it the staging box.",
+        "reply to the agent's question: use the staging box",
+    ),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -245,6 +279,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio packages (STU-G1c) --
     "studio_save": ("save my studio app",),
     "studio_publish": ("publish my studio app",),
+    # -- studio package delete (STU-A5c-2) --
+    "studio_delete_package": ("delete my studio app", "delete the studio package of Ravi, who left"),
+    # -- studio ready apps (STU-K1d) --
+    "studio_template_list": ("list my studio app templates",),
+    "studio_create_from_template": ("create my studio app from a template",),
     # -- studio records (STU-D2b) --
     "studio_package_get": ("list my studio packages",),
     "studio_record_list": ("show the records of my studio package",),
@@ -252,6 +291,119 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_record_create": ("add a record to my studio package",),
     "studio_record_update": ("change a record in my studio package",),
     "studio_record_delete": ("delete a record from my studio package",),
+    # -- studio door read (STU-B2b-2c) --
+    "studio_app_read": ("read a knowledge page through my studio app",),
+    # -- studio workflow read (STB-6a) --
+    "studio_workflow_read": ("list my studio workflows",
+                             "read the studio workflow that chases invoices",
+                             # STU-E4b: the run id mode, the steps of a run.
+                             "list the steps of the playbook run in my studio app"),
+    # -- studio-workflows: the workflow writes (STB-6b) --
+    "studio_workflow_publish": ("publish the workflow that chases invoices",
+                                "roll back the workflow to version 2"),
+    "studio_workflow_live": ("pause the workflow that chases invoices",
+                             "turn on the workflow again"),
+    # -- studio-workflows: the other Workflows acts (PAR-8a, task 3903) --
+    "studio_workflow_runs": ("show the last run of the workflow that chases invoices",
+                             "why did the workflow run fail?"),
+    "studio_workflow_check": ("check the workflow before I publish it",),
+    "studio_workflow_catalog": ("which code modules can a workflow step use?",
+                                "list the workflow modules"),
+    "studio_workflow_run": ("run the workflow that chases invoices",
+                            "test run the workflow with this lead"),
+    "studio_workflow_save": ("create a workflow called Weekly digest",
+                             "delete the workflow that chases invoices"),
+    "studio_workflow_build": ("change the workflow so it also sends a summary",),
+    "studio_workflow_module": ("write a code module that splits a full name",),
+    # -- studio-apps: the Custom Apps of the App Workshop (PAR-9, task 3950) --
+    "custom_app_read": ("list my custom apps", "show the files of the custom app expenses"),
+    "custom_app_save": ("rename the custom app expenses to Team expenses",
+                        "pin the app expenses to my sidebar"),
+    "custom_app_files": ("change the index.html of my custom app",
+                         "restore the app checkpoint from this morning"),
+    "custom_app_publish": ("publish the custom app expenses",
+                           "roll back the custom app to version 2"),
+    "custom_app_share": ("share the custom app with ravi@acme.test",),
+    "custom_app_data": ("delete the stored data of the app for key q3",),
+    # -- studio-share: the share of a skill with the org (WS-STU J2d) --
+    "studio_skill_share": ("share my skill with the team",
+                           "approve the skill share that waits for me"),
+    # -- org-admin: the members of the org (PAR-2a, task 3102) --
+    "list_members": ("list the members of our organization", "who are our org members?",
+                     "which sign-in requests wait?"),
+    "set_member_roles": ("give ravi@acme.test the admin role",
+                         "change the member roles of ravi@acme.test"),
+    "set_member_status": ("suspend the member ravi@acme.test",
+                          "reactivate the member ravi@acme.test"),
+    "answer_access_request": ("approve the sign-in request from kim@acme.test",
+                              "deny the access request from kim@acme.test"),
+    # -- org-admin: groups, roles, access and the org name (PAR-4a, task 3107) --
+    "list_org_groups": ("list the org groups", "who is in the organization groups?"),
+    "create_org_group": ("make a new org group called design",),
+    "edit_org_group": ("rename the org group design to Design team",),
+    "delete_org_group": ("delete the org group design",),
+    "add_org_group_member": ("add ravi@acme.test to the org group design",),
+    "remove_org_group_member": ("take ravi@acme.test out of the org group design",),
+    "list_roles_and_rights": ("list the roles and rights of our organization",
+                              "which custom roles do we have?"),
+    "create_org_role": ("make a custom role called auditor",),
+    "delete_org_role": ("delete the custom role auditor",),
+    "read_member_access": ("show the member access of ravi@acme.test",),
+    "set_member_overrides": ("set the permission overrides of ravi@acme.test",
+                             "deny ravi@acme.test the CRM with an access override"),
+    "preview_member_removal": ("what would the removal of a member like ravi@acme.test seal?",),
+    "rename_org": ("rename the organization to Acme Labs",),
+    # -- org-admin: the removal and the purge of a member (PAR-4c, task 3935) --
+    "remove_member": ("remove the member ravi@acme.test",),
+    "purge_member": ("purge the member ravi@acme.test",),
+    # -- org-admin: the seats (PAR-4d, task 3936) --
+    "read_seats": ("how many org seats are in use?", "show the seat assignments",
+                   "who holds a seat in our organization?"),
+    "set_seat": ("assign a seat to ravi@acme.test", "release the seat of ravi@acme.test",
+                 "free a seat for kim@acme.test"),
+    # -- org-admin: the Integrations app (PAR-6a, task 3109) --
+    "read_integrations": ("which integrations are connected?", "list our plugins",
+                          "is github connected?"),
+    "read_agent_access": ("which agent connections do I have?",
+                          "list the app requests that wait for me"),
+    "probe_integration": ("test the apollo integration", "test the MCP server tools-a"),
+    "discover_api_setup": ("how do I set up the Notion integration?",),
+    "revoke_agent_connection": ("revoke the agent connection of Claude Desktop",),
+    "disconnect_integration": ("disconnect the zoho integration", "remove the plugin weather",
+                               "disconnect github"),
+    "set_mcp_server": ("turn on always confirm for the MCP server tools-a",),
+    # -- people: four reads of the People app and of Reach (P-5b-1, task 3114) --
+    "people_directory": ("search the people directory for Priya",
+                         "who works here in sales?"),
+    "people_me": ("show my person record", "what does my people profile say?"),
+    "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
+    "reach_preview": ("show me the reach preview", "what would reach send me now?"),
+    # -- people: five self writes of my own record (P-5b-2, task 3943) --
+    "update_my_profile": ("set my pronouns to she/her", "change my people record",
+                          "update my emergency contact"),
+    "set_my_skills": ("add python to the skills on my people profile",),
+    "set_my_credentials": ("add my AWS certificate to the credentials on my people profile",),
+    "add_my_absence": ("record my holiday from 24 to 31 December",
+                       "add my absence for next Friday"),
+    "remove_my_absence": ("remove my absence on Friday", "delete one of my absences"),
+    # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
+    # The pack is dark, and EVERY names each pack, so this table reads the pack
+    # set of a box whose TOOL_PACKS line names it.
+    "my_tasks_calendar_connection": ("sync my google calendar", "sync my outlook calendar",
+                                     "show my tasks in google calendar",
+                                     "stop sending my tasks to outlook",
+                                     "send my tasks to google calendar"),
+    # -- notes: six reads of the Notes app (task 3963) --
+    "notes_meetings": ("list my meetings", "search my meetings for the budget review"),
+    "notes_meeting": ("show the meeting transcript of the sales sync",
+                      "show the meeting summary of the sales sync"),
+    "notes_settings": ("show my note taker settings",),
+    "notes_templates": ("list the meeting templates",),
+    "notes_glossary": ("show my notes glossary",),
+    "notes_copilot_instructions": ("show my copilot instructions",),
+    # -- studio-repair: the repair of a skill (TOF-3a F12c) --
+    "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
+    "studio_skill_undo": ("undo my skill to the version before",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
@@ -280,6 +432,22 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                               "add a focus block on Fridays"),
     "my_tasks_edit_day_rule": ("move my focus block to 9 to 12",),
     "my_tasks_delete_day_rule": ("delete the second day rule",),
+    # -- calendar-day flows (CAL-4, task 1678) --
+    "my_tasks_start_my_day": ("start my day", "good morning plan"),
+    "my_tasks_close_my_day": ("close my day", "wrap up my day"),
+    # -- calendar-day events (CE-15, task 3463) --
+    "my_tasks_list_events": ("what is on my calendar this week?",
+                             "which meetings are on my calendar tomorrow?"),
+    # -- calendar-day P-1a (task 3112) --
+    "my_tasks_list_calendar_connections": ("what calendars are connected",
+                                           "which calendars do I have connected",
+                                           "list my calendar connections"),
+    "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
+    "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # P-1b (task 3922): a task from a mail, or from a reply that the member sent.
+    "my_tasks_draft_from_mail": ("make a task from this email", "draft a task from my reply"),
+    "my_tasks_capture_from_mail": ("turn this email into a task",
+                                   "add this email to my tasks"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
@@ -290,6 +458,24 @@ REQUESTS: dict[str, tuple[str, ...]] = {
 #: rules of the loader show the member's model where the tools are.
 KNOWN_GAPS: dict[str, str] = {
     "summarise the Website Relaunch project": "a name sits between 'the' and 'project'",
+    # CO-11b (task 3563): the bare "unpin" left the authority words, so "unpin
+    # this chat" loads no pack. cal-tasks approved exactly three phrases:
+    # "unpin this page", "unpin the page" and "unpin a page". These asks of
+    # the authority pack load no pack by their words now.
+    "unpin that page": "only this, the and a stand before 'page' in the words",
+    "unpin the authority": "the bare 'unpin' is out, and 'authority' alone is no word",
+    "unpin the doc from the project": "the bare 'unpin' is out, and 'doc' is no word",
+    "unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin it": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin that": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin this doc": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the spec page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "please unpin": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the project page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin my page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin the pinned page": "the bare 'unpin' is out, and no three-phrase form matches",
+    "unpin our page": "the bare 'unpin' is out, and no three-phrase form matches",
 }
 
 #: Ordinary turns and the packs that they load. A change of a word list must
@@ -309,6 +495,10 @@ CONTROLS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("revert that draft", ()),
     ("revert that deal update", ()),
     ("what senders email me most about the crm deals", ("email", "crm-records")),
+    # CO-11b (task 3563): the pin of a chat is a core tool of the orchestrator,
+    # so these turns load no pack. A bare "unpin" once loaded projects-authority.
+    ("unpin this chat", ()),
+    ("pin this chat", ()),
 )
 
 
@@ -354,3 +544,38 @@ def test_the_known_gaps_stay_listed_with_a_reason() -> None:
 def test_an_ordinary_turn_keeps_its_packs(words: str, slugs: tuple[str, ...]) -> None:
     """Mutation: add a bare common word to a pack -> a control gains a pack."""
     assert _chosen(words) == slugs
+
+
+def test_the_question_tools_are_routed_to_the_authority_pack_and_no_rule_refuses_them() -> None:
+    """EA-18d review. Every phrasing loads ``projects-authority``. The plan rule
+    no longer tells the model to refuse an answer. The authority pack says when
+    to use the tools, and its catalog line names agent questions."""
+    for words in REQUESTS["answer_agent_question"] + REQUESTS["agent_questions"]:
+        assert "projects-authority" in _chosen(words), words
+    plan = tp.PACKS["projects-plan"]
+    assert "Never answer a question" not in plan.rules
+    assert "answer_agent_question" in tp.PACKS["projects-authority"].rules
+    assert "agent" in tp.PACKS["projects-authority"].when
+    assert "answer to an agent" not in plan.when
+
+
+@pytest.mark.parametrize("words", [
+    "open a pull request on github", "push the branch to github",
+    "clone the repo from github and fix the build",
+])
+def test_a_coding_turn_that_names_github_does_not_load_org_admin(words: str) -> None:
+    """PAR-6a fix round: a bare "github" once loaded the admin tools. Mutation:
+    add "github" back to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)
+
+
+@pytest.mark.parametrize("words", [
+    "book a window seat on the flight to Pune", "reserve a seat at the conference",
+    "how many seats does the meeting room have?",
+])
+def test_a_turn_about_a_seat_elsewhere_does_not_load_org_admin(words: str) -> None:
+    """PAR-4d (task 3936): a bare "seat" is out of the words. Mutation: add
+    "seat" or "seats" to ``_ORG_ADMIN_WORDS`` -> red."""
+    assert tp.matched_layer("org-admin", words) is None, words
+    assert "org-admin" not in _chosen(words)

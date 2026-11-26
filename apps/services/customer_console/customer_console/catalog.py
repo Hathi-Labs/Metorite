@@ -41,6 +41,9 @@ KNOWN_INVOCATIONS = frozenset({
     # VOX-2 (2026-11-08): Sarvam speech to text. litellm 1.103.0 has no
     # Sarvam transcription (`projects_ai_chat.md` §31).
     "native_sarvam",
+    # VOX-6 (2026-11-08): AssemblyAI Sync speech to text. litellm 1.103.0
+    # cannot call it (`projects_ai_chat.md` §31 VOX-6).
+    "native_assemblyai",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming
@@ -143,7 +146,8 @@ def check_invocation_for_task(invocation: str, task: str) -> str:
     are refused at declare time, where the operator can fix them.
 
     📌 **VOX-2 (2026-11-08).** ``transcribe`` takes a litellm verb or
-    ``native_sarvam``. ``native_sarvam`` serves ``transcribe`` only, and a
+    ``native_sarvam``, and VOX-6 added ``native_assemblyai``. Each serves
+    ``transcribe`` only, and a
     System One verb still serves ``decide`` only. The task of each native
     verb is read from ``handlers.NATIVE_HANDLERS``, never typed here.
     """
@@ -183,7 +187,8 @@ def check_model_for_invocation(model: str, invocation: str, *, task: str | None 
 
     📌 **VOX-2: the tie works both ways when the caller names the task.** A
     ``sarvam/`` model on ``transcribe`` takes ``native_sarvam`` only, because
-    litellm cannot call Sarvam for speech. A handler that reads its own model
+    litellm cannot call Sarvam for speech. The same holds for ``assemblyai/``
+    and ``native_assemblyai`` (VOX-6). A handler that reads its own model
     id refuses an id it cannot call, so a wrong Sarvam mode is a 400 here.
     """
     # Imported here: `handlers` imports the Router, and this module stays a
