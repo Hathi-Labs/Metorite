@@ -142,8 +142,12 @@ c. When the pull request is a draft and step b passed, run `gh pr ready <n>`.
 d. **The gate**, in the pull request's worktree. When the lane left none, make
    one with `bash scripts/worktree.sh new merge-<n>`. Then fetch and check out
    the branch there.
-   - Run `cd <worktree> && git fetch -q origin && timeout 900 bash scripts/premerge.sh`.
+   - Run `cd <worktree> && git fetch -q origin && timeout 900 bash scripts/premerge.sh --renumber`.
    - Exit 0: go on to e.
+   - Exit 3: a new migration was at or below main's top, and the script
+     renumbered it in a new commit (CIV-MN). Run `git push` (never force).
+     Comment the new number on the task. The new head needs pr-check, so go
+     on to the next pull request, and come back when its checks are green.
    - Exit 1: the merge with today's `main` fails a fence or conflicts. Comment
      the output on the task, release it, and go on. Do not resolve
      conflicts yourself.

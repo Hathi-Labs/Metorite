@@ -434,6 +434,78 @@ def test_a_migration_below_mains_highest_fails(repo):
     assert "Take 318" in res.stderr
 
 
+def _ledger_cmd(tmp: Path) -> str:
+    """A stand-in for ~/lanes/reserve_migration.sh: one above main's top AND the ledger."""
+    ledger = tmp / "ledger.tsv"
+    script = tmp / "book.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"L={ledger.as_posix()}\n"
+        "m=$(git ls-tree --name-only origin/main infra/postgres/ | sed -nE 's#.*/0*([0-9]+)_.*#\\1#p' | sort -n | tail -1)\n"
+        "l=$(cut -f1 \"$L\" 2>/dev/null | sort -n | tail -1)\n"
+        "t=$(( ${m:-0} > ${l:-0} ? ${m:-0} : ${l:-0} ))\n"
+        "printf '%s\\t%s\\t%s\\n' $((t+1)) \"$1\" \"$2\" >> \"$L\"\n"
+        "echo $((t+1))\n",
+        encoding="utf-8",
+    )
+    return f"bash {script.as_posix()}"
+
+
+def test_renumber_moves_a_low_migration_above_main_and_its_references(repo):
+    """CIV-MN: with --renumber the merge sets the number, so a stale 316 does not stop the PR."""
+    _commit(repo, "infra/postgres/316_feat.sql")
+    _commit(repo, "docs/feat.md", "applies infra/postgres/316_feat.sql\n")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    _advance_main(repo, "infra/postgres/317_more.sql")
+    before = _git(repo, "rev-parse", "HEAD")
+    res = _run(repo, "--renumber", PREMERGE_BOOK_CMD=_ledger_cmd(repo.parent), PREMERGE_PR="9")
+    assert res.returncode == 3, res.stdout + res.stderr
+    assert "RENUMBERED 316->318" in res.stdout
+    assert (repo / "infra/postgres/318_feat.sql").is_file()
+    assert not (repo / "infra/postgres/316_feat.sql").exists()
+    assert "318_feat.sql" in (repo / "docs/feat.md").read_text(encoding="utf-8")
+    # One new commit on the branch, a clean tree, and the merge is not left open.
+    assert _git(repo, "rev-parse", "HEAD~1") == before
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
+    assert _git(repo, "status", "--porcelain") == ""
+    assert "Push it" in res.stdout
+
+
+def test_renumber_gives_a_second_pr_in_the_same_pass_the_next_number(repo):
+    """Two PRs both hold 316 and main reached 317. The ledger gives 318, then 319."""
+    book = _ledger_cmd(repo.parent)
+    _git(repo, "checkout", "-q", "-b", "feat2")
+    _commit(repo, "infra/postgres/316_two.sql")
+    _git(repo, "checkout", "-q", "feat")
+    _commit(repo, "infra/postgres/316_one.sql")
+    _advance_main(repo, "infra/postgres/317_other.sql")
+    first = _run(repo, "--renumber", PREMERGE_BOOK_CMD=book, PREMERGE_PR="1")
+    assert first.returncode == 3, first.stdout + first.stderr
+    _git(repo, "checkout", "-q", "feat2")
+    second = _run(repo, "--renumber", PREMERGE_BOOK_CMD=book, PREMERGE_PR="2")
+    assert second.returncode == 3, second.stdout + second.stderr
+    assert "RENUMBERED 316->319" in second.stdout
+    assert (repo / "infra/postgres/319_two.sql").is_file()
+
+
+def test_renumber_without_a_ledger_fails_and_changes_nothing(repo):
+    _commit(repo, "infra/postgres/316_feat.sql")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    head = _git(repo, "rev-parse", "HEAD")
+    res = _run(repo, "--renumber", HOME=str(repo.parent / "nohome"))
+    assert res.returncode == 1
+    assert "box ledger" in res.stderr
+    assert _git(repo, "rev-parse", "HEAD") == head
+
+
+def test_without_renumber_a_low_number_still_fails_and_names_the_flag(repo):
+    _commit(repo, "infra/postgres/316_feat.sql")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    res = _run(repo)
+    assert res.returncode == 1
+    assert "--renumber" in res.stderr
+
+
 def test_a_conflict_fails_and_leaves_the_worktree_as_it_was(repo):
     _commit(repo, "notes.md", "feat\n")
     _advance_main(repo, "notes.md")

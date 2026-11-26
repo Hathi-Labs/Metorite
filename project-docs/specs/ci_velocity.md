@@ -1472,3 +1472,33 @@ on the new head. A conflicted PR never gets checks. So the bot looks for a
 conflict while a PR waits on checks. A lane that reads a `RESOLVED` line pulls
 its branch before its next commit. CIV-34b (a model-written proposal for a
 conflict that no rule fits) is open.
+
+### 8.10 The dev process items of lane-devx (owner, 2026-11-26)
+
+The owner asked for the claim gate, and for any other build that makes the
+dev process better. Lane-land owns the land-first
+guard. Lane-devx owns the rows below. Each row gets one Metorite task under
+WS-CIV. The board was not reachable when the rows were written, so the task
+numbers come later (`~/lanes/board-owed-lane-devx.txt`).
+
+| Slice | Tier | What | Fence |
+|---|---|---|---|
+| CIV-MN | STANDARD | The merge sets the migration number. `premerge.sh --renumber` books the next number on the box ledger, renumbers a low file with `scripts/renumber_migration.py`, commits it, and runs the trial merge on the new head. Exit 3 says "push, then merge after pr-check". A builder does not renumber. Lane-merge runs `--renumber`. | `test_premerge.py` (`test_renumber_*`) |
+| CIV-ORCH | STANDARD | The orchestrator lane `lane-orch` runs on the box. Its watcher is a systemd user timer that writes `~/lanes/orch-events.log`, and the keeper wakes the lane on a new event. | the timer unit and a unit test of the event rules |
+| CIV-MCPT | HIGH | A durable box sign-in for the Metorite MCP, the per-box token of task 1819 (MCP-G17). The owner mints and installs the token. | `docs/box_connect.md` and its tests |
+| CIV-FLIP | HIGH | `scripts/flag_flip.sh` over a flag registry made from `env_guard.py` and `docs/flag_reload.md`. It refuses a wrong value shape, an unmet prerequisite, and an owner-only flag without `--owner-said`. | every flag of `env_guard.py` has a registry row |
+| CIV-WAKE | STANDARD | An answered question wakes its lane, and one owner digest extends the "Needs you" surface of My Day. | keeper tests |
+| CIV-SMOKE | HIGH | One real chat turn in the release smoke, dark. It spends model credits, so the owner names the budget and the key first. | the smoke script test |
+| CIV-LIVE | STANDARD | The keeper restarts a lane after a network error or a usage reset, and CIV-10 reports the time each lane lost. | keeper tests |
+
+**CIV-MN as built.** Before it, R1 failed a merge when `main` took the
+number first, and the builder renumbered by hand. PRs 2781 (497) and 1819
+(498) went stale that way on 2026-11-26. Now the number of a slice is only a
+placeholder until the merge. The ledger (`~/lanes/migration-numbers.tsv`, only
+`reserve_migration.sh` writes it) takes a number above main's top and every
+booked number. So a second PR in the same pass gets the next number.
+
+The merge
+bot sends every PR that touches `infra/postgres/` to lane-merge (HIGH path),
+so the bot itself never renumbers. With no ledger (a PC), `--renumber` fails
+and names `scripts/renumber_migration.sh`.

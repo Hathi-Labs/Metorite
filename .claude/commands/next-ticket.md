@@ -263,7 +263,10 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
     that main and the branch each pass alone (CIV-MT, task 3277). A cap hit prints UNPROVEN.
     `--no-tests` or `PREMERGE_MERGE_TEST=0` turns the tests off. From LD-10 it also refuses a migration or
     build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
-    push, and run the gate and `pr-check` again. Then find the batch that holds
+    push, and run the gate and `pr-check` again. For a slice with a migration, add
+    `--renumber` (CIV-MN): the merge sets the number, so do not renumber at build.
+    Exit 3 means that it renumbered the file in a new commit. Push it, and merge
+    after `pr-check` is green on the new head. Then find the batch that holds
     your merge, as the steps below say.
   - **A stacked slice** that needs its merge before the next slice can go on
     may merge itself, as for HIGH. The PR body says why.

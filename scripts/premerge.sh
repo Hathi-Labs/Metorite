@@ -4,6 +4,7 @@
 #
 #   bash scripts/premerge.sh               # in the PR's worktree. Commit everything first.
 #   bash scripts/premerge.sh --no-tests    # collision fences only (same as PREMERGE_MERGE_TEST=0)
+#   bash scripts/premerge.sh --renumber    # step 1 renumbers a low migration (CIV-MN), not fails
 #
 # WHY. pr-check tests the PR merged with main AS IT WAS when the run started.
 # Branch protection does not ask for an up-to-date branch (strict: false), and
@@ -17,7 +18,11 @@
 # out of main, when the patch is unchanged (CIV-31, step 0 below).
 #
 # WHAT. When the branch is behind origin/main, this script:
-#   1. refuses a new migration numbered at or below main's highest (R1);
+#   1. refuses a new migration numbered at or below main's highest (R1).
+#      With --renumber (PREMERGE_RENUMBER=1) it books the next number on the
+#      box ledger, renumbers the file with scripts/renumber_migration.py,
+#      commits that on the branch, and goes on. Exit 3 then says: push the
+#      new head and merge after pr-check is green on it (CIV-MN, item 1);
 #   2. merges origin/main into a detached trial commit (no ref moves);
 #   3. runs the collision fences on that result;
 #   4. runs the tests that BOTH sides can affect (the branch's diff and main's
@@ -36,6 +41,8 @@
 # the branch is behind main. A branch that contains main exits at once, as
 # pr-check tested exactly what lands. Off: PREMERGE_MERGE_TEST=0 or --no-tests.
 #
+# EXIT 3 (--renumber only): the branch has a new renumber commit, and the
+# trial merge of it passed. Push it, wait for pr-check, then merge.
 # EXIT 0: merge now. EXIT 1: merge origin/main into the branch, fix, push, and
 # wait for pr-check. Fence: tests/unit/test_premerge.py.
 # ════════════════════════════════════════════════════════════════════════════
@@ -44,12 +51,16 @@ set -euo pipefail
 # CIV-MT (task 3277): the merge test is ON by default. PREMERGE_MERGE_TEST=0 or
 # --no-tests turns it off. --with-tests stays as a no-op alias, for old callers.
 merge_test=1
+# CIV-MN: the number of a new migration is set at merge, not at build.
+renumber=0
+case "${PREMERGE_RENUMBER:-0}" in 1|true|yes|on|TRUE|YES|ON) renumber=1 ;; esac
 case "${PREMERGE_MERGE_TEST:-1}" in 0|false|no|off|FALSE|NO|OFF) merge_test=0 ;; esac
 for arg in "$@"; do
   case "$arg" in
     --with-tests) merge_test=1 ;;
     --no-tests) merge_test=0 ;;
-    *) printf 'premerge: FAIL. unknown argument %s. The flags are --no-tests and --with-tests.
+    --renumber) renumber=1 ;;
+    *) printf 'premerge: FAIL. unknown argument %s. The flags are --no-tests, --with-tests and --renumber.
 ' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -68,6 +79,7 @@ FENCES=(
   tests/unit/test_chat_parity.py
 )
 LEDGER_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migration_ledger_check.py"  # before any cd
+RENUMBER_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/renumber_migration.py"  # before any cd
 BASE="${PREMERGE_BASE:-origin/main}"
 
 say()  { printf 'premerge: %s\n' "$*"; }
@@ -148,14 +160,47 @@ say "R1: reading the highest migration number on $BASE"
 main_max="$(git ls-tree --name-only "$BASE" infra/postgres/ \
   | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
 main_max="${main_max:-0}"
+low=()
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   n="$(num "$f")"
   [ -n "$n" ] || continue
-  if [ "$n" -le "$main_max" ]; then
-    fail "migration $(basename "$f") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1)."
-  fi
+  [ "$n" -le "$main_max" ] && low+=("$n $f")
 done < <(git diff --name-only --diff-filter=A "$base" HEAD -- infra/postgres/ | grep -E '/[0-9]+_[^/]*\.sql$' || true)
+renumbered=""
+if [ "${#low[@]}" -gt 0 ] && [ "$renumber" = 0 ]; then
+  set -- ${low[0]}
+  fail "migration $(basename "$2") is not above main's highest number ($main_max). Take $((main_max + 1)) (R1). Or run: bash scripts/premerge.sh --renumber"
+fi
+# CIV-MN (item 1 of lane-devx): the merge sets the number. Each low file, lowest
+# first, gets a number booked on the box ledger (reserve_migration.sh takes one
+# above main's top AND every booked number), so a second PR in the same pass
+# gets the next one. renumber_migration.py moves the file and rewrites every
+# reference to its file name. The result is ONE commit on the branch. This is
+# the only case where premerge.sh moves a ref. Fence: tests/unit/test_premerge.py
+# (test_renumber_*).
+if [ "${#low[@]}" -gt 0 ]; then
+  [ -f "$RENUMBER_PY" ] || fail "--renumber needs scripts/renumber_migration.py (PR 2813), and this checkout has none."
+  book="${PREMERGE_BOOK_CMD:-$HOME/lanes/reserve_migration.sh}"
+  [ -n "${PREMERGE_BOOK_CMD:-}" ] || [ -x "$book" ] \
+    || fail "--renumber needs the box ledger ($book). Here there is none: run scripts/renumber_migration.sh <old> <new> by hand (R1)."
+  r_lane="${PREMERGE_LANE:-premerge}"
+  r_task="${PREMERGE_TASK:-pr-${pr_no:-unknown}}"
+  while IFS= read -r item; do
+    old_n="${item%% *}"; f="${item#* }"
+    new_n="$(bash -c "$book \"\$@\"" _ "$r_lane" "$r_task" "${pr_no:--}" 2>&1 | tail -1 | tr -d '\r')"
+    case "$new_n" in ''|*[!0-9]*) fail "the ledger booked no number for $(basename "$f"): $new_n" ;; esac
+    [ "$((10#$new_n))" -gt "$main_max" ] || fail "the ledger booked $new_n, which is not above main's $main_max (R1)."
+    out="$(python3 "$RENUMBER_PY" "$old_n" "$((10#$new_n))" --repo . --dir "$(dirname "$f")" --no-test 2>&1)" \
+      || fail "renumber of $(basename "$f") to $new_n failed: $(printf '%s' "$out" | tail -3)"
+    printf '%s\n' "$out" | sed 's/^/  /'
+    renumbered="$renumbered $old_n->$((10#$new_n))"
+  done < <(printf '%s\n' "${low[@]}" | sort -n)
+  git add -u
+  git -c core.hooksPath=/dev/null commit -q -m "R1: renumber migration${renumbered} at merge (premerge --renumber, CIV-MN)" \
+    || fail "the renumber commit failed."
+  say "RENUMBERED${renumbered} in commit $(git rev-parse --short HEAD) on $(git symbolic-ref -q --short HEAD)"
+fi
 
 # ── 2. The trial merge ──────────────────────────────────────────────────────
 overlap="$(comm -12 <(git diff --name-only "$base" HEAD | sort) <(git diff --name-only "$base" "$BASE" | sort))"
@@ -388,4 +433,8 @@ else
   say "the merge test took $(( (SECONDS - started + 59) / 60 )) minute(s)"
 fi
 
+if [ -n "$renumbered" ]; then
+  say "PASS on the renumbered head $(git rev-parse --short HEAD). Push it (git push), wait for pr-check on it, then merge: gh pr merge --squash --match-head-commit $(git rev-parse HEAD)"
+  exit 3
+fi
 say "PASS. The merge with $BASE is clean and the fences hold. Merge now: gh pr merge --squash"
