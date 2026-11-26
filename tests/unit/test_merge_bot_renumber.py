@@ -11,6 +11,8 @@ with the same rule: one above the highest of main and the ledger.
 
 import os
 import subprocess
+import time
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +30,7 @@ from tests.unit.test_merge_bot import (
 )
 
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash")
+RENUMBER_PY = Path(__file__).resolve().parents[2] / "scripts" / "renumber_migration.py"
 
 # The stand-in for ~/lanes/reserve_migration.sh. It reads main of the temp origin.
 FAKE_RESERVE = r"""#!/usr/bin/env bash
@@ -53,6 +56,8 @@ def env(tmp_path):
     reserve.write_text(FAKE_RESERVE, encoding="utf-8", newline="\n")
     reserve.chmod(0o755)
     e.home = home
+    # The bot runs MAIN's copy of the tool, so the temp main holds this checkout's copy.
+    _push_main(e, "scripts/renumber_migration.py", RENUMBER_PY.read_text(encoding="utf-8"), "tool")
     # Main reaches 500 before any PR is cut.
     _push_main(e, "infra/postgres/499_main_a.sql", "select 1;\n", "main 499")
     _push_main(e, "infra/postgres/500_main_b.sql", "select 2;\n", "main 500")
@@ -323,3 +328,163 @@ def test_the_renumber_reuses_the_one_push_of_the_bot():
     assert text.count('git push -q origin "HEAD:refs/heads/$HEADREF"') == 1
     assert 'push_head "$sha" resolution' in text and 'push_head "$sha" renumber' in text
     assert "RENUMBER_RULES" not in text
+
+
+# ── Fix round 1 (review of c5625b5c9f) ─────────────────────────────────────
+
+
+def files_pr(env, n, files):
+    """A PR that adds each path of `files` (a dict path -> text) in one commit."""
+    git(env.seed, "checkout", "-q", "-B", f"pr{n}", "main")
+    for path, text in files.items():
+        (env.seed / path).parent.mkdir(parents=True, exist_ok=True)
+        (env.seed / path).write_text(text, encoding="utf-8")
+    git(env.seed, "add", "-A")
+    git(env.seed, "commit", "-qm", f"pr {n}")
+    git(
+        env.seed,
+        "push",
+        "-q",
+        "-f",
+        "origin",
+        f"pr{n}:refs/pull/{n}/head",
+        f"pr{n}:refs/heads/pr{n}",
+    )
+    sha = git(env.seed, "rev-parse", "HEAD")
+    git(env.seed, "checkout", "-q", "main")
+    env.heads[n] = sha
+    env.view(
+        n,
+        state="OPEN",
+        isDraft=False,
+        mergeCommit=None,
+        headRefOid=sha,
+        body="",
+        headRefName=f"pr{n}",
+        isCrossRepository=False,
+        baseRefName="main",
+    )
+    return sha
+
+
+def test_p1_the_pr_keeps_its_own_order(env):
+    """R6: 499 creates t1 and 501 alters it. Main is at 500. Both move, in the old order."""
+    sha = files_pr(
+        env,
+        5,
+        {
+            "infra/postgres/499_create_t1.sql": "create table t1();\n",
+            "infra/postgres/501_alter_t1.sql": "alter table t1 add c int;\n",
+            "docs/t1.md": "infra/postgres/499_create_t1.sql, then infra/postgres/501_alter_t1.sql\n",
+        },
+    )
+    r = renumber(env, 5, sha)
+    assert r.returncode == 0, r.stderr
+    sql = sorted(f for f in pr_files(env, 5) if f.startswith("infra/postgres/"))
+    assert sql == [
+        "infra/postgres/499_main_a.sql",
+        "infra/postgres/500_main_b.sql",
+        "infra/postgres/501_create_t1.sql",
+        "infra/postgres/502_alter_t1.sql",
+    ]
+    assert pr_file(env, 5, "docs/t1.md") == (
+        "infra/postgres/501_create_t1.sql, then infra/postgres/502_alter_t1.sql"
+    )
+    assert bot_log(env) == "RENUMBERED 5 499->501, 501->502\n"
+
+
+def test_p2_a_subfolder_never_counts(env):
+    sha = files_pr(env, 5, {"infra/postgres/generated/400_gen.sql": "select 1;\n"})
+    r = renumber(env, 5, sha)
+    assert r.returncode == 0 and r.stdout.strip() == "nothing to renumber"
+    sha = files_pr(
+        env,
+        6,
+        {
+            "infra/postgres/generated/400_gen.sql": "select 1;\n",
+            "infra/postgres/497_feat.sql": "select 2;\n",
+        },
+    )
+    r = renumber(env, 6, sha)
+    assert r.returncode == 0, r.stderr
+    files = pr_files(env, 6)
+    assert (
+        "infra/postgres/generated/400_gen.sql" in files and "infra/postgres/501_feat.sql" in files
+    )
+    assert bot_log(env) == "RENUMBERED 6 497->501\n"
+
+
+def test_f1_the_bot_runs_mains_copy_of_the_tool_never_the_prs(env):
+    marker = env.tmp / "pr-code-ran"
+    evil = f"open({str(marker)!r}, 'w').close()\nraise SystemExit(0)\n"
+    sha = files_pr(
+        env,
+        5,
+        {"infra/postgres/497_feat.sql": "select 1;\n", "scripts/renumber_migration.py": evil},
+    )
+    r = renumber(env, 5, sha)
+    assert r.returncode == 0, r.stderr
+    assert not marker.exists()
+    assert "infra/postgres/501_feat.sql" in pr_files(env, 5)
+
+
+def test_a_prose_line_with_the_old_number_is_named_in_the_log(env):
+    sha = files_pr(
+        env,
+        5,
+        {
+            "infra/postgres/497_feat.sql": "select 1;\n",
+            "docs/feat.md": "Intro.\nSee migration 497 for the grants.\n",
+        },
+    )
+    r = renumber(env, 5, sha)
+    assert r.returncode == 0, r.stderr
+    assert bot_log(env) == "RENUMBERED 5 497->501 check by hand: docs/feat.md:2\n"
+    assert r.stdout.strip() == pr_branch(env, 5)
+
+
+def test_a_number_that_is_taken_pushes_nothing(env):
+    sha = mig_pr(env, 5, 497)
+    r = renumber(env, 5, sha, RENUMBER_BOOK_CMD="echo 500")
+    assert r.returncode == 1 and "number 500 is taken" in r.stderr
+    assert pr_branch(env, 5) == sha and bot_log(env) == ""
+    _work_is_clean_at(env, sha)
+
+
+def test_a_dirty_tree_after_the_renumber_pushes_nothing(env):
+    sha = mig_pr(env, 5, 497)
+    book = f'touch "{(env.tmp / "work").as_posix()}/stray.txt" && "$HOME/lanes/reserve_migration.sh" lane-merge pr5 5'
+    r = renumber(env, 5, sha, RENUMBER_BOOK_CMD=book)
+    assert r.returncode == 1 and "the tree is dirty" in r.stderr
+    assert pr_branch(env, 5) == sha and bot_log(env) == ""
+    _work_is_clean_at(env, sha)
+
+
+def _hold(cmd):
+    p = subprocess.Popen(cmd)
+    time.sleep(0.5)
+    return p
+
+
+@pytest.mark.skipif(not __import__("shutil").which("flock"), reason="needs flock")
+def test_a_held_flock_exits_75(env):
+    sha = mig_pr(env, 5, 497)
+    (env.tmp / "state").mkdir(exist_ok=True)
+    holder = _hold(["flock", str(env.tmp / "state" / "lock"), "sleep", "30"])
+    try:
+        r = renumber(env, 5, sha, MERGE_BOT_RENUMBER_WAIT="1")
+    finally:
+        holder.kill()
+        holder.wait()
+    assert r.returncode == 75 and "holds the lock" in r.stderr
+    assert pr_branch(env, 5) == sha and ledger_rows(env) == []
+
+
+def test_a_held_mkdir_lock_waits_then_exits_75(env):
+    sha = mig_pr(env, 5, 497)
+    (env.tmp / "state" / "lock.d").mkdir(parents=True)
+    started = time.monotonic()
+    r = renumber(env, 5, sha, MERGE_BOT_LOCK="mkdir", MERGE_BOT_RENUMBER_WAIT="2")
+    assert r.returncode == 75 and "holds the lock" in r.stderr
+    assert time.monotonic() - started >= 2
+    assert pr_branch(env, 5) == sha and ledger_rows(env) == []

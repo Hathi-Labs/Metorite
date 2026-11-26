@@ -332,11 +332,12 @@ The log then gets `RESOLVED <pull request> <rules>`, and the next pass waits
 for the new pr-check. The lane pulls its branch after a `RESOLVED` line.
 
 **Migration numbers** (CIV-RN, `ci_velocity.md` §8.10). lane-merge runs
-`merge_bot.sh --renumber <pull request> <sha>` before premerge. A migration at
-or below main's highest gets the next number of the ledger. The bot pushes the
-move with no force, and the log gets
-`RENUMBERED <pull request> <old>-><new>[, ...]`. The lane pulls its branch
-after a `RENUMBERED` line.
+`~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <pull request> <sha>`
+before premerge. A migration at or below main's highest gets the next number
+of the ledger, and each later migration of the PR moves above it. The bot
+pushes the move with no force, and the log gets
+`RENUMBERED <pull request> <old>-><new>[, ...][ check by hand: <file>:<line>, ...]`.
+The lane pulls its branch after a `RENUMBERED` line.
 
 The log gets `BACK <pull request> conflict: ...` in these cases:
 

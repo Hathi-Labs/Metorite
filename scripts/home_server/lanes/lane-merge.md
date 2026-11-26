@@ -143,13 +143,21 @@ c. When the pull request is a draft and step b passed, run `gh pr ready <n>`.
 d. **The gate**, in the pull request's worktree. When the lane left none, make
    one with `bash scripts/worktree.sh new merge-<n>`. Then fetch and check out
    the branch there.
-   - First, set the migration number at merge (CIV-RN). Run
-     `bash scripts/home_server/merge_bot.sh --renumber <n> <head sha> --lane lane-merge --task <task>`.
+   - First, set the migration number at merge (CIV-RN). Run the bot's own
+     copy, never the copy in the worktree:
+     `bash ~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh --renumber <n> <head sha> --lane lane-merge --task <task>`.
      - It prints `nothing to renumber`: go on to premerge.
-     - It prints a new head SHA: the bot pushed a renumber, and the log has a
-       `RENUMBERED` line. Do not merge in this loop. Comment the line on the
-       task. Wait for pr-check on the new head. Then start again at step a.
-     - Exit 1: comment the reason on the task, release it, and go on.
+     - It prints one 40-character SHA: the bot pushed a renumber, and the log
+       has a `RENUMBERED` line. Do not merge in this loop. Comment the line on
+       the task, with each `check by hand` line that it names. Run
+       `git pull --ff-only` in the worktree. Wait for pr-check on the new
+       head. Then start again at step a.
+     - It prints something else, and exits 0: stop. Comment the output on the
+       task, and do not merge.
+     - Exit 1 with `number ... is taken`: run it again in the next loop. When
+       it fails again, comment the reason on the task and release it.
+     - Exit 1 for another reason: comment the reason on the task, release it,
+       and go on.
      - Exit 75: a pass of the bot holds the lock. Run it again in the next loop.
    - Run `cd <worktree> && git fetch -q origin && timeout 900 bash scripts/premerge.sh`.
    - Exit 0: go on to e.

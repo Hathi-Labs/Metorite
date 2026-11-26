@@ -1486,32 +1486,46 @@ number while the PR waits, premerge step 1 refuses the PR (R1). Before this
 slice, the PR went back to its lane for a renumber by hand.
 
 **The rule.** The builder keeps the number that it booked. lane-merge runs
-`bash scripts/home_server/merge_bot.sh --renumber <pr> <sha>` right before
-premerge (`lane-merge.md` step d). The sub-command does these steps:
+the bot's own copy, `~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh
+--renumber <pr> <sha>`, right before premerge (`lane-merge.md` step d). The
+copy in a PR branch can be old or changed, so lane-merge never runs it. The
+sub-command does these steps:
 
 1. It refuses a PR that is not open, a fork, or a base that is not `main`.
    It also refuses a protected head branch, and a head that is not `<sha>`.
 2. It checks out `<sha>` on the bot branch `merge-bot/pr-<n>`, in the bot
    workdir, under the lock of the bot.
-3. It takes the `.sql` files under `infra/postgres/` that the PR adds. A file
-   with a number at or below main's highest gets a new number, lowest first.
-4. For each file, `scripts/renumber_migration.py --file <path>` books the next
-   number through `~/lanes/reserve_migration.sh <lane> <task> <pr>`. Then it
-   moves the file and rewrites each reference to its name.
-5. One commit holds all the moves:
+3. It reads the `.sql` files that the PR adds at the top level of
+   `infra/postgres/`. Main's highest number comes from the same files. A
+   subfolder such as `infra/postgres/generated/` never counts.
+4. When one added file has a number at or below main's highest, every added
+   file from that number up moves. So the PR keeps its own order (R6). An
+   `ALTER` never lands before its `CREATE`.
+5. It runs main's `scripts/renumber_migration.py`, from `git show
+   origin/main:...` into the bot state folder. A PR cannot change the tool
+   that runs with the push reach of the bot.
+6. Each file first moves to a work number (900000 and up). Then, lowest first,
+   it moves to the next number of `~/lanes/reserve_migration.sh <lane> <task>
+   <pr>`, at the width of its old name. So no booked number meets a file of
+   the PR. Each move rewrites each reference to the file name.
+7. One commit holds all the moves:
    `merge gate: renumber migration <old> to <new> above main's <top> (R1)`.
-6. `push_head` pushes it with no force. It is the one push of the bot
+8. `push_head` pushes it with no force. It is the one push of the bot
    (CIV-34a). It pushes only when the head branch on GitHub is still `<sha>`.
-7. The log gets `RENUMBERED <pr> <old>-><new>[, ...]`. The sub-command prints
-   the new head SHA.
+9. The log gets `RENUMBERED <pr> <old>-><new>[, ...]`. When a prose line still
+   says `migration <old>`, the line ends with `check by hand: <file>:<line>`.
+   The sub-command prints the new head SHA, and nothing else, on stdout.
 
 The ledger books the number, so premerge step 0b names no other pull request.
 A PR with no low number prints `nothing to renumber`, and nothing changes.
 Each failure exits 1, resets the workdir to `<sha>` and pushes nothing. A
-refused push, a moved head, a failed booking and a dirty tree are failures. A number that the
-ledger booked before the failure stays booked, because only
-`reserve_migration.sh` writes the ledger. Exit 75 means that a pass of the bot
-holds the lock.
+refused push, a moved head, a failed booking, a taken number and a dirty tree
+are failures. A number that the ledger booked before the failure stays
+booked, because only `reserve_migration.sh` writes the ledger.
+
+When a pass of
+the bot holds the lock, the sub-command waits up to `MERGE_BOT_RENUMBER_WAIT`
+seconds (600). Then it exits 75. The flock lock and the mkdir lock both wait.
 
 The sub-command never merges. The new head needs its own pr-check. lane-merge
 waits for it, and then starts again at the first step of `lane-merge.md`. The
@@ -1519,8 +1533,12 @@ bot pass is the same as before, because a migration PR is HIGH tier (D218,
 CIV-28b).
 
 **Fence:** `tests/unit/test_merge_bot_renumber.py`. It covers a low number that
-moves to the ledger's next number, with a rewritten reference, and the real
-premerge that then passes. It covers two PRs with the same number, which get
-two numbers. It covers a PR with no migration, and each refusal that leaves
-the PR as it was. The test of the push seam fails if a second `git push` appears in the
-bot. `tests/unit/test_renumber_migration.py` covers `--file`.
+moves to the ledger's next number, with a rewritten reference. Then the real
+premerge passes.
+
+The fence also covers the order of a low and a high file, and a subfolder.
+It covers main's copy of the tool, and two PRs with the same number. It covers a PR
+with no migration, and each refusal that leaves the PR as it was. Exit 75
+has a test for each lock. A second `git push` in the bot fails the test of the
+push seam. `tests/unit/test_renumber_migration.py` covers `--file` and
+`--width`.

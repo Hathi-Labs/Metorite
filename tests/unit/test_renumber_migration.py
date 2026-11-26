@@ -141,3 +141,13 @@ def test_file_picks_one_of_two_files_with_the_same_number(repo: Path) -> None:
     assert (repo / "infra" / "postgres" / "480_main_took_it.sql").exists()
     bad = _run(repo, "480", "482", "--file", "infra/postgres/100_first.sql")
     assert bad.returncode == 2 and "not a tracked migration 480" in bad.stderr
+
+
+def test_width_sets_the_digits_of_the_new_name(repo: Path) -> None:
+    """CIV-RN: the bot moves 480 to a work number, then back to three digits."""
+    assert _run(repo, "480", "900000").returncode == 0
+    assert (repo / "infra" / "postgres" / f"900000{NAME}").exists()
+    out = _run(repo, "900000", "481", "--width", "3")
+    assert out.returncode == 0, out.stderr
+    assert (repo / "infra" / "postgres" / f"481{NAME}").exists()
+    assert f"481{NAME}" in (repo / "tests" / "fences.json").read_text(encoding="utf-8")

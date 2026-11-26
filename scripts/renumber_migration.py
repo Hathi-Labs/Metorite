@@ -15,6 +15,8 @@ main's top. Run it through ``scripts/renumber_migration.sh``.
 * ``--file <path>`` names the file to move, when the tree holds two files with the
   old number (a branch that merged main, where main took the same number).
   The merge bot uses it (CIV-RN, ``merge_bot.sh --renumber``).
+* ``--width <n>`` sets the digit count of the new name. The merge bot moves a file
+  to a work number first, and then back to the width of the old name.
 * With no new number it books one through the box ledger:
   ``scripts/renumber_migration.sh <old> --lane <lane> --task <task>``. It runs
   ``ssh metorite-home '~/lanes/reserve_migration.sh <lane> <task>'``.
@@ -89,10 +91,10 @@ def pick_file(repo: Path, folder: str, old: int, file: str) -> Path:
     return Path(file)
 
 
-def renumber(repo: Path, folder: str, old: int, new: int | None, lane: str | None = None, task: str | None = None, file: str | None = None) -> tuple[Path, Path, list[str], list[str]]:
+def renumber(repo: Path, folder: str, old: int, new: int | None, lane: str | None = None, task: str | None = None, file: str | None = None, width: int | None = None) -> tuple[Path, Path, list[str], list[str]]:
     """Move the file and rewrite its references. Returns (old, new, changed, review)."""
     src = pick_file(repo, folder, old, file) if file else find_migration(repo, folder, old)
-    width = len(re.match(r"^(\d+)_", src.name).group(1))  # type: ignore[union-attr]
+    width = width or len(re.match(r"^(\d+)_", src.name).group(1))  # type: ignore[union-attr]
     if new is None:
         new = book_number(lane, task)
     if new == old:
@@ -144,12 +146,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--task", help="your task number, to book a number")
     ap.add_argument("--dir", default="infra/postgres", help="the migration folder")
     ap.add_argument("--file", help="the file to move, when two files carry the old number")
+    ap.add_argument("--width", type=int, help="the digit count of the new number (default: the old one)")
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
     ap.add_argument("--no-test", action="store_true", help="skip test_migration_prefixes.py")
     args = ap.parse_args(argv)
     repo = Path(args.repo)
     try:
-        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new, args.lane, args.task, args.file)
+        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new, args.lane, args.task, args.file, args.width)
     except RenumberError as err:
         print(f"renumber_migration: {err}", file=sys.stderr)
         return 2

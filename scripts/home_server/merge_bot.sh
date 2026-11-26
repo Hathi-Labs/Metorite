@@ -88,7 +88,8 @@
 #   PREMERGE_NOW, PREMERGE_RUNS_CMD, PREMERGE_FREEZE_OK  read by scripts/release_freeze.sh
 #   MERGE_BOT_RESERVE [~/lanes/reserve_migration.sh]  the ledger script that --renumber
 #     books each new number with. RENUMBER_BOOK_CMD replaces the whole command (a test).
-#   MERGE_BOT_RENUMBER_WAIT [600]  seconds that --renumber waits for a pass to end
+#   MERGE_BOT_RENUMBER_WAIT [600]  seconds that --renumber waits for a pass to end,
+#     with either lock. Then it exits 75.
 # It reads gh JSON with python3, not with gh --jq.
 # Fence: tests/unit/test_merge_bot.py.
 set -uo pipefail
@@ -213,8 +214,14 @@ else
     rmdir "$STATE/lock.d" 2>/dev/null || rm -rf "$STATE/lock.d"
   fi
   if ! mkdir "$STATE/lock.d" 2>/dev/null; then
-    [ -n "$RN_PR" ] && { say "a pass of the bot holds the lock: run --renumber again"; exit 75; }
-    say "another pass runs"; exit 0
+    [ -n "$RN_PR" ] || { say "another pass runs"; exit 0; }
+    waited=0
+    until mkdir "$STATE/lock.d" 2>/dev/null; do
+      if [ "$waited" -ge "${MERGE_BOT_RENUMBER_WAIT:-600}" ]; then
+        say "a pass of the bot holds the lock: run --renumber again"; exit 75
+      fi
+      sleep 1; waited=$((waited + 1))
+    done
   fi
   trap 'rmdir "$STATE/lock.d" 2>/dev/null' EXIT
 fi
@@ -740,20 +747,27 @@ handle() {
 }
 
 # renumber <pr> <sha>: CIV-RN, the merge gate sets the migration number (R1). It checks
-# out <sha> on the bot branch and takes each migration that the PR adds. A number at
-# or below main's highest gets a new number from the box ledger: renumber_migration.py
-# books it through reserve_migration.sh (lane RN_LANE, task RN_TASK, this PR), moves
-# the file and rewrites each reference. It takes them one at a time, lowest first.
-# One commit holds them all, and push_head pushes it (CIV-34a, no force).
-# Then one RENUMBERED <pr> <old>-><new>[, ...] line goes to the log. It prints the
-# new head SHA, or "nothing to renumber". Any failure resets to <sha> and pushes nothing.
-# A number that the ledger booked before a failure stays booked: only
+# out <sha> on the bot branch. It reads the migrations that the PR adds at the top level
+# of infra/postgres/, the same files that make main's highest number. A subfolder
+# (infra/postgres/generated/) never counts. When one of them is at or below main's
+# highest, every added migration at or above the lowest such number moves, so the PR
+# keeps its own order (R6: an ALTER never lands before its CREATE). Each moves first to
+# a free work number (900000 and up), and then, lowest first, to a number that the box
+# ledger books: reserve_migration.sh (lane RN_LANE, task RN_TASK, this PR). The tool is
+# MAIN's scripts/renumber_migration.py, never the copy of the PR branch, so a PR cannot
+# change what runs with the push reach of the bot. One commit holds all the moves, and
+# push_head pushes it (CIV-34a, no force). Then one log line goes out:
+#   RENUMBERED <pr> <old>-><new>[, ...][ check by hand: <file>:<line>[, ...]]
+# The check-by-hand list names the prose lines that still say "migration <old>".
+# It prints the new head SHA, or "nothing to renumber". Any failure resets to <sha> and
+# pushes nothing. A number that the ledger booked before a failure stays booked: only
 # reserve_migration.sh writes the ledger.
-RENUMBER_PY="$ROOT/scripts/renumber_migration.py"
 RESERVE_CMD="${MERGE_BOT_RESERVE:-$HOME/lanes/reserve_migration.sh}"
+RN_WORK_BASE=900000
 renumber() {
   local pr="$1" sha="$2" branch="merge-bot/pr-$1" v now added main_top n f i out new moved="" pairs="" top own
-  local -a low=() lowf=()
+  local py tmpf min_low="" review="" book
+  local -a nums=() files=() temps=()
   v="$(view "$pr")"
   [ -n "$v" ] || { echo "gh cannot read PR $pr"; return 1; }
   [ "$(field 1 "$v")" = OPEN ] || { echo "PR $pr is $(field 1 "$v"), not open"; return 1; }
@@ -779,37 +793,55 @@ renumber() {
   git fetch -q origin "+refs/heads/main:refs/remotes/origin/main" "+refs/pull/$pr/head:refs/merge-bot-pull/$pr" 2>/dev/null \
     || { echo "git fetch failed"; return 1; }
   git cat-file -e "$sha^{commit}" 2>/dev/null || { echo "the head ${sha:0:9} is not on GitHub"; return 1; }
-  # The same rule as premerge.sh step 1: the .sql files under infra/postgres/ that the
-  # PR adds, with a number prefix. Leading zeros go, so 007 reads as 7.
-  # Each line: <number><TAB><path>, lowest number first.
+  # Top level only, as main_top reads it. Each line: <number><TAB><path>, lowest first.
   added="$(git diff --name-only --diff-filter=A origin/main..."$sha" -- infra/postgres/ 2>/dev/null \
-    | sed -nE 's#^(.*/)?0*([0-9]+)(_[^/]*\.sql)$#\2\t&#p' | sort -n)" || { echo "git diff failed"; return 1; }
+    | sed -nE 's#^infra/postgres/0*([0-9]+)_[^/]*\.sql$#\1\t&#p' | sort -n)" || { echo "git diff failed"; return 1; }
   main_top="$(git ls-tree --name-only origin/main infra/postgres/ \
-    | sed -nE 's#^.*/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
+    | sed -nE 's#^infra/postgres/0*([0-9]+)_[^/]*\.sql$#\1#p' | sort -n | tail -1)"
   main_top="${main_top:-0}"
   while IFS=$'\t' read -r n f; do
-    [ -n "$n" ] && [ "$n" -le "$main_top" ] && { low+=("$n"); lowf+=("$f"); }
+    [ -n "$n" ] && [ -z "$min_low" ] && [ "$n" -le "$main_top" ] && min_low="$n"
   done <<< "$added"
-  if [ "${#low[@]}" = 0 ]; then echo "nothing to renumber"; return 0; fi
+  if [ -z "$min_low" ]; then echo "nothing to renumber"; return 0; fi
+  while IFS=$'\t' read -r n f; do
+    [ -n "$n" ] && [ "$n" -ge "$min_low" ] && { nums+=("$n"); files+=("$f"); }
+  done <<< "$added"
   if [ "$DRY" = 1 ]; then
-    echo "dry run: would renumber ${low[*]} above main's $main_top on PR $pr"; return 0
+    echo "dry run: would renumber ${nums[*]} above main's $main_top on PR $pr"; return 0
   fi
-  if [ -z "${RENUMBER_BOOK_CMD:-}" ] && [ ! -x "$RESERVE_CMD" ]; then
-    echo "no ledger script at $RESERVE_CMD: run this on the home box"; return 1
+  book="${RENUMBER_BOOK_CMD:-}"
+  if [ -z "$book" ]; then
+    [ -x "$RESERVE_CMD" ] || { echo "no ledger script at $RESERVE_CMD: run this on the home box"; return 1; }
+    book="$(printf '%q ' "$RESERVE_CMD" "$RN_LANE" "$RN_TASK" "$pr")"
   fi
-  git checkout -q -B "$branch" "$sha" 2>/dev/null || { echo "checkout of ${sha:0:9} failed"; return 1; }
-  for i in "${!low[@]}"; do
-    n="${low[$i]}"; f="${lowf[$i]}"
-    # The ledger books the number, for this PR. RENUMBER_BOOK_CMD is the one hook of
-    # renumber_migration.py for the booking command.
-    if ! out="$(RENUMBER_BOOK_CMD="${RENUMBER_BOOK_CMD:-$(printf '%q ' "$RESERVE_CMD" "$RN_LANE" "$RN_TASK" "$pr")}" \
-      python3 "$RENUMBER_PY" "$n" --file "$f" --repo "$WORKDIR" --no-test 9>&- 2>&1)"; then
-      reset_to "$sha"; echo "the renumber of $n failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+  # Main's copy of the tool, outside the workdir.
+  tmpf="$(mktemp "$STATE/renumber_migration.XXXXXX")" || { echo "mktemp failed"; return 1; }
+  py="$tmpf.py"; mv "$tmpf" "$py"
+  if ! git show origin/main:scripts/renumber_migration.py > "$py" 2>/dev/null; then
+    rm -f "$py"; echo "cannot read origin/main:scripts/renumber_migration.py"; return 1
+  fi
+  git checkout -q -B "$branch" "$sha" 2>/dev/null || { rm -f "$py"; echo "checkout of ${sha:0:9} failed"; return 1; }
+  # Step 1: each file to a work number, so no booked number meets a file of the PR.
+  for i in "${!nums[@]}"; do
+    n="${nums[$i]}"; f="${files[$i]}"
+    if ! out="$(python3 "$py" "$n" "$((RN_WORK_BASE + i))" --file "$f" --repo "$WORKDIR" --no-test 9>&- 2>&1)"; then
+      rm -f "$py"; reset_to "$sha"; echo "the renumber of $n failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
+    fi
+    review="$review$(sed -nE '/^CHECK BY HAND/,$ s#^  ([^ ]+:[0-9]+):.*#\1#p' <<< "$out" | tr '\n' ' ')"
+    temps+=("$(sed -nE 's#^moved .* -> (.*)$#\1#p' <<< "$out" | head -n 1)")
+  done
+  # Step 2: lowest first, each to the next number of the ledger.
+  for i in "${!nums[@]}"; do
+    n="${nums[$i]}"; f="$(basename "${files[$i]}")"; f="${f%%_*}"
+    if ! out="$(RENUMBER_BOOK_CMD="$book" python3 "$py" "$((RN_WORK_BASE + i))" --file "${temps[$i]}" --width "${#f}" \
+      --repo "$WORKDIR" --no-test 9>&- 2>&1)"; then
+      rm -f "$py"; reset_to "$sha"; echo "the renumber of $n failed: $(tail -n 2 <<< "$out" | one_line)"; return 1
     fi
     new="$(sed -nE 's#^moved .* -> (.*/)?0*([0-9]+)_[^/]*$#\2#p' <<< "$out" | head -n 1)"
-    [[ "$new" =~ ^[0-9]+$ ]] || { reset_to "$sha"; echo "the renumber of $n printed no new number"; return 1; }
+    [[ "$new" =~ ^[0-9]+$ ]] || { rm -f "$py"; reset_to "$sha"; echo "the renumber of $n printed no new number"; return 1; }
     moved="$moved${moved:+, }$n to $new"; pairs="$pairs${pairs:+, }$n->$new"
   done
+  rm -f "$py"
   git add -u 2>/dev/null
   if [ -n "$(git status --porcelain --untracked-files=all | grep -v '^[MRADC] ' || true)" ]; then
     reset_to "$sha"; git clean -fdq 2>/dev/null; echo "the tree is dirty after the renumber: nothing pushed"; return 1
@@ -818,7 +850,9 @@ renumber() {
     commit -q -m "merge gate: renumber migration $moved above main's $main_top (R1)" >/dev/null 2>&1 \
     || { reset_to "$sha"; echo "the renumber commit failed"; return 1; }
   out="$(push_head "$sha" renumber)" || { echo "renumbered $pairs but $out"; return 1; }
-  record "RENUMBERED $pr $pairs"
+  review="$(sort -u <<< "$(tr ' ' '\n' <<< "$review")" | sed '/^$/d' | paste -sd, - | sed 's/,/, /g')"
+  [ -z "$review" ] || say "PR $pr: these lines still say the old number. Check them by hand: $review"
+  record "RENUMBERED $pr $pairs${review:+ check by hand: $review}"
   git rev-parse HEAD
   return 0
 }
