@@ -6485,11 +6485,11 @@ Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails 
 
 The owner asked this on 2026-11-26, in chat to metorite-78. Owner spec: `specs/agent_sandbox.md` §0d. Board: **WS-TO**, Metorite task 3980 (SBX-0e). The items give the meaning, not a quote.
 
-1. **AI Studio is unpaused** for the long tail of use cases. The chat builds the tool that it lacks, in the sandbox, and keeps it.
-2. **The split.** The PC lanes build the sandbox path, rung 6 of `agent_sandbox.md` (sub-rungs 6a to 6f). Ishaan's lanes build the Studio rungs 1 to 5, land the aging Studio pull requests and keep chat parity. A PC lane takes no task or pull request of Ishaan's lanes. This amends the order of D224 and D227: rung 6 and rungs 1 to 5 now move side by side.
+1. **AI Studio is unpaused** for the long tail of use cases. The chat builds the tool that it lacks, in the sandbox, and keeps it. This ends the wait that `ticket_queues.md` names for Studio work.
+2. **The split.** The PC lanes build the sandbox path, rung 6 of `agent_sandbox.md` (sub-rungs 6a to 6f). Ishaan's lanes build the Studio rungs 1 to 5, land the aging Studio pull requests and keep chat parity. A PC lane takes no task or pull request of Ishaan's lanes. The agent reads the split as this: rung 6 and rungs 1 to 5 move side by side, which changes the order of D224 and D227.
 3. **Credentials through the door.** Sandbox code acts as the member through the one Metorite door. The gateway calls each connector with the stored credential. No provider token and no platform secret enters the sandbox. A read runs, and a write waits for the card of the member.
-4. **No seam for the member.** The member sees one progress line, as for any long turn. The answer arrives as usual. A card appears only when the result writes something. The new skill is kept and reused silently. The admin approval of a skill kept for the org does not change.
-5. **New slices.** SBX-20 (task 3981) is the build and hand-back in the same turn. SBX-21 (task 3982) is the progress-line contract. Both ship dark and are HIGH.
+4. **No seam for the member.** The member sees one progress line, as for any long turn. The answer arrives as usual. A card appears only when the result writes something. The new skill is kept and reused silently.
+5. **New slices.** SBX-20 (task 3981) is the build and hand-back in the same turn. SBX-21 (task 3982) is the progress-line contract. Both ship dark and are HIGH, a choice of the PC lanes. The admin approval of a skill kept for the org does not change (`agent_sandbox.md` §8).
 6. **Open.** The agent reads item 4 as removing the build card on the SBX-20 path. The owner has not confirmed this. `agent_sandbox.md` §0d holds the safe defaults, and the question is on task 3981.
 
 This decision flips no flag and opens no owner gate.
