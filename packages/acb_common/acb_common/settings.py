@@ -2792,6 +2792,18 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
     chat_card_revise_orgs: str = ""
 
+    # ── The chat asks which draft (tasks 3977 and 3978) ──
+    #
+    # CHAT_DRAFT_CHOICE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each trash is as before. On,
+    # `manage_inbox(action="trash")` on a draft reads Drafts, shows each
+    # matching draft as an unticked row, and the answer counts what left Drafts
+    # and names what stays. The one reader is
+    # `acb_skills.draft_choice.draft_choice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_email_draft_choice.py.
+    chat_draft_choice_orgs: str = ""
+
     # ── A paste is framed as data (HRD-14b, chat_failure_modes.md §4.7b) ──
     #
     # CHAT_PASTE_FRAME_ORGS: a comma list of organization ids, or `*`. Empty

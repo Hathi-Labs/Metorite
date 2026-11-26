@@ -113,6 +113,16 @@ The check is shadow only, and it never changes the answer (D-HRD-6).
 of each run, so a reload applies to the next run. A flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`CHAT_DRAFT_CHOICE_ORGS` turns on the draft choice of the chat (`email_app_master_plan.md`
+§18.13, tasks 3977 and 3978). For each listed org, a trash of a draft in the chat reads
+Drafts first. Each matching draft is a row on the card, and the member picks. The answer
+counts only a trash that the mail provider confirmed, and names each matching draft that
+stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
+before.
+
+Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
+each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).
+
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
 the email or the Projects task that a tool call read or acted on last. The

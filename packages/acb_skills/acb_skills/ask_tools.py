@@ -2699,6 +2699,13 @@ def reply_card_channel_open() -> bool:
     return confirmation_channel_open() and not _whatsapp_run()
 
 
+def rows_card_channel_open() -> bool:
+    """True when this run can draw a card with checkbox rows that the member
+    ticks (task 3977): a card channel (:func:`confirmation_channel_open`) and
+    no WhatsApp run, whose reply code approves no rows card of ``manage_inbox``."""
+    return confirmation_channel_open() and not _whatsapp_run()
+
+
 def edit_card_channel_open() -> bool:
     """True when this run can show a card that the member EDITS (§18.10):
     ``EMAIL_EDIT_CARD_ORGS`` names the run's organization
