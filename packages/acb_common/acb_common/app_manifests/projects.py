@@ -539,6 +539,9 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve", "", "X",
               reason="SW-27b (task 3893): the typed MCP tool reserve_number reaches this "
               "route, as delete_task reaches the agent-delete route. The door adds nothing."),
+        Route("POST", "/projects/reservations/{reservation_id}/mark", "", "X",
+              reason="SW-27c1 (task 3938): the typed MCP tool mark_number reaches this "
+              "route. Only the agent of the run marks its number. The door adds nothing."),
         # ── agent_runs.py ──
         Route("GET", "/projects/tasks/{task_id}/agent-runs", "agent_runs", "A", off_door=TYPED),
         Route("GET", "/projects/agent-runs", "waiting_agent_requests", "A", off_door=TYPED),

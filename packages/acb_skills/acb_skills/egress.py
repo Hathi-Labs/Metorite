@@ -1471,6 +1471,15 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
+    # P-1b (task 3922): a task from a mail, in the member's own task list. It
+    # shows its exact fields on one card first (``skill_my_tasks.core``), with
+    # the mailbox line. In a held chat it refuses the AI path, because that
+    # card cannot show the fields. ``open_world=True``: the reply path labels
+    # the thread at the mail provider.
+    "my_tasks_capture_from_mail": _pin(
+        "account_id email_id thread_id title notes disposition next_action "
+        "assignee_name due_at defer_until context energy time_estimate_mins steps "
+        "reply_subject reply_to_message_id"),
     # The class B tools of projects-bulk.
     "create_tasks": _pin("project_id tasks"),
     "edit_comment": _pin("task_id comment_id body"),
@@ -1548,6 +1557,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_deal_status": _pin("deal_id stage lost_reason"),
     "log_activity": _pin("entity record_id activity_type subject body due_at"),
     "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+    # Each card names the list and the module, or the steps, before the write.
+    "crm_decide_suggestion": _pin("action list_name module"),
+    "crm_rerun_analysis": _pin(""),
     # WS-CRM CRM-M3a: a new deal pipeline. Its card shows each stage. It says
     # open_world=True as each CRM write does, so a covered run holds it off.
     # CRM-M4a adds `kind` and `feeds`: a lead pipeline, and the deal pipeline
@@ -1555,6 +1568,10 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_create_pipeline": _pin("name stages copy_from kind feeds"),
     "crm_update_record": _pin("entity record_id fields"),
     "crm_update_task": _pin("activity_id completed due_at"),
+    # CRM-M2e (task 3951): a stage, a lead status or a lost reason. Each card
+    # shows the row and each changed field before the write.
+    "crm_edit_status": _pin("kind action name new_name status_type probability hidden"),
+    "crm_edit_lost_reason": _pin("action label new_label hidden"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter

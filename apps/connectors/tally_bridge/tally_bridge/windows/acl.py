@@ -115,6 +115,30 @@ class UnsafeTallyFolder(Exception):
         return message(self.path, self.reason, self.folder, self.near)
 
 
+def lock_commands(folder: str) -> list[list[str]]:
+    """The three icacls commands that lock the program folder, in order: the
+    administrators own each item, the old rights go, and only SYSTEM and the
+    administrators may write. The message shows them, and the Windows test
+    runs them."""
+    return [
+        ["icacls", folder, "/setowner", f"*{ADMINISTRATORS}", "/T", "/C"],
+        ["icacls", folder, "/reset", "/T", "/C"],
+        [
+            "icacls",
+            folder,
+            "/inheritance:r",
+            "/grant:r",
+            f"*{SYSTEM}:(OI)(CI)F",
+            f"*{ADMINISTRATORS}:(OI)(CI)F",
+            "*S-1-5-32-545:(OI)(CI)RX",
+        ],
+    ]
+
+
+def _shown(command: list[str]) -> str:
+    return " ".join(f'"{word}"' if " " in word or "\\" in word else word for word in command)
+
+
 def message(path: str, reason: str, folder: str, near: bool) -> str:
     """The text for the customer: which part, why, and the one fix.
 
@@ -139,10 +163,9 @@ def message(path: str, reason: str, folder: str, near: bool) -> str:
     return (
         f"{head} First move the company data out of {folder}: after the lock, "
         "users can only read that folder. Then an administrator locks it with "
-        f'three commands. (1) icacls "{folder}" /setowner *{ADMINISTRATORS} /T /C '
-        f'(2) icacls "{folder}" /reset /T /C '
-        f'(3) icacls "{folder}" /inheritance:r /grant:r *{SYSTEM}:(OI)(CI)F '
-        f"*{ADMINISTRATORS}:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX . "
+        "three commands. "
+        + " ".join(f"({n}) {_shown(c)}" for n, c in enumerate(lock_commands(folder), 1))
+        + " . "
         "Or install TallyPrime under C:\\Program Files. "
         "Then run apply-windows again."
     )

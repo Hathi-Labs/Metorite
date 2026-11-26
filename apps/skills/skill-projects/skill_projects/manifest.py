@@ -544,6 +544,14 @@ MANIFEST: tuple[Route, ...] = (
         "SW-27b (task 3893): the MCP door only. An outside agent reserves a number "
         "through reserve_number. The chat has no need to reserve a number.",
     ),
+    Route(
+        "POST",
+        "/projects/reservations/{reservation_id}/mark",
+        "",
+        "X",
+        "SW-27c1 (task 3938): the MCP door only. The agent of the run marks its "
+        "number through mark_number. A person's release comes with SW-27c3.",
+    ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
     # §12.1). The in-product chat gets them in EA-12e.

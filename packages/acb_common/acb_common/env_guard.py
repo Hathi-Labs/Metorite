@@ -362,6 +362,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.
     "MCP_IMAGE_UPLOAD_ORGS",
+    # WS-MCP SW-27c1: SEQUENCE_MARKS_ORGS lets an outside agent mark the
+    # numbers of its own run (`mark_number`). Only the owner opens it.
+    "SEQUENCE_MARKS_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
