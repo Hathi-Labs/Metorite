@@ -37,6 +37,7 @@ from gateway.routes.projects.core import (
     insert_row,
     is_runnable_with_ancestors,
     load_default_status,
+    assert_task_project_open,
     load_visible_task,
     next_task_number,
     record_activity,
@@ -451,6 +452,7 @@ async def set_recurrence(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         root = str(task.root_project_id)
 
         if task.recurrence_id is not None:
@@ -481,6 +483,7 @@ async def clear_recurrence(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         if task.recurrence_id is None:
             # Already in the target state (the house idempotency rule): not an
             # error, and no write.

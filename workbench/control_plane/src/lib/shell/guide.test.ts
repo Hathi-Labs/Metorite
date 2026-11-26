@@ -674,7 +674,7 @@ describe("GD-4 repair 2", () => {
 
   it("the card sits on the top layer, above a dialog, whatever the dock does", () => {
     const src = readFileSync(join(__dirname, "GuideSpotlight.tsx"), "utf-8");
-    expect(src).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.top\}/);
+    expect(src).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.guide\}/);
     const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
     expect(host).not.toMatch(/showsPopover|anchorInDialog/);
   });

@@ -279,6 +279,26 @@ async def test_a_caller_supplied_deal_name_and_amount_are_carried(
     assert result.deal["amount"] == 780_000.0
 
 
+async def test_the_leads_description_reaches_the_deal_when_none_is_passed(
+    db: FakeCrmDB,
+) -> None:
+    """Task 2490 (EME Veterans, 2026-11-09): a 300-character equipment note on the
+    lead was lost at convert. A description that the caller passes still wins."""
+    note = "Two printers, one enclosure, 5 year service plan. " * 6
+    lead = _lead(db, description=note)
+    kept = await convert_lead(str(lead.id), ConvertRequest(), USER)
+    assert kept.deal["description"] == note
+
+    other = _lead(db, description=note)
+    chosen = await convert_lead(
+        str(other.id), ConvertRequest(deal=ConvertDeal(description="Own text")), USER,
+    )
+    assert chosen.deal["description"] == "Own text"
+
+    bare = await convert_lead(str(_lead(db).id), ConvertRequest(), USER)
+    assert bare.deal.get("description") in (None, "")
+
+
 async def test_the_deal_lands_in_the_default_status_with_its_probability(
     db: FakeCrmDB,
 ) -> None:

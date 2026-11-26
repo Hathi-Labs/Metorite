@@ -180,7 +180,7 @@ def test_the_learn_gate_reads_the_status_it_just_computed() -> None:
     keeps running off the old unconditional `if apply:`."""
     src = inspect.getsource(m._apply_and_log_match)
     assert 'if (status == "APPLIED"' in src
-    assert src.index('status = "FAILED"') < src.index('if (status == "APPLIED"')
+    assert src.index("run_status(") < src.index('if (status == "APPLIED"')
 
 
 # ── a rule draft whose file fails (WS-17 EM-T9 item 11) ─────────────────────
@@ -273,3 +273,38 @@ async def test_a_rule_reply_writes_a_typed_to_at_outlook(
     (patch_call,) = client.patch.await_args_list
     sent = patch_call.kwargs["json"]
     assert sent.get("toRecipients") == to_patch
+
+
+# ── a mail that is gone is not a failure (WS-17 task 894) ───────────────────
+
+_GONE = {"type": "LABEL", "error": m.MESSAGE_GONE_DETAIL}
+
+
+def test_run_status_all_gone_is_SKIPPED_with_reason() -> None:
+    assert m.run_status([], [_GONE, dict(_GONE, type="MOVE_FOLDER")]) == (
+        "SKIPPED", "The mail was moved or deleted before the rule ran.")
+
+
+def test_run_status_gone_plus_other_error_is_FAILED() -> None:
+    assert m.run_status([], [_GONE, {"type": "LABEL", "error": "boom"}]) \
+        == ("FAILED", None)
+
+
+def test_run_status_any_action_taken_is_APPLIED() -> None:
+    assert m.run_status(["LABEL"], [_GONE]) == ("APPLIED", None)
+    assert m.run_status([], []) == ("APPLIED", None)
+
+
+async def test_a_gone_mail_logs_SKIPPED_and_teaches_nothing() -> None:
+    db = _db()
+    await _run(db, taken=[], errors=[_GONE])
+    row = _logged(db)
+    assert row["status"] == "SKIPPED"
+    assert row["reason"] == m.GONE_RUN_REASON
+    assert "no longer in the mailbox" in row["aerr"]
+    _run.upsert.assert_not_called()
+
+
+def test_the_retry_path_uses_run_status() -> None:
+    src = inspect.getsource(m.retry_failed_executions)
+    assert "run_status(taken, errors)" in src

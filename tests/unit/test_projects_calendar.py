@@ -230,6 +230,11 @@ NOT_ON_THE_CALENDAR = {
     # #918. Not a filter: it asks the list to also answer the size of each
     # status lane for the board's column heads. The rows are the same.
     "with_status_counts",
+    # MCP-G19a. The audit filters of the agent door (`list_tasks` and
+    # `board_stats`). The board never sends them, so the calendar cannot drop
+    # them silently. `compact` is a row shape, not a filter.
+    "has_parent", "is_epic", "assigned", "updated_before", "updated_after",
+    "created_after", "title_prefix", "compact",
 }
 
 

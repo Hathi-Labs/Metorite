@@ -42,6 +42,10 @@ CRM = "crm-assistant"
 PROJECTS = "projects-assistant"
 #: Every owner whose packs the work scenarios turn on.
 OWNERS = (EA, CRM, PROJECTS)
+#: The owner of the ``studio`` pack (TS-5a). It is NOT in :data:`OWNERS`: it has
+#: no specialist tool and no ``config.json``, so no hand-off check reads it. Its
+#: tool names come from ``SKILL_FAMILIES`` (:func:`studio_tool_names`).
+STUDIO = "studio-builder"
 #: The specialist tool of each owner in the delegation arm.
 DELEGATE_TOOLS = {owner: owner.replace("-", "_") for owner in OWNERS}
 _DIRS = {
@@ -64,3 +68,17 @@ def owner_tool_names(owner: str) -> frozenset[str]:
     """The own tools of *owner*, as its ``config.json`` names them."""
     config = json.loads((_DIRS[owner] / "config.json").read_text(encoding="utf-8"))
     return frozenset(config.get("own_tool_scope") or ())
+
+
+def studio_tool_names() -> frozenset[str]:
+    """The tools of every pack of the Studio builder, read from ``SKILL_FAMILIES``.
+
+    ``owner_tool_names`` reads a ``config.json``, and this owner has none. The
+    set holds the 23 tools of ``studio``, the two of ``studio-workflows``, the
+    two of ``studio-repair``, the one of ``studio-share`` and the six of
+    ``studio-apps`` (PAR-9), so an unknown tool
+    of the family never maps to email."""
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    return frozenset(name for family in SKILL_FAMILIES.values()
+                     if str(family.get("owner")) == STUDIO for name in family["tools"])

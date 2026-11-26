@@ -34,6 +34,8 @@ from typing import Any
 
 from acb_auth import agent_oauth
 
+from agent_edge import playbook_prompts
+
 #: The one prompt of the edge.
 PROMPT_NAME = "work_on_task"
 
@@ -75,6 +77,87 @@ PR_RULE = (
     " task N. Write the URL of the pull request, or call add_task_reference."
 )
 
+#: Task 3648 (owner, 2026-11-17). What each stage means, and the classes of
+#: task where the lane is not obvious, so the agent asks and does not guess.
+#: Claude Code cuts the instructions at 4096 characters, and the verifier of
+#: task 3648 measured that the full rule at the tail never reached it. So
+#: with the runs flag ON (the state where release_task exists) the stages go
+#: right after the run instructions, before the routine, in a short form that
+#: ends before the cut. The five classes go in the description of
+#: ``ask_on_task`` (:data:`LANE_ASK_CLASSES`), which no cut touches. With the
+#: flag OFF the whole text is under the cut, so the full rule follows the PR
+#: rule. Fence: ``test_release_lane_pins.py`` ``TestTheInstructionsSay...``.
+LANE_STAGES = (
+    "Backlog holds a task that nobody started and that is not planned soon."
+    " To Do holds a task planned to run soon, and a started task that is"
+    " paused or given back. In progress holds work that moves now: a live run,"
+    " or an open pull request that waits for review or merge. Done holds work"
+    " that is merged or delivered. A started task never goes to Backlog."
+)
+
+#: The classes of task where the lane is not obvious (owner, 2026-11-17).
+LANE_ASK_CLASSES = (
+    "a task of a paused project, an umbrella whose first slice merged and"
+    " whose next slices did not start, a task with only its spec merged, a"
+    " task that waits for a production proof or an owner flip, and a board"
+    " whose lanes do not map to the stages"
+)
+
+#: The short form, with the runs flag on. It names ``ask_on_task``. It must
+#: END before character 4096 of the instructions in both states of the
+#: answer-change flag, so it holds about 280 characters at most. The full
+#: stage text is :data:`LANE_STAGES`, and the classes are in the description of
+#: ``ask_on_task``.
+LANE_RULE = (
+    " Lanes: Backlog is not started and not planned soon. To Do is planned"
+    " soon, or started and given back. In progress is moving now: a live run"
+    " or an open pull request. A started task never goes to Backlog. If you"
+    " are unsure, do not guess: ask once per class with ask_on_task."
+)
+
+#: The full form, with the runs flag off. No run tool shows, so the agent asks
+#: in its reply and names no tool.
+LANE_RULE_NO_RUNS = (
+    " Move a task by what its stage means. " + LANE_STAGES
+    + " On a board with custom lanes, pick the lane by its category, then by"
+    " its name. When you are not sure which lane fits, do not guess. These"
+    " classes need a question: " + LANE_ASK_CLASSES + ". Ask the member once"
+    " for the whole class in your reply. Name the class and the number of"
+    " tasks, give two to four options, and mark one as recommended. Then apply"
+    " the answer to every task of that class in this session, and state the"
+    " class and the answer in your report."
+)
+
+#: The sentence that ``ask_on_task`` adds to its description.
+LANE_ASK_RULE = (
+    " When you are not sure which lane a task belongs in, ask once for the"
+    " whole class and do not guess. These classes need that question: "
+    + LANE_ASK_CLASSES + ". Name the class and the number of tasks, give two"
+    " to four options, and mark one as recommended. Then apply the answer to"
+    " every task of that class in this session, and state the class and the"
+    " answer in your report."
+)
+
+#: IMG-3 (``projects_ai_chat.md`` §30.4 item 9). The one sentence that sends
+#: an agent to the images of a task. The prompt, the ``initialize``
+#: instructions and the ``get_task_context`` description each hold it. Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheImageRule``.
+IMAGE_RULE = ("When the task has images, call get_attachment for each one before"
+              " you start.")
+
+#: WS-MCP SW-113 (``agent_coordination.md`` §3.12.7 rule 12). The tip for an
+#: orchestrator. ⚠️ HELD BACK: no prompt holds it yet. ``AGENT_MAP_ORGS`` is
+#: off, and only the gateway reads it (``agent_summary.agent_map_allowed``),
+#: so the edge cannot show the tip only where the map works. An agent of an
+#: org off the flag would get ``TEXT_MAP_NOT_FOUND`` and could think that it
+#: lost access. The slice that flips ``AGENT_MAP_ORGS`` adds the tip to the
+#: work step of ``_work_steps``. Fence: ``test_mcp_edge_prompts.py``
+#: ``TestTheMapTip``.
+MAP_RULE = (
+    " Before you dispatch a sub-agent or another session, call get_agent_map"
+    " for the project of the task. It shows which sessions already work on"
+    " which tasks, so that two agents do not take one task.")
+
 #: SW-43 (agent_coordination.md §3.9). One sentence, shown only while
 #: ``agent_answer_change_enabled`` is on. The member may take an answer back
 #: until an agent activity follows it, so the agent posts a thought first.
@@ -82,6 +165,19 @@ ANSWER_RULE = (
     " Before you act on an answer, post a thought that names the answer id,"
     " because the member may withdraw it until you post."
 )
+#: SW-43c. The same step while the flag is off, so the work steps carry it by
+#: default. It holds no reason, because with the flag off no member takes an
+#: answer back. The flag turns it into :data:`ANSWER_RULE`
+#: (:func:`answer_thought_rule`). Fence: ``test_mcp_edge_agent_runs.py``
+#: ``TestTheAnswerChangeAtTheEdge``.
+ANSWER_THOUGHT_RULE = (
+    "Before you act on an answer, post a thought that names the answer id.")
+
+
+def answer_thought_rule() -> str:
+    """The step of the thought before an act on an answer, by the flag of
+    SW-43. The step shows with the runs flag alone (SW-43c)."""
+    return ANSWER_RULE.strip() if agent_oauth.answer_change_enabled() else ANSWER_THOUGHT_RULE
 
 #: The same words as ``tools._UNTRUSTED_NOTE``, the note of each tool.
 _UNTRUSTED = (
@@ -107,8 +203,23 @@ def offered(scopes: Iterable[str]) -> bool:
     return agent_oauth.writes_enabled() and agent_oauth.PROJECTS_WRITE in set(scopes)
 
 
-def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
-    """The ``prompts/list`` entries. Empty, never an error, when hidden."""
+def listed(scopes: Iterable[str], organization_id: object = None) -> list[dict[str, Any]]:
+    """The ``prompts/list`` entries. Empty, never an error, when hidden.
+
+    PB-2: the playbook prompts follow ``work_on_task``, for an organization on
+    ``playbook_orgs``. They need only ``projects:read``.
+    """
+    held = set(scopes)
+    return _work_on_task_entry(held) + playbook_prompts.listed(held, organization_id)
+
+
+def logged_name(params: object) -> str:
+    """The prompt name for the log: a known name, never client text."""
+    name = params.get("name") if isinstance(params, dict) else None
+    return name if name == PROMPT_NAME or name in playbook_prompts.PROMPTS else "unknown"
+
+
+def _work_on_task_entry(scopes: set[str]) -> list[dict[str, Any]]:
     if not offered(scopes):
         return []
     runs = agent_oauth.runs_enabled()
@@ -125,12 +236,34 @@ def listed(scopes: Iterable[str]) -> list[dict[str, Any]]:
     }]
 
 
-def get(scopes: Iterable[str], params: dict[str, Any]) -> dict[str, Any]:
+def get(scopes: Iterable[str], params: dict[str, Any],
+        organization_id: object = None) -> dict[str, Any]:
     """The ``prompts/get`` result, or raise :class:`PromptRefused`.
 
     No gateway request. The text is fixed text and the validated argument.
     """
     name = params.get("name")
+    if isinstance(name, str) and name in playbook_prompts.PROMPTS:
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not playbook_prompts.offered(name, scopes, organization_id):
+            raise PromptRefused(TEXT_UNKNOWN)
+        if not isinstance(arguments, dict):
+            raise PromptRefused(
+                playbook_prompts.TEXT_BAD_ARGUMENT.format(
+                    name=playbook_prompts.PROMPTS[name].argument or "arguments"))
+        try:
+            result = playbook_prompts.get(name, scopes, organization_id, arguments)
+        except ValueError as refused:
+            raise PromptRefused(str(refused)) from None
+        if result is None:
+            raise PromptRefused(TEXT_UNKNOWN)
+        description, text = result
+        return {
+            "description": description,
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+        }
     if name != PROMPT_NAME or not offered(scopes):
         raise PromptRefused(TEXT_UNKNOWN)
     arguments = params.get("arguments")
@@ -289,7 +422,7 @@ def _queued_text() -> str:
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
         " Then call claim_task with the task_id and the version of the row."
-        + _LINK_HINT +
+        + _LINK_HINT + _PLACE_HINT +
         " When claim_task returns a warning about open subtasks, claim a"
         " subtask from the list, not the epic.",
         "When claim_task says that another session holds the task (a 409"
@@ -324,12 +457,22 @@ _LINK_HINT = (
     " pass it as external_link.")
 
 
+#: SW-105. One sentence at the claim step: the name, the place and the model of
+#: the session. The map shows what the agent reports (agent_coordination.md
+#: 3.12). Fence: ``test_mcp_edge_prompts.py``.
+_PLACE_HINT = (
+    " Pass your session name as agent_label, the name of your machine as host,"
+    " its kind as host_kind (computer, server or cloud) and your model as"
+    " model. Pass a value only when you know it.")
+
+
 def _context_step(*, start_run: bool) -> str:
     """Step 4 of the protocol: the context after the claim, then a run only
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
     step = (
         "Call get_task_context for the task. It shows why the task exists: its"
-        " parents, its project, its blockers and the newest comments.")
+        " parents, its project, its blockers and the newest comments. "
+        + IMAGE_RULE)
     if start_run:
         step += " Call start_agent_run only when claim_task gave no agent_run_id."
     return step
@@ -348,6 +491,7 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " machine or another terminal. Stop, and tell me. Do not work on a held"
         " task.",
         "Call claim_task with that version as expected_version." + _LINK_HINT
+        + _PLACE_HINT
         + " When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",
@@ -355,6 +499,35 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         *_work_steps(runs=runs),
     ]
     return _numbered(steps)
+
+
+#: Task 1045a (``agent_coordination.md`` 1045a item 7). The step of the
+#: waiting line. It shows only with the runs flag, as the tool does.
+#: Fence: ``test_mcp_edge_prompts.py`` ``TestTheWaitingRule``.
+WAITING_RULE = (
+    "While your own sub-agents work, you work too. Continue to post a short"
+    " thought at least once a minute, and the run stays working. Post a"
+    " waiting line only before a wait of more than 2 minutes on CI, a deploy,"
+    " a review or a person, or another agent that is not yours: a thought"
+    " with post_agent_activity and waiting {on, until_minutes, note}. on is"
+    " ci, review, deploy, member or agent, and until_minutes is 1 to 120."
+    " The task then shows the run as waiting, not idle. Your next activity"
+    " ends the wait. A wait on a person for longer than 120 minutes is a"
+    " question: call ask_on_task.")
+
+
+#: SW-108 (``agent_coordination.md`` 3.12, Q20). The step of the dispatcher and
+#: of the lane. It shows only with the runs flag, because ``dispatched_by`` is
+#: the id of a run. It names no organization rule (D186.2). Fence:
+#: ``test_mcp_edge_prompts.py`` ``TestTheDispatchRule``.
+DISPATCH_RULE = (
+    "When another session handed you this task, its hand-off names its run id."
+    " Pass that id as dispatched_by on claim_task. Write it in the header of"
+    " your notes, so that you find your dispatcher after a restart. Pass"
+    " nothing when nobody handed you the task. When you hand a task to another"
+    " agent, you are an orchestrator. Hold an open run on a coordination task"
+    " of your own, so that you show on the map. Put that run id in each"
+    " hand-off. Before a quiet stretch, post a waiting line with on agent.")
 
 
 def _work_steps(*, runs: bool) -> list[str]:
@@ -371,8 +544,10 @@ def _work_steps(*, runs: bool) -> list[str]:
             " When you asked me with ask_on_task and I answer outside Metorite,"
             " such as in this chat, call record_outside_decision at once. The"
             " question then closes, and the task stops waiting on me.")
-        if agent_oauth.answer_change_enabled():
-            steps.append(ANSWER_RULE.strip())
+        steps.append(WAITING_RULE)
+        # SW-43c: on by default, so an agent posts the thought before the flip.
+        steps.append(answer_thought_rule())
+        steps.append(DISPATCH_RULE)
     else:
         steps.append("Report progress with add_comment.")
     steps += [
@@ -412,17 +587,24 @@ def _rules() -> str:
 
 __all__ = [
     "ANSWER_RULE",
+    "ANSWER_THOUGHT_RULE",
     "ARGUMENT",
     "BRIEF_RULE",
-    "PR_RULE",
+    "DISPATCH_RULE",
+    "IMAGE_RULE",
+    "MAP_RULE",
     "MAX_DIGITS",
     "PROMPT_NAME",
+    "PR_RULE",
     "TEXT_BAD_TASK",
     "TEXT_EXTRA",
     "TEXT_NO_TASK",
     "TEXT_UNKNOWN",
+    "WAITING_RULE",
     "PromptRefused",
+    "answer_thought_rule",
     "get",
     "listed",
+    "logged_name",
     "offered",
 ]

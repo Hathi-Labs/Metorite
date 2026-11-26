@@ -1405,6 +1405,7 @@ class TestTheStructuralFences:
         # EA-4b added the member's own list and revoke (spec §15 EA-4b).
         # MCP-P1a added the two list routes of the app door (spec §19.4).
         # MCP-P1b-1 added the four routes of an app request (spec §19.5).
+        # EA-19c added the four box-token routes (spec §10.9).
         assert set(routes) == {"/agent-access/authorize/check",
                                "/agent-access/authorize/approve",
                                "/agent-access/connections",
@@ -1414,7 +1415,11 @@ class TestTheStructuralFences:
                                "/agent-access/apps/{app}/requests",
                                "/agent-access/requests",
                                "/agent-access/requests/{request_id}",
-                               "/agent-access/requests/{request_id}/decision"}, (
+                               "/agent-access/requests/{request_id}/decision",
+                               "/agent-access/box-tokens/check",
+                               "/agent-access/box-tokens",
+                               "/agent-access/box-tokens/{connection_id}/rotate",
+                               "/agent-access/box-tokens/revoke-all"}, (
             "the router did not mount — main.py swallows an import error")
         for path, route in routes.items():
             assert _is_guarded(route), path

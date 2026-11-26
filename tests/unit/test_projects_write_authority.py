@@ -357,7 +357,7 @@ async def _chat(world, monkeypatch, who: str, act) -> Any:
         TransportError=httpx.TransportError, Response=httpx.Response))
     monkeypatch.setattr(client, "gateway_url", lambda: "http://gateway.test")
     monkeypatch.setattr(client, "current_user_email", lambda: who)
-    monkeypatch.setattr(client, "internal_token", lambda: tw.INTERNAL)
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", tw.INTERNAL)
     return await tw._in_scope(world, act)
 
 
@@ -567,7 +567,9 @@ def test_the_new_doors_call_the_one_module() -> None:
     from gateway.routes.projects import move, personal, tasks, tree
 
     doors = {
-        tree.create_node: "assert_may_name_lead(db, user, parent_row, values.get(\"lead\"))",
+        # WS-39 TPL-1a: the create's body is `create_node_in`, the one creator
+        # of a node, which `POST /nodes` and the apply of a template call.
+        tree.create_node_in: "assert_may_name_lead(db, user, parent_row, values.get(\"lead\"))",
         tree.patch_node: "assert_may_change_lead(db, user, before, values)",
         tree.move_node: "assert_may_move_project(db, user, moved)",
         tasks.move_task_in: "assert_may_move_task(db, user, task)",

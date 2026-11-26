@@ -93,7 +93,7 @@ def test_a_retry_that_fails_again_stays_failed() -> None:
     re-keyed or deleted in Outlook. Those cannot be repaired, and flipping them
     to APPLIED would hide them exactly as the original bug did."""
     src = inspect.getsource(m.retry_failed_executions)
-    assert 'status = "FAILED" if (errors and not taken) else "APPLIED"' in src
+    assert "run_status(taken, errors)" in src
 
 
 def test_a_retry_never_resurrects_deleted_mail() -> None:

@@ -243,6 +243,9 @@ async def _exchange_code(form: dict[str, str], client_id: str) -> IssuedTokens:
         raise _refuse(
             "code_replayed" if replayed else "code_invalid", client_id, replayed)
 
+    # The client asked for a refresh token. The store gives one only when the
+    # connection also holds `offline_access`, and its answer names the grant,
+    # never the wider token scope (EA-17c-3, `agent_tokens` rule 14).
     scopes = agent_oauth.parse_scope(grant.scope)
     issued = await agent_tokens.issue_tokens(
         grant, with_refresh=agent_oauth.OFFLINE_ACCESS in scopes)
@@ -284,6 +287,11 @@ async def _check_refresh_scope(raw: str, requested: str) -> None:
     v1 issues the scope the member granted and does not narrow it on refresh.
     The response names that scope (RFC 6749 §5.1). The check runs BEFORE the
     rotation, so a refused request spends nothing.
+
+    ⚠️ EA-17c-3: the token scope holds every scope that the agent asked for,
+    so the check reads ``agent_oauth.granted_scope`` of the token scope and
+    the connection scopes, never the token scope alone. A scope that the
+    member cleared gets ``invalid_scope``.
     """
     tokens = [t for t in requested.split(" ") if t]
     if len(requested) > agent_oauth.MAX_SCOPE_CHARS or any(
@@ -293,7 +301,7 @@ async def _check_refresh_scope(raw: str, requested: str) -> None:
     found = await agent_tokens.lookup_token(raw, kind=agent_tokens.REFRESH)
     if found is None:
         return  # the rotation decides, and it detects a reuse
-    held = set(agent_oauth.parse_scope(found.scope))
+    held = set(agent_oauth.granted_scope(found.scope, found.scopes).split(" "))
     if not set(tokens) <= held:
         raise OAuthError("invalid_scope")
 

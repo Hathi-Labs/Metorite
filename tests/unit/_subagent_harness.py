@@ -96,3 +96,81 @@ def counted(name: str, calls: list[str], *, result: str = "ran") -> Callable[...
     _tool.__name__ = name
     _tool.__doc__ = f"The test tool {name}."
     return _tool
+
+
+# ── AUTO-8b-2c: the headers of a worker run, through the REAL run_agent ─────
+
+
+class HeaderWire:
+    """An async ``httpx.MockTransport`` handler for the attribution fences.
+
+    It answers each request with one text completion, and keeps the headers
+    of each request, in lower case, in :attr:`headers`. When :attr:`gate` is
+    set, each request awaits it before the answer, so two runs can meet on
+    the wire.
+    """
+
+    def __init__(self) -> None:
+        self.headers: list[dict[str, str]] = []
+        self.gate: Callable[[], Any] | None = None
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.headers.append({k.lower(): v for k, v in request.headers.items()})
+        if self.gate is not None:
+            await self.gate()
+        return httpx.Response(200, json=completion(text='{"items": []}'))
+
+    def of_run(self, run_id: str) -> list[dict[str, str]]:
+        """The headers of each request that names the run *run_id*."""
+        return [h for h in self.headers if h.get("x-cc-run") == run_id]
+
+
+class _WorkerLoad:
+    """What ``executor.load_agent`` gives back: the REAL worker on *wire*.
+
+    The executor calls ``build_agents`` once for each run, on the frame of
+    that run, as the loader does. Only the transport under the client's own
+    request hook (the attribution stamp) is replaced.
+    """
+
+    def __init__(self, wire: HeaderWire, agent_dir: Path) -> None:
+        self.agent_dir = agent_dir
+        self.agent_name = "worker"
+        self.config = json.loads((REPO_ROOT / WORKER_DIR / "config.json").read_text(
+            encoding="utf-8"))
+        self._wire = wire
+
+    def build_agents(self) -> list[Any]:
+        agent = load_agent_module(WORKER_DIR).build_agents()[0]
+        oc = agent.client.client  # the AsyncOpenAI under the MAF client
+        oc._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(self._wire), event_hooks=oc._client.event_hooks,
+        )
+        return [agent]
+
+    def cleanup(self) -> None:
+        return None
+
+    def __enter__(self) -> _WorkerLoad:
+        return self
+
+    def __exit__(self, *_a: Any) -> bool:
+        return False
+
+
+def route_worker_runs(monkeypatch: Any, tmp_path: Path, wire: HeaderWire) -> None:
+    """Make each ``executor.run_agent`` load the REAL worker on *wire*.
+
+    No clone, no credential and no audit row. The working dirs land in
+    *tmp_path*. A caller passes ``organization_id``, so the run binds its own
+    tenant.
+    """
+    from acb_common import get_settings
+    from orchestrator import executor
+
+    agent_dir = tmp_path / "worker-clone"
+    agent_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _WorkerLoad(wire, agent_dir))
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(executor, "record", lambda *a, **k: None)

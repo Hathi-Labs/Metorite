@@ -56,7 +56,8 @@ export interface CollapsibleSectionProps {
    * ⚠️ Base UI's panel UNMOUNTS a closed panel by default. A report's table
    * sits folded under its chart, and an unmounted table is gone from the
    * page: find-in-page cannot reach it, and a render test cannot see it.
-   * With this on, the folded content stays in the markup and is hidden.
+   * With this on, the folded content stays in the markup, and the panel is
+   * `hidden="until-found"` too. Find-in-page then reaches it and opens it.
    */
   keepMounted?: boolean;
   /**
@@ -133,7 +134,11 @@ export function CollapsibleSection({
           the same amount: the content does not move, and the ring has room.
           1.5, not 1, because compact density shrinks a unit below 4px.
           Fence: `src/components/ui/collapsible.test.ts`. */}
-      <Base.Panel className={PANEL_CLASS} keepMounted={keepMounted}>
+      <Base.Panel
+        className={PANEL_CLASS}
+        keepMounted={keepMounted}
+        hiddenUntilFound={keepMounted}
+      >
         <div className="pt-1.5">{children}</div>
       </Base.Panel>
     </Base.Root>

@@ -137,7 +137,9 @@ def features_hash(user: Any) -> str:
     at the gateway restart that it needs, and no stored answer from before
     the restart is served after it. With no such permission and an empty
     list, the hash is the hash of before MD-3b. While ``crm`` is listed, the
-    CRM kill switch of the member's org joins it too (MD-3e)."""
+    CRM kill switch of the member's org joins it too (MD-3e). While
+    ``MY_DAY_LEARN_ORGS`` lists the member's org, ``learn=1`` joins it too
+    (LOOP-4a, ``state.learn_allowed``)."""
     from acb_auth.permissions import FEATURES
     from gateway.routes.shell import needs
     from gateway.routes.shell.intent import ADMIN_PERMISSION
@@ -166,6 +168,13 @@ def features_hash(user: Any) -> str:
 
         allowed = knowledge_org_allowed(getattr(user, "organization_id", None))
         held.append(f"knowledge_org={int(allowed)}")
+    from gateway.routes.shell.state import learn_allowed
+
+    if learn_allowed(getattr(user, "organization_id", None)):
+        # LOOP-4a: a learned answer is not the answer of before, so a flip or
+        # a rollback of MY_DAY_LEARN_ORGS misses at once. The part is there
+        # only for a listed org, so the key of every other org keeps its bytes.
+        held.append("learn=1")
     return hashlib.sha256(",".join(held).encode("utf-8")).hexdigest()[:16]
 
 

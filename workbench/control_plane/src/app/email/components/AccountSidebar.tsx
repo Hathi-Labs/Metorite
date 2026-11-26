@@ -1,5 +1,6 @@
 "use client";
 
+import AlsoSyncCalendar from "@/app/calendar/components/AlsoSyncCalendar";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import Badge from "@/components/ui/Badge";
@@ -323,6 +324,8 @@ export function AccountSidebar({
                 )}
               </div>
             ))}
+            {/* CE-10d: a connected mailbox can also sync its calendar. Draws nothing when none can. */}
+            <AlsoSyncCalendar className="mt-2 px-1" />
           </div>
         )}
       </div>

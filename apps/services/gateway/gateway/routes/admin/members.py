@@ -90,6 +90,7 @@ from gateway.routes.projects.seal import (
 # A member has one `user_settings` row for each organization (migration 239),
 # so each statement on that table names the org beside RLS, not instead of it.
 from gateway.routes.tasks.settings import _BOUND_ORG
+from gateway.studio.skills_store import SHARED_WITH_ORG
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -692,6 +693,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     # WS-65 SM-1 adds the four tables of a shared mailbox. A member purge
     # reaches a shared row only while its user_id is the leaver, until SM-8
     # leaves a shared row out of the member scope (shared_mailbox.md §4.2).
+    # WS-17 SG-2 adds `email_signature_settings`, the signature mode of the
+    # mailbox.
     "email_accounts": (
         "crm_auto_lead_cursors",
         "email_actions", "email_ai_drafts", "email_assistant_settings",
@@ -701,8 +704,8 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "email_mailbox_grants", "email_mailbox_member_prefs", "email_messages",
         "email_newsletters", "email_rule_guidance", "email_rule_patterns",
         "email_rules", "email_scheduled_sends", "email_send_log", "email_senders",
-        "email_sync_log", "email_thread_assignments", "email_thread_status",
-        "email_voice_profiles",
+        "email_signature_settings", "email_sync_log", "email_thread_assignments",
+        "email_thread_status", "email_voice_profiles",
     ),
     # The whole WhatsApp mirror — 14 direct, 16 with transitives
     # (`wa_media` and `wa_message_embeddings` hang off `wa_messages`).
@@ -728,6 +731,11 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
 #: which runs before every delete, and the delete of the installs, which runs
 #: after `_PURGE_DELETES` deletes her grants, read the same answer.
 _OTHERS_SEE_THE_APP = OTHERS_SEE_THE_INSTALL
+
+#: WS-STU J2d (TOF-4b): a skill that the org shares, the one test of
+#: `gateway/studio/skills_store.py`. Its parentheses let the delete side
+#: write `NOT` before it, so the delete and the keep split on it alone.
+_SHARED_SKILL = SHARED_WITH_ORG
 
 #: **Deleted.** Enumerated from `infra/postgres/` by grepping for every column
 #: that names a person — FKs to `app_user(id)` and the email-string columns
@@ -779,6 +787,47 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     _PersonRows("email_accounts", "email_accounts", MEMBER_MAILBOXES_WHERE),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
+    # WS-CO CO-11: the member's own rows of THIS organization on each chat,
+    # the pins today and the topic of CO-2 later. A row is the member's only,
+    # so it goes with the member, on a shared room too, where the room stays.
+    # The clause names the bound org beside RLS, as `reminders` does. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows
+    # on her private chats. So the count is each row of the member.
+    _PersonRows("chat_member_rows", "chat_session_member",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-17: the cards that the member approved, one row each, with no
+    # card text. The rows are the member's only, so they go with the member.
+    # Same clause as the line above, and the same place: before the chats.
+    _PersonRows("chat_card_rows", "chat_card_record",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-4: the shadow rows of the join match of THIS organization. A
+    # row holds codes and ids of the member's own chats, and nobody else's,
+    # so it goes with the member. The clause names the bound org beside RLS,
+    # as `chat_member_rows` does. It runs before `private_chat_sessions`,
+    # whose cascade would take only the rows of her private chats. So the
+    # count is each row of the member.
+    _PersonRows("chat_join_rows", "chat_join_log",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-TOF TOF-2b: the tool failure rows of THIS organization that name the
+    # member (``failure_events.member_email``, 30 days of retention). They go
+    # with the member. The clause names the bound org beside RLS. The platform
+    # tables hold no address and stay.
+    _PersonRows("failure_event_rows", "failure_events",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-1a (agent_sandbox.md §7.4): the tool gaps of the member in THIS
+    # organization. The need of a row is text about the member's work, so it
+    # goes with the member. The clause names the bound org beside RLS. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows of
+    # her private chats. So the count is each row of the member.
+    _PersonRows("tool_gaps", "tool_gaps",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-2 (agent_sandbox.md §12.2): the run capabilities of the member in
+    # THIS organization. A row holds her address and a token hash. The table
+    # is RLS-exempt, so the clause must name the bound org. The door already
+    # refuses a capability whose member has no seat (step 10). The delete
+    # removes the address at once, and does not wait for the daily sweep.
+    _PersonRows("sandbox_capabilities", "sandbox_capabilities",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
@@ -801,9 +850,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # changes of a private saved view or of an own business rule. They hold
     # the text of a private view or an own rule, which only the member
     # reads, so they go with the member. This purge deletes the own rules
-    # (`crm_member_rules` above). It does not delete the saved views
-    # (`crm_views`). An Undo row has the same readers as the row it undoes
-    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # (`crm_member_rules` above) and the private saved views
+    # (`crm_private_views` below). An Undo row has the same readers as the
+    # row it undoes (`change_log.log_change`), so the `ON DELETE CASCADE` key of
     # `undoes_id` takes only rows that this clause counts too, and no org
     # row goes with them. The clause names
     # the bound org beside RLS, as `reminders` does. The org's rows that the
@@ -815,6 +864,18 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # `private_to`.
     _PersonRows("crm_private_changes", "crm_change_log",
                 f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
+    # Task 1570 (D175.5, the owner's decision of 2026-11-04): the member's
+    # private CRM saved views of THIS organization. Only the owner reads a
+    # private view, so a purged member leaves none behind. The Change history
+    # rows that only the member reads went with `crm_private_changes` above.
+    # A shared view stays with the address. It is not counted as kept, as the
+    # org's rows of `crm_change_log` are not. The clause names the bound org
+    # beside RLS, as `studio_private_views` does, so the same address in
+    # another org keeps its views. No table hangs off `crm_views`, so the
+    # count is each row that goes.
+    _PersonRows("crm_private_views", "crm_views",
+                "NOT shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
@@ -835,15 +896,33 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # key to `brief_runs`.
     _PersonRows("brief_runs", "brief_runs",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
-    # WS-STU F1: the member's AI Studio skills of THIS organization. In F1 a
-    # skill is private, and only its owner reads it, so a purged member
-    # leaves none behind. The clause names the bound org beside RLS, as
-    # `brief_runs` does, so the same address in another org keeps its
-    # skills. The versions, `studio_skill_versions`, go by their
-    # `ON DELETE CASCADE` key to `studio_skills`. J2 adds a shared skill, and
-    # J2 decides if a shared one stays.
+    # WS-TOF TOF-3a (F12a): the runs of a skill that the member made in THIS
+    # organization: live turns, tests and repair proposals. A row holds codes,
+    # names and a hash, and it is the member's own record, so it goes with the
+    # member. The clause names the bound org beside RLS, as `studio_skills`
+    # does. It runs before `studio_skills`, whose cascade takes the runs of a
+    # deleted skill. So the count is each row of the member.
+    _PersonRows("studio_skill_runs", "studio_skill_runs",
+                f"lower(created_by) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-STU F1 and J2d (TOF-4b): the member's AI Studio skills of THIS
+    # organization that the org does not share. Only the owner reads such a
+    # skill, so a purged member leaves none behind: a private skill, and a
+    # skill with only a pending or a rejected ask. The clause names the bound
+    # org beside RLS, as `brief_runs` does, so the same address in another
+    # org keeps its skills. The versions, `studio_skill_versions`, go by
+    # their `ON DELETE CASCADE` key to `studio_skills`. A skill that the org
+    # shares stays with the address: see `studio_shared_skills` below.
     _PersonRows("studio_skills", "studio_skills",
-                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+                f"NOT {_SHARED_SKILL} AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # WS-STU AF-10a: the member's private saved views of THIS organization.
+    # Only the owner reads a private view, so a purged member leaves none
+    # behind. The clause names the bound org beside RLS, as `studio_skills`
+    # does. A shared view stays with the address: see `studio_shared_views`
+    # below.
+    _PersonRows("studio_private_views", "studio_saved_views",
+                "NOT shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the member's private
     # installs of THIS organization that nobody else sees. `scope_subject` is
     # the owner's address on a private install, and the CHECK
@@ -897,6 +976,31 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
                 "AND NOT EXISTS (SELECT 1 FROM calendar_entries AS e "
                 "WHERE e.id = calendar_entry_attendees.entry_id "
                 "AND lower(e.owner_email) = :email)"),
+    # WS-STU I8b-1a: the member's asks of an admin for a connection, in THIS
+    # organization. An ask is the member's own, and it waits on nothing after
+    # the member goes. The clause names the bound org beside RLS, as
+    # `goal_records` does. A `broken` row names no member, so it stays.
+    _PersonRows("connection_asks", "integration_attention",
+                "kind = 'ask' AND lower(member_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # WS-CO CO-2a (D163.2): the member's private topics of THIS organization.
+    # Only the owner reads a member topic, so a purged member leaves none
+    # behind. A company topic names no owner, so it stays. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_topic` in CO-2a.
+    _PersonRows("chat_topics", "chat_topic",
+                "scope = 'member' AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # Task 3435 (chat_run_continuity.md §4.12.4 item 1): the chat cards that
+    # asked the member, in THIS organization. A row holds the card, the
+    # member's answer and, with RESUME, the arguments of a call. Only the
+    # member who was asked may answer a card, so a row waits on nothing after
+    # the member goes. The table has no key to `chat_session`, so the delete
+    # of the private chats above takes none of these rows. The clause names
+    # the bound org beside RLS, as `connection_asks` does. No table hangs off
+    # `chat_pending_ask`.
+    _PersonRows("chat_pending_asks", "chat_pending_ask",
+                f"lower(actor_email) = :email AND organization_id = {_BOUND_ORG}"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )
@@ -943,6 +1047,13 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
     # whole, so the table is on one side only.
     _PersonRows("agent_run_strands", "pm_agent_run_strands",
                 "lower(member_email) = :email"),
+    # WS-39 SP-1 (project_management_app.md §13.2a): the member's review
+    # minutes in the capacity snapshot of a started cycle. Kept and counted,
+    # not deleted: a cycle's capacity snapshot is part of the record of the
+    # cycle, no UPDATE may change it, and a purge deletes no `pm_` row (D63).
+    # Kept whole, so the table is on one side only.
+    _PersonRows("cycle_capacity", "pm_cycle_capacity",
+                "lower(member_email) = :email"),
     # WS-PKG PKG-4 (package_host.md §5.1 decision 5): the group and org
     # installs that the member made. Other people use them, so they stay, as
     # a shared room does. `scope_kind <> 'private'` is load-bearing: it is the
@@ -962,6 +1073,25 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
                 "scope_kind = 'private' AND lower(scope_subject) = :email"
                 f" AND organization_id = {_BOUND_ORG}"
                 f" AND {_OTHERS_SEE_THE_APP}"),
+    # WS-STU AF-10a (D63): the shared saved views that the member made. Every
+    # member who reads the app reads them, so they stay with the address, as
+    # a shared room does. The clause is the delete side's
+    # `studio_private_views` with `shared` for `NOT shared`, so the two split
+    # the member's views with no overlap and no gap.
+    _PersonRows("studio_shared_views", "studio_saved_views",
+                "shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
+    # WS-STU J2d (TOF-4b, the orchestrator's decision of 2026-11-19): the
+    # skills of the member that the org shares. A holder approved a version,
+    # and each member of the org loads it, so the skill stays with the org
+    # and keeps the address, as a shared view does. Known limit: only the raw
+    # DELETE share route unshares it. No surface lists the id of an approved
+    # skill, and the chat unshare sends the owner-only read first (J2d).
+    # The clause is the delete side's `studio_skills` with no `NOT`, so the
+    # two split the member's skills with no overlap and no gap.
+    _PersonRows("studio_shared_skills", "studio_skills",
+                f"{_SHARED_SKILL} AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
 )
 
 
@@ -1227,6 +1357,10 @@ async def purge_member_rows(
     # WS-61 KB-9a: the member's address in the Knowledge gaps. KC-1a: the
     # member's Drive sources, with their token and their tree.
     revokes = await purge_knowledge_member(db, org_id, addr)
+    # WS-CAL CE-10: the member's calendar connections go AFTER their entries
+    # (the list above), because calendar_entries.connection_id has no cascade.
+    from gateway.calendar_sync.connections import purge_calendar_member
+    await purge_calendar_member(db, org_id, addr)
     if knowledge_revokes is not None:
         knowledge_revokes.extend(revokes)
     # WS-63 PZ-9: the settings row went above, so the executor must read the
@@ -1235,8 +1369,9 @@ async def purge_member_rows(
 
     # Before the commit, on its own connection — see the admin route's
     # docstring.
+    # Task 2221: the org of this purge. The operator door binds no tenant.
     record_admin_change(actor_email, "org.member_purged", f"user:{addr}",
-                        deleted=deleted, kept=kept)
+                        organization_id=org_id, deleted=deleted, kept=kept)
     return deleted, kept, plans
 
 

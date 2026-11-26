@@ -17,6 +17,10 @@
       {
         "href": "/build/agents",
         "feature": "build.agents"
+      },
+      {
+        "href": "/apps",
+        "feature": "studio"
       }
     ]
   }

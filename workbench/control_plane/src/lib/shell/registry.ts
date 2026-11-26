@@ -196,7 +196,7 @@ export function buildItems(
  */
 export function addInstallJobs(
   items: BarItem[],
-  jobs: readonly { id: string; label: string; words: readonly string[]; href: string; icon: string }[],
+  jobs: readonly { id: string; label: string; words: readonly string[]; href: string; icon: string; app?: string }[],
 ): BarItem[] {
   if (jobs.length === 0) return items;
   const taken = new Set(items.map((i) => i.key));
@@ -206,11 +206,11 @@ export function addInstallJobs(
       key: `do:${j.id}`,
       group: "do",
       label: j.label,
-      hint: "Start · Installed app",
+      hint: j.app ? `Start · ${j.app}` : "Start · Installed app",
       icon: j.icon,
       href: j.href,
       app: j.href.split(/[?#]/)[0],
-      words: j.words,
+      words: j.app ? [...j.words, j.app] : j.words,
     }));
   if (extra.length === 0) return items;
   const at = items.reduce((n, i, k) => (i.group === "do" ? k + 1 : n), 0);

@@ -3,18 +3,22 @@ hydration, and the full-body endpoint."""
 
 from __future__ import annotations
 
+import functools
 import json
 import time
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
@@ -59,6 +63,10 @@ from gateway.routes.email.provider_errors import (
 )
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -215,12 +223,18 @@ async def list_messages(
     has_attachments: bool | None = Query(None),
     importance: str | None = Query(None),       # high | normal | low
     from_email: str | None = Query(None),       # substring match on sender address
+    to_addr: str | None = Query(None),          # substring on any To/Cc recipient (LOOP-19)
+    attachment_name: str | None = Query(None),  # substring on a file name (LOOP-19)
     sender_category: str | None = Query(None),  # email_senders category
     sort: str = Query("newest"),                # newest | oldest | importance
     collapse: bool = Query(False),              # one row per conversation
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     user: UserContext = Depends(get_current_user),
+    # HRD-18b. A plain default, so a direct call that leaves it out gets False.
+    # Only the chat's `query_inbox` sends it. The Mail UI never does, so its
+    # list keeps the exact sender filter.
+    near_sender: bool = False,
 ):
     """List/search emails across accounts.
 
@@ -238,6 +252,9 @@ async def list_messages(
     level, matching the one-classification-per-conversation invariant); the
     assistant's inbox-query tools leave it off so their counts stay per-message.
     Ignored when ``thread_id`` is set (the conversation view wants every message).
+
+    ``near_sender`` (HRD-18b) opts in to the near spelling of a sender filter
+    that finds no mail. It acts only when ``FIND_ORGS`` holds the org too.
     """
     # Chat speed (2026-10-25): the assistant's `query_inbox` waited a median
     # 7.5 s on this route, and the page itself reads in about 0.1 s. One log
@@ -261,6 +278,9 @@ async def list_messages(
         mailbox_sql = _mailbox_clause(account_id, thread_id, params)
         if mailbox_sql:
             where_clauses.append(mailbox_sql)
+        # HRD-18b: the mailboxes of the read and nothing else. The near retry
+        # of a sender asks them whether the sender has any mail at all.
+        scope = list(where_clauses)
         if thread_id:
             # Conversation view: every message in the thread, ignore the folder
             # filter (a thread spans inbox/sent/etc.).
@@ -327,10 +347,16 @@ async def list_messages(
         if has_attachments is not None:
             where_clauses.append("em.has_attachments = :has_attachments")
             params["has_attachments"] = has_attachments
+        for clause in (recipient_clause(params, to_addr),
+                       attachment_name_clause(params, attachment_name)):
+            if clause:
+                where_clauses.append(clause)
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
+        from_at: int | None = None
         if from_email:
+            from_at = len(where_clauses)
             where_clauses.append(
                 "LOWER(em.from_address->>'email') LIKE :from_email")
             params["from_email"] = f"%{from_email.strip().lower()}%"
@@ -373,19 +399,17 @@ async def list_messages(
             order_sql, order_plain = "em.received_at DESC, em.id DESC", "received_at DESC, id DESC"
 
         # Count total — conversations when collapsing, else messages.
-        count_sql = (
-            f"""SELECT COUNT(DISTINCT {conv_key})
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-            if do_collapse else
-            f"""SELECT COUNT(*)
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-        )
-        count_result = await db.execute(text(count_sql), params)
+        count_sql = functools.partial(_count_sql, conv_key=conv_key, collapse=do_collapse)
+        count_result = await db.execute(text(count_sql(where_sql)), params)
         total = count_result.scalar() or 0
+        # HRD-18b: a sender filter that found no mail tries the near spelling
+        # of the sender, when the caller asks (`near_sender`) and FIND_ORGS is
+        # on. The answer names the spelling.
+        where_sql, total, near = await _near_sender_retry(
+            db, user, from_email, account_id, clauses=where_clauses, at=from_at,
+            params=params, where_sql=where_sql, total=total, count_sql=count_sql,
+            listing=near_sender is True and not thread_id, scope=scope,
+        )
         _counted = time.monotonic()
 
         _COLS = """em.id, em.provider_message_id, em.thread_id,
@@ -488,7 +512,131 @@ async def list_messages(
             "total": total,
             "page": page,
             "page_size": page_size,
+            **near,
         }
+
+
+def _count_sql(where_sql: str, *, conv_key: str, collapse: bool) -> str:
+    """The COUNT of :func:`list_messages`: conversations when it collapses,
+    else messages."""
+    if collapse:
+        return f"""SELECT COUNT(DISTINCT {conv_key})
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+    return f"""SELECT COUNT(*)
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+
+
+#: The names that the near retry of ``from_email`` weighs, and the most
+#: sender addresses that it reads (HRD-18b).
+NEAR_FROM_NAMES = 5
+NEAR_FROM_MAX = 20
+
+
+async def _near_sender_retry(
+    db: Any, user: UserContext, from_email: str | None, account_id: str | None, *,
+    clauses: list[str], at: int | None, params: dict[str, Any], where_sql: str,
+    total: int, count_sql: Any, listing: bool, scope: list[str],
+) -> tuple[str, int, dict[str, Any]]:
+    """The list's WHERE and total after the near retry of a sender filter.
+
+    It runs only when *listing* is true: the caller sent ``near_sender`` and
+    the read is no thread load. The whole read must have found no mail, and
+    then the sender ALONE must have no mail either (:func:`_sender_has_mail`,
+    review of 2026-11-16). So "unread mail from Vijay" with Vijay's mail all
+    read tries no near spelling, and a sender whose name holds the word is
+    never replaced by another. An exact total of 0 is 0 on each page, so each
+    page retries, and the pages agree. With a near spelling
+    (:func:`_near_from`), the filter's clause becomes the addresses of the
+    near senders, and the count runs again. The third value is
+    ``{"near": ...}`` for the answer, else ``{}``: a closed shape of the
+    filter as the member gave it and one token of a sender that the member
+    may read.
+    """
+    if total or at is None or not listing or not _near_wanted(user, from_email or ""):
+        return where_sql, total, {}
+    if await _sender_has_mail(db, scope, params, from_email or ""):
+        return where_sql, total, {}
+    found = await _near_from(db, user, from_email or "", account_id)
+    if found is None:
+        return where_sql, total, {}
+    clauses[at] = "LOWER(em.from_address->>'email') = ANY(:from_near)"
+    params.pop("from_email", None)
+    params["from_near"] = found[1]
+    where_sql = " AND ".join(clauses)
+    total = (await db.execute(text(count_sql(where_sql)), params)).scalar() or 0
+    return where_sql, total, {"near": {"word": (from_email or "").strip()[:80], "as": found[0]}}
+
+
+def _near_wanted(user: UserContext, wanted: str) -> bool:
+    """True when ``FIND_ORGS`` holds the member's org and the sender filter
+    is one word of 4 letters or more, so a near spelling may be tried."""
+    from acb_common import name_match
+    from gateway.retrieval.find import find_allowed
+
+    if not find_allowed(getattr(user, "organization_id", None)):
+        return False
+    asked = name_match.words(wanted)
+    return len(asked) == 1 and name_match.near_eligible(asked[0])
+
+
+#: A sender whose address or name holds the filter (HRD-18b review, P1-a).
+_HELD_SENDER = (
+    "(LOWER(em.from_address->>'email') LIKE :held_sender"
+    " OR LOWER(em.from_address->>'name') LIKE :held_sender)"
+)
+
+
+async def _sender_has_mail(db: Any, scope: list[str], params: dict[str, Any],
+                           wanted: str) -> bool:
+    """True when a mail of the read's mailboxes (*scope*) comes from a sender
+    whose address or name holds *wanted*, in any folder and with no other
+    filter: no folder, no read state, no date and no words. Then the word has
+    mail of its own, and no near spelling stands in for it."""
+    sql = (
+        "SELECT 1 FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id "
+        "WHERE " + " AND ".join([*scope, _HELD_SENDER]) + " LIMIT 1"
+    )
+    held = {**params, "held_sender": f"%{wanted.strip().lower()}%"}
+    return (await db.execute(text(sql), held)).first() is not None
+
+
+async def _near_from(
+    db: Any, user: UserContext, wanted: str, account_id: str | None,
+) -> tuple[str, list[str]] | None:
+    """The near spelling of a sender filter that found no mail, and the
+    addresses of the senders that hold it (HRD-18b, ``find_engine.md`` §5.3).
+
+    ``None`` unless ``FIND_ORGS`` holds the member's org, the filter is one
+    word of 4 letters or more, and a sender of the mailboxes of the read is
+    near it. The senders come from ``contacts.sender_rows``, the reader of
+    the company search, and ``acb_common.name_match`` judges them. So a
+    sender of another member's mailbox never gives a spelling.
+    """
+    import asyncio
+
+    from acb_common import name_match
+    from gateway.routes.email.transport.contacts import sender_names, sender_rows
+
+    if not _near_wanted(user, wanted):
+        return None
+    asked = name_match.words(wanted)
+    rows = await sender_rows(db, user.email or "anonymous", account_id)
+    found = await asyncio.to_thread(
+        name_match.near_names, asked[0], sender_names(rows), NEAR_FROM_NAMES,
+        deadline=name_match.scoring_deadline())
+    best = name_match.best_spelling(asked[0], found)
+    if best is None:
+        return None
+    spelt = name_match.words(best.spelling)[0]
+    addresses = [
+        address for name, address in rows
+        if spelt in name_match.words(name) or spelt in name_match.words(address)
+    ][:NEAR_FROM_MAX]
+    return (best.spelling, addresses) if addresses else None
 
 
 # Sender categories that are bulk/automated and never "important to check".
@@ -638,7 +786,9 @@ async def _rekey(db: Any, message_id: str, old: str, new: str) -> None:
                      reason="row_changed")
 
 
-async def _hydrate_attachments(message_id: str, user_email: str) -> list[AttachmentModel]:
+async def _hydrate_attachments(
+    message_id: str, user_email: str
+) -> tuple[list[AttachmentModel], bool]:
     """Fetch a message from its provider and persist its attachment metadata,
     then return it.
 
@@ -649,6 +799,10 @@ async def _hydrate_attachments(message_id: str, user_email: str) -> list[Attachm
     gap: when a message advertises attachments but none are stored, fetch and
     store them regardless of the body state.
 
+    Returns ``(files, ok)``. ``ok`` is False only when the provider call
+    failed (an expired token, a rate limit), so the reader can say so. An
+    empty list with ``ok`` True is a mail whose parts are all inline pictures.
+
     ⚠️ No session is open across the provider call (2026-10-28). Block A
     builds the provider and closes. Block B writes the rows after the fetch.
     """
@@ -658,22 +812,57 @@ async def _hydrate_attachments(message_id: str, user_email: str) -> list[Attachm
                 db, message_id, user_email
             )
         if not await provider.authenticate():
-            return []
+            return [], False
         full = await provider.get_message(provider_msg_id)
         async with _tenant_session() as db:
             await _insert_attachments(db, message_id, full.attachments)
             await _persist_rotated_creds(db, store, account_id, provider)
-            return await _fetch_attachments(db, message_id)
+            return await _fetch_attachments(db, message_id), True
     except Exception as exc:  # noqa: BLE001
         _log.warning(
             "get_message.attach_hydrate_failed",
             message_id=message_id, error=str(exc)[:200],
         )
-        return []
+        return [], False
 
 
 class MessageSummariesRequest(BaseModel):
     ids: list[str]
+
+
+def summary_ids(raw: list[str] | None) -> list[str]:
+    """The valid message ids of a summaries request, canonical, in order.
+
+    A client may send ``id=<uuid>``, the label that the list tools print, so
+    the label drops first. An id that is not a UUID drops out. One bad id
+    must never fail the batch: asyncpg raised ``DataError`` for it, and the
+    route answered 500 for every row (task 3863).
+    """
+    out: list[str] = []
+    for item in raw or []:
+        try:
+            out.append(str(uuid.UUID(strip_id_label(item))))
+        except ValueError:
+            continue
+    return out
+
+
+def _summary_extra(row: Any) -> dict[str, Any]:
+    """The mailbox, the folder, the To addresses and the snippet of one
+    summaries row (task 3977). A row without a column gives an empty value."""
+    to = getattr(row, "to_addresses", None)
+    if isinstance(to, str):
+        try:
+            to = json.loads(to or "[]")
+        except ValueError:
+            to = []
+    account = getattr(row, "account_id", None)
+    return {
+        "account_id": str(account) if account else None,
+        "folder": getattr(row, "folder", None),
+        "to_addresses": to if isinstance(to, list) else [],
+        "snippet": getattr(row, "snippet", None) or "",
+    }
 
 
 @router.post("/messages/summaries")
@@ -689,14 +878,15 @@ async def message_summaries(
     server-side, so the card is self-contained regardless of which list tool
     (or none) surfaced the id. Owner-scoped; unknown/foreign ids are omitted.
     Order follows the input ``ids`` so the agent's grouping is preserved."""
-    ids = [i for i in (req.ids or []) if i]
+    ids = summary_ids(req.ids)
     if not ids:
         return {"summaries": []}
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
                 """SELECT em.id, em.thread_id, em.subject, em.from_address,
-                          em.received_at, em.is_read, em.has_attachments
+                          em.received_at, em.is_read, em.has_attachments,
+                          em.account_id, em.folder, em.to_addresses, em.snippet
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
                    WHERE """
@@ -718,6 +908,9 @@ async def message_summaries(
                 "received_at": r.received_at.isoformat() if r.received_at else None,
                 "is_read": r.is_read,
                 "has_attachments": r.has_attachments,
+                # Task 3977 (§18.13): the chat trash tells a draft from a
+                # mail, and matches drafts, with no read of each message.
+                **_summary_extra(r),
             }
         # Preserve caller order (and drop ids the user doesn't own).
         summaries = [by_id[i] for i in ids if i in by_id]
@@ -891,7 +1084,9 @@ async def get_message(
         # Body came from sync (so the hydration block above didn't run) but
         # the attachments were never stored — fetch + store them now.
         if not msg.attachments:
-            msg.attachments = await _hydrate_attachments(message_id, owner)
+            msg.attachments, ok = await _hydrate_attachments(message_id, owner)
+            if not ok:
+                msg.attachments_status = "failed"
     # After the hydration and its write, so the store keeps the whole
     # body (WS-17, 2026-10-09). `is True`, as `mark_read` above, holds the
     # default for a direct Python call.
@@ -1167,12 +1362,27 @@ async def snooze_message(
         }
 
 
+#: The values of ``provider`` in the answer of ``DELETE ...?report=true``
+#: (task 3977, ``email_app_master_plan.md`` §18.13).
+TRASH_CONFIRMED = "confirmed"
+TRASH_NOT_CONFIRMED = "not_confirmed"
+
+
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_message(
     message_id: str,
     user: UserContext = Depends(get_current_user),
+    report: bool = False,
 ):
-    """Move email to trash (locally and on the provider)."""
+    """Move email to trash (locally and on the provider).
+
+    The answer is 204 with no body, as before. Task 3977 (§18.13): with
+    ``?report=true`` the answer is 200 and says what the provider did.
+    ``provider`` is ``confirmed`` only when the provider accepted the trash.
+    It is ``not_confirmed`` when no provider loads, when it does not
+    authenticate, or when its trash raises. The local row then reads Trash,
+    and the next sync can bring the message back. ``reason`` is one fixed
+    word, and never the text of an error."""
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -1202,16 +1412,20 @@ async def delete_message(
     # ── Two-way sync: trash on the provider too (best-effort) ──
     # The local trash committed with the block above, BEFORE the push
     # (2026-10-28). No session is open across the provider call.
+    confirmed = False
+    reason = "no_provider" if built is None else "not_authenticated"
+    discarded = False
     if built is not None:
         provider, provider_msg_id, account_id, store = built
         new_pid = None
-        discarded = False
         try:
             if await provider.authenticate():
                 new_pid = await provider.trash_message(provider_msg_id)
+                confirmed = True
                 discarded = provider_msg_id in getattr(provider, "discarded_drafts", ())
         except Exception as exc:  # noqa: BLE001
             push_error = exc
+            reason = "provider_error"
         rekeyed = bool(new_pid) and new_pid != provider_msg_id
         if discarded or rekeyed or provider.credentials_dirty():
             try:
@@ -1237,6 +1451,16 @@ async def delete_message(
             "delete_message.provider_sync_failed",
             message_id=message_id, error=str(push_error)[:200],
         )
+    if not report:
+        return None
+    # A failure AFTER the provider accepted (the local re-key or the saved
+    # tokens) does not undo the trash, so it stays confirmed.
+    return JSONResponse({
+        "id": message_id,
+        "provider": TRASH_CONFIRMED if confirmed else TRASH_NOT_CONFIRMED,
+        "reason": "" if confirmed else reason,
+        "discarded": discarded,
+    })
 
 
 @router.get("/messages/{message_id}/full-body")

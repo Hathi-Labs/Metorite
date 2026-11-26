@@ -39,7 +39,8 @@ import { mergeFileEntry } from "@/lib/shell/chatHistory";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
+import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTierRouted } from "@/hooks/useTierRouted";
@@ -324,6 +325,7 @@ function SessionList({
   activeId,
   activeRunIds,
   unreadIds,
+  needsInputIds,
   onSelect,
   onNew,
   onDelete,
@@ -334,6 +336,7 @@ function SessionList({
   activeRunIds: Set<string>;
   /** Chats with a reply the member has not read (WS-51 S5). */
   unreadIds: ReadonlySet<string>;
+  needsInputIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -504,7 +507,7 @@ function SessionList({
                       )}
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
-                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
+                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} needsInput={needsInputIds.has(s.id)} />
                           {/* A cut title shows whole in a tip (owner, 2026-10-10). The
                               row stays a two-line card, so only this line gets it. */}
                           <OverflowTip
@@ -579,11 +582,17 @@ function ChatPageInner() {
 
   const { isMobile } = useViewMode();
   const {
-    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen,
+    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen, shows: drawerShows,
   } = useMobileDrawer();
+  // The place tab whose sheet shows is selected in the bar (MOB-12).
+  const [sheetTab, markSheetTab] = useSheetTab(drawerIsOpen, drawerShows);
+  usePhoneBar({ active: sheetTab });
+  // The bar's "New chat" tab starts a chat as the page's own button does.
+  const newChatRef = useRef<() => void>(() => {});
   const activeRunIds = useActiveSessions();
   // WS-51 S5: a chat whose run ended while the member looked away.
   const unreadIds = useUnreadIds();
+  const needsInputIds = useNeedsInputIds();
 
   // Refs to hold drawer content (defined later in render).
   const conversationsRef = useRef<React.ReactNode>(null);
@@ -599,15 +608,19 @@ function ChatPageInner() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "chats" && conversationsRef.current) {
         drawerTabRef.current = "chats";
+        markSheetTab("chats");
         openDrawer(conversationsRef.current);
       } else if (tab === "files" && filesRef.current) {
         drawerTabRef.current = "files";
+        markSheetTab("files");
         openDrawer(filesRef.current);
+      } else if (tab === "chat-new") {
+        newChatRef.current();
       }
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer]);
+  }, [openDrawer, markSheetTab]);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
@@ -730,6 +743,15 @@ function ChatPageInner() {
       setSessionPanelOpen(true);
     }
   }, [isMobile]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // H-332 (task 757): the panes do not all fit on a narrow desktop. When the
+  // Files pane opens below 1400 px, the conversations list folds (its header
+  // toggle brings it back), so the message column keeps its room.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!isMobile && artifactPanelOpen && window.innerWidth < 1400) setSessionPanelOpen(false);
+  }, [artifactPanelOpen, isMobile]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Auto-reveal the artifact sidebar the first time an agent writes a file
@@ -918,6 +940,7 @@ function ChatPageInner() {
     newChatWaitingRef.current = action === "wait";
     setShowPicker(true);
   }, [agentChoice, startOrchestratorChat]);
+  newChatRef.current = handleNewSession;
 
   // The list answered: a waiting press starts the orchestrator chat, or the
   // picker that it asked for now draws (`agentPickerShows`).
@@ -1075,6 +1098,7 @@ function ChatPageInner() {
           activeId={activeSessionId}
           activeRunIds={activeRunIds}
           unreadIds={unreadIds}
+          needsInputIds={needsInputIds}
           onSelect={(id) => { handleSelectSession(id); closeDrawer(); }}
           onNew={() => { handleNewSession(); closeDrawer(); }}
           onDelete={handleDeleteSession}
@@ -1205,16 +1229,17 @@ function ChatPageInner() {
               <SessionRunDot
                 running={sessions.some((s) => activeRunIds.has(s.id))}
                 unread={sessions.some((s) => unreadIds.has(s.id))}
+                needsInput={sessions.some((s) => needsInputIds.has(s.id))}
               />
             )
           }
         />
       )}
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-x-auto overflow-y-hidden" data-chat-row="">
       {/* ── Desktop: conversations sidebar ────────────────────────────── */}
       {!isMobile && sessionPanelOpen && (
-        <aside className="w-72 shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
+        <aside className="w-72 min-w-44 shrink border-r border-border bg-sidebar flex flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-sidebar-foreground">Conversations</div>
           </div>
@@ -1225,6 +1250,7 @@ function ChatPageInner() {
               activeId={activeSessionId}
               activeRunIds={activeRunIds}
               unreadIds={unreadIds}
+              needsInputIds={needsInputIds}
               onSelect={handleSelectSession}
               onNew={handleNewSession}
               onDelete={handleDeleteSession}
@@ -1258,7 +1284,9 @@ function ChatPageInner() {
       {!isMobile && <SidePanelEditor />}
 
       {/* ── Chat area ──────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden min-w-0">
+      {/* H-332 (task 757): the message column keeps a floor. With the panes open
+          the row scrolls sideways before the column is crushed under a card. */}
+      <div data-chat-column="" className="flex flex-1 overflow-hidden min-w-[min(100%,26rem)]">
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
 
           {activeSession ? (

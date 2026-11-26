@@ -132,6 +132,14 @@ KEY_ROOT = "cc"
 #: answers 503 for it.
 OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
 
+#: The one script of :meth:`TenantRedis.delete_unless`: delete ``KEYS[1]``
+#: unless it holds ``ARGV[1]``. Redis runs a script as one step. It names no
+#: key of its own, so the key discipline of the wrapper holds.
+_DELETE_UNLESS_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 end "
+    "return redis.call('DEL', KEYS[1])"
+)
+
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -508,6 +516,18 @@ class TenantRedis:
         """
         return await self._client.getdel(self._raw(k))
 
+    async def delete_unless(self, k: TenantKey, value: str) -> Any:
+        """Delete *k* unless it holds *value*, in ONE atomic step.
+
+        The step is the fixed Lua script :data:`_DELETE_UNLESS_LUA`. It
+        touches ``KEYS[1]`` only, and a caller gives no script, so it can
+        reach no key of another tenant. Gives 1 when it deleted the key, and
+        0 when the key held *value* or did not exist. A GET and then a DELETE
+        can remove a value that another writer set between the two
+        (``acb_skills.late_approve.drop_offer``, the SPENT mark of RESUME-2a).
+        """
+        return await self._client.eval(_DELETE_UNLESS_LUA, 1, self._raw(k), value)
+
     async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
         """Read many keys in ONE round trip. Each key goes through
         :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
@@ -720,6 +740,17 @@ class TenantPipeline:
 
     def expire(self, k: TenantKey, seconds: int) -> TenantPipeline:
         self._pipe.expire(TenantRedis._raw(k), seconds)
+        return self
+
+    def incr(self, k: TenantKey, amount: int = 1) -> TenantPipeline:
+        self._pipe.incr(TenantRedis._raw(k), amount)
+        return self
+
+    def expireat(self, k: TenantKey, when: int) -> TenantPipeline:
+        """Set the key to end at the Unix time *when*. A counter of a fixed
+        period (API-3, the daily budget) sets one end each time, in the
+        same MULTI block as its INCR, so no key lives without an end."""
+        self._pipe.expireat(TenantRedis._raw(k), when)
         return self
 
     async def execute(self) -> Any:

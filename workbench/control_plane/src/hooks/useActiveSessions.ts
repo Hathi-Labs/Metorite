@@ -197,6 +197,20 @@ export function useThreadNeedsInput(threadId: string | null | undefined): boolea
   );
 }
 
+/**
+ * The ids of the chats whose run waits on the member's answer (task 3600), for
+ * a chat list's amber dot. The set keeps its reference while the ids hold, so a
+ * run's step change does not redraw the list. It starts no poll of its own.
+ */
+export function useNeedsInputIds(): ReadonlySet<string> {
+  const serverRuns = useServerRuns();
+  const idsKey = useMemo(
+    () => serverRuns.filter((r) => r.state === "needs_input").map((r) => r.threadId).sort().join(","),
+    [serverRuns],
+  );
+  return useMemo(() => (idsKey ? new Set(idsKey.split(",")) : EMPTY), [idsKey]);
+}
+
 /** A session's title from this member's session list, for a run with none. */
 export function localTitle(threadId: string): string | null {
   try {

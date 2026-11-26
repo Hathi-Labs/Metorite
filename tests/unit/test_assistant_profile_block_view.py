@@ -146,7 +146,7 @@ def test_the_executor_calls_the_same_function() -> None:
     import orchestrator.executor as ex
 
     src = inspect.getsource(ex._member_profile_entry)
-    assert "assistant_profile.member_block(raw, preferred, display)" in src
+    assert "assistant_profile.member_block(raw, preferred, display, str(org))" in src
     assert "render_block" not in src
     route = inspect.getsource(ap.get_assistant_profile_block)
     assert "member_block(" in route and "render_block" not in route

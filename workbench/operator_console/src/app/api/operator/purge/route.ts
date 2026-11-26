@@ -3,6 +3,11 @@
 // The one BFF route that touches two upstreams, in a fixed order the tests
 // pin (`route.test.ts`):
 //
+//   0. Console `GET /operators/session` (and `GET /operators/elevate`): the
+//      caller's rank. The gateway door trusts this console's token, so the
+//      rank check must happen here, BEFORE any other call and before the
+//      tenant act (H-313). ADMIN, with an open elevation window when the
+//      Console requires one: the `/orgs/purge` row of the matrix.
 //   1. Console `GET /orgs` — the AUTHORITY check: the org must already be
 //      `deleted` on the lifecycle graph. `deleted` is terminal (nothing
 //      transitions out of it), so the check cannot be invalidated between
@@ -17,12 +22,34 @@
 // the tenant data under a name nobody can type. A failure between 2 and 3
 // leaves the Console row intact and the whole action retryable as-is.
 
-import { listOrganizations, purgeOrgRegistry } from "@/lib/console";
+import {
+  listOrganizations,
+  purgeOrgRegistry,
+  readElevation,
+  readOperatorSession,
+} from "@/lib/console";
 import { purgeTenantOrg, TenantDoorUnconfigured } from "@/lib/tenantDoor";
-import { gate, json, readJsonBody } from "@/lib/route";
+import { OWN_REFUSAL, type ElevationRead } from "@/lib/memberRemove";
+import { mayPurgeOrg } from "@/lib/orgPurge";
+import { readWhoami } from "@/lib/whoami";
+import { gate, json, readJsonBody, relay } from "@/lib/route";
 import { ConsoleUnconfigured } from "@/lib/console";
 
 export const dynamic = "force-dynamic";
+
+// A body we can show: the parsed JSON, or the raw text when it is not JSON.
+function readBody(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// A refusal that is this route's own, marked as the member removal marks it.
+function own(status: number, body: Record<string, unknown>): Response {
+  return json(status, { ...body, refused_by: OWN_REFUSAL });
+}
 
 export async function POST(request: Request): Promise<Response> {
   const admitted = await gate();
@@ -47,6 +74,24 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    // 0 — the caller's rank, before anything else. Fail CLOSED.
+    const session = await readOperatorSession(d);
+    if (session.status !== 200) return relay(session);
+    const who = readWhoami(readBody(session.body));
+    if (who === null) {
+      return own(502, {
+        error: "the Console's session read gave a shape this console cannot read",
+      });
+    }
+    let elevation: ElevationRead | null = null;
+    if (who.method === "session") {
+      const win = await readElevation(d);
+      if (win.status !== 200) return relay(win);
+      elevation = readBody(win.body) as ElevationRead;
+    }
+    const refusal = mayPurgeOrg(who, elevation);
+    if (refusal !== null) return own(403, { error: refusal });
+
     // 1 — the authority check.
     const list = await listOrganizations(d);
     if (list.status !== 200) {

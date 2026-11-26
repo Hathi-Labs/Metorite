@@ -15,8 +15,16 @@ Spec ``project-docs/specs/external_agent_access.md`` §7.1 and §9.6, check 6.
 3. The token audience must equal ``agent_oauth.resource()``. The lookup does
    not check it, so the edge must.
 4. The effective scopes are the token scope intersected with the connection
-   scopes. ``projects:write`` covers ``projects:read`` on both sides, and
-   the write scope of an app covers its read scope (MCP-P1a).
+   scopes (``agent_oauth.effective_scopes``). ``projects:write`` covers
+   ``projects:read`` on both sides, and the write scope of an app covers its
+   read scope (MCP-P1a). Since EA-17c-3 the token carries what the agent
+   asked for, and the connection scopes alone narrow it.
+5. **A box token (EA-19b, spec §10.9).** A token of a connection of
+   credential ``box`` is a 401 while ``agent_oauth.box_tokens_enabled`` is
+   false, next to the allowlist check. After a check that passes, the edge
+   stamps the use with ``agent_tokens.touch_box_use`` and the client
+   address that ``mcp.py`` passes in (``request.client.host``, never
+   ``X-Real-IP``). A failed stamp never fails the request.
 
 The tenant comes from the token row and from nowhere else. This module reads
 one request input, the ``Authorization`` header, and it never sends that
@@ -76,25 +84,30 @@ def token_of(header_value: str | None) -> str | None:
     return token or None
 
 
-def _expand(scopes: Iterable[str]) -> set[str]:
-    """The resource scopes of *scopes*, with the cover rule of
-    ``agent_oauth.covered_scopes``: ``<x>:write`` covers ``<x>:read``, for
-    Projects and for each app of the door (MCP-P1a, spec §19.6)."""
-    return agent_oauth.covered_scopes(scopes)
-
-
 def effective_scopes(token_scope: str | None, connection_scopes: Iterable[str]) -> frozenset[str]:
     """The token scope intersected with the connection scopes (§7.1 step 4).
 
-    A broader scope covers a narrower one on each side before the
-    intersection, so a ``projects:write`` token on a ``projects:read``
-    connection may read. A malformed token scope gives no scope.
+    ``agent_oauth.effective_scopes`` holds the ONE rule, and this name calls
+    it (EA-17c-3). A broader scope covers a narrower one on each side before
+    the intersection, so a ``projects:write`` token on a ``projects:read``
+    connection may read. A malformed token scope gives no scope. ⚠️ Since
+    EA-17c-3 a token carries every scope that the agent asked for, so the
+    connection side is the grant. Never read the token scope of a lookup
+    alone.
     """
-    try:
-        token = _expand(agent_oauth.parse_scope(token_scope))
-    except ValueError:
-        token = set()
-    return frozenset(token & _expand(connection_scopes))
+    return agent_oauth.effective_scopes(token_scope, connection_scopes)
+
+
+def read_only(caller: Caller) -> Caller:
+    """*caller* with its scopes narrowed to the read scopes (SW-34b).
+
+    The read-only door ``/mcp/readonly`` calls it once, right after
+    :func:`authenticate`. Each later check reads the narrowed scopes, so the
+    list, check 8, the prompt, the resources and the instructions follow
+    the door with no second scope rule. The rule is
+    ``agent_oauth.read_only``, and it only removes a scope.
+    """
+    return Caller(lookup=caller.lookup, scopes=agent_oauth.read_only(caller.scopes))
 
 
 def covers(scopes: frozenset[str], required: str | None) -> bool:
@@ -102,8 +115,22 @@ def covers(scopes: frozenset[str], required: str | None) -> bool:
     return required is None or required in scopes
 
 
-async def authenticate(header_value: str | None) -> Caller:
-    """§7.1 steps 1 to 4, or raise :class:`BearerRefused`."""
+async def _touch_box(found: TokenLookup, client_addr: str | None) -> None:
+    """Stamp the use of a box token (step 5). Any error only logs."""
+    try:
+        await agent_tokens.touch_box_use(
+            found.connection_id, found.organization_id, client_addr)
+    except Exception as exc:
+        _log.warning("agent_edge.box_touch_failed", error=type(exc).__name__,
+                     connection_id=found.connection_id)
+
+
+async def authenticate(header_value: str | None, client_addr: str | None = None) -> Caller:
+    """§7.1 steps 1 to 4 and step 5, or raise :class:`BearerRefused`.
+
+    *client_addr* is the client address of the request. Only a box token
+    reads it (EA-19b).
+    """
     raw = token_of(header_value)
     if raw is None:
         raise BearerRefused(401, sent=False, reason="no_token")
@@ -124,9 +151,16 @@ async def authenticate(header_value: str | None) -> Caller:
     if not agent_oauth.org_allowed(found.organization_id):
         _log.info("agent_edge.token_org_not_allowed", connection_id=found.connection_id)
         raise BearerRefused(401, sent=True, reason="org_not_allowed")
+    # EA-19b: a box token is live only while the box flag is on (a pause).
+    box = found.credential == agent_tokens.BOX
+    if box and not agent_oauth.box_tokens_enabled():
+        _log.info("agent_edge.box_tokens_off", connection_id=found.connection_id)
+        raise BearerRefused(401, sent=True, reason="box_tokens_off")
     if found.resource != agent_oauth.resource():
         _log.info("agent_edge.token_wrong_audience", connection_id=found.connection_id)
         raise BearerRefused(401, sent=True, reason="audience")
+    if box:
+        await _touch_box(found, client_addr)
     return Caller(lookup=found, scopes=effective_scopes(found.scope, found.scopes))
 
 
@@ -138,5 +172,6 @@ __all__ = [
     "authenticate",
     "covers",
     "effective_scopes",
+    "read_only",
     "token_of",
 ]

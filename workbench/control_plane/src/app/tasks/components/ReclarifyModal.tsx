@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect } from "react";
@@ -19,6 +20,9 @@ export function ReclarifyModal() {
   const items = useTaskStore((s) => s.items);
   const vp = useVisualViewport();
   const item = id ? items.find((i) => i.id === id) : undefined;
+
+  // A tap on a tab of the phone's bar closes it, and the tab then acts.
+  useCloseOnBarTap(close, !!item);
 
   // The item vanished (deleted/undone elsewhere) → close.
   useEffect(() => {

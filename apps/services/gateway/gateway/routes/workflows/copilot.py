@@ -10,6 +10,14 @@ and their nodes are rewired from ``module_name`` to real ``module_id``s. The
 resulting graph is validated (one named-issue repair round) and returned to
 the client, which applies it to the canvas — the maker reviews, tests, and
 saves; the copilot never writes the workflow row itself.
+
+**The gate (STU-J1-3).** A Copilot turn is authoring: it builds a graph for the
+editor and spends credits. So the route carries ``AUTHOR_GATE`` and needs
+``feature:studio`` where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org. It keeps
+the router gate too, and that gate is the gate of the module write in
+``_save_module``: the module routes keep ``feature:workflows`` until STU-Q15
+has a decision. So J1-3 opens no module write to a person who lacks
+``feature:workflows``.
 """
 
 from __future__ import annotations
@@ -21,6 +29,7 @@ from acb_auth import UserContext, get_current_user
 from acb_llm.voice import voice_prompt
 from fastapi import Depends, HTTPException
 from gateway.routes.workflows.core import (
+    AUTHOR_GATE,
     _log,
     _tenant_session,
     _uid,
@@ -60,7 +69,7 @@ Respond with ONLY a JSON object (no prose outside it, no markdown fence):
 Graph rules (a validator enforces them — violations bounce back to you):
 - Node: {"id", "type", "position": {"x","y"}, "data": {"label", "config"}}.
   Types: trigger | agent | tool | module | condition | set | approval | wait |
-  output.
+  human_step | output.
 - Exactly one trigger node; no cycles; a node has at most ONE incoming edge.
 - Edges: {"id", "source", "target"}; edges out of a condition MUST carry
   "sourceHandle": "true" or "false".
@@ -80,6 +89,14 @@ Graph rules (a validator enforces them — violations bounce back to you):
 - Any tool action marked "write": true MUST have an approval node somewhere
   upstream of it (the validator rejects the graph otherwise).
 - Never put credentials or secrets in any config.
+- human_step: {"assignee": <member email>, "title": "...", "description": "..."}
+  and no other key. The run gives that member one task and pauses until the
+  task is done. All three values are fixed words: never put a {{ref}} in a
+  human_step. "description" is optional. Use only an email that the maker
+  wrote; never invent one. If the maker names nobody, leave "assignee" empty
+  and ask in "reply" who gets the task.
+- Never use the node types pm_task or pm_lifecycle: no run starts a workflow
+  that holds one.
 - Lay out top-to-bottom: x around 360 for the spine, y += ~120 per node;
   condition branches diverge left/right (x -220 / +220). Keep existing node
   positions when you keep the node.
@@ -263,7 +280,7 @@ async def _capability_context(message: str, db: Any) -> dict[str, Any]:
     }
 
 
-@router.post("/{workflow_id}/copilot")
+@router.post("/{workflow_id}/copilot", dependencies=[AUTHOR_GATE])
 async def workflow_copilot(
     workflow_id: str,
     body: CopilotRequest,
