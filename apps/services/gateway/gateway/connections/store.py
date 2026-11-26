@@ -22,6 +22,13 @@ the column.
 * **No secret out.** The blob, the access token and the refresh token never
   appear in a return value (except :func:`load_credential`, which exists to
   return them to server code), a log line or an error message.
+* **A connect clears the asks (WS-STU I8b-1a).** Each of the six writers that
+  can leave a row ``connected`` calls :func:`_clear_asks` with the row that its
+  statement returned: :func:`save_credential`, :func:`save_no_secret`,
+  :func:`save_headers`, :func:`attach_oauth_credential`,
+  :func:`update_oauth_public` and :func:`set_status`. The hook reads the status
+  and the scope from that row, never from the call. Fence:
+  ``tests/unit/test_studio_connection_ask.py``.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common import get_logger
+from acb_common.studio_flags import connection_gate_on
 from acb_llm.key_store import InvalidToken, get_key_store
 from sqlalchemy import text
 
@@ -107,6 +115,20 @@ _GET_BY_ID_SQL = (
 #: runs next (WS-61 KC-3h). Any status, so a disconnect and a sync run lock the
 #: same row. The lock order of the Knowledge rows is in ``kb_sync/engine.py``.
 _LOCK_BY_ID_SQL = _GET_BY_ID_SQL + " FOR NO KEY UPDATE"
+
+#: SEM-12: the two statements of ``connections/semantic_model.py`` that touch
+#: the registry. They live here, because only this module names the table
+#: (``test_crm_connection_scan.py``). Each takes the bound-org SQL as ``{org}``
+#: and reads the id only, never the credential column.
+LOCK_ONE_FOR_MODEL_SQL = (
+    "SELECT id FROM integration_connections "
+    "WHERE id = CAST(:cid AS uuid) AND organization_id = {org} "
+    "FOR NO KEY UPDATE"
+)
+FROM_ONE_FOR_MODEL_SQL = (
+    "FROM integration_connections c "
+    "WHERE c.id = CAST(:cid AS uuid) AND c.organization_id = {org}"
+)
 
 _BLOB_SQL = (
     "SELECT credentials_encrypted FROM integration_connections "
@@ -353,6 +375,52 @@ _DELETE_SQL = (
     f"DELETE FROM integration_connections WHERE {_KEY_WHERE} RETURNING id"
 )
 
+#: The providers that one member may use now (WS-STU I1a, split by I9a): each
+#: ``connected`` org row, and each ``connected`` member row of that member.
+#: The row of another member never counts. It reads the provider and the kind
+#: of the row only, never the blob.
+_MET_SQL = (
+    "SELECT DISTINCT provider, scope_kind FROM integration_connections "
+    f"WHERE organization_id = CAST(:org AS uuid) AND status = '{STATUS_CONNECTED}' "
+    f"AND (scope_kind = '{SCOPE_ORG}' OR (scope_kind = '{SCOPE_MEMBER}' "
+    "AND member_email = :member))"
+)
+
+#: The table that holds the connection of an owning app OUTSIDE this
+#: registry (WS-STU I8a): a mailbox is a row of ``email_accounts``, and a
+#: WhatsApp number a row of ``wa_accounts``.
+_OUTSIDE_APPS: dict[str, str] = {"email": "email_accounts", "whatsapp": "wa_accounts"}
+#: The table of a key that the console stores (``signin: key`` and owning app
+#: ``console`` in the connector list). The key flow of Studio is I8e.
+_KEY_TABLE = "provider_keys"
+
+
+def _outside_registry() -> dict[str, str]:
+    """Each provider of the connector list (IN-11) whose connection lives
+    outside this registry, with the table that holds it. It is computed from
+    the list, so a new row of an owning app above, or a new key of the console,
+    joins it with no second list."""
+    from acb_common.connector_list import connector_rows
+
+    out: dict[str, str] = {}
+    for row in connector_rows():
+        if row["owning_app"] in _OUTSIDE_APPS:
+            out[row["id"]] = _OUTSIDE_APPS[row["owning_app"]]
+        elif row["signin"] == "key" and row["owning_app"] == "console":
+            out[row["id"]] = _KEY_TABLE
+    return out
+
+
+#: The providers that :func:`met_providers` never meets, each with its table
+#: (WS-STU I8a). Studio shows such a name as blocked and offers no Connect,
+#: because the action door refuses each action of the app while it names one.
+#: ⚠️ The set is computed. When I9 or IN-3 makes a ``_MET*`` statement read
+#: one of these tables, change the rule in :func:`_outside_registry` in the
+#: same change. ``test_studio_connect_in_place.py`` fails while the two
+#: disagree, and when a listed provider has neither a registry writer nor an
+#: entry here.
+OUTSIDE_REGISTRY: dict[str, str] = _outside_registry()
+
 
 @dataclass(frozen=True)
 class Connection:
@@ -394,6 +462,32 @@ def _connection(row: Any) -> Connection:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+async def _clear_asks(db: Any, conn: Connection | None) -> None:
+    """Delete the asks of members for the provider of *conn* (WS-STU I8b-1a,
+    ``ai_studio.md`` §8.2).
+
+    It acts only when the row that the writer's statement returned is
+    ``connected`` at org scope. A member row never clears an org ask, and a
+    row that stays ``disconnected`` or ``needs_reconnect`` clears nothing.
+    While ``STUDIO_CONNECTION_GATE_ORGS`` does not hold the org, it sends no
+    SQL. The delete runs in a savepoint: a caught error aborts the
+    transaction of the writer (H-249), so the savepoint keeps the connect, and
+    the log names the class only. ``attention`` is imported here, as
+    :func:`_outside_registry` imports the connector list, so the store has no
+    import cycle."""
+    if conn is None or conn.status != STATUS_CONNECTED or conn.scope_kind != SCOPE_ORG:
+        return
+    if not connection_gate_on(conn.organization_id):
+        return
+    from gateway.connections import attention
+
+    try:
+        async with db.begin_nested():
+            await attention.clear_on_connect(db, conn.organization_id, conn.provider)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("connections.ask_clear_failed", error=type(exc).__name__)
 
 
 def _key(
@@ -534,6 +628,36 @@ async def list_all(db: Any, org: str) -> list[Connection]:
     return [_connection(r) for r in rows]
 
 
+async def met_providers(
+    db: Any, org: str, member: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The providers that *member* may use now in *org*, as
+    ``(org_met, member_met)`` (WS-STU I1a, split by I9a).
+
+    ``org_met`` holds each provider with a ``connected`` org row. ``member_met``
+    holds each provider with a ``connected`` member row of *member* itself. The
+    member row of another member never counts, and ``needs_reconnect``,
+    ``needs_reset`` and ``disconnected`` never count. The two sets stay apart,
+    because a need that asks for the member's own account is never met by an org
+    row, and an org need is never met by a member row. It reads the ``provider``
+    and ``scope_kind`` columns only, never the blob.
+
+    The registry holds ``mcp:<server>``, ``zoho``, ``github``,
+    ``google_calendar``, ``outlook_calendar`` and ``google_drive``. A mailbox
+    lives in ``email_accounts``, so ``mailbox`` is never met here (I9 adds
+    it). A key of the console lives in ``provider_keys`` (I8e).
+    :data:`OUTSIDE_REGISTRY` names each such provider.
+    ``package_host/resolve.met_connections`` is the one caller.
+    """
+    who = (member or "").strip().lower()
+    params = {"org": str(uuid.UUID(str(org))), "member": who}
+    rows = (await db.execute(text(_MET_SQL), params)).all()
+    # An empty member never matches a member row: the CHECK allows
+    # ``member_email = ''``, so the SQL alone would let it match.
+    return (frozenset(str(r[0]) for r in rows if r[1] == SCOPE_ORG),
+            frozenset(str(r[0]) for r in rows if r[1] == SCOPE_MEMBER and who))
+
+
 async def get_by_id(db: Any, org: str, connection_id: str) -> Connection | None:
     """One connection by id, in *org* only, or ``None``. It carries no blob.
 
@@ -651,7 +775,9 @@ async def save_credential(
         # other app has a source profile, so no other app touches one (KC-1a).
         profiles_sql = _STALE_PROFILES_SQL if keep_profile else _DROP_PROFILES_SQL
         await db.execute(text(profiles_sql), {"id": str(row.id), "org": str(row.organization_id)})
-    return _connection(row)
+    conn = _connection(row)
+    await _clear_asks(db, conn)
+    return conn
 
 
 async def save_no_secret(
@@ -679,7 +805,9 @@ async def save_no_secret(
         connected_by=(connected_by or "").strip().lower() or None,
     )
     row = (await db.execute(text(_UPSERT_NO_SECRET_SQL), params)).first()
-    return _connection(row)
+    conn = _connection(row)
+    await _clear_asks(db, conn)
+    return conn
 
 
 #: The values that :func:`set_status` may write. ``needs_reset`` stays with
@@ -701,7 +829,9 @@ async def set_status(
         "id": str(connection_id), "org": str(org), "status": status,
         "code": safe_error_code(code) if code else None,
     })).first()
-    return _connection(row) if row is not None else None
+    conn = _connection(row) if row is not None else None
+    await _clear_asks(db, conn)
+    return conn
 
 
 async def update_tokens(
@@ -927,7 +1057,9 @@ async def save_headers(
         conflict="NOTHING" if only_if_absent else _HEADERS_REPLACE,
     )
     row = (await db.execute(text(sql), params)).first()
-    return _connection(row) if row is not None else None
+    conn = _connection(row) if row is not None else None
+    await _clear_asks(db, conn)
+    return conn
 
 
 @dataclass(frozen=True)
@@ -984,7 +1116,9 @@ async def attach_oauth_credential(
         "scopes": list(scopes),
         "connected_by": (connected_by or "").strip().lower() or None,
     })).first()
-    return OAuthAttach(before=before, after=_connection(after_row), previous=previous)
+    after = _connection(after_row)
+    await _clear_asks(db, after)
+    return OAuthAttach(before=before, after=after, previous=previous)
 
 
 async def lock_row(
@@ -1024,7 +1158,9 @@ async def update_oauth_public(
         "id": conn.id, "org": conn.organization_id,
         "extra": json.dumps(kept), "enabled": bool(enabled),
     })).first()
-    return _connection(row)
+    updated = _connection(row)
+    await _clear_asks(db, updated)
+    return updated
 
 
 # ── A short-lived sealed value (WS-54 IN-8a) ────────────────────────────────

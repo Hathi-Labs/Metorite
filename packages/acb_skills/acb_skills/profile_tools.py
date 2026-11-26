@@ -168,8 +168,9 @@ from acb_common.assistant_profile import (
     writes_open,
 )
 from acb_common.paging import paged
+from acb_common.settings import internal_auth_headers
 
-from acb_skills.company_search_tools import _gateway_url, _internal_token
+from acb_skills.company_search_tools import _gateway_url
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (the ``company_search_tools`` convention).
@@ -182,13 +183,30 @@ SHARED_ROOM = "A shared room cannot look up a colleague. Ask in your own chat."
 #: What the model reads when the gateway refuses the member.
 CLOSED = "The colleague lookup is not open to you."
 
-#: No tier matched.
-NOBODY = "Nobody matches. Ask for the full name or the address."
+#: No tier matched. ``{where}`` names only the places that the tool
+#: searched (CT-1 verify): the mail tier needs ``feature:email``, and the
+#: directory needs ``feature:people``.
+NOBODY = "Nobody matches in {where}. Ask for the full name or the address."
 
-#: The member lacks ``feature:people``, so only their aliases were searched.
+#: The places, by (the directory was searched, the mail was searched).
+WHERE = {
+    (True, True): "the members, the People directory or your mail",
+    (True, False): "the members or the People directory",
+    (False, True): "your saved aliases or your mail",
+    (False, False): "your saved aliases",
+}
+
+#: The first line of an answer from the member's mail (CT-1). These people
+#: are not members. The model asks, and never acts on one without a yes.
+MAIL = ("No member and no People row matches «{asked}». These people are from "
+        "your mail, not a member of Metorite. Ask the member whether one is the "
+        "person they mean, and never act on one without a yes:")
+
+#: The member lacks ``feature:people``, so the directory was not searched.
+#: It says nothing about the mail, which has its own feature (CT-1).
 NO_DIRECTORY = (
-    "Only your saved aliases were searched, because the People directory "
-    "is not open to you. Ask for the full address."
+    "The People directory is not open to you, so it was not searched. "
+    "Ask for the full address."
 )
 
 #: The words of each source in the answer.
@@ -231,7 +249,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -284,6 +302,13 @@ def clean(value: Any, cap: int = NAME_CAP) -> str:
 #: speaks to the model, so the model offers the alias in its own words.
 ALIAS_HINT = "After the member picks one, offer to save it as a name with profile_alias."
 
+#: The first line of a near answer (HRD-18a, ``chat_failure_modes.md`` F1).
+#: No name equals the input, and ``acb_common.name_match`` calls these near.
+#: The model asks, even for one name, because a near spelling is no match.
+NEAR = ("Nobody is named «{asked}». Near spellings, not matches. Ask the member "
+        "whether one of them is the person they mean, and never act on one "
+        "without a yes:")
+
 #: The route read only the first rows of a large directory (PZ-5 verify, P2),
 #: so a person may be missing. One match is then not proof of one person.
 TRUNCATED = ("The directory is large, and only part of it was searched. "
@@ -300,11 +325,34 @@ def format_answer(body: Any, asked: str) -> str:
     total = max(int(body.get("total") or 0), len(people))
     lines = [HEADER]
     if not people:
-        lines.append(NOBODY)
+        where = WHERE[(body.get("directory") is not False,
+                       body.get("mail_searched") is True)]
+        lines.append(NOBODY.format(where=where))
         if body.get("directory") is False:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
+        return "\n".join(lines)
+    if body.get("mail") is True:
+        lines.append(MAIL.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}> (from your mail, not a member of Metorite)"
+                  for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        if body.get("directory") is False:
+            lines.append(NO_DIRECTORY)
+        return "\n".join(lines)
+    if body.get("near") is True:
+        # HRD-18a: one near name asks too. It is never a "Match:".
+        lines.append(NEAR.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}>" for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        lines.append(ALIAS_HINT)
         return "\n".join(lines)
     if total == 1 and len(people) == 1:
         source = SOURCES.get(str(body.get("source") or ""), "people")
@@ -330,8 +378,10 @@ async def resolve_person(name: str) -> str:
 
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
-    in the People directory and the members together. One match: act on it. Several: ask the
-    member which one, and never guess. None: ask for the full name or the
+    in the People directory and the members together, and last in the
+    member's mail. One match: act on it. Several: ask the
+    member which one, and never guess. Near spellings only: ask the member to
+    confirm one, even when there is one. None: ask for the full name or the
     address.
 
     Args:
@@ -671,7 +721,7 @@ async def _write_gate() -> dict[str, str]:
     if await session_is_marked():
         raise _Refused(MARKED, "marked")
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         "X-Profile-Via": _channel(),

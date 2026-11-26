@@ -199,6 +199,8 @@ from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 from sqlalchemy.exc import DBAPIError
 
+from tests.unit import _r8_lists as r8_lists
+
 ORG = str(uuid.uuid4())
 OTHER = str(uuid.uuid4())
 ANA = "ana@example.test"
@@ -1869,15 +1871,11 @@ def test_the_route_module_still_runs_no_sql() -> None:
 
 
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_delete_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_package_delete_r8.py" in must_run
     # A5c-2: the R8 half of the admin path, in pr-check and in deploy
     # (``test_deploy_pipeline.py`` holds the two lists equal).
-    assert re.search(r"^[ \t]+tests/unit/test_studio_package_delete_admin_r8\.py(?: \\)?$",
-                     block.group(1), re.M)
+    assert "tests/unit/test_studio_package_delete_admin_r8.py" in must_run
     admin_r8 = (_ROOT / "tests/unit/test_studio_package_delete_admin_r8.py").read_text(
         encoding="utf-8")
     assert "pytestmark = _DB_GATE" in admin_r8

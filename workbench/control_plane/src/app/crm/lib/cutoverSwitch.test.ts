@@ -20,6 +20,8 @@ import {
   POLL_MS,
   START_FAILED,
   SWITCH_FAILED,
+  STATUS_LOST,
+  STATUS_TRIES,
   SYNC_TOO_LONG,
   SWITCH_WORD,
   canSwitch,
@@ -342,6 +344,39 @@ describe("CRM-Z10b the switch dialog", () => {
     expect(commit).toHaveBeenCalledWith({ confirm: SWITCH_WORD, leave_out: [], run_id: "r7" });
     // A failure with no run clears it.
     expect(switchReducer(s, { type: "failed", message: "No." }).runId).toBeNull();
+  });
+
+  it("retries a dropped status read, and the sync goes on (task 1827)", async () => {
+    const commit = vi.fn(async () => RESULT);
+    const start = vi.fn(async () => ({ run_id: "r8" }));
+    let calls = 0;
+    const read = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("Failed to fetch");
+      return status("ready", null, "r8");
+    });
+    const out = await runSwitch([], { start, status: read, commit, wait: async () => undefined });
+    expect(out).toEqual({ result: RESULT });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("says it lost touch, not that the sync did not finish, and keeps the run (task 1827)", async () => {
+    const commit = vi.fn(async () => RESULT);
+    const start = vi.fn(async () => ({ run_id: "r9" }));
+    const dropped = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const lost = await runSwitch([], { start, status: dropped, commit, wait: async () => undefined });
+    expect(lost).toEqual({ error: STATUS_LOST, runId: "r9" });
+    expect(dropped).toHaveBeenCalledTimes(STATUS_TRIES);
+    expect(STATUS_LOST).not.toMatch(/did not finish/);
+    expect(commit).not.toHaveBeenCalled();
+    // The next press reads the SAME run and starts no new sync.
+    const again = await runSwitch([], {
+      start, status: async () => status("ready", null, "r9"), commit, wait: async () => undefined,
+    }, "r9");
+    expect(again).toEqual({ result: RESULT });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith({ confirm: SWITCH_WORD, leave_out: [], run_id: "r9" });
   });
 
   it("keeps the final run after a 409 with modules, and the next press switches with it (P3-c)", async () => {

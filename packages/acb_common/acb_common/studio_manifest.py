@@ -41,7 +41,8 @@ from pydantic_core import PydanticCustomError
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
 from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
 from acb_common.app_manifests.shell_manifest import SHELL_DIR
-from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
+from acb_common.connector_list import connector as _connector
+from acb_common.secret_shapes import SECRET_SHAPES, is_secret_field_key, is_secret_key
 from acb_common.studio_access import AccessError, check_access_fit, parse_access, parse_roles
 from acb_common.studio_fields import (
     FIELD_TYPES,
@@ -71,7 +72,7 @@ STUDIO_VERSION = 1
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
 )  # fmt: skip
 
 #: The five record verbs of an object. ``studio_tools.complete_record_actions``
@@ -79,14 +80,14 @@ BLOCKS: tuple[str, ...] = (
 RECORD_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
 
 #: Each verb of an ``object:<name>.<op>`` action: the record verbs, and the
-#: aggregate of C2b (STU-D4b). No action is added for the aggregate by itself,
-#: so a package declares it.
-OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate")
+#: aggregate of C2b (STU-D4b), and the tree read of C18 (STU-D18-2a). No action
+#: is added for the aggregate or the tree by itself, so a package declares it.
+OBJECT_OPS: tuple[str, ...] = (*RECORD_OPS, "aggregate", "tree")
 
 #: The class of each object verb (STU-B2a, ``ai_studio.md`` §3.2). It is the
 #: one source of the class of an ``object:<name>.<op>`` action. The B1 catalog
 #: (``catalog_rows``) gives the class of each other source. A read is A, and an
-#: aggregate is a read. A create or an update is B, because the app can undo
+#: aggregate and a tree are reads. A create or an update is B, because the app can undo
 #: it. A delete is C. ``test_studio_action_door.py`` holds these keys equal to
 #: :data:`OBJECT_OPS`.
 OBJECT_OP_CLASSES: dict[str, str] = {
@@ -96,6 +97,7 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "update": "B",
     "delete": "C",
     "aggregate": "A",
+    "tree": "A",
 }
 
 #: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
@@ -159,12 +161,48 @@ _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 _NAME = NAME_PATTERN
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
 _OPS = "|".join(OBJECT_OPS)
+
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-B1b-1. The name of one MCP tool in ``mcp:<server>.<tool>``. MCP lets a
+#: tool name hold letters of both cases, digits, ``_`` and ``-``. This grammar
+#: refuses a dot (the dot ends the server key), a colon, a slash, a space and
+#: each character outside ASCII. A name is at most 64 characters, the cap of a
+#: model tool name. A tool whose name this refuses gives no catalog row.
+MCP_TOOL_NAME = r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}"
+
 # `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
+    rf"|logic:(?P<logic>{_NAME})"
+    rf"|mcp:(?P<mcp_server>{MCP_SERVER_NAME})\.(?P<mcp_tool>{MCP_TOOL_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
+)
+
+#: STU-I1a. The most connections that one package names.
+MAX_CONNECTIONS = 32
+#: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
+#: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
+#: the grammar only. IN-11 adds the check that the connector list holds it.
+#: API-5 adds an API connection of a template (``api:<template>``), such as
+#: ``api:zoho_books`` (``api_connections.md`` §2.2). The connector list holds
+#: that id, and each id of the list matches this grammar.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|api:{_NAME}|{_NAME}")
+#: STU-I9a. The two whose-account values of a connection need.
+CONNECTION_AS = ("org", "member")
+#: STU-I9a. The most scopes, and the longest scope, of one connection need.
+MAX_CONNECTION_SCOPES = 16
+MAX_CONNECTION_SCOPE_CHARS = 200
+#: STU-I1a. The refusal of a field whose key names a secret
+#: (``secret_shapes.is_secret_field_key``: a whole secret name, so
+#: ``token_number`` passes). A test reads this text, so keep it stable.
+SECRET_FIELD = (
+    "A field must not hold a secret. Name the provider in `connections`, "
+    "and the registry keeps its key."
 )
 
 _COLOR_KEYS = frozenset({"color", "colour", "font", "fontsize", "font_size", "font-size"})
@@ -193,16 +231,23 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration`` or ``workflow``, the source names of the B1 catalog.
+    ``integration``, ``workflow``, ``logic`` (STU-B4a) or ``mcp``
+    (STU-B1b-1), the source names of the B1 catalog. ``logic`` is a
+    first-party logic module: ``logic`` holds its name. ``mcp`` is one tool of
+    an MCP server of the org: ``server`` holds the registry key of the server,
+    and ``tool`` holds the tool name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic", "mcp"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
+    logic: str | None = None
+    server: str | None = None
+    tool: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -218,6 +263,10 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="integration")
     if m.group("wf"):
         return UsesRef(source="workflow")
+    if m.group("logic"):
+        return UsesRef(source="logic", logic=m.group("logic"))
+    if m.group("mcp_server"):
+        return UsesRef(source="mcp", server=m.group("mcp_server"), tool=m.group("mcp_tool"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -226,6 +275,20 @@ def parse_uses(uses: object) -> UsesRef | None:
 
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ConnectionNeed(_Strict):
+    """STU-I9a. One connection that the app needs, with the account it uses.
+
+    ``as_`` (written ``as`` in the manifest) is ``org`` or ``member``. With
+    none, :func:`connection_as` gives the default of the connector list.
+    ``scopes`` are the scopes that the app asks for. They are a declaration
+    only: no credential is read from them."""
+
+    name: str
+    as_: Literal["org", "member"] | None = Field(default=None, alias="as")
+    scopes: list[str] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
 
 
 class FieldDef(_Strict):
@@ -245,10 +308,33 @@ class FieldDef(_Strict):
     min: int | None = None
     max: int | None = None
     units: list[str] | None = None
+    #: C24a. The ranges of a `quantity` in its base unit, and the conversions to it.
+    #: `studio_fields._check_ranges` holds the rules. The flag is computed on read.
+    normal: dict[str, Any] | None = None
+    critical: dict[str, Any] | None = None
+    conversions: list[dict[str, Any]] | None = None
     format: str | None = None
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
+    #: C15a. The parts of an `autonumber`: the text before the number, the pad
+    #: width and `never` or `day`. `studio_fields._check_extras` holds the rules.
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
+
+
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
 
 
 class ObjectDef(_Strict):
@@ -262,6 +348,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -286,7 +374,7 @@ class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None
@@ -328,6 +416,29 @@ class TabDef(_Strict):
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 
+#: The page presets (STU-LY-0, ``specs/studio_layouts.md`` section 6). The enum is closed: a later
+#: preset joins it in the slice of its block. ``PRESET_REGIONS`` gives the regions of each:
+#: region -> (block type, most views, required). ``manifest.ts`` holds the same table.
+LAYOUTS: tuple[str, ...] = (
+    "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+)  # fmt: skip
+_LIST_DETAIL = {"list": ("table", 1, True), "detail": ("detail", 1, True)}
+PRESET_REGIONS: dict[str, dict[str, tuple[str, int, bool]]] = {
+    "table_workspace": {"main": ("table", 1, True)},
+    "list_detail": _LIST_DETAIL,
+    "board": {"main": ("board", 1, True)},
+    "dashboard": {
+        "kpis": ("stat", 6, True),
+        "charts": ("chart", 4, False),
+        "worklist": ("table", 1, False),
+    },
+    "work_queue": _LIST_DETAIL,
+    "approval_queue": _LIST_DETAIL,
+}
+REGION_NAMES: tuple[str, ...] = ("list", "main", "detail", "kpis", "charts", "worklist")
+MAX_REGION_VIEWS = 6
+
+
 class PageDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     title: str | None = None
@@ -335,6 +446,59 @@ class PageDef(_Strict):
     tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
     cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
     side: SideDef | None = None
+    #: A preset replaces the grid (owner, 2026-11-14). A page with a `layout` has `regions`
+    #: and no tabs, cells or side. `_check_pages` holds the rest.
+    layout: Literal[
+        "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue"
+    ] | None = None
+    regions: dict[str, list[str]] = Field(default_factory=dict, max_length=len(REGION_NAMES))
+
+#: The caps of the rail (STU-AF2a, D219). `lib/studio/manifest.ts` holds the same numbers, and
+#: `navCaps.test.ts` checks them against the `maxItems` of the schema file.
+#: This `nav` is not the `nav` contribution point of `CONTRIBUTION_POINTS`. That point
+#: (`contributes.nav`) adds a row to the shell sidebar. This `nav` lays out the rail of one app.
+MAX_NAV_SECTIONS = 4
+MAX_NAV_ROWS = 12
+#: A rail shows at most this many counts (STU-AF3a). `navCaps.test.ts` holds the TS twin equal.
+MAX_NAV_COUNTS = 8
+
+#: The icons of a rail row (STU-AF2a). Each name is a Lucide name that `lib/icons.tsx` draws.
+#: The names come from the icons of the built-in app rails (`lib/nav.ts`, the CRM rail, the
+#: Knowledge rail and the Projects tree) and from the common names of a business app.
+#: `NAV_ICONS` in `lib/studio/manifest.ts` is the twin. `test_studio_manifest_ts_parity.py`
+#: holds the two equal.
+NAV_ICONS: tuple[str, ...] = (
+    "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+    "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+    "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+    "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+    "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+    "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+    "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+)  # fmt: skip
+
+
+class NavRow(_Strict):
+    #: A page of `pages`. The check that it exists is `_check_nav`.
+    page: str = Field(pattern=rf"^{_DASHED}$")
+    icon: Literal[
+        "Home", "LayoutDashboard", "LayoutGrid", "List", "ListChecks", "Table",
+        "Kanban", "Calendar", "CalendarDays", "Clock", "Users", "User",
+        "Briefcase", "Handshake", "Inbox", "Mail", "Phone", "MessageCircle",
+        "FileText", "Files", "FolderOpen", "Tag", "Star", "Flag",
+        "Bell", "Bookmark", "Wallet", "Receipt", "Package", "Truck",
+        "MapPin", "Wrench", "Settings", "ClipboardList", "CheckSquare", "Target",
+        "Trophy", "Lightbulb", "BookOpen", "Layers", "Activity", "Sparkles",
+    ] | None = None  # fmt: skip
+    label: str | None = Field(default=None, min_length=1, pattern=r"\S")
+    #: `true` asks the client to show a count of the rows of the page. `_check_nav` needs a
+    #: table or board view on the page. The filter and the sort stay on that view, never here.
+    count: bool | None = None
+
+
+class NavSection(_Strict):
+    title: str = Field(min_length=1, pattern=r"\S")
+    rows: list[NavRow] = Field(max_length=MAX_NAV_ROWS)
 
 
 class Trigger(_Strict):
@@ -426,7 +590,11 @@ class Manifest(_Strict):
     name: str | None = None
     purpose: str | None = None
     team: str | None = None
-    connections: list[str] = Field(default_factory=list)
+    #: STU-I1a. The registry connections that the app needs. `_check_connections`
+    #: holds the grammar, and an unmet name makes the install `needs_setup`.
+    #: STU-I9a: an item is a name, or ``{name, as, scopes}``. A plain name is
+    #: as before, and :func:`connection_as` gives its default account.
+    connections: list[str | ConnectionNeed] = Field(default_factory=list)
     #: C8a. The roles of the app. An install maps each one to members (C8b).
     #: `studio_access.parse_roles` is the one check.
     roles: list[str] = Field(default_factory=list)
@@ -435,6 +603,8 @@ class Manifest(_Strict):
     views: list[ViewDef] = Field(default_factory=list)
     #: How the views sit on a page (STU-D11a). A view stays one block.
     pages: list[PageDef] = Field(default_factory=list, max_length=MAX_PAGES)
+    #: The rail of the app (STU-AF2a). Each row names a page of `pages`.
+    nav: list[NavSection] = Field(default_factory=list, max_length=MAX_NAV_SECTIONS)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
     # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
@@ -607,10 +777,28 @@ def _scan(
             )
 
 
+def _connection_union_error(loc: list[Any], typ: str, out: list[ManifestError]) -> bool:
+    """STU-I9a. True when the error is the noise of the ``connections`` union:
+    the text branch (dropped), or a whole item of the wrong type (one sentence)."""
+    if loc[:1] != ["connections"]:
+        return False
+    if len(loc) == 3 and loc[2] == "str":
+        return True
+    if len(loc) == 2 and typ == "model_type":
+        out.append(_err(_path(loc), "A connection is a name, or an object with `name`, "
+                                    "`as` and `scopes`."))
+        return True
+    return False
+
+
 def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestError]:
     out: list[ManifestError] = []
     for e in exc.errors():
-        loc = list(e["loc"])
+        # STU-I9a: an item of `connections` is a union. The tag of a branch is
+        # not part of the path, and the text branch adds no second error.
+        loc = [x for x in e["loc"] if x != "ConnectionNeed"]
+        if _connection_union_error(loc, e["type"], out):
+            continue
         path = _path(loc)
         last = loc[-1] if loc else ""
         typ = e["type"]
@@ -638,6 +826,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
             else:
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
+        elif last == "icon" and typ == "literal_error":
+            msg = f"Icon is not in the icon list. Use a name of `NAV_ICONS`.{_got(val)}"
         elif last == "type" and typ == "literal_error":
             if val == "formula":
                 msg = _FORMULA_TYPE_MESSAGE
@@ -686,7 +876,8 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action> or workflow:<uuid>.{_got(a.uses)}",
+            "integration:<action>, workflow:<uuid>, logic:<name> "
+            f"or mcp:<server>.<tool>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
@@ -804,8 +995,12 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
             if c.span is not None and c.span > cols:
                 out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
 
+    blocks = {v.id: v.block for v in m.views}
     for pi, pg in enumerate(m.pages):
         p = f"$.pages[{pi}]"
+        if pg.layout or pg.regions:
+            _check_layout_page(pg, p, view_ids, blocks, out)
+            continue
         if pg.tabs and pg.cells:
             out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
         elif not pg.tabs and not pg.cells:
@@ -816,6 +1011,71 @@ def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> N
         cell_errors(pg.cells, f"{p}.cells", pg.cols)
         if pg.side and pg.side.view not in view_ids:
             _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
+
+
+def _check_layout_page(
+    pg: PageDef, p: str, view_ids: set[str], blocks: dict[str, str], out: list[ManifestError]
+) -> None:
+    """A page with a preset: regions of declared views, and no grid (STU-LY-0)."""
+    if not pg.layout:
+        out.append(_err(f"{p}.regions", "`regions` needs a `layout`. Add one, or remove `regions`."))
+        return
+    if pg.tabs or pg.cells or pg.side:
+        out.append(_err(p, "A page with a `layout` has no tabs, cells or side. Remove them."))
+    table = PRESET_REGIONS[pg.layout]
+    for name, ids in pg.regions.items():
+        rp = f"{p}.regions.{name}"
+        if name not in table:
+            out.append(_err(rp, f"Layout `{pg.layout}` has no region `{name}`. Use {', '.join(table)}."))
+            continue
+        block, cap, _ = table[name]
+        if len(ids) > cap:
+            out.append(_err(rp, f"Region `{name}` holds at most {cap} view{'s' if cap > 1 else ''}."))
+        for i, vid in enumerate(ids):
+            if vid not in view_ids:
+                _undeclared(f"{rp}[{i}]", "View", vid, "`views`", out)
+            elif blocks.get(vid) != block:
+                out.append(_err(f"{rp}[{i}]", f"Region `{name}` takes a {block} view."))
+    for name, (_block, _cap, required) in table.items():
+        if required and not pg.regions.get(name):
+            out.append(_err(f"{p}.regions.{name}", f"Layout `{pg.layout}` needs region `{name}`."))
+
+
+#: The views that read the rows of an object. Only these can give a count.
+_COUNT_BLOCKS = frozenset({"table", "board"})
+
+
+def _check_nav(m: Manifest, out: list[ManifestError]) -> None:
+    """A rail row names a declared page. A `nav` needs `pages`, because the default
+    pages of an app with none are drawn in the client, and no row can name them."""
+    page_ids = {p.id for p in m.pages}
+    _dupes([sec.title for sec in m.nav], "$.nav", "section title", out)
+    blocks = {v.id: v.block for v in m.views}
+    pages = {p.id: p for p in m.pages}
+
+    def countable(page_id: str) -> bool:
+        pg = pages[page_id]
+        cells = [*pg.cells, *(c for t in pg.tabs for c in t.cells)]
+        ids = [c.view for c in cells] + ([pg.side.view] if pg.side else [])
+        ids += [v for region in pg.regions.values() for v in region]
+        return any(blocks.get(i) in _COUNT_BLOCKS for i in ids)
+
+    counted = 0
+    for si, sec in enumerate(m.nav):
+        for ri, row in enumerate(sec.rows):
+            if row.page not in page_ids:
+                _undeclared(f"$.nav[{si}].rows[{ri}].page", "Page", row.page, "`pages`", out)
+            if row.count:
+                counted += 1
+                if row.page in page_ids and not countable(row.page):
+                    out.append(
+                        _err(
+                            f"$.nav[{si}].rows[{ri}].count",
+                            f"Page `{_short(row.page)}` has no table or board view to count.",
+                        )
+                    )
+    if counted > MAX_NAV_COUNTS:
+        out.append(_err("$.nav", f"A rail shows at most {MAX_NAV_COUNTS} counts."))
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
@@ -838,6 +1098,13 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
+            if is_secret_field_key(f.key):
+                # STU-I1a: a key goes to the registry through a connection,
+                # never into a form of the app. The narrow rule, because a
+                # field such as `token_number` holds member data.
+                out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)
@@ -1041,11 +1308,72 @@ def _check_links(
                 _undeclared(f"$.shell.search[{i}]", "Object", name, "this manifest", out)
 
 
+def connection_as(name: str, declared: Any = None) -> str:
+    """STU-I9a. The account that a connection need uses: ``org`` or ``member``.
+
+    A declared ``org`` or ``member`` wins. Else a known connector gives the
+    ``scope`` of its row in the connector list (IN-11, the one seam), and an
+    unknown name is ``org``. Pure."""
+    if declared in CONNECTION_AS:
+        return str(declared)
+    row = _connector(name) if isinstance(name, str) else None
+    return "member" if row is not None and row.get("scope") == "member" else "org"
+
+
+def connection_item(raw: Any) -> tuple[str, str] | None:
+    """STU-I9a. ``(name, as)`` of one item of ``connections``, as written in a
+    stored manifest (a text, or an object), or None when it has no name or its `as` is invalid. Pure."""
+    if isinstance(raw, str):
+        return raw, connection_as(raw)
+    if isinstance(raw, Mapping) and isinstance(raw.get("name"), str):
+        declared = raw.get("as")
+        if declared is not None and declared not in CONNECTION_AS:
+            return None  # a stored `as` that the schema refuses fails closed
+        return raw["name"], connection_as(raw["name"], declared)
+    return None
+
+
+def _check_connection_scopes(path: str, scopes: list[str], out: list[ManifestError]) -> None:
+    if len(scopes) > MAX_CONNECTION_SCOPES:
+        out.append(_err(path, f"A connection names at most {MAX_CONNECTION_SCOPES} scopes. "
+                              "Remove the extra ones."))
+        return
+    for j, scope in enumerate(scopes):
+        if not scope or len(scope) > MAX_CONNECTION_SCOPE_CHARS or scope != "".join(scope.split()):
+            out.append(_err(f"{path}[{j}]", "A scope is text with no space, and at most "
+                                            f"{MAX_CONNECTION_SCOPE_CHARS} characters." + _got(scope)))
+    _dupes(scopes, path, "scope", out)
+
+
+def _check_connections(m: Manifest, out: list[ManifestError]) -> None:
+    """STU-I1a. Each name of ``connections`` is ``mcp:<server>`` or a provider
+    id (:data:`CONNECTION_NAME_RE`), once each, and at most
+    :data:`MAX_CONNECTIONS` of them. The grammar only: IN-11 adds the check
+    that the connector list holds the provider.
+
+    STU-I9a: an item can be ``{name, as, scopes}``. ``as`` is checked by the
+    schema. ``scopes`` are at most :data:`MAX_CONNECTION_SCOPES` words with no
+    space, once each."""
+    if len(m.connections) > MAX_CONNECTIONS:
+        out.append(_err("$.connections", f"A package names at most {MAX_CONNECTIONS} "
+                                         "connections. Remove the extra ones."))
+    names = [c if isinstance(c, str) else c.name for c in m.connections]
+    for i, name in enumerate(names):
+        if not CONNECTION_NAME_RE.fullmatch(name):
+            out.append(_err(f"$.connections[{i}]", "A connection is mcp:<server> or a "
+                                                    "provider id, such as zoho." + _got(name)))
+        item = m.connections[i]
+        if not isinstance(item, str) and item.scopes is not None:
+            _check_connection_scopes(f"$.connections[{i}].scopes", item.scopes, out)
+    _dupes(names, "$.connections", "connection", out)
+
+
 def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[ManifestError]:
     out: list[ManifestError] = []
     objects = {o.name: {f.key for f in o.fields} for o in m.objects}
     action_ids = {a.id for a in m.actions}
 
+    _check_connections(m, out)
     _dupes([o.name for o in m.objects], "$.objects", "object", out)
     _dupes([a.id for a in m.actions], "$.actions", "action id", out)
     _dupes([v.id for v in m.views], "$.views", "view id", out)
@@ -1064,6 +1392,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_view(vi, v, objects, action_ids, out)
         _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
+    _check_nav(m, out)
     _check_links(m, objects, catalog, out)
     if m.extends is not None and m.extends == m.id:
         out.append(_err("$.extends", "A package cannot extend itself. Name the host package."

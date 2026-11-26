@@ -15,6 +15,9 @@
  * - A reply box writes a free `prompt`.
  * - Stop writes a `prompt` with the signal `stop`, after a confirm.
  *
+ * CIV-14b: the line of the newest thought or action draws the images that the
+ * agent put on it (`AgentImageStrip`), and a click opens one at full size.
+ *
  * The panel reads the run again every 5 seconds while the run is open and
  * the panel is mounted. It asks only for the activities after the newest
  * `seq` it holds.
@@ -80,7 +83,9 @@ import {
   lastSeq,
   latestElicitation,
   mergeActivities,
+  activityImages,
   newestEphemeral,
+  newestEphemeralActivity,
   panelState,
   replyPayload,
   runToShow,
@@ -91,9 +96,12 @@ import {
   writeFailure,
 } from "../lib/agentRuns";
 import { newestHandoff } from "../lib/agentHandoff";
+import { agentPlaceLine } from "../lib/agentCardLook";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
+import { AgentImageStrip } from "./AgentImageStrip";
 import { AgentPill } from "./AgentPill";
 import { AGENT_SUBMIT_HINT, AgentQuestionCard } from "./AgentQuestionCard";
+import AgentRunPlan from "./AgentRunPlan";
 import { AskAgentDialog } from "./AskAgentDialog";
 import { HandoffCard } from "./HandoffCard";
 import { MarkdownBody } from "@/components/MarkdownMessage";
@@ -346,10 +354,13 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
   }
 
   const client = clientName(run.client_via);
+  const placeLook = agentPlaceLine(run);
   // The closures below cannot see the narrowing of `run` above.
   const shownRunId = run.id;
   const host = httpsHost(run.external_link);
   const ephemeral = newestEphemeral(activities);
+  // CIV-14b: the images that the agent put on the line that shows.
+  const lineImages = activityImages(newestEphemeralActivity(activities));
   const elicitation = latestElicitation(activities, run);
   const answer =
     elicitation &&
@@ -614,6 +625,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         </div>
       ) : null}
 
+      {/* SW-106: where the session runs, and on which model. It shows only when
+          the session reported a machine, a kind or a model, so a run with none
+          adds no line. */}
+      {placeLook.none ? null : (
+        <p
+          className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+          data-agent-place=""
+          title={placeLook.line}
+        >
+          <Icon name={placeLook.icon} size={12} className="shrink-0" aria-hidden />
+          <span className="min-w-0 truncate">{placeLook.line}</span>
+        </p>
+      )}
+
       {/* The second line: the newest thought, and the session link. */}
       {(ephemeral && run.status !== "failed") || host ? (
         <div className="flex min-w-0 items-center gap-2 text-xs">
@@ -640,6 +665,13 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
           ) : null}
         </div>
       ) : null}
+      {ephemeral && run.status !== "failed" && lineImages.length > 0 ? (
+        <div data-agent-ephemeral-images="">
+          <AgentImageStrip images={lineImages} agentLabel={client} />
+        </div>
+      ) : null}
+
+      <AgentRunPlan plan={run.plan} />
 
       {elicitation ? (
         // EA-18b: the answer part is ONE component, shared with the Questions list.

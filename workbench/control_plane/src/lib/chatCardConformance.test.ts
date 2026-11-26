@@ -67,6 +67,10 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   // STU-F5a: the live records card of a Studio read. The table template draws
   // its head, and the card draws RollupHeader while it has no rows.
   "components/studio/StudioRecordsCard.tsx": { seam: true },
+  // STU-I8d: the Connect card of a saved draft. It draws RollupHeader and the lines of I8a.
+  "components/studio/StudioConnectCard.tsx": { seam: true },
+  // STU-F6a: the skill offer of a finished turn. It draws RollupHeader.
+  "components/studio/SkillOfferCard.tsx": { seam: true },
   "components/ChatErrorCard.tsx": { seam: true },
   "components/ToolCardShell.tsx": { seam: true },
   "components/GenerativeUINode.tsx": { seam: true },
@@ -84,6 +88,8 @@ const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/RecommendedBadge.tsx": { exempt: "a badge inside an option row" },
   "components/TodoPanel.tsx": { exempt: "the plan above the composer, not a card of the transcript" },
   "components/PlanCardBody.tsx": { exempt: "the body of the plan card, under its TemplateHead in genUITemplates" },
+  // AO-3: the picture of the resting card. ChatErrorCard draws its title row.
+  "components/AiRestingArt.tsx": { exempt: "the picture in the body of the resting card, under ChatErrorCard's RollupHeader" },
 };
 
 const SEAM = /<(?:RollupHeader|CollapsibleCardHeader|TemplateHead|ToolCardShell)\b/;

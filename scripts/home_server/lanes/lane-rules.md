@@ -16,7 +16,15 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    `unheld` true. Claim it.
    - Never take a task outside your lane.
    - Never take a task that a live session holds.
+   - Never take a task that another member holds, even when the hold went
+     quiet. Ask on the task with `ask_on_task` first. A contributor's fleet
+     works beside yours (`docs/contributor_playbook.md`).
    - Refuse OWNER-GATE work (`work_plan.md` §6).
+   - Send your place with each `claim_task`: `agent_label` is your lane name,
+     `host` is the machine, `host_kind` is `computer`, `server` or `cloud`, and
+     `model` is your model. Send a value only when you know it. While Remote
+     Control is on, build `external_link` from `CLAUDE_CODE_BRIDGE_SESSION_ID`
+     as `https://claude.ai/code/<id>`. The map of agents shows these values.
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20
    comments, read the older ones with `get_task_timeline` (kind comments).
@@ -115,6 +123,11 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
       comments the failing test on the task and releases it. Find it with
       `my_work` or `search_tasks`, fix it, push, and hand it over again. Read
       `~/lanes/merge-bot.log` for `BACK` lines after each hand-over.
+    - A `RESOLVED <pull request> <rules>` line means that the merge bot merged
+      `main` into your branch, resolved a conflict, and pushed the merge
+      commit (CIV-34a). Do not hand it over again. Before your next commit on
+      that branch, run `git pull --ff-only` in its worktree. A push without it
+      is refused, because your branch is behind the bot's commit.
 15. **Save GitHub runs.** A red run costs a full set of jobs.
     - Before each push, run the tests that your diff can affect on this box:
       `timeout 2400 uv run python scripts/affected_tests.py --run`. For
@@ -123,3 +136,8 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     - Push only on a pass. Push once for each round of fixes, not once for
       each commit.
     - Do not push to "see what CI says". Run the test here.
+16. **A conflict in `ai_studio.md` section 14 (CIV-HS, task 3337).** Section 14
+    holds one index line for each slice. The row text is in
+    `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
+    put your row text in its row file and your index line back. Run
+    `python scripts/ai_studio_rows.py check` before you push.

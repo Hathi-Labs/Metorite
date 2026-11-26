@@ -44,6 +44,7 @@ __all__ = [
     "attributed_copilot_provider",
     "attributed_openai",
     "attribution_headers",
+    "in_run_ceiling",
     "run_ceiling_scope",
     "run_ceiling_text",
 ]
@@ -88,9 +89,10 @@ def run_ceiling_text(credits: Decimal) -> str:
 def run_ceiling_scope(credits: Decimal) -> Iterator[str]:
     """Send ``X-CC-Run-Ceiling: <credits>`` on each model call in this block.
 
-    The headless turn (AUTO-8b-2b) is the one caller. It binds the credits
-    that its goal has left, at the start of each round. A chat call binds
-    nothing, so it sends no header.
+    The headless turn (AUTO-8b-2b) binds the credits that its goal has left,
+    at the start of each round. A skill test (TOF-3b F4b,
+    ``gateway.studio.skill_tests.run_suite``) binds the credits that its cap
+    has left, for each test. A chat call binds nothing, so it sends no header.
 
     🔴 The header can only LOWER the Router's ceiling of the run, never raise
     it. The Console holds that rule (``customer_console.credits.run_ceiling_for``).
@@ -108,6 +110,13 @@ def run_ceiling_scope(credits: Decimal) -> Iterator[str]:
             _RUN_CEILING.reset(token)
         except ValueError:  # a token from another context
             _RUN_CEILING.set(held)
+
+
+def in_run_ceiling() -> bool:
+    """True inside :func:`run_ceiling_scope`: a round of the headless turn,
+    the one caller. A chat call is never inside it. A tool reads this to
+    keep within the time cap of the round (CRM-Q25e: no long CRM read)."""
+    return _RUN_CEILING.get() is not None
 
 
 def _proof_for(member: str) -> str | None:

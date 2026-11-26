@@ -91,7 +91,7 @@ MAX_VALUE_BYTES = 65536
 #: The point of a field declaration (§4).
 FIELDS_POINT = "fields"
 #: The types that PKG-13 refuses in a declaration (§8.3).
-REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file"})
+REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file", "autonumber"})
 #: The parts of a field spec that a declaration may not set (§8.3).
 REFUSED_SPEC_KEYS: tuple[str, ...] = ("required", "hot", "to")
 

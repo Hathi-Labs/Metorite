@@ -42,6 +42,8 @@ from acb_common import studio_fields as sf
 from acb_common import studio_manifest
 from acb_common.studio_fields import FieldError, FieldSpec, RecordError
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _UUID = str(uuid.uuid4())
@@ -53,6 +55,7 @@ _EXTRA: dict[str, dict[str, Any]] = {
     "relation": {"to": "crm.account"},
     "quantity": {"units": ["kg", "m"]},
     "barcode": {"format": "ean13"},
+    "autonumber": {"prefix": "FV-"},
 }
 
 #: One good value of each type, and the value the store keeps.
@@ -79,6 +82,7 @@ _GOOD: dict[str, tuple[Any, Any]] = {
     "quantity": ({"value": "12.5", "unit": "kg"}, {"value": "12.5", "unit": "kg"}),
     "percent": (2550, 2550),
     "barcode": ("4006381333931", "4006381333931"),
+    "autonumber": ("FV-0042", "FV-0042"),
 }
 
 #: Bad values of each type, by a name for the test id.
@@ -180,6 +184,11 @@ _BAD: list[tuple[str, str, Any]] = [
     ("barcode", "long", "40063813339311"),
     ("barcode", "letter", "400638133393a"),
     ("barcode", "number", 4006381333931),
+    ("autonumber", "number", 42),
+    ("autonumber", "no-digits", "FV-"),
+    ("autonumber", "bad-prefix", "F V-0042"),
+    ("autonumber", "long-prefix", "ABCDEFGHIJKLM0001"),
+    ("autonumber", "digits-first-then-text", "0042x"),
 ]
 
 
@@ -195,7 +204,7 @@ def _words(message: str) -> int:
 
 
 def test_the_types_are_the_spec_list() -> None:
-    assert len(sf.FIELD_TYPES) == 22
+    assert len(sf.FIELD_TYPES) == 23
     assert set(_GOOD) == set(sf.FIELD_TYPES)
     assert {kind for kind, _, _ in _BAD} == set(sf.FIELD_TYPES)
     assert set(sf.HOT_TYPES) <= set(sf.FIELD_TYPES)
@@ -258,7 +267,8 @@ def test_the_spec_rules_of_the_new_types(spec: dict[str, Any], word: str) -> Non
     assert [p.path for p in problems] == [word]
 
 
-@pytest.mark.parametrize("kind", ["richText", "rating", "duration", "quantity", "percent", "barcode"])
+@pytest.mark.parametrize(
+    "kind", ["richText", "rating", "duration", "quantity", "percent", "barcode", "autonumber"])
 def test_a_new_type_cannot_be_hot(kind: str) -> None:
     assert kind not in sf.HOT_TYPES
     problems = sf.validate_field_spec({"key": "f_key", "type": kind, **_EXTRA.get(kind, {}), "hot": True})
@@ -565,12 +575,10 @@ def test_one_reader_of_the_org_gauge() -> None:
 def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     """A fence that never runs is no fence. The `--must-run` list names the
     pytest ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
+    must_run = r8_lists.must_run()
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
                   "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
-        assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
+        assert f"tests/unit/{suite}.py" in must_run, suite
 
 
 def test_the_store_imports_the_one_check() -> None:
@@ -671,4 +679,4 @@ def test_a_tag_like_text_and_a_value_over_the_maximum_get_their_own_message() ->
 
 def test_the_spec_parts_and_the_value_shapes_come_from_the_constants() -> None:
     assert str(sf.MAX_RICH_TEXT_CHARS) in sf.VALUE_SHAPES["richText"]
-    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode"}
+    assert set(sf.SPEC_PARTS) == {"rating", "quantity", "barcode", "autonumber"}

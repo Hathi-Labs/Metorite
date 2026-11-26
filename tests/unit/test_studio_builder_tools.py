@@ -16,6 +16,7 @@ import ast
 import copy
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import ClassVar
 
@@ -528,6 +529,25 @@ async def test_list_actions_filters_by_id_and_title_and_hides_the_schema(catalog
     assert out["total"] == 2 and out["shown"] == 2
 
 
+async def test_list_actions_leaves_out_the_chat_tool_rows(monkeypatch) -> None:
+    """TOF-1e (TOF-1a, "Before the flip" item 3): a ``tool`` row is a chat tool
+    for a skill, and an app cannot use it. The page, its total and the query
+    skip it. Mutation: drop the filter of ``studio_list_actions`` → red."""
+    rows = [*ROWS, {"id": "tool:create_lead", "title": "Create lead", "class": "C",
+                    "source": "tool", "connection": None, "input_schema": None}]
+    _serve(monkeypatch, body={"actions": rows})
+    out = await st.studio_list_actions()
+    assert [r["id"] for r in out["actions"]] == ["tasks.create", "tasks.list",
+                                                 "integration:slack.post"]
+    assert out["total"] == 3
+    assert (await st.studio_list_actions("lead"))["actions"] == []
+    # P1 of the review: the skill flow keeps the rows, or a skill could not hold one.
+    both = await st.studio_list_actions(for_skill=True)
+    assert [r["id"] for r in both["actions"]][-1] == "tool:create_lead" and both["total"] == 4
+    assert [r["id"] for r in (await st.studio_list_actions("lead", for_skill=True))["actions"]] == [
+        "tool:create_lead"]
+
+
 async def test_list_actions_is_capped(monkeypatch) -> None:
     rows = [{"id": f"a.op{i}", "title": "t", "class": "A"} for i in range(80)]
     _serve(monkeypatch, body={"actions": rows})
@@ -631,3 +651,33 @@ def test_the_fence_catches_a_code_runner() -> None:
     """Non-vacuity: the same walk flags ``eval``, ``subprocess`` and ``run_command``."""
     bad = "import subprocess\neval('1')\nfrom x import run_command\n"
     assert sorted(_violations(bad)) == ["eval", "run_command", "subprocess"]
+
+
+# -- STU-FIX (task 3227): a manifest alone, and an id from the name ----------
+
+
+async def test_patch_takes_a_manifest_alone_and_ops_default_to_nothing(catalog) -> None:
+    m = await _valid()
+    out = await st.studio_patch(m)
+    assert out["ok"] and out["diff"] == [] and out["manifest"]["id"] == m["id"]
+    assert (await st.studio_patch(m, None))["ok"]
+
+
+@pytest.mark.parametrize("brief, mid", [
+    ("Event inquiry tracker for a stall at an exhibition", "event-inquiry-tracker"),
+    ("I want to build an app. Ask me what it should track, then build it.", "ask-me-what-it"),
+    ("Build me an app: lead tracker that logs calls", "lead-tracker"),
+    ("Track customer orders", "track-customer-orders"),
+    ("for", "for"),
+    ])
+async def test_draft_id_comes_from_the_name_part_of_the_brief(brief, mid) -> None:
+    out = await st.studio_draft(brief)
+    assert out["ok"], out
+    assert out["manifest"]["id"] == mid
+    assert not out["manifest"]["id"].startswith("new-app-")
+
+
+async def test_a_brief_with_no_latin_word_gives_app_and_a_tail() -> None:
+    for brief in ("ನನಗೆ ಅಪ್ಲಿಕೇಶನ್ ಬೇಕು", "मुझे एक ऐप चाहिए", "123 !!!"):
+        mid = (await st.studio_draft(brief))["manifest"]["id"]
+        assert re.fullmatch(r"app-[0-9a-f]{4}", mid), mid

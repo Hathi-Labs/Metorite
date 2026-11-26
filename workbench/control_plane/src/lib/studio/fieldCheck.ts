@@ -36,10 +36,28 @@ export const MAX_UNITS = 30;
 export const MAX_UNIT_CHARS = 20;
 export const MAX_CODE_CHARS = 80;
 export const MAX_QR_CHARS = 2_000;
+// STU-C15a: an autonumber is a prefix of at most 12 characters, then at most 15 digits.
+export const MAX_AUTONUMBER_PREFIX = 12;
+export const MAX_AUTONUMBER_PAD = 9;
+export const DEFAULT_AUTONUMBER_PAD = 4;
+export const MAX_AUTONUMBER = 999_999_999_999_999;
 /** A rating with no `min` and `max` runs from 1 to 5. */
 export const DEFAULT_RATING_MIN = 1;
 export const DEFAULT_RATING_MAX = 5;
 export const BARCODE_FORMATS = ["ean13", "code128", "qr"] as const;
+
+export interface QuantityRange {
+  low?: string | null;
+  high?: string | null;
+}
+export interface QuantityConversion {
+  from: string;
+  to: string;
+  factor: string;
+}
+/** STU-C24a. The same list as `QUANTITY_FLAGS` of `studio_fields.py`. */
+export type QuantityFlag =
+  | "none" | "unchecked" | "normal" | "low" | "high" | "critical_low" | "critical_high";
 
 /** One field of an object, as the form needs it. */
 export interface FieldSpec {
@@ -56,10 +74,19 @@ export interface FieldSpec {
   max?: number;
   /** STU-C14. The units of a quantity. */
   units?: readonly string[];
+  /** STU-C24a. The ranges of a quantity, in its base unit (the first unit). A null bound is open. */
+  normal?: QuantityRange;
+  critical?: QuantityRange;
+  /** STU-C24a. A value in `from` times `factor` is in `to`, the base unit. */
+  conversions?: readonly QuantityConversion[];
   /** STU-C14. The format of a barcode: `ean13`, `code128` or `qr`. */
   format?: string;
   /** C13. A lines relation: the field of the object `to` that names this record. It holds no value. */
   lines?: string;
+  /** C15a. An autonumber: the text before the number, the pad width and `never` or `day`. */
+  prefix?: string;
+  pad?: number;
+  reset?: string;
 }
 
 export type CheckResult = { ok: true; value: unknown } | { ok: false; message: string };
@@ -343,6 +370,46 @@ function quantity(f: FieldSpec, v: unknown): CheckResult {
   return pass({ value: v.value, unit: v.unit });
 }
 
+/** Decimal text as a BigInt scaled by 10^6, or null. No float: the compare is exact. */
+function scaled(t: unknown): bigint | null {
+  if (typeof t !== "string" || !QUANTITY.test(t)) return null;
+  const [whole, frac = ""] = t.replace("-", "").split(".");
+  const n = BigInt(whole) * BigInt(1_000_000) + BigInt(frac.padEnd(6, "0"));
+  return t.startsWith("-") ? -n : n;
+}
+
+const SCALE = BigInt(1_000_000);
+
+/**
+ * STU-C24a. The flag of one quantity value: the twin of `quantity_flag`. The value
+ * goes to the base unit (the first unit) at scale 10^12, then meets the ranges
+ * with `critical` first. A bound is inclusive. Nothing rounds before the compare.
+ */
+export function quantityFlag(f: FieldSpec, v: unknown): QuantityFlag {
+  const bound = (r: QuantityRange | undefined, k: "low" | "high"): bigint | null => {
+    const b = scaled(r?.[k]);
+    return b === null ? null : b * SCALE;
+  };
+  const [nLo, nHi] = [bound(f.normal, "low"), bound(f.normal, "high")];
+  const [cLo, cHi] = [bound(f.critical, "low"), bound(f.critical, "high")];
+  if (nLo === null && nHi === null && cLo === null && cHi === null) return "none";
+  const base = f.units?.[0];
+  const n = isObject(v) ? scaled(v.value) : null;
+  if (base === undefined || n === null || !isObject(v)) return "none";
+  let x = n * SCALE;
+  if (v.unit !== base) {
+    const c = (f.conversions ?? []).find((k) => k.from === v.unit && k.to === base);
+    const factor = c ? scaled(c.factor) : null;
+    if (factor === null || factor <= BigInt(0)) return "unchecked";
+    x = n * factor;
+  }
+  if (cLo !== null && x < cLo) return "critical_low";
+  if (cHi !== null && x > cHi) return "critical_high";
+  if (nLo !== null && x < nLo) return "low";
+  if (nHi !== null && x > nHi) return "high";
+  return "normal";
+}
+
 function percent(v: unknown): CheckResult {
   if (wholeNumber(v) && Math.abs(v) >= MAX_PERCENT_BP) {
     const top = ((MAX_PERCENT_BP - 1) / 100).toLocaleString("en-US", { minimumFractionDigits: 2 });
@@ -378,6 +445,18 @@ function barcode(f: FieldSpec, v: unknown): CheckResult {
     : fail(`Enter text of 1 to ${MAX_QR_CHARS.toLocaleString("en-US")} characters, with no control character.`);
 }
 
+/** The stored form of an autonumber: a prefix, then digits. The store fills it, so no form sends it. */
+function autonumber(_f: FieldSpec, v: unknown): CheckResult {
+  return typeof v === "string" && new RegExp(`^[A-Za-z0-9_./-]{0,${MAX_AUTONUMBER_PREFIX}}[0-9]{1,15}$`).test(v)
+    ? pass(v)
+    : fail("The store fills this field. Leave it empty.");
+}
+
+/** The stored value of `n` in the format of the field: the prefix, then the zero-padded number. */
+export function autonumberText(f: FieldSpec, n: number): string {
+  return `${f.prefix ?? ""}${String(n).padStart(f.pad ?? DEFAULT_AUTONUMBER_PAD, "0")}`;
+}
+
 const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   text: (_f, v) => text(v, MAX_TEXT_CHARS),
   longText: (_f, v) => text(v, MAX_LONG_TEXT_CHARS),
@@ -401,6 +480,7 @@ const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   quantity,
   percent: (_f, v) => percent(v),
   barcode,
+  autonumber,
 };
 
 /** One value of one field, as the store keeps it. The twin of `check_value`. */

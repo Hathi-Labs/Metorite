@@ -732,8 +732,7 @@ def test_a_manual_long_wait_in_a_listed_org_starts_and_pauses(promoted, monkeypa
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
     for wf in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github" / "workflows" / wf).read_text(encoding="utf-8")
-        assert "tests/unit/test_workflows_triggers_r8.py" in workflow, wf
+        assert "tests/unit/test_workflows_triggers_r8.py" in r8_lists.must_run(), wf
 
 
 # ── STU-E3: the Studio record trigger ────────────────────────────────────────
@@ -968,9 +967,15 @@ def test_an_author_who_is_not_active_or_lost_studio_starts_no_run(promoted, monk
 
 
 def _edit(promoted, name: str, who: str, triggers: list):
+    """A Save of *who*. Since STB-6c a Save that arms a trigger of a published
+    workflow needs ``workflows:publish``, so *who* holds it here. These cases
+    test the E3 author rule, and ``test_workflows_trigger_state_r8.py`` tests
+    the right."""
+    from acb_auth import UserContext, UserRole, build_access
     from gateway.routes.workflows import crud
 
-    user = SimpleNamespace(email=who)
+    user = UserContext(email=who, role=UserRole.EMPLOYEE, organization_id=promoted.org_a,
+                       access=build_access(["feature:workflows", "workflows:publish"]))
 
     async def go():
         try:
@@ -1063,6 +1068,8 @@ def test_other_event_sources_skip_the_package_check(promoted, monkeypatch):
 # ── STU-E3 pool fix: the author check holds one connection at a time ─────────
 
 import acb_auth.access as _acb_access  # noqa: E402
+
+from tests.unit import _r8_lists as r8_lists  # noqa: E402
 
 #: The real resolver, kept before the autouse stub replaces it.
 _REAL_RESOLVE = _acb_access.resolve_access_in_org

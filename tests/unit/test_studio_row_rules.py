@@ -12,7 +12,9 @@ R8 half is ``test_studio_row_rules_r8.py``.
 * Each call of the six store functions in ``apps/`` and ``packages/`` passes
   ``viewer`` (``test_each_call_of_the_six_passes_a_viewer``), and the six take
   it as a required keyword. The test lists each reader path.
-* ``aggregate_records`` takes no viewer, so no code may call it yet.
+* ``aggregate_records`` takes a REQUIRED ``viewer`` since C2d-a, so it is one of the eight.
+* ``read_tree`` takes a REQUIRED ``viewer`` since D18-2a, so it is one of the
+  readers of the first fence, and a call with no viewer fails it.
 * The door builds the viewer from the session's member only.
 * The second copy of ``HOT_TYPES`` in ``draftEdit.ts`` equals the Python list.
 
@@ -24,6 +26,12 @@ R8 half is ``test_studio_row_rules_r8.py``.
   ``test_a_grant_that_reads_all_and_shows_a_key_lifts_the_refusal`` goes red.
 * R3. ``invoke._do_object_write``: drop ``viewer=viewer`` of ``apply_writes``.
   ``test_each_call_of_the_six_passes_a_viewer`` goes red.
+* R4 (D18-2a, run on 2026-11-14). ``objects_store.read_tree``: remove the
+  ``viewer`` parameter, or give it the default None.
+  ``test_the_six_take_viewer_as_a_required_keyword`` goes red for each.
+* R5 (D18-2a, run on 2026-11-14). ``invoke._run_object_tree``: drop
+  ``viewer=viewer`` of ``read_tree``. ``test_each_call_of_the_six_passes_a_viewer``
+  goes red.
 """
 
 from __future__ import annotations
@@ -41,6 +49,8 @@ from acb_common import studio_query as sq
 from acb_common.studio_manifest import validate_manifest
 from acb_common.studio_rules import parse_rules
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from gateway.routes.studio import invoke
@@ -49,8 +59,10 @@ from gateway.studio import objects_store as store
 _ROOT = Path(__file__).resolve().parents[2]
 _STORE = _ROOT / "apps/services/gateway/gateway/studio/objects_store.py"
 _DRAFT_EDIT = _ROOT / "workbench/control_plane/src/lib/studio/draftEdit.ts"
+#: The store calls that take a REQUIRED ``viewer``: the six of C8a, ``read_tree`` since
+#: its door (D18-2a), and ``aggregate_records`` since C2d-a. The name stays ``_SIX``.
 _SIX = ("get_record", "query_records", "apply_writes", "create_record", "update_record",
-        "delete_record")
+        "delete_record", "read_tree", "aggregate_records")
 
 ME = "ana@x.test"
 SLIP_FIELDS = [
@@ -600,13 +612,14 @@ def test_each_call_of_the_six_passes_a_viewer() -> None:
             if not has:
                 missing.append(f"{rel}:{line} {name}")
     assert missing == []
-    # Each reader path of the records today. Chat tools, search (C5) and
-    # workflows (B6) reach the records through the door only. The batch store
+    # Each reader path of the records today. Chat tools and workflows (B6)
+    # reach the records through the door only. The batch store
     # (E8a) is the second path: its caller passes the viewer to ``run_chunk``,
     # which passes it on to each ``apply_writes`` call. The loop above checks
-    # that this call passes it too.
+    # that this call passes it too. C5a adds the search reader.
     assert readers == {"apps/services/gateway/gateway/routes/studio/invoke.py",
-                       "apps/services/gateway/gateway/studio/batch_store.py"}
+                       "apps/services/gateway/gateway/studio/batch_store.py",
+                       "apps/services/gateway/gateway/studio/search.py"}
 
 
 def test_the_six_take_viewer_as_a_required_keyword() -> None:
@@ -616,28 +629,6 @@ def test_the_six_take_viewer_as_a_required_keyword() -> None:
         assert param.default is inspect.Parameter.empty, name
 
 
-@pytest.mark.parametrize("name", ["aggregate_records", "read_tree"])
-def test_no_code_calls_a_reader_that_takes_no_viewer(name: str) -> None:
-    """``aggregate_records`` (C2b) and ``read_tree`` (C18) read every record of
-    the object. The first door of each adds a viewer first, and then joins the six."""
-    assert "viewer" not in inspect.signature(getattr(store, name)).parameters
-    found = []
-    for path in _source_files():
-        if path == _STORE:
-            continue
-        text = path.read_text(encoding="utf-8")
-        if re.search(rf"\b{name}\s*\(", text):
-            found.append(path.relative_to(_ROOT).as_posix())
-    if name == "aggregate_records":
-        # D4b: the one caller is the door, and only for the owner. A viewer of an
-        # install is refused before the store (a sum would ignore the installed
-        # fields and the row rules). The first viewer aggregate adds a viewer here.
-        assert found == ["apps/services/gateway/gateway/routes/studio/invoke.py"]
-        guard = inspect.getsource(invoke._run_object_aggregate)
-        assert "InstalledApp" in guard and "SOURCE_NOT_OPEN" in guard
-        assert guard.index("SOURCE_NOT_OPEN") < guard.index("aggregate_records")
-    else:
-        assert found == []
 
 
 def test_the_door_builds_the_viewer_from_the_session_member_only() -> None:
@@ -662,7 +653,7 @@ def test_the_second_list_of_hot_types_in_draft_edit_equals_the_first() -> None:
 @pytest.mark.parametrize("name", [
     "_GET_RECORD_SCOPED_SQL", "_LOCK_RECORD_SCOPED_SQL", "_LINE_PARENTS_SCOPED_SQL",
     "_SHARE_OBJECT_SQL", "_VIEW_SQL", "_SOURCE_ACCESS_SQL", "_OBJECT_ACCESS_SQL",
-    "_SET_ACCESS_SQL",
+    "_SET_ACCESS_SQL", "_TREE_ALL_SCOPED_SQL", "_TREE_ROOT_SCOPED_SQL",
 ])
 def test_each_statement_of_the_row_rules_names_the_org_and_the_package(name: str) -> None:
     sql = getattr(store, name)
@@ -697,6 +688,34 @@ def test_a_page_with_a_row_rule_holds_it_in_each_part() -> None:
         assert "ac.v_text" not in plain and "me" not in plain_params
 
 
+def test_an_aggregate_with_a_row_rule_holds_it_in_each_part() -> None:
+    """C2d-a. The guard ``g``, the candidates ``m`` and the ids of an aggregate
+    read the same records, so each part that names the package names the row
+    rule too. With no rule, the statement holds no trace of it."""
+    fields = [sf.parse_field_spec({"key": "employee", "type": "person", "hot": True}),
+              sf.parse_field_spec({"key": "note", "type": "text"}),
+              sf.parse_field_spec({"key": "day", "type": "date", "hot": True}),
+              sf.parse_field_spec({"key": "amount", "type": "number", "hot": True})]
+    oid, pid = "00000000-0000-0000-0000-00000000000a", "00000000-0000-0000-0000-00000000000b"
+    sums = [{"op": "sum", "field": "amount"}]
+    shapes = [
+        sq.parse_aggregate(fields, None, None, None),
+        sq.parse_aggregate(fields, None, {"field": "day"}, sums),
+        sq.parse_aggregate(fields, [{"field": "employee", "op": "eq", "value": ME}], None, sums),
+        sq.parse_aggregate(fields, [{"field": "note", "op": "contains", "value": "x"}],
+                           {"field": "day"}, sums),
+    ]
+    for agg in shapes:
+        sql, params = store.build_aggregate(agg, object_id=oid, package_id=pid,
+                                            access=(("employee",), ME))
+        assert params["akeys"] == ["employee"] and params["me"] == ME
+        assert sql.count(store._IN_PACKAGE) == sql.count("ac.v_text = CAST(:me AS text)") > 0
+        plain, plain_params = store.build_aggregate(agg, object_id=oid, package_id=pid)
+        assert "ac.v_text" not in plain and "me" not in plain_params and "akeys" not in plain_params
+        same, _ = store.build_aggregate(agg, object_id=oid, package_id=pid, access=None)
+        assert same == plain
+
+
 def test_a_check_of_a_rule_reads_every_record() -> None:
     """A ``unique`` and a ``group_sum_min`` judge the whole object, so their
     statements hold no row rule."""
@@ -720,9 +739,7 @@ def test_the_migration_is_expand_only_and_adds_the_column_and_the_hot_type() -> 
 
 
 def test_this_suite_and_the_r8_suite_are_on_the_must_run_lists() -> None:
-    for workflow in ("pr-check.yml", "deploy.yml"):
-        text = (_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-        assert re.search(r"^[ \t]+tests/unit/test_studio_row_rules_r8\.py(?: \\)?$", text, re.M), workflow
+    assert "tests/unit/test_studio_row_rules_r8.py" in r8_lists.must_run()
 
 
 # ── Fix round 4 ─────────────────────────────────────────────────────────────

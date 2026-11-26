@@ -77,13 +77,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.unit import _r8_lists as r8_lists
 
 pytest.importorskip("sqlalchemy")
 
@@ -718,12 +719,8 @@ def test_r8_a_batch_that_is_not_open_is_never_moved_back_to_open(world) -> None:
 
 
 def test_this_suite_is_named_in_both_ci_skip_guards() -> None:
-    for name in ("pr-check.yml", "deploy.yml"):
-        flow = (_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", flow)
-        assert block, f"{name}: the --must-run argument list is missing"
-        assert re.search(r"^[ \t]+tests/unit/test_studio_batch_r8\.py(?: \\)?$",
-                         block.group(1), re.M), name
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_batch_r8.py" in must_run
 
 
 def test_r8_the_viewer_reaches_every_apply_writes_call(world, monkeypatch) -> None:

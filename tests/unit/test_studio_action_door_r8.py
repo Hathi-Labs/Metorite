@@ -63,6 +63,15 @@ u. A change during the read is seen. A package that goes and an owner that
    changes get 404. A declaration that changes gets 403. Neither reads a
    record.
 
+**Acceptance (WS-STU I1a).** The section "I1a" at the end of this file.
+
+v. A draft that names a connection with no ``connected`` row gets 409
+   ``needs_connection`` for each action, and nothing reads or changes. Each
+   call writes one row with the code. An org row of the bound org opens each
+   action. A ``preview=1`` object action stays open.
+w. A row of org B, a member row of Ben, and a ``needs_reconnect`` row each
+   meet nothing for Ana in org A. Her own member row meets it.
+
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
 
@@ -1966,6 +1975,12 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
     whole history of the member. ``clock_timestamp()`` is volatile and cannot
     bound an index, so the window reads ``now()``.
 
+    Task 3293. The plan check is now a tree walk of ``EXPLAIN (FORMAT JSON)``, and the
+    constraint indexes are dropped too (inside the same rolled-back transaction), so the
+    index under test is the only way into the table. The test no longer depends on the
+    join shape or on the statistics. Mutations: keep no index (a seq scan, red), or take
+    the window out of the SQL (an index read with no ``created_at`` bound, red).
+
     Task 2229. The test used to leave every index of the table in place and
     expect the planner to pick this one. On a table of a few rows the cost of
     ``pm_agent_runs_app_open_connection`` (organization, connection) wins as
@@ -2009,28 +2024,57 @@ def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None
             )
             for name in others:
                 c.execute(text(f'DROP INDEX "{name}"'))
-            c.execute(text("SET LOCAL enable_seqscan = off"))
-            # Task 3049: migrations 418 and 421 widened pm_agent_runs, and the
-            # planner then drove the read from pm_agent_run_activities and reached
-            # pm_agent_runs through its key (a constraint index, which this test
-            # cannot drop) in a nested loop. With the nested loop off, the plan
-            # shows how pm_agent_runs itself is read, which is what this test pins.
-            # A merge join could still read pm_agent_runs in key order through the
-            # key, so it is off too. A hash join is left, and it reads the table
-            # through the one index that has a condition on it.
-            c.execute(text("SET LOCAL enable_nestloop = off"))
-            c.execute(text("SET LOCAL enable_mergejoin = off"))
-            lines = [
-                r[0] for r in c.execute(text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)
+            # Task 3293. The constraint indexes (the key and each unique) are the ones that a
+            # DROP INDEX cannot reach. They gave the planner a second way to read the table
+            # (a full walk of the key, or a point lookup in a nested loop), and the pick
+            # moved with the statistics and the join shape (tasks 3049 and 3293). DDL is
+            # transactional, so drop each such constraint here (CASCADE drops the foreign
+            # keys that name it) and the rollback restores them. Then the one index left on
+            # pm_agent_runs is the one under test, and no join shape has another way in.
+            owned = [
+                r[0]
+                for r in c.execute(
+                    text(
+                        "SELECT conname FROM pg_constraint"
+                        " WHERE conrelid = 'pm_agent_runs'::regclass AND contype IN ('p', 'u', 'x')"
+                    )
+                )
             ]
+            assert owned, "the table lost its key: this test then proves nothing about the choice"
+            for name in owned:
+                c.execute(text(f'ALTER TABLE pm_agent_runs DROP CONSTRAINT "{name}" CASCADE'))
+            c.execute(text("SET LOCAL enable_seqscan = off"))
+            raw = c.execute(
+                text(f"EXPLAIN (FORMAT JSON) {app_requests._OPEN_OF_CHANGE_SQL}"), params
+            ).scalar()
         finally:
             trans.rollback()
-    plan = "\n".join(lines)
-    assert "Seq Scan on pm_agent_runs" not in plan, plan
-    at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
-    assert keep in lines[at], plan
-    cond = lines[at + 1]
-    assert "Index Cond" in cond and "created_at >" in cond, plan
+    doc = json.loads(raw) if isinstance(raw, str) else raw
+    plan = json.dumps(doc, indent=1)
+    reads = _reads_of_table(doc[0]["Plan"], "pm_agent_runs")
+    assert reads, plan
+    for index, cond in reads:
+        # Never a walk of the whole table, whatever the join shape.
+        assert index == keep, (f"pm_agent_runs is read through {index!r}, not through {keep}", plan)
+        # The window of a live request is part of the index condition: the range is bounded.
+        assert "created_at >" in cond, ("the index read has no bound on created_at", plan)
+
+
+def _reads_of_table(node: dict, table: str) -> list[tuple]:
+    """Each read of *table* in a JSON plan: ``(index name or None, index condition)``.
+    A seq scan has no index. A bitmap heap scan takes the index and the condition from
+    its bitmap index scan child."""
+    out: list[tuple] = []
+    if node.get("Relation Name") == table:
+        index, cond = node.get("Index Name"), str(node.get("Index Cond", ""))
+        if node.get("Node Type") == "Bitmap Heap Scan":
+            for child in node.get("Plans", []):
+                if child.get("Node Type") == "Bitmap Index Scan":
+                    index, cond = child.get("Index Name"), str(child.get("Index Cond", ""))
+        out.append((index, cond))
+    for child in node.get("Plans", []):
+        out.extend(_reads_of_table(child, table))
+    return out
 
 
 # ── ap. The chat tools of B2c-2b on the real door ──────────────────────────
@@ -2742,3 +2786,235 @@ def test_r8_bd_the_store_refuses_and_the_session_stays_usable(
     assert ran == [1]
     assert [r[3] for r in _audits(world, world.pkg)] == [{
         **_AGG_OUTCOME, "outcome": "refused", "reason": code}]
+
+
+
+# ── I1a. A connection that the caller does not have (WS-STU I1a) ───────────
+#
+# R7. Mutations, run on 2026-11-14 on this section and its hermetic twin:
+# * I1-D1. ``invoke._check``: drop the call of ``_needs_connection``. Both
+#   refusal cases go red.
+# * I1-D2. ``connections/store._MET_SQL``: drop ``AND member_email = :member``.
+#   ``test_r8_only_the_callers_own_row_and_a_connected_row_meet_it`` goes red.
+# * I1-D3 (the review fix). ``invoke._needs_connection``: drop the check of
+#   ``connection_gate_on``. ``test_r8_the_gate_off_changes_nothing_off`` goes red.
+
+#: A provider of the registry that no other suite names.
+TALLY = f"mcp:tally-{TAG}"
+
+
+def _needs_tally(world: Any, pid: str) -> None:
+    """Add ``connections`` to the draft of *pid*, as the superuser."""
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE apps SET manifest = manifest || CAST(:m AS jsonb) "
+            "WHERE id = CAST(:p AS uuid)"), {"m": json.dumps({"connections": [{"name": TALLY, "as": "member"}]}), "p": pid})
+
+
+def _connect(world: Any, org: str, *, member: str | None = None,
+             status: str = "connected") -> str:
+    with world.p.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO integration_connections (organization_id, provider, owning_app, "
+            "scope_kind, member_email, status) VALUES (CAST(:o AS uuid), :p, 'integrations', "
+            ":k, :m, :s) RETURNING id"),
+            {"o": org, "p": TALLY, "k": "member" if member else "org", "m": member,
+             "s": status}).scalar_one())
+
+
+@pytest.fixture
+def tally(world, monkeypatch):
+    """The draft of Ana's package names ``TALLY``, and the gate is on for org A."""
+    _needs_tally(world, world.pkg)
+    monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", world.a)
+    yield world
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM integration_connections WHERE provider = :p"),
+                  {"p": TALLY})
+
+
+def test_r8_a_missing_connection_refuses_each_action_until_a_member_row_connects(tally) -> None:
+    world = tally
+    before = _record_row(world, world.rec)
+    count = _record_count(world, world.obj)
+    body = {"id": world.rec, "data": {"site": "Changed"}}
+
+    async def every() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg, a, body) for a in _EVERY_ACTION]
+
+    for (status, detail), action in zip(_run(world, every), _EVERY_ACTION, strict=True):
+        assert (status, detail) == (409, {"code": invoke.NEEDS_CONNECTION,
+                                          "message": invoke.CONNECTION_TEXT,
+                                          "provider": TALLY, "as": "member"}), action
+    assert (_record_row(world, world.rec), _record_count(world, world.obj)) == (before, count)
+    rows = _audits(world, world.pkg)
+    assert [r[3]["reason"] for r in rows] == [invoke.NEEDS_CONNECTION] * len(_EVERY_ACTION)
+    assert {(r[0], r[1], r[3]["outcome"], r[3]["uses"]) for r in rows} == {
+        (world.a, ANA, "refused", None)}
+
+    # A preview of an object action stays open, so the IDE works.
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", request=_Request(
+        {"id": world.rec}, query={"preview": "1"})))
+    assert status == 200 and got["record"]["id"] == world.rec, got
+
+    _connect(world, world.a)                     # an org row never meets a member need
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek",
+                                               {"id": world.rec}))
+    assert (status, detail["code"]) == (409, invoke.NEEDS_CONNECTION)
+    _connect(world, world.a, member=ANA)
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
+    assert status == 200 and got["record"]["data"] == _DATA, got
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert status == 200 and got["total"] == 1, got
+
+
+def test_r8_only_the_callers_own_row_and_a_connected_row_meet_it(tally) -> None:
+    world = tally
+
+    def peek() -> tuple[int, Any]:
+        return _run(world, lambda: _call(world.a, ANA, world.pkg, "peek", {"id": world.rec}))
+
+    _connect(world, world.b)                     # org B
+    _connect(world, world.b, member=ANA)         # Ana's address, in org B
+    _connect(world, world.a, member=BEN)         # another member of org A
+    rid = _connect(world, world.a, member=ANA, status="needs_reconnect")
+    status, detail = peek()
+    assert (status, detail["code"]) == (409, invoke.NEEDS_CONNECTION)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE integration_connections SET status = 'connected' "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": rid})
+    status, got = peek()
+    assert status == 200 and got["record"]["id"] == world.rec, got
+    # Ben's own package names no connection, so his row changes nothing there.
+    status, got = _run(world, lambda: _call(world.a, BEN, world.pkg_ben, "peek",
+                                            {"id": world.rec_ben}))
+    assert status == 200
+
+
+def test_r8_the_gate_off_changes_nothing_off(tally, monkeypatch) -> None:
+    """``STUDIO_CONNECTION_GATE_ORGS`` empty, or naming org B only: the door of
+    org A is as before I1a. No row exists, and each action answers as it did."""
+    world = tally
+    for listed in ("", world.b):
+        monkeypatch.setattr(get_settings(), "studio_connection_gate_orgs", listed)
+
+        async def go() -> list[tuple[int, Any]]:
+            return [await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
+                    for a in ("peek", "add", "no_such_action")]
+
+        (peek_s, peek), (add_s, add), (none_s, none) = _run(world, go)
+        assert peek_s == 200 and peek["record"]["id"] == world.rec, (listed, peek)
+        assert (add_s, add["code"]) == (403, "approval_required"), listed
+        assert (none_s, none["code"]) == (403, "not_declared"), listed
+    reasons = [r[3].get("reason") for r in _audits(world, world.pkg)]
+    assert invoke.NEEDS_CONNECTION not in reasons
+
+
+# ── c2d. The aggregate of a viewer of an install (STU-C2d-a, J2a) ───────────
+#
+# A viewer of an install aggregates through the door. The door runs the one
+# grammar on the installed fields first, and the store reads what the list
+# reads for the viewer (C8a). Ana views the package of Ben.
+#
+# * The viewer counts and groups the records of the installed object.
+# * A field of a newer version is 422 ``query_field_unknown``.
+# * An object with a grant that names no role of the viewer gives a total of 0.
+#   The owner still reads all.
+# * A member with no install, and org B with the same email, get 404.
+#
+# **The mutations of C2d-a (R7).** Each was run on 2026-11-14.
+#
+# * G6. ``_run_object_aggregate``: leave out the ``parse_aggregate`` of the
+#   installed fields. ``test_r8_c2d_a_field_of_a_newer_version_is_422_for_a_viewer`` goes red.
+# * G7. ``_run_object_aggregate``: put the refusal ``SOURCE_NOT_OPEN`` back.
+#   ``test_r8_c2d_a_viewer_of_an_install_counts_and_groups_the_installed_object`` goes red.
+
+_CAROL = f"carol.{TAG}@stub2a.test"
+
+
+def _installed_by_ben(world: Any, monkeypatch, fields: list[dict[str, Any]] | None = None) -> None:
+    """Ana is a viewer of the install of the package of Ben. The installed
+    version declares *fields* of ``visit``, and no ``hours`` by default."""
+    kept = fields if fields is not None else [f for f in _FIELDS if f["key"] != "hours"]
+    manifest = _manifest(f"door-{TAG}-viewer", world.wf_a, world.wf_b)
+    manifest["objects"] = [{"name": "visit", "fields": kept}]
+
+    async def _installed(db: Any, *, viewer: str, app_id: str) -> Any:
+        from gateway.package_host import viewer as host_viewer
+        if viewer != ANA or app_id != world.pkg_ben:
+            return None
+        # The install shows only to a session that RLS lets read the package.
+        seen = await db.execute(text("SELECT 1 FROM apps WHERE id = CAST(:i AS uuid)"),
+                                {"i": app_id})
+        if seen.first() is None:
+            return None
+        return host_viewer.InstalledApp(id=app_id, version=1, manifest=manifest)
+
+    monkeypatch.setattr(invoke, "package_host_allowed", lambda org: True)
+    monkeypatch.setattr(invoke._viewer, "installed_app", _installed)
+
+
+def test_r8_c2d_a_viewer_of_an_install_counts_and_groups_the_installed_object(
+        world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        await _add_tallied(world.a, world.obj_ben, world.pkg_ben, [
+            ("done", 100, "INR", 4), ("done", 7, "INR", 3), ("planned", 5, "INR", 1)])
+        body = {"group_by": {"field": "status"},
+                "measures": [{"op": "count"}, {"op": "sum", "field": "fee"}]}
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", body),
+                await _call(world.a, BEN, world.pkg_ben, "tally", body)]
+
+    (vs, viewer_got), (os_, owner_got) = _run(world, go)
+    assert (vs, os_) == (200, 200), (viewer_got, owner_got)
+    assert viewer_got["total"]["count"] == 4 and viewer_got["total"] == owner_got["total"]
+    assert [(g["key"], g["count"]) for g in viewer_got["groups"]] == [("planned", 2), ("done", 2)]
+
+
+def test_r8_c2d_a_field_of_a_newer_version_is_422_for_a_viewer(world, monkeypatch) -> None:
+    """``hours`` is a field of the object, and the installed version lacks it.
+    The owner sums it, and the viewer gets ``query_field_unknown``."""
+    _installed_by_ben(world, monkeypatch)
+    sums = {"measures": [{"op": "sum", "field": "hours"}]}
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", sums),
+                await _call(world.a, ANA, world.pkg_ben, "tally",
+                            {"group_by": {"field": "status"}, "filter": [
+                                {"field": "hours", "op": "gt", "value": 1}]}),
+                await _call(world.a, BEN, world.pkg_ben, "tally", sums)]
+
+    (s1, d1), (s2, d2), (s3, _) = _run(world, go)
+    assert (s1, d1["code"]) == (422, "query_field_unknown")
+    assert (s2, d2["code"]) == (422, "query_field_unknown")
+    assert s3 == 200
+
+
+def test_r8_c2d_a_grant_that_names_no_role_of_the_viewer_gives_a_total_of_0(
+        world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        async with tenant_session(world.a) as db:
+            done = await objects_store.set_access(
+                db, world.obj_ben, [{"role": "boss", "read": "all"}], package_id=world.pkg_ben)
+            assert done is not None
+        body = {"group_by": {"field": "status"}, "measures": [{"op": "count"}]}
+        return [await _call(world.a, ANA, world.pkg_ben, "tally", body),
+                await _call(world.a, BEN, world.pkg_ben, "tally", body)]
+
+    (vs, viewer_got), (os_, owner_got) = _run(world, go)
+    assert (vs, os_) == (200, 200)
+    assert viewer_got["total"]["count"] == 0 and viewer_got["groups"] == []
+    assert owner_got["total"]["count"] == 1
+
+
+def test_r8_c2d_a_member_with_no_install_and_org_b_get_404(world, monkeypatch) -> None:
+    _installed_by_ben(world, monkeypatch)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, _CAROL, world.pkg_ben, "tally", {}),
+                await _call(world.b, ANA, world.pkg_ben, "tally", {})]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2

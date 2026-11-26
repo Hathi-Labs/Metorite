@@ -28,6 +28,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_fields
@@ -248,6 +250,4 @@ def test_a_cap_refusal_never_names_a_line() -> None:
 
 
 def test_the_r8_suite_is_on_both_must_run_lists() -> None:
-    for name in ("pr-check.yml", "deploy.yml"):
-        workflow = (_ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        assert "tests/unit/test_studio_org_caps_r8.py \\" in workflow, name
+    assert "tests/unit/test_studio_org_caps_r8.py" in r8_lists.must_run()

@@ -171,12 +171,22 @@ describe("the Studio pack (D179)", () => {
       // STU-K1d: a chat create from a template adds an app to the library, so the library re-reads.
       "studio_create_from_template",
       // STU-B2c-2b: a resend after the approval writes a record, so an open app re-reads.
-      "studio_record_create", "studio_record_update", "studio_record_delete"]) {
+      "studio_record_create", "studio_record_update", "studio_record_delete",
+      // STB-6b: a publish, a roll back, a pause or a turn on changes a workflow of the library.
+      "studio_workflow_publish", "studio_workflow_live",
+      // PAR-8a: the four other workflow writes.
+      "studio_workflow_run", "studio_workflow_save", "studio_workflow_build",
+      "studio_workflow_module",
+      // PAR-9: the five Custom Apps writes.
+      "custom_app_save", "custom_app_files", "custom_app_publish", "custom_app_share",
+      "custom_app_data"]) {
       expect(appsForWrite(w), w).toEqual(["studio"]);
     }
     for (const rd of ["studio_draft", "studio_validate", "studio_patch", "studio_outline", "studio_plan",
       "studio_describe", "studio_list_actions", "studio_package_get", "studio_record_list",
-      "studio_skill_list", "studio_interview"]) {
+      "studio_skill_list", "studio_interview", "studio_workflow_read",
+      "studio_workflow_runs", "studio_workflow_check", "studio_workflow_catalog",
+      "custom_app_read"]) {
       expect(appsForWrite(rd), rd).toEqual([]);
     }
   });

@@ -125,8 +125,8 @@ reference tied to code. Do not put product specs in `docs/`.
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
    Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
-   right before `gh pr merge`. It runs the collision fences only. Add
-   `--with-tests` to run the affected tests too (D176).
+   right before `gh pr merge`. It runs the collision fences, and it runs the tests
+   that both sides can affect when the branch is behind main. Add `--no-tests` to skip them (D176).
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
@@ -274,7 +274,9 @@ session that changes the repo or a box follows these steps:
 5. **Move the status** with `set_task_status`. Move the task to review when the pull request opens.
    A project with no review status keeps the task in progress. Move it to done
    after the merge, with the evidence in a comment. Then call
-   `finish_agent_run` with what shipped and what is left.
+   `finish_agent_run` with what shipped and what is left. After a hand-over
+   to the merge bot, the session waits for the bot's line, and its `DONE`
+   line is the merge (`next-ticket.md` step 7, CIV-28c).
 6. **Hand off when you stop.** Call `release_task`, with a note of what is
    done, what is left and the next step.
 7. **Give each spec slice a task.** A spec that adds slice rows gets a task
@@ -414,6 +416,10 @@ Rules that make it work:
   commands, the keeper, the merge queue, the accounts and the traps. **To size
   lanes, sub-agents, runners and CI to the machines you have, or to add a
   machine such as a cloud VPS, read `docs/dev_capacity.md`.**
+- **Google Cloud is the aroh deployment** (D229, D230). Project
+  `metorite-513907` holds the dev box `aroh-dev-1`. Every new resource there
+  takes the name `aroh`. **Read `docs/gcp_aroh.md` before you touch it.** It
+  holds the access, the network plan, the box and the traps.
 - **GitHub `pr-check` is the gate (D218).** Push when the verifier passes, not
   after each commit, so `pr-check` runs once for each round.
   `bash scripts/ci_local.sh` runs the whole pr-check suite locally. It is

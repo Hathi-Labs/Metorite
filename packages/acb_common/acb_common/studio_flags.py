@@ -8,6 +8,16 @@ takes effect with no restart (``docs/flag_reload.md``).
 
 ``STUDIO_NUM_F8_ORGS`` (C2c) adds the float8 test to a number filter of the
 object query. Default OFF.
+
+``STUDIO_CONNECTION_GATE_ORGS`` (I1a) makes the ``connections`` of a manifest
+bind: the resolve of the package host and the action door both ask
+:func:`connection_gate_on`. Default OFF, and off means that ``connections``
+changes nothing. It lives here because ``gateway/package_host`` imports no
+routes layer.
+
+``STUDIO_LIVE_PREVIEW_ORGS`` (I11a) lets a preview of the action door read a
+class A ``mcp:`` action live: :func:`live_preview_on`. Default OFF, and off
+means that each ``mcp:`` action of a preview stays ``source_not_open``.
 """
 
 from __future__ import annotations
@@ -31,6 +41,28 @@ def num_f8_allowed(organization_id: str | None) -> bool:
     if not organization_id:
         return False
     listed = _parse_orgs(str(getattr(get_settings(), "studio_num_f8_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def connection_gate_on(organization_id: str | None) -> bool:
+    """True when ``STUDIO_CONNECTION_GATE_ORGS`` holds the org, or holds ``*``
+    (WS-STU I1a). Default OFF: no org, and an org off the list, keep the
+    behaviour before I1a. The one reader of the setting. The org comes from the session or the bound tenant,
+    never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_connection_gate_orgs", "") or ""))
+    return "*" in listed or str(organization_id).strip().lower() in listed
+
+
+def live_preview_on(organization_id: str | None) -> bool:
+    """True when ``STUDIO_LIVE_PREVIEW_ORGS`` holds the org, or holds ``*``
+    (WS-STU I11a). Default OFF: no org, and an org off the list, read no
+    ``mcp:`` action live. The one reader of the setting. The org comes from
+    the session, never from request input (R5)."""
+    if not organization_id:
+        return False
+    listed = _parse_orgs(str(getattr(get_settings(), "studio_live_preview_orgs", "") or ""))
     return "*" in listed or str(organization_id).strip().lower() in listed
 
 

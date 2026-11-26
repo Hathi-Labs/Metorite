@@ -99,6 +99,8 @@ from gateway.routes.workflows.engine.handlers import NodeExecutionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit import _r8_lists as r8_lists
+
 _ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "workflows"
 _PARK = _WORKFLOWS / "park.py"
@@ -1489,5 +1491,4 @@ class TestParkAndAskOnARealDatabase:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """An R8 suite that CI does not list still skips in silence when the
     database gate is disarmed. Match the argument line, not a mention."""
-    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
-    assert re.search(r"^\s+tests/unit/test_auto_park\.py \\?$", workflow, re.M)
+    assert "tests/unit/test_auto_park.py" in r8_lists.must_run()

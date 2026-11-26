@@ -43,17 +43,20 @@ import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal, localcontext
 from typing import Any
 from urllib.parse import urlsplit
 
 from acb_common.app_manifests.base import APP_ID_PATTERN
 
 #: The field types of §3.1 and of C14, in camelCase as the genUI node types are.
-#: The first sixteen are C1. The last six are C14, and none of them may be hot.
+#: The first sixteen are C1. The next six are C14, and none of them may be hot.
+#: The last one, ``autonumber``, is C15a: the store fills it, and a caller never writes it.
 FIELD_TYPES: tuple[str, ...] = (
     "text", "longText", "number", "money", "date", "datetime", "checkbox",
     "select", "multiSelect", "person", "relation", "file", "url", "email",
     "phone", "geo", "richText", "rating", "duration", "quantity", "percent", "barcode",
+    "autonumber",
 )  # fmt: skip
 
 #: The types that a hot field may have. Each maps to one value column of
@@ -113,17 +116,32 @@ MAX_PERCENT_BP = 10**9
 #: C14. A quantity takes a declared list of units.
 MAX_UNITS = 30
 MAX_UNIT_CHARS = 20
+#: C24a. A quantity holds at most this many conversions to its base unit.
+MAX_CONVERSIONS = 30
+#: C24a. The flag of a quantity value. It is computed, and never stored.
+QUANTITY_FLAGS: tuple[str, ...] = (
+    "none", "unchecked", "normal", "low", "high", "critical_low", "critical_high")
 #: C14. The barcode formats. EAN-13 has a check digit. Code 128 is printable ASCII.
 BARCODE_FORMATS: tuple[str, ...] = ("ean13", "code128", "qr")
 MAX_CODE_CHARS = 80
 MAX_QR_CHARS = 2_000
+#: C15a. An autonumber field: the longest prefix, the pad width and the reset rule.
+#: The number is below 10^15, as the CHECK of ``studio_object_counters`` says.
+MAX_AUTONUMBER_PREFIX = 12
+DEFAULT_AUTONUMBER_PAD = 4
+MAX_AUTONUMBER_PAD = 9
+AUTONUMBER_RESETS: tuple[str, ...] = ("never", "day")
+MAX_AUTONUMBER = 999_999_999_999_999
 #: The text that ``studio_record_hot.v_text`` holds: the first 256 characters.
 #: A btree entry has a size limit, so the side table never holds a long text.
 HOT_TEXT_CHARS = 256
 
 #: C14. The parts of a field spec that belong to one type.
 SPEC_PARTS: dict[str, tuple[str, ...]] = {
-    "rating": ("min", "max"), "quantity": ("units",), "barcode": ("format",),
+    "rating": ("min", "max"),
+    "quantity": ("units", "normal", "critical", "conversions"),
+    "barcode": ("format",),
+    "autonumber": ("prefix", "pad", "reset"),
 }
 
 #: C14. One sentence for each new type: what a caller sends. ``studio_describe fields``
@@ -132,14 +150,18 @@ VALUE_SHAPES: dict[str, str] = {
     "richText": f"markdown text, at most {MAX_RICH_TEXT_CHARS} characters, with no HTML tag",
     "rating": "a whole number from the field's min to its max (1 to 5 when it has none)",
     "duration": "whole seconds, as 5400 for 1h 30m",
-    "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text",
+    "quantity": "{'value': '12.5', 'unit': one of the units of the field}, the value as decimal text. "
+                "The value stays {value, unit}. A flag against the field's ranges is computed on read",
     "percent": "basis points as a whole number: 15% is 1500 and 0.5% is 50",
     "barcode": "text in the field's format: ean13 (13 digits, check digit last), code128 or qr",
+    "autonumber": "no value: the store fills it with the prefix and the next number, as FV-0042. "
+                  "A write that names the field is refused",
 }
 
 _SPEC_KEYS = frozenset({
     "key", "type", "label", "required", "many", "options", "to", "hot",
-    "min", "max", "units", "format", "lines",
+    "min", "max", "units", "format", "lines", "normal", "critical", "conversions",
+    "prefix", "pad", "reset",
 })
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
@@ -156,7 +178,16 @@ _UUID_FORM_RE = re.compile(
     r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}", re.ASCII)
 # C14. A quantity value is a decimal string: no exponent, so no float is stored.
 _QUANTITY_RE = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
+# C24a. A conversion factor is a positive decimal with at most 6 decimals.
+_FACTOR_RE = re.compile(r"[0-9]{1,15}(?:\.[0-9]{1,6})?", re.ASCII)
 _EAN13_RE = re.compile(r"[0-9]{13}", re.ASCII)
+# C15a. The prefix of an autonumber, and the stored value: a prefix then the digits.
+# The check of a value is loose on the prefix, because a change of the prefix
+# binds new numbers only, so an older record keeps its older prefix.
+_AUTONUMBER_PREFIX_RE = re.compile(
+    rf"[A-Za-z0-9_./-]{{0,{MAX_AUTONUMBER_PREFIX}}}", re.ASCII)
+_AUTONUMBER_VALUE_RE = re.compile(
+    rf"[A-Za-z0-9_./-]{{0,{MAX_AUTONUMBER_PREFIX}}}[0-9]{{1,{len(str(MAX_AUTONUMBER))}}}", re.ASCII)
 # A tag or a comment in a rich text. The text is markdown, and never HTML.
 _RAW_HTML_RE = re.compile(r"<[A-Za-z/!?]")
 _PHONE_RE = re.compile(r"\+[1-9][0-9]{7,14}", re.ASCII)
@@ -215,12 +246,25 @@ class FieldSpec:
     max: int | None = None
     #: C14. The units of a quantity.
     units: tuple[str, ...] | None = None
+    #: C24a. The ranges of a quantity, as ``(low, high)`` decimal text in the base
+    #: unit (the first unit). None is no range, and a None bound is open.
+    normal: tuple[str | None, str | None] | None = None
+    critical: tuple[str | None, str | None] | None = None
+    #: C24a. ``(from, to, factor)``: a value in ``from`` times ``factor`` is in ``to``,
+    #: the base unit.
+    conversions: tuple[tuple[str, str, str], ...] | None = None
     #: C14. The format of a barcode.
     format: str | None = None
     #: C13. A lines relation: the key of the relation field of the object ``to``
     #: that names this record. The field holds no value, because its lines are
     #: records of ``to`` (:func:`lines_problem`).
     lines: str | None = None
+    #: C15a. The parts of an autonumber: the text before the number, the width
+    #: of the number (zero-padded) and when the counter starts again. None
+    #: means the default (an empty prefix, 4 digits, ``never``).
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
 
     def stored_spec(self) -> dict[str, Any]:
         """The ``spec`` column: every part but the key, the type and ``hot``,
@@ -238,10 +282,23 @@ class FieldSpec:
             out["max"] = self.max
         if self.units is not None:
             out["units"] = list(self.units)
+        if self.normal is not None:
+            out["normal"] = {"low": self.normal[0], "high": self.normal[1]}
+        if self.critical is not None:
+            out["critical"] = {"low": self.critical[0], "high": self.critical[1]}
+        if self.conversions is not None:
+            out["conversions"] = [
+                {"from": a, "to": b, "factor": c} for a, b, c in self.conversions]
         if self.format is not None:
             out["format"] = self.format
         if self.lines is not None:
             out["lines"] = self.lines
+        if self.prefix is not None:
+            out["prefix"] = self.prefix
+        if self.pad is not None:
+            out["pad"] = self.pad
+        if self.reset is not None:
+            out["reset"] = self.reset
         return out
 
 
@@ -327,13 +384,127 @@ def _int(v: Any) -> bool:
     return type(v) is int
 
 
-def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
-    """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
-    of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
+def range_of(raw: Any) -> tuple[str | None, str | None] | None:
+    """C24a. A stored range as ``(low, high)``, or None. It runs no check:
+    a bound that is not decimal text reads as open."""
+    if not isinstance(raw, Mapping):
+        return None
+    lo, hi = raw.get("low"), raw.get("high")
+    return (lo if isinstance(lo, str) and _QUANTITY_RE.fullmatch(lo) else None,
+            hi if isinstance(hi, str) and _QUANTITY_RE.fullmatch(hi) else None)
+
+
+def conversions_of(raw: Any) -> tuple[tuple[str, str, str], ...] | None:
+    """C24a. Stored conversions as ``(from, to, factor)`` tuples, or None. It runs
+    no check: an item of the wrong shape is dropped."""
+    if not isinstance(raw, list):
+        return None
+    return tuple(
+        (c["from"], c["to"], c["factor"]) for c in raw
+        if isinstance(c, Mapping) and isinstance(c.get("from"), str)
+        and isinstance(c.get("to"), str) and isinstance(c.get("factor"), str))
+
+
+def _bound(path: str, v: Any, out: list[SpecProblem]) -> Decimal | None:
+    if v is None:
+        return None
+    if not isinstance(v, str) or not _QUANTITY_RE.fullmatch(v):
+        out.append(SpecProblem(
+            path, "A bound is decimal text with up to 6 decimals and no exponent, or null."))
+        return None
+    return Decimal(v)
+
+
+def _check_range(name: str, raw: Any, out: list[SpecProblem]) -> tuple[Decimal | None, Decimal | None]:
+    """C24a. One range: an object with ``low`` and ``high``, each decimal text or
+    null, and low at most high. Returns the two bounds."""
+    if raw is None:
+        return None, None
+    if not isinstance(raw, Mapping) or not set(raw) <= {"low", "high"}:
+        out.append(SpecProblem(name, f"`{name}` is an object with `low` and `high`."))
+        return None, None
+    lo = _bound(f"{name}.low", raw.get("low"), out)
+    hi = _bound(f"{name}.high", raw.get("high"), out)
+    if lo is not None and hi is not None and lo > hi:
+        out.append(SpecProblem(f"{name}.high", f"`{name}.high` must not be below `{name}.low`."))
+    return lo, hi
+
+
+def _check_conversions(raw: Any, units: list[str], out: list[SpecProblem]) -> None:
+    if raw is None:
+        return
+    if not isinstance(raw, list) or len(raw) > MAX_CONVERSIONS:
+        out.append(SpecProblem(
+            "conversions", f"`conversions` is a list of at most {MAX_CONVERSIONS} items."))
+        return
+    base = units[0] if units else None
+    pairs: set[tuple[str, str]] = set()
+    for i, c in enumerate(raw):
+        at = f"conversions[{i}]"
+        if not isinstance(c, Mapping) or set(c) != {"from", "to", "factor"}:
+            out.append(SpecProblem(at, "A conversion is an object with `from`, `to` and `factor`."))
+            continue
+        a, b, fac = c["from"], c["to"], c["factor"]
+        if not isinstance(a, str) or a not in units:
+            out.append(SpecProblem(f"{at}.from", "`from` must be one of the `units`."))
+            continue
+        if not isinstance(b, str) or b not in units:
+            out.append(SpecProblem(f"{at}.to", "`to` must be one of the `units`."))
+            continue
+        if (b, a) in pairs:
+            out.append(SpecProblem(at, "A conversion and its inverse are both listed. List one."))
+        elif b != base:
+            out.append(SpecProblem(
+                f"{at}.to", "`to` must be the base unit, the first of `units`. A chain is not allowed."))
+        elif a == b:
+            out.append(SpecProblem(at, "`from` and `to` must differ."))
+        elif (a, b) in pairs:
+            out.append(SpecProblem(at, "This pair is listed twice."))
+        pairs.add((a, b))
+        if (not isinstance(fac, str) or not _FACTOR_RE.fullmatch(fac) or Decimal(fac) <= 0):
+            out.append(SpecProblem(
+                f"{at}.factor", "`factor` is positive decimal text with up to 6 decimals."))
+
+
+def _check_ranges(spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C24a. ``normal`` and ``critical`` of a quantity, and ``conversions``."""
+    n_lo, n_hi = _check_range("normal", spec.get("normal"), out)
+    c_lo, c_hi = _check_range("critical", spec.get("critical"), out)
+    if c_lo is not None and n_lo is not None and c_lo > n_lo:
+        out.append(SpecProblem("critical.low", "`critical.low` must not be above `normal.low`."))
+    if c_hi is not None and n_hi is not None and c_hi < n_hi:
+        out.append(SpecProblem("critical.high", "`critical.high` must not be below `normal.high`."))
+    units = spec.get("units")
+    ok = isinstance(units, list) and all(isinstance(u, str) for u in units)
+    _check_conversions(spec.get("conversions"), units if ok else [], out)
+
+
+def _check_autonumber(spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C15a: the ``prefix``, ``pad`` and ``reset`` of an autonumber. Each is optional."""
+    prefix, pad, reset = spec.get("prefix"), spec.get("pad"), spec.get("reset")
+    if prefix is not None and (
+            not isinstance(prefix, str) or _AUTONUMBER_PREFIX_RE.fullmatch(prefix) is None):
+        out.append(SpecProblem(
+            "prefix", f"`prefix` is 0 to {MAX_AUTONUMBER_PREFIX} characters: letters, "
+            "digits and _ . / -."))
+    if pad is not None and not (_int(pad) and 1 <= pad <= MAX_AUTONUMBER_PAD):
+        out.append(SpecProblem("pad", f"`pad` is a whole number from 1 to {MAX_AUTONUMBER_PAD}."))
+    if reset is not None and reset not in AUTONUMBER_RESETS:
+        out.append(SpecProblem("reset", f"`reset` is {' or '.join(AUTONUMBER_RESETS)}."))
+
+
+def _check_part_owners(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """Each part of :data:`SPEC_PARTS` belongs to one type."""
     for owner, parts in SPEC_PARTS.items():
         for part in parts:
             if kind != owner and spec.get(part) is not None:
                 out.append(SpecProblem(part, f"Only a {owner} field takes `{part}`."))
+
+
+def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> None:
+    """C14: ``min`` and ``max`` of a rating, ``units`` of a quantity and ``format``
+    of a barcode. Each belongs to one type. A quantity and a barcode need theirs."""
+    _check_part_owners(kind, spec, out)
     if kind == "rating":
         lo, hi = spec.get("min"), spec.get("max")
         for name, v in (("min", lo), ("max", hi)):
@@ -361,6 +532,9 @@ def _check_extras(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) ->
                     out.append(SpecProblem(f"units[{i}]", "This unit is listed twice."))
                 else:
                     seen.add(u)
+        _check_ranges(spec, out)
+    elif kind == "autonumber":
+        _check_autonumber(spec, out)
     elif kind == "barcode" and spec.get("format") not in BARCODE_FORMATS:
         out.append(SpecProblem(
             "format", f"A barcode field needs a `format`: {', '.join(BARCODE_FORMATS)}."))
@@ -375,6 +549,12 @@ def _check_flags(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> 
     if many and kind in ("multiSelect", "checkbox"):
         out.append(SpecProblem(
             "many", f"A {kind} field takes no `many`, because it holds one value or one list."))
+    if kind == "autonumber":
+        # C15a. The store fills the field, so it is never required, never a list.
+        for flag in ("required", "many"):
+            if spec.get(flag) is True:
+                out.append(SpecProblem(
+                    flag, f"An autonumber field takes no `{flag}`. The store fills it."))
     if spec.get("hot") is True:
         problem = _hot_problem(kind, many)
         if problem is not None:
@@ -495,7 +675,10 @@ def parse_field_spec(spec: Mapping[str, Any], *,
         to=spec.get("to"), hot=spec.get("hot") is True,
         min=spec.get("min"), max=spec.get("max"),
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
-        format=spec.get("format"), lines=spec.get("lines"))
+        normal=range_of(spec.get("normal")), critical=range_of(spec.get("critical")),
+        conversions=conversions_of(spec.get("conversions")),
+        format=spec.get("format"), lines=spec.get("lines"),
+        prefix=spec.get("prefix"), pad=spec.get("pad"), reset=spec.get("reset"))
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
@@ -517,8 +700,13 @@ def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> Fie
         min=spec["min"] if _int(spec.get("min")) else None,
         max=spec["max"] if _int(spec.get("max")) else None,
         units=tuple(spec["units"]) if isinstance(spec.get("units"), list) else None,
+        normal=range_of(spec.get("normal")), critical=range_of(spec.get("critical")),
+        conversions=conversions_of(spec.get("conversions")),
         format=spec["format"] if isinstance(spec.get("format"), str) else None,
-        lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None)
+        lines=spec.get("lines") if isinstance(spec.get("lines"), str) else None,
+        prefix=spec["prefix"] if isinstance(spec.get("prefix"), str) else None,
+        pad=spec["pad"] if _int(spec.get("pad")) else None,
+        reset=spec["reset"] if isinstance(spec.get("reset"), str) else None)
 
 
 # --- the values -------------------------------------------------------------
@@ -635,7 +823,7 @@ def _relation(f: FieldSpec, v: Any) -> dict[str, str]:
 
 
 def _file(f: FieldSpec, v: Any) -> dict[str, str]:
-    # The id of an `attachments` row. The door checks that the viewer may open it.
+    # Only the id shape is checked. No Studio code reads `attachments` yet (D13b).
     try:
         if isinstance(v, Mapping) and set(v) == {"id"} and isinstance(v["id"], str):
             return {"id": str(uuid.UUID(v["id"]))}
@@ -720,6 +908,44 @@ def _quantity(f: FieldSpec, v: Any) -> dict[str, str]:
     return {"value": v["value"], "unit": v["unit"]}
 
 
+def quantity_flag(f: FieldSpec, v: Mapping[str, Any]) -> str:
+    """C24a. The flag of one quantity value, one of :data:`QUANTITY_FLAGS`.
+
+    The flag is advice, computed on read and never stored, so a change of a range
+    rewrites no data. The value goes to the base unit (the first unit) with exact
+    decimals, and then meets the ranges. ``critical`` goes first. A bound is
+    inclusive. No range gives ``none``, and a unit with no conversion gives
+    ``unchecked``. Nothing rounds before the compare. ``quantity_flag`` in
+    ``fieldCheck.ts`` is the twin.
+    """
+    ranges = [r for r in (f.normal, f.critical) if r is not None and r != (None, None)]
+    if not ranges:
+        return "none"
+    text, unit = v.get("value"), v.get("unit")
+    if not isinstance(text, str) or not _QUANTITY_RE.fullmatch(text) or not f.units:
+        return "none"
+    with localcontext() as ctx:
+        ctx.prec = 60
+        x = Decimal(text)
+        if unit != f.units[0]:
+            factor = next((c for a, b, c in (f.conversions or ())
+                           if a == unit and b == f.units[0]), None)
+            if factor is None or not _FACTOR_RE.fullmatch(factor) or Decimal(factor) <= 0:
+                return "unchecked"
+            x = x * Decimal(factor)
+        c_lo, c_hi = (Decimal(b) if b is not None else None for b in (f.critical or (None, None)))
+        n_lo, n_hi = (Decimal(b) if b is not None else None for b in (f.normal or (None, None)))
+        if c_lo is not None and x < c_lo:
+            return "critical_low"
+        if c_hi is not None and x > c_hi:
+            return "critical_high"
+        if n_lo is not None and x < n_lo:
+            return "low"
+        if n_hi is not None and x > n_hi:
+            return "high"
+    return "normal"
+
+
 def _percent(f: FieldSpec, v: Any) -> int:
     if _int(v) and abs(v) >= MAX_PERCENT_BP:
         raise FieldError(
@@ -757,6 +983,36 @@ def _barcode(f: FieldSpec, v: Any) -> str:
     return v
 
 
+def _autonumber(f: FieldSpec, v: Any) -> str:
+    """C15a. The stored form: a prefix, then the digits of the number. The store
+    fills it, so no caller sends it. The check is loose on the prefix and the
+    pad, because a change of either binds new numbers only."""
+    if not isinstance(v, str) or _AUTONUMBER_VALUE_RE.fullmatch(v) is None:
+        raise FieldError(f.key, f"Field `{f.key}` is filled by the store. Write no value for it.")
+    return v
+
+
+def autonumber_pad(field: FieldSpec) -> int:
+    """The width of the number of an autonumber field."""
+    return DEFAULT_AUTONUMBER_PAD if field.pad is None else field.pad
+
+
+def autonumber_reset(field: FieldSpec) -> str:
+    """When the counter of an autonumber field starts again: ``never`` or ``day``."""
+    return field.reset or "never"
+
+
+def autonumber_text(field: FieldSpec, number: int) -> str:
+    """The stored value of *number*: the prefix, then the number with zeros on
+    the left up to the pad. A wider number keeps all its digits."""
+    return f"{field.prefix or ''}{number:0{autonumber_pad(field)}d}"
+
+
+def autonumber_fields(fields: Sequence[FieldSpec]) -> list[FieldSpec]:
+    """The autonumber fields of *fields*, in order."""
+    return [f for f in fields if f.type == "autonumber"]
+
+
 _CHECKS: dict[str, Any] = {
     "text": lambda f, v: _text(f, v, MAX_TEXT_CHARS),
     "longText": lambda f, v: _text(f, v, MAX_LONG_TEXT_CHARS),
@@ -780,6 +1036,7 @@ _CHECKS: dict[str, Any] = {
     "quantity": _quantity,
     "percent": _percent,
     "barcode": _barcode,
+    "autonumber": _autonumber,
 }
 assert tuple(_CHECKS) == FIELD_TYPES, "each field type has one check"
 
@@ -883,7 +1140,8 @@ def _max_value_bytes(field: FieldSpec) -> int:
     fixed = {"number": _MAX_NUMBER_BYTES, "money": 32 + _MAX_NUMBER_BYTES,
              "geo": 32 + 2 * _MAX_NUMBER_BYTES, "date": 16, "datetime": 40, "checkbox": 5,
              "person": 2 + MAX_EMAIL_CHARS, "email": 2 + MAX_EMAIL_CHARS,
-             "relation": 16 + MAX_ID_CHARS, "file": 16 + MAX_ID_CHARS, "phone": 24}
+             "relation": 16 + MAX_ID_CHARS, "file": 16 + MAX_ID_CHARS, "phone": 24,
+             "autonumber": 2 + MAX_AUTONUMBER_PREFIX + len(str(MAX_AUTONUMBER))}
     if kind in fixed:
         return fixed[kind]
     options = [len(json.dumps(o, ensure_ascii=False).encode("utf-8")) for o in field.options or ()]

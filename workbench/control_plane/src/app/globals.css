@@ -553,8 +553,20 @@ html[data-look="glass"].light {
    coarse, and even no hover, while its member uses the trackpad, so every
    control drew at its 40 to 44 px touch size (owner, 2026-11-01: "the pills
    ... seem a little large", twice). The window width is the signal a hybrid
-   device cannot get wrong: from 1024 px, a control takes the desktop size. */
-@custom-variant pointer-coarse (@media (hover: none) and (pointer: coarse) and (max-width: 1023px));
+   device cannot get wrong: from 1024 px, a control takes the desktop size.
+   The floor view of a Studio app (STU-D23a) asks for the touch size itself.
+   Inside an element with `data-floor`, a control takes it at every width, so
+   a tablet in landscape gets it too. Nothing outside that root changes. The
+   media branch is the rule above, unchanged. Fence:
+   `src/lib/theme/floorTouch.test.ts`. */
+@custom-variant pointer-coarse {
+  @media (hover: none) and (pointer: coarse) and (max-width: 1023px) {
+    @slot;
+  }
+  &:where([data-floor], [data-floor] *) {
+    @slot;
+  }
+}
 
 @theme inline {
   --color-background: var(--background);
@@ -1636,6 +1648,23 @@ main[data-askbar-clear]::after {
   }
 }
 
+/* AO-3: the resting elephant of the "AI is taking a breather" card
+   (`components/AiRestingArt.tsx`). It takes ONE slow breath when the card
+   appears, then stands still. It never loops: a failed act is Attention in
+   DESIGN_SYSTEM.md §4b, and Attention never loops. It moves `transform`
+   only, from its feet. Under reduced motion it does not move. */
+@keyframes ai-rest-breathe {
+  0%, 100% { transform: scale(1, 1); }
+  50%      { transform: scale(1.015, 1.035); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ai-rest-breathe {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    animation: ai-rest-breathe 1.2s ease-in-out 1;
+  }
+}
+
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the
    library renders unstyled: tables + the column-resize affordance, selected
@@ -2616,6 +2645,42 @@ html[data-look="glass"] .assistant-panel[data-panel-form="dock"]:not([data-shown
   visibility: hidden;
 }
 
+/* ── A docked side panel (`components/ui/SidePanelMotion.tsx`) ──────────── */
+/* One motion for every panel that docks at the right of a page (task 7,
+   owner 2026-11-22): the Projects task panel, and the record card at its side
+   stop. It is the assistant's dock form on the same tokens. The frame eases
+   its width, so the page reflows as it does for the assistant's spacer. The
+   panel keeps its width and rides the frame's left edge, so its content never
+   reflows. The width is `max-w-sm`'s, the docked width of both panels
+   (`TASK_PANEL_WIDTH`). A card over the page leaves the frame with no box. */
+.side-panel,
+.side-panel > [data-side-panel-body] {
+  display: contents;
+}
+.side-panel:has([data-side-docked]) {
+  display: flex;
+  flex-shrink: 0;
+  width: 0;
+  min-height: 0;
+}
+.side-panel[data-shown]:has([data-side-docked]) {
+  width: var(--container-sm, 24rem);
+}
+/* The frame clips the panel only while it moves, so a menu of an open panel
+   is never cut. */
+.side-panel:not([data-panel-phase="open"]):has([data-side-docked]) {
+  overflow: clip;
+}
+.side-panel:has([data-side-docked]) > [data-side-panel-body] {
+  display: flex;
+  flex-shrink: 0;
+  width: var(--container-sm, 24rem);
+  min-height: 0;
+}
+.side-panel[data-moving] {
+  transition: width var(--panel-duration) var(--panel-easing);
+}
+
 /* The side panel to the full view, and back (`swapPanelForm`). A view
    transition keeps a picture of each form. The panel's box glides between
    the two rects on the panel tokens, and each picture keeps its own size,
@@ -3047,6 +3112,27 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
 }
 
 /*
+ * A chat row on a touch device (task 3566). The hover strip is hidden there
+ * and the row has its own "More actions" button, so the age and the run dot
+ * stay in place. Without this, a tap that leaves a sticky `:hover` on the row
+ * would blank the age and the dot, and no strip would take their place. The
+ * touch test is the one shared variant `pointer-coarse`, never a second
+ * media query. Fence: `lib/shell/sessionPickerStrip.test.ts`.
+ */
+@variant pointer-coarse {
+  .group[data-session-row][data-has-actions]:hover .rail-row-meta,
+  .group[data-session-row][data-has-actions]:has(:focus-visible) .rail-row-meta {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+}
+
+/*
  * The icon slot of a row that can open. The expand chevron sits over the
  * icon, transparent at rest. On hover or keyboard focus in the row, the
  * chevron shows and the icon gives way. The chevron is a real button the
@@ -3114,6 +3200,11 @@ html[data-look="glass"] nav[data-more-above][data-more-below] {
      `usePanelPhase` and `swapPanelForm` skip the moving phases too. */
   .assistant-spacer[data-moving],
   .assistant-panel[data-moving] {
+    transition: none;
+  }
+  /* A docked side panel shows and goes at once too. `useSidePanelPresence`
+     skips the moving phases. */
+  .side-panel[data-moving] {
     transition: none;
   }
   .sidebar-beacon {

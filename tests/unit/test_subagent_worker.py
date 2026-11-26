@@ -282,11 +282,16 @@ def test_a_spawn_child_takes_the_key_of_its_own_pack_tools() -> None:
     """OA-9c: the sub-run of the worker derives the key that the spawn minted
     for its pack tools, never the parent's key or the record. Any other agent,
     and a job with no pack tool, gets both dropped. Mutation: ``_without_pack_keys``
-    ignores the job -> the worker's frame binds ``None`` -> red."""
+    ignores the job -> the worker's frame binds ``None`` -> red.
+
+    TOF-3a F12b (a deliberate change of this pin): the notes of the skill
+    runs of the parent drop too. Mutation: drop ``SKILL_RUN_NOTES_KEY`` from
+    ``_without_pack_keys`` -> red."""
     from acb_skills.tool_packs import PACK_RUN_KEY, PACKS_KEY
     from orchestrator import executor
+    from orchestrator._tool_injection import SKILL_RUN_NOTES_KEY
 
-    dropped = {PACK_RUN_KEY: None, PACKS_KEY: None}
+    dropped = {PACK_RUN_KEY: None, PACKS_KEY: None, SKILL_RUN_NOTES_KEY: None}
     job = sc.Job(1, "Read.", (), "fast", packs=("crm-records",),
                  pack_tools=(counted("get_record", []),), pack_run="key-child")
     with artifact_context_scope():
@@ -296,7 +301,8 @@ def test_a_spawn_child_takes_the_key_of_its_own_pack_tools() -> None:
         assert executor._without_pack_keys("worker") == dropped
         sc.bind_job(job)
         assert executor._without_pack_keys("worker") == {PACK_RUN_KEY: "key-child",
-                                                         PACKS_KEY: None}
+                                                         PACKS_KEY: None,
+                                                         SKILL_RUN_NOTES_KEY: None}
         assert executor._without_pack_keys("projects-assistant") == dropped
         assert executor._without_pack_keys() == dropped
     assert executor._job_pack_keys("worker", {sc.JOB_KEY: job}) == {PACK_RUN_KEY: "key-child"}

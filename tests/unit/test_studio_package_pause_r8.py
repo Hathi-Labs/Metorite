@@ -67,6 +67,7 @@ from gateway.routes.studio import invoke, packages
 from gateway.studio import objects_store, packages_store
 from sqlalchemy import text
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
     _DB_GATE,
@@ -539,9 +540,4 @@ def test_r8_an_archived_install_stays_archived(world) -> None:
 
 
 def test_r8_this_suite_is_named_in_the_ci_skip_guard() -> None:
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[2]
-    for workflow in ("pr-check.yml", "deploy.yml"):
-        body = (root / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-        assert "tests/unit/test_studio_package_pause_r8.py" in body, workflow
+    assert "tests/unit/test_studio_package_pause_r8.py" in r8_lists.must_run()

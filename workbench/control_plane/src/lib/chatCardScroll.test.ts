@@ -29,6 +29,8 @@ const CARD_FILES = [
   "components/crm/CrmEvidence.tsx",
   // STU-F5a: the live records card of a Studio read.
   "components/studio/StudioRecordsCard.tsx",
+  // STU-F6a: the skill offer of a finished turn.
+  "components/studio/SkillOfferCard.tsx",
 ];
 
 /** A class string that caps a height and scrolls inside it. */

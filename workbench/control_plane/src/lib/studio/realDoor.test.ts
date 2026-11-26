@@ -24,6 +24,8 @@
  *    Mutation: post `source.args` whole for an aggregate. "an aggregate body holds
  *    only" turns red. Mutation: drop `aggregate` from `READ_SOURCE`. "an aggregate
  *    reads one row" turns red.
+ * 7. No file address (STU-D19a). The real door has no `fileAddress` until D24 serves a file.
+ *    Mutation: give the door one. "the real door gives no file address" turns red.
  */
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,11 +33,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  AGGREGATE_KEYS, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  AGGREGATE_KEYS, TREE_KEYS, TREE_LEVEL, TREE_PARENT, treeBody, flattenTree, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
 } from "./realDoor";
-import { canRetryRead } from "./dataDoor";
+import { canRetryRead, rowsMeta } from "./dataDoor";
 import { readRefusal } from "./formModel";
 
 beforeEach(() => clearAll());
@@ -282,6 +284,34 @@ describe("the package routes", () => {
     expect(got.objects.map((o) => o.name)).toEqual(["visit"]);
     expect(one.calls[0].url).toBe(`/api/studio/packages/${PKG}`);
   });
+  it("getPackage keeps the views and the pages of the manifest, and gives empty lists when it has none (AF-1)", async () => {
+    const views = [{ id: "all", block: "table", object: "visit" }];
+    const pages = [{ id: "main", cells: [{ view: "all" }] }];
+    const full = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, views, pages } }, objects: [] });
+    const got = await getPackage(PKG, full.impl);
+    expect(got.views).toEqual(views);
+    expect(got.pages).toEqual(pages);
+    const bare = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    const none = await getPackage(PKG, bare.impl);
+    expect(none.views).toEqual([]);
+    expect(none.pages).toEqual([]);
+  });
+  it("getPackage gives the access of each manifest object, by name, and null for an open object (AF-3b)", async () => {
+    const access = [{ role: "hr", read: "all" }];
+    const manifest = { actions: ACTIONS, objects: [{ name: "pay", access }, { name: "note" }] };
+    const got = await getPackage(PKG, fakeFetch(200, { package: { id: PKG, name: "Visits", manifest }, objects: [] }).impl);
+    expect(got.objectAccess).toEqual({ pay: access, note: null });
+  });
+  it("getPackage keeps the nav of the manifest, and gives an empty list when it has none (AF-2a)", async () => {
+    const nav = [{ title: "Work", rows: [{ page: "main", icon: "Home" }] }];
+    const full = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, nav } }, objects: [] });
+    expect((await getPackage(PKG, full.impl)).nav).toEqual(nav);
+    const bare = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } }, objects: [] });
+    expect((await getPackage(PKG, bare.impl)).nav).toEqual([]);
+    const counted = [{ title: "Work", rows: [{ page: "main", count: true }] }];
+    const withCount = fakeFetch(200, { package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS, nav: counted } }, objects: [] });
+    expect((await getPackage(PKG, withCount.impl)).nav).toEqual(counted);
+  });
   it("a package id that is no uuid makes no call", async () => {
     const { impl, spy } = fakeFetch();
     await expect(getPackage("../x", impl)).rejects.toThrow(STUDIO_OFF);
@@ -328,6 +358,19 @@ describe("fix round 1: the body marker, the generic 500, the rule words, the kep
     expect(readRefusal(res.data).message).toBe("Pallets must be between 0 and 500.");
     expect(ownMessage("A plain sentence.")).toBe("A plain sentence.");
     expect(ownMessage(null)).toBeNull();
+  });
+  it("a roll-up refusal of the parent keeps its Line 1 place in the message (STU-D17a, recorded 422)", () => {
+    // The shape of `test_r8_a_rollup_range_that_breaks_refuses_the_whole_save`: the batch names Line 1.
+    const res = mapAnswer(422, { detail: {
+      code: "rule_refused", rule: "total_ok",
+      message: "Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %.",
+      fieldErrors: [{ field: "ingredients", message: "Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %." }],
+    } });
+    expect(res.ok).toBe(false);
+    // `ownMessage` starts at ^Rule, so it cannot strip the place. The sheet does it (`sheetModel.parentRuleMessage`).
+    expect(res.message).toBe("Line 1 of `ingredients`: Rule `total_ok` of object `formulation`: The lines must sum to 100 %.");
+    expect(readRefusal(res.data).rule).toBe("total_ok");
+    expect(ownMessage("Rule `a` of object `b`: Plain.")).toBe("Plain.");
   });
   it("keeps one door while the actions stay the same, and makes a new one when they change", () => {
     let made = 0;
@@ -445,5 +488,103 @@ describe("J2a: a viewer reads and writes nothing", () => {
     expect(spy).not.toHaveBeenCalled();
     await door.read({ action: "object:visit.list" });
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the tree read (STU-D18-2b)", () => {
+  const TREE_ACTIONS = [
+    { id: "parts_tree", uses: "object:part.tree" },
+    { id: "change_part", uses: "object:part.update" },
+  ];
+  const ANSWER = {
+    nodes: [
+      { record: { id: "r1", data: { name: "Root", parent: null } }, level: 1, parent_id: null },
+      { record: { id: "c1", data: { name: "Child", parent: { id: "r1" } } }, level: 2, parent_id: "r1" },
+    ],
+    truncated: false,
+  };
+
+  it("an action of the tree is a read, and a viewer keeps it", () => {
+    expect(isReadSource("object:part.tree")).toBe(true);
+    expect(isReadSource("object:part.trees")).toBe(false);
+    expect(readActions(TREE_ACTIONS).map((a) => a.id)).toEqual(["parts_tree"]);
+    expect(verbMap(TREE_ACTIONS)["object:part.tree"]).toBe("parts_tree");
+  });
+
+  it("posts the declared id with the keys of the tree body only", async () => {
+    const { impl, calls } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    await door.read({ action: "object:part.tree", args: { limit: 2000, id: "x", data: {}, filter: [], read: true } });
+    expect(calls[0]).toEqual({ url: `/api/studio/apps/${PKG}/actions/parts_tree`, body: { limit: 2000 } });
+    expect(treeBody({ root_id: "u", depth: 3, limit: 5, junk: 1 })).toEqual({ root_id: "u", depth: 3, limit: 5 });
+    expect(treeBody(undefined)).toEqual({});
+    expect([...TREE_KEYS]).toEqual(["root_id", "depth", "limit"]);
+  });
+
+  it("the keys equal TREE_INPUT_KEYS of the gateway door", () => {
+    const src = readFileSync(new URL("../../../../../apps/services/gateway/gateway/routes/studio/invoke.py", import.meta.url), "utf8");
+    const m = /TREE_INPUT_KEYS: frozenset\[str\] = frozenset\(\{([^}]*)\}\)/.exec(src);
+    expect(m).not.toBeNull();
+    const keys = [...m![1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]).sort();
+    expect(keys).toEqual([...TREE_KEYS].sort());
+  });
+
+  it("maps the nodes to rows with the parent id and the level, and reads truncated", async () => {
+    const { impl } = fakeFetch(200, { ...ANSWER, truncated: true });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    const rows = await door.read({ action: "object:part.tree", args: { limit: 2000 } });
+    expect(rows).toEqual([
+      { name: "Root", parent: null, id: "r1", [TREE_PARENT]: null, [TREE_LEVEL]: 1 },
+      { name: "Child", parent: { id: "r1" }, id: "c1", [TREE_PARENT]: "r1", [TREE_LEVEL]: 2 },
+    ]);
+    expect(rowsMeta(rows)).toEqual({ truncated: true });
+  });
+
+  it("an answer of a whole tree has no truncated meta", async () => {
+    const { impl } = fakeFetch(200, ANSWER);
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    expect(rowsMeta(await door.read({ action: "object:part.tree" }))).toBeNull();
+  });
+
+  it("the record id wins over a data key id, and a node with no id is left out", () => {
+    const rows = flattenTree({ nodes: [
+      { record: { id: "n1", data: { id: "other" } }, level: 1, parent_id: null },
+      { record: { data: {} }, level: 1, parent_id: null },
+      "junk",
+    ] });
+    expect(rows?.map((r) => r.id)).toEqual(["n1"]);
+  });
+
+  it("an answer that is no tree fails with a plain sentence", async () => {
+    const { impl } = fakeFetch(200, { records: [] });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: impl });
+    await expect(door.read({ action: "object:part.tree" })).rejects.toThrow("That did not work. Try again.");
+    expect(flattenTree(null)).toBeNull();
+  });
+
+  it("a refused tree shows the sentence of the door, and an undeclared tree makes no call", async () => {
+    const refused = fakeFetch(422, { detail: { code: "query_op_not_allowed", message: "Object `part` holds no hierarchy, so it has no tree to read." } });
+    const door = createRealDoor({ packageId: PKG, actions: TREE_ACTIONS, fetchImpl: refused.impl });
+    await expect(door.read({ action: "object:part.tree" })).rejects.toThrow(/holds no hierarchy/);
+    const none = fakeFetch();
+    const bare = createRealDoor({ packageId: PKG, actions: [], fetchImpl: none.impl });
+    await expect(bare.read({ action: "object:part.tree" })).rejects.toThrow(/does not declare/);
+    expect(none.spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("STU-D19a: the real door gives no file address", () => {
+  // No Studio route serves the bytes of a file yet (D24). So a live Gallery card draws its
+  // placeholder. D19b gives the real door an address, after the serve route, and edits this test.
+  // Mutation: give `createRealDoor` a `fileAddress`. Both tests turn red.
+  it("names no file address and no file route in its source", () => {
+    const src = readFileSync(new URL("./realDoor.ts", import.meta.url), "utf8");
+    expect(src).not.toMatch(/fileAddress|FileAddress/);
+    expect(src).not.toMatch(/\/files?\/|\/attachments\/|data:image/);
+  });
+  it("builds a door with no fileAddress, the read door too", () => {
+    const { impl } = fakeFetch();
+    expect(createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl }).fileAddress).toBeUndefined();
+    expect(createRealDoor({ packageId: PKG, actions: readActions(ACTIONS), fetchImpl: impl }).fileAddress).toBeUndefined();
   });
 });

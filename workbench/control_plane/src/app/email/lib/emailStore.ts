@@ -276,6 +276,29 @@ export function prunePatches(
   return next;
 }
 
+/**
+ * `rows` with the patch of each write still in flight on top. A list read may
+ * answer before the write commits, and the row must not flip back (EM-RU2).
+ */
+export function overlayPatches<T extends Email>(
+  rows: T[],
+  patches: Record<string, MessagePatch>,
+): T[] {
+  if (Object.keys(patches).length === 0) return rows;
+  return rows.map((e) => withPatch(e, patches));
+}
+
+/** True while a list read sets its rows. The patches of writes in flight stay then. */
+let _keepPatches = false;
+function setListRows(set: (p: Partial<EmailState>) => void, part: Partial<EmailState>) {
+  _keepPatches = true;
+  try {
+    set(part);
+  } finally {
+    _keepPatches = false;
+  }
+}
+
 /** The patches with one entry put back as it was before a failed write. */
 function restorePatch(
   patches: Record<string, MessagePatch>,
@@ -371,6 +394,8 @@ interface EmailState {
   /** True when the last search was re-ranked semantically (hybrid) by the server
    *  — lets the UI show a "Smart results" indicator. False for lexical/no search. */
   searchIsSemantic: boolean;
+  /** True when no mail held every word and the list shows mail with at least one. */
+  searchBroadened: boolean;
   /** Checkbox multi-selection in the list, shared with the unified toolbar so
    *  bulk actions can live in the page-level bar instead of inside EmailList. */
   selectedIds: Set<string>;
@@ -554,9 +579,10 @@ interface EmailState {
    * the list, and a card reads it through `withPatch`.
    *
    * It is short-lived. A write that succeeds drops its patch, and a write
-   * that fails restores the one before. A list that holds the row drops the
-   * patch too, because the row is the server's state. After that the list
-   * row, or the thread copy of the reading pane, shows the change.
+   * that fails restores the one before. A list that another action sets drops
+   * the patch of its rows, because the row is the server's state. A list READ
+   * (first page, refresh, load more) keeps the patch of a write in flight and
+   * lays it over its rows, so an opened mail stays read (EM-RU2).
    */
   messagePatches: Record<string, MessagePatch>;
   /** Add/remove one category across many messages at once. */
@@ -1037,6 +1063,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   searchScope: null,
   searchFilters: [],
   searchIsSemantic: false,
+  searchBroadened: false,
   selectedIds: new Set<string>(),
   viewerCommand: null,
 
@@ -1231,6 +1258,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // hybrid:true asks for semantic re-ranking; the server applies it only
       // when semantic search is enabled and returns whether it did.
       let searchIsSemantic = false;
+      let searchBroadened = false;
       const result = searchActive(get())
         ? await (async () => {
             const r = await api.searchEmails({
@@ -1242,6 +1270,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
               pageSize: PAGE_SIZE,
             });
             searchIsSemantic = r.hybrid;
+            searchBroadened = r.broadened;
             return r;
           })()
         : await api.listEmails({
@@ -1273,14 +1302,15 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (!get().viewAll) for (const e of emails) for (const c of e.categories || []) labelSet.add(c);
       // A check never outlives its row (EM-T8g-2 review round 2).
       const checks = prunedChecks(get().selectedIds, emails);
-      set({
-        emails,
+      setListRows(set, {
+        emails: overlayPatches(emails, get().messagePatches),
         folders,
         availableLabels: [...labelSet].sort(),
         emailsLoading: false,
         emailsTotal: total,
         emailsPage: 1,
         searchIsSemantic,
+        searchBroadened,
         ...(checks ? { selectedIds: checks } : {}),
       });
     } catch (err: any) {
@@ -1360,9 +1390,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       if (!now.viewAll) for (const e of result.emails) for (const c of e.categories || []) labelSet.add(c);
       // A check never outlives its row (EM-T8g-2 review round 2).
       const checks = prunedChecks(now.selectedIds, result.emails);
-      set({
-        emails: result.emails,
+      setListRows(set, {
+        emails: overlayPatches(result.emails, now.messagePatches),
         emailsTotal: result.total,
+        searchBroadened: "broadened" in result && result.broadened === true,
         availableLabels: [...labelSet].sort(),
         ...(checks ? { selectedIds: checks } : {}),
       });
@@ -1377,7 +1408,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       selectedAccountId, selectedFolder,
       emailsPage, emails, loadingMore, emailsTotal,
     } = state;
-    if (loadingMore || emails.length >= emailsTotal) return;
+    // A broadened answer exists on page 1 only: page 2 would run the strict
+    // AND query again and overwrite the total with 0 (task 2975 verifier).
+    if (loadingMore || state.searchBroadened || emails.length >= emailsTotal) return;
     set({ loadingMore: true });
     // A newer read or a change of the pool replaced the list this page
     // extends (EM-T8g-2 review F4).
@@ -1411,8 +1444,11 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       }
       // Append, de-duping by id in case a sync shifted the window mid-scroll.
       const seen = new Set(emails.map((e) => e.id));
-      const merged = [...emails, ...result.emails.filter((e) => !seen.has(e.id))];
-      set({
+      const merged = [
+        ...emails,
+        ...overlayPatches(result.emails.filter((e) => !seen.has(e.id)), get().messagePatches),
+      ];
+      setListRows(set, {
         emails: merged,
         emailsPage: nextPage,
         emailsTotal: result.total,
@@ -1575,6 +1611,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
+      searchBroadened: false,
     });
     get().fetchEmails();
   },
@@ -1712,6 +1749,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       searchFilters: [],
       searchScope: null,
       searchIsSemantic: false,
+      searchBroadened: false,
       selectedEmailId: null,
       selectedEmailOverride: null,
     });
@@ -1792,7 +1830,9 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       get().selectedFolder !== "starred";
     const prevPatch = get().messagePatches[id];
     const patch: MessagePatch = { ...prevPatch, ...updates };
-    set({
+    // The patch stays while the write runs, also for a row of the list, so a
+    // list read in that time can lay it over its rows (EM-RU2).
+    setListRows(set, {
       emails: movedAway
         ? prevEmails.filter((e) => e.id !== id)
         : prevEmails.map((e) => (e.id === id ? { ...e, ...updates } : e)),
@@ -1885,7 +1925,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       prevPatch?.categories ?? prevEmails.find((e) => e.id === id)?.categories ?? current ?? [];
     const patch: MessagePatch = { ...prevPatch, categories: toggle(base) };
     // Optimistically update the message's category chips.
-    set({
+    setListRows(set, {
       emails: prevEmails.map((e) => {
         if (e.id !== id) return e;
         return { ...e, categories: toggle(e.categories || []) };
@@ -2392,8 +2432,10 @@ export const useEmailStore = create<EmailState>((set, get) => ({
 // A list that holds a row drops that row's patch: the row is the server's
 // state, and it shows through (review fix round 3, P3). An optimistic write
 // sets the row to the patch's value, so the drop changes nothing on screen.
+// A list read keeps the patches of writes in flight, and it lays them over
+// its rows. The write drops its own patch when it ends (EM-RU2).
 useEmailStore.subscribe((state, prev) => {
-  if (state.emails === prev.emails) return;
+  if (state.emails === prev.emails || _keepPatches) return;
   const pruned = prunePatches(state.messagePatches, state.emails);
   if (pruned !== state.messagePatches) useEmailStore.setState({ messagePatches: pruned });
 });

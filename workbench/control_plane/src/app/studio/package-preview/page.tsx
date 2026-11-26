@@ -19,8 +19,9 @@
  * and the get, the Table and the Board do not edit, and the page draws no Form, no Edit, no
  * record delete, no IDE link and no app delete. One line says that the owner changes the app.
  *
- * It builds no view-to-node mapper and reads no page of the manifest: PKG-8
- * owns that. It is no pane, so `nav.ts` does not list it, and the access gate of
+ * It builds no view-to-node mapper and reads no page of the app. With
+ * `NEXT_PUBLIC_STUDIO_APP_FRAME=1` it hands the package to `AppFrame.tsx` (STU-AF1), which
+ * draws the pages of the app through `StudioPage`. It is no pane, so `nav.ts` does not list it, and the access gate of
  * `/studio` covers it (`page.test.ts` holds both). An org outside `STUDIO_ORGS`
  * gets 404 from the gateway, and the page shows an empty state with no error.
  */
@@ -28,12 +29,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useMemo, useState } from "react";
 
 import { AppTopBar } from "@/components/AppTopBar";
+import AppFrame from "./AppFrame";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import { EmptyState } from "@/components/EmptyState";
 import DeleteRecordButton from "@/components/studio/DeleteRecordButton";
 import RecordsStatus from "@/components/studio/RecordsStatus";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
+import AppConnectCard from "@/components/studio/AppConnectCard";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import Button from "@/components/ui/Button";
@@ -54,6 +57,8 @@ import {
 import { useCachedResource } from "@/lib/useCachedResource";
 
 const PAGE_LIMIT = 100;
+/** STU-AF1: the app frame draws the manifest pages. Off, the page draws the object preview below. */
+const APP_FRAME = process.env.NEXT_PUBLIC_STUDIO_APP_FRAME === "1";
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 
 /** The app page. The title is the name of the package, and a page with no package yet is "App". */
@@ -105,7 +110,8 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
     [object, fields, computed, list, canUpdate]);
   const canList = !!object && verbMap(controls.actions)[`object:${object.name}.list`] !== undefined;
   const rows = useCachedResource<Row[]>(
-    door && object && canList ? sourceKey(door, list) : null,
+    // The app frame reads through its own lens (STU-AF4), so this unfiltered read would be a second one.
+    door && object && canList && !APP_FRAME ? sourceKey(door, list) : null,
     () => (door as NonNullable<typeof door>).read(list),
   );
   const [picked, setPicked] = useState("");
@@ -132,9 +138,14 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   if (!detail.data || !door) {
     return <Shell><RecordsStatus loading error={null} onRetry={detail.refresh} /></Shell>;
   }
+  if (APP_FRAME) {
+    return <AppFrame pkg={pkg} detail={detail.data} door={door} controls={controls} onDeleted={onDeleted}
+      above={controls.owner ? <AppConnectCard pkg={pkg} /> : undefined} />;
+  }
   if (!object) {
     return (
       <Shell title={detail.data.name} actions={ownerBar}>
+        {controls.owner ? <AppConnectCard pkg={pkg} /> : null}
         <EmptyState icon="PackageOpen" message={controls.owner
           ? "This app has no object yet. Ask Mira to add one, then publish it." : VIEWER_NO_OBJECT} />
       </Shell>
@@ -156,6 +167,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
         {controls.owner ? null : <span role="status" className="text-xs text-muted-foreground">{READ_ONLY_SENTENCE}</span>}
       </>
     }>
+      {controls.owner ? <AppConnectCard pkg={pkg} /> : null}
       <PackageLifetimeBar pkg={pkg} />
       {!canList ? (
         <p role="status" className={`${PANEL} text-sm text-muted-foreground`}>{noListLine(object.label ?? object.name)}</p>
