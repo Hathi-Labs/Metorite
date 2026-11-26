@@ -60,6 +60,8 @@ from gateway.routes.email.core import (
     _fmt_addr_list,
     _llm_json,
     _log,
+    _persist_rotated_creds,
+    _provider_for_message,
     _row_to_message,
     _savepoint,
     _tenant_session,
@@ -68,6 +70,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
@@ -3670,6 +3673,106 @@ async def trash_chat_draft(
     await provider.trash_message(row.provider_message_id)
     await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
     return True
+
+
+#: Task 3978: the stored copy of one draft, for the live check of the chat.
+_STORED_DRAFT_SQL = (
+    "SELECT account_id, subject, body_text, folder, has_attachments,"
+    " to_addresses, cc_addresses, bcc_addresses FROM email_messages"
+    " WHERE id = CAST(:id AS uuid) AND account_id IN (")
+
+
+def _people_set(values: Any) -> frozenset[str]:
+    """The addresses of a stored list or of a provider list, lower case."""
+    out = set()
+    for a in values or []:
+        mail = a.get("email") if isinstance(a, dict) else getattr(a, "email", a)
+        if str(mail or "").strip():
+            out.add(str(mail).strip().lower())
+    return frozenset(out)
+
+
+def _live_is_stored_draft(live: Any, row: Any, sig: str) -> bool:
+    """True when the provider's live draft *live* is the stored copy *row*:
+    the same text (the fold of :func:`_live_is_chat_text`), the same subject,
+    the same To, Cc and Bcc, and no file on either side (task 3978)."""
+    stored = {k: _addresses_of(getattr(row, k)) for k in
+              ("to_addresses", "cc_addresses", "bcc_addresses")}
+    return (_fold_draft(sig, _live_draft_text(live)) == _fold_draft(sig, row.body_text or "")
+            # Case folds: Outlook's createReply names a reply draft "RE: x",
+            # and the stored copy says "Re: x" until the next sync.
+            and " ".join(str(getattr(live, "subject", "") or "").split()).casefold()
+            == " ".join(str(row.subject or "").split()).casefold()
+            and all(_people_set(getattr(live, k, None)) == _people_set(stored[k])
+                    for k in stored)
+            and not getattr(live, "has_attachments", False) and not row.has_attachments)
+
+
+async def _read_live_draft(provider: Any, provider_message_id: str) -> Any:
+    """The provider's full read of the draft (the read of the sync), or None
+    on a refused sign-in, a failure or a read past the bound. It runs with
+    NO session open (gateway rule: no session across a provider call)."""
+    try:
+        async with asyncio.timeout(BODY_FETCH_TIMEOUT_S):
+            if not await provider.authenticate():
+                return None
+            return await provider.get_message(provider_message_id)
+    except Exception:  # unread or too slow: nothing is trashed
+        return None
+
+
+@router.delete("/chat-drafts/{draft_id}")
+async def trash_chat_draft_live(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> Any:
+    """Trash ONE draft that the chat saved, after a live check (task 3978).
+
+    ``email_app_master_plan.md`` §18.13.1: the member pressed "Delete it" on a
+    card. The email assistant checked the stored copy against the record of
+    the chat. This route then reads the live draft at the provider, with the
+    full read of the sync. It trashes the draft only while the live text,
+    subject, To, Cc and Bcc are those of the stored copy, and neither holds a
+    file. Else it answers 409 and changes nothing: a draft that the member
+    edited at the mailbox stays. A passed check runs the trash of ``DELETE
+    /email/messages/{id}?report=true``, and answers its report. An older
+    gateway has no such route, so the chat never trashes with no check.
+
+    Three blocks, as ``delete_message``: block A reads the row and loads the
+    provider. The read at the provider runs with no session open. Block C
+    saves rotated tokens only. The SQL of block A takes the draft only from a
+    mailbox of the session's member (D-EM-4)."""
+    owner = user.email or "anonymous"
+    if _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    # Block A: the stored copy and the provider, in one short session.
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            _STORED_DRAFT_SQL + mailbox_ids_sql(uid="user_id", level="send") + ")"),
+            {"id": draft_id, "user_id": owner})).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        sig = await _account_signature(db, str(row.account_id))
+        provider, pmid, account_id, store = await _provider_for_message(db, draft_id, owner)
+    # The read at the provider, with no session open.
+    live = await _read_live_draft(provider, pmid)
+    # Block C: the tokens that the sign-in rotated. A failure here keeps the check.
+    if provider.credentials_dirty():
+        try:
+            async with _tenant_session() as db:
+                await _persist_rotated_creds(db, store, account_id, provider)
+        except Exception as exc:  # the next sign-in refreshes again
+            _log.warning("email.chat_draft_creds_unsaved", error=type(exc).__name__)
+    ok = (live is not None and str(row.folder or "").lower() in ("drafts", "draft")
+          and _live_is_stored_draft(live, row, sig))
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail=("The draft at the mailbox is not the draft that Metorite holds, or "
+                    "Metorite could not read it there. Nothing was deleted."))
+    from gateway.routes.email.transport.messages import delete_message
+
+    return await delete_message(draft_id, user, report=True)
 
 
 class DraftUpsertRequest(BaseModel):
