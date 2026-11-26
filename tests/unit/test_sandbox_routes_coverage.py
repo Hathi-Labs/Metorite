@@ -142,7 +142,7 @@ def test_the_hand_lists_have_the_counts_of_the_spec():
 
 
 def test_sandbox_routes_is_exactly_the_68_rows_of_decision_2():
-    assert app_manifests.SANDBOX_ROUTES == _expected()
+    assert _expected() == app_manifests.SANDBOX_ROUTES
     assert len(app_manifests.SANDBOX_ROUTES) == 68
 
 
@@ -169,7 +169,7 @@ def test_no_pair_is_class_b_c_or_x_a_download_or_agent_access():
 def test_each_kept_off_row_is_a_real_class_a_get_row_and_stays_off():
     rows = _rows()
     for path in KEPT_OFF:
-        app_id, row = rows[("GET", path)]
+        _, row = rows[("GET", path)]
         assert row.cls == "A", path
         assert not row.sandbox, path
         assert ("GET", path) not in app_manifests.SANDBOX_ROUTES, path
@@ -191,7 +191,7 @@ def test_each_pair_is_served_by_the_live_gateway_at_that_template():
 
 def test_every_sandbox_app_is_crm_or_projects_and_neither_is_on_the_mcp_door():
     assert [one.id for one in app_manifests.SANDBOX_APPS] == ["crm", "projects"]
-    assert app_manifests.SANDBOX_READ_SCOPES == {"crm:read", "projects:read"}
+    assert {"crm:read", "projects:read"} == app_manifests.SANDBOX_READ_SCOPES
     for one in app_manifests.SANDBOX_APPS:
         assert one not in app_manifests.APPS
 

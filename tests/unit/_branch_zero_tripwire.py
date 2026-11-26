@@ -59,6 +59,9 @@ ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
     "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
     "x-agent-session", "x-agent-approval", "if-match",
+    # SBX-2: the capability of the sandbox sibling, and the headers that the
+    # sibling reads only to refuse a second credential.
+    "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and
@@ -324,8 +327,9 @@ def _patch_matches(monkeypatch: Any) -> None:
 def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     """Wrap every request that branch 0 sees, for the rest of the test.
 
-    Patches ``deps._is_agent_request`` and ``deps._agent_user`` so a direct
-    caller of ``get_current_user`` is covered too. :func:`current_user_override`
+    Patches ``deps._is_agent_request`` and ``deps._agent_user``, and the
+    sandbox sibling ``deps._is_sandbox_request`` and ``deps._sandbox_user``
+    (SBX-2), so a direct caller of ``get_current_user`` is covered too. :func:`current_user_override`
     covers the body of ``get_current_user`` itself, for an app. *agent_user*
     replaces ``_agent_user``, for a mutation test. Clears :data:`VIOLATIONS`
     and arms the RAISE hook until the test ends; the caller calls
@@ -335,6 +339,8 @@ def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     armed = Armed(deps)
     is_agent = deps._is_agent_request
     user = agent_user or deps._agent_user
+    is_sandbox = deps._is_sandbox_request
+    sandbox_user = deps._sandbox_user
 
     def _trigger(request: Any) -> bool:
         return is_agent(armed.wrap(request))
@@ -342,8 +348,17 @@ def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     async def _branch_zero(request: Any) -> Any:
         return await user(armed.wrap(request))
 
+    def _sandbox_trigger(request: Any) -> bool:
+        return is_sandbox(armed.wrap(request))
+
+    async def _sandbox_branch(request: Any) -> Any:
+        return await sandbox_user(armed.wrap(request))
+
     monkeypatch.setattr(deps, "_is_agent_request", _trigger)
     monkeypatch.setattr(deps, "_agent_user", _branch_zero)
+    # SBX-2: the sandbox sibling runs under the same wrapper.
+    monkeypatch.setattr(deps, "_is_sandbox_request", _sandbox_trigger)
+    monkeypatch.setattr(deps, "_sandbox_user", _sandbox_branch)
     monkeypatch.setattr(MONITOR, "armed", True)
     _patch_matches(monkeypatch)
     return armed

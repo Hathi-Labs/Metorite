@@ -241,7 +241,16 @@ _BRANCH_ZERO = (
     # CIV-14b: the one body reader. It reads the copy that the gateway keeps
     # of a signed form, or `await request.body()`.
     "_signed_body",
+    # SBX-2 (agent_sandbox.md §12.2 decision 3): the sandbox sibling of branch
+    # 0. Its trigger and its steps see the request, so the scan, the tripwire
+    # and the one digest cover them.
+    "_is_sandbox_request", "_sandbox_user",
 )
+
+#: The functions that may loop over the header NAMES, each name used only in
+#: a prefix test (see :meth:`_InvertedScan.trigger_loop`). The sandbox sibling
+#: counts its own headers and refuses an ``X-Agent-`` header that way.
+_TRIGGER_FUNCTIONS = frozenset({"_is_agent_request", "_is_sandbox_request", "_sandbox_user"})
 
 #: The attribute chains a scan accepts from `request`, each with the ONE use
 #: it may have (see :meth:`_InvertedScan.chain_use`).
@@ -263,10 +272,13 @@ _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_sign
 #: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17).
 #: ``If-Match`` is not signed. The digest binds it: another value is another
 #: digest, so the spend refuses it.
+#: SBX-2 adds the capability header of the sandbox sibling, and the four
+#: headers that the sibling reads only to refuse a second credential.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
     "x-agent-approval", "if-match",
+    "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
 })
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
@@ -356,8 +368,9 @@ _PINNED_STORES = frozenset({
 _MATCHES_RECEIVER = "context"
 
 #: The trigger's loop variable may only be used as
-#: ``<var>.lower().startswith(<literal that starts with this>)``.
-_TRIGGER_PREFIX = "x-agent-"
+#: ``<var>.lower().startswith(<literal that starts with one of these>)``.
+#: SBX-2 adds the prefix of the sandbox sibling.
+_TRIGGER_PREFIX = ("x-agent-", "x-sandbox-")
 
 #: Scanned functions of ``agent_signing.py`` carry this prefix in the source
 #: map, so their names never collide with a branch-0 name.
@@ -529,7 +542,7 @@ class _InvertedScan:
                     self.flag(node, "_one_header without an allowed literal header")
         if self.name == "_one_header":
             self.one_header_name()
-        if self.name == "_is_agent_request":
+        if self.name in _TRIGGER_FUNCTIONS:
             self.trigger_loop()
         if self.name == "_effective_template":
             self.pinned_stores()
@@ -787,7 +800,7 @@ class _InvertedScan:
                 self.key_of(use, key)
             return
         if key == ("headers",):
-            if isinstance(use, ast.For) and use.iter is top and self.name == "_is_agent_request":
+            if isinstance(use, ast.For) and use.iter is top and self.name in _TRIGGER_FUNCTIONS:
                 return  # the trigger reads header NAMES (see `trigger_loop`)
             if isinstance(use, ast.Compare) and len(use.ops) == 1 and top in use.comparators \
                     and isinstance(use.ops[0], (ast.In, ast.NotIn)):
@@ -1239,8 +1252,20 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # does not change. Diff-reviewer (Opus) APPROVE and an independent
     # verification PASS. The old pins were 3.12 ``fa6f0023…6fbfe9`` and 3.13
     # ``de650553…653174``. CPython 3.12.12 and 3.13.2 gave the new pins.
-    (3, 12): "acb6431cdc901da090564c5212e194576915fcda94c802074cf2a63aff7c0624",
-    (3, 13): "caf1fed03b3a63278a16016dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6",
+    # SBX-2 (2026-11-26, agent_sandbox.md §12.2, task 3801): the sandbox
+    # sibling of branch 0. `_is_sandbox_request` and `_sandbox_user` join the
+    # scan, and `_refuse_sandbox`, `_read_capability`, `_sandbox_gate` and
+    # `_claim_sandbox_call` join the helpers. `get_current_user` runs the
+    # sibling first. The scan and the tripwire allow `x-sandbox-capability`
+    # and the four headers that the sibling reads only to refuse, and the
+    # trigger prefix becomes a tuple. The tripwire wraps the sibling too. The
+    # pins before it were 3.12 ``acb6431c…aff7c0624`` and 3.13
+    # ``caf1fed0…dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6``. CPython 3.12.12
+    # and 3.13.2 gave the new pins. This pin needs the diff-reviewer review
+    # and the independent verification of external_agent_access.md §10.1.
+    # Both are OWED: the builder did neither, and the merge waits for both.
+    (3, 12): "0fb814d2cee264bd8a763abb6b5383db9e35e61166de7ba2284e229f1aa36735",
+    (3, 13): "de85489364ac9ccf0aa6eaf220f356d0c4a06c309d88f01055701e9f7df2a33c",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1253,9 +1278,13 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: helpers of the spend: ``_approval_of``, the digest of an approved call,
 #: and ``_spend_approval``, the one spend in a tenant session of the ROW's
 #: organization. Neither sees the request.
+#: SBX-2 adds the four helpers of the sandbox sibling: the refusal, the
+#: capability read, the gate of steps 5 to 8 and the call cap. None of them
+#: sees the request.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
                         "_claim_door_read", "_audit_door", "_approval_of",
-                        "_spend_approval")
+                        "_spend_approval", "_refuse_sandbox", "_read_capability",
+                        "_claim_sandbox_call", "_sandbox_gate")
 
 
 def _branch_zero_digest() -> str:
