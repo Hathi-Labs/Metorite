@@ -497,8 +497,10 @@ date. For the debt of today, read `DEBT_CEILING`.
 Nine ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13.
-P-3a took crm to 67, and P-1c took calendar to 2.
+and memory to 4, and P-5b-6 took people to 12.
+
+Task 3960 took whatsapp to 13. P-3a took crm to 67, and P-1c took calendar to
+2.
 
 The total of `DEBT_CEILING` is 302. The "Today" column above does not show
 these changes.
