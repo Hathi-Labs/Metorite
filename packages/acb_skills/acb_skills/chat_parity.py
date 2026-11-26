@@ -194,7 +194,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
             (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
-            (3115, 3903)),
+            (3115, 3903, 3950)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3925, 3107, 3935, 3936, 3108, 3109, 3932)),
@@ -231,6 +231,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # PAR-9 (task 3950): the studio-apps pack sends the routes of the Custom Apps.
+    "packages/acb_skills/acb_skills/custom_app_tools.py",
     # PAR-8b: the Home tools send the shell routes, the brief and the test push.
     "packages/acb_skills/acb_skills/home_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
@@ -262,6 +264,14 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # P-1a (task 3112): the two proposals of the task page. Each tool writes nothing.
     "POST /api/tasks/items/{}/enrich": "my_tasks_enrich",
     "POST /api/tasks/items/{}/suggest-title": "my_tasks_suggest_title",
+    # P-1b (task 3922): the Add to Tasks popup of a mail, and the task from a reply
+    # that the member sent. The draft reads, and the write shows one card.
+    "POST /api/tasks/capture/from-email": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-email/create": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-email/enhance": "my_tasks_draft_from_mail",
+    "POST /api/tasks/capture/from-email/preview": "my_tasks_draft_from_mail",
+    "POST /api/tasks/capture/from-reply/create": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-reply/detect": "my_tasks_draft_from_mail",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
     # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
@@ -272,6 +282,11 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/tasks/calendar/day-state": "my_tasks_set_one_thing",
     # P-1a (task 3112): the read of the Connected calendars section (CE-10c). No token shows.
     "GET /api/calendar/connections": "my_tasks_list_calendar_connections",
+    # P-1c (task 3923): Sync now and the task switch (CE-13d). The tool takes the
+    # provider, reads the list, and sends one write after one card. It is in the
+    # dark pack calendar-connections. Disconnect is not here (C-04).
+    "POST /api/calendar/connections/{}/sync": "my_tasks_calendar_connection",
+    "PATCH /api/calendar/connections/{}": "my_tasks_calendar_connection",
     # CAL-2 (task 1676): the CALENDAR fields of the settings (the standing instruction,
     # the working hours, capacity, buffer, focus run, break, lunch, energy windows,
     # auto rollover, time zone). The model choices, the sync flags and capture_dedup
@@ -590,6 +605,35 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/workflows/modules": "studio_workflow_module",
     "PUT /api/workflows/modules/{}": "studio_workflow_module",
     "DELETE /api/workflows/modules/{}": "studio_workflow_module",
+    # PAR-9 (task 3950, chat_parity.md section 6.4 rung 8): 26 acts of the Custom Apps,
+    # as the member, in the dark pack studio-apps. A publish, a roll back, a share act,
+    # a file delete, a restore and a data delete each show ONE card first.
+    "GET /api/apps": "custom_app_read",
+    "GET /api/apps/pins": "custom_app_read",
+    "GET /api/apps/{}": "custom_app_read",
+    "GET /api/apps/{}/versions": "custom_app_read",
+    "GET /api/apps/{}/usage": "custom_app_read",
+    "GET /api/apps/{}/grants": "custom_app_read",
+    "GET /api/apps/{}/checkpoints": "custom_app_read",
+    "GET /api/apps/{}/me": "custom_app_read",
+    "GET /api/apps/{}/files": "custom_app_read",
+    "GET /api/apps/{}/files/content": "custom_app_read",
+    "GET /api/apps/{}/data/{}": "custom_app_read",
+    "GET /api/apps/{}/data/{}/{}": "custom_app_read",
+    "PATCH /api/apps/{}": "custom_app_save",
+    "POST /api/apps/{}/fork": "custom_app_save",
+    "DELETE /api/apps/{}/pin": "custom_app_save",
+    "PUT /api/apps/{}/files/content": "custom_app_files",
+    "DELETE /api/apps/{}/files/content": "custom_app_files",
+    "POST /api/apps/{}/build": "custom_app_files",
+    "POST /api/apps/{}/sync": "custom_app_files",
+    "POST /api/apps/{}/restore": "custom_app_files",
+    "POST /api/apps/{}/publish": "custom_app_publish",
+    "POST /api/apps/{}/rollback": "custom_app_publish",
+    "POST /api/apps/{}/grants": "custom_app_share",
+    "DELETE /api/apps/{}/grants/{}": "custom_app_share",
+    "PUT /api/apps/{}/data/{}/{}": "custom_app_data",
+    "DELETE /api/apps/{}/data/{}/{}": "custom_app_data",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -991,23 +1035,14 @@ DEBT: dict[str, str] = {
     # ── Tasks ──
     # The owner decides: retire the /tasks button, or build a tool with a card.
     "POST /api/tasks/ai/backfill-context": "P-1",
-    # P-1b (task 3922): the six capture rows of mail. HIGH, with the owner's Approve.
-    "POST /api/tasks/capture/from-email": "P-1",
-    "POST /api/tasks/capture/from-email/create": "P-1",
-    "POST /api/tasks/capture/from-email/enhance": "P-1",
-    "POST /api/tasks/capture/from-email/preview": "P-1",
-    "POST /api/tasks/capture/from-reply/create": "P-1",
-    "POST /api/tasks/capture/from-reply/detect": "P-1",
     # ── Calendar ──
     # CE-10c (task 66): the Connected calendars section of Calendar settings. P-1a (task 3112)
-    # paid the list read. P-1c (task 3923) pays Disconnect and Sync now.
+    # paid the list read, and P-1c (task 3923) paid Sync now and the switch.
+    # Disconnect waits for the owner's decision on C-04 (task 3923): the C-04 eval
+    # allows no destructive My Tasks tool, and only the owner may amend it.
     "DELETE /api/calendar/connections/{}": "P-1",
     # The read of the day state is task 1680 (PR 1998), not P-1a.
     "GET /api/tasks/calendar/day-state": "P-1",
-    # The switch of CE-10c follow-up (task 66): Show my Metorite tasks in Google Calendar or Outlook.
-    # P-1c (task 3923) pays it.
-    "PATCH /api/calendar/connections/{}": "P-1",
-    "POST /api/calendar/connections/{}/sync": "P-1",
     # ── Email ──
     "DELETE /api/email/messages/{}": "P-2",
     "POST /api/email/accounts/{}/backfill": "P-2",
@@ -1107,34 +1142,11 @@ DEBT: dict[str, str] = {
     # ── Workflows ──
     # PAR-8a (task 3903) paid each Workflows row. The Workflows app has no debt.
     # ── Custom Apps ──
-    "DELETE /api/apps/{}/data/{}/{}": "P-6",
-    "DELETE /api/apps/{}/files/content": "P-6",
-    "DELETE /api/apps/{}/grants/{}": "P-6",
-    "DELETE /api/apps/{}/pin": "P-6",
-    "GET /api/apps": "P-6",
-    "GET /api/apps/pins": "P-6",
-    "GET /api/apps/{}": "P-6",
-    "GET /api/apps/{}/checkpoints": "P-6",
-    "GET /api/apps/{}/data/{}": "P-6",
-    "GET /api/apps/{}/data/{}/{}": "P-6",
-    "GET /api/apps/{}/files": "P-6",
-    "GET /api/apps/{}/files/content": "P-6",
-    "GET /api/apps/{}/grants": "P-6",
-    "GET /api/apps/{}/me": "P-6",
-    "GET /api/apps/{}/usage": "P-6",
-    "GET /api/apps/{}/versions": "P-6",
-    "PATCH /api/apps/{}": "P-6",
+    # PAR-9 (task 3950) paid 26 rows. The code of an app sends these two through the
+    # cc bridge (ccBridge.ts), and no member click sends them. No kind of EXEMPT_KINDS
+    # fits, so each waits for an owner ruling (chat_parity.md section 6.4, PAR-9).
     "POST /api/apps/{}/ai/complete": "P-6",
-    "POST /api/apps/{}/build": "P-6",
-    "POST /api/apps/{}/fork": "P-6",
-    "POST /api/apps/{}/grants": "P-6",
-    "POST /api/apps/{}/publish": "P-6",
-    "POST /api/apps/{}/restore": "P-6",
-    "POST /api/apps/{}/rollback": "P-6",
-    "POST /api/apps/{}/sync": "P-6",
     "POST /api/apps/{}/tools/{}": "P-6",
-    "PUT /api/apps/{}/data/{}/{}": "P-6",
-    "PUT /api/apps/{}/files/content": "P-6",
     # ── Agent Registry ──
     "DELETE /api/agent/mutations/{}/delete": "P-6",
     "DELETE /api/agent/mutations/{}/dismiss": "P-6",
@@ -1286,8 +1298,8 @@ P0_CEILING: dict[str, int] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
-    "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
-    "calendar": 4,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). Paid by task 3923. The day-state read is task 1680.
+    "tasks": 1,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7). P-1b (task 3922) paid the six capture rows of mail (7 to 1).
+    "calendar": 2,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now and the switch (4 to 2). Disconnect waits for the owner's decision on C-04. Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).
     "notes": 51,
@@ -1296,7 +1308,7 @@ DEBT_CEILING: dict[str, int] = {
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
-    "apps": 28,
+    "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).

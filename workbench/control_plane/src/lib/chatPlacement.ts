@@ -194,6 +194,8 @@ const EVIDENCE: readonly string[] = [
   "studio_workflow_runs",
   "studio_workflow_check",
   "studio_workflow_catalog",
+  // PAR-9 (task 3950): the Custom Apps of the App Workshop, read only.
+  "custom_app_read",
 ];
 
 /** Writes. Projects names are manifest class B or C. */

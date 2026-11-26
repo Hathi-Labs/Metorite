@@ -294,7 +294,11 @@ read the folder nor write to it. `test_tally_bridge_installer.py` is its
 fence. On a dev box, `--dev-link-file` keeps the credential in a plain file
 (DEV ONLY).
 
-A disconnect by the admin deletes the credential at the next poll. A cut
+A disconnect by the admin deletes the credential at the next poll. Each
+disconnect also deletes the local copy of the books (TLY-4, §3.8.13 point 6).
+That is the admin's Disconnect, `unlink`, and the Refuse and Unlink buttons
+of the setup page. In link mode, the copy runs only while a
+confirmed link exists, so it does not come back after a disconnect. A cut
 link comes back by itself, after a wait that grows to 60 s.
 
 ## Fixtures

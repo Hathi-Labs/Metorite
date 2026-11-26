@@ -555,3 +555,125 @@ def test_a_cancel_while_a_pairing_starts_says_try_again_and_does_not_lie():
     note, later, state = asyncio.run(go())
     assert note and "Click Cancel again" in note
     assert later is None and state["mode"] == NOT_LINKED
+
+
+# --- TLY-4: a Disconnect deletes the local copy (§3.8.13 point 6) -------------------
+
+
+def test_an_unlink_on_the_page_deletes_the_local_copy():
+    deleted: list[str] = []
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    ctl = LinkController(store, lambda: URL, _up, "0.1.0", "OFFICE-PC",
+                         api_factory=lambda u: FakeLink().api(), sleep=_fast,
+                         on_disconnect=lambda: deleted.append("copy"))
+    asyncio.run(ctl.unlink())
+    assert deleted == ["copy"] and store.state is None
+
+
+def test_an_unlink_with_no_link_deletes_nothing():
+    deleted: list[str] = []
+    ctl = LinkController(MemoryLinkStore(), lambda: URL, _up, "0.1.0", "OFFICE-PC",
+                         api_factory=lambda u: FakeLink().api(), sleep=_fast,
+                         on_disconnect=lambda: deleted.append("copy"))
+    asyncio.run(ctl.unlink())
+    assert deleted == []
+
+
+def test_a_revoke_by_the_admin_deletes_the_local_copy():
+    deleted: list[str] = []
+    link = FakeLink()
+    link.revoked = True
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    ctl = LinkController(store, lambda: URL, _up, "0.1.0", "OFFICE-PC",
+                         api_factory=lambda u: link.api(), sleep=_fast,
+                         on_disconnect=lambda: deleted.append("copy"))
+    ctl.dispatch = _echo
+
+    async def go():
+        stop = asyncio.Event()
+        runner = asyncio.create_task(ctl.run(stop))
+        await _until(lambda: ctl.state()["mode"] == DISCONNECTED)
+        stop.set()
+        await asyncio.wait_for(runner, 3)
+
+    asyncio.run(go())
+    assert deleted == ["copy"]
+
+
+def test_a_failed_copy_delete_is_logged_and_the_unlink_still_ends():
+    def broken():
+        raise OSError("in use")
+
+    store = MemoryLinkStore(LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    ctl = LinkController(store, lambda: URL, _up, "0.1.0", "OFFICE-PC",
+                         api_factory=lambda u: FakeLink().api(), sleep=_fast,
+                         on_disconnect=broken)
+    state, _ = asyncio.run(ctl.unlink())
+    assert state["mode"] == NOT_LINKED and store.state is None
+
+
+def test_serve_wires_the_copy_delete_into_the_controller(tmp_path):
+    import argparse
+
+    from tally_bridge import linkcli
+
+    copy = CopyStore(tmp_path / "copy", Keys())
+    copy.save(Snapshot("Alpha Co", datetime(2026, 11, 25, tzinfo=UTC)))
+    args = argparse.Namespace(windows=False, dev_link_file=str(tmp_path / "link.json"))
+
+    class Reader:
+        async def is_up(self):
+            return True
+
+    ctl = linkcli.link_controller(args, LiveSettings(Settings(link_url=URL)), Reader(), copy)
+    ctl._on_disconnect()
+    assert copy.load("Alpha Co") is None
+
+
+def test_in_link_mode_the_copy_runs_only_while_a_confirmed_link_exists():
+    """TLY-4: after a Disconnect the copy loop does not build a new copy."""
+    store = MemoryLinkStore()
+    ctl = _controller(FakeLink(), store)
+    assert ctl.copy_allowed() is False  # not linked
+    store.save(LinkState(CREDENTIAL, "conn-1", "Acme Traders"))
+    assert ctl.copy_allowed() is False  # not confirmed (rule j)
+    store.save(store.state.confirm())
+    assert ctl.copy_allowed() is True
+    assert _controller(FakeLink(), MemoryLinkStore(), url="").copy_allowed() is True  # address mode
+
+
+def test_the_copy_loop_skips_a_round_that_is_not_allowed():
+    from tally_bridge.localcopy import schedule
+
+    ticks: list[str] = []
+
+    async def tick(*a, **k):
+        ticks.append("tick")
+        return {}
+
+    class Live:
+        copy_interval_min = 30
+
+    async def go():
+        original = schedule.one_tick
+        schedule.one_tick = tick
+        real_sleep = asyncio.sleep
+        calls = {"n": 0}
+
+        async def short(s):
+            calls["n"] += 1
+            if calls["n"] > 2:
+                raise asyncio.CancelledError
+            await real_sleep(0)
+
+        schedule.asyncio.sleep = short
+        try:
+            await schedule.run_forever(None, None, Live(), allowed=lambda: False)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            schedule.one_tick = original
+            schedule.asyncio.sleep = real_sleep
+
+    asyncio.run(go())
+    assert ticks == []
