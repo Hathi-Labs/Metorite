@@ -67,6 +67,9 @@ function extra(title, note, files) {
   for (const [file, label] of files) g.appendChild(figure(file, label, false));
   out.append(h, p, g);
 }
+extra("2b. The \"...\" menu of the pane on a phone (fix round 3)",
+  "With the flag on, Print is the last item of this menu.",
+  [["pane-menu--phone-light.png", "Phone 390, light"], ["pane-menu--phone-dark.png", "Phone 390, dark"]]);
 extra("7. A call that fails", "The gateway refuses. The labels come back, and the page says why.",
   [["error--dark.png", "Dark, 1440"]]);
 extra("8. Keyboard: the focus on Done",
@@ -81,7 +84,8 @@ for (const line of [
   "Found and repaired: after Done, the reading pane kept the old labels of the open mail.",
   "The red \"1 Issue\" badge on the light phone menu comes from the development server. The capture with the flag off shows it too.",
   "Fix round 2 (2026-11-26): on a phone, Done in the bar of the pane is now an icon. The rig took the phone captures of sections 2, 5 and 6 again. The desktop bar did not change, so its captures stay.",
-  "Open defect: at 390 px the bar of the pane still has two rows. The Print icon goes to a second row. Before this round, three icons went to the second row.",
+  "Fix round 3 (2026-11-26): with the flag on, Print moves into the \"...\" menu of the pane on a phone, so the bar has one row at 390 px. The rig took the phone captures of sections 2, 5 and 6 again, light and dark, and measured one row. It took the phone captures of \"Before (flag off): the reading pane\" again with the same rig, so the two compare. The flag off keeps Print in the bar.",
+  "Fix round 3: the rig opens the mail with a tap on its row, as a member does on a phone, and the stub answers each later read with the labels of the last call.",
   "Section 6 on a phone: after Ctrl+Z the toast closes, and the labels of before return.",
   "Not opened: widths of 1280 and 1920, comfortable density, a conversation of two or more messages after Done, hover states, a real mailbox.",
 ]) { const li = document.createElement("li"); li.textContent = line; list.appendChild(li); }
