@@ -253,6 +253,7 @@ QUEUED_RUN_STATUSES: tuple[str, ...] = ("created", "in_progress", "awaiting")
 _QUEUED_RUN_SQL = (
     "SELECT 1 FROM pm_agent_runs r"
     f" WHERE r.organization_id = {BOUND_ORG_SQL}"
+    "   AND r.task_id IS NOT NULL"
     "   AND r.task_id = CAST(:tid AS uuid)"
     "   AND lower(r.member_email) = :me"
     "   AND lower(btrim(r.started_by)) = :me"
