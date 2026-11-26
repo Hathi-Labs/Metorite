@@ -2400,6 +2400,9 @@ and is off by default (`packages/acb_memory`).
 
 `GET /shell/feed?limit=` gives 40 cards by default, and 80 at most.
 
+**LOOP-4b adds one card field.** `why_seen` is a list of sentences, only for an
+org in `MY_DAY_LEARN_ORGS`. `proactive_loop.md` §7.2 holds its rules.
+
 ```json
 {
   "cards": [
@@ -2529,7 +2532,8 @@ this spec disagree, this spec wins.
 
 1. **"Why am I seeing this".** The card menu shows the score terms in words:
    "Due in 2 hours. You act on most overdue cards." It builds trust, and it
-   is the first thing a member asks of a chief of staff.
+   is the first thing a member asks of a chief of staff. LOOP-4b uses the
+   sentences of `proactive_loop.md` §7.2, and it shows no score.
 2. **Ask about this card.** One menu row opens the assistant dock with the
    card as context. The dock owns the talk (`navigation_shell.md` §7.1).
 3. **Teach My Day.** "Not useful" and its one line are the training. No
@@ -4157,7 +4161,9 @@ that the learner lowers. This spec stays the owner of the feed parts.
 `MY_DAY_LEARN_ORGS`. For a listed org, the state join drops a muted kind
 before the order, and a needs card goes to Later at worst. The join adds the
 affinity of the main kind. `feed_decide._habits` is the one count read.
-"Why am I seeing this" is LOOP-4b, and it waits for a spec edit.
+
+"Why am I seeing this" is LOOP-4b (task 4006). `proactive_loop.md` §7.2 holds
+its pins W1 to W5. LOOP-4b is not built.
 
 The affinity of a needs card never goes below 0 in the score, so the
 per-app cut cannot drop it. The reach loop, the briefs and the chat brief read
