@@ -30,6 +30,9 @@ rule, or a listed member passes with it.
 | M2 | ``narrow`` lets an exact allow override pass | ``test_acc_d_an_exact_allow_and_a_guest_are_refused`` |
 | M3 | the rules read runs with no savepoint | ``test_acc_g_a_failed_read_refuses_integrations_only`` (raise mode) |
 | M4 | the write drops the ``COALESCE`` of a missing parent | ``test_acc_f_the_write_persists_and_org_b_does_not_change`` |
+| M5 | the purge does not call ``scrub_member_rules`` | ``test_fix1_a_purge_takes_the_address_off_and_a_reinvite_is_refused`` |
+| M6 | the group gate reads with no ``FOR SHARE`` | ``test_fix1_a_put_waits_for_a_member_write_that_passed_the_gate``, ``test_fix1_the_gate_waits_for_a_rule_write_and_reads_the_new_rule`` |
+| M7 | the PUT takes its row lock after the checks | ``test_fix1_a_group_delete_waits_for_a_put_that_names_the_group`` |
 """
 
 from __future__ import annotations
@@ -784,3 +787,260 @@ async def test_acc_g_a_failed_read_refuses_integrations_only(ns, monkeypatch, mo
     # The narrowed answer was not cached: the next read decides again.
     monkeypatch.setattr(access_mod, "_INTEGRATION_RULES_SQL", real_sql)
     assert (await _resolve(ns, allow, cache=True)).has(_use("zoho-crm"))
+
+
+# ── Fix round 1: the member purge, and the row lock of the org ───────────────
+
+
+async def _put_in_scope(ns: Any, user: Any, path: str, body: Any) -> httpx.Response:
+    """A PUT of the admin router, inside a ``tenant_engine_scope`` that the
+    caller holds. Two calls can then run at once on one engine."""
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant
+    from fastapi import FastAPI
+    from gateway.routes.admin import router
+
+    async def _caller() -> Any:
+        bind_tenant(ns.a)
+        return user
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_current_user] = _caller
+    scope = clear_tenant()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://gateway.test") as client:
+            return await client.put(path, json=body)
+    finally:
+        release_tenant(scope)
+
+
+async def _still_waiting(task: asyncio.Task, seconds: float = 1.5) -> bool:
+    """True when *task* has not finished after *seconds*: it waits on a lock."""
+    await asyncio.sleep(seconds)
+    return not task.done()
+
+
+def _roster_admin(org: str) -> Any:
+    """An admin who may write members but holds no ``admin:access:manage``."""
+    from acb_auth import UserContext, UserRole, build_access
+
+    return UserContext(email=_email("admin"), role=UserRole.EXECUTIVE, organization_id=org,
+                       access=build_access(["admin:members:read", "admin:members:manage"]))
+
+
+async def test_fix1_a_purge_takes_the_address_off_and_a_reinvite_is_refused(
+        ns, flag_on, monkeypatch) -> None:
+    """§3.9.2 rule 5 after a purge. The purge runs on the app role and holds
+    the row lock of the org, so a PUT that names the leaver waits, and then
+    gets 422. The address is off each rule, an emptied rule stays admins
+    only, and the same address invited again is refused."""
+    from acb_common.db import bind_tenant, release_tenant, tenant_session
+    from gateway.routes.admin import members
+    from gateway.routes.admin._common import get_member
+    from gateway.routes.crm import questions
+
+    async def _no_keys(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(members, "record_admin_change", lambda *a, **k: None)
+    monkeypatch.setattr(questions, "forget_member_keys", _no_keys)
+    gone, listed = _email("gone"), _email("listed")
+    with ns.p.admin_engine.begin() as c:
+        _seed_person(c, ns.a, gone, "member", ())
+    _rules(ns, {"mcp-x": {"subjects": [gone, listed], "set_by": _email("admin")},
+                "zoho-crm": {"subjects": [gone]}})
+    assert (await _resolve(ns, gone)).has(_use("mcp-x")), "the positive control"
+    admin = _user(_email("admin"), await _resolve(ns, _email("admin")), ns.a)
+
+    # The purge stops after its first statement, the scrub, and holds its lock.
+    scrubbed, release = asyncio.Event(), asyncio.Event()
+    real_owner_check = members.assert_owner_survives
+
+    async def _paused(*a: Any, **k: Any) -> None:
+        scrubbed.set()
+        await release.wait()
+        await real_owner_check(*a, **k)
+
+    monkeypatch.setattr(members, "assert_owner_survives", _paused)
+
+    async def _purge() -> None:
+        async with tenant_session(ns.a) as session:
+            member = await get_member(session, ns.a, gone)
+            await members.purge_member_rows(session, ns.a, member, actor_email=_email("admin"))
+
+    async with tenant_engine_scope(ns.dsn):
+        token = bind_tenant(ns.a)
+        try:
+            purge = asyncio.create_task(_purge())
+            await asyncio.wait_for(scrubbed.wait(), 30)
+            put = asyncio.create_task(_put_in_scope(
+                ns, admin, "/admin/integration-access/mcp-x",
+                {"mode": "chosen", "people": [gone, listed]}))
+            assert await _still_waiting(put), "the PUT did not wait for the purge lock"
+            release.set()
+            await asyncio.wait_for(purge, 60)
+            refused = await asyncio.wait_for(put, 60)
+        finally:
+            release.set()
+            release_tenant(token)
+    assert refused.status_code == 422 and gone in refused.text, refused.text
+
+    rules = _stored(ns, ns.a)["integration_access"]
+    assert rules["mcp-x"]["subjects"] == [listed]
+    assert rules["mcp-x"]["set_by"] == _email("admin"), "the scrub keeps the rest"
+    assert rules["zoho-crm"]["subjects"] == [], "an emptied rule stays: admins only"
+    with ns.p.admin_engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM app_user WHERE email = :e"),
+                         {"e": gone}).scalar() == 0
+
+    # The same address joins again. No rule names it, so both stay refused.
+    with ns.p.admin_engine.begin() as c:
+        _seed_person(c, ns.a, gone, "member", ())
+    again = await _resolve(ns, gone)
+    assert again.is_active and again.has(_use("apollo")), "the positive control"
+    assert not again.has(_use("mcp-x")) and not again.has(_use("zoho-crm"))
+    assert (await _resolve(ns, listed)).has(_use("mcp-x"))
+    assert (await _resolve(ns, _email("admin"))).has(_use("zoho-crm"))
+    # The stored list now saves again: no 422 for an address of nobody.
+    r = await _admin_call(ns, "PUT", "/admin/integration-access/mcp-x",
+                          {"mode": "chosen", "people": [listed]})
+    assert r.status_code == 200, r.text
+    with ns.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM app_user WHERE email = :e"), {"e": gone})
+
+
+async def test_fix1_a_put_waits_for_a_member_write_that_passed_the_gate(
+        ns, flag_on, monkeypatch) -> None:
+    """The gate takes ``FOR SHARE`` in the transaction of the member write.
+    A PUT that names the team waits until that write commits."""
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.admin import groups
+
+    listed = _email("listed")
+    admin = _user(_email("admin"), await _resolve(ns, _email("admin")), ns.a)
+    gated, release = asyncio.Event(), asyncio.Event()
+    real_get_member = groups.get_member
+
+    async def _paused(*a: Any, **k: Any) -> Any:
+        gated.set()
+        await release.wait()
+        return await real_get_member(*a, **k)
+
+    monkeypatch.setattr(groups, "get_member", _paused)
+    async with tenant_engine_scope(ns.dsn):
+        token = bind_tenant(ns.a)
+        try:
+            add = asyncio.create_task(groups.add_group_member(
+                ROOM_GROUP, groups.GroupMemberAdd(email=listed, grant_center_access=False),
+                admin=_roster_admin(ns.a)))
+            await asyncio.wait_for(gated.wait(), 30)
+            put = asyncio.create_task(_put_in_scope(
+                ns, admin, "/admin/integration-access/mcp-x",
+                {"mode": "chosen", "groups": [ROOM_GROUP]}))
+            assert await _still_waiting(put), "the PUT did not wait for the gate lock"
+            release.set()
+            await asyncio.wait_for(add, 60)
+            r = await asyncio.wait_for(put, 60)
+        finally:
+            release.set()
+            release_tenant(token)
+    try:
+        assert r.status_code == 200, r.text
+        assert (await _resolve(ns, listed)).has(_use("mcp-x"))
+    finally:
+        with ns.p.admin_engine.begin() as c:
+            c.execute(text(
+                "DELETE FROM org_group_member WHERE user_id = CAST(:u AS uuid) AND group_id = "
+                "(SELECT id FROM org_group WHERE organization_id = CAST(:o AS uuid) "
+                "AND slug = :s)"), {"u": ns.ids["listed"], "o": ns.a, "s": ROOM_GROUP})
+
+
+async def test_fix1_the_gate_waits_for_a_rule_write_and_reads_the_new_rule(ns) -> None:
+    """A rule write holds the row lock (the PUT's ``FOR NO KEY UPDATE`` and
+    its ``UPDATE``). The gate waits, then reads the committed rule, so a
+    member write that the rule now guards is refused."""
+    from acb_common.db import bind_tenant, release_tenant
+    from fastapi import HTTPException
+    from gateway.routes.admin import groups
+    from gateway.routes.admin._common import ORG_INTEGRATION_RULES_SQL, ORG_RULE_LOCKS
+
+    listed = _email("listed")
+    with ns.p.admin_engine.connect() as held:
+        tx = held.begin()
+        held.execute(text(ORG_INTEGRATION_RULES_SQL + ORG_RULE_LOCKS["update"]), {"org": ns.a})
+        held.execute(text(
+            "UPDATE organization SET settings = CAST(:v AS jsonb) WHERE id = CAST(:o AS uuid)"),
+            {"o": ns.a, "v": json.dumps(
+                {"integration_access": {"mcp-x": {"subjects": [f"group:{ROOM_GROUP}"]}}})})
+        async with tenant_engine_scope(ns.dsn):
+            token = bind_tenant(ns.a)
+            try:
+                add = asyncio.create_task(groups.add_group_member(
+                    ROOM_GROUP, groups.GroupMemberAdd(email=listed, grant_center_access=False),
+                    admin=_roster_admin(ns.a)))
+                waited = await _still_waiting(add)
+                tx.commit()
+                with pytest.raises(HTTPException) as refused:
+                    await asyncio.wait_for(add, 60)
+            finally:
+                if tx.is_active:
+                    tx.rollback()
+                release_tenant(token)
+    assert waited, "the gate did not wait for the rule write"
+    assert refused.value.status_code == 403 and "admin:access:manage" in refused.value.detail
+    with ns.p.admin_engine.connect() as c:
+        assert c.execute(text(
+            "SELECT count(*) FROM org_group_member m JOIN org_group g ON g.id = m.group_id "
+            "WHERE g.slug = :s AND m.user_id = CAST(:u AS uuid)"),
+            {"s": ROOM_GROUP, "u": ns.ids["listed"]}).scalar() == 0
+
+
+async def test_fix1_a_group_delete_waits_for_a_put_that_names_the_group(
+        ns, flag_on, monkeypatch) -> None:
+    """The PUT takes its row lock before it checks that the group exists. So
+    a delete of that group cannot run between the check and the write: it
+    waits, and then the rule refuses it (409)."""
+    from acb_common.db import bind_tenant, release_tenant
+    from fastapi import HTTPException
+    from gateway.routes.admin import groups
+    from gateway.routes.admin import integration_access as routes
+
+    empty = f"empty{TAG}"
+    with ns.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO org_group (organization_id, slug, display_name, created_by) "
+            "VALUES (CAST(:o AS uuid), :s, :s, 'seed') ON CONFLICT DO NOTHING"),
+            {"o": ns.a, "s": empty})
+    admin = _user(_email("admin"), await _resolve(ns, _email("admin")), ns.a)
+    locked, release = asyncio.Event(), asyncio.Event()
+    real_closed_list = routes.closed_list
+
+    async def _paused(*a: Any, **k: Any) -> Any:
+        locked.set()
+        await release.wait()
+        return await real_closed_list(*a, **k)
+
+    monkeypatch.setattr(routes, "closed_list", _paused)
+    async with tenant_engine_scope(ns.dsn):
+        token = bind_tenant(ns.a)
+        try:
+            put = asyncio.create_task(_put_in_scope(
+                ns, admin, "/admin/integration-access/mcp-x",
+                {"mode": "chosen", "groups": [empty]}))
+            await asyncio.wait_for(locked.wait(), 30)
+            gone = asyncio.create_task(groups.delete_group(empty, admin=admin))
+            assert await _still_waiting(gone), "the delete ran inside the PUT"
+            release.set()
+            r = await asyncio.wait_for(put, 60)
+            with pytest.raises(HTTPException) as refused:
+                await asyncio.wait_for(gone, 60)
+        finally:
+            release.set()
+            release_tenant(token)
+    assert r.status_code == 200, r.text
+    assert refused.value.status_code == 409 and "rule" in refused.value.detail
+    with ns.p.admin_engine.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM org_group WHERE slug = :s"),
+                         {"s": empty}).scalar() == 1

@@ -1083,7 +1083,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 
 ### 3.9 Who can use an integration (task 3985, ACC-1 BUILT)
 
-> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
+> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix round 1 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
 This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
@@ -1178,13 +1178,18 @@ Each site below reads the resolved access, so the rule reaches it with no change
 | Integration credentials of a run (`acb_skills.integrations.build_integrations`) | No credential. The agent gets a warning |
 | API connection calls (`routes/api_connections.py`) | 404, as for an unknown name |
 | MCP tool list refresh and live read (`connections/mcp_tools._may_use`) | Refused |
-| A shared session | The fold denies when one member fails the rule |
+| A shared session | The fold denies when one member fails the rule. The second limit below names the exception |
 | A delegated run | It acts as the member of its parent |
 
 **Limits, stated.**
 
 - A run with no member gets no filter, and every server attaches. The stream path adds MCP servers to each run, and the batch path adds them on a named chat thread. LNK-Q7 and rule c of §3.8.7 own this gap for link connectors.
 - An org-visible room expands to every member. So one restriction removes the service from each such room.
+- A room that expands past 200 members does not narrow. A failed read of the room members does not narrow either. In both cases, `resolve_session_access` falls back to the access of the actor, so the actor's own rule still applies. The access of the other members does not. This is the fold of `acb_auth/access.py` (`_MAX_PARTICIPANT_EXPANSION`), and ACC-1 did not change it.
+- Replay redaction compares allowed sets only (`routes/chat.py` `_render_message`, `chat_fold._run_authority`). A rule adds a deny, and it removes no allow. So a member that a rule refuses later can still read the tool output of an earlier shared run. A member who was in the room at that run also reads it again.
+- `litellm` and `smtp` are keys of `_REGISTRY`, so they can hold a rule. A rule on one removes that credential from each agent run of a refused member. An agent that declares the key then gets no model credential or no mail credential for that member. ACC-2 must warn the admin before such a rule saves.
+- A member purge takes the address off each rule, in the purge transaction (`members.purge_member_rows`, the admin door and the operator door). A rule that becomes empty stays, and it then means admins only, plus its teams. An org purge deletes the org row, and its rules go with it. No other path deletes an `app_user` row.
+- A rule write, a member write to a group, a group delete and a member purge each lock the org row first. The rule write takes `FOR NO KEY UPDATE`, and the group writes take `FOR SHARE` (`_common.ORG_RULE_LOCKS`). So a rule check and its write never interleave with another of them.
 - The room caps read allow overrides only (`routes/rooms.py`). So they do not name the rule as the cause.
 - A rule controls use through the assistant and agents. It does not hide data that a sync already copied into Metorite, such as CRM records.
 - A member-scoped connection (`scope_kind = 'member'`) has no rule. The `grant = admin` mark of an API connection (`api_connections.md` §2.3a) still applies on top.
@@ -1358,6 +1363,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 - **ACC-e.** A shared session with a refused participant denies, for an email, group or org subject. A delegated run also denies.
 - **ACC-f.** Organization B does not change. The first write on empty settings persists, and a second key keeps the first.
 - **ACC-g.** A malformed rule and a failed read refuse integrations only. Neither raises, and neither marks the access tables as missing.
+- **ACC-h (fix round 1).** A purge takes the address off each rule, and the resolver refuses the same address when it joins again. A PUT waits for a member write that passed the gate, and a gate waits for a rule write, then reads it.
 
 **ACC-1 acceptance, hermetic** (`test_integration_access_rules.py`):
 

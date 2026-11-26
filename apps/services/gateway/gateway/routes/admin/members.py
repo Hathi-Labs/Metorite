@@ -1297,11 +1297,22 @@ async def purge_member_rows(
     its session block exits. A refusal of invariant 1 raises before the
     read, so it reaches no provider and stops no loop. More than
     ``TEARDOWN_MAX_MAILBOXES`` mailboxes raise a 409 before any delete.
+
+    ACC-1 fix round 1 (``integrations_console.md`` §3.9.2): the FIRST
+    statement takes the member's address off each integration access rule of
+    the org, under the row lock of the org (``_common.ORG_RULE_LOCKS``). It is
+    first because the lock must come before each row lock of the deletes
+    below. A refusal after it rolls it back with the rest. This body is the
+    one place that deletes an ``app_user`` row of a live org. The org purge
+    (``acb_auth.offboard``) deletes the org row, and the rules go with it.
     """
-    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
+    from gateway.routes.admin.integration_access import scrub_member_rules
 
     addr = (member["email"] or "").strip().lower()
     uid = member["id"]
+
+    await scrub_member_rules(db, org_id, addr)
+    await assert_owner_survives(db, org_id, excluding_user_id=member["id"])
 
     # EM-G11f1b: the plans, then the purge rows, before any delete. The
     # cascade of `email_accounts` deletes the filter ids, and the purge row

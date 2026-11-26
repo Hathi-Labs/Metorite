@@ -240,6 +240,38 @@ def rules_name_group(raw: Any, slug: str) -> bool:
     return any(subjects is None or subject in subjects for subjects in rules.values())
 
 
+def without_member(raw: Any, email: str) -> tuple[dict[str, Any] | None, int]:
+    """``(value, changed)``: the stored rules with *email* taken off each list.
+
+    The member purge calls it (ACC-1 fix round 1). *changed* counts the rules
+    that held the address. When it is 0, *value* is ``None`` and the caller
+    writes nothing. A rule that becomes empty stays, so it means admins only,
+    plus its teams. A value, a rule or a list that the code cannot read stays
+    as it is, because it already refuses. So the result is never wider than
+    the input. Never raises.
+    """
+    addr = (email or "").strip().lower()
+    if "@" not in addr:
+        return None, 0
+    try:
+        value = _decode(raw)
+    except (ValueError, UnicodeDecodeError):
+        return None, 0
+    if not isinstance(value, Mapping):
+        return None, 0
+    out: dict[str, Any] = dict(value)
+    changed = 0
+    for service, rule in value.items():
+        if not isinstance(rule, Mapping) or not isinstance(rule.get("subjects"), list):
+            continue
+        kept = [s for s in rule["subjects"]
+                if not (isinstance(s, str) and s.strip().lower() == addr)]
+        if len(kept) != len(rule["subjects"]):
+            out[service] = {**rule, "subjects": kept}
+            changed += 1
+    return (out, changed) if changed else (None, 0)
+
+
 def mode_of(subjects: frozenset[str] | None) -> str:
     """The mode of a stored rule. An empty or unreadable rule is admins only."""
     return "chosen" if subjects else "admins"
@@ -279,4 +311,5 @@ __all__ = [
     "rules_name_group",
     "service_name_ok",
     "split_subjects",
+    "without_member",
 ]

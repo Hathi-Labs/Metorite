@@ -826,10 +826,30 @@ ORG_INTEGRATION_RULES_SQL = (
 )
 
 
-async def org_integration_rules(db: Any, org_id: str) -> Any:
-    """The stored rules of *org_id* (raw JSONB, or ``None``). Raises on a fault."""
+#: The row locks that a read of the rules can take (ACC-1 fix round 1).
+#:
+#: * ``share`` is for a write that a rule can name: a member write to a group,
+#:   and a group delete. Many such writes can run at once.
+#: * ``update`` is for a write of the rules: the PUT, and the scrub of a
+#:   member purge. It waits for each ``share`` holder, and each waits for it.
+#:
+#: Each caller takes the lock as the FIRST row lock of its transaction. So
+#: the order is always the org row, then the other rows, and no deadlock
+#: cycle can form. ``FOR NO KEY UPDATE`` is the lock of a plain ``UPDATE``,
+#: so the later write of the same row takes no stronger lock. The app role
+#: holds ``UPDATE`` on ``organization``, and a row lock needs it.
+ORG_RULE_LOCKS = {"share": " FOR SHARE", "update": " FOR NO KEY UPDATE"}
+
+
+async def org_integration_rules(db: Any, org_id: str, *, lock: str | None = None) -> Any:
+    """The stored rules of *org_id* (raw JSONB, or ``None``). Raises on a fault.
+
+    *lock* is a key of :data:`ORG_RULE_LOCKS`, or ``None`` for a plain read.
+    The lock holds to the end of the caller's transaction.
+    """
+    sql = ORG_INTEGRATION_RULES_SQL + (ORG_RULE_LOCKS[lock] if lock else "")
     row = (
-        await db.execute(text(ORG_INTEGRATION_RULES_SQL), {"org": org_id})
+        await db.execute(text(sql), {"org": org_id})
     ).mappings().first()
     return None if row is None else row["rules"]
 
@@ -867,11 +887,17 @@ async def assert_group_rule_gate(
     A value that the code cannot read counts as naming the group, and a failed
     read is 503. Neither rule depends on ``INTEGRATION_ACCESS_ORGS``, because a
     stored rule binds whatever the flag says.
+
+    ACC-1 fix round 1: the read takes ``FOR SHARE`` on the org row, and the
+    lock holds until the caller's transaction ends. The caller does the group
+    write on the same session. So a PUT that names the group waits for that
+    commit, and it then reads the new members. Call this before any other row
+    lock of the transaction (:data:`ORG_RULE_LOCKS` says why).
     """
     from acb_auth.integration_access import rules_name_group
 
     try:
-        raw = await org_integration_rules(db, org_id)
+        raw = await org_integration_rules(db, org_id, lock="share")
     except Exception as exc:
         _log.warning("group_rule_gate_read_failed", error=type(exc).__name__)
         raise HTTPException(

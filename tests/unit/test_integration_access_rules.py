@@ -18,6 +18,9 @@ What it locks:
 6. The access preview shows the rule as the source.
 7. The group-write gate of §3.9.2 holds.
 8. The write statements, by their text, and the one writer of the key.
+9. Fix round 1: a member purge takes the address off each rule first, under
+   the row lock of the org. The PUT takes that lock before it checks the
+   groups and the people, and the group gates take ``FOR SHARE``.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from acb_auth.integration_access import (
     parse_rules,
     rules_name_group,
     service_name_ok,
+    without_member,
 )
 from fastapi import HTTPException
 from gateway.routes.admin import _common
@@ -183,16 +187,28 @@ class _RulesDB:
         self.groups = {"ops"}
         self.people = {"a@x.test"}
         self.writes: list[str] = []
+        #: Each statement in order, as a short word. ACC-1 fix round 1 checks
+        #: that the row lock comes before the checks of groups and people.
+        self.order: list[str] = []
 
     async def execute(self, sql: Any, params: dict | None = None) -> Any:
         s = " ".join(str(sql).split())
         p = params or {}
-        if s == " ".join(_common.ORG_INTEGRATION_RULES_SQL.split()):
-            return _Result([{"rules": json.dumps(self.rules)}])
+        read = " ".join(_common.ORG_INTEGRATION_RULES_SQL.split())
+        for lock, suffix in [(None, ""), *_common.ORG_RULE_LOCKS.items()]:
+            if s == read + suffix:
+                self.order.append(f"rules:{lock}")
+                return _Result([{"rules": json.dumps(self.rules)}])
         if "FROM org_group" in s:
+            self.order.append("groups")
             return _Result([(g,) for g in p["slugs"] if g in self.groups])
         if "FROM app_user" in s:
+            self.order.append("people")
             return _Result([(e,) for e in p["emails"] if e in self.people])
+        if s == " ".join(routes.SCRUB_RULES_SQL.split()):
+            self.writes.append("scrub")
+            self.rules = json.loads(p["rules"])
+            return _Result([], rowcount=1)
         if s == " ".join(routes.SET_RULE_SQL.split()):
             self.writes.append("set")
             self.rules[p["svc"]] = json.loads(p["rule"])
@@ -544,3 +560,104 @@ def test_only_the_route_module_writes_the_key() -> None:
             if pattern.search(path.read_text(encoding="utf-8", errors="replace")):
                 writers.append(path.relative_to(REPO).as_posix())
     assert writers == ["apps/services/gateway/gateway/routes/admin/integration_access.py"]
+
+
+# ── 9. ACC-1 fix round 1: the purge scrub and the row lock ──────────────────
+
+
+def test_without_member_takes_the_address_off_each_list_and_keeps_the_rule() -> None:
+    raw = {"mcp-x": {"subjects": ["Gone@X.test ", "a@x.test"], "set_by": "b@x.test"},
+           "zoho-crm": {"subjects": ["gone@x.test"]},
+           "apollo": {"subjects": ["group:ops"]}}
+    out, changed = without_member(json.dumps(raw), "GONE@x.test")
+    assert changed == 2
+    assert out["mcp-x"] == {"subjects": ["a@x.test"], "set_by": "b@x.test"}
+    assert out["zoho-crm"] == {"subjects": []}, "an empty rule stays: admins only"
+    assert out["apollo"] == raw["apollo"]
+    # The scrubbed rules refuse the address, and refuse a member who joins
+    # later with it (rule 5). The empty rule is admins only, never everyone.
+    narrowed = narrow(MEMBER, out, email="gone@x.test")
+    assert narrowed.refused == {"mcp-x", "zoho-crm", "apollo"}
+    assert parse_rules(out)[0]["zoho-crm"] == frozenset()
+
+
+@pytest.mark.parametrize("raw", [
+    None, "not json", [1, 2], {"mcp-x": "junk"}, {"mcp-x": {"subjects": "gone@x.test"}},
+    {"mcp-x": {"subjects": ["a@x.test"]}},
+], ids=["none", "text", "list", "junk-rule", "junk-subjects", "not-named"])
+def test_without_member_leaves_an_unreadable_or_unnamed_value_alone(raw: Any) -> None:
+    assert without_member(raw, "gone@x.test") == (None, 0)
+
+
+def test_without_member_never_widens_a_rule_that_the_code_cannot_read() -> None:
+    raw = {"mcp-x": {"subjects": ["gone@x.test", 5]}}
+    out, changed = without_member(raw, "gone@x.test")
+    assert changed == 1 and out["mcp-x"]["subjects"] == [5]
+    assert parse_rules(out)[0]["mcp-x"] is None, "still unreadable, so admins only"
+
+
+async def test_the_scrub_locks_the_org_row_then_writes() -> None:
+    fake = _RulesDB({"mcp-x": {"subjects": ["gone@x.test", "a@x.test"]},
+                     "zoho-crm": {"subjects": ["a@x.test"]}})
+    assert await routes.scrub_member_rules(fake, ORG, "gone@x.test") == 1
+    assert fake.order == ["rules:update"] and fake.writes == ["scrub"]
+    assert fake.rules == {"mcp-x": {"subjects": ["a@x.test"]},
+                          "zoho-crm": {"subjects": ["a@x.test"]}}
+    # Nothing names the address now, so a second scrub writes nothing.
+    assert await routes.scrub_member_rules(fake, ORG, "gone@x.test") == 0
+    assert fake.writes == ["scrub"]
+    flat = " ".join(routes.SCRUB_RULES_SQL.split())
+    assert flat.endswith("WHERE id = CAST(:org AS uuid)"), "R5: the org of the session"
+
+
+async def test_the_scrub_refuses_a_write_that_changed_no_row() -> None:
+    class _NoRow(_RulesDB):
+        async def execute(self, sql: Any, params: dict | None = None) -> Any:
+            if "jsonb_set(settings, '{integration_access}', CAST(:rules" in str(sql):
+                return _Result([], rowcount=0)
+            return await super().execute(sql, params)
+
+    with pytest.raises(HTTPException) as failed:
+        await routes.scrub_member_rules(_NoRow({"mcp-x": {"subjects": ["gone@x.test"]}}),
+                                        ORG, "gone@x.test")
+    assert failed.value.status_code == 500
+
+
+async def test_the_purge_scrubs_the_rules_first(monkeypatch) -> None:
+    """The scrub is the first statement of the purge body, so its row lock
+    comes before each row lock of the deletes, and a refusal rolls it back."""
+    from gateway.routes.admin import members
+
+    calls: list[str] = []
+
+    async def _scrub(_db: Any, org: str, email: str) -> int:
+        calls.append(f"scrub:{org}:{email}")
+        return 1
+
+    async def _owner(*_a: Any, **_k: Any) -> None:
+        calls.append("owner")
+        raise HTTPException(status_code=409, detail="the last owner")
+
+    monkeypatch.setattr(routes, "scrub_member_rules", _scrub)
+    monkeypatch.setattr(members, "assert_owner_survives", _owner)
+    with pytest.raises(HTTPException):
+        await members.purge_member_rows(
+            object(), ORG, {"id": "u-1", "email": " Gone@X.test"}, actor_email="a@x.test")
+    assert calls == [f"scrub:{ORG}:gone@x.test", "owner"]
+
+
+async def test_the_put_locks_the_org_row_before_it_checks_groups_and_people(world) -> None:
+    r = await _call(_user(ADMIN_PERMS), "PUT", "/admin/integration-access/mcp-x",
+                    {"mode": "chosen", "groups": ["ops"], "people": ["a@x.test"]})
+    assert r.status_code == 200, r.text
+    assert world.db.order[:3] == ["rules:update", "groups", "people"], world.db.order
+
+
+async def test_the_group_gates_take_the_share_lock(ruled_db) -> None:
+    add = groups_routes.GroupMemberAdd(email="priya@fracktal.in", grant_center_access=False)
+    await groups_routes.add_group_member("ops", add, admin=FULL_ADMIN)
+    await groups_routes.remove_group_member("ops", "priya@fracktal.in", admin=FULL_ADMIN)
+    with pytest.raises(HTTPException):
+        await groups_routes.delete_group("ops", admin=FULL_ADMIN)
+    assert len(ruled_db.rule_reads) == 3
+    assert all(s.endswith("FOR SHARE") for s in ruled_db.rule_reads), ruled_db.rule_reads

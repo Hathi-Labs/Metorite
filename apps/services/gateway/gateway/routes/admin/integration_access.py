@@ -48,6 +48,7 @@ from acb_auth.integration_access import (
     rule_value,
     service_name_ok,
     split_subjects,
+    without_member,
 )
 from fastapi import Depends, HTTPException, Request
 from gateway.routes.admin._common import (
@@ -85,6 +86,15 @@ REMOVE_RULE_SQL = """
        SET settings = jsonb_set(
                settings, '{integration_access}',
                COALESCE(settings -> 'integration_access', '{}'::jsonb) - CAST(:svc AS text))
+     WHERE id = CAST(:org AS uuid)
+"""
+
+#: The write of the scrub of a member purge (:func:`scrub_member_rules`). It
+#: sets the whole value that the scrub read under its row lock. The key exists,
+#: because the scrub writes only when it took an address off a rule.
+SCRUB_RULES_SQL = """
+    UPDATE organization
+       SET settings = jsonb_set(settings, '{integration_access}', CAST(:rules AS jsonb))
      WHERE id = CAST(:org AS uuid)
 """
 
@@ -301,8 +311,14 @@ async def set_integration_access(
 
     async with _tenant_session() as db:
         org_id = await get_org_id(db, admin)
+        # ACC-1 fix round 1: the row lock first, before the checks that the
+        # groups and the people exist. A member write to a group, a group
+        # delete and a member purge each lock the same row first
+        # (`_common.ORG_RULE_LOCKS`). So none of them can run between the
+        # check and the write below.
+        stored, _readable = parse_rules(
+            await org_integration_rules(db, org_id, lock="update"))
         services = await closed_list(db, org_id)
-        stored, _readable = parse_rules(await org_integration_rules(db, org_id))
         clearing_stale = rule.mode == "everyone" and service in stored
         if service not in services and not clearing_stale:
             raise _unprocessable(f"Unknown service '{service}'.")
@@ -334,3 +350,36 @@ async def set_integration_access(
     _log.info("integration_access_set", service=service, mode=rule.mode, by=admin.email)
     return _item(service, services.get(service, ""), _decoded(raw).get(service),
                  after.get(service), listed=service in services, readable=True)
+
+
+async def scrub_member_rules(db: Any, org_id: str, email: str) -> int:
+    """Take a purged member's address off each rule of *org_id* (ACC-1 fix round 1).
+
+    The member purge (``members.purge_member_rows``) calls this in its own
+    transaction, as its FIRST statement. It reads the rules with the
+    ``update`` row lock (``_common.ORG_RULE_LOCKS``), so no PUT and no group
+    gate runs between the read and the write. Returns the number of rules
+    that changed.
+
+    Without it, the address stays on a rule after the ``app_user`` row goes.
+    A PUT of the stored list then gets 422, and a later invite of the same
+    address passes the rule, which §3.9.2 rule 5 forbids.
+
+    A rule only gets narrower here. A rule that becomes empty stays, and it
+    then means admins only, plus its teams. A value or a rule that the code
+    cannot read stays as it is, because it already means admins only.
+    """
+    raw = await org_integration_rules(db, org_id, lock="update")
+    scrubbed, changed = without_member(raw, email)
+    if not changed:
+        return 0
+    result = await db.execute(
+        text(SCRUB_RULES_SQL), {"rules": json.dumps(scrubbed), "org": org_id})
+    if getattr(result, "rowcount", 0) != 1:
+        # The purge must not commit with the address still on a rule.
+        raise HTTPException(
+            status_code=500,
+            detail="Could not take the member off who can use each integration.",
+        )
+    _log.info("integration_access_member_scrubbed", rules=changed)
+    return changed
