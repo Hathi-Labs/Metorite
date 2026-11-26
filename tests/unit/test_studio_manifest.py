@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 from acb_common.studio_manifest import (
-    NAV_ICONS,
     BLOCKS,
     FIELD_TYPES,
     LAYOUTS,
+    NAV_ICONS,
     PRESET_REGIONS,
     REGION_NAMES,
     SOURCE_NOT_A_READ,
