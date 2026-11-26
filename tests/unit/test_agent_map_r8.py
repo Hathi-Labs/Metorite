@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -202,7 +203,8 @@ def _label(p: Any, rid: str, *, label: str | None, key: str | None, conn: str | 
         c.execute(text(
             "UPDATE pm_agent_runs SET agent_label = :l, session_key = :k, "
             "connection_id = CAST(:c AS uuid), "
-            "waiting_until = CASE WHEN :w THEN now() + interval '30 minutes' END "
+            "waiting_until = CASE WHEN :w THEN now() + interval '30 minutes' END, "
+            "waiting_on = CASE WHEN :w THEN 'ci' END "
             "WHERE id = CAST(:r AS uuid)"),
             {"l": label, "k": key, "c": conn, "w": waiting, "r": rid})
 
@@ -443,6 +445,18 @@ class TestTheMap:
         assert all(tuple(r) == m.MAP_RUN_KEYS for r in body["runs"])
         assert all(tuple(x) == m.MAP_LINE_KEYS for x in body["lines"])
         assert all(tuple(c) == m.MAP_CHILD_KEYS for c in body["children"])
+
+    async def test_a_waiting_run_says_what_it_waits_on(self, w):
+        """AMR-1. Only a run that reads ``waiting`` carries the wait. Every
+        other run, an awaiting one too, carries two nulls."""
+        _, body, _ = await _get(w, w.admin_a)
+        runs = {r["run_id"]: r for r in body["runs"]}
+        wait = runs[w.r_wait]
+        assert wait["state"] == "waiting" and wait["waiting_on"] == "ci"
+        assert datetime.fromisoformat(wait["waiting_until"]) > datetime.now(UTC)
+        for rid, run in runs.items():
+            if rid != w.r_wait:
+                assert run["waiting_on"] is None and run["waiting_until"] is None, rid
 
     async def test_one_name_of_one_connection_is_one_node(self, w):
         _, body, _ = await _get(w, w.admin_a)
@@ -862,6 +876,44 @@ class TestTheCap:
         _, body, _ = await _get(w, w.admin_b)
         assert body["truncated"] is False and body["count"] == 1
 
+    async def test_the_cap_drops_a_quiet_run_before_a_run_that_waits(self, w):
+        """With ``show_quiet``, 300 quiet runs and one older run that waits."""
+        p = w.p
+        proj = w.proj_b
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
+                "task_number, status_id, title, created_by) "
+                "SELECT gen_random_uuid(), CAST(:o AS uuid), CAST(:p AS uuid), "
+                "CAST(:r AS uuid), 910000 + g, CAST(:s AS uuid), 'hush ' || g, :e "
+                "FROM generate_series(1, 301) g"),
+                {"o": p.org_b, "p": proj["id"], "r": proj["root"],
+                 "s": proj["lanes"]["todo"], "e": ADMIN_B})
+            c.execute(text(
+                "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, "
+                "client_via, status, started_by, last_activity_at) "
+                "SELECT CAST(:o AS uuid), t.id, :e, :v, "
+                "CASE WHEN t.title = 'hush 301' THEN 'awaiting' ELSE 'in_progress' END, "
+                ":e, now() - CASE WHEN t.title = 'hush 301' THEN interval '30 hours' "
+                "ELSE interval '3 hours' END "
+                "FROM pm_tasks t WHERE t.organization_id = CAST(:o AS uuid) "
+                "AND t.title LIKE 'hush %'"),
+                {"o": p.org_b, "e": ADMIN_B, "v": VIA_B})
+        try:
+            status, body, _ = await _get(w, w.admin_b, MAP + "&show_quiet=true")
+            assert status == 200
+            assert len(body["runs"]) == 300 and body["truncated"] is True
+            assert "hush 301" in {r["title"] for r in body["runs"]}
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text(
+                    "DELETE FROM pm_agent_runs WHERE organization_id = CAST(:o AS uuid) "
+                    "AND task_id IN (SELECT id FROM pm_tasks WHERE title LIKE 'hush %')"),
+                    {"o": p.org_b})
+                c.execute(text(
+                    "DELETE FROM pm_tasks WHERE organization_id = CAST(:o AS uuid) "
+                    "AND title LIKE 'hush %'"), {"o": p.org_b})
+
 
 def _children(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {c["child_id"]: c for c in body["children"]}
@@ -1108,6 +1160,12 @@ def test_the_edge_wraps_each_name_and_keeps_only_the_pinned_keys() -> None:
     raw = json.dumps(out)
     for leaked in ("SECRETKEY", "box-1", "model-x", "10.0.0.1"):
         assert leaked not in raw
+    # AMR-1: the wait leaves as one of the five fixed words and an ISO time.
+    assert out["runs"][0]["waiting_on"] is None
+    kept = tools.map_run({"waiting_on": "ci", "waiting_until": "2026-11-21T10:00:00+00:00"})
+    assert (kept["waiting_on"], kept["waiting_until"]) == ("ci", "2026-11-21T10:00:00+00:00")
+    bad = tools.map_run({"waiting_on": hostile, "waiting_until": hostile})
+    assert (bad["waiting_on"], bad["waiting_until"]) == (None, None)
     bare = _bare_strings(out)
     assert all(_plain_ok(s) for s in bare), bare
     # A value out of its shape never leaves plain.

@@ -495,6 +495,36 @@ callback address that waits too long expires. The per-box token of task 1819
 (MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
 the box-token steps.
 
+### 5.3 The sign-in alarm
+
+A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
+`metorite` shows "Needs authentication" or is missing, it writes one NOTE
+line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
+marks the recovery. A failed check (timeout, odd text) changes nothing.
+
+⚠️ The check must never refresh the shared OAuth token. A refresh by the
+alarm can make a lane present a spent refresh token, and then the server
+signs out every lane. So the alarm reads `expiresAt` of the `metorite`
+entry in `~/.claude/.credentials.json` first. It runs the check only when
+the access token has 10 minutes or more left, or when no OAuth entry
+exists (a box token). An expired token does not page, because it can mean
+that nobody called. So with OAuth, the alarm cannot see a dead refresh
+token that no lane retries. The box token of task 1819 has no refresh
+token, and the alarm then checks on each run.
+
+- Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
+  enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
+- Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
+  `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
+  the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
+  mention. Without it, nothing is sent. `METORITE_ALARM_GH_REPO` sets the
+  repository (default `Hathi-Labs/Metorite`). A new issue also notifies the
+  watchers of the repository. `METORITE_ALARM_HOST` names the box.
+- Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
+  `~/.local/state/metorite/signin_alarm.json`.
+- `aroh-dev-1` and the PC's WSL install it the same way. When the checkout
+  is not `~/Metorite`, set `METORITE_REPO=<path>` in `alarm.env`.
+
 ---
 
 ## 6. CI and CD on the box
