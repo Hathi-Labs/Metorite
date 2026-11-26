@@ -1084,8 +1084,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 ### 3.9 Who can use an integration (task 3985, PLAN)
 
 > **Status:** 📝 PLAN, owner ask of 2026-11-26. Verified against code at `origin/main` `e8b692f04`.
-> No slice is built. An audit on 2026-11-26 returned NO-GO on the first text, and this text holds its fixes.
-> The owner questions are in §10.
+> No slice is built, and this text holds the fixes of the 2026-11-26 audit. The owner questions are in §10.
 >
 > This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
