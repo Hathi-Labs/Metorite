@@ -255,7 +255,7 @@ export interface ProjectRow {
   close_after_months?: number | null;
   timezone?: string | null;
   /**
-   * WS-39 SP-3a (migration 500) — how the team of this node works. One key of
+   * WS-39 SP-3a (migration 505) — how the team of this node works. One key of
    * `lib/workStyle.ts`. Absent from an older gateway, and read as `flow`.
    */
   work_style?: string | null;

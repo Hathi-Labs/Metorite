@@ -1,5 +1,5 @@
 -- ============================================================================
--- 500_pm_projects_work_style.sql — the work style of a project node (WS-39
+-- 505_pm_projects_work_style.sql — the work style of a project node (WS-39
 -- SP-3a, Metorite task 962, D195).
 --
 -- What: one column on `pm_projects`.
