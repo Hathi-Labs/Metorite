@@ -4647,6 +4647,17 @@ FIND_UNAVAILABLE = (
 #: the repo. This module never imports the orchestrator.
 SchemaMeasure = Callable[[Sequence[Any]], int]
 
+#: SBX-1a (``agent_sandbox.md`` §6.1): the hook of the no-match path of
+#: ``find_tools``. It takes the query and the live tool list, and gives one
+#: sentence to add to :data:`FIND_NONE`, or None. The caller passes
+#: ``orchestrator.tool_gap_path.make_gap_hook()``, so this module imports no
+#: gateway code.
+GapHook = Callable[[str, Sequence[Any]], Awaitable[str | None]]
+
+#: The longest wait for the gap hook, in seconds. Past it the answer is
+#: :data:`FIND_NONE` alone.
+FIND_GAP_TIMEOUT_S = 8.0
+
 
 @dataclass(frozen=True)
 class FindCandidates:
@@ -4860,11 +4871,18 @@ class FindTools(FunctionMiddleware):
 
     A found tool never joins :meth:`PackRun.holds`, and the search writes no
     sticky state (TS-4 owns it).
+
+    SBX-1a (``agent_sandbox.md`` §6.1): *on_gap* is the hook of the no-match
+    path. It runs only where step 3 ranked no tool, never after a refusal of
+    step 1, 2, 4 or 5. With no hook, the answer is :data:`FIND_NONE` byte for
+    byte. The hook has :data:`FIND_GAP_TIMEOUT_S` seconds. A text answer
+    follows :data:`FIND_NONE` after a blank line. None, a timeout or a fault
+    gives :data:`FIND_NONE`, and a fault logs its class only.
     """
 
     def __init__(
         self, *, candidates: FindCandidates, run_key: str, record: PackRun,
-        build: PackBuilder, measure: SchemaMeasure,
+        build: PackBuilder, measure: SchemaMeasure, on_gap: GapHook | None = None,
     ) -> None:
         from acb_skills import tool_search
 
@@ -4873,6 +4891,7 @@ class FindTools(FunctionMiddleware):
         self.record = record
         self._build = build
         self._measure = measure
+        self._on_gap = on_gap
         self.tool = find_tool(candidates.packs)
         self._lock = run_lock(record)
         self._index = tool_search.build_index(dict(candidates.descriptions))
@@ -5006,11 +5025,11 @@ class FindTools(FunctionMiddleware):
         ctx, run, live = gate
         self.searches += 1
         room = FIND_TOOLS_MAX - len(self.found)
-        ranked = self.rank(_query_argument(getattr(context, "arguments", None)), live, run,
-                           min(FIND_LIMIT, room))
+        query = _query_argument(getattr(context, "arguments", None))
+        ranked = self.rank(query, live, run, min(FIND_LIMIT, room))
         if not ranked:
             _log.info("tool_packs.find_none", searches=self.searches)
-            return FIND_NONE
+            return await self._no_match(query, live)
         got = await self._gather(ranked, ctx, run, live)
         if not got.made:
             return "\n\n".join(got.refusals) or _refused(
@@ -5025,6 +5044,24 @@ class FindTools(FunctionMiddleware):
                          error=type(exc).__name__)
             return FIND_UNAVAILABLE
         return self._answer(picked, got, why, len(live))
+
+    async def _no_match(self, query: str, live: Sequence[Any]) -> str:
+        """SBX-1a: the answer when the rank gave no tool. :data:`FIND_NONE`,
+        then the sentence of the gap hook when it gives one. A cancel of the
+        run passes through. Each other fault gives :data:`FIND_NONE`."""
+        hook = self._on_gap
+        if hook is None:
+            return FIND_NONE
+        try:
+            told = await asyncio.wait_for(hook(query, live), FIND_GAP_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # TimeoutError too: the search answers as before
+            _log.warning("tool_packs.find_gap_failed", error=type(exc).__name__)
+            return FIND_NONE
+        if not isinstance(told, str) or not told.strip():
+            return FIND_NONE
+        return f"{FIND_NONE}\n\n{told}"
 
     def _answer(self, picked: Sequence[str], got: _Gathered, why: str, live: int) -> str:
         """Step 7 of the class text, after the add: the record of this run

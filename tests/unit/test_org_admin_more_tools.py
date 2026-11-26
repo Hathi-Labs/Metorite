@@ -931,7 +931,7 @@ _PURGE_LOSSES: dict[str, str] = {
     "app_grants": "grants", "app_tool_grants": "grants", "mailbox_grants": "grants",
     "private_app_installs": "grants",
     "room_participations": "chats", "chat_member_rows": "chats", "chat_card_rows": "chats",
-    "chat_join_rows": "chats", "failure_event_rows": "chats",
+    "chat_join_rows": "chats", "failure_event_rows": "chats", "tool_gaps": "chats",
     "private_chat_sessions": "chats", "chat_topics": "chats", "chat_pending_asks": "chats",
     "crm_member_rules": "crm", "crm_private_changes": "crm", "crm_private_views": "crm",
     "studio_skill_runs": "studio", "studio_skills": "studio", "studio_private_views": "studio",

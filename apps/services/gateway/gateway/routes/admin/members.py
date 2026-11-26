@@ -814,6 +814,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # tables hold no address and stay.
     _PersonRows("failure_event_rows", "failure_events",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-1a (agent_sandbox.md §7.4): the tool gaps of the member in THIS
+    # organization. The need of a row is text about the member's work, so it
+    # goes with the member. The clause names the bound org beside RLS. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows of
+    # her private chats. So the count is each row of the member.
+    _PersonRows("tool_gaps", "tool_gaps",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
