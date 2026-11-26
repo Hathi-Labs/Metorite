@@ -284,6 +284,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
     Route("GET", "/projects/plan/order", "my_work", "A"),
+    # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
+    # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
+    Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -661,6 +664,9 @@ PLANNED: dict[str, str] = {
     "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
     # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
     "board_stats": "Metorite task 2223, chat parity for the board count",
+    # SW-45 (task 1878): the route is built, and the MCP `my_work` reads it.
+    # The chat `my_work` does not show the group yet (agent_coordination.md SW-45).
+    "own_app_free": "WS-MCP SW-45 follow-up, chat parity for the own_app_free group of my_work",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
