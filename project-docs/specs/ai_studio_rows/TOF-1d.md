@@ -38,7 +38,7 @@ The cost is one card that the member can close. The draft holds no argument and 
 
 The instructions hold one numbered step for each call, with the tool and a target. The rules block is fixed text.
 
-A target is an id only. `targetOf` reads the keys of `TARGET_KEYS` and keeps a value only when it is a UUID or a short token with a digit. A title, a query, a body and a result never reach the draft.
+A target is an id only. `targetOf` reads the keys of `TARGET_KEYS` and keeps a value only when it is a UUID, also with the `page:` prefix. A title, a query, a body and a result never reach the draft.
 
 **B5, the fold (task 3832).** Each call is its own row and its own step, in call order. Two reads of one tool are two rows. The skill holds each catalog id once (`body.actions`), because the gateway refuses a duplicate action. `MIN_CALLS = 3` counts calls and not distinct tools. A turn that has more than 35 calls gives no offer.
 

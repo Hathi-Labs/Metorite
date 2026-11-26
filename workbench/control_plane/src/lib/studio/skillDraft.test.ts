@@ -95,7 +95,7 @@ describe("a target is an id, never a value", () => {
     // A model may write a secret into an id key. Mutation: bring back the short-token rule -> red.
     // Built at run time, so that no key-shaped literal is in the file (the secret scan).
     const ghp = `ghp_${"a1".repeat(18)}`;
-    const akia = `AKIA${"Q".repeat(16)}`;
+    const akia = `AKIA${"Q7".repeat(8)}`;
     for (const secret of ["sk-abc123secrettokenXYZ", ghp, akia, "T-1042"]) {
       expect(targetOf("read_page", { page_id: secret })).toBe("");
       expect(targetOf("find_tasks", { id: secret })).toBe("");

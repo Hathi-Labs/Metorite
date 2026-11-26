@@ -15,9 +15,9 @@
  * ⚠️ **A target is an id, never a value.** A tool argument may hold text that
  * a model or another person wrote, and a stored skill goes into the prompt of
  * each later turn. So `targetOf` reads only the keys of `TARGET_KEYS`, and it
- * keeps a value only when it is the shape of an id: a UUID, or a short token
- * that holds a digit. A title, a query, a body and a result never pass. The
- * card shows the same text, so the member sees each target before Save.
+ * keeps a value only when it is a UUID (also with the `page:` prefix). A
+ * title, a query, a body and a result never pass. The card shows the same
+ * text, so the member sees each target before Save.
  *
  * Fence: `skillDraft.test.ts`.
  */
