@@ -126,6 +126,9 @@ class Observation:
     #: TS-5a. True when the chat had read outside mail before this turn, so the
     #: packs are held (the mark of ``egress``).
     held: bool = False
+    #: Task 2874. EVERY tool call of the orchestrator's own run in this turn, in order:
+    #: name, arguments, result (:func:`checks_2874.ordered_calls_of`).
+    ordered: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
 
 
 def trace_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
@@ -768,9 +771,16 @@ _UNKNOWN_FUNCTION = re.compile(r"""^['"]?Function "[^"]+" not found\.?['"]?$""")
 def refused(result: str) -> bool:
     """True when *result* is the answer to a call that the run refused: it starts
     as a refusal does, it is the unknown-function answer, or it says that nothing
-    was created or changed."""
+    was created or changed.
+
+    Task 3599: the stream no longer carries MAF's unknown-function text. The
+    step of such a call shows ``unknown_tool.MEMBER_LINE``, and that call did
+    not run either."""
+    from acb_skills.unknown_tool import MEMBER_LINE
+
     text = str(result).strip()
-    return (text.startswith(REFUSED_PREFIXES) or _UNKNOWN_FUNCTION.match(text) is not None
+    return (text.startswith(REFUSED_PREFIXES) or text == MEMBER_LINE
+            or _UNKNOWN_FUNCTION.match(text) is not None
             or _NOTHING_HAPPENED.search(text) is not None)
 
 
@@ -1397,3 +1407,9 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
 
 def passed(result: dict[str, bool | None]) -> bool:
     return all(v is not False for v in result.values())
+
+
+# Task 2874: the checks of the seven defects of the chat of 2026-11-11.
+from evals.one_assistant_measure import checks_2874 as _checks_2874  # noqa: E402
+
+KINDS.update(_checks_2874.KINDS)

@@ -115,6 +115,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
     "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
     "SHARED_TOKEN",
+    # LD-8b: the member a local dev_up.sh --data prod stack signs in as. It is read
+    # only when auth is off (gateway.ts), and no chat setup may write it.
+    "DEV_SIGNED_IN_EMAIL",
     # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
     # the directory of the Microsoft app, a per-deployment decision
     # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
@@ -152,6 +155,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # starts before the turn-kind answer. A restart can bill a prompt twice,
     # so only the operator writes it (ai_tier_routing.md §13.1).
     "AI_TURN_KIND_PARALLEL",
+    # Chat speed (task 3592): the orgs whose delegated runs ask no turn-kind
+    # question. It moves the tier that such a run pays for, so only the
+    # operator writes it (ai_tier_routing.md §4.3).
+    "AI_TURN_KIND_NOWAIT_ORGS",
     # WS-48 N1 (D93): the agents that hold `narrow_and_read`. It moves what
     # an organization pays, so only the operator writes it
     # (data_narrowing_pipeline.md §11).
@@ -165,10 +172,28 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # moves what the chat can do and spends model tokens, so only the owner
     # writes it (work_plan.md §6 D4). The `TOOL_` prefix covers it too.
     "TOOL_SEARCH_ORGS",
+    # Task 3559: the folder where the touch-target e2e spec writes its report
+    # (workbench/control_plane/e2e/touch-targets.spec.ts). A test-only read of
+    # the test runner. No integration may write it.
+    "TOUCH_OUT",
     # WS-FIND FIND-2 (find_engine.md section 8): the orgs whose search hits say
     # how they matched. It changes the order and the text of each answer, so
     # only the owner writes it (work_plan.md section 6 D4).
     "FIND_ORGS",
+    # WS-FIND HRD-21 (find_engine.md section 8): the orgs whose search reads
+    # the member's own past chats. It puts the text of old chats into a run,
+    # so only the owner writes it. The `CHAT_` prefix covers it too, and the
+    # exact name keeps the fence if that prefix ever narrows.
+    "CHAT_SEARCH_ORGS",
+    # WS-FIND FIND-7 (find_engine.md section 5.5): the "not found" check of a
+    # chat answer. `on` gives the chat one more pass and spends model tokens,
+    # so only the owner writes it (D-FIND-8).
+    "FIND_CLAIM_CHECK",
+    # chat_failure_modes.md section 6 HRD-17e-1: the orgs whose chat save
+    # keeps the longer stored reply, and the orgs that only log it. It changes
+    # what a save writes, so only the operator writes it. The `CHAT_` prefix
+    # covers both too.
+    "CHAT_NO_SHRINK_ORGS", "CHAT_NO_SHRINK_SHADOW_ORGS",
     # WS-67 OA-8f: the floor trim of the orchestrator. It changes the tool list
     # of each turn, so only the owner writes it.
     "ORCHESTRATOR_FLOOR_TRIM",
@@ -176,9 +201,16 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # PAR-8b (chat_parity.md section 6.4): the orgs whose main assistant holds the
+    # five Home tools. They join each request, so only the owner writes it.
+    "HOME_TOOLS_ORGS",
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9.4 WT-6a: the orgs where a held chat keeps
+    # the two archive tools of class C. It moves a guard, so only the owner
+    # writes it (work_plan.md §6 D4).
+    "HELD_CLASS_C_ORGS",
     # one_assistant_context.md §9 WT-1: the orgs where a member may continue
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
@@ -189,6 +221,28 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # crm_platform.md CRM-Q30c (task 3868): the orgs whose CRM read tools say
+    # how old the Zoho mirror of a module is. It changes what the chat reads
+    # for the org, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MIRROR_AGE_ORGS",
+    # semantic_model.md SEM-7: the orgs where the CRM plan checks the kinds
+    # measure, join and query, and org_facts serves them. It changes what the
+    # chat reads for the org, so only the operator writes it.
+    "SEMANTIC_MODEL_ORGS",
+    # semantic_model.md SEM-12: the orgs that may write and read the semantic
+    # model of a connection. It changes what the chat may read for the org,
+    # so only the operator writes it.
+    "CONNECTION_MODEL_ORGS",
+    # crm_platform.md §18.7, task 3869: the orgs whose Zoho mirror reads each
+    # generic module in full once in 7 days. It spends the org's Zoho API
+    # credits, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MODULE_REREAD_ORGS",
+    # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
+    # outside API through a connection. It opens an egress path for the org,
+    # so only the operator writes it.
+    "API_CONNECTIONS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
@@ -206,6 +260,14 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # CSY-1: the orgs whose chat gets the "Connected systems" block. It adds
+    # the admin's text about each server to the context, so only the operator
+    # writes it.
+    "CONNECTED_SYSTEMS_ORGS",
+    # CSY-4: the orgs where a turn that names a connected server evicts a
+    # sticky mail pack. It moves the precedence of a mail rule, so only the
+    # owner writes it.
+    "MCP_MAIL_PRECEDENCE_ORGS",
     # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
     # the member's other chats into a run, so only the operator writes it. The
     # `ASSISTANT_PROFILE_` prefix below does not cover it.
@@ -249,6 +311,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
     # changes which task an agent takes first, so only the operator writes it.
     "MY_WORK_PLAN_ORDER_ORGS",
+    # SW-45: AGENT_CLAIM_SCOPE_MODES warns on or refuses an agent claim outside
+    # the member's own apps. A tenant that set it would change the claims of
+    # every org, so only the operator writes it.
+    "AGENT_CLAIM_SCOPE_MODES",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -296,6 +362,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.
     "MCP_IMAGE_UPLOAD_ORGS",
+    # WS-MCP SW-27c1: SEQUENCE_MARKS_ORGS lets an outside agent mark the
+    # numbers of its own run (`mark_number`). Only the owner opens it.
+    "SEQUENCE_MARKS_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
@@ -309,9 +378,19 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-MCP SW-44: APP_OWNER_ROOT_ORGS names the app root of each org. A
+    # tenant must not point the list of another org at a project, so only the
+    # owner writes it.
+    "APP_OWNER_ROOT_ORGS",
     # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
     # org. The view reads the agent runs of the org, so only the owner writes it.
     "AGENTS_VIEW_ORGS",
+    # WS-MCP SW-102: AGENT_MAP_ORGS opens the map read of the agent runs for
+    # an org. The map reads the runs of the org, so only the owner writes it.
+    "AGENT_MAP_ORGS",
+    # WS-MCP AMR-1: AGENT_LENSES_ORGS shows the new Agents view to the members
+    # of an org. The owner previews it first, so only the owner writes it.
+    "AGENT_LENSES_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.
@@ -350,6 +429,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # changes what each member of the org sees, so only the operator writes
     # it (proactive_loop.md §7.2).
     "MY_DAY_LEARN_ORGS",
+    # LOOP-9: the shadow gate of a new nudge kind. It decides which kinds reach
+    # a member, so only the operator writes it (proactive_loop.md).
+    "PROACTIVE_KIND_MODES", "PROACTIVE_KIND_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",
@@ -360,12 +442,25 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # capture run sets them. They choose the look and the size of a capture.
     "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
+    # WS-MDC CC-11: the visual capture of e2e/visual/cc11.visual.ts. Only a
+    # local capture run sets it. It adds the long card lots to the feed.
+    "CC11_LOTS",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # MCP-G17g: the sign-in alarm of a dev machine (scripts/home_server). It
+    # reads its channel, its files and the login to mention. A tenant must
+    # never save these.
+    "METORITE_ALARM_CHANNEL", "METORITE_ALARM_CREDS", "METORITE_ALARM_GH_REPO",
+    "METORITE_ALARM_GH_USER", "METORITE_ALARM_HOST", "METORITE_ALARM_LOG",
+    "METORITE_ALARM_STATE",
+    # SBX-13: the sandbox door client reads the run capability from this name
+    # (sandbox/metorite_door.py). The broker sets it in the tool container. A
+    # tenant must never save it.
+    "METORITE_API_TOKEN",
     # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
     # reads its mode, its files and the merge bot log. A tenant must never save these.
     "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
@@ -508,6 +603,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",
+    # AO-2: PROVIDER_ALERT_ORGS names the org whose admins hear our AI vendor
+    # alerts. A tenant that set it could send them to its own admins.
+    "PROVIDER_ALERT_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
@@ -520,7 +618,7 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # an org, so a tenant that set it could open it for every org.
     "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
-    "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
+    "MUTATION_", "SANDBOX_", "COMPUTE_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",
     "AWS_", "AZURE_", "VERTEX_",
     # Speech, meetings and media providers of the deployment.

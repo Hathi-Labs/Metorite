@@ -312,3 +312,57 @@ def test_patch_refuses_the_record_key() -> None:
     ops = [{"op": "add", "path": "/record", "value": {"tabs": []}}]
     msg = _refused(_patch(doc, ops))
     assert msg == "`record` is not a v1 manifest key. Remove it."
+
+
+# ── Page presets (STU-LY-8, `studio_layouts.md` section 7) ─────────────────────────────────
+
+
+def test_the_frame_part_names_the_presets_from_the_model() -> None:
+    body = run(st.studio_describe("frame"))["frame"]["layouts"]
+    assert list(body["presets"]) == list(sm.LAYOUTS)
+    for name, regions in sm.PRESET_REGIONS.items():
+        got = body["presets"][name]
+        assert set(got) == set(regions)
+        for region, (block, cap, required) in regions.items():
+            assert got[region] == {"block": block, "most_views": cap, "required": required}
+    assert "one sentence" in body["note"]
+
+
+def test_the_layout_example_validates() -> None:
+    ex = run(st.studio_describe("frame"))["frame"]["layouts"]["example"]
+    d = {**_base(), "views": [{"id": "all_visits", "title": "All", "block": "table"}], "pages": [ex]}
+    assert sm.validate_manifest(d) == [], sm.validate_manifest(d)
+
+
+def test_the_words_only_point_to_a_built_preset() -> None:
+    names = [n for n, _ in st.LAYOUT_WORDS]
+    assert set(names) <= set(sm.LAYOUTS)
+    assert set(sm.LAYOUTS) <= set(names)
+
+
+@pytest.mark.parametrize(
+    "prompt, want",
+    [
+        ("A pipeline of candidates by stages for hiring", "board"),
+        ("Kanban for my support status columns", "board"),
+        ("An overview with KPIs of how we are doing", "dashboard"),
+        ("Track inventory in a spreadsheet and edit in bulk", "table_workspace"),
+        ("Manage purchase requests", "table_workspace"),
+        ("An inbox to triage tickets", "work_queue"),
+        ("Requests to handle for the support desk", "work_queue"),
+        ("Managers approve leave, needs approval", "approval_queue"),
+        ("Sign off expense claims", "approval_queue"),
+        ("A directory of contacts with details beside", "list_detail"),
+        ("Photos and a catalog of products", None),
+        ("Visits on a map of sites", None),
+        ("An inspection checklist, SOP steps", None),
+        ("Plan installations over time as a Gantt", None),
+    ],
+)
+def test_the_hint_picks_the_preset_for_fourteen_prompts(prompt: str, want) -> None:
+    assert st.layout_hint(prompt) == want
+
+
+def test_the_frame_part_still_fits_the_describe_cap_with_the_presets() -> None:
+    size = len(json.dumps(run(st.studio_describe("frame")), ensure_ascii=False, separators=(",", ":")))
+    assert size <= st.MAX_MANIFEST_CHARS // 2, size

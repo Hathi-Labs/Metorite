@@ -44,6 +44,7 @@ from gateway.routes.projects.cascade import (
     archive_subtree,
     complete_subtree,
     emit_all,
+    in_archived_project,
     load_subtree,
     movable_subtree,
     subtree_privacy_refusals,
@@ -53,8 +54,15 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    holds_task,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
+    ARCHIVED_PROJECT_REFUSAL,
     CLIENT_TASK_SOURCES,
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -78,7 +86,9 @@ from gateway.routes.projects.core import (
     assert_move_keeps_privacy,
     assert_no_task_cycle,
     assert_not_archived,
+    assert_project_open_for_writes,
     assert_task_is_epic,
+    assert_task_project_open,
     clean_payload,
     count_where,
     diff_changes,
@@ -1290,7 +1300,7 @@ async def create_task_in(
     # summarises. Tasks live on projects. A task filed on either would
     # sit outside every board (`core.assert_holds_tasks`).
     assert_holds_tasks(target, then="Create the task in")
-    assert_not_archived(target, then="Create the task in")
+    assert_project_open_for_writes(target)
     root = await root_project_id(db, str(project_id))
     values["root_project_id"] = root
     # The values pass the gate a PATCH puts them through
@@ -1449,6 +1459,8 @@ async def patch_task(
         await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
+        # ARC-2b: a field edit into an archived project is refused (409).
+        await assert_task_project_open(db, before)
 
         # WS-27bi / D-PM-20. Checked HERE — after the visibility load, before any
         # write — so a caller who cannot see the task still gets 404 and never
@@ -1655,6 +1667,9 @@ async def move_task_in(
     carries", and only this module and ``move.py`` pass it.
     """
     task_id = str(task.id)
+    # ARC-2b: a move OUT of an archived project is refused too (the dest check
+    # below covers a move INTO one). Every caller of this seam lands here.
+    await assert_task_project_open(db, task)
     values: dict[str, Any] = {}
     #: Values that had no field in the destination (D-PM-29). Written to
     #: the timeline after the move, with their values, by `record_drops`.
@@ -1687,7 +1702,7 @@ async def move_task_in(
         # as the privacy guard below: a caller who cannot see the folder or
         # the space still gets 404.
         assert_holds_tasks(dest, then="Move the task into")
-        assert_not_archived(dest, then="Move the task into")
+        assert_project_open_for_writes(dest)
         # Before anything is computed: a task may only move INTO a personal
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
@@ -1998,7 +2013,9 @@ async def delete_task_in(
     not in the set is. A kept one whose parent goes moves up to its nearest
     surviving ancestor, or to the task's own parent when none below the task
     survives (:func:`kept_parents`). ``subtasks_kept_hidden`` counts the
-    hidden ones, with no title. Each row goes through a plain ``DELETE``, so
+    hidden ones, with no title. A descendant in an archived project is never
+    deleted either (ARC-2b): *delete_all* keeps it, and a list that names it
+    is 409. Each row goes through a plain ``DELETE``, so
     the trigger of migration 168 writes one tombstone for each. With neither
     argument the rule is D-PM-38, the rule before D-OP-10.
     """
@@ -2022,6 +2039,20 @@ async def delete_task_in(
             ids = clean_task_ids(delete_ids)
             if ids - seen:
                 raise HTTPException(status_code=422, detail=SUBTASK_NOT_BELOW)
+        # ARC-2b (`one_projects_app.md` §9b.6 rule 2). A subtask in an
+        # archived project is never deleted. `delete_all` keeps it, as it keeps
+        # a hidden one, and it moves up with the other kept rows below. A
+        # list that names it is refused before any write. `seen` stays as it
+        # is, so `subtasks_kept_hidden` counts only the hidden ones.
+        filed_projects: dict[str, bool] = {}
+        filed: set[str] = set()
+        for r in rows:
+            if str(r.id) in ids and await in_archived_project(db, r, filed_projects):
+                filed.add(str(r.id))
+        if filed:
+            if not delete_all:
+                raise HTTPException(status_code=409, detail=ARCHIVED_PROJECT_REFUSAL)
+            ids = ids - filed
         # The grandparent is read from the database, for the reason that
         # `lift_subtasks_to_grandparent` gives.
         row = (await db.execute(
@@ -2110,7 +2141,10 @@ async def task_subtree(
     Every descendant the caller can see, at any depth, top down, archived
     ones included. ``hidden`` counts the ones the caller cannot see, with no
     title, because a delete keeps them (``delete_task_in``). One read through
-    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes.
+    ``cascade.load_subtree``, so it shows the set that ``delete_all`` takes,
+    with one exception (ARC-2b): ``delete_all`` keeps a subtask in an
+    archived project, and a list that names one is 409. This read still
+    shows such a subtask, with no mark (ARC-2c follow-up).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -2177,6 +2211,7 @@ async def delete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, doomed)
         # WS-64 OP-8 (D-OP-12). Checked on the task the member names. The
         # subtasks that go with it follow that one check.
         await assert_may_delete_task(db, user, doomed)
@@ -2278,7 +2313,7 @@ async def agent_delete_task(
         if not await delete_enabled(db, getattr(user, "email", None) or ""):
             raise HTTPException(status_code=403, detail=AGENT_DELETE_OFF)
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         # The lock holds the row until the delete commits, so a member's edit
         # cannot land between the two checks and the delete.
         doomed = await lock_task(db, task_id)
@@ -2420,6 +2455,10 @@ async def archive_task(
     The work is :func:`archive_task_in`, the one core that the archive
     approval of WS-55 EA-6g calls too.
 
+    The reply carries ``was_archived`` (WT-6a). True means the task was on
+    the shelf before this call, so this call wrote nothing, and the reply's
+    ``updated_at`` is the version of the earlier archive.
+
     H-409 item 1: the archive ends the task's open agent run in the same
     transaction. A run that an agent write holds at that moment refuses the
     lock, and ``transient_as_409`` answers 409 with nothing written.
@@ -2427,10 +2466,15 @@ async def archive_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         outcome = await archive_task_in(
             db, vis, task, user, include_subtasks=include_subtasks, end_runs=True,
         )
         result = outcome.row
+        # WT-6a: true when the task was archived before this call, which then
+        # wrote nothing. Its `updated_at` is the version of THAT archive, so
+        # the chat tool offers no Undo for it (`guarded.archive_task`).
+        result["was_archived"] = outcome.was_archived
         cascade = outcome.cascade
         if cascade is not None:
             result["subtasks_archived"] = len(cascade.ids)
@@ -2463,6 +2507,7 @@ async def _reopen_after_unarchive(db: Any, row: Any) -> list[str]:
 @transient_as_409
 async def unarchive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
     """Bring an archived task back onto its board.
 
@@ -2477,6 +2522,11 @@ async def unarchive_task(
     parent took it there. The client restores the exact ids an archive
     cascade reported, and nothing else.
 
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is
+    :func:`_check_version`. The Undo of a chat receipt sends the version that
+    the archive answered, so a change since answers 412 and restores nothing.
+    An absent header passes (D-PM-20), so each app call is unchanged.
+
     H-409 fix round 1 (task 748). The archive ended the task's open agent
     run, so the unarchive puts that run back inside the undo window, in any
     lane (the marker decides, fix round 2; ``agent_runs.reopen_run_of_reopened_task``).
@@ -2486,6 +2536,9 @@ async def unarchive_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        # After the visibility load, so a hidden task stays a 404 (R5).
+        _check_version(task, if_match)
+        await assert_task_project_open(db, task)
         if getattr(task, "archived_at", None) is None:
             return await _with_agent_state(db, row_to_dict(task, TaskModel))
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
@@ -2645,11 +2698,19 @@ async def set_assignees(
     (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
+
+    SW-45 (review P1). An agent that adds its own member gets the scope
+    check of ``claim_task`` (``claim_scope.check_claim_scope``). Outside the
+    member's own apps, mode ``warn`` writes one timeline line and the answer
+    has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
+    ``outside_apps`` and writes nothing. Only a task that already holds the
+    session member is not checked. Another assignee is not a pass.
     """
     agent_call = getattr(user, "agent", None) is not None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, task)
         # MCP-G2. After the visibility load, so a hidden task stays a 404.
         if not agent_call:
             _check_version(task, if_match)
@@ -2677,12 +2738,24 @@ async def set_assignees(
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
             await require_exact_version(db, task_id, if_match)
+        # SW-45 (review P1): an agent that adds its own member holds the task
+        # as a claim does. So the claim's ONE check runs here too, before any
+        # write, and `refuse` has no second door. Another assignee in
+        # `current` is not a pass: only the session member is.
+        me = actor(user).strip().lower()
+        scope_note = (
+            await check_claim_scope(db, user, task, current, vis)
+            if agent_call and me in wanted and not holds_task(user, current)
+            else None
+        )
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
         )
         added, removed, notified = (
             assigned.added, assigned.removed, assigned.notified)
+        if scope_note is not None and me in added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
     if added:
         await emit("pm.task.assigned", {
@@ -2703,7 +2776,7 @@ async def set_assignees(
         from gateway.routes.shell import cache as feed_cache
 
         await feed_cache.bump_org(task_org)
-    return {
+    result: dict[str, Any] = {
         "task_id": task_id,
         "assignees": sorted(wanted),
         # Named rather than swallowed: assigning somebody outside the project's
@@ -2712,6 +2785,10 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+    # SW-45: the warning of a self-add outside the own apps, in mode `warn`.
+    if scope_note is not None:
+        apply_warning(result, scope_note)
+    return result
 
 
 # ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
@@ -2766,13 +2843,24 @@ class ClaimIn(BaseModel):
     """``POST /projects/tasks/{id}/claim``. The body is optional (CIV-14a).
     An agent may send ``external_link``, an https link to its session.
     SW-7b: it may also send ``agent_label``, the display name of its session,
-    and a person's body that names one is 422. The tenant and the member
-    never come from this body (R5)."""
+    and a person's body that names one is 422. SW-104: ``host``, ``model``
+    and ``host_kind`` name the machine and the model of the session, by the
+    same rule and the same bounds as ``StartIn``. SW-107: ``dispatched_by``
+    names the run that dispatched the session, by the same rule. The tenant
+    and the member never come from this body (R5)."""
 
     model_config = ConfigDict(extra="forbid")
 
     external_link: str | None = Field(default=None, max_length=2_048)
     agent_label: str | None = Field(default=None, max_length=200)
+    host: str | None = Field(default=None, max_length=200,
+                             pattern=r"^[^\x00-\x1f\x7f-\x9f]+$")
+    model: str | None = Field(default=None, max_length=200,
+                              pattern=r"^[^\x00-\x1f\x7f-\x9f]+$")
+    host_kind: Literal["computer", "server", "cloud"] | None = None
+    dispatched_by: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 #: SW-63 (agent_coordination.md §5.10). The most subtask ids a claim lists.
@@ -2820,7 +2908,10 @@ async def claim_task(
     WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
     transaction, with ``If-Match`` and no body. The name says that the call
     can move the status, which ``assignees/self`` hid. A member may call it
-    too, and nothing here reads ``UserContext.agent``.
+    too. Only the SW-45 scope check (``claim_scope.check_claim_scope``) reads
+    ``UserContext.agent``: an agent claim of a task that does not hold the
+    session member, outside the member's own apps, warns or gets 403
+    ``outside_apps`` by ``AGENT_CLAIM_SCOPE_MODES``.
 
     * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
       move the task to the first ``in_progress`` lane of its OWN status set
@@ -2862,10 +2953,15 @@ async def claim_task(
     link = agent_runs.check_run_link(payload.external_link)
     # SW-7b: the display label of the agent's session. A person's is 422.
     label = agent_runs.agent_label_of(user, payload.agent_label)
+    # SW-104: its machine, its kind and its model. A person's is 422.
+    place = agent_runs.agent_place_of(user, payload.host, payload.model, payload.host_kind)
+    # SW-107: the run that dispatched it. A person's is 422.
+    dispatched_by = agent_runs.dispatched_by_of(user, payload.dispatched_by)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         # 1. The visibility load answers 404 for a task the caller cannot see.
         seen = await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, seen)
         # The tenant of the dispatch sink, read as `set_assignees` reads it.
         task_org = str(getattr(seen, "organization_id", "") or "")
 
@@ -2884,6 +2980,11 @@ async def claim_task(
                 {"tid": task_id},
             )).fetchall()
         }
+        # SW-45: an agent claim of a task that does not hold the member,
+        # outside the member's own apps, warns or is refused
+        # (AGENT_CLAIM_SCOPE_MODES).
+        # Before any write, so a refusal writes nothing.
+        scope_note = await check_claim_scope(db, user, seen, current, vis)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,
@@ -2900,7 +3001,17 @@ async def claim_task(
         # the claim keeps that order (O-M9). Its place after the key does not
         # matter: no run writer takes an assignee key. A refusal below rolls
         # the run back with the claim. None for a member.
-        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link, label)
+        run_id = await agent_runs.open_run_for_claim(db, task_id, user, link, label,
+                                                    place)
+        # SW-107: the run's dispatcher, read in this tenant session, so RLS
+        # hides a run of another organization. A bad value drops, and the
+        # claim goes on with a warning. The chain read takes no lock. The
+        # UPDATE writes only the claim's own run, and its foreign key check
+        # takes a KEY SHARE lock on the dispatcher row. That lock waits on a
+        # delete and on a run write that holds the dispatcher row FOR UPDATE
+        # (`_lock_run`). Such a write locks only its own run and its task, so
+        # it never waits on the claim, and no cycle forms.
+        dropped = await agent_runs.set_run_dispatcher(db, run_id, dispatched_by)
 
         # 3. The row lock, and the row as the lock read it (fix round 1).
         # Two claims serialise here, and the second one sees the new
@@ -2955,6 +3066,10 @@ async def claim_task(
         # the row it crossed a member's PATCH, which writes the row and then
         # the editor's watcher key (fix round 3).
         await ensure_watchers(db, task_id, added, by=actor(user))
+        # SW-45: the ONE timeline line of a claim outside the own apps. Only a
+        # claim that wrote the key writes it, so a second claim adds none.
+        if scope_note is not None and added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
         row = await load_visible_task(db, vis, task_id)
         result = row_to_dict(row, TaskModel)
@@ -2967,6 +3082,11 @@ async def claim_task(
         result["agent_run_id"] = run_id
         # SW-63: a task with open subtasks still claims. The result warns.
         await _warn_open_subtasks(db, vis, task_id, result)
+        # SW-45: the warning of a claim outside the own apps, after SW-63's.
+        if scope_note is not None:
+            apply_warning(result, scope_note)
+        # SW-107: a dropped dispatcher adds its fixed text after those warnings.
+        agent_runs.warn_dispatch(result, dropped)
 
     if added:
         await emit("pm.task.assigned", {
@@ -3004,10 +3124,13 @@ async def create_link(
         )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        source = await load_visible_task(db, vis, task_id)
         # Both ends must be visible: a link is readable from either side, so
         # accepting an unreadable target would disclose that it exists.
-        await load_visible_task(db, vis, str(payload.target_task_id))
+        target = await load_visible_task(db, vis, str(payload.target_task_id))
+        # ARC-2b: a link writes on both ends, so both projects must be open.
+        await assert_task_project_open(db, source)
+        await assert_task_project_open(db, target)
         # WS-27p — the same guard `assert_no_task_cycle` has always put on
         # `parent_task_id`, finally on the edge that can actually deadlock:
         # A blocks B blocks C blocks A is a loop no human can resolve by
@@ -3034,7 +3157,7 @@ async def delete_link(
 ) -> dict:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        await assert_task_project_open(db, await load_visible_task(db, vis, task_id))
         # SW-16a: a signed agent must see BOTH ends, as `create_link` requires.
         # A link that leaves its pin reads as a link that does not exist. A
         # person keeps the rule of this route: the end they see is enough.

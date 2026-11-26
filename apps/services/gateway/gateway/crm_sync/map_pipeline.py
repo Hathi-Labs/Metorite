@@ -2328,22 +2328,26 @@ def _utc_date(now: datetime | None = None) -> str:
     return (now or datetime.now(UTC)).astimezone(UTC).date().isoformat()
 
 
-def _requests_key(utc_date: str) -> Any:
+def _requests_key(utc_date: str, namespace: str = NAMESPACE) -> Any:
     from acb_common.tenant_redis import key
 
-    return key(NAMESPACE, "requests", utc_date)
+    return key(namespace, "requests", utc_date)
 
 
 async def reserve_requests(org: str, utc_date: str, count: int,
-                           cap: int = DAILY_REQUESTS) -> bool:
+                           cap: int = DAILY_REQUESTS, *, namespace: str = NAMESPACE) -> bool:
     """Count *count* requests against the org's day, BEFORE they go out. A
     request that fails is billed, so it counts. At the cap it gives the count
-    back and answers False."""
+    back and answers False.
+
+    *namespace* names the day counter. The default is the CRM counter, so
+    each CRM key stays the same. The profiler of a connection counts on its
+    own key (WS-SEM SEM-13b, ``semantic_model.md`` §10.7)."""
     from acb_common.tenant_redis import get_tenant_redis, organization_scope
 
     with organization_scope(org):
         redis = get_tenant_redis()
-        k = _requests_key(utc_date)
+        k = _requests_key(utc_date, namespace)
         used = int(await redis.incr(k, count))
         await redis.expire(k, REQUESTS_TTL_S)
         if used > cap:

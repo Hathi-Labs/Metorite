@@ -49,6 +49,9 @@ doing it is the refusal §6 exists for.
 Write it when you create it, not at the end when context is short. The entry
 written while you still remember why is worth five reconstructed later.
 
+The six steps to work under a Metorite task are in `CLAUDE.md` §4. The
+session-start hook prints them. This command does not copy them.
+
 First create the Metorite task (`create_task`). Put the why, the steps and the
 authority in its description. Then append the four-line entry to the `# OPEN`
 section, next free id, ids never reused:

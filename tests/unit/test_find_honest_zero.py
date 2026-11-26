@@ -18,8 +18,10 @@ The claims, each written so that a wrong build fails it:
   zero answer states what the search did or found. The four families that no
   guard can see (a recipient, an old sender, a project name, a chat name cut
   by k) prove that the switch alone stops the claim.
-* **The guard behind the switch.** With the switch on (``claims_on``), "No
-  record has all the words" prints only with proof,
+* **The guard behind the switch.** With the switch on (``claims_on``), and
+  each source declaring ``Source.proves_absence`` (``declares``, FIND-4b,
+  ``test_find_absence_declared.py``), "No record has all the words" prints
+  only with proof,
   the rule of ``held`` false: one word of 4 letters or more, searched alone
   in each app that answered, found nothing, nothing was skipped, and no date
   or verified filter limited it. A first pass with no hit is no proof,
@@ -55,7 +57,7 @@ from gateway.retrieval import company, find, sources, turn_vector
 from gateway.retrieval.sources import Hit
 
 from tests.unit.test_company_search_recency import recency  # noqa: F401
-from tests.unit.test_company_search_sources import ALL, member
+from tests.unit.test_company_search_sources import ALL, ORG, member
 
 #: A word that no record holds.
 MARKER = "Zqvortex"
@@ -195,24 +197,13 @@ def find_on(monkeypatch):
     return _set
 
 
-class _WithChatOrgs:
-    """The settings, with ``chat_search_orgs`` set. The setting does not exist
-    yet (HRD-21 adds it), and the settings model refuses a new field."""
-
-    def __init__(self, real: Any, value: str) -> None:
-        self._real = real
-        self.chat_search_orgs = value
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
 @pytest.fixture()
 def chat_orgs(monkeypatch):
+    """``CHAT_SEARCH_ORGS`` on the cached settings (HRD-21 added the field)."""
     def _set(value: str) -> None:
-        real = get_settings()
-        monkeypatch.setattr(find, "get_settings", lambda: _WithChatOrgs(real, value))
+        monkeypatch.setattr(get_settings(), "chat_search_orgs", value, raising=False)
 
+    _set("")
     return _set
 
 
@@ -228,6 +219,22 @@ def claims_on(monkeypatch):
     """``find.ABSENCE_CLAIMS`` on, so the three-part guard behind it stays
     fenced (review round 4). The product ships with it off."""
     monkeypatch.setattr(find, "ABSENCE_CLAIMS", True)
+
+
+@pytest.fixture()
+def declares(monkeypatch):
+    """Each source of ``sources.REGISTRY`` declares ``Source.proves_absence``
+    (FIND-4b). No source declares it in the product, so a test that claims
+    needs this and ``claims_on``. Ask for it after ``on``, so it marks the
+    fake readers."""
+    for key, source in list(sources.REGISTRY.items()):
+        monkeypatch.setitem(sources.REGISTRY, key,
+                            dataclasses.replace(source, proves_absence=True))
+
+
+#: The declarations of a unit test of the rule: each app that answered
+#: declares ``Source.proves_absence`` (FIND-4b).
+DECLARED = {"crm": True, "email": True}
 
 
 def run(q: str, user: Any = None, **given: Any) -> dict[str, Any]:
@@ -341,13 +348,29 @@ class TestTheHonestZero:
             {"why": "not_open", "app": "artifacts"},
         ]
 
-    def test_a_named_org_gets_no_past_chats_line(self, on, chat_orgs):
+    def test_a_search_that_asked_the_chats_gets_no_past_chats_line(self, on, chat_orgs):
+        """HRD-21: the line prints only while the search did not ask the
+        ``chat`` source, so it stays true. Here the source is open for the
+        member (``feature:chat``) and the run names its current chat."""
         chat_orgs("*")
-        answer = run(f"{MARKER} Quasar", user=_without("artifacts"))
+        user = member(*(f for f in ALL if f != "artifacts"), "chat")
+        answer = run(f"{MARKER} Quasar", user=user, current_chat="t-here")
         assert answer["where_else"] == [{"why": "not_open", "app": "artifacts"}]
+        # With no current chat the source is not asked, and the line is true.
+        answer = run(f"{MARKER} Quasar", user=user)
+        assert answer["where_else"][0] == {"why": "past_chats"}
 
-    def test_an_absent_setting_reads_as_off(self, on):
-        assert not hasattr(get_settings(), "chat_search_orgs")
+    def test_chat_is_never_named_as_an_app_that_is_not_open(self, on, chat_orgs):
+        """The past chats have their own line. A member without
+        ``feature:chat`` reads it, and no ``not_open`` entry names ``chat``."""
+        chat_orgs("*")
+        where = run(f"{MARKER} Quasar", current_chat="t-here")["where_else"]
+        assert {"why": "past_chats"} in where
+        assert not any(e.get("app") == "chat" for e in where)
+
+    def test_an_empty_setting_reads_as_off(self, on, chat_orgs):
+        assert get_settings().chat_search_orgs == ""
+        assert not find.chat_search_named(ORG)
         assert {"why": "past_chats"} in run(f"{MARKER} Quasar")["where_else"]
 
     def test_another_org_on_the_list_reads_as_off(self, on, chat_orgs):
@@ -416,7 +439,7 @@ class TestTheHonestZero:
         assert not _claims(body)
 
     def test_with_the_switch_on_a_proven_zero_keeps_the_opening_of_kr_zero(
-            self, on, claims_on):
+            self, on, claims_on, declares):
         body = run(f"{MARKER} Quasar")
         assert body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -485,7 +508,7 @@ class TestMostOfTheWords:
         assert lines[1].startswith(f"{cst.EACH_WORD_OPENING} snowflake (")
         assert not _claims(body)
 
-    def test_with_the_switch_on_a_proven_miss_with_hits_says_so(self, on, claims_on):
+    def test_with_the_switch_on_a_proven_miss_with_hits_says_so(self, on, claims_on, declares):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         lines = cst.format_answer(body, dated=True).splitlines()
@@ -522,7 +545,8 @@ class TestMostOfTheWords:
 
         def absent(broadened: Any, skipped: Any = (), limited: bool = False) -> bool:
             return find.word_absent(broadened, query=typed, skipped=list(skipped),
-                                    limited=limited, shown=[], looked=looked)
+                                    limited=limited, shown=[], looked=looked,
+                                    declared=DECLARED)
 
         assert absent([{"word": "alpha", "hits": 2, "skipped": []},
                        {"word": "bravo", "hits": 0, "skipped": []}])
@@ -626,11 +650,13 @@ class TestTheTypedWord:
     def test_the_proof_needs_a_miss_and_no_shown_word(self, on, claims_on):
         zero = [{"word": "zqvortex", "hits": 0, "skipped": []}]
 
-        def proven(*, miss: bool = True, shown: Any = (), looked: Any = None) -> bool:
+        def proven(*, miss: bool = True, shown: Any = (), looked: Any = None,
+                   declared: Any = DECLARED) -> bool:
             return company._none_has_all(
                 member(*ALL), f"Snowflake {MARKER}", ["crm"], [], zero, limited=False,
                 miss=miss, shown=list(shown),
-                looked={"zqvortex": True} if looked is None else looked)
+                looked={"zqvortex": True} if looked is None else looked,
+                declared=declared)
 
         assert proven()
         assert not proven(miss=False)
@@ -638,8 +664,11 @@ class TestTheTypedWord:
         assert not proven(shown=["Deal · Zqvortex Labs"])
         assert not proven(looked={"zqvortex": False})
         assert not proven(looked={})
+        # FIND-4b: an app that answered and does not declare proves nothing.
+        assert not proven(declared={"crm": False})
+        assert not proven(declared={})
 
-    def test_a_plain_word_found_nowhere_still_proves_absence(self, on, claims_on):
+    def test_a_plain_word_found_nowhere_still_proves_absence(self, on, claims_on, declares):
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is True
         assert cst.format_answer(body, dated=True).splitlines()[1] == cst.MOST_WORDS
@@ -659,10 +688,10 @@ class TestTheTypedWord:
         looked = {"muller": True, "zqvortex": True}
         assert find.word_absent([{"word": "muller", "hits": 0, "skipped": []}],
                                 query="Müller Hans", skipped=[], limited=False,
-                                shown=[], looked=looked) is False
+                                shown=[], looked=looked, declared=DECLARED) is False
         assert find.word_absent([{"word": "zqvortex", "hits": 0, "skipped": []}],
                                 query="Müller Zqvortex", skipped=[], limited=False,
-                                shown=[], looked=looked) is True
+                                shown=[], looked=looked, declared=DECLARED) is True
 
     def test_held_of_an_accented_word_is_not_known(self, claims_on):
         """The same rule in ``near_report`` (HRD-18b), so the near line does
@@ -670,7 +699,8 @@ class TestTheTypedWord:
         near = [{"word": "Müller", "as": "Mueller", "hits": 1}]
         zero = [{"word": "muller", "hits": 0, "skipped": []}]
         (entry,) = find.near_report(near, {}, zero, query="Müller Zqvortex",
-                                    first_zero=True, skipped=[], looked={"muller": True})
+                                    first_zero=True, skipped=[], looked={"muller": True},
+                                    declared=DECLARED)
         assert entry["held"] is None
         body = {"query": "Müller Zqvortex", "hits": [], "skipped": [], "near": [entry]}
         assert "No record holds «" not in cst.format_answer(body, dated=True)
@@ -678,7 +708,7 @@ class TestTheTypedWord:
         (plain,) = find.near_report([{"word": "Puja", "as": "Pooja", "hits": 1}], {},
                                     [{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert plain["held"] is False
 
 
@@ -738,7 +768,7 @@ class TestTheWordSomewhere:
         body = run(f"Snowflake {MARKER}")
         assert body["hits"] and body["none_has_all"] is False and not _claims(body)
 
-    def test_the_positive_control_still_claims(self, on, claims_on):
+    def test_the_positive_control_still_claims(self, on, claims_on, declares):
         """With the switch on: a plain word, typed as it folds, with zero
         hits, no skip, no shown hit that holds it and no near name of the
         word itself."""
@@ -750,9 +780,10 @@ class TestTheWordSomewhere:
 
     def test_the_one_helper_of_both_proofs(self, claims_on):
         def proves(word: str = "puja", *, shown: Any = (), looked: Any = None,
-                   query: str = "Puja Shah") -> bool:
+                   query: str = "Puja Shah", declared: Any = DECLARED) -> bool:
             return find.proves_absence(word, query=query, shown=list(shown),
-                                       looked={"puja": True} if looked is None else looked)
+                                       looked={"puja": True} if looked is None else looked,
+                                       declared=declared)
 
         assert proves()
         assert not proves(query="Pujaa Shah")
@@ -760,6 +791,10 @@ class TestTheWordSomewhere:
         assert not proves(shown=["Pujas list"])  # the stem of the word
         assert not proves(looked={"puja": False})
         assert not proves(looked={})
+        # FIND-4b: each app that answered must declare.
+        assert not proves(declared={"crm": True, "email": False})
+        assert not proves(declared={})
+        assert not proves(declared=None)
 
     def test_held_needs_the_same_proof(self, claims_on):
         """``near_report`` (HRD-18b) uses the one helper: a hit of ANY rung
@@ -771,7 +806,8 @@ class TestTheWordSomewhere:
         def held(found: Any = None, related: Any = None, looked: Any = None) -> Any:
             (entry,) = find.near_report(
                 near, found or {}, zero, query="Puja Shah", first_zero=True, skipped=[],
-                related=related, looked={"puja": True} if looked is None else looked)
+                related=related, looked={"puja": True} if looked is None else looked,
+                declared=DECLARED)
             return entry["held"]
 
         assert held() is False
@@ -819,20 +855,20 @@ class TestTheClaimIsOff:
     def test_the_switch_ships_off(self):
         assert find.ABSENCE_CLAIMS is False
         assert not find.proves_absence("puja", query="Puja Shah", shown=[],
-                                       looked={"puja": True})
+                                       looked={"puja": True}, declared=DECLARED)
         assert not find.word_absent([{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", skipped=[], limited=False, shown=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
 
     def test_held_is_true_or_unknown_never_false(self):
         near = [{"word": "Puja", "as": "Pooja", "hits": 1}]
         (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 0, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert entry["held"] is None
         (entry,) = find.near_report(near, {}, [{"word": "puja", "hits": 2, "skipped": []}],
                                     query="Puja Shah", first_zero=True, skipped=[],
-                                    looked={"puja": True})
+                                    looked={"puja": True}, declared=DECLARED)
         assert entry["held"] is True
 
     @staticmethod
@@ -846,7 +882,7 @@ class TestTheClaimIsOff:
         monkeypatch.setattr(find, "ABSENCE_CLAIMS", False)
         return body
 
-    def test_a_recipient_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_recipient_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """The member sent «Invoice for October» to Ramesh. Full text never
         reads To or Cc, so "ramesh" alone finds nothing, and no near name or
         hint holds it."""
@@ -854,14 +890,14 @@ class TestTheClaimIsOff:
         assert "m-11" in [h["id"] for h in body["hits"]]
         assert {"word": "ramesh", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_an_old_sender_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_an_old_sender_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """«ops@kowalco.com» is past the newest names of the near lookup, and
         full text keeps the address as one token."""
         body = self._only_the_switch(monkeypatch, "kowalco shipment")
         assert [h["id"] for h in body["hits"]] == ["m-12"]
         assert {"word": "kowalco", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_a_project_name_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_project_name_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """Tasks search the title and the description. «Quarterly budget» is in
         the project «Zenith Launch». "budget" finds «Budget notes» and it, and
         the cut to k = 1 removes the one hit whose hint shows the project. So
@@ -870,7 +906,7 @@ class TestTheClaimIsOff:
         assert [h["id"] for h in body["hits"] if h["app"] == "tasks"] == ["t-3"]
         assert {"word": "zenith", "hits": 0, "skipped": []} in body["broadened"]
 
-    def test_a_chat_name_cut_by_k_proves_nothing(self, on, no_guard, monkeypatch):
+    def test_a_chat_name_cut_by_k_proves_nothing(self, on, no_guard, declares, monkeypatch):
         """WhatsApp never searches the chat name. "deploy" finds «Ops Room»
         and «Orion Team», and the cut to k = 1 keeps «Ops Room» only."""
         body = self._only_the_switch(monkeypatch, "Orion deploy", k=1)
@@ -1002,15 +1038,42 @@ class TestExplain:
         trace = run("Snowflake printer", user=_without("knowledge"), explain=True)["trace"]
         assert trace["flags_off"] == ["EMAIL_SEMANTIC_SEARCH_ENABLED"]
 
-    def test_a_chat_source_replaces_the_fixed_row(self):
-        """Rung 6 has one fixed ``closed`` row only while no source has the
-        key ``chat`` (HRD-21). A source with the key gives its own rows."""
-        fixed = [r for r in find.trace_rows({}, ["tasks"], set()) if r["rung"] == "chat"]
-        assert fixed == [{"rung": "chat", "source": "chat", "ran": False, "hits": 0,
-                          "ms": 0, "outcome": "closed"}]
-        rows = find.trace_rows({}, ["tasks", "chat"], set())
-        assert not any(r["rung"] == "chat" for r in rows)
-        assert {r["source"] for r in rows} == {"tasks", "chat"}
+    def test_rung_6_is_one_row(self):
+        """HRD-21 (``find_engine.md`` §3.7): the ``chat`` source gives ONE row,
+        in rung 6, from its note of pass 1. It has no row in rungs 1 to 4.
+        Closed, or not asked, the row is the ``closed`` row of before HRD-21,
+        byte for byte, so a dark source changes no trace."""
+        closed_row = {"rung": "chat", "source": "chat", "ran": False, "hits": 0,
+                      "ms": 0, "outcome": "closed"}
+        keys = ["tasks", "chat"]
+        for rows in (find.trace_rows({}, ["tasks"], set()),
+                     find.trace_rows({}, keys, {"chat"}),
+                     find.trace_rows({"exact": {}}, keys, set())):
+            assert [r for r in rows if r["source"] == "chat"] == [closed_row]
+            assert rows[-1] == closed_row
+        notes = {"exact": {"chat": {"ran": True, "hits": 2, "ms": 140, "outcome": "ok"}}}
+        rows = find.trace_rows(notes, keys, set())
+        assert [r for r in rows if r["source"] == "chat"] == [
+            {"rung": "chat", "source": "chat", "ran": True, "hits": 2, "ms": 140,
+             "outcome": "ok"}]
+        assert {r["rung"] for r in rows if r["source"] == "tasks"} == set(find.TRACE_RUNGS)
+
+    def test_a_dark_chat_source_changes_no_trace(self, on, chat_orgs, monkeypatch):
+        """HRD-21: with ``CHAT_SEARCH_ORGS`` empty, a member who holds
+        ``feature:chat`` and names a current chat reads the trace of a member
+        who does not. The world keeps its fake reader, with the real switch."""
+        def bare(answer: dict[str, Any]) -> list[dict[str, Any]]:
+            return [{**r, "ms": 0} for r in answer["trace"]["rungs"]]
+
+        monkeypatch.setitem(sources.REGISTRY, "chat", dataclasses.replace(
+            sources.REGISTRY["chat"], gate=sources._chat_open))
+        plain = run("Snowflake printer", explain=True)
+        with_chat = run("Snowflake printer", user=member(*ALL, "chat"), explain=True,
+                        current_chat="t-here")
+        assert bare(with_chat) == bare(plain)
+        assert bare(plain)[-1] == {"rung": "chat", "source": "chat", "ran": False,
+                                   "hits": 0, "ms": 0, "outcome": "closed"}
+        assert "chat" not in {key for key, _q in on.calls}, "a dark chat source read"
 
     def test_a_dark_studio_source_changes_no_trace(self, on):
         def bare(answer: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1195,15 +1258,17 @@ class TestTheTool:
     def test_the_trace_stays_under_600_tokens(self):
         """The worst case (§7: the count is the characters divided by 4): 8
         sources in 4 rungs, each with ``MAX_K`` hits, the time of the whole
-        answer and a failure. Then 3 near words of 40 letters, each with
-        ``TRACE_SPELLINGS`` spellings of 40 letters, and every flag off."""
+        answer and a failure. The ``chat`` source has its one row of rung 6
+        (HRD-21), with the same worst values. Then 3 near words of 40 letters,
+        each with ``TRACE_SPELLINGS`` spellings of 40 letters, and every flag
+        off."""
         ms = int(company.ANSWER_CAP_S * 1000)
         rows = [
             {"rung": rung, "source": key, "ran": True, "hits": company.MAX_K, "ms": ms,
              "outcome": "timed_out"}
-            for rung in find.TRACE_RUNGS for key in sources.REGISTRY
-        ] + [{"rung": "chat", "source": "chat", "ran": False, "hits": 0, "ms": 0,
-              "outcome": "closed"}]
+            for rung in find.TRACE_RUNGS for key in sources.REGISTRY if key != find.CHAT_KEY
+        ] + [{"rung": "chat", "source": "chat", "ran": True, "hits": company.MAX_K, "ms": ms,
+              "outcome": "timed_out"}]
         near = [{"word": w * name_match.NEAR_MAX_CHARS, "as": f"{w}{s}" * 20, "over_floor": True}
                 for w in "abc" for s in "xyz"[:find.TRACE_SPELLINGS]]
         body = {"trace": {"rungs": rows, "near": near, "meaning": "timed_out",

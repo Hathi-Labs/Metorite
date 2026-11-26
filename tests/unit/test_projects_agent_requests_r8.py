@@ -74,7 +74,7 @@ def _runs_on(monkeypatch, live):  # noqa: F811
     return live
 
 
-def _seed(wd: Any, task: str, member: str, *, status: str = "awaiting", minutes: int = 5,
+def _seed(wd: Any, task: str, member: str, *, status: str = "awaiting", minutes: float = 5,
           body: str = "May I archive this?", archive: bool = True) -> str:
     """A run of *member* on *task*, with an open question when it awaits."""
     run = str(uuid.uuid4())
@@ -83,7 +83,7 @@ def _seed(wd: Any, task: str, member: str, *, status: str = "awaiting", minutes:
             "INSERT INTO pm_agent_runs (id, organization_id, task_id, member_email, client_via,"
             " status, started_by, created_at, last_activity_at)"
             " VALUES (CAST(:r AS uuid), CAST(:o AS uuid), CAST(:t AS uuid), :m, :via, :s, :via,"
-            " now() - make_interval(mins => :age), now() - make_interval(mins => :age))"),
+            " now() - make_interval(secs => CAST(:age AS double precision) * 60), now() - make_interval(secs => CAST(:age AS double precision) * 60))"),
             {"r": run, "o": wd.org, "t": task, "m": member, "via": VIA, "s": status,
              "age": minutes})
         if status == "awaiting":
@@ -94,7 +94,7 @@ def _seed(wd: Any, task: str, member: str, *, status: str = "awaiting", minutes:
                 " content, content_metadata, actor, actor_via, created_at)"
                 " VALUES (CAST(:o AS uuid), CAST(:r AS uuid), CAST(:t AS uuid), 'elicitation',"
                 " CAST(:c AS jsonb), CAST(:m AS jsonb), :me, :via,"
-                " now() - make_interval(mins => :age))"),
+                " now() - make_interval(secs => CAST(:age AS double precision) * 60))"),
                 {"o": wd.org, "r": run, "t": task, "c": json.dumps({"body": body}),
                  "m": json.dumps(meta) if meta else None, "me": member, "via": VIA,
                  "age": minutes})
@@ -151,8 +151,8 @@ async def test_r8_the_list_is_oldest_first(_runs_on, monkeypatch) -> None:
     wd = _runs_on
     old = _task(wd, wd.team, CREATOR, "OP6E old")
     new = _task(wd, wd.team, CREATOR, "OP6E new")
-    _seed(wd, old, CREATOR, minutes=300, archive=False, body="Which lane?")
-    _seed(wd, new, CREATOR, minutes=2)
+    _seed(wd, old, CREATOR, minutes=300.5, archive=False, body="Which lane?")
+    _seed(wd, new, CREATOR, minutes=2.5)
     out = await _list(wd, monkeypatch, CREATOR)
     # CIV-14k: the oldest question comes first, because it waited longest.
     assert out.index("OP6E old") < out.index("OP6E new"), out
