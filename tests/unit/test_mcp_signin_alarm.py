@@ -115,3 +115,10 @@ def test_units():
     assert "EnvironmentFile=-%h/.config/metorite/alarm.env" in service
     sh = (_DIR / "mcp_signin_alarm.sh").read_text(encoding="utf-8")
     assert "install" in sh and "enable" in sh
+
+
+@pytest.mark.parametrize("raw", ["[]", "null", "123", '"x"', "{bad"])
+def test_damaged_state_reads_unknown(al, raw):
+    al.STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    al.STATE_PATH.write_text(raw, encoding="utf-8")
+    assert al.load_state()["state"] == "unknown"

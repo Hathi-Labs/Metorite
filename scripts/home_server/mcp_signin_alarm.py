@@ -94,15 +94,21 @@ def check(cwd: pathlib.Path, runner: Callable[[pathlib.Path], Any] = run_list) -
 
 
 def load_state() -> dict:
+    """The saved state, or ``unknown`` for a missing or damaged file."""
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        d = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        d = None
+    if not isinstance(d, dict):
         return {"state": "unknown", "since": None, "notified": False}
+    return d
 
 
 def save_state(st: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(st), encoding="utf-8")
+    tmp = STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st), encoding="utf-8")
+    tmp.replace(STATE_PATH)  # atomic: a reader never sees half a file
 
 
 def write_note(msg: str) -> None:
