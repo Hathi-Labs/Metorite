@@ -2585,6 +2585,13 @@ _INBOX_VERBS = {
 _CARD_MESSAGE_LINES = 20
 
 
+def _capped_lines(lines: list[str], cap: int = _CARD_MESSAGE_LINES) -> list[str]:
+    """The first *cap* lines, then one line that counts the rest."""
+    if len(lines) <= cap:
+        return lines
+    return [*lines[:cap], f"+{len(lines) - cap} more"]
+
+
 async def _inbox_card_parts(message_ids: list[str]) -> tuple[str, str, str]:
     """``(mailbox, where, context)`` of the card of a bulk act (EM-G11c1).
 
@@ -2800,10 +2807,8 @@ class _TrashPlan:
     def already_lines(self) -> list[str]:
         if not self.already:
             return []
-        lines = ["Already in Trash, so nothing happens to them:"]
-        lines += [f"- {_card_text(self.rule.message_label(m), 200)}"
-                  for m in self.already[:_CARD_MESSAGE_LINES]]
-        return lines
+        return ["Already in Trash, so nothing happens to them:", *_capped_lines(
+            [f"- {_card_text(self.rule.message_label(m), 200)}" for m in self.already])]
 
 
 async def _trash_drafts(rule: Any, message_ids: list[str]) -> str | None:
@@ -2887,15 +2892,17 @@ async def _plain_drafts_card(plan: _TrashPlan, named_ids: set[str]) -> set[str] 
         return _framed_drafts(head, data, tail)
     pairs = plan.pairs(drafts + staying, plan.others)
     shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
+    # *shown* holds the drafts, then the staying drafts, then the others.
+    moving = [shown.pop(0) for _ in drafts]
+    kept = [shown.pop(0) for _ in staying]
     lines: list[str] = []
-    if drafts:
-        lines += ["Each draft that moves to Trash:", *shown[:len(drafts)]]
-    if plan.others:
-        lines += ["Each other message that moves to Trash:",
-                  *shown[len(drafts) + len(staying):][:_CARD_MESSAGE_LINES]]
-    if staying:
+    if moving:
+        lines += ["Each draft that moves to Trash:", *moving]
+    if shown:
+        lines += ["Each other message that moves to Trash:", *_capped_lines(shown)]
+    if kept:
         lines += ["These matching drafts stay in Drafts:",
-                  *shown[len(drafts):len(drafts) + len(staying)][:plan.rule.MAX_DRAFTS]]
+                  *_capped_lines(kept, plan.rule.MAX_DRAFTS)]
     lines += plan.already_lines()
     refusal = await _card_refusal(
         _trash_title(len(drafts), len(plan.others)), plan.detail(),
