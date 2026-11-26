@@ -24,6 +24,9 @@
  * THE LABEL. A job of the Bash tool runs inside a long `bash -c` preamble.
  * The report shows the text inside its `eval`, with obvious secrets masked.
  *
+ * SW-61 also runs here: `stop-disposition.mjs` blocks a background turn that
+ * holds a claim with no disposition. No new `settings.json` entry is needed.
+ *
  * ⚠️ FAILS OPEN AND SILENT. No `ps` (Windows), no `claude` ancestor, a parse
  * error or a crash all end in exit 0.
  * Fence: `node .claude/hooks/stop-children.test.mjs`, run by pr-check.yml.
@@ -36,6 +39,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { checkDisposition } from './stop-disposition.mjs'
 
 export const MIN_AGE_SECONDS = 30 * 60
 
@@ -228,6 +232,9 @@ export function main(stdin = '', psText = null) {
     input = JSON.parse(stdin || '{}')
   } catch {}
   if (input.stop_hook_active) return { code: 0 }
+  // SW-61: a background turn with a claim and no disposition stops here once.
+  const blocked = checkDisposition(input)
+  if (blocked) return { code: 2, message: blocked }
   const text = psText ?? execFileSync('ps', ['-eo', 'pid=,ppid=,etimes=,args='], { encoding: 'utf8', timeout: 5000 })
   const rows = parsePs(text)
   const root = findSessionRoot(rows)

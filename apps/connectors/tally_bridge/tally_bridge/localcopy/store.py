@@ -127,6 +127,8 @@ class CopyStore:
     def __init__(self, folder: str | os.PathLike[str], keys: KeyProvider) -> None:
         self._folder = Path(folder)
         self._keys = keys
+        # TLY-2b: copied_at by company, kept while the file does not change.
+        self._times: dict[str, tuple[tuple[int, int], datetime | None]] = {}
 
     def _path(self, company: str) -> Path:
         name = hashlib.sha256(company.encode("utf-8")).hexdigest()[:32]
@@ -161,6 +163,29 @@ class CopyStore:
 
     def delete(self, company: str) -> None:
         self._path(company).unlink(missing_ok=True)
+
+    def copied_at(self, company: str) -> datetime | None:
+        """When the copy of *company* was made, or None. It decrypts a file
+        only when the file changed, so a link poll each 25 s stays cheap."""
+        try:
+            st = self._path(company).stat()
+        except FileNotFoundError:
+            self._times.pop(company, None)
+            return None
+        stamp = (st.st_mtime_ns, st.st_size)
+        cached = self._times.get(company)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        snap = self.load(company)
+        when = snap.copied_at if snap is not None else None
+        self._times[company] = (stamp, when)
+        return when
+
+    def oldest_copied_at(self, companies: tuple[str, ...] | list[str]) -> datetime | None:
+        """The oldest copy time of *companies* that have a copy, or None
+        (§3.8.13 point 7: "Reads use the copy of 14:05")."""
+        times = [t for t in (self.copied_at(c) for c in companies) if t is not None]
+        return min(times) if times else None
 
     def delete_all(self) -> int:
         """Delete every copy (Disconnect, uninstall). Returns the count."""
