@@ -13,7 +13,7 @@ import {
   sessionLine,
   splitSessions,
 } from "./agentLenses";
-import { fleet, mapOf, run, session } from "./agentLensesFixtures";
+import { BEN, fleet, mapOf, run, session } from "./agentLensesFixtures";
 import { agentStateChip } from "@/lib/statusAccent";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
@@ -48,7 +48,7 @@ describe("the words of a state", () => {
 });
 
 describe("buildLensModel", () => {
-  const model = buildLensModel(fleet());
+  const model = buildLensModel(fleet(), new Map(), BEN);
   const ana = model.people.find((p) => p.person === "ana@x.test")!;
   const ben = model.people.find((p) => p.person === "ben@x.test")!;
 
@@ -91,9 +91,27 @@ describe("buildLensModel", () => {
   });
 });
 
+describe("who needs you (EA3-50)", () => {
+  const labels = new Map([["ben@x.test", "Ben Rao"]]);
+  it("is the member of the session only, in any letter case", () => {
+    const own = buildLensModel(fleet(), new Map(), { email: "BEN@x.test", labels });
+    expect(own.byId.get("lane-b")).toMatchObject({ state: "you", askedOf: null });
+  });
+  it("reads Waiting for the name to everyone else, and counts no need", () => {
+    const other = buildLensModel(fleet(), new Map(), { email: "ana@x.test", labels });
+    const lane = other.byId.get("lane-b")!;
+    expect(lane).toMatchObject({ state: "waiting", wait: { on: "member", until: null } });
+    expect(sessionLine(lane, NOW)).toBe("Waiting for Ben");
+    expect(countStates(other.sessions).you).toBe(0);
+  });
+  it("is nobody with no viewer", () => {
+    expect(countStates(buildLensModel(fleet()).sessions).you).toBe(0);
+  });
+});
+
 describe("the line of a card", () => {
   it("is the question, else the wait, else the task", () => {
-    const asked = buildLensModel(fleet(), new Map([["r3", "May PR 12 merge?"]]));
+    const asked = buildLensModel(fleet(), new Map([["r3", "May PR 12 merge?"]]), BEN);
     expect(sessionLine(asked.byId.get("lane-b")!, NOW)).toBe("May PR 12 merge?");
     expect(sessionLine(asked.byId.get("lane-a")!, NOW)).toBe("Waiting on CI · about 25 min");
     expect(sessionLine(asked.byId.get("boss")!, NOW)).toBe("#7 Task of boss");
@@ -105,7 +123,7 @@ describe("the line of a card", () => {
 });
 
 describe("splitSessions", () => {
-  const sessions = buildLensModel(fleet()).sessions;
+  const sessions = buildLensModel(fleet(), new Map(), BEN).sessions;
   it("folds the states whose chip is off, and says idle", () => {
     const split = splitSessions(sessions, all(), false, name);
     expect(split.folded.map((s) => s.id).sort()).toEqual(["solo", "sub"]);

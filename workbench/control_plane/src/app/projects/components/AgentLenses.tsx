@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
@@ -133,7 +134,8 @@ export interface AgentLensesProps {
   /** Reads the map again, after an answer. */
   onRefresh?: () => void;
   emptyCopy: string;
-  /** A test fixes the clock, the lens and the width. */
+  /** A test fixes the clock, the lens, the width and the viewer. */
+  viewerEmail?: string;
   nowMs?: number;
   initialLens?: Lens;
   phone?: boolean;
@@ -151,6 +153,7 @@ export function AgentLenses({
   nowMs: nowGiven,
   initialLens = "graph",
   phone: phoneGiven,
+  viewerEmail,
 }: AgentLensesProps) {
   const nowMs = useNowMs(nowGiven);
   const narrow = useMedia(PHONE_QUERY);
@@ -164,7 +167,12 @@ export function AgentLenses({
   const [selection, setSelection] = useState<LensSelection | null>(null);
   const map = read.kind === "ready" ? read.map : null;
   const questions = useQuestionTexts(map, projectId);
-  const model = useMemo(() => (map ? buildLensModel(map, questions.byRun) : null), [map, questions.byRun]);
+  const signedIn = useAccess().access.email;
+  const me = viewerEmail ?? signedIn;
+  const model = useMemo(
+    () => (map ? buildLensModel(map, questions.byRun, { email: me, labels: personLabels }) : null),
+    [map, questions.byRun, me, personLabels],
+  );
   const nameOf = useCallback(
     (email: string) => personLabels?.get(email) ?? personLabels?.get(email.toLowerCase()) ?? email,
     [personLabels],

@@ -26,6 +26,9 @@ export const run = (id: string, sessionId: string, over: Record<string, unknown>
 export const mapOf = (sessions: unknown[], runs: unknown[] = [], lines: unknown[] = []): AgentMap =>
   parseAgentMap({ sessions, runs, lines, count: runs.length, truncated: false, viewer: "admin" }) as AgentMap;
 
+/** The member who looks: the one whose session asks in `fleet()`. */
+export const BEN = { email: "ben@x.test" };
+
 /** boss dispatched lane-a and lane-b (of another person). lane-a dispatched sub. solo holds nothing. */
 export const fleet = () =>
   mapOf(

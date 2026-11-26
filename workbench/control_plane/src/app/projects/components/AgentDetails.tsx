@@ -172,10 +172,17 @@ function TaskRunPanel({ taskId, personLabels }: { taskId: string; personLabels?:
   );
 }
 
+/** The run that a session opens on: the one that asks, else the newest. */
+export function firstRun(session: Pick<LensSession, "runs">): LensSession["runs"][number] | null {
+  return session.runs.find((r) => r.state === "awaiting") ?? session.runs[0] ?? null;
+}
+
 function SessionDetails({ session, ...props }: DetailsProps & { session: LensSession }) {
   const { model, nameOf, nowMs, onSelect, onOpenTask, personLabels } = props;
-  const [picked, setPicked] = useState<string | null>(null);
-  const run = session.runs.find((r) => r.run_id === picked) ?? session.runs[0] ?? null;
+  // The panel opens on the run that asks. The first choice stays, so a re-read
+  // never swaps the panel (and a typed reply) under the member.
+  const [picked, setPicked] = useState<string | null>(() => firstRun(session)?.run_id ?? null);
+  const run = session.runs.find((r) => r.run_id === picked) ?? firstRun(session);
   const names = (ids: readonly string[]) => ids.flatMap((id) => model.byId.get(id) ?? []);
   const place = sessionPlace({
     host: session.host,

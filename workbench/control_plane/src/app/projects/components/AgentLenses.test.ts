@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { buildLensModel } from "../lib/agentLenses";
-import { fleet, mapOf } from "../lib/agentLensesFixtures";
+import { BEN, fleet, mapOf, run, session } from "../lib/agentLensesFixtures";
+import { firstRun } from "./AgentDetails";
 import { AgentLenses, type AgentLensesProps } from "./AgentLenses";
 import { panToShow, startViewport } from "./AgentGraphLens";
 import { AgentsPhone, type AgentsPhoneProps } from "./AgentsPhone";
@@ -18,13 +19,14 @@ const lenses = (over: Partial<AgentLensesProps> = {}) =>
       nowMs: NOW,
       initialLens: "board",
       phone: false,
+      viewerEmail: BEN.email,
       ...over,
     }),
   );
 const phone = (over: Partial<AgentsPhoneProps> = {}) =>
   renderToStaticMarkup(
     createElement(AgentsPhone, {
-      model: buildLensModel(fleet()),
+      model: buildLensModel(fleet(), new Map(), BEN),
       nowMs: NOW,
       nameOf: (e: string) => e,
       onOpenSession: () => {},
@@ -95,6 +97,21 @@ describe("the phone view", () => {
     });
     expect(group).toContain("lane-a");
     expect(group).toContain("1 idle session");
+  });
+});
+
+describe("the run that the details open on", () => {
+  it("is the run that asks, not the newest one", () => {
+    const map = mapOf(
+      [session("s", { state: "waiting_on_person" })],
+      [run("new", "s", { age: 1 }), run("ask", "s", { state: "awaiting", age: 900 })],
+    );
+    expect(firstRun(buildLensModel(map).sessions[0])?.run_id).toBe("ask");
+  });
+  it("is the newest run when none asks, and none with no run", () => {
+    const map = mapOf([session("s")], [run("old", "s", { age: 900 }), run("new", "s", { age: 1 })]);
+    expect(firstRun(buildLensModel(map).sessions[0])?.run_id).toBe("new");
+    expect(firstRun({ runs: [] })).toBeNull();
   });
 });
 

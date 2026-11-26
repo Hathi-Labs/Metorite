@@ -876,6 +876,44 @@ class TestTheCap:
         _, body, _ = await _get(w, w.admin_b)
         assert body["truncated"] is False and body["count"] == 1
 
+    async def test_the_cap_drops_a_quiet_run_before_a_run_that_waits(self, w):
+        """With ``show_quiet``, 300 quiet runs and one older run that waits."""
+        p = w.p
+        proj = w.proj_b
+        with p.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, "
+                "task_number, status_id, title, created_by) "
+                "SELECT gen_random_uuid(), CAST(:o AS uuid), CAST(:p AS uuid), "
+                "CAST(:r AS uuid), 910000 + g, CAST(:s AS uuid), 'hush ' || g, :e "
+                "FROM generate_series(1, 301) g"),
+                {"o": p.org_b, "p": proj["id"], "r": proj["root"],
+                 "s": proj["lanes"]["todo"], "e": ADMIN_B})
+            c.execute(text(
+                "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, "
+                "client_via, status, started_by, last_activity_at) "
+                "SELECT CAST(:o AS uuid), t.id, :e, :v, "
+                "CASE WHEN t.title = 'hush 301' THEN 'awaiting' ELSE 'in_progress' END, "
+                ":e, now() - CASE WHEN t.title = 'hush 301' THEN interval '30 hours' "
+                "ELSE interval '3 hours' END "
+                "FROM pm_tasks t WHERE t.organization_id = CAST(:o AS uuid) "
+                "AND t.title LIKE 'hush %'"),
+                {"o": p.org_b, "e": ADMIN_B, "v": VIA_B})
+        try:
+            status, body, _ = await _get(w, w.admin_b, MAP + "&show_quiet=true")
+            assert status == 200
+            assert len(body["runs"]) == 300 and body["truncated"] is True
+            assert "hush 301" in {r["title"] for r in body["runs"]}
+        finally:
+            with p.admin_engine.begin() as c:
+                c.execute(text(
+                    "DELETE FROM pm_agent_runs WHERE organization_id = CAST(:o AS uuid) "
+                    "AND task_id IN (SELECT id FROM pm_tasks WHERE title LIKE 'hush %')"),
+                    {"o": p.org_b})
+                c.execute(text(
+                    "DELETE FROM pm_tasks WHERE organization_id = CAST(:o AS uuid) "
+                    "AND title LIKE 'hush %'"), {"o": p.org_b})
+
 
 def _children(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {c["child_id"]: c for c in body["children"]}

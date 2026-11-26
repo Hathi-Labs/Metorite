@@ -734,8 +734,10 @@ SELECT node_id,
  LIMIT :cap
 """
 
-#: The runs that the map lists, newest event first. ``{fold}`` drops the
-#: quiet runs unless the caller asks for them (``show_quiet``).
+#: The runs that the map lists: the open runs first, newest event first, then
+#: the quiet ones. So the cap drops a quiet run before a run that waits, whose
+#: clock can be old. ``{fold}`` drops the quiet runs unless the caller asks for
+#: them (``show_quiet``).
 _MAP_RUNS_SQL = _MAP_CTE + """
 SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
        live.life_at, live.quiet, live.waiting_on, live.waiting_until,
@@ -743,7 +745,7 @@ SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
   FROM live
   JOIN pm_tasks t ON t.id = live.task_id
  WHERE {fold}
- ORDER BY live.life_at DESC NULLS LAST, live.id DESC
+ ORDER BY live.quiet, live.life_at DESC NULLS LAST, live.id DESC
  LIMIT :cap
 """
 

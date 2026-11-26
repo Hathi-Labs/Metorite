@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { type GraphOptions, GRAPH_X, layoutGraph, relatedNodes } from "./agentGraph";
 import { DEFAULT_STATES, buildLensModel } from "./agentLenses";
-import { fleet, mapOf, run, session } from "./agentLensesFixtures";
+import { BEN, fleet, mapOf, run, session } from "./agentLensesFixtures";
 
 const options = (over: Partial<GraphOptions> = {}): GraphOptions => ({
   filters: { states: new Set(DEFAULT_STATES), person: "", find: "" },
@@ -13,7 +13,7 @@ const options = (over: Partial<GraphOptions> = {}): GraphOptions => ({
   nameOf: (e) => e,
   ...over,
 });
-const model = buildLensModel(fleet());
+const model = buildLensModel(fleet(), new Map(), BEN);
 const graph = layoutGraph(model, options());
 const node = (id: string, g = graph) => g.nodes.find((n) => n.id === id);
 const pairs = (g = graph) => g.edges.map((e) => `${e.from}>${e.to}:${e.kind}`).sort();
@@ -68,6 +68,12 @@ describe("layoutGraph", () => {
     const off = layoutGraph(model, options({ waits: false }));
     expect(off.nodes.some((n) => n.kind === "block")).toBe(false);
     expect(off.edges.some((e) => e.kind === "you" || e.kind === "wait")).toBe(false);
+  });
+  it("draws no line to You for a question of another member (EA3-50)", () => {
+    const g = layoutGraph(buildLensModel(fleet(), new Map(), { email: "ana@x.test" }), options());
+    expect(g.nodes.some((n) => n.id === "b:you")).toBe(false);
+    expect(g.edges.some((e) => e.kind === "you")).toBe(false);
+    expect(pairs(g)).toContain("s:lane-b>b:member:wait");
   });
   it("never invents a line for a wait with no structured field", () => {
     const g = layoutGraph(

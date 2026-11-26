@@ -26,7 +26,7 @@ import {
   sortSessions,
 } from "./agentMap";
 import { NOT_REPORTED } from "./agentPlace";
-import { AGENT_LANES, type AgentWaitingOn, waitingText } from "./agentRuns";
+import { AGENT_LANES, type AgentWaitingOn, agentPillText, waitingText } from "./agentRuns";
 
 export type LensState = "you" | "working" | "waiting" | "idle";
 
@@ -96,6 +96,8 @@ export interface LensSession {
   /** The open sub-agents of those runs (SW-110). */
   children: MapChild[];
   wait: LensWait | null;
+  /** "Waiting for Ben": a run of ANOTHER member waits for that member's answer. */
+  askedOf: string | null;
   /** The question of a run that waits on a person, when the viewer may read it. */
   question: string | null;
   /** The ids of the sessions that dispatched this one. */
@@ -146,22 +148,39 @@ function waitOf(runs: readonly MapRun[]): LensWait | null {
   return run?.waiting_on ? { on: run.waiting_on, until: run.waiting_until } : null;
 }
 
+/** Who looks at the view. `labels` resolves an address to a name. */
+export interface LensViewer {
+  email?: string | null;
+  labels?: ReadonlyMap<string, string>;
+}
+
 /**
  * Build the model. `questions` maps a run id to the text of its open question.
+ *
+ * ⚠️ EA3-50: "Needs you" reads to the member of the session only. A session of
+ * another member that waits for an answer is `waiting` on a person, and its
+ * line names that member. With no viewer, no session needs "you".
  *
  * An orchestrator is a session with no dispatcher on the map that dispatched at
  * least one session. Its group holds each session of ITS OWN person below it in
  * the dispatch chain. A session of another person stays under that person, and
  * its dispatch line still joins the two.
  */
-export function buildLensModel(map: AgentMap, questions: ReadonlyMap<string, string> = new Map()): LensModel {
+export function buildLensModel(
+  map: AgentMap,
+  questions: ReadonlyMap<string, string> = new Map(),
+  viewer: LensViewer = {},
+): LensModel {
+  const me = (viewer.email ?? "").trim().toLowerCase();
   const dispatch = dispatchGraph(map);
   const sessions: LensSession[] = sortSessions(map.sessions, dispatch.waiting).map((s) => {
     const runs = map.runs
       .filter((r) => r.session_id === s.id)
       .sort((a, b) => Number(a.quiet) - Number(b.quiet) || (a.age ?? 0) - (b.age ?? 0) || a.run_id.localeCompare(b.run_id));
     // SW-109: a quiet orchestrator with a live lane waits. It is never "lost".
-    const state: LensState = dispatch.waiting.has(s.id) ? "waiting" : STATE_OF_MAP[s.state];
+    const mapped: LensState = dispatch.waiting.has(s.id) ? "waiting" : STATE_OF_MAP[s.state];
+    const others = mapped === "you" && (!me || s.person.trim().toLowerCase() !== me);
+    const state: LensState = others ? "waiting" : mapped;
     const asked = runs.find((r) => r.state === "awaiting" && questions.has(r.run_id));
     return {
       id: s.id,
@@ -178,7 +197,11 @@ export function buildLensModel(map: AgentMap, questions: ReadonlyMap<string, str
       quietCount: s.quiet_count,
       runs,
       children: runs.flatMap((r) => childrenOf(map, r.run_id)),
-      wait: state === "waiting" ? waitOf(runs) : null,
+      // The awaiting state is the fact that names the wait of another member.
+      wait: others ? { on: "member", until: null } : state === "waiting" ? waitOf(runs) : null,
+      askedOf: others
+        ? agentPillText("awaiting", { memberEmail: s.person, viewerEmail: me, labels: viewer.labels }).text
+        : null,
       question: state === "you" && asked ? (questions.get(asked.run_id) ?? null) : null,
       dispatchers: dispatch.dispatchers.get(s.id) ?? [],
       dispatched: dispatch.dispatched.get(s.id) ?? [],
@@ -321,6 +344,7 @@ export function foldWord(folded: readonly LensSession[]): string {
 /** The second line of a card: the question, else the wait, else the task. */
 export function sessionLine(s: LensSession, nowMs: number): string {
   if (s.question) return s.question;
+  if (s.askedOf) return s.askedOf;
   if (s.wait) {
     const text = waitingText(s.wait, nowMs);
     return text.charAt(0).toUpperCase() + text.slice(1);
