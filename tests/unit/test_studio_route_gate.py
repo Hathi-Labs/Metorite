@@ -100,6 +100,8 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # F2a, the skill routes.
     ("GET", "/studio/skills"),
     ("POST", "/studio/skills"),
+    # TOF rung 1 (task 3830): does a saved skill match these words.
+    ("POST", "/studio/skills/match"),
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),

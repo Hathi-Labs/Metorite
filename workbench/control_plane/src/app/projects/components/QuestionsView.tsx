@@ -102,6 +102,12 @@ export interface QuestionsViewProps {
    */
   fixedProject?: string;
   initialShown?: number;
+  /**
+   * AMR-4, the phone view of Agents at scale: one card at a time, with
+   * "N of M" and previous and next. The oldest comes first. The row, the card
+   * and the writes are the same.
+   */
+  pager?: boolean;
 }
 
 export function QuestionsView({
@@ -114,13 +120,16 @@ export function QuestionsView({
   noArchiveDecision = false,
   fixedProject,
   initialShown,
+  pager = false,
 }: QuestionsViewProps) {
   const { access } = useAccess();
   const me = access.email;
   const [scope, setScope] = useState<QuestionScope>("mine");
   const [project, setProject] = useState(fixedProject ?? "");
   const [showAll, setShowAll] = useState(false);
-  const limited = initialShown !== undefined;
+  const limited = initialShown !== undefined || pager;
+  /** AMR-4: the card of the pager, by its place in the list. */
+  const [at, setAt] = useState(0);
   const [sort, setSort] = useState<QuestionSort>("oldest");
   const [page, setPage] = useState<QuestionsPage | null>(null);
   /** The counts outlive a tab switch, so both tabs keep their numbers. */
@@ -279,11 +288,15 @@ export function QuestionsView({
   }
 
   const stale = rowsAreStale(pageKey, queryKey({ scope, project, sort }));
-  const cut = limited && !showAll && page !== null && page.rows.length > initialShown;
-  const groups = useMemo(
-    () => (page ? groupByProject(cut ? page.rows.slice(0, initialShown) : page.rows) : []),
-    [page, cut, initialShown],
-  );
+  const total = page?.rows.length ?? 0;
+  // A list that got shorter keeps the pager inside it.
+  const shownAt = Math.min(at, Math.max(total - 1, 0));
+  const cut = initialShown !== undefined && !showAll && total > initialShown;
+  const groups = useMemo(() => {
+    if (!page) return [];
+    if (pager) return groupByProject(page.rows.slice(shownAt, shownAt + 1));
+    return groupByProject(cut ? page.rows.slice(0, initialShown) : page.rows);
+  }, [page, pager, shownAt, cut, initialShown]);
   const capped = page ? cappedLine(page, sort) : null;
   const empty = emptyCopy(scope);
   const showEveryone = everyoneTabShown(counts);
@@ -385,6 +398,30 @@ export function QuestionsView({
           <EmptyState icon="CircleCheck" message={empty.message} hint={empty.hint} />
         ) : null}
 
+        {pager && total > 0 ? (
+          <div className="mb-2 flex items-center gap-1" data-questions-pager="">
+            <span role="status" className="mr-auto text-xs text-muted-foreground">
+              {QUESTIONS_COPY.pagerWord} {shownAt + 1} of {total}
+            </span>
+            <Button
+              variant="secondary"
+              size="icon"
+              icon="ChevronLeft"
+              aria-label={QUESTIONS_COPY.previous}
+              disabled={total < 2}
+              onClick={() => setAt((shownAt - 1 + total) % total)}
+            />
+            <Button
+              variant="secondary"
+              size="icon"
+              icon="ChevronRight"
+              aria-label={QUESTIONS_COPY.next}
+              disabled={total < 2}
+              onClick={() => setAt((shownAt + 1) % total)}
+            />
+          </div>
+        ) : null}
+
         {groups.map((group) => (
           <div
             key={group.key}
@@ -408,7 +445,7 @@ export function QuestionsView({
                 </span>
               ))}
               {/* A cut list would count the drawn rows only, so it says no count. */}
-              {cut ? null : (
+              {cut || pager ? null : (
                 <span className="tabular-nums" title={pathLabel(group.path)}>
                   · {questionsCount(group.rows.length)}
                 </span>
@@ -489,7 +526,7 @@ export function QuestionsView({
           </Button>
         ) : null}
 
-        {capped && !cut ? (
+        {capped && !cut && !pager ? (
           <p className="text-xs text-muted-foreground" data-questions-capped="">
             {capped}
           </p>

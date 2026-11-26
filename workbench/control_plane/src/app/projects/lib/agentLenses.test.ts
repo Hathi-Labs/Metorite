@@ -87,7 +87,7 @@ describe("buildLensModel", () => {
     expect(m.people[0].groups.flatMap((g) => g.sessions)).toHaveLength(1);
   });
   it("counts the sessions of each state", () => {
-    expect(countStates(model.sessions)).toEqual({ you: 1, working: 1, waiting: 1, idle: 2 });
+    expect(countStates(model.sessions)).toEqual({ you: 1, failed: 0, working: 1, waiting: 1, idle: 2, done: 0 });
   });
 });
 
