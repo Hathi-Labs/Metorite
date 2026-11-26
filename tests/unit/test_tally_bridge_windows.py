@@ -54,6 +54,8 @@ class FakeProtector:
     ("true", True), ("1", True), ("ON", True), ("yes", True),
     ("false", False), ("0", False), ("off", False), ("No", False),
 ])
+
+
 def test_an_on_off_setting_parses(raw, value):
     s = settings_from_mapping({"KEEP_AWAKE": raw})
     assert s.keep_awake is value
@@ -188,7 +190,7 @@ def test_the_task_xml_is_written_in_utf16_and_deleted_after_the_call(tmp_path):
         seen["path"] = path
         return 0
 
-    assert system.apply_startup(True, r"C:\TallyPrime\tally.exe", runner) == 0
+    assert system.apply_startup(True, r"C:\TallyPrime\tally.exe", runner, _safe_folder) == 0
     assert "<GroupId>S-1-5-32-545</GroupId>" in seen["text"]
     assert not os.path.exists(seen["path"])
 
@@ -276,7 +278,7 @@ def test_apply_windows_runs_the_signin_task_and_one_firewall_rule(windows_box):
         ran.append(list(argv))
         return 0
 
-    assert cli._apply_windows(_args(), runner=runner) == 0
+    assert cli._apply_windows(_args(), runner=runner, check_folder=_safe_folder) == 0
     assert any(a[:5] == ["schtasks", "/Create", "/TN", system.TASK_NAME, "/XML"] for a in ran)
     assert ran[-2:] == [system.firewall_off(), system.firewall_on()]
 
@@ -382,3 +384,7 @@ def test_a_child_command_gets_only_the_windows_variables_it_needs():
     env = {"SystemRoot": r"C:\Windows", "Path": r"C:\Windows\system32",
            "TALLY_BRIDGE_READ_TOKEN_SHA256": "a" * 64, "SECRET": "x"}
     assert system.child_env(env) == {"SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\system32"}
+
+
+def _safe_folder(path: str) -> None:
+    """Task 3974: these tests are about the task itself; the folder is safe."""

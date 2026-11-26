@@ -65,6 +65,10 @@ people rows and one memory row. The people ceiling went from 19 to 13, and the
 memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
 `tests/unit/test_people_tools.py` and `tests/unit/test_people_tools_r8.py` (R8).
 
+**P-5b-6 (task 3947), built 2026-11-25.** The client code that created a person
+had no caller, so the slice deleted it. `POST /api/tasks/people` left the UI,
+and the people ceiling went from 13 to 12. The gateway route stays.
+
 **P-5b-1, a fact for the owner.** The owner may turn the pack on, and
 `packs_batch_on` may name an org. Then `reach_preview` can bring the subject of
 an outside mail into a WhatsApp turn. The tool marks that chat as one that read
@@ -446,7 +450,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 72 | P-3 | 3678 |
+| crm | 74 | 67 | P-3 | 3678 (task 3951 paid 5) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -465,12 +469,13 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Five ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
-took admin to 10. PAR-6a took integrations to 4. P-5b-1 took people to 13 and
-memory to 4. PAR-3 took knowledge to 15, and PAR-3b took it to 4.
+Six ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
+PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
+and memory to 4, and P-5b-6 took people to 12.
 
-The total of `DEBT_CEILING` is 322. The "Today" column above does
-not show these changes.
+The total of `DEBT_CEILING` is 321. The "Today" column above does not show
+these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -641,7 +646,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 72 | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 67 (72 before task 3951) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -731,7 +736,7 @@ data. The gate column names what the owner does before the slice is live.
 | P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
 | P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
-| P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | To do |
+| P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | Built, 2026-11-25. `createPerson` and the create branch of `savePerson` are gone, so the people ceiling is 12. The gateway route stays. |
 | Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |
 
 - **Acceptance of P-5b-1.** Each tool sends its route with `X-User-Email` of

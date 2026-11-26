@@ -191,6 +191,7 @@ test('(d) the main guard runs on a path with a space', { skip: !posix }, () => {
     const copy = path.join(dir, 'hook dir', 'stop-children.mjs')
     fs.mkdirSync(path.dirname(copy))
     fs.copyFileSync(HOOK, copy)
+    fs.copyFileSync(HOOK.replace('stop-children.mjs', 'stop-disposition.mjs'), path.join(path.dirname(copy), 'stop-disposition.mjs'))
     const r = runCli(copy, fakeBin(dir), '{}')
     assert.equal(r.status, 2, r.stderr)
     assert.match(r.stderr, /900002/, 'the wait loop is listed')
