@@ -31,6 +31,7 @@ from acb_common import db_busy, get_logger
 from acb_common.db import current_tenant, tenant_session
 from acb_common.db import get_session_factory as _get_session_factory
 
+from acb_auth.integration_access import narrow as _narrow_by_rules
 from acb_auth.permissions import (
     LEGACY_ROLE_MAP,
     EffectiveAccess,
@@ -317,6 +318,105 @@ _ACCESS_SQL = """
      WHERE lower(u.email) = :email
      LIMIT 1
 """
+
+
+#: ACC-1 (``integrations_console.md`` §3.9.2): the integration rules of one org
+#: and the group slugs of one member in it.
+#:
+#: ⚠️ **A separate statement, never a part of** :data:`_ACCESS_SQL`. A failure
+#: there removes all access, and its "does not exist" text latches
+#: ``_tables_missing`` until a restart. This read runs after the access row is
+#: in hand, inside a savepoint, and its failure narrows integrations only
+#: (:func:`read_integration_rules`).
+#:
+#: ``organization`` and ``org_group`` carry no row security, so the statement
+#: names the org on both (R5). The org is the org of the member's ``app_user``
+#: row, or the org of the run, never a request field. ``org_group_member``
+#: has the row policy of ``user_role``, so this group read agrees with the
+#: role read of :data:`_ACCESS_SQL`.
+_INTEGRATION_RULES_SQL = """
+    SELECT o.settings -> 'integration_access'    AS rules,
+           COALESCE(
+               (SELECT array_agg(DISTINCT g.slug)
+                  FROM org_group_member gm
+                  JOIN org_group g ON g.id = gm.group_id
+                 WHERE gm.user_id = CAST(:uid AS uuid)
+                   AND g.organization_id = o.id),
+               ARRAY[]::text[]
+           )                                    AS groups
+      FROM organization o
+     WHERE o.id = CAST(:org AS uuid)
+"""
+
+
+class IntegrationRules:
+    """What :func:`read_integration_rules` found: the raw rules, the member's
+    group slugs, and whether the read failed."""
+
+    __slots__ = ("failed", "groups", "raw")
+
+    def __init__(self, raw: object = None, groups: tuple[str, ...] = (),
+                 failed: bool = False) -> None:
+        self.raw = raw
+        self.groups = groups
+        self.failed = failed
+
+
+async def read_integration_rules(
+    session: object, org_id: object, user_id: object,
+) -> IntegrationRules:
+    """Read :data:`_INTEGRATION_RULES_SQL` on *session*. Never raises.
+
+    The read runs in a savepoint (``begin_nested``), so a failed statement
+    leaves the caller's transaction usable (H-249). A failure of any kind
+    gives ``failed=True``, and the caller refuses integrations only. A blank
+    org or member gives no rule: a member row with no org has no org to hold
+    a rule.
+    """
+    try:
+        org = str(org_id or "").strip()
+        uid = str(user_id or "").strip()
+        if not org or not uid:
+            return IntegrationRules()
+        from sqlalchemy import text
+
+        async with session.begin_nested():  # type: ignore[attr-defined]
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    text(_INTEGRATION_RULES_SQL), {"org": org, "uid": uid},
+                )
+            ).mappings().first()
+        if row is None:
+            return IntegrationRules()
+        groups = tuple(str(g) for g in (row["groups"] or ()) if g)
+        return IntegrationRules(row["rules"], groups)
+    except Exception as exc:  # a fault narrows, it never escapes
+        _log.warning("access.integration_rules_read_failed", error=type(exc).__name__)
+        return IntegrationRules(failed=True)
+
+
+async def _rules_for_row(session: object, row: object, org_id: object = None) -> IntegrationRules:
+    """The rules for one access row, or none for a member who is not active.
+
+    Never raises. *org_id* names the org when the caller holds it (the org of
+    a run). Else the org is the org of the member's row.
+    """
+    try:
+        if row["status"] != "active":  # type: ignore[index]
+            return IntegrationRules()
+        org = org_id or row["organization_id"]  # type: ignore[index]
+        uid = row["user_id"]  # type: ignore[index]
+    except Exception as exc:
+        _log.warning("access.integration_rules_row_unreadable", error=type(exc).__name__)
+        return IntegrationRules(failed=True)
+    return await read_integration_rules(session, org, uid)
+
+
+def _apply_rules(access: EffectiveAccess, email: str, rules: IntegrationRules) -> EffectiveAccess:
+    """The access after the integration rules (``integration_access.narrow``)."""
+    return _narrow_by_rules(
+        access, rules.raw, email=email, groups=rules.groups, read_failed=rules.failed,
+    ).access
 
 
 #: One row per address, bumped on every repeat knock. ``status`` is deliberately
@@ -1168,10 +1268,16 @@ async def resolve_access(
             session_cm = tenant_session()
         else:
             session_cm = _get_session_factory()()
+        rules = IntegrationRules()
         async with session_cm as session:
             row = (
                 await session.execute(text(_ACCESS_SQL), {"email": key})
             ).mappings().first()
+            # ACC-1: the integration rules, as their own statement in a
+            # savepoint. `_rules_for_row` never raises, so a fault here can
+            # never reach the `except` below (no lockout, no latch).
+            if row is not None:
+                rules = await _rules_for_row(session, row)
     except Exception as exc:  # noqa: BLE001
         # A pool or connect TIMEOUT is not "no access". It raises, and the
         # auth dependency answers 503 (2026-10-07, see IdentityUnavailable).
@@ -1237,8 +1343,11 @@ async def resolve_access(
         roles=row["roles"] or [],
         is_active=row["status"] == "active",
     )
+    # ACC-1: a rule only narrows. A failed read refuses integrations, and that
+    # answer is not cached, so the next request reads again.
+    access = _apply_rules(access, key, rules)
 
-    if use_cache:
+    if use_cache and not rules.failed:
         _cache_put(key, access)
     return access
 
@@ -1528,6 +1637,7 @@ async def resolve_access_in_org(
         return refused
     key = email.lower().strip()
     org = str(org_id).strip()
+    rules = IntegrationRules()
     try:
         from sqlalchemy import text
 
@@ -1537,6 +1647,9 @@ async def resolve_access_in_org(
                     text(_ACCESS_IN_ORG_SQL), {"email": key, "org": org},
                 )
             ).mappings().first()
+            # ACC-1: the rules of THIS org, in a savepoint. Never raises.
+            if row is not None:
+                rules = await _rules_for_row(session, row, org)
     except Exception as exc:
         _raise_if_pool_timeout(exc, "access_in_org")
         _log.warning("auth.access_in_org_failed", error=str(exc)[:200])
@@ -1550,12 +1663,12 @@ async def resolve_access_in_org(
         perm, _, effect = str(entry).rpartition("=")
         if perm and effect in ("allow", "deny"):
             overrides.append((perm, effect))
-    return build_access(
+    return _apply_rules(build_access(
         row["role_permissions"] or [],
         overrides,
         roles=row["roles"] or [],
         is_active=row["status"] == "active",
-    )
+    ), key, rules)
 
 
 #: The address that holds ``owner`` in the organization with a given slug. Joins
