@@ -133,3 +133,29 @@ def test_entries_use_urn_full_urls_and_a_missing_id_is_refused():
     assert all(e["fullUrl"].startswith("urn:uuid:") for e in bundle["entry"])
     with pytest.raises(fh.FhirError):
         fh.export_visit(patient={"data": {}}, visit=VISIT, bindings=BINDINGS, consents=CONSENT, now=NOW)
+
+
+def test_consent_row_with_no_patient_id_grants_nothing():
+    row = {"patient_id": None, "purpose": "fhir_export", "granted_at": NOW - timedelta(days=1)}
+    with pytest.raises(fh.ConsentError):
+        fh.check_consent([row], "None", now=NOW)
+    import uuid
+    pid = uuid.uuid4()
+    fh.check_consent([{**row, "patient_id": pid}], str(pid), now=NOW)
+
+
+@pytest.mark.parametrize("withdrawn", ["", False, 0])
+def test_any_withdrawn_value_but_none_fails_closed(withdrawn):
+    row = {**CONSENT[0], "withdrawn_at": withdrawn}
+    with pytest.raises(fh.ConsentError):
+        fh.check_consent([row], "p-1", now=NOW)
+
+
+def test_phone_and_email_telecom_are_both_kept():
+    b = [*BINDINGS, fh.FhirBinding("patient", "phone", "Patient", "telecom", system="phone"),
+         fh.FhirBinding("patient", "email", "Patient", "telecom", system="email")]
+    pat = {"id": "p-1", "data": {"phone": "+911234567890", "email": "a@example.test"}}
+    out = fh.export_visit(patient=pat, visit=VISIT, bindings=b, consents=CONSENT, now=NOW)
+    tel = out["entry"][0]["resource"]["telecom"]
+    assert tel == [{"system": "phone", "value": "+911234567890"},
+                   {"system": "email", "value": "a@example.test"}]

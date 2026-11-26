@@ -126,9 +126,11 @@ def check_consent(consents: Sequence[Mapping[str, Any]], patient_id: str, *,
     if at.tzinfo is None:
         raise ConsentError("No consent covers this export. Nothing was exported.")
     for row in consents:
-        if str(row.get("patient_id")) != patient_id or row.get("purpose") != CONSENT_PURPOSE:
+        row_pid = row.get("patient_id")
+        if row_pid is None or str(row_pid) != patient_id or row.get("purpose") != CONSENT_PURPOSE:
             continue
-        if row.get("withdrawn_at"):
+        # Fail closed: only None means not withdrawn.
+        if row.get("withdrawn_at") is not None:
             continue
         granted = row.get("granted_at")
         # Fail closed: a grant needs an aware datetime that is not in the future,
@@ -222,7 +224,8 @@ def export_visit(*, patient: Mapping[str, Any], visit: Mapping[str, Any],
                 continue
             value = _value(b, data[b.field])
             if b.resource == "Patient" and b.element == "telecom":
-                value = [{"system": b.system, "value": value}]
+                resource.setdefault("telecom", []).append({"system": b.system, "value": value})
+                continue
             elif (b.resource, b.element) in {("Patient", "name"), ("Encounter", "reasonCode")}:
                 value = [{"text": value}]
             _set(resource, b.element, value)
