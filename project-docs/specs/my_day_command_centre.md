@@ -270,7 +270,7 @@ The spec audit of 2026-11-07 asked for these choices before the build. Each is a
 
 None of them reads the One Thing, a focus mark or a block.
 
-**Storage (migration 498, expand only).**
+**Storage (migration 507, expand only).**
 
 - `pm_task_personal.focus_on date NULL`. A mark is the member's date of the mark. It is "today's focus" only while it equals the member's today, so it expires by itself.
 - `user_settings.today_focus_cap smallint NULL`. Null reads as 3. A write clamps it to 1..10, and a read clamps it again.

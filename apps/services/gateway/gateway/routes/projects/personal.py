@@ -194,7 +194,7 @@ class PersonalIn(BaseModel):
     #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
 
-    # ── Today's focus (migration 498, WS-MDC CC-2) ──────────────────────────
+    # ── Today's focus (migration 507, WS-MDC CC-2) ──────────────────────────
     #: My mark "today's focus": my today as ``YYYY-MM-DD``, or null to clear.
     #: Any other date is a 422. A mark past my cap is a 409
     #: ``focus_cap_reached`` (:func:`mark_focus`, ``today_rule``). Only the
