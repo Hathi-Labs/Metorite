@@ -35,6 +35,15 @@ flag off overrides the list. ``gmail_connect_allowed`` takes the member from
 the session ``UserContext`` only, so a ``login_hint`` or a state that names a
 listed member widens nothing. The list is a platform name of ``env_guard``.
 
+The disclosure (EM-G11a, §12.3.13.4, mutation M1): a Gmail authorize needs the
+current ``GMAIL_DISCLOSURE_VERSION`` and refuses before it signs a state.
+Microsoft needs no value. The fences are
+``test_gmail_authorize_needs_the_disclosure``,
+``test_an_old_disclosure_version_is_refused``,
+``test_microsoft_authorize_needs_no_disclosure``,
+``test_the_disclosure_versions_match`` and
+``test_the_ack_log_line_carries_no_address``.
+
 Every case here is hermetic. The callback writes through ``_save_account``
 only, and the R8 suites ``test_email_tenant_bind_rls.py`` and
 ``test_email_import_floor.py`` prove its SQL. This slice changes no SQL.
@@ -49,6 +58,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import structlog
 from acb_auth.roles import UserContext, UserRole
 from acb_common import env_guard, get_settings
 from acb_common.settings import Settings
@@ -69,6 +79,9 @@ MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 SETTINGS_BASIC = "https://www.googleapis.com/auth/gmail.settings.basic"
 FULL_GRANT = f"{MODIFY} {SETTINGS_BASIC}"
 CALLBACK_PAGE = "https://app.example.test/email/oauth/callback"
+
+#: The acknowledgement of the disclosure step (EM-G11a item 6).
+ACK = oauth.GMAIL_DISCLOSURE_VERSION
 
 _APP_ENV = (
     "MSFT_OAUTH_CLIENT_ID", "MSFT_OAUTH_CLIENT_SECRET",
@@ -220,7 +233,9 @@ async def _callback(
 async def test_gmail_asks_the_two_scopes_of_d_em_31() -> None:
     assert GMAIL_SCOPES == [MODIFY, SETTINGS_BASIC]
 
-    resp = await oauth.oauth_authorize("gmail", user=_member(), redirect_after="")
+    resp = await oauth.oauth_authorize(
+        "gmail", user=_member(), redirect_after="", disclosure=ACK,
+    )
 
     assert resp.status_code == 302
     url = urlparse(resp.headers["location"])
@@ -398,7 +413,9 @@ async def test_not_configured_names_no_integrations(monkeypatch) -> None:
     for provider in oauth.CONNECT_PROVIDERS:
         _no_app(monkeypatch, provider)
         with pytest.raises(HTTPException) as exc:
-            await oauth.oauth_authorize(provider, user=_member(), redirect_after="")
+            await oauth.oauth_authorize(
+                provider, user=_member(), redirect_after="", disclosure=ACK,
+            )
         assert exc.value.status_code == 400
         assert exc.value.detail == oauth._NOT_CONFIGURED[provider]
 
@@ -553,7 +570,9 @@ async def test_flag_off_the_gmail_app_info_is_a_503(monkeypatch) -> None:
 
 
 async def test_flag_on_the_gmail_connect_runs_as_today(spy) -> None:
-    resp = await oauth.oauth_authorize("gmail", user=_member(), redirect_after="/email")
+    resp = await oauth.oauth_authorize(
+        "gmail", user=_member(), redirect_after="/email", disclosure=ACK,
+    )
     assert resp.status_code == 302
     state = parse_qs(urlparse(resp.headers["location"]).query)["state"][0]
 
@@ -641,7 +660,9 @@ async def test_a_listed_member_connects_gmail(spy, monkeypatch, session) -> None
     body = _body(await oauth.oauth_providers(user=user))
     assert body == {"microsoft": True, "gmail": True}
 
-    resp = await oauth.oauth_authorize("gmail", user=user, redirect_after="/email")
+    resp = await oauth.oauth_authorize(
+        "gmail", user=user, redirect_after="/email", disclosure=ACK,
+    )
     assert resp.status_code == 302
     url = urlparse(resp.headers["location"])
     assert f"{url.scheme}://{url.netloc}{url.path}" == GOOGLE_AUTHORIZE
@@ -762,7 +783,9 @@ async def test_an_empty_list_lets_every_member_through(monkeypatch, raw) -> None
         user = _member(email)
         assert oauth.gmail_connect_allowed(user) is True, email
         assert _body(await oauth.oauth_providers(user=user))["gmail"] is True
-        resp = await oauth.oauth_authorize("gmail", user=user, redirect_after="")
+        resp = await oauth.oauth_authorize(
+            "gmail", user=user, redirect_after="", disclosure=ACK,
+        )
         assert resp.status_code == 302
 
 
@@ -1079,3 +1102,196 @@ async def test_the_manual_route_still_takes_imap(no_write) -> None:
     with pytest.raises(_ReachedTheDatabase):
         await accounts.create_account(req, user=_member())
     assert no_write.blocks == 1
+
+
+# ── The disclosure (EM-G11a, §12.3.13.4) ───────────────────────────────────
+
+
+def _no_signing(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Record each state that the authorize leg signs."""
+    signed: list[dict] = []
+
+    def _sign(**kwargs):
+        signed.append(kwargs)
+        return "signed-state"
+
+    monkeypatch.setattr(oauth, "sign_oauth_state", _sign)
+    return signed
+
+
+async def test_gmail_authorize_needs_the_disclosure(monkeypatch) -> None:
+    """M1. No value is a 400 ``disclosure_required``, and the leg signs no
+    state, so a button that skips the step fails here."""
+    signed = _no_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize("gmail", user=_member(), redirect_after="")
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "disclosure_required"
+    assert signed == []
+
+    resp = await oauth.oauth_authorize(
+        "gmail", user=_member(), redirect_after="", disclosure=ACK,
+    )
+    assert resp.status_code == 302
+    assert len(signed) == 1
+
+
+def test_the_route_reads_disclosure_from_the_query() -> None:
+    """A direct call cannot prove the binding. FastAPI must read this name from
+    the query, or each real Gmail connect answers 400."""
+    from gateway.routes.email.core import router
+
+    routes = [
+        r for r in router.routes
+        if getattr(r, "path", "").endswith("/oauth/{provider}/authorize")
+    ]
+    assert len(routes) == 1
+    assert "disclosure" in [p.name for p in routes[0].dependant.query_params]
+
+
+def test_the_disclosure_check_comes_before_the_state_is_signed() -> None:
+    """The auditor's correction of item 6. The check sits after the dark gate
+    and before ``sign_oauth_state``, not in the code that builds ``params``."""
+    src = inspect.getsource(oauth.oauth_authorize)
+    dark = src.index("gmail_connect_allowed(user)")
+    check = src.index("_require_disclosure(")
+    sign = src.index("sign_oauth_state(")
+    build = src.index("params = {")
+    assert dark < check < sign < build
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["2026-10-draft", "", " ", ACK + "x", ACK.upper(), f" {ACK}", "../../etc"],
+)
+async def test_an_old_disclosure_version_is_refused(monkeypatch, value) -> None:
+    """An old tab holds the old words, so it holds no consent to the new ones.
+    The match is exact."""
+    signed = _no_signing(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "gmail", user=_member(), redirect_after="", disclosure=value,
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "disclosure_required"
+    assert signed == []
+
+
+async def test_a_dark_gmail_keeps_its_own_answer(monkeypatch) -> None:
+    """The dark gate comes first, so a member off the list reads the dark
+    answer and never learns about the step."""
+    _dark(monkeypatch)
+    with pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize("gmail", user=_member(), redirect_after="")
+    assert exc.value.detail == oauth._NOT_CONFIGURED["gmail"]
+
+
+@pytest.mark.parametrize("value", [None, "", "2026-10-draft", ACK])
+async def test_microsoft_authorize_needs_no_disclosure(value) -> None:
+    """The Outlook acceptance item (item 4). Outlook is live, so no value, an
+    old value and a new value all reach Microsoft."""
+    resp = await oauth.oauth_authorize(
+        "microsoft", user=_member(), redirect_after="", disclosure=value,
+    )
+    assert resp.status_code == 302
+    url = urlparse(resp.headers["location"])
+    assert url.netloc == "login.microsoftonline.com"
+
+
+def test_the_disclosure_versions_match() -> None:
+    """The TypeScript constant is read as text. A mirror goes stale, and a
+    stale version here refuses every Gmail connect."""
+    connect = (
+        REPO / "workbench" / "control_plane" / "src" / "app" / "email" / "lib" / "connect.ts"
+    ).read_text(encoding="utf-8")
+    versions = re.findall(r'^export const DISCLOSURE_VERSION = "([^"]+)";$', connect, re.M)
+    assert versions == [oauth.GMAIL_DISCLOSURE_VERSION]
+    # The BFF refuses anything else, so the version must pass its pattern.
+    route = (
+        REPO / "workbench" / "control_plane" / "src" / "app" / "api" / "email" / "oauth"
+        / "[provider]" / "authorize" / "route.ts"
+    ).read_text(encoding="utf-8")
+    pattern = re.search(r"const DISCLOSURE = /(.+)/;", route)
+    assert pattern is not None
+    assert re.fullmatch(pattern.group(1), oauth.GMAIL_DISCLOSURE_VERSION)
+
+
+@pytest.mark.parametrize("provider", ["gmail", "microsoft"])
+async def test_the_ack_log_line_carries_no_address(provider) -> None:
+    """Item 7, the CASA evidence.
+
+    ⚠️ This renders through ``merge_contextvars``, as production does. The
+    session gate binds ``user=<address>`` into the log context, so a check of
+    the keyword arguments alone would pass while each real line held the
+    address. A client hint is in the request here for the same reason.
+    """
+    structlog.contextvars.bind_contextvars(user=MEMBER, member_verified="1")
+    try:
+        with structlog.testing.capture_logs(
+            processors=[structlog.contextvars.merge_contextvars],
+        ) as lines:
+            resp = await oauth.oauth_authorize(
+                provider, user=_member(), redirect_after="",
+                login_hint="dana+hint@example.com", disclosure=ACK,
+            )
+        assert resp.status_code == 302
+        acks = [e for e in lines if e["event"] == "email.oauth_disclosure_ack"]
+        assert len(acks) == 1
+        ack = acks[0]
+        assert ack["provider"] == provider
+        assert ack["version"] == ACK
+        assert ack["organization_id"] == ORG
+        assert "user" not in ack
+        assert "@" not in json.dumps(ack, default=str)
+        # The rest of the request keeps its member, so a model call still bills.
+        assert structlog.contextvars.get_contextvars()["user"] == MEMBER
+        assert structlog.contextvars.get_contextvars()["member_verified"] == "1"
+    finally:
+        structlog.contextvars.unbind_contextvars("user", "member_verified")
+
+
+async def test_a_refused_connect_logs_no_ack_and_no_address(monkeypatch) -> None:
+    """A refusal is not an acknowledgement, and its line holds no value of the
+    request, so a query cannot write into the log."""
+    structlog.contextvars.bind_contextvars(user=MEMBER)
+    try:
+        with structlog.testing.capture_logs(
+            processors=[structlog.contextvars.merge_contextvars],
+        ) as lines, pytest.raises(HTTPException):
+            await oauth.oauth_authorize(
+                "gmail", user=_member(), redirect_after="",
+                disclosure="evil\ninjected@example.com",
+            )
+    finally:
+        structlog.contextvars.unbind_contextvars("user")
+    assert [e["event"] for e in lines] == ["email.oauth_disclosure_refused"]
+    assert "@" not in json.dumps(lines[0], default=str)
+    assert "injected" not in json.dumps(lines[0], default=str)
+
+
+async def test_an_old_version_on_microsoft_logs_no_ack() -> None:
+    """An ack line names the current words, or it is not written."""
+    with structlog.testing.capture_logs() as lines:
+        await oauth.oauth_authorize(
+            "microsoft", user=_member(), redirect_after="", disclosure="2026-10-draft",
+        )
+        await oauth.oauth_authorize("microsoft", user=_member(), redirect_after="")
+    assert not [e for e in lines if e["event"] == "email.oauth_disclosure_ack"]
+
+
+async def test_a_mailbox_limit_logs_no_ack(monkeypatch) -> None:
+    """The line records a member who reached the provider, so a 409 writes none."""
+    async def _full(*args):
+        return True
+
+    monkeypatch.setattr(oauth, "_mailbox_limit_reached", _full)
+    with structlog.testing.capture_logs() as lines, pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "gmail", user=_member(), redirect_after="", disclosure=ACK,
+        )
+    assert exc.value.status_code == 409
+    assert not [e for e in lines if e["event"] == "email.oauth_disclosure_ack"]

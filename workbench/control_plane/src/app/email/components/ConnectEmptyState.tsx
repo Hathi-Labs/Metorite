@@ -50,8 +50,8 @@ export function ConnectEmptyState({
   loadError,
   onRetry,
 }: {
-  /** Starts the sign-in with the range the member chose (EM-T6d). */
-  onConnect: (provider: ConnectProviderId, importMonths: number) => void;
+  /** Starts the sign-in with the range and the version the member acknowledged. */
+  onConnect: (provider: ConnectProviderId, importMonths: number, disclosure: string) => void;
   /** Opens the range step of this provider at once (a retry, EM-T6d). */
   initialProvider?: ConnectProviderId | null;
   /** The capability read of the store (EM-G8). `undefined` while it runs. */
@@ -85,8 +85,10 @@ export function ConnectEmptyState({
 
   return (
     <EmailFrame>
-    <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-background p-4">
-      <div className="w-full max-w-md">
+    {/* `m-auto`, not `items-center`: the disclosure step can be taller than
+        the window, and `items-center` puts its top out of reach of the scroll. */}
+    <div className="flex h-full w-full justify-center overflow-y-auto bg-background p-4">
+      <div className="m-auto w-full max-w-md">
         <div className="rounded-lg border border-border bg-card p-6">
           <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Icon name="Mail" size={22} />
