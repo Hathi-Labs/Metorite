@@ -1321,8 +1321,9 @@ _MAIL_AI_OWNER_LINE = (
 async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]],
                      mail: dict[str, str] | None = None) -> str | None:
     """Show ONE card and wait. None when the member approved. Else the words
-    of the tool: the read of the source mail failed, the card did not fit, a
-    held chat got a cut card, or the card did nothing (HRD-7).
+    of the tool: the source mail gave no true row (:func:`_source_row`), the
+    card did not fit, a held chat got a cut card, or the card did nothing
+    (HRD-7).
 
     *mail* is the ids of the mail that the write sends. With them, the first
     row names that mail (task 3973).
@@ -1341,8 +1342,8 @@ async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]],
                 "Nothing changed.")
     if mail:
         source = await _source_row(mail)
-        if source is None:
-            return MAIL_NO_SOURCE
+        if isinstance(source, str):
+            return source
         rows = [source, *rows]
     try:
         context = str(card_body(mailbox_line(_MAIL_PLACE), rows))
@@ -1373,9 +1374,15 @@ MAIL_BAD_THREAD = (
 )
 #: The cap of the sender name and of the subject of the source mail on the card.
 MAIL_SOURCE_MAX = 120
-#: The cap of the sender address: the longest legal address (RFC 5321), so a
-#: legal domain is never cut off.
+#: The longest legal sender address (RFC 5321). A longer one is refused, never
+#: cut, because a cut can hide the domain.
 MAIL_ADDRESS_MAX = 254
+#: The answer for a sender address that a card cannot show as it is. It does
+#: not repeat the address.
+MAIL_BAD_ADDRESS = (
+    "The sender address of this mail cannot be shown truly on a card, so nothing "
+    "changed. The member can add the task in the app."
+)
 #: The answer when the read of the source mail fails. No card shows.
 MAIL_NO_SOURCE = (
     "I could not read that mail, so no card showed. Check account_id and "
@@ -1389,26 +1396,39 @@ def _card_text(value: str) -> str:
     return _stranger_text(_same_text(value), len(value))
 
 
-async def _source_row(mail: dict[str, str]) -> tuple[str, str] | None:
+def _true_address(address: str) -> bool:
+    """True when a card can show *address* as it is. A card never shows a
+    changed or a cut address as the real one (task 3973)."""
+    return (_card_text(address) == address
+            and address.isprintable()
+            and not any(ch.isspace() for ch in address)
+            and len(address) <= MAIL_ADDRESS_MAX
+            and address.count("@") <= 1)
+
+
+async def _source_row(mail: dict[str, str]) -> tuple[str, str] | str:
     """The card row of the source mail (D169, task 3973): the sender name, the
     sender address and the subject that the gateway gives for *mail*, the ids
-    that the write sends. A name that equals the address shows once. None when
-    the read fails. The values go to the card only and into no answer, so this
-    read marks no chat."""
+    that the write sends. A name that equals the address shows once. A string
+    is a refusal: the read failed, or the address cannot show as it is. The
+    values go to the card only and into no answer, so this read marks no
+    chat."""
     from acb_common.card_body import one_line
 
     try:
         p = await _request("POST", _CAPTURE_EMAIL_PREVIEW, json=mail)
     except (_GatewayError, httpx.HTTPError, ValueError):
-        return None
+        return MAIL_NO_SOURCE
     got = [p.get(k) for k in ("from_name", "subject")] if isinstance(p, dict) else [None]
     if not all(isinstance(v, str) for v in got):
-        return None
+        return MAIL_NO_SOURCE
     name, subject = (_card_text(v) for v in got)
     raw = p.get("from_email")
-    address = _card_text(raw) if isinstance(raw, str) else ""
+    address = raw if isinstance(raw, str) else ""
+    if address and not _true_address(address):
+        return MAIL_BAD_ADDRESS
     # "(no address)" has no fence, so a sender cannot write it as a value.
-    shown = _data(_mail_text(address, MAIL_ADDRESS_MAX)) if address else "(no address)"
+    shown = _data(address) if address else "(no address)"
     who = shown if address and name.casefold() == address.casefold() else (
         f"{_data(_mail_text(name, MAIL_SOURCE_MAX) or '(unknown)')}, address {shown}")
     return ("source", one_line(
