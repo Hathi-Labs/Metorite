@@ -1947,7 +1947,7 @@ the A2 model.
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
-| **SBX-1a** (task 3800) | (D187) (D225) `tool_gaps` (§7.4). The no-match path of `find_tools` with the library check and the compose check (§6.1), not a second tool. The gap log line of §9.1, and the route `GET /studio/tool-gaps` for an approver. No code runs anywhere. §12.1 holds the full slice and the eleven audit decisions. `user_tool_runs` moved to SBX-4 (decision 9) | SBX-0b | AGENT-SAFE. HIGH tier: a FORCE RLS table and the chat tool seam. Dark behind `user_tool_find_enabled`. 🔨 **BUILT dark** (2026-11-26, branch `mt-8f625471-sbx1-tool-gaps`): migration 502, the hook, the store, the library search and the route. The flip is the `enforcement-flip` of rung 6a |
+| **SBX-1a** (task 3800) | (D187) (D225) `tool_gaps` (§7.4). The no-match path of `find_tools` with the library check and the compose check (§6.1), not a second tool. The gap log line of §9.1, and the route `GET /studio/tool-gaps` for an approver. No code runs anywhere. §12.1 holds the full slice and the eleven audit decisions. `user_tool_runs` moved to SBX-4 (decision 9) | SBX-0b | AGENT-SAFE. HIGH tier: a FORCE RLS table and the chat tool seam. Dark behind `user_tool_find_enabled`. 🔨 **BUILT dark** (2026-11-26, branch `mt-8f625471-sbx1-tool-gaps`): migration 504, the hook, the store, the library search and the route. The flip is the `enforcement-flip` of rung 6a |
 | **SBX-1b** (task 3984) | A read-only "Tool gaps" section on `/studio`, for a holder of `studio:publish`. It reads `GET /studio/tool-gaps` through the `/api/studio/[[...path]]` proxy. It shows the counts by outcome and by category, and the newest rows. Frontend only, with no new route | SBX-1a | AGENT-SAFE. STANDARD. Dark |
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
@@ -2044,7 +2044,7 @@ points. The text of §6.1, §7 and §11 follows them.
 
 **Files.**
 
-- New: `infra/postgres/502_tool_gaps.sql`. The lane booked the number for
+- New: `infra/postgres/504_tool_gaps.sql`. The lane booked the number for
   this task (R1). Check it again at merge.
 - New: `apps/services/gateway/gateway/studio/tool_gaps.py`, the one writer
   and reader: `record_gap` and `gap_summary`.
@@ -3016,7 +3016,7 @@ here, and each needs its own check before anyone acts on it.
   the path and the route) and SBX-1b (the gap view on `/studio`, task 3984).
   `user_tool_runs` moves to SBX-4. The header and the critical path of §0c
   now say that SBX-18 and SBX-19 are built dark.
-- 2026-11-26 — SBX-1a built dark (task 3800). Migration 502 adds `tool_gaps`.
+- 2026-11-26 — SBX-1a built dark (task 3800). Migration 504 adds `tool_gaps`.
   `FindTools` takes the hook `on_gap`, and `orchestrator/tool_gap_path.py` is
   the no-match path. `gateway/studio/tool_gaps.py` writes and reads the rows,
   and `GET /studio/tool-gaps` serves an approver. The flag

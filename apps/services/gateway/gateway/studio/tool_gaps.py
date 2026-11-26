@@ -1,7 +1,7 @@
 """The one writer and reader of ``tool_gaps`` (SBX-1a, task 3800).
 
 Spec: ``project-docs/specs/agent_sandbox.md`` §6.1, §7.4 and §9.2.
-Migration: the file that creates ``tool_gaps`` (502 at build).
+Migration: the file that creates ``tool_gaps`` (504 at merge, 502 at build).
 ``tests/unit/test_user_tool_registry.py`` runs this SQL on a real Postgres as
 the NOBYPASSRLS role, and ``tests/unit/test_tool_gap_detection.py`` holds the
 refusals.

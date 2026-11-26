@@ -1,5 +1,5 @@
 -- ============================================================================
--- 502_tool_gaps.sql - the tool gap record: one row for each call of
+-- 504_tool_gaps.sql - the tool gap record: one row for each call of
 -- find_tools that found no tool (agent_sandbox.md §7.4, SBX-1a, task 3800).
 --
 -- What: one new table. `tool_gaps` holds one row for each no-match call of
@@ -41,7 +41,8 @@
 -- with USING and WITH CHECK. `REFERENCES` comes before `DEFAULT` (the
 -- tenancy ratchet).
 --
--- The number is taken at build time (R1): the lane booked 502 for this task.
+-- The number is taken at build time (R1): the lane booked 502, and moved to 504 above
+-- SBX-2 (503) before the merge.
 -- Check it again at merge. Pinned by tests/unit/test_user_tool_registry.py,
 -- which finds this file by CONTENT, and tests/unit/test_tenant_coverage.py.
 -- ============================================================================
