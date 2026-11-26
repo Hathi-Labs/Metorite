@@ -125,6 +125,17 @@ describe("Connect and Reconnect", () => {
     expect(panelPlan(needs, true).reconnect).toBe(false);
   });
 
+  it("shows the sign-in state and Connect on a URL row that the server asked to sign in (task 3866)", () => {
+    const asked = mcp({ acts_as: null, status: "needs_reconnect", last_error: "needs_signin" });
+    expect(mcpConnect(asked, true)).toBe("connect");
+    const html = sheet(asked);
+    expect(html).toContain("This server asks for a sign-in. Connect it to start.");
+    expect(html).toContain('data-mcp-connect="connect"');
+    expect(html).toMatch(/>Connect</);
+    expect(html).toContain("Needs reconnect");
+    expect(mcpConnect(asked, false)).toBeNull();
+  });
+
   it("shows the consent as loading while it starts", () => {
     const html = sheet(mcp(), { connecting: true });
     expect(html).toMatch(/data-mcp-connect="reconnect"[^>]*disabled|disabled[^>]*data-mcp-connect="reconnect"/);
@@ -165,17 +176,18 @@ describe("the Connect dialog (§3.6.9)", () => {
     expect(c.confirmLabel).toBe("Open the sign-in");
   });
 
-  it("says that a read-only tool runs with no card, unless the server always confirms", () => {
+  it("says that each tool runs with no card, unless the server always confirms (MCP-NC1)", () => {
     const loose = connectDialogCopy(
       mcp({ acts_as: null, detail: { name: "notion", host: "mcp.notion.com", always_confirm: "false" } }),
       ADMIN,
       "connect",
     );
-    expect(loose.note).toContain("A tool that the server marks as read-only runs with no approval.");
-    expect(loose.note).toContain(`what ${ADMIN} can read at mcp.notion.com`);
+    expect(loose.note).toContain("Each tool runs with no approval.");
+    expect(loose.note).toContain(`what ${ADMIN} can read and change at mcp.notion.com`);
+    expect(loose.note).not.toContain("read-only");
     const strict = connectDialogCopy(mcp({ acts_as: null }), ADMIN, "connect");
     expect(strict.note).toContain("set to always confirm");
-    expect(strict.note).toContain("runs with no approval");
+    expect(strict.note).toContain("If you turn that switch off, each tool runs with no approval.");
   });
 
   it("names the admin it acts as now, when another admin reconnects", () => {

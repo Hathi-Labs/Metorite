@@ -1107,8 +1107,11 @@ def sent_words() -> str:
 
     That is the sent text of the request (:data:`MEMBER_SENT`), then the
     member's own typed steers that the run read, as :func:`typed_words` reads
-    them. Only the tool-pack chooser reads it (D-PZ-37). ⚠️ Never ground a
-    write in it: a tapped pill holds words that the member did not type.
+    them. Only the tool-pack chooser reads it (D-PZ-37). TOF-3a F12b: the
+    live writer of skill runs reads the same words through ``PackTurn.words``,
+    and keeps only their hash (``orchestrator._tool_injection``). ⚠️ Never
+    ground a write in it: a tapped pill holds words that the member did not
+    type.
     :func:`typed_words` is the one value that grounds a write."""
     own = MEMBER_SENT.get()
     holder = _STEERS.get()

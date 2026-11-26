@@ -47,3 +47,16 @@ async def test_an_unknown_focus_is_refused_with_422() -> None:
         await tasks.list_tasks(user=None, agent_focus="nonsense")  # type: ignore[arg-type]
     assert caught.value.status_code == 422
     assert "waiting" in str(caught.value.detail)
+
+
+def test_the_hold_foci_read_the_unheld_rule_and_stay_off_the_strip() -> None:
+    """SW-5. "Free" is the text of the ``unheld`` filter, "held" is its negation."""
+    assert filters.HOLD_FOCI == ("held", "free")
+    assert not set(filters.HOLD_FOCI) & set(filters.AGENT_FOCI)
+    assert filters.agent_focus_clause("free") == filters.unheld_clause()
+    assert filters.agent_focus_clause("held") == f"NOT ({filters.unheld_clause()})"
+    clauses, params = filters.agent_filter_clauses("held", False, "Me@Example.test")
+    assert clauses == [filters.agent_focus_clause("held")]
+    assert params == {filters.AGENT_FOCUS_ME: "me@example.test"}
+    with pytest.raises(Exception, match="Unknown agent focus"):
+        filters.agent_filter_clauses("busy", False, "me@example.test")

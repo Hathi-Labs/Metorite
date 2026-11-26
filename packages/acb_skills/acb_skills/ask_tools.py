@@ -38,9 +38,13 @@ import json as _json
 import re as _re
 from collections.abc import Iterator as _Iterator
 from dataclasses import dataclass as _dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from typing import NamedTuple as _NamedTuple
 
 from acb_common.no_person import no_person_present as _no_person_present
+
+if TYPE_CHECKING:  # the edit card of a new task (EAC-1), for the annotations only
+    from acb_skills.task_card import TaskEdit
 
 # ── A run with no card channel (WS-47 WAC-3) ──────────────────────────────────
 #
@@ -434,22 +438,15 @@ def _member_waits() -> None:
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
-    The questions are rendered as interactive cards in the chat UI.  The user
-    can select options, type freeform answers, or both.  Their answers will
-    be sent as the next chat message for you to process.
+    The chat shows each question as a card. The user picks options, types an
+    answer, or both, and the answers arrive as the next chat message.
 
-    **Use this tool when:**
-    - You need to disambiguate between multiple possible interpretations
-    - The user's request is missing a required parameter
-    - You want the user to choose from a known set of options
-    - A decision has security, cost, or irreversibility implications
+    Use it when a request has more than one meaning, lacks a required value,
+    needs a choice from known options, or has a security, cost or
+    irreversible effect. Do NOT use it for a simple yes/no (use your best
+    judgment), or for what a web search or a tool call can answer.
 
-    **Do NOT use for:**
-    - Simple yes/no confirmations (use your best judgment)
-    - Questions you can answer yourself with a web search or tool call
-
-    **After calling this tool, STOP and wait.**  The user's response will
-    arrive as the next message in the conversation.
+    **After calling this tool, STOP and wait** for the next message.
 
     Args:
         questions: JSON string. ``header`` and ``question`` are required;
@@ -475,8 +472,7 @@ async def ask_questions(questions: str) -> str:
             }
 
     Returns:
-        ``"Questions displayed to the user. Waiting for response."``
-        The agent MUST stop after receiving this and let the user answer.
+        ``"Questions displayed to the user. Waiting for response."`` Then stop.
     """
     if cards_refused():
         # WS-47 WAC-3: no card channel. Answer at once, push and park nothing.
@@ -762,6 +758,58 @@ CONFIRMATION_RESOLVED = "confirmation_resolved"
 CONFIRMATION_ANSWERS: frozenset[str] = frozenset(
     {"APPROVE", "REJECT", "TIMEOUT", "CANCELLED"}
 )
+
+#: The event that gives the receipt of an approved card its Undo
+#: (one_assistant_context.md §9.4 WT-6a). The value names the card's
+#: ``request_id``, the kind and the id of the row, and the row's version after
+#: the write. The browser then calls the unarchive route itself, under the
+#: member's own session, with that version as ``If-Match``. The event carries
+#: no token. ``workbench/control_plane/src/lib/archiveUndo.ts`` reads it.
+CONFIRMATION_UNDO = "confirmation_undo"
+#: The kinds of row that a receipt can restore, each with its unarchive route.
+UNDO_KINDS: frozenset[str] = frozenset({"task", "project"})
+_UUID_RE = _re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def undo_value(kind: str, row_id: str, version: str | None) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_UNDO` event, or None.
+
+    *kind* is one of :data:`UNDO_KINDS`, *row_id* a UUID and *version* the
+    row's ``updated_at`` with a UTC offset. The Undo sends that version as
+    ``If-Match``, so a missing one gives None too. Any other value gives None,
+    so no line offers an Undo that cannot work."""
+    rid = str(row_id or "").strip().lower()
+    if kind not in UNDO_KINDS or not _UUID_RE.fullmatch(rid):
+        return None
+    stamp = str(version or "").strip()
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}T[0-9:.]+(Z|[+-]\d{2}:?\d{2})", stamp):
+        return None
+    return {"kind": kind, "id": rid, "version": stamp}
+
+
+async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool:
+    """Offer Undo on the receipt of the card that the member just approved.
+
+    WT-6a. A tool calls it after the write that its card approved. It sends
+    one :data:`CONFIRMATION_UNDO` event on the channel that carried the card,
+    keyed by that card's ``request_id``. The tool names no card: the id comes
+    from :data:`_APPROVED_CARD`. True when the event went out. A frame with no
+    approved card, a value that :func:`undo_value` refuses, or a fault gives
+    False, and the receipt then offers no Undo. It never raises."""
+    card = _APPROVED_CARD.get()
+    # One card gives one Undo. A second call names no card.
+    _APPROVED_CARD.set(None)
+    value = undo_value(kind, row_id, version)
+    if card is None or value is None:
+        return False
+    request_id, publish = card
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_UNDO,
+                       "value": {"request_id": request_id, **value}})
+    except Exception:  # the receipt then offers no Undo
+        return False
+    return True
 
 
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
@@ -1095,6 +1143,51 @@ def _new_mail_redraft(form: dict) -> dict:
                 or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
             raise ValueError("a new-mail form names the card it revises and its draft")
         out["revises"], out["draft"] = revises, draft
+    if "changed" in form:
+        if "revises" not in out:
+            raise ValueError("a new-mail form names what changed only with the card it revises")
+        out["changed"] = _new_mail_changed(form["changed"])
+    return out
+
+
+#: The act kinds that a link names (``redraft.ACT_OF_KIND``), and the parts of ``changed``.
+_CHANGED_ACTS = frozenset({"new", "forward", "reply"})
+_CHANGED_PEOPLE = ("to", "cc", "bcc")
+
+
+def _new_mail_changed(value: Any) -> dict:
+    """What differs from the card that this card replaces (HRD-8b), checked.
+
+    The gateway sets it (``redraft.changed_since``), and the tool copies it. It
+    holds an ``act`` of ``{was, now}`` and the ``to``, ``cc`` and ``bcc`` of
+    ``{added, removed}``, each a short list of text. Anything else raises
+    ``ValueError``, so no card draws a claim of a model."""
+    from acb_skills.reply_card import MAX_REPLY_RECIPIENTS
+
+    if not isinstance(value, dict) or not value or set(value) - {"act", *_CHANGED_PEOPLE}:
+        raise ValueError("a new-mail form names what changed as act, to, cc and bcc")
+    out: dict = {}
+    if "act" in value:
+        act = value["act"]
+        if (not isinstance(act, dict) or set(act) != {"was", "now"}
+                or act["was"] not in _CHANGED_ACTS or act["now"] not in _CHANGED_ACTS):
+            raise ValueError("a new-mail form names a changed act as was and now")
+        out["act"] = {"was": act["was"], "now": act["now"]}
+    for name in _CHANGED_PEOPLE:
+        if name not in value:
+            continue
+        part = value[name]
+        if not isinstance(part, dict) or set(part) != {"added", "removed"}:
+            raise ValueError(f"a new-mail form names changed {name} as added and removed")
+        lists = {}
+        for side in ("added", "removed"):
+            items = part[side]
+            if (not isinstance(items, list) or len(items) > MAX_REPLY_RECIPIENTS
+                    or not all(isinstance(a, str) and 0 < len(a) <= 320 for a in items)):
+                raise ValueError(f"a new-mail form names {name} {side} as a list of addresses")
+            lists[side] = list(items)
+        if lists["added"] or lists["removed"]:
+            out[name] = lists
     return out
 
 
@@ -1419,12 +1512,358 @@ async def _close_on_new_steer(fut: Any, thread_id: str, before: frozenset[int],
 # Every app's write card closes in :func:`request_confirmation`, so this one
 # record covers email, Projects, CRM, Studio and each later app.
 
+# ── The one vocabulary of card outcomes (HRD-7) ─────────────────────────────
+#
+# ``chat_failure_modes.md`` C1: in Projects a reject, a timeout and a cancel
+# were ONE string, and email and CRM had their own. On 2026-11-11 the model
+# said that a card the member had discarded was "up for your decision". So
+# each outcome of a card has ONE word and ONE text, here, and each card family
+# (Projects, CRM, email) takes its words from :data:`CARD_OUTCOMES`. Add each
+# outcome here, and never start a second list. Fence:
+# ``tests/unit/test_card_outcome_vocabulary.py``.
+
+#: The member approved the card.
+CARD_APPROVED = "approved"
+#: The member said no on the card. Discard on a reply card is a no too.
+CARD_DECLINED = "declined"
+#: The card got no answer before the wait ended.
+CARD_TIMED_OUT = "timed out"
 #: The outcome of a card that a chat message of the member closed before the
-#: member answered it. HRD-7 (``chat_failure_modes.md`` C1) grows ONE
-#: vocabulary of card outcomes from this word: approved, declined, closed by
-#: your message, timed out, parked, changed since. Add each outcome here, and
-#: never start a second list.
+#: member answered it (task 3130). The run's answer also ends with
+#: :func:`closed_card_line`.
 CLOSED_BY_YOUR_MESSAGE = "closed by your message"
+#: No card could show: a WhatsApp run, a batch or scheduled run, or a run
+#: with no person present (AUTO-7a).
+CARD_NOT_SHOWN = "no card"
+#: The card asked one member, and the answer came from someone else (PZ-32).
+CARD_OTHER_MEMBER = "another member answered"
+#: The card stays open after the run ends (WS-51 S2). No caller reads it yet:
+#: RESUME-4 owns the model's side of a parked card.
+CARD_PARKED = "parked"
+#: The object changed after the card showed. HRD-10a gives the first caller:
+#: ``update_task`` of Projects, behind :func:`card_precondition_on`.
+CARD_CHANGED_SINCE = "changed since"
+
+
+class CardOutcome(_NamedTuple):
+    """The text of one card outcome: the lead, what happened, the next step.
+
+    The text reads ``"<lead>: <happened> <next>"``. A card family can put one
+    sentence that names its act between the two parts (:func:`card_outcome_text`).
+    The lead is the first word that the model and a chat card read. The chat
+    cards draw by the lead (``src/lib/cardOutcomes.ts``)."""
+
+    lead: str
+    happened: str
+    next: str
+
+
+#: THE table of card outcomes (HRD-7). Each text says what happened and the
+#: next step. Each text of a card that did nothing says "nothing was done",
+#: so the measure of ``evals/one_assistant_measure`` reads it as an act that
+#: did not happen. ``src/lib/cardOutcomes.ts`` holds the same leads.
+CARD_OUTCOMES: dict[str, CardOutcome] = {
+    CARD_APPROVED: CardOutcome(
+        "Approved",
+        "the member approved the card.",
+        "Do the act now, and say what it did."),
+    CARD_DECLINED: CardOutcome(
+        "Declined",
+        "the member said no on the card, so nothing was done. The card is "
+        "closed, and no decision is open.",
+        "Tell the member that it was not done. Show the card again only if "
+        "the member asks for it."),
+    CARD_TIMED_OUT: CardOutcome(
+        "Timed out",
+        "the card got no answer in time, so nothing was done. The card is "
+        "closed.",
+        "Tell the member that it was not done. Ask whether to show the card "
+        "again."),
+    CLOSED_BY_YOUR_MESSAGE: CardOutcome(
+        "Closed by your message",
+        "the member wrote in the chat while the card was open, and nothing "
+        "was done.",
+        "Read the member's words next, as their own chat message. If they "
+        "change this act, keep each part that they do not change. Then call "
+        "the tool again, so that a new card shows. If they ask about "
+        "something else, answer that first. Then ask whether to show the "
+        "card again."),
+    CARD_NOT_SHOWN: CardOutcome(
+        "Not shown",
+        "a card cannot show here, so nothing was done.",
+        "Tell the member that this needs their approval on a card. Ask them "
+        "to ask for it again in the Metorite web app, where a card can show."),
+    CARD_OTHER_MEMBER: CardOutcome(
+        "Answered by another member",
+        "someone other than the member who asked answered the card, so "
+        "nothing was done.",
+        "Tell the member that only they can approve this card. Ask whether "
+        "to show it again."),
+    CARD_PARKED: CardOutcome(
+        "Parked",
+        "the card waits in the chat for the member's answer, and nothing was "
+        "done yet.",
+        "Tell the member that the card waits for them. Do not say that it is "
+        "done."),
+    # Owner decision A (HRD-10a, 2026-11-16): text first. The model tells the
+    # member, and a new card shows only when the member asks for it.
+    CARD_CHANGED_SINCE: CardOutcome(
+        "Changed since the card",
+        "the item changed after the card showed, so nothing was done.",
+        "Tell the member what changed. Show a new card only if the member "
+        "asks for it."),
+}
+
+#: The leads of each outcome of a card that did nothing.
+CARD_NOT_DONE_LEADS: tuple[str, ...] = tuple(
+    o.lead for k, o in CARD_OUTCOMES.items() if k != CARD_APPROVED)
+
+
+#: Task 3827: the card that the member approved last in this frame, with the
+#: publisher of its stream. Only :func:`request_confirmation` writes it, and
+#: only on an APPROVE. :func:`card_outcome_head` reads it once, for a
+#: "Changed since the card" text. The default is None, never a mutable object.
+#: WT-6a: :func:`publish_card_undo` reads it once too, after the write that
+#: the card approved. So one card gives a "Changed since" text or an Undo,
+#: never both. A ContextVar, so two tools that run at once each read their own.
+_APPROVED_CARD: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
+    "acb_approved_card", default=None)
+
+#: The event that tells the chat an approved card did nothing (task 3827). The
+#: chat reads it to change its "Approved" line. ``src/lib/confirmationQueue.ts``
+#: holds the same name (``CONFIRMATION_NOT_DONE``).
+CONFIRMATION_NOT_DONE = "confirmation_not_done"
+
+#: Tasks that publish the event. A set keeps each one alive until it ends.
+_NOT_DONE_TASKS: set[Any] = set()
+
+
+def _announce_changed_since() -> None:
+    """Tell the chat that the card the member just approved did nothing,
+    because the object changed after the card (task 3827).
+
+    The tool answer holds the same words for the model. The member read
+    "Approved" on the receipt line before the tool ran, and the id of the
+    card is the only link between that line and this result. It fires once
+    for a card, and only after an APPROVE of that card in this frame. It
+    never raises, and it never waits."""
+    held = _APPROVED_CARD.get()
+    if held is None:
+        return
+    _APPROVED_CARD.set(None)
+    rid, publish = held
+    try:
+        import asyncio as _asyncio
+
+        task = _asyncio.get_running_loop().create_task(publish({
+            "type": "CUSTOM",
+            "name": CONFIRMATION_NOT_DONE,
+            "value": {"request_id": rid, "outcome": CARD_CHANGED_SINCE},
+        }))
+    except Exception:  # no loop, or no publisher: the text still goes out
+        return
+    _NOT_DONE_TASKS.add(task)
+    task.add_done_callback(lambda t: (_NOT_DONE_TASKS.discard(t),
+                                      t.cancelled() or t.exception()))
+
+
+def card_outcome_head(outcome: str, act: str = "") -> str:
+    """The lead and what happened of *outcome*, then *act*, with no next step.
+
+    A card family that keeps its own next step uses it: the email redraft
+    texts keep theirs (HRD-8a). *act* is one sentence that names the act,
+    such as "No lead was created for Veena." A ``KeyError`` names an outcome
+    that is not in :data:`CARD_OUTCOMES`.
+
+    Task 3827: a "Changed since the card" head also tells the chat, by the
+    id of the approved card, so its receipt line stops reading "Approved".
+    Each text with this head says that nothing was done: a batch that wrote
+    some rows holds no such head (``skill_projects.writes``)."""
+    o = CARD_OUTCOMES[outcome]
+    if outcome == CARD_CHANGED_SINCE:
+        _announce_changed_since()
+    head = f"{o.lead}: {o.happened}"
+    act = " ".join(str(act or "").split())
+    return f"{head} {act}" if act else head
+
+
+def card_outcome_text(outcome: str, act: str = "") -> str:
+    """The whole text of *outcome* (:data:`CARD_OUTCOMES`): the lead, what
+    happened, *act* when given, and the next step."""
+    return f"{card_outcome_head(outcome, act)} {CARD_OUTCOMES[outcome].next}"
+
+
+#: HRD-7: the outcome of the last card of this frame, or None. Only
+#: :func:`request_confirmation` writes it: None when it starts, then one
+#: outcome on each way out but a raise. A ContextVar, so each task reads its
+#: own. A tool reads it right after its own ``await`` of the card, in the same
+#: task, so a card of a parallel tool call never reaches it. ⚠️ The default is
+#: None, never a mutable object.
+_LAST_OUTCOME: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
+    "acb_last_card_outcome", default=None)
+
+
+def last_card_outcome() -> str | None:
+    """The outcome of the last :func:`request_confirmation` of this frame,
+    a key of :data:`CARD_OUTCOMES`, or None when no card asked yet, or when
+    the card raised. The bool or the sentinel of the card stays its answer.
+    This only says WHY a card did nothing."""
+    return _LAST_OUTCOME.get()
+
+
+def clear_card_outcome() -> None:
+    """Forget the outcome of the last card of this frame, as the start of
+    :func:`request_confirmation` does. TOF-3a F12b calls it before a tool of
+    a loaded skill runs, so a call with no card of its own reads None."""
+    _LAST_OUTCOME.set(None)
+    _APPROVED_CARD.set(None)
+
+
+def card_not_done_text(act: str = "") -> str:
+    """The text of a tool whose card did nothing, from the outcome of the
+    last card of this frame (:func:`last_card_outcome`), with *act*.
+
+    An approve reads as declined here: a tool calls this only when it did not
+    act, such as a card with rows whose approve left out the row that the act
+    needs. No outcome reads as declined too, so a tool that a test drives
+    with a fake card keeps one text."""
+    outcome = _LAST_OUTCOME.get()
+    if outcome is None or outcome == CARD_APPROVED or outcome not in CARD_OUTCOMES:
+        outcome = CARD_DECLINED
+    return card_outcome_text(outcome, act)
+
+
+def card_precondition_on(org: object = None) -> bool:
+    """True when ``CHAT_CARD_PRECONDITION_ORGS`` names *org*. THE reader
+    (HRD-10a).
+
+    *org* defaults to the bound tenant of the run (``acb_common.db``), never
+    to a value of the request (R5). A comma list of org ids, or ``*`` for
+    each one. Empty means off, the default. It reads the settings on each
+    call, so a flag reload (``docs/flag_reload.md``) applies a change with no
+    restart. Any fault reads as off.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "chat_card_precondition_orgs", "") or "")
+        entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        if not entries:
+            return False
+        if "*" in entries:
+            return True
+        if org is None:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        name = str(org or "").strip().lower()
+        return bool(name) and name in entries
+    except Exception:
+        return False
+
+
+#: CO-17: the card id of the last card that the member approved on this frame,
+#: the chat it was in, and the tool call frame (:data:`_CARD_FRAME`) of the
+#: card, or None. :func:`note_record_link` and :func:`note_sent_message` read
+#: it. ⚠️ The default is None, never a mutable object.
+_LAST_APPROVED: _contextvars.ContextVar[tuple[str, str, object | None] | None] = (
+    _contextvars.ContextVar("acb_last_approved_card", default=None))
+
+#: Task 3594: the frame of ONE tool call. :func:`card_call` sets a new object
+#: for each call, and the approved card keeps it. On the Copilot path one
+#: context is copied to each tool of a run, so a card that one tool approved
+#: could reach a later tool that showed no card. A send counts only in the
+#: same frame as its card. ⚠️ The default is None, never a mutable object.
+_CARD_FRAME: _contextvars.ContextVar[object | None] = _contextvars.ContextVar(
+    "acb_card_frame", default=None)
+
+
+async def _record_approved_card(request_id: str | None, responder: str = "") -> None:
+    """CO-17 (``chat_organization.md`` §16.3): write the card record of the
+    card *request_id* that the member just approved. The record holds the
+    chat, the member, the card id and the act kind (the tool's own name), and
+    no text of the card. Dark behind ``CHAT_CARD_RECORD_ORGS``. A fault is no
+    fault of the card: it writes nothing and the answer stands. Never raises.
+
+    *responder* is the gateway's session member who answered the card, never
+    a field of the answer. In a room it can be another member than the run's
+    own, and the row then names the member who approved. A path with no card
+    id of its own (a late approve, a stored call, a WhatsApp reply code)
+    passes None, and a new id is made."""
+    _LAST_APPROVED.set(None)
+    try:
+        import uuid as _uuid
+
+        from orchestrator.card_record import act_kind_of, record_approved
+        from orchestrator.executor import resolve_relay_thread_id
+
+        request_id = request_id or _uuid.uuid4().hex
+
+        tid = resolve_relay_thread_id() or ""
+        if not tid:
+            return
+        _LAST_APPROVED.set((tid, request_id, _CARD_FRAME.get()))
+        await record_approved(tid, request_id, act_kind_of(_CARD_TOOL.get()),
+                              responder=responder)
+    except Exception:  # noqa: BLE001
+        return
+
+
+async def note_sent_message(message_id: str, recipients: Any = (), *,
+                            request_id: str | None = None) -> bool:
+    """CO-17 and task 3594: a send tool says what went, AFTER the provider
+    took the mail. Never before the send, and never on a decline, a close or
+    a failure.
+
+    *message_id* is the provider id of the mail, a token. *recipients* are the
+    addresses that the member approved on the card. *request_id* is the id of
+    the card that the tool itself awaited, when the tool knows it.
+
+    The card record of the approved card takes them once, so the next turn
+    of the chat reads the send (``orchestrator.card_record.set_sent``). The
+    bind is explicit: the approved card must be of THIS tool call frame
+    (:data:`_CARD_FRAME`). With no frame, *request_id* must name the card.
+    A use spends the hold, so a second send of the same card counts for
+    nothing. False with no approved card, with the flag off and on a fault.
+    Never raises."""
+    held = _LAST_APPROVED.get()
+    if held is None:
+        return False
+    tid, rid, frame = held
+    if frame is not _CARD_FRAME.get():
+        return False
+    if frame is None and (request_id is None or request_id != rid):
+        return False
+    _LAST_APPROVED.set(None)
+    try:
+        from orchestrator.card_record import set_sent
+
+        return await set_sent(tid, rid, message_id, list(recipients or []))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def note_record_link(link: str) -> bool:
+    """CO-17: a tool that made a record after an approved card says its app
+    path, such as ``/projects?task=<id>``. The card record of the last
+    approved card of this frame takes it once. Only an app path counts, never
+    free text. False with no approved card, with the flag off and on a fault.
+    Never raises."""
+    held = _LAST_APPROVED.get()
+    if held is None:
+        return False
+    try:
+        from orchestrator.card_record import set_link
+
+        return await set_link(held[0], held[1], link)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _noted(outcome: str, answer: Any) -> Any:
+    """Record *outcome* for :func:`last_card_outcome`, and give *answer*."""
+    _LAST_OUTCOME.set(outcome)
+    return answer
 
 
 #: The act keys of one card: one key for each act that the card can do. A
@@ -1486,6 +1925,118 @@ def release_closed_cards(token: _contextvars.Token[ClosedCards | None]) -> None:
         _RUN_CLOSED_CARDS.reset(token)
     except ValueError:
         _RUN_CLOSED_CARDS.set(None)
+
+
+class ApprovedActs:
+    """The approved acts that ran in one reply (task 3595, PARK-LINE).
+
+    Each entry is the title of a card that the member approved, whose tool
+    then said at its own success site that the act ran (:func:`act_ran`). A
+    park names them in one line (:func:`take_park_line`) as inert acts
+    (:func:`card_act`), so the member hears what the reply made before it
+    stopped at a card. The same title twice stays twice: two tasks are two
+    acts."""
+
+    __slots__ = ("acts",)
+
+    def __init__(self) -> None:
+        self.acts: list[str] = []
+
+    def ran(self, title: str) -> None:
+        """The act of the approved card titled *title* ran."""
+        self.acts.append(str(title))
+
+    def take(self) -> list[str]:
+        """Each title in order. The list is then empty."""
+        out, self.acts = self.acts, []
+        return out
+
+
+# ⚠️ The default is None, never a mutable object (orchestrator rule 23).
+_RUN_APPROVED_ACTS: _contextvars.ContextVar[ApprovedActs | None] = _contextvars.ContextVar(
+    "acb_approved_acts", default=None,
+)
+
+#: The title of the last card of this frame, or None. :func:`request_confirmation`
+#: sets it as it sets :data:`_LAST_OUTCOME` to None (:func:`_open_card_frame`).
+#: The gate wrapper of ``_tool_injection`` clears it before each tool call
+#: (:func:`forget_card_marks`), so a title of an earlier call never names this
+#: call's act.
+_LAST_TITLE: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
+    "acb_last_card_title", default=None)
+
+#: True when the tool of THIS call said that the act of its last card ran
+#: (:func:`act_ran`). A new card sets it to False, and so does the gate
+#: wrapper before each call. The park line names an act ONLY on this proof:
+#: the default is "not named", so a tool that never calls :func:`act_ran`
+#: names nothing (task 3595, the redesign after two reviews).
+_ACT_RAN: _contextvars.ContextVar[bool] = _contextvars.ContextVar(
+    "acb_card_act_ran", default=False)
+
+
+def _open_card_frame(title: str) -> None:
+    """A new card of this frame, titled *title*: no act of it ran yet.
+    :func:`request_confirmation` calls it on every card."""
+    _LAST_TITLE.set(title)
+    _ACT_RAN.set(False)
+
+
+def act_ran() -> None:
+    """The act of this call's card really ran (task 3595, PARK-LINE).
+
+    A tool calls it at its SUCCESS SITE only: after the write succeeded and
+    its receipt names what the write made (an id came back, each row of a
+    batch landed). Never before the write, and never on a partial or a
+    refused path. The park line of the reply then names the act, if the
+    member approved the card. A tool that never calls it names nothing,
+    which is the safe side. ``tests/unit/test_park_made_line.py`` holds the
+    list of the tools that call it."""
+    _ACT_RAN.set(True)
+
+
+def open_approved_acts_for_run() -> _contextvars.Token[ApprovedActs | None]:
+    """Open a fresh record of approved acts for the run that starts now.
+    ``run_agent_stream`` calls it for a run that is not delegated, so a
+    child run writes into its parent's record. It gives the token to
+    :func:`release_approved_acts` in the same ``finally``."""
+    return _RUN_APPROVED_ACTS.set(ApprovedActs())
+
+
+def release_approved_acts(token: _contextvars.Token[ApprovedActs | None] | None) -> None:
+    """Undo :func:`open_approved_acts_for_run`. None (a delegated run opened
+    no record) does nothing. A token of another context sets the default."""
+    if token is None:
+        return
+    try:
+        _RUN_APPROVED_ACTS.reset(token)
+    except ValueError:
+        _RUN_APPROVED_ACTS.set(None)
+
+
+def forget_card_marks() -> None:
+    """Clear the title of the last card and the proof of its act. The gate
+    wrapper calls it just before a tool runs, so only a card of that call,
+    and only the success site of that call, names an act."""
+    _LAST_TITLE.set(None)
+    _ACT_RAN.set(False)
+
+
+def note_approved_act() -> bool:
+    """Record the act of this call's last card. True when it recorded.
+
+    It records only on three proofs together: the member approved the card
+    (:func:`last_card_outcome`), the tool said at its success site that the
+    act ran (:func:`act_ran`), and the run has a record. The gate wrapper
+    calls it after a normal return only, so a raise records nothing. It
+    reads no result text: a text cannot prove an act."""
+    holder = _RUN_APPROVED_ACTS.get()
+    title = _LAST_TITLE.get()
+    if holder is None or title is None or _LAST_OUTCOME.get() != CARD_APPROVED:
+        return False
+    if not _ACT_RAN.get():
+        return False
+    holder.ran(title)
+    return True
 
 
 # ── The act key of a card: the tool call that drew it ────────────────────────
@@ -1554,6 +2105,15 @@ _CARD_TOOL: _contextvars.ContextVar[Any] = _contextvars.ContextVar(
     "acb_card_tool", default=None,
 )
 
+#: RESUME-1a: the bound arguments of the call that a card belongs to
+#: (:func:`card_call`), by parameter name, for the stored call of the card
+#: (``acb_skills.stored_call``). None for a delegation tool and for a call
+#: whose arguments do not bind by name. ⚠️ The default is None, never a
+#: mutable object.
+_CARD_ARGS: _contextvars.ContextVar[dict[str, Any] | None] = _contextvars.ContextVar(
+    "acb_card_args", default=None,
+)
+
 
 @_dataclass(frozen=True)
 class PlainCard:
@@ -1602,6 +2162,19 @@ async def _late_approved(card: PlainCard) -> bool:
         return False
 
 
+async def _resume_yes(card: PlainCard | None) -> bool:
+    """True when this card is the card of a stored call that the member
+    approved late (RESUME-2a, ``acb_skills.stored_call.resume_answer``).
+    Outside the scope of one stored call it is False at once. A fault gives
+    False, and the card shows as before."""
+    try:
+        from acb_skills.stored_call import resume_answer
+
+        return await resume_answer(card)
+    except Exception:  # fail closed: the card shows
+        return False
+
+
 def _take_card_facts() -> dict[str, Any] | None:
     """The facts that the tool bound for this card
     (``whatsapp_acts.take_card_facts``), or None. A fault gives None."""
@@ -1632,6 +2205,44 @@ async def _late_approve_spent(card: PlainCard) -> None:
 
         await note_approved(card)
     except Exception:  # the answer stands
+        return
+
+
+def _bind_stored_call(request_id: str, card: PlainCard | None) -> bool:
+    """Bind the stored call of the plain card *card* to *request_id*, BEFORE
+    the card goes out (RESUME-1a, ``chat_run_continuity.md`` §4.12.4 item 1).
+
+    ``acb_skills.stored_call.stored_call_of`` decides whether the card stores
+    a call, and ``orchestrator.pending_ask.bind_call`` holds it by the request
+    id, out of band. On path A the row is written in the executor's drain,
+    which cannot read this frame's context, so a ContextVar would not reach
+    it. A card with rows, a reply form or a held send id has no *card*. With
+    ``CHAT_RESUME_ORGS`` off it binds nothing. True when bound. A fault binds
+    nothing, and the card shows as before. Never raises."""
+    if card is None:
+        return False
+    try:
+        from acb_skills.stored_call import stored_call_of
+
+        stored = stored_call_of(card, _CARD_ARGS.get())
+        if stored is None:
+            return False
+        from orchestrator.pending_ask import bind_call
+
+        return bool(bind_call(request_id, stored))
+    except Exception:
+        return False
+
+
+def _unbind_stored_call(request_id: str) -> None:
+    """Drop what :func:`_bind_stored_call` left for *request_id* (RESUME-1a).
+    The wait of the card calls it on every way out, so nothing stays with
+    ``CHAT_DURABLE_ASKS`` off. Never raises."""
+    try:
+        from orchestrator.pending_ask import unbind_call
+
+        unbind_call(request_id)
+    except Exception:
         return
 
 
@@ -1727,25 +2338,49 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
     gates, beside ``whatsapp_acts.tool_call``. A nested call opens its own,
     so a card reads the innermost call. *keyless* (a delegation tool) opens
     a scope with no key, so a card of a child run never takes the key of
-    the call that started the child. A fault gives no key. Never raises."""
+    the call that started the child. A fault gives no key. Never raises.
+
+    RESUME-1a: it also holds the bound arguments of the call (``_CARD_ARGS``),
+    for the stored call of a card. A delegation tool holds none."""
     keys: ActKeys | None = None
+    arguments: dict[str, Any] | None = None
     if not keyless:
         try:
             import inspect as _inspect
 
             try:
-                bound = dict(_inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
+                signature = _inspect.signature(fn)
+                bound = dict(signature.bind_partial(*args, **kwargs).arguments)
+                arguments = _by_name(signature, bound)
             except (TypeError, ValueError):
                 bound = {} if args else dict(kwargs)
+                arguments = None if args else dict(kwargs)
             keys = act_keys(str(getattr(fn, "__module__", "") or ""),
                             str(getattr(fn, "__name__", "") or ""), bound)
         except Exception:
             keys = None
     token = _CARD_CALL.set(keys)
     tool_token = _CARD_TOOL.set(None if keyless else fn)
+    args_token = _CARD_ARGS.set(None if keyless else arguments)
+    # Task 3594: a new frame for this call, and no approved card of an
+    # earlier call. A send of this call counts only after a card of this call.
+    frame_token = _CARD_FRAME.set(object())
+    approved_token = _LAST_APPROVED.set(None)
     try:
         yield
     finally:
+        try:
+            _LAST_APPROVED.reset(approved_token)
+        except ValueError:
+            _LAST_APPROVED.set(None)
+        try:
+            _CARD_FRAME.reset(frame_token)
+        except ValueError:
+            _CARD_FRAME.set(None)
+        try:
+            _CARD_ARGS.reset(args_token)
+        except ValueError:
+            _CARD_ARGS.set(None)
         try:
             _CARD_TOOL.reset(tool_token)
         except ValueError:
@@ -1754,6 +2389,20 @@ def card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any], *,
             _CARD_CALL.reset(token)
         except ValueError:
             _CARD_CALL.set(None)
+
+
+def _by_name(signature: Any, bound: dict[str, Any]) -> dict[str, Any] | None:
+    """*bound* when each value binds a named parameter, or None (RESUME-1a).
+
+    A ``*args`` or ``**kwargs`` value cannot go back to the tool by name, so
+    such a call stores no call."""
+    import inspect as _inspect
+
+    star = (_inspect.Parameter.VAR_POSITIONAL, _inspect.Parameter.VAR_KEYWORD)
+    params = signature.parameters
+    if any(params[name].kind in star for name in bound if name in params):
+        return None
+    return dict(bound)
 
 
 def _card_opened(keys: ActKeys | None) -> None:
@@ -1836,10 +2485,45 @@ def closed_card_line(titles: list[str]) -> str:
     if len(acts) == 1:
         return (f"Not done: {acts[0]}. The card closed when a new message came in. "
                 "Say 'do it' to get it back.")
-    joined = (f"{acts[0]} and {acts[1]}" if len(acts) == 2
-              else ", ".join(acts[:-1]) + f", and {acts[-1]}")
-    return (f"Not done: {joined}. The cards closed when a new message came in. "
+    return (f"Not done: {_listed(acts)}. The cards closed when a new message came in. "
             "Say 'do it' to get them back.")
+
+
+def _listed(items: list[str]) -> str:
+    """"a", "a and b", or "a, b, and c"."""
+    if len(items) < 3:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + f", and {items[-1]}"
+
+
+#: The lead of the park line (task 3595).
+PARK_LINE_LEAD = "Approved and run in this reply"
+
+
+def park_line(acts: list[str], waiting: str = "") -> str:
+    """The line of a parked reply that ran approved acts (task 3595).
+
+    Empty for no act. Each act is inert text (:func:`card_act`) in one « »
+    fence. *waiting* is the question of the card that parked. The words are
+    history, so they stay true after a late Approve of that card. They have
+    no word "done", no link and no id."""
+    fenced = [f"«{card_act(a)}»" for a in acts or []]
+    if not fenced:
+        return ""
+    stop = (f"This reply stopped at the card «{card_act(waiting)}» to wait for your answer."
+            if str(waiting or "").strip()
+            else "This reply stopped at a card to wait for your answer.")
+    return f"{PARK_LINE_LEAD}: {_listed(fenced)}. {stop}"
+
+
+def take_park_line(waiting: str = "") -> str:
+    """The park line of this run's approved acts, once (:func:`park_line`).
+    ``pending_ask.park`` sends it after the "Not done" line and before its
+    ``RUN_FINISHED``. Empty when the run has no record or no act."""
+    holder = _RUN_APPROVED_ACTS.get()
+    if holder is None:
+        return ""
+    return park_line(holder.take(), waiting)
 
 
 def take_closed_card_line() -> str:
@@ -2033,6 +2717,45 @@ def edit_card_channel_open() -> bool:
         return False
 
 
+def task_edit_card_channel_open() -> bool:
+    """True when this run can show the card of a new task that the member
+    EDITS (``projects_ai_chat.md`` §32, EAC-1): ``PROJECT_EDIT_CARD_ORGS``
+    names the run's organization (``task_card.task_edit_card_on``), a card
+    channel is open (:func:`confirmation_channel_open`), and the run is not of
+    WhatsApp. The tool checks a held chat itself, before it asks.
+
+    Off, the card is the card of before, exactly. A WhatsApp run parks the
+    act for the member's Confirm (WAC-4), with no card. A fault reads False."""
+    try:
+        from acb_skills.task_card import task_edit_card_on
+
+        return task_edit_card_on() and confirmation_channel_open() and not _whatsapp_run()
+    except Exception:
+        return False
+
+
+def _task_edit_form(edit: dict | None, rows: list[dict] | None, reply: dict | None,
+                    with_answer: bool, request_id: str | None,
+                    member: str) -> dict | None:
+    """The edit form of a card (EAC-1), checked, or None for the card of before.
+
+    A bad form, or a form beside rows, a reply form or a held send id, is a
+    programming error of the calling tool, so it raises ``ValueError`` before
+    any card is drawn. The form is dropped, and the card is the card of
+    before, when :func:`task_edit_card_channel_open` is False or no member is
+    bound (``responder``). Only the run's own member may edit the values."""
+    if edit is None:
+        return None
+    if rows is not None or reply is not None or with_answer or request_id is not None:
+        raise ValueError("an edit form goes on a plain card only")
+    from acb_skills.task_card import clean_task_edit_form
+
+    form = clean_task_edit_form(edit)
+    if "@" not in member or not task_edit_card_channel_open():
+        return None
+    return form
+
+
 def _whatsapp_email_path() -> bool:
     """True in a WhatsApp run with writes on, where an email card can park
     for a reply code or take the yes of one (H-391). A fault reads False."""
@@ -2099,7 +2822,8 @@ async def request_confirmation(
     request_id: str | None = None,
     with_answer: bool = False,
     responder: str | None = None,
-) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
+    edit: dict | None = None,
+) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
     Renders a ``ConfirmationCard`` inline in the chat with Approve / Reject
@@ -2156,6 +2880,15 @@ async def request_confirmation(
             responder, is a REJECT. ``None`` binds no member, as before.
             The WhatsApp profile path is not a card answer, and its own
             gate binds the member (``whatsapp_acts``).
+        edit: optional edit form of a new task
+            (``task_card.create_task_form``, ``projects_ai_chat.md`` §32,
+            EAC-1). It goes on a plain card only, and it needs
+            ``responder``. The card draws the values as a form. A plain
+            ``APPROVE`` approves the original values. Only
+            ``task_card.parse_task_edit_answer`` reads an edited answer, and
+            any other shape is a REJECT. With ``PROJECT_EDIT_CARD_ORGS`` off,
+            in a WhatsApp run, with no channel and with no ``responder``, the
+            form is dropped, and the card is the card of before.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -2185,8 +2918,26 @@ async def request_confirmation(
         With ``reply``: a :class:`ReplyAnswer` when the member pressed Send
         or Save to Drafts, and ``None`` for Discard, a timeout, an answer
         that is not a reply answer, and a run with no card.
+
+        With ``edit``: a ``task_card.TaskEdit`` when the member approved
+        edited values, ``True`` for a plain ``APPROVE`` (the original
+        values), and ``False`` for each other answer, as a plain card.
+
+        HRD-7: the answer stays as above. :func:`last_card_outcome` then
+        gives WHY, as a key of :data:`CARD_OUTCOMES`: approved, declined,
+        timed out, closed by your message, no card, or another member
+        answered. A raise (a park, a stop) records no outcome.
     """
+    _LAST_OUTCOME.set(None)
+    # WT-6a: a card of an earlier call is never the card of this one. A path
+    # with no chat card (WhatsApp, no channel) leaves this None.
+    _APPROVED_CARD.set(None)
+    # CO-17: a new card ends the hold on the link slot of an earlier one.
+    _LAST_APPROVED.set(None)
     _title = str(title or "Confirm action").strip()[:120]
+    # Task 3595: the title of this card, beside its outcome, on every way
+    # out, and no proof yet that its act ran (:func:`act_ran`).
+    _open_card_frame(_title)
     _detail = str(detail or "").strip()[:500]
     _context = str(context or "").strip()[:4000]
     #: True when a field lost text to the clip above.
@@ -2199,12 +2950,15 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    #: EAC-1: the edit form of a new task, or None for the card of before.
+    _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
+                            str(responder or "").strip().lower())
     if _no_person_present():
         # AUTO-7a: before every path, the WhatsApp paths too. A run with no
         # person cannot ask anyone, and no argument of a tool changes that.
         if _reply is not None or _with_answer:
-            return None
-        return frozenset() if _rows is not None else False
+            return _noted(CARD_NOT_SHOWN, None)
+        return _noted(CARD_NOT_SHOWN, frozenset() if _rows is not None else False)
     # H-391: an email card in a WhatsApp run parks for the member's reply
     # code, or takes the yes of the code that approved it. Anything else
     # goes on below, as before.
@@ -2212,25 +2966,31 @@ async def request_confirmation(
         _title, _detail, _context, _rows, _reply, request_id, _with_answer,
         cut=_clipped)
     if _email is not _NOT_EMAIL:
-        return _email
+        if _email:
+            await _record_approved_card(None)
+        return _noted(CARD_APPROVED if _email else CARD_NOT_SHOWN, _email)
     if _reply is not None:
         if _rows is not None:
             raise ValueError("a card has rows or a reply form, never both")
         # No WhatsApp profile and no default: a reply needs the card.
         if cards_refused() or _whatsapp_run():
-            return None
+            return _noted(CARD_NOT_SHOWN, None)
     # WS-47 WAC-4: the WhatsApp profile answers first. It parks an allowed
     # act ("not yet"), or answers the Confirm of a parked one. None leaves
     # the card to the gate below. It never approves a card with rows.
     _profile = _whatsapp_answer(_title, _detail, _context, _rows)
     if _profile is not None:
-        # A held send card (§21) never takes an answer from a profile.
-        return None if _with_answer else _profile
+        # A held send card (§21) never takes an answer from a profile. A park
+        # shows no card: the tool reads ``whatsapp_acts.parked_line``.
+        _by_profile = None if _with_answer else _profile
+        if _by_profile:
+            await _record_approved_card(None)
+        return _noted(CARD_APPROVED if _by_profile else CARD_NOT_SHOWN, _by_profile)
     if cards_refused():
         # A deny, never an approve: a channel with no card is no consent.
         if _with_answer:
-            return None
-        return frozenset() if _rows is not None else False
+            return _noted(CARD_NOT_SHOWN, None)
+        return _noted(CARD_NOT_SHOWN, frozenset() if _rows is not None else False)
     # HRD-22 (chat_run_continuity.md S2 item 8): a plain card only. No rows,
     # no reply form and no held send id ever take a late approve, and a cut
     # card never does (the WhatsApp Confirm refuses one too).
@@ -2238,12 +2998,16 @@ async def request_confirmation(
     _card = PlainCard(
         _title, _detail, _context, _facts, _CARD_CALL.get(), _CARD_TOOL.get(),
         _clipped or _body_cut(context)) if _plain else None
-    if _card is not None and await _late_approved(_card):
+    # RESUME-2a (chat_run_continuity.md §4.12.4 item 2): inside the one call
+    # of a stored call, the first card asks the stored-call yes. Only the
+    # card that the member approved takes it. Any other card shows.
+    if await _resume_yes(_card) or (_card is not None and await _late_approved(_card)):
         # The member approved this very card late, in this thread. The grant
         # is gone, so this is its one use. It shows no card, and it takes the
         # place of a closed card with the same act (task 3130).
         _card_opened(_CARD_CALL.get())
-        return True
+        await _record_approved_card(None)
+        return _noted(CARD_APPROVED, True)
     # HRD-6: the card is the sign of the wait. The tool call that shows it
     # gets no "Please wait" line, and a line that shows goes.
     _member_waits()
@@ -2263,6 +3027,8 @@ async def request_confirmation(
             value["rows"] = _rows
         if _reply is not None:
             value["reply"] = _reply
+        if _edit is not None:
+            value["edit"] = _edit
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
@@ -2273,15 +3039,25 @@ async def request_confirmation(
     #: The thread that owns each card of this call (EM-CR): the key of the
     #: gateway's record of a reply answer.
     _card_thread: dict[str, str] = {}
+    #: HRD-7: set when a REJECT came from someone other than the member who
+    #: asked (PZ-32), so the outcome is not the member's own no.
+    _other_member: list[bool] = []
+    #: EAC-1: the member's edited values of an edit card.
+    _edited: list[TaskEdit] = []
+
+    #: CO-17: the gateway's session member who answered the card.
+    _responded: list[str] = []
 
     def _verdict(result: dict, rid: str = "") -> tuple[str, frozenset[str] | None]:
         """The card's closing answer, and the ticked ids of a rows card."""
         said = str(result.get("answer", "")).strip()
+        _responded.append(str(result.get("responder") or "").strip().lower())
         if result.get("revised") is True:
             return REVISED_ANSWER, None
         if _member and str(result.get("responder") or "").strip().lower() != _member:
             # PZ-32: the card asked the run's own member. An answer of anyone
             # else, or of nobody named, is no approval.
+            _other_member.append(True)
             return "REJECT", None
         if _reply is not None:
             from acb_skills.reply_card import parse_new_mail_answer, parse_reply_answer
@@ -2297,6 +3073,18 @@ async def request_confirmation(
             _replied.append(ReplyAnswer(rid, raw, choice,
                                         str(result.get("responder") or ""),
                                         _card_thread.get(rid, "")))
+            return "APPROVE", None
+        if _edit is not None and said.upper() != "APPROVE":
+            from acb_skills.task_card import parse_task_edit_answer
+
+            # EAC-1: the one parser of the `edit` key. Any other shape, a
+            # `reply` or `rows` answer too, is no answer. The responder is
+            # the gateway's session member, never a field of the answer.
+            edited = parse_task_edit_answer(str(result.get("answer", "")),
+                                            str(result.get("responder") or ""))
+            if edited is None:
+                return "REJECT", None
+            _edited.append(edited)
             return "APPROVE", None
         if _rows is None:
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
@@ -2322,7 +3110,7 @@ async def request_confirmation(
 
     async def _block_on(
         _fut, _rid, _pending, _publish, _baseline=None,
-    ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | _Revised | None:
+    ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
         """Park on the answer, then say on the stream that the card is closed.
 
         A model can call card-gated tools in parallel, so one stream can carry
@@ -2367,12 +3155,29 @@ async def request_confirmation(
             if _watch is not None:
                 _watch.cancel()
             _pending.pop(_rid, None)
+            # RESUME-1a: the row took its stored call, or none was written.
+            # Either way nothing of it stays in the process.
+            _unbind_stored_call(_rid)
             # Best effort: the run's end clears a blocking card too. A PARKED
             # card (WS-51 S2) is not closed: it stays open for a late answer,
             # which a new run takes (``orchestrator.pending_ask``).
             with _contextlib.suppress(Exception):
                 if not _was_parked(_rid):
                     await _publish(_resolved_event(_rid, _answer))
+        # HRD-7: why the card closed. The answer below does not change.
+        _LAST_OUTCOME.set(
+            CARD_APPROVED if _answer == "APPROVE"
+            else CLOSED_BY_YOUR_MESSAGE if _answer == REVISED_ANSWER
+            else CARD_TIMED_OUT if _answer == "TIMEOUT"
+            else CARD_OTHER_MEMBER if _other_member
+            else CARD_DECLINED)
+        # Task 3827: the id of this card, for a "Changed since" text that follows.
+        # WT-6a: only an APPROVE of this card lets a later Undo name it.
+        _APPROVED_CARD.set(
+            (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
+        if _answer == "APPROVE":
+            # CO-17: the durable record of an approved card. No card text.
+            await _record_approved_card(_rid, _responded[-1] if _responded else "")
         if _answer == REVISED_ANSWER:
             # Task 3130: the run's answer ends with the "Not done" line.
             _card_closed_by_message(_title, _act)
@@ -2389,6 +3194,9 @@ async def request_confirmation(
             # HRD-22: the act runs now, so no stale twin of this card may run
             # it again on a late approve.
             await _late_approve_spent(_card)
+        if _answer == "APPROVE" and _edited:
+            # EAC-1: the member's edited values. A plain APPROVE is True.
+            return _edited[0]
         return _answer == "APPROVE"
 
     # ── Path A: _active_run_queue (native MAF / Tier 2 blocking) ──────────
@@ -2410,7 +3218,14 @@ async def request_confirmation(
         _card_thread[_rid] = str(getattr(_pending_user_input, "owner_of", lambda _r: "")(_rid)
                                  or "")
         _base = _steer_baseline()
-        await queue.put(_event(_rid))
+        # RESUME-1a: the stored call binds BEFORE the card goes out, so the
+        # drain's `pending_ask.note_event` finds it when it writes the row.
+        _bind_stored_call(_rid, _card)
+        try:
+            await queue.put(_event(_rid))
+        except BaseException:
+            _unbind_stored_call(_rid)
+            raise
         return await _block_on(_fut, _rid, _pending_user_input, queue.put, _base)
 
     # ── Path C: Redis relay (blocking on BOTH Copilot-SDK and native MAF) ──
@@ -2437,7 +3252,14 @@ async def request_confirmation(
             _card_thread[_rid] = str(_tid)
             _line = f"data: {_json.dumps(_event(_rid))}\n\n"
             _base = _steer_baseline()
-            await _push_sse_to_stream(_tid, _line)
+            # RESUME-1a: the stored call binds BEFORE the push, which writes
+            # the row (`pending_ask.note_event`).
+            _bind_stored_call(_rid, _card)
+            try:
+                await _push_sse_to_stream(_tid, _line)
+            except BaseException:
+                _unbind_stored_call(_rid)
+                raise
 
             async def _publish(ev: dict, _t: str = _tid) -> None:
                 await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
@@ -2450,8 +3272,9 @@ async def request_confirmation(
     # caller explicitly opted a reversible action into auto-approval. A reply
     # form never auto-approves: there is no body the member submitted.
     if _reply is not None or _with_answer:
-        return None
+        return _noted(CARD_NOT_SHOWN, None)
     approved = str(non_interactive_default).strip().lower() == "approve"
+    _LAST_OUTCOME.set(CARD_APPROVED if approved else CARD_NOT_SHOWN)
     if _rows is not None:
         return frozenset(r["id"] for r in _rows if r["checked"]) if approved else frozenset()
     return approved

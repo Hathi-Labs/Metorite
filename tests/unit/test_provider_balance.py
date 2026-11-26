@@ -280,10 +280,23 @@ class TestStatusRule:
         v = pb.assess(h, now=NOW)
         assert (v.status, v.cause) == ("out", "payment")
 
-    def test_a_402_is_not_cleared_by_a_later_success(self):
-        """The reviewer's rule: 401 and 402 stay as they were."""
+    def test_a_402_is_cleared_by_a_later_SERVED_call_when_there_is_no_probe(self):
+        """Recovery after a top-up (AO-1). Anthropic has no balance probe, and
+        every call tries it first, so a served call after the 402 proves it."""
         h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW - timedelta(minutes=5)},
                 recent_count_by_status={402: 1}, last_success_at=NOW)
+        assert pb.assess(h, now=NOW).status != "out"
+
+    def test_a_served_call_BEFORE_the_402_does_not_clear_it(self):
+        h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW},
+                recent_count_by_status={402: 1}, last_success_at=NOW - timedelta(minutes=5))
+        assert pb.assess(h, now=NOW).status == "out"
+
+    def test_a_vendor_WITH_a_probe_keeps_the_probe_rule(self):
+        """A served call does not clear a 402 when the vendor has a probe. Only
+        a healthy probe newer than the 402 does."""
+        h = _ok_usd("50", last_refusal_by_status={402: NOW - timedelta(minutes=1)},
+                    recent_count_by_status={402: 1}, last_success_at=NOW)
         assert pb.assess(h, now=NOW).status == "out"
 
     @pytest.mark.parametrize("status", [403, 429])
@@ -546,3 +559,28 @@ def test_every_chain_walk_in_main_passes_the_watch():
             kw = {k.arg: k.value for k in node.keywords}
             assert "watch" in kw and _is_watch(kw["watch"]), ast.unparse(node)
     assert walks >= 6 and streams >= 1, (walks, streams)
+
+
+def test_one_billing_400_shows_the_vendor_out_with_cause_payment():
+    """🔴 2026-11-17: Anthropic answered an empty account with a 400. The walk
+    now hands `on_refusal` the effective status, 402, and the panel says out."""
+    steps = [ResolvedTier(tier="t", model="anthropic/sonnet")]
+    msg = "Your credit balance is too low to access the Anthropic API."
+
+    class _Billing(Exception):
+        status_code = 400
+
+    async def attempt(step: ResolvedTier) -> Any:
+        raise _Billing(msg)
+
+    with pytest.raises(UpstreamFailed):
+        asyncio.run(
+            walk_chain(steps, attempt, None, lambda s, st: pb.note_refusal("anthropic", st, now=NOW))
+        )
+    rows = pb.drain_refusals()
+    assert [(r["provider"], r["status"]) for r in rows] == [("anthropic", 402)]
+    h = _in(probe_status="not_exposed", last_refusal_by_status={402: NOW},
+            recent_count_by_status={402: 1})
+    v = pb.assess(h, now=NOW)
+    assert (v.status, v.cause) == ("out", "payment")
+    assert msg not in repr(rows)

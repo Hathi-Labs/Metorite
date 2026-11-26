@@ -62,6 +62,12 @@ const nextConfig: NextConfig = {
   // its dev server writes no Turbopack disk cache. Plain `next dev` keeps the
   // cache. Fence: `src/lib/e2eGate.test.ts`.
   experimental: {
+    // Next buffers each request body for src/proxy.ts (it matches every path)
+    // and keeps only the first 10 MB by default, which cut a 14 MB chat upload
+    // (task 3811). 100 MB covers the largest single request: Knowledge import
+    // total (100 MB), workspace file (50 MB), chat upload (25 MB). The fence is
+    // src/lib/proxyBodyLimit.test.ts.
+    proxyClientMaxBodySize: "100mb",
     turbopackFileSystemCacheForDev: process.env.E2E_NO_TURBOPACK_CACHE !== "1",
   },
   images: {

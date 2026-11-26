@@ -1,0 +1,71 @@
+# Metorite — the Tally bridge tests on Windows (TLY-5 PR C, task 3949).
+#
+# The Tally bridge (apps/connectors/tally_bridge) runs on the customer's
+# Windows machine. Its Windows side (DPAPI, the service, the commands) sits
+# behind seams that the Linux unit job tests with fakes. This job runs the
+# same bridge tests on a real Windows runner, and the one real DPAPI round
+# trip must PASS here: a skip of it fails the job.
+#
+# Scope: only the bridge. `uv run --project apps/connectors/tally_bridge
+# --frozen` installs the bridge's own locked dependencies, not the workspace.
+# The job runs only tests/unit/test_tally_bridge_*.py.
+#
+# ⚠️ The `paths:` filter is on purpose. This check is NOT a required check, so
+# a filtered skip cannot block a merge (the trap of pr-check.yml, H-23, binds a
+# required check only). If the owner ever makes it required, drop the filter.
+#
+# It runs on a GitHub-hosted runner only (windows-latest). It never runs on
+# the box (test_box_runner_routing.py).
+
+name: tally-bridge-windows
+
+on:
+  pull_request:
+    paths:
+      - "apps/connectors/tally_bridge/**"
+      - "tests/unit/test_tally_bridge_*.py"
+      - ".github/workflows/tally-bridge-windows.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/connectors/tally_bridge/**"
+      - "tests/unit/test_tally_bridge_*.py"
+      - ".github/workflows/tally-bridge-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tally-bridge-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tally-bridge-windows:
+    name: "Tally bridge tests (Windows)"
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          python-version: "3.12"
+
+      - name: The bridge tests
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem tests/unit/test_tally_bridge_*.py | ForEach-Object { $_.FullName }
+          uv run --project apps/connectors/tally_bridge --frozen --with pytest --with pytest-asyncio --with pytest-timeout `
+            pytest -p no:cacheprovider -o timeout_method=thread -rs @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: The real DPAPI round trip must pass, not skip
+        shell: pwsh
+        run: |
+          $out = uv run --project apps/connectors/tally_bridge --frozen --with pytest --with pytest-asyncio --with pytest-timeout `
+            pytest -p no:cacheprovider -o timeout_method=thread -rs `
+            tests/unit/test_tally_bridge_windows.py -k real_dpapi 2>&1 | Out-String
+          Write-Output $out
+          if ($out -notmatch '1 passed') { Write-Error "The real DPAPI test did not pass."; exit 1 }

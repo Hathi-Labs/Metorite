@@ -28,12 +28,12 @@ Sub-agents have no Metorite tools, so you post for them.
 
 | Step | Call |
 |---|---|
-| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, then `get_task_context`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
-| Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task` (send `agent_label`, `host`, `host_kind` and `model`), then `get_task_context`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle. When you dispatch a lane, hold an open run on a coordination task of your own. Put its run id in the hand-off. A lane passes that id as `dispatched_by` on its claim (SW-108). A server that does not know the input refuses the claim. Then claim again without it |
 | Before a wait of more than 2 minutes | While your own sub-agents work, post a thought at least once a minute. The run stays working, so set no wait. Only for CI, a deploy, a review or a person, or an external agent, post a `post_agent_activity` thought with `waiting: {on, until_minutes, note}`. `on` is `ci`, `review`, `deploy`, `member` or `agent`. `until_minutes` is 1 to 120. The run then shows waiting, not idle, until the time ends or your next line. A wait on a person for longer than 120 minutes is a question (`ask_on_task`) |
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
-| 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left. For a hand-over (LOW or STANDARD), comment the hand-over and post a `waiting: {on: ci}` thought before the wait. The bot's `DONE` line is the merge |
+| 7 Land | The task URL goes in the PR body. The hook `pr-task-url.mjs` reminds you when the PR body has none (SW-19c). `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left. For a hand-over (LOW or STANDARD), comment the hand-over and post a `waiting: {on: ci}` thought before the wait. The bot's `DONE` line is the merge. A task of the project "Tool failures" goes to review after the merge, never to done. Its sync job closes it (`tool_failure_log.md` §7.5) |
 | A test run in the background | Cap it. Run `affected_tests.py --run`, which drops the known hangers and sets a 600 s timeout for each test. A wait of more than 45 minutes with no new output is a stall. Stop the wait, report it with `post_agent_activity` as an `error`, and find the hung test (CIV-15) |
 | Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
 | A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
@@ -257,9 +257,11 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
     merges a HIGH slice. Wait for `pr-check` to go green. Then run
     `bash scripts/premerge.sh` in the worktree, in the same command as the merge:
     `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
-    the merge with today's main. It runs the collision fences only: migration
-    numbers, H-ids and D-numbers. It names the files both sides changed. Add
-    `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a migration or
+    the merge with today's main. It runs the collision fences (migration
+    numbers, H-ids and D-numbers). When the branch is behind main, it also runs the tests
+    that both sides can affect on the merge result, under a 420 s cap, and refuses a red
+    that main and the branch each pass alone (CIV-MT, task 3277). A cap hit prints UNPROVEN.
+    `--no-tests` or `PREMERGE_MERGE_TEST=0` turns the tests off. From LD-10 it also refuses a migration or
     build-path slice whose head commit has no `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
     push, and run the gate and `pr-check` again. Then find the batch that holds
     your merge, as the steps below say.
