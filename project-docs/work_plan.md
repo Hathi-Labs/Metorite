@@ -6449,6 +6449,53 @@ Ishaan: "Dev box approved"
 
 Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D230 entries merge. **Re-check this number at merge.**
 
+### D231 — The sandbox box is `aroh-sandbox-1` on Google Cloud, not a Hostinger KVM 2 (DECIDED, 2026-11-23)
+
+Ishaan Pilar asked on task 3912. Vijay Varada chose this option on the task on 2026-11-23 (answer `1c3ee034`):
+
+```text
+"Approve GCP: Ishaan's session may create aroh-sandbox-1 on the GCP bill"
+```
+
+1. **The box.** `aroh-sandbox-1` in `asia-south1-a`, `n2d-standard-2` (2 vCPU, 8 GB), in `aroh-vpc` on the subnet `aroh-sandbox` (`10.40.32.0/20`). It has no external IP and no service account.
+2. **This amends D187 decision 5 and D130.7 for the sandbox box only.** Production stays on Hostinger, so member data that a sandbox run reads also goes to Google. It replaces the Hostinger KVM 2 of task 3786.
+3. **SBX-G9 is done.** SBX-G10, SBX-G11, WS43-G1, WS43-G2 and SBX-G13 stay owner gates. The answer opens none of them.
+4. **The patch route is Cloud NAT on `aroh-sandbox` only.** Vijay chose it on task 3912 (answer `e87c3a0c`). Ishaan's session made Cloud Router `aroh-router` and Cloud NAT `aroh-nat` on 2026-11-25 (`asia-south1`, subnet list `aroh-sandbox` only, automatic IPs, error logs only). The box reaches the internet outbound only. It still has no external IP and no inbound path.
+
+`docs/gcp_aroh.md` §4a holds the settings. `specs/agent_sandbox.md` §4.6 points to it.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D231 entries merge. **Re-check this number at merge.**
+
+### D232 — `integrations_console.md` §3.8 (local connectors, link mode) is the contract, and TLY-2 goes first (DECIDED, 2026-11-25)
+
+Ishaan Pilar asked on task 3653. Vijay Varada chose this option on the task on 2026-11-25 (answer `ccf82fd8`):
+
+```text
+"Approve §3.8, start TLY-2 first"
+```
+
+1. **§3.8 is APPROVED.** It is the contract for local connectors. It wins over the draft in the build brief of task 3655 (§3.8.10).
+2. **TLY-2 goes first.** It builds the program's side (task 3663) against a fake Metorite link. §3.8.14 holds its wire format, for the LNK-2 audit to confirm.
+3. **Each LNK slice asks again.** The Metorite side (LNK-1 task 3658, LNK-2 task 3659 and the rest of epic 3654) is HIGH. Each slice asks the owner for its own "Approve the merge".
+4. **The open points stay open.** LNK-Q1 to LNK-Q7 and the code-signing certificate (§3.8.12) are not answered by this decision.
+
+Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails when two D232 entries merge. **Re-check this number at merge.**
+
+### D233 — AI Studio is unpaused, the PC lanes take the sandbox rung, and the chat builds a missing tool in the same turn (DECIDED, 2026-11-26)
+
+The owner asked this on 2026-11-26, in chat to metorite-78. Owner spec: `specs/agent_sandbox.md` §0d. Board: **WS-TO**, Metorite task 3980 (SBX-0e). The items give the meaning, not a quote.
+
+1. **AI Studio is unpaused** for the long tail of use cases. The chat builds the tool that it lacks, in the sandbox, and keeps it. The agent reads this as the end of the Studio wait in `ticket_queues.md`.
+2. **The split.** The PC lanes build the sandbox path, rung 6 of `agent_sandbox.md` (sub-rungs 6a to 6f). Ishaan's lanes build the Studio rungs 1 to 5, land the aging Studio pull requests and keep chat parity. A PC lane takes no task or pull request of Ishaan's lanes. The agent reads this split as parallel work. Rung 6 and rungs 1 to 5 move side by side. That changes the order of D224 and D227.
+3. **Credentials through the door.** Sandbox code acts as the member through the one Metorite door. The gateway calls each connector with the stored credential. No provider token and no platform secret enters the sandbox. A read runs, and a write waits for the card of the member.
+4. **No seam for the member.** The member sees one progress line, as for any long turn. The answer arrives as usual. A card appears only when the result writes something. The new skill is kept and reused silently.
+5. **New slices.** SBX-20 (task 3981) is the build and hand-back in the same turn. SBX-21 (task 3982) is the progress-line contract. Both ship dark and are HIGH, a choice of the PC lanes. The admin approval of a skill kept for the org does not change (`agent_sandbox.md` §8).
+6. **The build card (answered 2026-11-26, task 3981, answer `8c7fc3a3`).** Vijay Varada chose "No build card, but keep the card for outside content". The new path shows no build card in a normal chat. After outside content the card still shows. The silent path gets no web host and no extra package. It shows no credit estimate, and the cap of the org binds. `agent_sandbox.md` §0d holds the table.
+
+This decision flips no flag and opens no owner gate.
+
+Fence: SBX-F27 and SBX-F28 of `agent_sandbox.md` §11, advisory until their slices build them. `tests/unit/test_decision_ids.py` fails when two D233 entries merge. **Re-check this number at merge.**
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
@@ -6488,6 +6535,7 @@ Fence: none, so this entry is advisory. `tests/unit/test_decision_ids.py` fails 
 | **The `decide` task** — the door, the tenant facade `acb_llm.decide`, the chat tool, and each app's adoption mode | **WS-31 — `specs/customer_console.md` §6A.14** (CP-13, D75, minted 2026-09-23) | ONE tenant facade. A second decide client in an app is a defect. Each app's `off`, `shadow` or `on` mode lives in `gateway/decide_features.py` until H-44's feature-to-tier registry absorbs it. Mirrors: `email_app_master_plan.md` §2.1 (triage adoption), `agent_architecture.md` §8 (the chat tool), `ai_metering_and_analytics.md` §3.3 (`tier-decide` is hidden) |
 | **The tier vocabulary against the tier schema** — who owns `tier_catalog` | **Split, and the split is the point.** `customer_console.md` **§6A** owns `tier_catalog`'s schema and the serving path. `ai_metering_and_analytics.md` owns the tier vocabulary, the customer-facing labels (D-AI-1) and the §8 slice contracts | Recorded 2026-08-30 after slice 3's re-audit found the table already shipped in `015_tier_pricing.sql` under D67. One table, two owners, two questions: `customer_console.md` answers "what columns and who writes them", `ai_metering_and_analytics.md` answers "which tiers exist and what a customer is told they are" |
 | **The inbound MCP edge** — an outside agent that acts as a member: the OAuth server, the `/mcp` endpoint, the signed request to the gateway, the agent scope on `Visibility`, and the `MCP_ROUTES` allowlist | **WS-55 — `specs/external_agent_access.md`** (D97, minted 2026-10-10) | `external_agent_dispatch.md` (WS-56, the outbound twin, link-only) · `projects_agent_parity.md` D91 (it keeps the native tools of the in-product assistant. Its §5.3 is the parked item, and WS-55 answers it) · `tenancy_and_visibility.md` §3.2 (a pointer to the agent scope only) |
+| **The sandbox API door**: the run capability, the sandbox sibling of branch 0 and the `SANDBOX_ROUTES` allowlist | **WS-TO — `specs/agent_sandbox.md`** §5 and §12.2 (SBX-2) | `external_agent_access.md` §10.1 (branch 0, link-only: the sibling binds to its scan, its digest and its review rule) · `maf_coding_engine.md` (the broker, which mints a capability from SBX-4) |
 | **The artifact registry** — what an artifact is, its row, its scope and shares, its retention, and the library | **WS-60 — `specs/artifact_management.md`** (minted 2026-10-15) | `agent_file_and_memory_framework.md` and `agent_persistence_implementation.md` (the bytes, the three folders, the blob store: unchanged) · `projects_ai_chat.md` §21.16 (the run's artifact context, H-201/H-227) · `task_references.md` (the `artifact` kind of `pm_task_refs`) · `navigation_shell.md` NS-6 slice 6c (the chat door of the Artifacts app) · `agents-workspaces-artifacts.md` (REFERENCE, stale) |
 | Visibility model (who inside that company) | **`specs/tenancy_and_visibility.md`** (D12 §3–§4 · the app-by-app gap table §5 · TV-1 §2 — **unchanged and still binding**) | `department_centers.md` (the "separate deployment is for a separate org, never a department" rule) · `org_access_control.md` §8 Ph2 · `multi_user_organization_research.md` §5/§7/§8/§9/§17 (**research only, and superseded for planning by the new spec**) · `groups_sessions_authority.md` §3 (the intersection rule it constrains) · D9 (the twelve "second tenant deployment" sites) |
 | **The shell** — the bar, the sidebar shape, Home and its altitudes, the command bar, the dock, the bell, the avatar menu, role presets and the app manifest | **WS-44 — `specs/navigation_shell.md`** (D87, D88 and D89, minted 2026-10-05) | `launch_surface.md` keeps WHICH panes are live (§2) and the one nav filter (§8.4) · `DESIGN_SYSTEM.md` §6a and `workbench/control_plane/AGENTS.md` rule 10 (pointers only) · `department_centers.md` (D49 banner, a pointer only) · each app's own spec keeps what happens inside the app |
@@ -6725,6 +6773,10 @@ and one thing that cannot be written until a second person exists.
 > it spends no credits. So its flip is the `enforcement-flip` act. D218 binds
 > it: the owner approves the preview before the flip.
 > `specs/proactive_loop.md` §7.2 is the authority.
+>
+> The flag also adds `why_seen` to each card of the feed answer (LOOP-4b).
+> It is a list of sentences that code writes. My Day shows them under "Why am I
+> seeing this", so the preview must show that box too.
 >
 > The reach loop, the briefs and the chat brief read the same learned feed.
 > So a kind that the member mutes leaves them too. A muted needs card in Later

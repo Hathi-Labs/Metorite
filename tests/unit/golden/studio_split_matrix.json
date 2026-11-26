@@ -61,7 +61,9 @@
     "snooze_email",
     "sync_account"
    ],
-   "offered": [],
+   "offered": [
+    "mail-tasks"
+   ],
    "packs": [
     "calendar-day",
     "email"
@@ -144,6 +146,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -213,7 +216,8 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reports",
@@ -290,6 +294,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -360,7 +365,8 @@
    "offered": [
     "crm-records",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reports",
@@ -437,6 +443,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -494,7 +501,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -551,7 +559,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -836,7 +845,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -1003,7 +1013,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -1170,7 +1181,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "projects-cycles"
+    "projects-cycles",
+    "mail-tasks"
    ],
    "packs": [
     "crm-records",
@@ -1325,6 +1337,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -1487,7 +1500,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "email",
@@ -1624,7 +1638,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -1772,7 +1787,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -1996,7 +2012,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "crm-records",
@@ -2053,7 +2070,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -2110,7 +2128,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio"
@@ -2242,7 +2261,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -2320,7 +2340,9 @@
     "snooze_email",
     "sync_account"
    ],
-   "offered": [],
+   "offered": [
+    "mail-tasks"
+   ],
    "packs": [
     "calendar-day",
     "email"
@@ -2403,6 +2425,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2474,6 +2497,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -2551,6 +2575,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2623,6 +2648,7 @@
     "crm-records",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -2700,6 +2726,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio",
     "studio-more"
    ],
@@ -2759,7 +2786,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -2818,7 +2846,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -3053,6 +3082,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3205,6 +3235,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio"
    ],
    "packs": [
@@ -3349,6 +3380,7 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3517,6 +3549,7 @@
     "projects-authority",
     "projects-cycles",
     "calendar-day",
+    "mail-tasks",
     "studio-more"
    ],
    "packs": [
@@ -3683,7 +3716,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "email",
@@ -3824,7 +3858,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -3965,7 +4000,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-reminders",
@@ -4174,7 +4210,8 @@
     "projects-reminders",
     "projects-reports",
     "projects-authority",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "projects-cycles",
@@ -4232,7 +4269,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -4291,7 +4329,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",
@@ -4412,7 +4451,8 @@
     "projects-reports",
     "projects-authority",
     "projects-cycles",
-    "calendar-day"
+    "calendar-day",
+    "mail-tasks"
    ],
    "packs": [
     "studio",

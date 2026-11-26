@@ -1105,6 +1105,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **AF-3b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-3b.md) |
 | **AF-4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-4.md) |
 | **AF-5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5.md) |
+| **AF-5b** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-5b.md) |
 | **AF-6** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-6.md) |
 | **AF-7** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/AF-7.md) |
 | **AF-8a** | open | STD | AGENT-SAFE | [row](ai_studio_rows/AF-8a.md) |
@@ -1838,6 +1839,8 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 | 18 | Member code runs only in the off-box sandbox (server code) or in the viewer's browser (screens). A capture of a screen (G13) and a compile (L1, L3) run in the member's browser | D127.2, D146.1 as D202.4 amends it | Advisory. The review of each code slice checks it |
 
 **The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request and a 4 MiB response. It also sets 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
+
+**Status (L6a, task 2417).** The limits and the codes are data only, in `studio_limits.py`, `limits.ts` and `codeErrors.ts`, with a golden file. Only the source size has a refusal test today. The other limits wait on L1, L7, SBX-9 and B5.
 
 | Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
 |---|---|---|---|

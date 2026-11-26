@@ -54,6 +54,8 @@ from tests.unit.test_tool_packs_choice import MEMBER, SESSION, _bound, _name, _r
 REPO = Path(__file__).resolve().parents[2]
 SKILL_DIR = REPO / "apps" / "skills" / "skill-projects" / "skill_projects"
 CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
+#: P-1b (task 3922): the source of ``my_tasks_capture_from_mail``.
+MY_TASKS_CORE = REPO / "apps" / "skills" / "skill-my-tasks" / "skill_my_tasks" / "core.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
@@ -80,10 +82,14 @@ KEPT_PROJECTS = frozenset({
     "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "watch",
 })
-#: The seven CRM writes. Each says ``open_world=True`` and keeps saying it.
+#: The eleven CRM writes. Each says ``open_world=True`` and keeps saying it.
+#: CRM-M2e (task 3951) added the two set-up writes of stages and lost reasons.
 KEPT_CRM = frozenset({
     "convert_lead", "create_lead", "log_activity", "update_deal_status",
+    # P-3 (task 3954): a suggestion of the field map, and a new AI analysis.
+    "crm_decide_suggestion", "crm_rerun_analysis",
     "crm_update_record", "crm_update_task", "crm_create_pipeline",
+    "crm_edit_status", "crm_edit_lost_reason",
 })
 
 #: The Projects writes that a held chat does not hold: every class C tool but
@@ -115,10 +121,15 @@ OFF_PROJECTS = frozenset({
 CHAT_FILES = frozenset({"export_tasks", "render_report", "status_report"})
 
 
+#: P-1b (task 3922): the task from a mail, of the ``mail-tasks`` pack. It says
+#: ``open_world=True``: its reply path labels the thread at the mail provider.
+KEPT_MY_TASKS = frozenset({"my_tasks_capture_from_mail"})
+
+
 def test_the_list_is_this_table() -> None:
     """Mutation: add a tool to the list -> red. It is the first mutation of the
     slice: an open-world tool on the list needs a person to change this table."""
-    assert set(eg.HELD_CARD_WRITE_TOOLS) == KEPT_PROJECTS | KEPT_CRM
+    assert set(eg.HELD_CARD_WRITE_TOOLS) == KEPT_PROJECTS | KEPT_CRM | KEPT_MY_TASKS
 
 
 def test_each_projects_tool_is_in_exactly_one_row() -> None:
@@ -348,8 +359,9 @@ def test_no_pack_tool_of_a_listed_owner_comes_from_mcp(projects_tools, crm_tools
 #: A form delegates its card to the class B tool that it wraps. A batch uses
 #: ``_ask_batch``, and ``test_projects_agent_writes.py`` holds that as a caller
 #: of ``_confirm``.
+#: P-1b (task 3922): ``_mail_card`` is the card door of the task from a mail.
 _DOORS = {"_confirm", "_ask_batch", "_ask_reminder", "update_task", "update_project",
-          "request_confirmation"}
+          "request_confirmation", "_mail_card"}
 _WRITES = {"post", "patch", "put", "delete", "post_file", "_post", "_patch", "_put", "_delete"}
 
 

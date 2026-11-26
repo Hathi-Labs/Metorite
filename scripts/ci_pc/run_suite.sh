@@ -160,9 +160,15 @@ job() {
   # (bodyLook.test.ts: "under 100 ms"), and two vitest runs at once broke it
   # (110 ms, 2026-11-04). The other jobs are not timed.
   [ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")
+  # Task 1304. `tsc --noEmit` of the control plane died at the default heap of
+  # about 2 GB in this container, so the vitest step never ran. The container
+  # has 4 GB, so the heap is 3 GB. GitHub's runner has more memory, and pr-check.yml
+  # stays as it is.
+  local env=()
+  case "$label" in frontend|operator-console) env=(-e NODE_OPTIONS=--max-old-space-size=3072);; esac
   (
     s=$(date +%s)
-    "${lk[@]}" docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
+    "${lk[@]}" docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g "${env[@]}" \
       -v "$HOME:$HOME" -v /var/run/docker.sock:/var/run/docker.sock --group-add "$DOCKER_GID" \
       "$IMAGE" bash "$RUN/$label.sh" > "$RUN/$label.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/$label.rc"

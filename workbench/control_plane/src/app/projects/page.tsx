@@ -72,6 +72,7 @@ import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { useAgentLensesOn } from "@/lib/shell/shellPrefs";
 import { AgentsAtWorkView, useAgentMap, useAgentsAtWork } from "./components/AgentsAtWork";
 import { AgentsCanvas } from "./components/AgentsCanvas";
 import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
@@ -1248,10 +1249,12 @@ function ProjectsWorkspace() {
   // each 30 s only while the canvas is on screen.
   const [mapQuiet, setMapQuiet] = useState(false);
   const [mapRetry, setMapRetry] = useState(0);
+  // AMR-1: the lenses count idle sessions with their task, so they read the quiet runs.
+  const agentLenses = useAgentLensesOn();
   const agentMapRead = useAgentMap(
     Boolean(selected) && !isMyTasksApp(app),
     chosenMode === "agents",
-    mapQuiet,
+    agentLenses || mapQuiet,
     selected?.id,
     mapRetry,
   );
@@ -5382,6 +5385,16 @@ function ProjectsWorkspace() {
         error={attentionErrorHere}
         personLabels={personLabels}
         onOpenTask={(id) => void openTaskById(id)}
+        // SW-44: a `no_lead` row opens its project. A project the tree does
+        // not hold yet goes through the `?project=` deep link.
+        onOpenProject={(id) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === id);
+          // Leave the lens first. A row of the open project would otherwise
+          // keep the lens on the screen, and the click would do nothing.
+          setAttentionFor(null);
+          if (row) setSelected(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(id)}`);
+        }}
         onBack={() => setAttentionFor(null)}
         onChanged={() => setAttentionVersion((v) => v + 1)}
       />
@@ -5626,6 +5639,13 @@ function ProjectsWorkspace() {
               onShowQuiet={setMapQuiet}
               onOpenTask={(id) => void openTaskById(id)}
               onRetry={() => setMapRetry((n) => n + 1)}
+              projectId={selected.id}
+              personLabels={personLabels}
+              onPeopleSeen={notePeopleSeen}
+              onOpenProject={(id) => {
+                const row = flatten(visibleRoots).find((e) => e.node.id === id);
+                if (row) setSelected(row.node as ProjectRow);
+              }}
             />
           ) : mode === "overview" ? (
             summary ? (

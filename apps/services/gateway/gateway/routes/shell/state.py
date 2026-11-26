@@ -57,6 +57,11 @@ Redis fault gives the affinity 0, as a failed state read keeps the feed. A
 learned fault sets ``Applied.cacheable`` False and never ``Applied.ok``. The
 member comes from the session, and the org from the bound session (R5).
 
+**What the join hands on** (LOOP-4b). For a listed org, ``Applied`` also
+holds ``taught``, what the join learned, and ``acted``, the cards whose row is
+``acted``. ``feed.feed_answer`` reads both for the sentences of "Why am I
+seeing this" (``feed_why.explain``). The join itself adds no card key for it.
+
 **Who reads the learned join.** ``feed.feed_cards`` is the one compute, so
 the reach loop, the briefs and the chat brief read the same join as My Day
 (``reach.loop.snapshot``). A muted kind leaves them too. A muted needs card in
@@ -751,6 +756,11 @@ class Applied:
     another reason: a fault of the learned path (LOOP-4a). It never changes
     ``ok``, so a learned fault never makes a snapshot incomplete. The read
     cache stores an answer only when both are True (``feed.feed_answer``).
+
+    ``taught`` is what the join learned, and None with the org off
+    ``MY_DAY_LEARN_ORGS`` or after a failed state read. ``acted`` holds the
+    signal ids whose state row is ``acted``. The sentences of "Why am I seeing
+    this" read both (LOOP-4b, ``feed_why.explain``).
     """
 
     cards: list[dict[str, Any]]
@@ -758,6 +768,8 @@ class Applied:
     day: Day | None = None
     ok: bool = True
     cacheable: bool = True
+    taught: Learned | None = None
+    acted: frozenset[str] = frozenset()
 
 
 def snooze_edge(rows: dict[str, dict[str, Any]], now: datetime) -> datetime | None:
@@ -939,10 +951,12 @@ async def apply_state(user: UserContext, cards: list[dict[str, Any]],
         logger.warning("shell.feed state read failed", extra={"error": type(exc).__name__})
         return Applied(join(cards, {}, Context(now, Day(ZoneInfo("UTC")))), ok=False)
     taught = await learned(user, now, day)
+    acted = frozenset(sid for sid, row in rows.items() if row.get("state") == "acted")
     if taught is None:  # the org is off MY_DAY_LEARN_ORGS: the join of before
-        return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day)
+        return Applied(join(cards, rows, Context(now, day)), snooze_edge(rows, now), day,
+                       acted=acted)
     return Applied(join(cards, rows, Context(now, day), taught), snooze_edge(rows, now), day,
-                   cacheable=taught.ok)
+                   cacheable=taught.ok, taught=taught, acted=acted)
 
 
 async def write_state(user: UserContext, items: list[StateItem], now: datetime) -> int:

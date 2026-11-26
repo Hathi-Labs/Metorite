@@ -21,6 +21,8 @@ The fences (R7), each with its mutation:
 * ``home-real-route``: each request reaches a real handler of the gateway, and
   the real body model takes the body. Mutation: send ``/shell/feed/states``
   -> 404 -> red. Mutation: add a key to the state item -> 422 -> red.
+* ``home-no-why-seen`` (LOOP-4b): the feed read returns no ``why_seen``.
+  Mutation: give the rows the whole card -> red.
 * ``home-frame``: text that other people wrote stays inside ONE frame block.
   Mutation: put the titles in the result outside the block -> red.
 * ``home-hidden``: a write refuses a hidden character with the one rule of
@@ -384,6 +386,21 @@ async def test_the_feed_read_says_how_many_cards_exist_and_how_to_see_the_rest(
     assert rest["shown"] == 10 and rest["more"] is False and rest["offset"] == 20
     assert big["shown"] == 30 and big["more"] is False and big["page"] == ""
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
+
+
+async def test_the_feed_read_returns_no_why_seen(gw: Gateway) -> None:
+    """LOOP-4b done-when (i) (``proactive_loop.md`` §7.2 W2). The route of a
+    listed org sends ``why_seen`` on each card, and the tool reads that route.
+    It adds no such key to a row, and no sentence of it comes back. Mutation:
+    give the rows the whole card -> red."""
+    said = "It is in Now, because a time on it is close"
+    gw.cards = [_card(why_seen=[said])]
+    with _run():
+        got = await ht.home_read("feed")
+    assert gw.handlers() == ["shell_feed"] and got["count"] == 1
+    whole = json.dumps(got, ensure_ascii=False)
+    assert PLANTED in got["block"]  # non-vacuity: the card's text did come back
+    assert "why_seen" not in whole and said not in whole
 
 
 async def test_a_full_feed_says_that_home_holds_the_rest(gw: Gateway) -> None:
