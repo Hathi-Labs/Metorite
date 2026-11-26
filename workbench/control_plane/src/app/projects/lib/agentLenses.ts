@@ -68,8 +68,18 @@ export function lensEdge(state: LensState): AgentEdge | null {
   return agentCardLook(VOCABULARY[state]).edge;
 }
 
-/** The word and the chip of one run, in the same words as a session. A quiet run reads Idle. */
-export function lensRun(run: Pick<MapRun, "state" | "quiet">): { word: string; chip: string } {
+/**
+ * The word and the chip of one run, in the same words as a session. A quiet run
+ * reads Idle. `askedOf` is the line of a session whose question is another
+ * member's: its asking run reads that line, never "Needs you" (EA3-50).
+ */
+export function lensRun(
+  run: Pick<MapRun, "state" | "quiet">,
+  askedOf: string | null = null,
+): { word: string; chip: string } {
+  if (askedOf !== null && !run.quiet && run.state === "awaiting") {
+    return { word: askedOf, chip: agentStateChip("waiting") };
+  }
   const key = run.quiet ? "stale" : run.state;
   return { word: vocabularyWord(key), chip: agentStateChip(key) };
 }

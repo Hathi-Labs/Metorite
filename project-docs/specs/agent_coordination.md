@@ -12,6 +12,8 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.**
+
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
 **SW-106 (the map shows the machine and the model) is built and dark, 2026-11-22 (task 3627). The visual review and the owner preview are open.**
@@ -883,7 +885,9 @@ The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler p
 - **A session node.** It is the task card of the board, with the agent edge of `lib/agentCardLook.ts`.
 - **The lines.** A dispatch line is neutral. A line to "You" takes the warning colour. A line to another wait takes the accent colour.
 - **The layout.** A pure function places the nodes (`lib/agentGraph.ts`). `@xyflow/react` pans and zooms.
-- **No invented line.** "You" holds the sessions that read `waiting_on_person`. Another wait comes from `waiting_on` and `waiting_until` of a listed run. AMR-1 adds those two fields to the map read.
+- **No invented line.** "You" holds the sessions of the viewer that read `waiting_on_person`. Another wait comes from `waiting_on` and `waiting_until` of a listed run. AMR-1 adds those two fields to the map read.
+- **A question of another member (EA3-50).** That session reads "Waiting for" and the member's name. It counts as waiting, and its line goes to "A person". The `waiting_on_person` state is the fact of that line.
+- **A find.** The Graph also draws the orchestrator of a match, as context. Board and List show the matches only.
 - **A wait with no field.** It draws no line. The read has no field for one session that needs another session, so the view draws no such line.
 - **Details.** A click opens a dock at the right. A narrow window uses the shared `Modal`.
 - **The acts.** The view only reads (rule 7 of §3.12.7). The details show the run panel (`AgentRunPanel`) of one task. That panel has no Steer control before SW-86, so a member writes to an agent in its reply box.

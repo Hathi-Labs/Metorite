@@ -276,7 +276,9 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
                     {r.title}
                   </span>
                 </Button>
-                <span className={`${STATE_PILL} ${lensRun(r).chip}`}>{lensRun(r).word}</span>
+                <span className={`${STATE_PILL} ${lensRun(r, session.askedOf).chip}`}>
+                  {lensRun(r, session.askedOf).word}
+                </span>
                 <Button
                   variant="ghost"
                   size="icon-sm"
