@@ -121,6 +121,14 @@ function indexOf(nodes: ReadonlyArray<TreeNodeIn>): Index {
   return { byId, children };
 }
 
+/**
+ * The order of two labels: not case-sensitive, and a run of digits counts as a number.
+ * "Part 2" comes before "Part 10", and "Module 01.03" before "Module 01.10".
+ */
+export function compareLabels(a: string, b: string): number {
+  return a.localeCompare(b, "en", { numeric: true, sensitivity: "base" });
+}
+
 /** The visible rows, depth first. A collapsed node hides its children. Iterative and O(n). */
 export function treeRows(
   nodes: ReadonlyArray<TreeNodeIn>,
@@ -131,8 +139,7 @@ export function treeRows(
   const sorted = (list: TreeNodeIn[] | undefined): TreeNodeIn[] => {
     const l = list ?? [];
     if (opts?.sort !== "label") return l;
-    const key = (n: TreeNodeIn) => (n.label ?? n.id).toLowerCase();
-    return [...l].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+    return [...l].sort((a, b) => compareLabels(a.label ?? a.id, b.label ?? b.id));
   };
   const rows: TreeRow[] = [];
   const stack: Array<{ node: TreeNodeIn; depth: number }> = [];
@@ -225,6 +232,22 @@ export function moveRefusal(reason: MoveRefusalReason): string {
     case "unknown_parent": return "The new parent is not in the tree.";
     case "same_parent": return "The node is already there.";
     default: return "This move is not allowed.";
+  }
+}
+
+/**
+ * A short reason for one line under a disabled option in the Move menu. The full sentence
+ * (`moveRefusal`) stays for the alert. A long sentence widened the menu past a 320 px phone.
+ */
+export function menuReason(reason: MoveRefusalReason): string {
+  switch (reason) {
+    case "self": return "This is the node itself.";
+    case "descendant": return "It is inside this node.";
+    case "too_deep": return `Too deep: ${MAX_TREE_DEPTH} levels.`;
+    case "unknown_node": return "Node not found.";
+    case "unknown_parent": return "Parent not found.";
+    case "same_parent": return "It is already there.";
+    default: return "Not available.";
   }
 }
 

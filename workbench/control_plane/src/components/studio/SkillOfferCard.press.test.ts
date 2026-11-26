@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { clearAll, put } from "@/lib/dataCache";
+import { __setSkillOfferForTests } from "@/lib/shell/shellPrefs";
 import { __forgetOffersForTests, type OfferTurn } from "@/lib/studio/skillOffer";
 import type { CatalogAction } from "@/lib/studio/skillsApi";
 
@@ -72,11 +73,12 @@ function render() {
 }
 
 beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "1");
+  __setSkillOfferForTests(true);
   put(OFFER_CATALOG_KEY, CATALOG);
 });
 
 afterEach(() => {
+  __setSkillOfferForTests(false);
   clearAll();
   __forgetOffersForTests();
   vi.unstubAllEnvs();

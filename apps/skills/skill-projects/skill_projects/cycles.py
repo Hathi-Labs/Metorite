@@ -36,12 +36,12 @@ from skill_projects.client import GatewayRefusal, data, delete, get, post, uuid_
 from skill_projects.guarded import ONE_ACT, _guard_card, _many
 from skill_projects.reads import legend
 from skill_projects.writes import (
-    CANCELLED,
     MAX_BATCH,
     _confirm,
     _fields_block,
     _fits_on_card,
     _node,
+    _not_confirmed,
     _ref,
     _refusal_words,
     _split,
@@ -240,7 +240,7 @@ async def create_cycle(project_id: str, name: str, starts_on: str, ends_on: str,
         detail=f"on {data(node.get('name'))}",
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     made = (await post(f"/projects/nodes/{pid}/cycles", payload)) or {}
     # The route answers {"cycle": {...}}, as the other cycle routes do.
     row = made.get("cycle") if isinstance(made.get("cycle"), dict) else made
@@ -356,7 +356,7 @@ async def plan_cycle(cycle_id: str, add_task_ids: str = "", remove_task_ids: str
         detail=f"{name}: +{len(adds)} / -{len(drops)}",
         context=_fields_block(card),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # The removes first, then the adds in id order: one lock order for every
     # bulk add. Each task is its own transaction in the route, so a stop
     # leaves the earlier tasks in. Nothing raises after the first write: a
@@ -449,7 +449,7 @@ async def start_cycle(cycle_id: str, goal: str = "") -> str:
         detail=name,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     body: dict[str, Any] = {"goal": aim} if str(goal or "").strip() else {}
     row = (await post(f"/projects/cycles/{cid}/start", body)) or {}
     return (
@@ -514,7 +514,7 @@ async def close_cycle(cycle_id: str, carry_over: str = "") -> str:
         detail=f"{name}: {len(unfinished)} unfinished to {place}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     choices = [{"task_id": str(t.get("id")), **choice} for t in sorted(unfinished, key=lambda t: str(t.get("id")))]
     row = (await post(f"/projects/cycles/{cid}/close", {"choices": choices})) or {}
     moved = row.get("moved") or {}

@@ -5,7 +5,13 @@
 # SIGTERM, and the old process keeps its port the whole time. So every member
 # is served as normal while this waits. See gateway/routes/drain.py.
 #
-# It polls GET /internal/drain until `runs` is 0, or until the bound passes.
+# First it calls POST /internal/drain/park ONCE (RESUME-5). Each run that waits
+# on a person parks, where its org has the resume flags on, and its card waits
+# for an answer after the restart. The call has its own bound. A 404 from a
+# gateway older than the route, or any other failure, lets the drain go on.
+#
+# Then it polls GET /internal/drain until `runs` is 0, or until the bound
+# passes. The bound starts before the park call, so the park time is inside it.
 # It ALWAYS exits 0. A stop that this script cannot read goes ahead at once:
 # no answer, a refused port, a 404 from a gateway older than the route, or a
 # body it cannot parse. A crashed gateway is the common case of the first one.
@@ -15,18 +21,25 @@
 set -u
 
 url="${GATEWAY_DRAIN_URL:-http://127.0.0.1:8080/internal/drain}"
+park_url="${GATEWAY_DRAIN_PARK_URL:-${url}/park}"
 wait_s="${GATEWAY_DRAIN_WAIT_SECONDS:-60}"
 poll_s="${GATEWAY_DRAIN_POLL_SECONDS:-1}"
+park_s="${GATEWAY_DRAIN_PARK_SECONDS:-8}"
 token="${GATEWAY_INTERNAL_TOKEN:-}"
 
-# One read of the count. Prints the number, or nothing when it cannot read one.
-# The token goes to curl on stdin, never on the command line, so `ps` on the
-# box cannot show it.
-runs_now() {
+# One call to an internal route: the method, the URL and the bound in seconds.
+# Prints the body, or nothing when the call fails. The token goes to curl on
+# stdin, never on the command line, so `ps` on the box cannot show it.
+call() {
   local body
   body="$(printf 'header = "Authorization: Bearer %s"\n' "$token" \
-    | curl -s -m 2 -f -K - "$url" 2>/dev/null)" || return 0
-  printf '%s' "$body" | grep -o '"runs": *[0-9]*' | grep -o '[0-9]*$' | head -n 1
+    | curl -s -m "$3" -f -X "$1" -K - "$2" 2>/dev/null)" || return 0
+  printf '%s' "$body"
+}
+
+# One read of the count. Prints the number, or nothing when it cannot read one.
+runs_now() {
+  call GET "$url" 2 | grep -o '"runs": *[0-9]*' | grep -o '[0-9]*$' | head -n 1
 }
 
 # Milliseconds since the epoch. `date +%s` counts whole seconds, so a bound read
@@ -38,6 +51,22 @@ now_ms() {
 }
 
 start=$(now_ms)
+
+# RESUME-5: park the runs that wait on a person, once. A line only when a run
+# parked or the call failed, so a stop with nothing to park logs as before.
+# A bash match reads the number, so the park starts no more processes.
+parked=""
+park_body="$(call POST "$park_url" "$park_s")"
+park_re='"parked": *([0-9]+)'
+if [[ "$park_body" =~ $park_re ]]; then
+  parked="${BASH_REMATCH[1]}"
+fi
+if [ -z "$parked" ]; then
+  echo "gateway-drain: no park answer from $park_url, so the drain goes on"
+elif [ "$parked" -gt 0 ]; then
+  echo "gateway-drain: parked $parked run(s) that wait on a person"
+fi
+
 runs="$(runs_now)"
 if [ -z "$runs" ]; then
   echo "gateway-drain: no count from $url, so the stop goes ahead now"

@@ -531,11 +531,16 @@ export function MessageContent({
   messageId = null,
 }: MessageContentProps) {
   return (
-    <LightVersionContext.Provider value={lightVersion}>
-      <InlineImageContext.Provider value={inlineImagePath(messageId)}>
-        <MessageBody html={html} text={text} remoteId={remoteId} />
-      </InlineImageContext.Provider>
-    </LightVersionContext.Provider>
+    // `select-text`: the email page root is `select-none` (it keeps stray
+    // selection out of the chrome). The body, quoted part included, must stay
+    // selectable (task 3392). An HTML body is an iframe and has its own document.
+    <div data-email-body="" className="select-text">
+      <LightVersionContext.Provider value={lightVersion}>
+        <InlineImageContext.Provider value={inlineImagePath(messageId)}>
+          <MessageBody html={html} text={text} remoteId={remoteId} />
+        </InlineImageContext.Provider>
+      </LightVersionContext.Provider>
+    </div>
   );
 }
 

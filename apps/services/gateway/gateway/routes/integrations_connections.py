@@ -206,6 +206,21 @@ def _host_only(url: str | None) -> str:
 # ── The five sources ────────────────────────────────────────────────────────
 
 
+def _registry_label(provider: str) -> str:
+    """The name of a registry row. An API connection (``api:<template>``,
+    API-5) takes the label of its connector-list row, so the console says
+    "Zoho Books" and not "Api:Zoho Books". Each other row keeps its rule."""
+    if provider == "zoho":
+        return "Zoho CRM"
+    if provider.startswith("api:"):
+        from acb_common.connector_list import connector
+
+        row = connector(provider)
+        if row is not None:
+            return str(row["label"])
+    return provider.replace("_", " ").title()
+
+
 def _registry_row(conn: store.Connection, user: UserContext) -> Row:
     """A row of the registry table. The Zoho CRM row is the first."""
     app = _app_of(conn.owning_app)
@@ -220,7 +235,7 @@ def _registry_row(conn: store.Connection, user: UserContext) -> Row:
         id=f"{conn.provider}:{conn.id}",
         kind="oauth",
         provider=conn.provider,
-        label="Zoho CRM" if conn.provider == "zoho" else conn.provider.replace("_", " ").title(),
+        label=_registry_label(conn.provider),
         owning_app=app,
         scope=conn.scope_kind,
         owner=(conn.member_email if not org_scope else conn.connected_by) or None,
@@ -359,6 +374,9 @@ async def _mcp_rows(org: str, user: UserContext) -> list[Row]:
             # MCP-C2: a switch too. The one parse is ``StoredServer``.
             "read_only_key": "true" if srv.read_only_key else "false",
         }
+        if srv.description:
+            # CSY-7: the panel edits it in place, so it is not a line of text.
+            detail["description"] = srv.description
         host = _host_only(srv.url)
         if host:
             detail["host"] = host
@@ -518,7 +536,17 @@ def _not_found() -> HTTPException:
 
 
 def _split_id(connection_id: str) -> tuple[str, str]:
-    prefix, sep, rest = connection_id.partition(":")
+    """The provider and the key of a row id.
+
+    An API connection (API-2) has the provider ``api:<template>``, so its
+    row id is ``api:<template>:<uuid>``. It splits at the LAST colon. Each
+    other id splits at the first one, because an MCP server name and a key
+    service can hold no colon, and a registry id ends with a uuid.
+    """
+    if connection_id.startswith("api:"):
+        prefix, sep, rest = connection_id.rpartition(":")
+    else:
+        prefix, sep, rest = connection_id.partition(":")
     if not sep or not prefix or not rest:
         raise _not_found()
     return prefix, rest
@@ -554,6 +582,12 @@ async def _disconnect_registry(org: str, provider: str, key: str, user: UserCont
         await github_connection.disconnect(org)
         async with tenant_session(org) as db:
             after = await store.get_by_id(db, org, conn.id)
+    elif conn.provider == "api:zoho_books" and conn.owning_app == "integrations":
+        # API-2: revoke the refresh token at Zoho, then the store disconnect,
+        # under the connect lock of the Books flow.
+        from gateway.routes.integrations_api_connect import disconnect_books
+
+        after = await disconnect_books(org)
     else:
         async with tenant_session(org) as db:
             after = await store.disconnect(db, org, conn.id)
