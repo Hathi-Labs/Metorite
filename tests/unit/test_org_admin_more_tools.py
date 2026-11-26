@@ -929,7 +929,7 @@ _PURGE_LOSSES: dict[str, str] = {
     "email_accounts": "mail", "whatsapp_accounts": "mail", "task_accounts": "mail",
     "scheduled_sends": "mail", "mailbox_member_prefs": "mail",
     "app_grants": "grants", "app_tool_grants": "grants", "mailbox_grants": "grants",
-    "private_app_installs": "grants",
+    "private_app_installs": "grants", "sandbox_capabilities": "grants",
     "room_participations": "chats", "chat_member_rows": "chats", "chat_card_rows": "chats",
     "chat_join_rows": "chats", "failure_event_rows": "chats", "tool_gaps": "chats",
     "private_chat_sessions": "chats", "chat_topics": "chats", "chat_pending_asks": "chats",
