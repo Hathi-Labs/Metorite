@@ -1890,7 +1890,7 @@ the A2 model.
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
 | **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
-| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin needs the diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 before the merge. §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
+| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
@@ -2900,3 +2900,7 @@ here, and each needs its own check before anyone acts on it.
   of SBX-20 on task 3981 (answer `8c7fc3a3`). §0d, SBX-F27 and D233 record it.
 - 2026-11-26 — SBX-13 built (task 3428). The door client `metorite_door` is in
   the sandbox image, read only. Fence SBX-F22. The §0c row of SBX-13 says so.
+- 2026-11-26 — SBX-2 built dark (task 3801). Migration 503 adds
+  `sandbox_capabilities`. The sibling of branch 0 reads `X-Sandbox-Capability`,
+  and `SANDBOX_ROUTES` opens 68 GET rows. The flag `SANDBOX_DOOR_ORGS` stays
+  off. The member purge deletes her capabilities. SBX-F22 now reads the real set.
