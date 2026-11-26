@@ -1350,17 +1350,22 @@ _ORG_ADMIN_DELEGATION_REFUSED = (
 
 # ── The people pack (P-5b-1, chat_parity.md section 6.4, task 3114) ────────
 
-#: The rules of the ``people`` pack: the four reads of P-5b-1. Each tool that
+#: The rules of the ``people`` pack: the four reads of P-5b-1 and the send of
+#: P-5b-5 (task 3946). Each tool that
 #: it names is a tool of this pack. The owner (``org-admin``) has no persona
 #: text in the orchestrator, and it never runs as an agent. The routes decide
 #: what each member sees, so the rules claim no right.
-_PEOPLE_RULES = """PEOPLE TOOLS. You hold four reads of the People app and of Reach. Use them
-yourself. No people agent exists to hand a task to.
+_PEOPLE_RULES = """PEOPLE TOOLS. You hold four reads of the People app and of Reach, and one
+send. Use them yourself. No people agent exists to hand a task to.
 - people_directory searches the directory. It gives the id of each person.
 - people_me reads the member's own row, or says why there is none.
 - people_work reads the open tasks of a person: me for the member, or the id
   that people_directory gave.
 - reach_preview reads what Reach would send the member now. It sends nothing.
+- reach_send_brief sends the member's own brief to the member's own WhatsApp
+  now. Call it only when the member asks to send the brief. It shows one card
+  first, each time. When the result says that the brief may have gone, tell
+  the member to check WhatsApp. Never call it again by yourself.
 - Each tool acts as the member, and shows only what the People app shows to
   the member. When the result says that the HR fields are hidden, tell the
   member so. Do not guess them.
@@ -1378,6 +1383,8 @@ _PEOPLE_WORDS = (
     "my people profile", "my person record", "people app", "colleague's work",
     "work of a colleague", "reach preview", "reach brief",
     "what would reach send",
+    # P-5b-5 (task 3946): the send of my own brief.
+    "send my brief", "brief to my whatsapp",
 )
 
 #: The answer to a hand-off to the owner of the ``people`` pack while the run
@@ -1639,12 +1646,13 @@ PACKS: dict[str, Pack] = {
         delegation_refusal=_ORG_ADMIN_DELEGATION_REFUSED,
     ),
     # P-5b-1 (task 3114, owner answer OD4 A, 2026-11-25): four reads of the People
-    # app and of Reach. Owned by org-admin. Last, so the cap drops it first. It has
-    # no surface, and it is NOT in FOLLOWS: it stays off until the owner adds a
-    # TOOL_PACKS line.
+    # app and of Reach. P-5b-5 (task 3946, OD7 A) adds the send of my own brief, on
+    # one card each time. Owned by org-admin. Last, so the cap drops it first. It
+    # has no surface, and it is NOT in FOLLOWS: it stays off until the owner adds
+    # a TOOL_PACKS line.
     "people": Pack(
         slug="people",
-        when="Load for the people directory, your own row, the open work of a colleague, or the Reach preview.",
+        when="Load for the people directory, your own row, the open work of a colleague, the Reach preview, or to send my brief to my WhatsApp now.",
         rules=_PEOPLE_RULES,
         words=_PEOPLE_WORDS,
         delegation_refusal=_PEOPLE_DELEGATION_REFUSED,

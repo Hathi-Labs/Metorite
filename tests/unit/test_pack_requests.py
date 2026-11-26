@@ -368,6 +368,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "people_me": ("show my person record", "what does my people profile say?"),
     "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
     "reach_preview": ("show me the reach preview", "what would reach send me now?"),
+    # P-5b-5 (task 3946): the send of my own brief, on one card each time.
+    "reach_send_brief": ("send my brief now", "send the brief to my whatsapp"),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

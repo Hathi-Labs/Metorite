@@ -13,7 +13,7 @@ The tools are in ``acb_skills.org_admin_tools`` (PAR-2a),
 ``acb_skills.org_admin_more_tools`` (PAR-4a: groups, roles, overrides and the
 name of the org. PAR-4c: the removal and the purge of a member. PAR-4d: the
 seats), ``acb_skills.integrations_admin_tools`` (PAR-6a) and
-``acb_skills.people_tools`` (P-5b-1, the pack ``people``), and this module
+``acb_skills.people_tools`` (P-5b-1 and P-5b-5, the pack ``people``), and this module
 keeps no copy. They call the admin and Integrations routes over
 HTTP as the member, and take no org or member argument. The routes decide
 each right.

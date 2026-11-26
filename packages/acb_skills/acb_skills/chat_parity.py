@@ -242,6 +242,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     # PAR-6a: the org-admin pack sends the routes of the Integrations app.
     "packages/acb_skills/acb_skills/integrations_admin_tools.py",
     # P-5b-1: the people pack sends the People routes and the two Reach reads.
+    # P-5b-5: it sends the brief of Reach too.
     "packages/acb_skills/acb_skills/people_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
@@ -417,6 +418,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/people/{}/work": "people_work",
     "GET /api/me/reach/status": "reach_preview",
     "GET /api/me/reach/preview": "reach_preview",
+    # P-5b-5 (task 3946, OD7 A): send my brief now, on one card each time. The
+    # tool sends the route as the verified member of the run, with no body.
+    "POST /api/me/reach/brief": "reach_send_brief",
     # ── Chat ──
     # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
     # id: it acts on the chat of the run, as the member of the run.
@@ -1092,7 +1096,6 @@ DEBT: dict[str, str] = {
     "DELETE /api/people/{}/avatar": "P-5",
     "PATCH /api/people/{}": "P-5",
     "PATCH /api/tasks/people/{}": "P-5",
-    "POST /api/me/reach/brief": "P-5",
     "POST /api/people/{}/absences": "P-5",
     "POST /api/people/{}/avatar": "P-5",
     "POST /api/people/{}/resume": "P-5",
@@ -1293,7 +1296,7 @@ DEBT_CEILING: dict[str, int] = {
     "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).
     "notes": 51,
     "whatsapp": 13,  # P-4a (task 3960) paid the 12 read rows of WhatsApp with 12 read tools (25 to 13). Paid by task 3960.
-    "people": 12,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays.
+    "people": 11,  # P-5b-1 (task 3114) paid the directory, my row, my work, the work of a person, and the Reach status and preview (19 to 13). P-5b-6 (task 3947, owner answer OD3 A) deleted the dead client code that created a person, so POST /api/tasks/people left the UI (13 to 12). The gateway route stays. P-5b-5 (task 3946, OD7 A) paid POST /api/me/reach/brief with reach_send_brief, on one card each time (12 to 11).
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).

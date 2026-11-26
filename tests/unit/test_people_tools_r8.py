@@ -26,6 +26,21 @@ b. A person id of org B gives Mel the plain not-found words. Zed lists no
    person of org A.
 c. ``people_me`` returns only the row of the caller.
 
+**Acceptance (P-5b-5, task 3946).** The REAL Reach router
+(``gateway.reach.routes``) answers the status, the preview and the send.
+
+d. Mel of org A approves the card, and her brief goes to her own link only.
+   Zed of org B has no link in org B. A link row for his address in org A does
+   not reach him: the tool shows no card and sends no request, and a direct
+   ``POST /reach/brief`` as Zed answers ``no_link``. A member that Reach does
+   not allow gets 404, and the tool says "Reach is off for you."
+
+**No test here reaches WhatsApp.** The fixture ``reach_world`` stubs the
+provider factory, the thread record and the bot credential read, and it sets
+no flag or credential of the box. The allow rule and the channel switch are
+stubbed as functions, so the denial of Zed comes from the data of his org.
+``test_people_tools.py`` holds that by its structural test.
+
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
 
@@ -113,15 +128,19 @@ class _World:
         return asyncio.run(go())
 
 
-def _app(w: _World) -> Any:
+def _app(w: _World, *, reach: bool = False) -> Any:
     """The real People routers, in the order of ``main.py``. The caller is the
     principal of ``X-User-Email``, and the wrapper binds that caller's org, as
-    the auth layer does."""
+    the auth layer does. *reach* adds the real Reach router (P-5b-5)."""
     from gateway.routes.people import router, self_router
 
     app = FastAPI()
     app.include_router(self_router)
     app.include_router(router)
+    if reach:
+        from gateway.reach.routes import router as reach_router
+
+        app.include_router(reach_router)
 
     def who(request: Request) -> UserContext:
         return w.users[request.headers.get("x-user-email", "")]
@@ -256,3 +275,192 @@ def test_c_people_me_returns_only_the_callers_row(world) -> None:
         assert other not in out["person"]
     zed = w.act(w.zed, pt.people_me)
     assert _rows(zed["person"])["email"] == w.zed and w.mel not in zed["person"]
+
+
+# ── d. The send of my brief (P-5b-5, task 3946) ─────────────────────────────
+
+
+class _Provider:
+    """A WhatsApp provider that records each send and sends nothing."""
+
+    def __init__(self) -> None:
+        self.sends: list[tuple[str, str, str]] = []
+
+    async def send_text(self, wa_id: str, body: str) -> str:
+        self.sends.append(("text", wa_id, body))
+        return "wamid.p5b5.stub"
+
+    async def send_template(self, wa_id: str, name: str, language: str,
+                            components: Any = None) -> str:
+        self.sends.append(("template", wa_id, name))
+        return "wamid.p5b5.stub"
+
+
+class _ReachWorld:
+    """The world of the send: the provider, the cards and the thread records."""
+
+    def __init__(self, w: _World, transport: httpx.ASGITransport) -> None:
+        self.w = w
+        self.transport = transport
+        self.provider = _Provider()
+        self.cards: list[dict[str, Any]] = []
+        self.records: list[tuple[str, str]] = []
+        self.phone_a = "91" + str(uuid.uuid4().int)[:10]
+        self.phone_z = "92" + str(uuid.uuid4().int)[:10]
+        self.allowed: Callable[[str, str], bool] = lambda org, email: True
+
+    def send(self, who: str) -> dict[str, Any]:
+        """``reach_send_brief`` as the VERIFIED member *who* of the run."""
+        from acb_common import bind_run_context, run_context_scope
+        from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+        self.w.member = who
+
+        async def go() -> dict[str, Any]:
+            async with tenant_engine_scope(self.w.url):
+                with run_context_scope(), artifact_context_scope():
+                    bind_run_context(run_id="r-p5b5-r8", user=who, member_verified=True)
+                    bind_artifact_context(session_id="s-p5b5-r8", member=who,
+                                          agent_name="orchestrator", run_id="r-p5b5-r8")
+                    return await pt.reach_send_brief()
+        return asyncio.run(go())
+
+    def post(self, who: str) -> httpx.Response:
+        """A direct ``POST /reach/brief`` as *who*, with no tool and no card."""
+
+        async def go() -> httpx.Response:
+            async with tenant_engine_scope(self.w.url), _REAL_CLIENT(
+                    transport=self.transport, base_url="http://gateway.test") as client:
+                return await client.post("/reach/brief", headers={"X-User-Email": who})
+        return asyncio.run(go())
+
+
+def _outbox(p: Any, member: str) -> list[dict[str, Any]]:
+    with p.admin_engine.connect() as c:
+        return [dict(r) for r in c.execute(text(
+            "SELECT organization_id::text AS org, state, reason, regime FROM reach_outbox "
+            "WHERE member_email = :m ORDER BY created_at"), {"m": member}).mappings()]
+
+
+def _wipe_reach(p: Any, members: tuple[str, ...]) -> None:
+    with p.admin_engine.begin() as c:
+        for table in ("reach_outbox", "reach_signal_log", "whatsapp_bot_messages",
+                      "whatsapp_member_links"):
+            c.execute(text(f"DELETE FROM {table} WHERE member_email = ANY(:m)"),
+                      {"m": list(members)})
+
+
+@pytest.fixture
+def reach_world(world, monkeypatch):
+    """The real Reach router over the real database, with each send stubbed.
+
+    The stubs: the provider factory, the thread record and the bot credential
+    read. The allow rule and the channel switch are stubbed as functions, so
+    no flag of the box is set. Mel of org A has a link with an open window.
+    Zed of org B has no link in org B, and a link row for his address sits in
+    org A."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_skills import ask_tools
+    from gateway.reach import flags as reach_flags
+    from gateway.reach import loop
+    from gateway.reach import whatsapp as channel
+    from gateway.routes.shell import state
+    from gateway.routes.whatsapp_channel import flags as wa_flags
+    from whatsapp_ingestion.providers import factory
+
+    w = world
+    p = w.p
+    transport = httpx.ASGITransport(app=_app(w, reach=True))
+    rw = _ReachWorld(w, transport)
+    monkeypatch.setattr(pt.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=transport, **kw))
+    # The stubs of the send. Nothing below them can reach a phone.
+    monkeypatch.setattr(factory, "build_provider", lambda kind, creds: rw.provider)
+
+    async def record(org: str, member: str, wa_id: str, out_id: Any, body: str,
+                     outbox_id: str) -> None:
+        rw.records.append((org, member))
+
+    monkeypatch.setattr(channel, "_record", record)
+    monkeypatch.setattr(wa_flags, "bot_credentials", lambda: {"stub": "no credential"})
+    monkeypatch.setattr(wa_flags, "org_allowed", lambda org: True)
+    monkeypatch.setattr(channel, "channel_ready", lambda org: True)
+    monkeypatch.setattr(reach_flags, "member_allowed",
+                        lambda org, email: rw.allowed(str(org or ""), str(email or "")))
+    # My Day is not the subject here: one overdue task card.
+    day = state.Day(ZoneInfo("Asia/Kolkata"), 9, 18)
+    card = {"signal_id": "tasks:p5b5", "app": "tasks", "kind": "overdue",
+            "group": "needs_you", "score": 50, "title": "Ship the quote", "facts": {},
+            "fingerprint": "fp0p5b05", "state": "new", "at": None, "why": "Overdue"}
+
+    async def snapshot(org: str, user: Any, now: Any = None) -> Any:
+        return loop.Snapshot([dict(card)], now or datetime.now(UTC), day, True, True)
+
+    monkeypatch.setattr(loop, "snapshot", snapshot)
+
+    async def confirm(title: str, detail: str = "", context: str = "", **kw: Any) -> bool:
+        rw.cards.append({"title": title, "context": context, **kw})
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", confirm)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    members = (w.mel, w.zed)
+    _wipe_reach(p, members)
+    with p.admin_engine.begin() as c:
+        for org, member, phone in ((p.org_a, w.mel, rw.phone_a),
+                                   (p.org_a, w.zed, rw.phone_z)):
+            c.execute(text(
+                "INSERT INTO whatsapp_member_links (organization_id, member_email, wa_id, "
+                "status, is_current, linked_at) VALUES (CAST(:o AS uuid), :m, :wa, "
+                "'active', true, now())"), {"o": org, "m": member, "wa": phone})
+            c.execute(text(
+                "INSERT INTO whatsapp_bot_messages (organization_id, member_email, wa_id, "
+                "wamid, direction, state) VALUES (CAST(:o AS uuid), :m, :wa, :wid, 'in', "
+                "'replied')"), {"o": org, "m": member, "wa": phone,
+                                "wid": f"wamid.p5b5.{w.tag}.{phone}"})
+    yield rw
+    _wipe_reach(p, members)
+
+
+def test_d_an_approved_card_sends_my_brief_to_my_own_link(reach_world) -> None:
+    """Non-vacuity of the case below: the stubbed provider gets Mel's brief."""
+    rw = reach_world
+    w = rw.w
+    out = rw.send(w.mel)
+    assert out["sent"] is True and out["answer"] == "Sent. Check your WhatsApp.", out
+    assert len(rw.cards) == 1 and rw.cards[0]["responder"] == w.mel
+    assert pt.SEND_CARD_OPEN in rw.cards[0]["context"]
+    assert [(kind, wa) for kind, wa, _body in rw.provider.sends] == [("text", rw.phone_a)]
+    assert rw.records == [(w.p.org_a, w.mel)]
+    assert _outbox(w.p, w.mel) == [{"org": w.p.org_a, "state": "sent", "reason": None,
+                                    "regime": "free_text"}]
+
+
+def test_d_a_member_of_org_b_cannot_trigger_a_send(reach_world) -> None:
+    """Zed of org B has a link row in org A only. The tool shows no card and
+    sends no request. A direct POST answers ``no_link`` and sends nothing."""
+    rw = reach_world
+    w = rw.w
+    out = rw.send(w.zed)
+    assert out == {"ok": False, "error": pt._NOT_LINKED, "sent": False}, out
+    assert rw.cards == [] and rw.provider.sends == []
+    assert _outbox(w.p, w.zed) == []
+    got = rw.post(w.zed)
+    assert got.status_code == 200 and got.json() == {"state": "skipped",
+                                                     "reason": "no_link"}
+    assert rw.provider.sends == [] and rw.records == []
+    # The row of the direct POST is in Zed's own org, and it says no_link.
+    assert _outbox(w.p, w.zed) == [{"org": w.p.org_b, "state": "skipped",
+                                    "reason": "no_link", "regime": None}]
+
+
+def test_d_reach_off_for_a_member_is_404_and_plain_words(reach_world) -> None:
+    rw = reach_world
+    w = rw.w
+    rw.allowed = lambda org, email: org == w.p.org_a
+    out = rw.send(w.zed)
+    assert out == {"ok": False, "error": pt._REACH_OFF, "sent": False}, out
+    assert rw.post(w.zed).status_code == 404
+    assert rw.cards == [] and rw.provider.sends == [] and _outbox(w.p, w.zed) == []

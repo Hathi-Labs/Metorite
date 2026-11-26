@@ -259,7 +259,8 @@ async def test_flag_off_no_hand_off_is_refused(store, monkeypatch) -> None:
 
 #: P-5b-1 (task 3114): words of the dark ``people`` pack, under 12 words.
 PEOPLE_WORDS = "Search the people directory and show my person record"
-PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview")
+PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview",
+                "reach_send_brief")
 
 
 def test_flag_off_the_people_pack_reaches_no_chat(store, monkeypatch) -> None:
