@@ -14,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.**
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 
@@ -898,6 +898,29 @@ The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler p
 - **The phone, 760 pixels and under.** It shows three counts, then the questions that wait on the member, then the people. The oldest question comes first.
 - **One level for each screen.** A person opens their orchestrators. An orchestrator opens its sessions. A session opens in a bottom sheet.
 - **One answer path.** The phone uses the list of agent questions (`QuestionsView`). The graph does not draw on a phone.
+
+#### 3.12.9 The Agents view at scale (AMR-4, 2026-11-26)
+
+The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
+
+- **Aggregate first.** A canvas draws at most 40 session cards, plus the orchestrator card. Past that it groups, and each group says what it holds.
+- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
+- **The overview.** A scope with more than 40 sessions draws one tile for each orchestrator, under its person, on the Graph and the Board. The tile that wants the most attention comes first. A tile holds its counts, one square for each session (the most urgent first, at most 96) and a bar of its subagents. The sessions with no orchestrator make one "No orchestrator" tile for each person.
+- **Quiet orchestrators.** A tile with only idle and done sessions folds into one row for its person. A find opens that row.
+- **Levels.** A tile, or a square, opens the graph of that orchestrator. A breadcrumb leads back: All agents, then a person, then an orchestrator.
+- **The bound.** One orchestrator draws its card and at most 12 session cards, ranked needs you, failed, working and waiting. The rest fold into one node for each state. The node shows its squares and opens 12 more. A node that fills the canvas then walks on to its next cards, so a member reaches every session by clicking. The canvas never passes 40 session cards, plus the orchestrator card. The selected session always draws.
+- **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". A List row and the details say it in full. One session at a time opens its subagents in the graph, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
+- **Ways to the work.** "Question 1 of N" walks the questions that wait on the member, the oldest first. Each step opens the orchestrator, centres the card and opens the details. Find reaches the names of the subagents.
+- **Zoom.** Under 60 % zoom, a card shows its name only.
+- **The phone.** The first screen shows four counts: needs you, failed, working and waiting. It shows one question card, with a step back and a step forward. Then it shows the people with their squares. A person shows orchestrators as rows. An orchestrator shows its sessions by state, 10 cards and then "Show more". Idle and Done are rows that open. The answer keeps the one path of `QuestionsView`.
+- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). This holds for the List, the session and task lists of the details, the subagent list and the cards of a phone level. The row heights are rem, and the sums use the applied root font size, so each density works. No library.
+- **The toolbar.** With the dock closed, it stays one row at 1280 pixels and wider. In a narrow column it first hides the words of the chips and of the lens switch. The icon and the count stay, and each control keeps its word as its accessible name. It never scrolls the page sideways.
+- **Two more reads.** Both are query values of the map read, and both act only for an org that `AGENT_LENSES_ORGS` holds. For any other org the gateway does not read them. A bad value answers the one 404 of the map.
+- **`detail=summary`.** It lists at most 1000 session nodes, each with ONE lead run. That is the run that asks, then the run that waits, then the newest open run. With no open run, it is the newest ended run. `children` is empty. Each session holds `subagents`: `total`, `working`, `failed`, `done` and at most 40 distinct `names`. Each session holds `tasks`: the `number` and the `title` of at most 20 tasks of its runs, the lead task first. The title is one line of untrusted text. The find box reads them.
+- **Failed and Done on the summary.** A node with no open run reads `failed` or `done` when its newest ended run is `failed` or `completed`. That run ended in the last 24 hours (`MAP_ENDED_WINDOW_S`). A newest run that stopped, or ended in another way, lists no node. A node with an open run keeps the state rule of the map.
+- **The counted subagents.** They are the children of the open runs and of the runs that ended in the window, for the listed nodes.
+- **`session=<node id>`.** It gives the runs of one node, at most 300, with the quiet ones. It gives its children too, at most 200, open and ended. Each child has its state. A node that the caller may not see gives the empty map, as an unknown id does. The view reads it only when a session opens, and again with each new map.
+- **Visibility.** Both reads go through the ONE `seen` text of the map (D12), in the scope of `project_id`. No answer holds a session key or an address. The org comes from the session (R5). The edge tool `get_agent_map` sends neither value.
 
 ### 3.13 What other apps do: agent-autoloop (SW-0d, task 2506)
 
@@ -2264,7 +2287,7 @@ They keep their own gates.
 
 #### AMR-1 · The Graph lens of the Agents view
 
-- **Metorite task.** To make (the board was not reachable on 2026-11-26). Epic 321.
+- **Metorite task.** 4020. Epic 321.
 - **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
 - **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
 - **Fence.** `lib/agentLenses.test.ts`, `lib/agentGraph.test.ts`, `components/AgentLenses.test.ts`, `tests/unit/test_agent_map_r8.py` and `tests/unit/test_auth_me_shell.py`.
@@ -2272,7 +2295,7 @@ They keep their own gates.
 
 #### AMR-2 · The Board and List lenses, and the toolbar
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4021. Epic 321.
 - **Scope.** The toolbar of §3.12.8, and the Board and List lenses over the same model. The words and the icons of a state come from `AGENT_STATES` and the board lanes.
 - **Done when.** Each lens shows the same sessions under the same filters.
 - **Fence.** `lib/agentLenses.test.ts` and `components/AgentLenses.test.ts`.
@@ -2280,11 +2303,20 @@ They keep their own gates.
 
 #### AMR-3 · The phone view of the Agents view
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4022. Epic 321.
 - **Scope.** The phone view of §3.12.8.
 - **Done when.** At 390 pixels, no graph draws. A question that waits on the member takes an answer on its card. A session opens in the bottom sheet.
 - **Fence.** `components/AgentLenses.test.ts`.
 - **Risk.** STANDARD UI. **Gate.** AGENT-SAFE, dark. **Depends on.** AMR-1.
+
+#### AMR-4 · The Agents view at scale
+
+- **Metorite task.** 4023. Epic 321.
+- **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
+- **Done when.** A fleet of 500 sessions and 2000 subagents draws at most 40 session cards on a canvas, plus the orchestrator card. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
+- **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts`, `components/AgentScale.test.ts` and `components/AgentRepairs.test.ts`.
+- **Risk.** STANDARD UI, with a change to a shared read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** AMR-1 to AMR-3, SW-39.
+- **Built and dark, 2026-11-26.** The repairs after the verifier and the review are in, 2026-11-26.
 
 #### SW-39 · Child runs
 
@@ -2559,6 +2591,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-101b | The command of SW-101 |
 | SW-112 | `npx vitest run src/app/projects/lib/agentMap.test.ts src/app/projects/lib/commands.test.ts src/app/projects/components/ViewTabs.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `uv run pytest -q -p no:cacheprovider tests/unit/test_chat_parity.py`, then `visual-review` |
 | AMR-1 to AMR-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py`, `npx vitest run src/app/projects src/lib/shell/shellPrefs.test.ts src/lib/theme` in `workbench/control_plane`, then `visual-review` |
+| AMR-4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_map_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_app_requests_r8.py tests/unit/test_chat_parity.py`, `npx vitest run src/app/projects src/lib src/components` in `workbench/control_plane`, then `visual-review` |
 | SW-113 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_coverage.py tests/unit/test_agent_map_r8.py tests/unit/test_mcp_edge_prompts.py` |
 | SW-39 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-114 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_child_runs_r8.py tests/unit/test_mcp_edge_coverage.py`, and `node --test` on the hook tests |
@@ -2752,4 +2785,5 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 - **2026-11-17.** The orchestration map for task 3617. It adds §3.12, §5.12, §7.2, Q19 to Q21 (§8.2), one row in §3.7 and item 6 of SW-51. The board holds the slices SW-102 to SW-111 (tasks 3623 to 3632) and the demo tasks 3619 to 3622. It adds no code.
 - **2026-11-19.** The Agents view on each project, for task 3794. It adds §3.12.7, Q22 and Appendix C. It adds the rows SW-101b, SW-112, SW-113, SW-39 and SW-114, with the tasks 3794 to 3797 and 3799. Rung M5 has the demo task 3798. It widens SW-102, SW-104 and SW-105. It adds no code.
 - **2026-11-26.** The lenses and the phone view of the Agents view, from the owner's mockup. It adds §3.12.8 and the rows AMR-1 to AMR-3.
+- **2026-11-26, at scale.** The owner's rules for a large fleet. It adds §3.12.9, the row AMR-4 and its verify row. The slice is built and dark behind `AGENT_LENSES_ORGS`.
 - **2026-11-21.** The agent-autoloop research for task 2506 (SW-0d). It adds §3.13, a hop limit in SW-95, retry in SW-78 and the row SW-38. It adds no code.
