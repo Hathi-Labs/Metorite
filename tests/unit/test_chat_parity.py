@@ -661,8 +661,10 @@ def test_each_task_of_the_baseline_table_is_in_the_wave_of_its_app() -> None:
     Mutation: drop 3903 from ``WAVES["P-6"]`` -> red."""
     assert baseline_tasks_not_in_waves(_baseline_table(), cp.WAVES) == []
     waves = {**cp.WAVES, "P-6": (cp.WAVES["P-6"][0], cp.WAVES["P-6"][1], (3115,))}
+    # PAR-9 (task 3950): the apps row names its task too.
     assert baseline_tasks_not_in_waves(_baseline_table(), waves) == [
-        "workflows: task 3903 is not in WAVES['P-6']"]
+        "workflows: task 3903 is not in WAVES['P-6']",
+        "apps: task 3950 is not in WAVES['P-6']"]
 
 
 def test_a_wave_with_no_task_is_found() -> None:

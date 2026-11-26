@@ -96,6 +96,15 @@ export function blockStateCopy(
   }
 }
 
+/** The plural of an object label, in lower case: "Visit" gives "visits", "Company" gives "companies". */
+export function pluralOf(label: string): string {
+  const w = label.trim().toLowerCase();
+  if (!w) return "records";
+  if (/[^aeiou]y$/.test(w)) return `${w.slice(0, -1)}ies`;
+  if (/(s|x|z|ch|sh)$/.test(w)) return `${w}es`;
+  return `${w}s`;
+}
+
 /** The label that a screen reader hears for a loading block. */
 export function blockLoadingLabel(noun: string): string {
   return `Loading ${noun}`;

@@ -150,6 +150,21 @@ def _pipelines(call: dict) -> Any:
     raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
 
 
+def _mapping(call: dict) -> Any:
+    """The suggestion and analysis routes of ``_responder`` (P-3, task 3954)."""
+    path, method = call["path"], call["method"]
+    if path == "/crm/mapping/suggestions" and method == "GET":
+        return _SUGGESTIONS
+    if path.startswith("/crm/mapping/suggestions/") and method == "POST":
+        return {"slot": "deal", "module": "Deals_X", "version": 3}
+    if path == "/crm/analysis/status" and method == "GET":
+        return {"run": None, "allowed": True}
+    if path == "/crm/analysis/rerun" and method == "POST":
+        return {"id": "a1", "state": "running", "started_at": "2026-11-25T10:00:00Z",
+                "steps": {}, "outcome": None, "started": True}
+    raise AssertionError(f"a tool reached an unexpected route: {method} {path}")
+
+
 def _responder(call: dict) -> Any:
     """The gateway, as far as these tools can tell.
 
@@ -161,6 +176,8 @@ def _responder(call: dict) -> Any:
         return _STATUSES
     if path == "/crm/lost-reasons" and method == "GET":
         return _REASONS
+    if path.startswith(("/crm/mapping/", "/crm/analysis/")):
+        return _mapping(call)
     if path == f"/crm/deals/{_DEAL_ID}":
         return {**_DEAL, **body}
     if path == f"/crm/leads/{_LEAD_ID}" and method == "GET":
@@ -257,6 +274,19 @@ _CARD_MUST_NAME: dict[str, str] = {
     "crm_edit_status": "Negotiation",  # the stage being changed
     "crm_edit_lost_reason": "Price",   # the lost reason being changed
 }
+
+# P-3 (task 3954): the two card writes of the suggestions of the field map and
+# the AI analysis. Each reads before its card.
+_SUGGESTIONS = {
+    "suggestions": [{"slot": "deal", "version": 2, "module": "Deals_X",
+                     "label": "Commercials", "records": 40, "targets": [], "stage": None}],
+    "overlays": [],
+}
+_WRITE_TOOLS += ["crm_decide_suggestion", "crm_rerun_analysis"]
+_CALLS["crm_decide_suggestion"] = lambda: _M.crm_decide_suggestion("approve", "deals")
+_CALLS["crm_rerun_analysis"] = lambda: _M.crm_rerun_analysis()
+_CARD_MUST_NAME["crm_decide_suggestion"] = "Commercials"  # the module being used
+_CARD_MUST_NAME["crm_rerun_analysis"] = "AI analysis"     # the act itself
 
 
 def test_the_call_table_covers_every_write_tool() -> None:

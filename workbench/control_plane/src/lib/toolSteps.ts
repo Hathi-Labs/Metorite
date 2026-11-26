@@ -249,6 +249,13 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   studio_workflow_save: { kind: "edit", verb: V.save, object: "a workflow" },
   studio_workflow_build: { kind: "edit", verb: V.build, object: "a workflow" },
   studio_workflow_module: { kind: "edit", verb: V.save, object: "a code module" },
+  // PAR-9 (task 3950): the Custom Apps of the App Workshop, noun-first names too.
+  custom_app_read: { kind: "read", verb: V.read, object: "a custom app" },
+  custom_app_save: { kind: "edit", verb: V.save, object: "a custom app" },
+  custom_app_files: { kind: "edit", verb: V.change, object: "the files of a custom app" },
+  custom_app_publish: { kind: "edit", verb: V.update, object: "the live version of a custom app" },
+  custom_app_share: { kind: "edit", verb: V.change, object: "who can open a custom app" },
+  custom_app_data: { kind: "edit", verb: V.change, object: "the stored data of a custom app" },
 };
 
 /** First word of a verb-first name → its verb and its step kind. */

@@ -24,6 +24,7 @@ import { AppTopBar, type AppTopBarBack } from "@/components/AppTopBar";
 import Tabs from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
+import LayoutBody from "@/components/studio/layouts/LayoutBody";
 import type { ViewDef } from "@/lib/studio/manifest";
 import { buildPage, type PageManifest } from "@/lib/studio/pageModel";
 import type { PageState } from "@/lib/studio/pageState";
@@ -209,7 +210,10 @@ export default function StudioPage({
           className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {filterBar && <div className="mb-3 sm:mb-4">{filterBar}</div>}
-          {cells.length === 0 ? (
+          {page.layout ? (
+            <LayoutBody layout={page.layout} regions={page.regions} renderView={renderView}
+              titleOf={(id) => titleOf(manifest.views, id)} />
+          ) : cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
           ) : (
             <div className={`grid gap-3 sm:gap-4 ${GRID[page.cols] ?? GRID[1]}`} data-page-grid>
