@@ -41,6 +41,10 @@ number or a money field, and an average takes a number field. The store keeps
 the :data:`MAX_GROUPS` groups with the most records, and the rest fold into
 one group, ``other``.
 
+**The matrix (C2d-b).** ``group_by`` may be a list of two groups: the row axis
+and the column axis. Each axis takes at most :data:`MAX_AXIS_VALUES` values.
+A read past it is refused with ``query_too_big``, and nothing folds.
+
 **Errors.** Each refusal raises :class:`QueryError` with one of
 :data:`QUERY_ERROR_CODES` and one sentence. The sentence names the field key
 when the key has the key shape. It never echoes a value.
@@ -511,6 +515,11 @@ def parse_query(fields: Sequence[FieldSpec], filter: Any, sort: Any = None) -> Q
 
 #: The groups of one aggregate. The groups past it fold into ``other``.
 MAX_GROUPS = 50
+#: The distinct values of one axis of a matrix (C2d-b). A read with two group
+#: keys is refused past it, and nothing folds. So a matrix has 400 cells at most.
+MAX_AXIS_VALUES = 20
+#: The group keys of one aggregate: the row axis and the column axis.
+MAX_GROUP_KEYS = 2
 #: The measures of one aggregate.
 MAX_MEASURES = 4
 #: The measures. ``count`` counts the records, and it reads no field.
@@ -561,6 +570,8 @@ class Aggregate:
     conditions: tuple[Condition, ...] = ()
     group: GroupBy | None = None
     measures: tuple[Measure, ...] = (Measure("count"),)
+    #: C2d-b. The second key, the column axis of a matrix. None with one key.
+    group2: GroupBy | None = None
 
     def query(self) -> Query:
         """The filter as a :class:`Query`, for the guard ``hot_or_small``."""
@@ -580,13 +591,13 @@ class Aggregate:
         keys = set(self.query().hot_keys())
         if self.group is not None:
             keys.add(self.group.field.key)
+        if self.group2 is not None:
+            keys.add(self.group2.field.key)
         keys.update(f.key for f in self.measure_fields())
         return tuple(sorted(keys))
 
 
-def _check_group_shape(group_by: Any) -> Mapping[str, Any] | None:
-    if group_by is None:
-        return None
+def _check_one_group(group_by: Any) -> Mapping[str, Any]:
     if not isinstance(group_by, Mapping) or "field" not in group_by \
             or not set(group_by) <= _GROUP_KEYS:
         raise QueryError(
@@ -595,6 +606,23 @@ def _check_group_shape(group_by: Any) -> Mapping[str, Any] | None:
         key = _named(group_by["field"])
         raise QueryError(VALUE_INVALID, f'Field `{key}`: the group `bucket` is "day" or "month".', key)
     return group_by
+
+
+def _check_group_shape(group_by: Any) -> list[Mapping[str, Any]]:
+    """The group objects: none, one, or two (C2d-b). One object and a list of
+    one are the same. Two keys name two different fields."""
+    if group_by is None:
+        return []
+    if not _is_list(group_by):
+        return [_check_one_group(group_by)]
+    if not group_by or len(group_by) > MAX_GROUP_KEYS:
+        raise QueryError(VALUE_INVALID, f"`group_by` is one group, or a list of 1 to {MAX_GROUP_KEYS} groups.")
+    groups = [_check_one_group(g) for g in group_by]
+    if len(groups) == 2 and groups[0]["field"] == groups[1]["field"]:
+        key = _named(groups[0]["field"])
+        raise QueryError(VALUE_INVALID, f"Field `{key}` is in the group list twice. "
+                                        "The two keys are two fields.", key)
+    return groups
 
 
 def _check_measures_shape(measures: Any) -> list[Mapping[str, Any]]:
@@ -625,9 +653,9 @@ def _check_measures_shape(measures: Any) -> list[Mapping[str, Any]]:
 
 
 def check_aggregate_shape(filter: Any, group_by: Any = None, measures: Any = None) -> tuple[
-        list[Mapping[str, Any]], Mapping[str, Any] | None, list[Mapping[str, Any]]]:
-    """The conditions, the group and the measures of an aggregate, after a
-    check of the shape only. No measures means one ``count``.
+        list[Mapping[str, Any]], list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """The conditions, the groups (none, one or two) and the measures of an
+    aggregate, after a check of the shape only. No measures means one ``count``.
 
     It needs no fields, so a route can run it before it opens a session.
     :func:`parse_aggregate` runs it first too. Raises :class:`QueryError`.
@@ -635,9 +663,7 @@ def check_aggregate_shape(filter: Any, group_by: Any = None, measures: Any = Non
     return check_shape(filter), _check_group_shape(group_by), _check_measures_shape(measures)
 
 
-def _group(by_key: Mapping[str, FieldSpec], raw: Mapping[str, Any] | None) -> GroupBy | None:
-    if raw is None:
-        return None
+def _group(by_key: Mapping[str, FieldSpec], raw: Mapping[str, Any]) -> GroupBy:
     field = _field(by_key, raw["field"])
     if field.type not in GROUP_TYPES or field.many:
         raise QueryError(OP_NOT_ALLOWED, f"Field `{field.key}` is a {field.type} field, and it takes no group.",
@@ -675,8 +701,10 @@ def parse_aggregate(fields: Sequence[FieldSpec], filter: Any, group_by: Any = No
     """The :class:`Aggregate` of *filter*, *group_by* and *measures*, against
     the *fields* of one object.
 
-    *filter* has the grammar of :func:`parse_query`. *group_by* is None or
-    ``{"field": <key>, "bucket": "day" | "month"}``. *measures* is a list of
+    *filter* has the grammar of :func:`parse_query`. *group_by* is None, or
+    ``{"field": <key>, "bucket": "day" | "month"}``, or a list of 1 or 2 of
+    these (C2d-b). With 2, the first is the row axis and the second is the
+    column axis. *measures* is a list of
     ``{"op": "count"}`` and ``{"op": "sum" | "average", "field": <key>}``, and
     None means one count. Raises :class:`QueryError` on the first problem. The
     ``hot_or_small`` rule and the currency of a money sum need a read, so the
@@ -685,7 +713,10 @@ def parse_aggregate(fields: Sequence[FieldSpec], filter: Any, group_by: Any = No
     items, group, wanted = check_aggregate_shape(filter, group_by, measures)
     conditions = parse_query(fields, items).conditions
     by_key = {f.key: f for f in fields}
-    return Aggregate(conditions, _group(by_key, group), tuple(_measure(by_key, m) for m in wanted))
+    keys = [_group(by_key, g) for g in group]
+    return Aggregate(conditions, keys[0] if keys else None,
+                     tuple(_measure(by_key, m) for m in wanted),
+                     keys[1] if len(keys) > 1 else None)
 
 
 # --- the input schema -------------------------------------------------------
@@ -736,6 +767,13 @@ def list_input_schema() -> dict[str, Any]:
 
 _KEY_SCHEMA: dict[str, Any] = {"type": "string", "pattern": f"^{NAME_PATTERN}$"}
 
+_GROUP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["field"],
+    "properties": {"field": _KEY_SCHEMA, "bucket": {"enum": list(BUCKETS)}},
+}
+
 _AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -743,13 +781,9 @@ _AGGREGATE_INPUT_SCHEMA: dict[str, Any] = {
         "filter": _LIST_INPUT_SCHEMA["properties"]["filter"],
         "group_by": {
             "anyOf": [
-                {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["field"],
-                    "properties": {"field": _KEY_SCHEMA, "bucket": {"enum": list(BUCKETS)}},
-                },
+                _GROUP_SCHEMA,
                 {"type": "null"},
+                {"type": "array", "minItems": 1, "maxItems": MAX_GROUP_KEYS, "items": _GROUP_SCHEMA},
             ],
         },
         "measures": {

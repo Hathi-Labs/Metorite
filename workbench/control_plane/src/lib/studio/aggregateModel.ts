@@ -39,6 +39,14 @@ export interface AggGroup {
   values: (number | null)[];
 }
 
+/** C2d-b. One cell of a matrix: the records with one pair of keys. `null` is no value. */
+export interface AggCell {
+  key: unknown;
+  key2: unknown;
+  count: number;
+  values: (number | null)[];
+}
+
 export interface AggData {
   measures: AggMeasure[];
   /** For each measure: the currency of a money measure, or `null`. */
@@ -47,6 +55,8 @@ export interface AggData {
   other: AggGroup | null;
   folded: number;
   total: AggGroup;
+  /** C2d-b. Empty with one group key. With two, one cell for each pair that holds a record. */
+  cells: AggCell[];
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
@@ -96,12 +106,17 @@ export function parseAggregate(rows: readonly Row[] | null | undefined): AggData
     const p = parseGroup(g, n);
     if (p) groups.push(p);
   }
+  const cells: AggCell[] = [];
+  for (const c of Array.isArray(raw.cells) ? raw.cells : []) {
+    const p = parseGroup(c, n);
+    if (p) cells.push({ key: p.key, key2: isObject(c) ? c.key2 ?? null : null, count: p.count, values: p.values });
+  }
   const currencies = measures.map((_, j) => {
     const c = Array.isArray(raw.currencies) ? raw.currencies[j] : null;
     return typeof c === "string" && /^[A-Z]{3}$/.test(c) ? c : null;
   });
   return {
-    measures, currencies, groups, total,
+    measures, currencies, groups, total, cells,
     other: raw.other ? parseGroup(raw.other, n) : null,
     folded: numeric(raw.folded) ?? 0,
   };

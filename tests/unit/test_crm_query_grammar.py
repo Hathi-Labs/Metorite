@@ -481,7 +481,9 @@ def test_the_query_compiler_reuses_the_one_filter_builder() -> None:
 
 #: sha256 of ``json.dumps(schema, sort_keys=True)`` on main before SEM-1b-1.
 _LIST_SCHEMA_SHA = "5e9047963da4d4c99d833c14a6e669bb1ee510321ba87b936a17aca4096ecfd6"
-_AGGREGATE_SCHEMA_SHA = "48c32a4dc498b859d489d25f1d2e3b4b16fc5650acd192b650ba17670e6bef9a"
+#: STU-C2d-b (task 3324) changed the aggregate schema on purpose: ``group_by``
+#: also takes a list of 2 groups. The list schema did not change.
+_AGGREGATE_SCHEMA_SHA = "742626b317b55f6219a159ab00c0411bf3c1a76a057a17fc88b501cbceb981eb"
 
 
 def _sha(schema: dict[str, Any]) -> str:

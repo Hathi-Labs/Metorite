@@ -2698,10 +2698,15 @@ def _wire_group(group: objects_store.AggregateGroup) -> dict[str, Any]:
             "values": [_wire(v) for v in group.values]}
 
 
+def _wire_cell(cell: objects_store.AggregateCell) -> dict[str, Any]:
+    return {"key": _wire(cell.key), "key2": _wire(cell.key2), "count": cell.count,
+            "values": [_wire(v) for v in cell.values]}
+
+
 def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
     """The one row of an aggregate, in the shape of ``parseAggregate`` (D4b).
     A measure names its field by the key only, so no field spec leaves."""
-    return {
+    answer: dict[str, Any] = {
         "measures": [{"op": m.op, "field": None if m.field is None else m.field.key}
                      for m in result.measures],
         "currencies": list(result.currencies),
@@ -2710,6 +2715,9 @@ def _aggregate_answer(result: objects_store.AggregateResult) -> dict[str, Any]:
         "folded": result.folded,
         "total": _wire_group(result.total),
     }
+    if result.cells:
+        answer["cells"] = [_wire_cell(c) for c in result.cells]  # C2d-b: two group keys
+    return answer
 
 
 def _tree_answer(page: objects_store.TreePage) -> dict[str, Any]:

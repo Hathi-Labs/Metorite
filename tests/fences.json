@@ -403,6 +403,7 @@
       "tests/unit/test_staging_export.py",
       "tests/unit/test_staging_minimise_r8.py",
       "tests/unit/test_studio_action_door_r8.py",
+      "tests/unit/test_studio_aggregate_cells_r8.py",
       "tests/unit/test_studio_autonumber_r8.py",
       "tests/unit/test_studio_batch_r8.py",
       "tests/unit/test_studio_catalog_r8.py",
