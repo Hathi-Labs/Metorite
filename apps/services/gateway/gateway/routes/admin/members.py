@@ -814,6 +814,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # tables hold no address and stay.
     _PersonRows("failure_event_rows", "failure_events",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-2 (agent_sandbox.md §12.2): the run capabilities of the member in
+    # THIS organization. A row holds her address and a token hash. The table
+    # is RLS-exempt, so the clause must name the bound org. The door already
+    # refuses a capability whose member has no seat (step 10). The delete
+    # removes the address at once, and does not wait for the daily sweep.
+    _PersonRows("sandbox_capabilities", "sandbox_capabilities",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER

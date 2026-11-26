@@ -532,6 +532,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "chat_join_rows": 0,
         # WS-TOF TOF-2b: the fake holds no tool failure row of the member.
         "failure_event_rows": 0,
+        # SBX-2: the fake holds no run capability of the member.
+        "sandbox_capabilities": 0,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
@@ -2176,3 +2178,21 @@ def test_the_tool_failure_rows_of_the_member_go_with_the_member() -> None:
     assert "failure_events" not in {r.table for r in _PURGE_KEEPS}
     assert not {"failure_fingerprints", "failure_daily", "failure_config"} & {
         r.table for r in _PURGE_DELETES}
+
+
+def test_the_run_capabilities_of_the_member_go_in_the_bound_org_only() -> None:
+    """SBX-2 (``agent_sandbox.md`` §12.2): a ``sandbox_capabilities`` row
+    holds the member's address. The table is RLS-exempt, so the clause names
+    the bound org itself. Without it, the purge of a member in org A would
+    delete her capabilities in org B too.
+
+    Mutation: drop the org clause, and this test fails. Drop the entry, and
+    this test, the count dict above and
+    ``test_every_table_keyed_by_a_member_email_is_in_the_purge`` fail."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "sandbox_capabilities"]
+    assert rows.key == "sandbox_capabilities"
+    assert rows.where == f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"
+    assert "sandbox_capabilities" not in {r.table for r in _PURGE_KEEPS}
