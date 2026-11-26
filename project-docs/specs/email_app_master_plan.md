@@ -419,6 +419,10 @@ and no message that is newer than the anchor is outside Sent and Drafts.
 A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
 move back end it too. A reply that the member sends does not end it.
 
+Only the act of the member stores the mark. An automated write that gives those words
+as its reason stores `Auto-classified`, because a model writes that reason over the
+mail text.
+
 **Move back.** The same route with `done=false` and `restore` writes the status of
 `restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`) with the reason `Moved back by you`.
 It puts that label on the latest inbound message. With `follow_up` it puts
@@ -435,8 +439,14 @@ the app shows these surfaces:
 - A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
   act had "Follow-up". Ctrl+Z runs the same step, on the one undo stack of the app.
 
-**Accepted limits.** A message that arrives with a date before the anchor does not end
-the hold. When the flag goes off, a held row is a plain `DONE` row again.
+**Accepted limits.**
+
+- A message that arrives with a date before the anchor does not end the hold.
+- When the flag goes off, a held row is a plain `DONE` row again.
+- The label jobs of the hold write at the provider with Auto-run off too, because
+  the member asked for Done.
+- A reply of the member in a held conversation still pays one status call. The
+  result changes nothing.
 
 **Fences.** `tests/unit/test_email_mark_done.py` (the flag, and the statement with
 the flag off), `tests/unit/test_email_mark_done_r8.py` (the hold on a real database),

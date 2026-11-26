@@ -44,6 +44,7 @@ import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
 import { MessageActions, MessageReplyBar } from "./MessageActions";
+import { useMarkDone } from "./useMarkDone";
 import { showsReplyBar } from "../lib/messageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -98,6 +99,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
+  const { enabled: canMarkDone, markDone } = useMarkDone();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
   const [read, setRead] = useState(email?.isRead ?? true);
   const [flagged, setFlagged] = useState(email?.isFlagged ?? false);
@@ -364,6 +366,18 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const id = setInterval(tick, 20000);
     return () => clearInterval(id);
   }, [email?.threadId, mailboxId]);
+
+  // Mark done and its move back change the labels of the whole conversation
+  // (task 3995), so the open one reads again.
+  const markStamp = useEmailStore((s) => s.markStamp);
+  useEffect(() => {
+    if (!markStamp || !email?.threadId) return;
+    listThread(mailboxId ?? undefined, email.threadId)
+      .then((t) => setThread(mergeThread(t)))
+      .catch(() => {});
+    // Only a new mark reads here. A switch of mail has its own read below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markStamp]);
 
   // Task #124: the assistant wrote to the mailbox, so the open conversation
   // reads now (a draft it made shows at once), not at the next tick.
@@ -1283,6 +1297,17 @@ export function EmailDetail({ email }: EmailDetailProps) {
             onClick={() => startReply("forward")}
             active={replyMode === "forward"}
           />
+          {canMarkDone && email.threadId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="Check"
+              title="Mark done"
+              onClick={() => void markDone([email])}
+            >
+              Done
+            </Button>
+          )}
 
           <TBtn
             icon={themedIcon("ListChecks")}
