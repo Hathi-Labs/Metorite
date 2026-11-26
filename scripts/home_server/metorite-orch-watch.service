@@ -1,0 +1,16 @@
+# The watcher of the box orchestrator (CIV-ORCH). A user unit of `dev`.
+# NOT installed by the repo. Install: copy this file and the timer to
+# ~/.config/systemd/user/, copy orch_watch.py to ~/.local/lib/metorite/, then run:
+#   systemctl --user enable --now metorite-orch-watch.timer
+# Reads ~/lanes/merge-queue.log, ~/lanes/merge-bot.log, ~/lanes/keeper-lanes.txt,
+# ~/lanes/orch_resting.txt and `claude agents --json`. Writes ~/lanes/orch-events.log
+# and ~/lanes/orch-watch-state.json. It wakes nothing: the lane keeper wakes lane-orch.
+[Unit]
+Description=Metorite orchestrator watcher: write lane and merge events (CIV-ORCH)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Metorite
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/orch_watch.py
+TimeoutStartSec=120

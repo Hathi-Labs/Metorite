@@ -28,6 +28,11 @@ no PC and no person. One pass:
    goes to it as ``KEEPER_SKIP_ACCOUNTS``, and the keeper does not run it
    while the box sits on a skip-list account.
 
+9. CIV-ORCH: when ``~/lanes/orch-events.log`` grew since the last wake of
+   lane-orch, and lane-orch is listed, ended and not busy, wake it with
+   ORCH_NOTE. The cap for this wake is 5 minutes, not 30, and the 10-minute
+   transcript age does not apply. orch_watch.py writes the log.
+
 8. A listed lane with no session of its name is started fresh from
    ``~/lanes/start/<lane>.txt`` (reason ``fresh start``, task 2466). With no such
    file it logs and starts nothing. The 30-minute cap applies.
@@ -66,6 +71,38 @@ NOTE = (
     "with get_agent_run, and stop only if it is still open. Do not end the turn "
     "after a hand-over."
 )
+
+
+ORCH_LANE = "lane-orch"
+ORCH_CAP_S = 300
+ORCH_NOTE = (
+    "New events in ~/lanes/orch-events.log. Read the lines after the last one you "
+    "handled, act on each (send a BACK to its lane, give an idle lane its next task, "
+    "wake lane-merge for a REQUEUE), write one NOTE line, then end your turn."
+)
+
+
+def plan_orch(
+    agents: list[dict],
+    state: dict,
+    now: float,
+    *,
+    events_size: int,
+    only_lanes: set[str],
+    skip_lanes: set[str],
+    busy: set[str],
+) -> tuple[str, str] | None:
+    """(session id, reason) when lane-orch must wake for new events, else None. Pure."""
+    if ORCH_LANE not in only_lanes or ORCH_LANE in skip_lanes or ORCH_LANE in busy:
+        return None
+    if events_size <= int(state.get("_orch_pos", 0)):
+        return None
+    a = newest_per_lane(agents).get(ORCH_LANE)
+    if not a or a.get("state") not in ENDED:
+        return None
+    if now - state.get(ORCH_LANE, 0) < ORCH_CAP_S:
+        return None
+    return a["sessionId"], "orch-events"
 
 
 def _csv(name: str, default: str = "") -> set[str]:
@@ -246,7 +283,7 @@ def log(line: str) -> None:
         f.write(f"{stamp}Z {line}\n")
 
 
-def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
+def _wake(name: str, sid: str, agent: dict, note: str = NOTE) -> tuple[int, str]:
     """Stop the ended session when it still has a process, then resume it under the
     lane's name. Returns (exit code, a short reason). Never raises."""
     # Claude refuses to resume from an untrusted directory such as the home
@@ -266,7 +303,7 @@ def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
             if r.returncode:
                 return r.returncode, f" stop failed: {r.stderr.strip()[:100]!r}"
         r = subprocess.run(
-            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", NOTE],
+            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", note],
             capture_output=True,
             text=True,
             timeout=120,
@@ -343,6 +380,23 @@ def run_pass(
         elif reason == "account change":
             failed_forced = True
     skip_lanes = _csv("KEEPER_SKIP_LANES", DEFAULT_SKIP_LANES)
+    try:
+        events_size = (LANES_DIR / "orch-events.log").stat().st_size
+    except OSError:
+        events_size = 0
+    woken = {n for n, _, _ in wakes}
+    orch = None if ORCH_LANE in woken else plan_orch(
+        agents, state, now, events_size=events_size, only_lanes=lanes,
+        skip_lanes=skip_lanes, busy=busy,
+    )
+    if orch:
+        sid, reason = orch
+        rc, why = _wake(ORCH_LANE, sid, by_sid.get(sid, {}), note=ORCH_NOTE)
+        log(f"wake {ORCH_LANE} session={sid[:8]} reason={reason} exit={rc}{why}")
+        if rc == 0:
+            state[ORCH_LANE] = now
+            state["_orch_pos"] = events_size
+            wakes.append((ORCH_LANE, sid, reason))
     notes = start_notes(lanes)
     for name in sorted(lanes - set(newest_per_lane(agents)) - skip_lanes - busy):
         if name not in notes:

@@ -1,0 +1,10 @@
+# Runs the orchestrator watcher every 5 minutes (CIV-ORCH). NOT installed, see the service file.
+[Unit]
+Description=Metorite orchestrator watcher, every 5 minutes (CIV-ORCH)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

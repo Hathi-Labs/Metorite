@@ -179,6 +179,13 @@ that is left by its process id, never by its test name.
 The code and its header are the contract: `scripts/home_server/lane_keeper.py`.
 Its fence is `tests/unit/test_lane_keeper.py`.
 
+**The orchestrator lane (CIV-ORCH).** `metorite-orch-watch.timer` runs
+`orch_watch.py` every 5 minutes as `dev`. It writes `~/lanes/orch-events.log`:
+BACK, HOLD, RED, STOP and REQUEUE lines, idle lanes, an idle merger and
+stalled lanes. The keeper wakes `lane-orch` when that log grows. The start note
+is `scripts/home_server/lanes/lane-orch.md`. The fence is
+`tests/unit/test_orch_watch.py`, with `plan_orch` in the keeper tests.
+
 | File on the box | What it does |
 |---|---|
 | `~/lanes/keeper-lanes.txt` | The only lanes that may wake, one name per line. Empty file: nothing wakes. |

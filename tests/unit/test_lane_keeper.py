@@ -438,3 +438,46 @@ def test_task_2466_a_listed_lane_with_no_session_starts_fresh_from_its_note(keep
     assert len(calls) == 1
     log_text = (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
     assert "no start note" in log_text and "start lane-chat" not in log_text
+
+
+# ── CIV-ORCH: wake lane-orch on a new line of orch-events.log ───────────────
+
+
+def test_plan_orch_wakes_an_ended_orch_lane_when_the_events_log_grew(keeper):
+    mod, _ = keeper
+    agents = [_agent("lane-orch", "o1", "idle", status="idle")]
+    args = dict(only_lanes={"lane-orch"}, skip_lanes=set(), busy=set())
+    assert mod.plan_orch(agents, {"_orch_pos": 10}, NOW, events_size=50, **args) == ("o1", "orch-events")
+    # No new bytes, a busy or working lane, or a wake 2 minutes ago: no wake.
+    assert mod.plan_orch(agents, {"_orch_pos": 50}, NOW, events_size=50, **args) is None
+    assert mod.plan_orch(agents, {}, NOW, events_size=50, only_lanes={"lane-orch"},
+                         skip_lanes=set(), busy={"lane-orch"}) is None
+    working = [_agent("lane-orch", "o1", "working", status="busy")]
+    assert mod.plan_orch(working, {}, NOW, events_size=50, **args) is None
+    assert mod.plan_orch(agents, {"lane-orch": NOW - 120}, NOW, events_size=50, **args) is None
+    # Not listed in keeper-lanes.txt: never.
+    assert mod.plan_orch(agents, {}, NOW, events_size=50, only_lanes=set(),
+                         skip_lanes=set(), busy=set()) is None
+
+
+def test_run_pass_wakes_lane_orch_with_the_orch_note_and_moves_the_offset(keeper, monkeypatch):
+    mod, tmp = keeper
+    _lanes(tmp, "lane-orch")
+    (tmp / "lanes" / "orch-events.log").write_text("2026-11-26T17:00Z\tback\tpr-1\tx\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    # The transcript is 1 minute old: a plain wake would wait, the orch wake does not.
+    agents = json.dumps([_agent("lane-orch", "o1", "idle", status="idle")])
+    wakes = mod.run_pass(agents_json=agents, now=NOW)
+    assert ("lane-orch", "o1", "orch-events") in wakes
+    assert any(mod.ORCH_NOTE in c for c in calls)
+    state = json.loads((tmp / "lanes" / "keeper-state.json").read_text(encoding="utf-8"))
+    assert state["_orch_pos"] > 0
+    # The next pass, with no new event, does not wake it again.
+    calls.clear()
+    assert not [w for w in mod.run_pass(agents_json=agents, now=NOW + 600) if w[0] == "lane-orch"]
