@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
@@ -46,6 +47,9 @@ def build_address_app(
     reader: TallyReader,
     store: SettingsStore | None = None,
     copy: CopyStore | None = None,
+    link: object | None = None,
+    on_machine_saved: Callable[[Settings], str | None] | None = None,
+    machine_check: Callable[[Settings], str | None] | None = None,
 ) -> ASGIApp:
     """The app of address mode: ``/mcp``, ``/health`` and the setup page.
 
@@ -82,9 +86,18 @@ def build_address_app(
             reader,
             # TLY-4: a company that leaves the allow-list loses its copy at once.
             on_saved=(lambda new: copy.keep_only(new.allowed_companies)) if copy else None,
+            # TLY-2b: the link controller, for the pair step of the page.
+            link=link,
+            # TLY-2d: the entry point applies the machine switches.
+            on_machine_saved=on_machine_saved,
+            machine_check=machine_check,
         )
     )
-    return BearerGuard(app, secrets)
+    guard = BearerGuard(app, secrets)
+    # TLY-2: link mode runs a request of Metorite against this app in the same
+    # process. Only ``/mcp`` (transport.link.dispatch.MCP_PATH).
+    guard.inner = app
+    return guard
 
 
 class _NoSaveStore:
@@ -119,6 +132,7 @@ class BearerGuard:
     def __init__(self, app: ASGIApp, secrets: SecretStore) -> None:
         self._app = app
         self._secrets = secrets
+        self.inner: ASGIApp = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (

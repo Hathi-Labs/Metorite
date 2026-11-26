@@ -470,19 +470,6 @@ line — never reclaim a number by deleting the other entry.
   A hit means part 1 is open.
 - **Added:** 2026-10-06 · the NS-11 session.
 
-### H-245 · Close the four P3 edges of skill privacy that the PR #635 review left · [AGENT]
-- **Metorite:** #618. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** run these four checks. Each one stays open until its step closes.
-  1. `rg -n "SKILL_UNCLAIMED" packages/acb_skills/acb_skills/tenant_file_store.py`.
-     No hit means step 1 is open.
-  2. `rg -n "acb_memory" packages/acb_skills/acb_skills/agent_paths.py`.
-     No import of the store in `claim_skill` means step 2 is open.
-  3. `rg -n "skill_owner" packages/acb_skills/acb_skills/note_tools.py`.
-     No hit means step 3 is open.
-  4. `rg -n "_odd_name_form" apps/services/gateway/gateway/routes/workspace.py`.
-     Step 4 is open while no hit lies inside `get_workspace_tree`.
-- **Added:** 2026-10-05 · the approval review of PR #635 (four P3s).
-
 ### H-244 · Decide whether an agent may set an env var through a SETUP token · [OWNER]
 - **Metorite:** #769. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `rg -n "<<<SETUP" apps/services/orchestrator/orchestrator/executor.py workbench/control_plane/src/app/api/agent/chat/route.ts`.
@@ -841,13 +828,6 @@ line — never reclaim a number by deleting the other entry.
   `grep -n "pm_tags" apps/services/gateway/gateway/routes/projects/move.py`
   → the code runs `WHERE {vocabulary_scope()}`, a two-arm predicate with a
   correlated subquery. Two different statements.
-- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
-
-### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
-- **Metorite:** #496. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
-  → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
-  `_plan` checks `compatible()` for each entry and never checks `claimed`.
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
@@ -1364,12 +1344,6 @@ line — never reclaim a number by deleting the other entry.
   → a hit means the first item is still open.
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-184 · Four small follow-ups from the R2b review of the report visuals · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
-  → no hit means item 1 is still open. Check each other item by hand.
-- **Added:** 2026-09-24 · the WS-27bn R2b session
-
 ### H-199 · A lead who left a team cannot remove their old report through the chat · [AGENT]
 - **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** `grep -n "refusal=" apps/skills/skill-projects/skill_projects/guarded.py apps/skills/skill-projects/skill_projects/writes.py`
@@ -1395,12 +1369,6 @@ line — never reclaim a number by deleting the other entry.
   (the contract, built 2026-11-22). It merges only after the production ledger
   holds 354 from an earlier release.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
-
-### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]
-- **Metorite:** #497. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `grep -n '"Project"' workbench/control_plane/src/app/projects/components/ReportsView.tsx`
-  → a hit in `scopeName` means item 2 is still open.
-- **Added:** 2026-09-29 · the WS-27bn R5b-2 and UX pass session
 
 ### H-206 · A browser that blocks storage breaks the whole app · [AGENT]
 - **Metorite:** #685. The task holds the full entry (moved 2026-10-27, D118).

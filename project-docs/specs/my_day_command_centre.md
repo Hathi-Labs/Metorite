@@ -184,7 +184,7 @@ The owner said that several apps can need a member. So the "Needs you" group of 
 
 1. **One tab for each app that has a needs provider.** The first tab is "All". Each other tab names one app, for example Projects, Email, Approvals, Waiting, CRM and Calendar. Each tab shows its count.
 2. **The source is the one feed.** `GET /shell/needs` already merges each app's provider (`navigation_shell.md` §7.2). The tabs filter that feed by app. No new read exists.
-3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 stays visible but quiet, so the row does not jump.
+3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 is not drawn (owner, 2026-11-22: approved as built, task 1973). The tab bar keeps its place, so the row does not jump. "See all" opens `/approvals` on the Approvals tab until `/waiting` ships.
 4. **A new app joins by its manifest.** It adds a provider. It adds no tab code (D89).
 5. **The Waiting tab shows the top 5** of `/waiting` and links to the page. `waiting_on_me.md` owns that page.
 6. **Each row acts in place** under D101 and D171.4. A row that needs more context opens the owning app.

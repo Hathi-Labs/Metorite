@@ -48,6 +48,7 @@ import {
   parseAuthorizeRequest,
   toggleScope,
   refusalFor,
+  SCOPE_COPY,
   scopeRows,
   type CheckView,
 } from "./consent";
@@ -169,6 +170,10 @@ describe("the scopes", () => {
   it("approve needs one resource scope, and offline_access alone is not one", () => {
     expect(canApprove(VIEW, new Set(["projects:read"]))).toBe(true);
     expect(canApprove(VIEW, new Set())).toBe(false);
+  });
+
+  it("context:read says what get_company_context returns, and no more (EA-5)", () => {
+    expect(SCOPE_COPY["context:read"].detail).toBe("The organization name and its slug.");
   });
 });
 

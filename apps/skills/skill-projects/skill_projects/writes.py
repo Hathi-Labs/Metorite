@@ -552,11 +552,27 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True, exact: bool = 
     return _refuse_agent_assignee(resolved)
 
 
+#: One address: one ``@``, a local part and a domain, with no space, no second
+#: ``@`` and no fence mark. It does not prove that the person exists: the card
+#: warns about an unknown address (:func:`_unknown_addresses`).
+_ADDRESS_SHAPE = re.compile(r"[^\s@«»,;<>()]+@[^\s@«»,;<>()]+")
+
+
 async def _resolve_assignee_name(value: str, *, exact: bool = False) -> str:
     raw = str(value or "").strip()
     if not raw:
         raise GatewayRefusal("An assignee needs a value.")
-    if "@" in raw or raw.lower().startswith("agent:"):
+    if raw.lower().startswith("agent:"):
+        return raw.lower()
+    if "@" in raw:
+        # H-162 (task 487): an address passes through, but only in the shape of
+        # one. A broken one ("anitha@", "a b@c.io", "a@b@c") would reach the
+        # route as a bare string, so it is refused here, before any card.
+        if not _ADDRESS_SHAPE.fullmatch(raw):
+            raise GatewayRefusal(
+                f"{data(raw)} is not a valid email address. Pass one address, like "
+                "name@company.com, or the person's name."
+            )
         return raw.lower()
     payload = await get("/projects/assignees", {"q": raw})
     people = (payload or {}).get("people") or []
@@ -861,9 +877,18 @@ def ask_about_subtasks(
     )
 
 
-#: The most ``/relations`` reads one subtree count makes. Past it the card
-#: says "at least", so a huge tree costs a bounded number of reads.
+#: The most pages one subtree count reads. Past it the card says "at least",
+#: so a huge tree costs a bounded number of reads. A tree of up to
+#: ``SUBTREE_PAGE_SIZE`` tasks costs exactly one read.
 SUBTREE_READS = 100
+
+#: The rows of one page of the subtree read. The gateway allows 500 with
+#: ``compact``, and this read does not need the heavy row parts.
+SUBTREE_PAGE_SIZE = 500
+
+#: The deepest level the gateway's ``include_descendants`` walk reaches
+#: (``DESCENDANTS_MAX_DEPTH``). A row at this depth may have more below it.
+SUBTREE_MAX_DEPTH = 10
 
 _CLOSED_CATEGORIES = ("done", "cancelled")
 
@@ -874,7 +899,8 @@ class SubtreeCount:
     ``total`` is every visible descendant that is not archived, which is the
     set ``cascade.archive_subtree`` shelves. ``open`` is the part of it that
     is not closed, which is the set ``cascade.complete_subtree`` completes.
-    ``capped`` says the walk stopped at :data:`SUBTREE_READS`.
+    ``capped`` says the read stopped at :data:`SUBTREE_READS` pages, or reached
+    level :data:`SUBTREE_MAX_DEPTH`, so the true count may be higher.
     """
 
     def __init__(self, total: int = 0, open_: int = 0, capped: bool = False) -> None:
@@ -884,33 +910,51 @@ class SubtreeCount:
 
 
 async def _subtask_counts(task_id: str) -> SubtreeCount:
-    """Every level below *task_id*, through ``/relations``, top down.
+    """Every level below *task_id*, in ONE gateway read.
 
-    ``/relations`` lists the direct children that the member can see and
-    that are not archived. A walk of it reaches the descendants the
-    gateway's cascade acts on (``cascade.load_subtree``). One read per task
-    in the tree, to :data:`SUBTREE_READS`.
+    ``GET /projects/tasks`` with ``parent_task_id`` and ``include_descendants``
+    lists the visible, non-archived descendants at every level, each once, with
+    its ``status_category``. A subtree of up to :data:`SUBTREE_PAGE_SIZE` tasks
+    costs one read. A larger one pages, to :data:`SUBTREE_READS` pages.
+    ``include_triage`` keeps a parked task in, as the cascade acts on it too.
     """
     out = SubtreeCount()
-    queue = [task_id]
-    seen = {str(task_id)}
-    reads = 0
-    while queue:
-        if reads >= SUBTREE_READS:
+    tid = uuid_of(task_id, "task_id")
+    seen = {str(tid)}
+    total = 0
+    page = 1
+    while True:
+        got = (
+            await get(
+                "/projects/tasks",
+                {
+                    "parent_task_id": tid,
+                    "include_descendants": "true",
+                    "include_triage": "true",
+                    "compact": "true",
+                    "page": page,
+                    "page_size": SUBTREE_PAGE_SIZE,
+                },
+            )
+        ) or {}
+        rows = got.get("rows") or []
+        total = int(got.get("total") or 0)
+        for row in rows:
+            rid = str(row.get("id") or "")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            out.total += 1
+            if row.get("status_category") not in _CLOSED_CATEGORIES:
+                out.open += 1
+            if (row.get("depth") or 0) >= SUBTREE_MAX_DEPTH:
+                out.capped = True
+        if not rows or page * SUBTREE_PAGE_SIZE >= total:
+            break
+        if page >= SUBTREE_READS:
             out.capped = True
             break
-        tid = uuid_of(queue.pop(0), "task_id")
-        relations = (await get(f"/projects/tasks/{tid}/relations")) or {}
-        reads += 1
-        for child in relations.get("subtasks") or []:
-            cid = str(child.get("id") or "")
-            if not cid or cid in seen:
-                continue
-            seen.add(cid)
-            out.total += 1
-            if child.get("category") not in _CLOSED_CATEGORIES:
-                out.open += 1
-            queue.append(cid)
+        page += 1
     return out
 
 

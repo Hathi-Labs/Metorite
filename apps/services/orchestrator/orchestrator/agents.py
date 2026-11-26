@@ -300,6 +300,24 @@ _PROPOSALS_SWAP: tuple[str, str] = (
     "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
 )
 
+# PAR-3 (task 3105, chat_parity.md wave P-5). With KNOWLEDGE_CHAT_WRITES on
+# too, the tool list of the persona gains the line of the four Knowledge
+# writes, by one more exact swap. Off, the persona does not change, byte for
+# byte. Fence: tests/unit/test_kb_chat_writes.py.
+_KB_WRITES_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- create_page, edit_page, create_space, edit_space: when the member asks you to\n"
+    "  write a page, change a draft page, or make or change a space in Knowledge. Each\n"
+    "  one shows the full text on a card first. A new page is a draft. edit_page changes\n"
+    "  only a draft. For a published page, use propose_edit. You never publish\n"
+    # PAR-3b (task 3901): the move, the revert and the eight more reads.
+    "- move_page, revert_page: move a draft page, or bring back an old version of a\n"
+    "  draft, behind a card. A person moves or reverts a published page in the app\n"
+    "- list_pages, list_recent, read_page_version, list_backlinks, list_proposals,\n"
+    "  list_sources, list_gaps, list_maintenance: read more of Knowledge\n",
+)
+
 
 # WS-63 PZ-6a (personalization.md §5.5). With ASSISTANT_PROFILE_ENABLED on,
 # the memory tools of the persona gain the line of the four profile writes,
@@ -409,7 +427,7 @@ _SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
     *, profile: bool = False, constraints: bool = False, spawn: bool = False,
-    card_writes: bool = False, find: bool = False,
+    card_writes: bool = False, find: bool = False, kb_writes: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
@@ -421,7 +439,8 @@ def _orchestrator_instructions(
     is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
     *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
-    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
+    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`. *kb_writes* (PAR-3)
+    adds :data:`_KB_WRITES_SWAP`, only with *company_search* on too.
     """
     if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
@@ -430,6 +449,7 @@ def _orchestrator_instructions(
         (_COMPANY_SEARCH_SWAPS if company_search else ())
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
+        + ((_KB_WRITES_SWAP,) if company_search and kb_writes else ())
         + ((_FIND_SWAP,) if company_search and recency and find else ())
         + ((_PROFILE_SWAP,) if profile else ())
         + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
@@ -464,6 +484,15 @@ def _knowledge_propose_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return knowledge_propose_enabled()
+
+
+def _knowledge_chat_writes_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_CHAT_WRITES``, in ``acb_skills`` (PAR-3)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_chat_writes_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_chat_writes_enabled()
 
 
 def _chat_constraints_enabled() -> bool:
@@ -584,6 +613,31 @@ def _chat_pin_enabled(org: str | None = None) -> bool:
 
             org = _current_run_org()
         return pin_tool_allowed(org)
+    except Exception:
+        return False
+
+
+def _home_tools_enabled(org: str | None = None) -> bool:
+    """True when the Home tools are on for this assistant's org.
+
+    PAR-8b (``chat_parity.md`` §6.4, task 3903). The rule is the one reader of
+    ``HOME_TOOLS_ORGS``, ``acb_skills.home_tools.home_tools_on``. The org is
+    found as :func:`_spawn_subagents_enabled` finds it, and a caller with none
+    fails closed. Each route asks its own gates again at each call. Never
+    raises.
+    """
+    try:
+        from acb_skills.home_tools import home_tools_on
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return home_tools_on(org)
     except Exception:
         return False
 
@@ -1205,6 +1259,9 @@ def build_orchestrator_agent(
     # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
     # Off until KB-5b ships the Review view, where a person accepts.
     proposals = company_search and _knowledge_propose_enabled()
+    # PAR-3 (task 3105): read once too, so the persona line and the four
+    # Knowledge writes agree.
+    kb_writes = company_search and _knowledge_chat_writes_enabled()
     # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
     # PZ-25: per organization, so read it on the bound run, never at import.
     profile_on = _assistant_profile_enabled(organization_id)
@@ -1225,7 +1282,8 @@ def build_orchestrator_agent(
                                               constraints=constraints_on,
                                               spawn=_spawn_subagents_enabled(organization_id),
                                               card_writes=card_writes_on,
-                                              find=find_on)
+                                              find=find_on,
+                                              kb_writes=kb_writes)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -1280,6 +1338,16 @@ def build_orchestrator_agent(
                                read_page, list_spaces]
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
+        # PAR-3 (task 3105): the four Knowledge writes, only with
+        # KNOWLEDGE_CHAT_WRITES on. Each shows the full text on one card.
+        if kb_writes:
+            from acb_skills.knowledge_tools import MORE_READ_TOOLS as _KB_MORE_READS
+            from acb_skills.knowledge_tools import MOVE_REVERT_TOOLS as _KB_MOVE_REVERT
+            from acb_skills.knowledge_tools import WRITE_TOOLS as _KB_WRITE_TOOLS
+
+            # PAR-3b (task 3901): the move, the revert and the eight more
+            # reads, on the same flag, after the four writes.
+            retrieval_tools += [*_KB_WRITE_TOOLS, *_KB_MOVE_REVERT, *_KB_MORE_READS]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
@@ -1289,10 +1357,12 @@ def build_orchestrator_agent(
     # WS-63 PZ-6a: the four profile writes, on the same one path, with the
     # persona line of `_PROFILE_SWAP`. Each refuses outside the member's own
     # chat. Fence: tests/unit/test_profile_write_tools.py.
-    # WS-FIND FIND-6: `resolve_person` stays in the list. `resolve_name` has
-    # no member, no saved alias and no address yet, so the parity of D-FIND-3
-    # does not hold (find_engine.md §5.3, as built). For an org of FIND_ORGS
-    # it takes the guard of the find tools.
+    # WS-FIND FIND-6: `resolve_person` stays in the list. FIND-6b gave
+    # `resolve_name` the member, the saved alias and the address, so the
+    # parity of D-FIND-3 holds, except for the limits that find_engine.md
+    # §5.2 lists ("Limits of FIND-6b"). `resolve_person` leaves one release
+    # later, in the next PR (find_engine.md §5.3). For an org of FIND_ORGS it
+    # takes the guard of the find tools.
     if profile_on:
         from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
 
@@ -1349,6 +1419,14 @@ def build_orchestrator_agent(
         from acb_skills.chat_pin_tools import TOOLS as _PIN_TOOLS
 
         pin_tools = list(_PIN_TOOLS)
+    # PAR-8b (chat_parity.md §6.4, task 3903): the Home page, Needs you and the
+    # shell, the orchestrator's own, on this one path. Dark until
+    # HOME_TOOLS_ORGS names the org. Fence: tests/unit/test_home_tools.py.
+    home_tools: list[Any] = []
+    if _home_tools_enabled(organization_id):
+        from acb_skills.home_tools import HOME_TOOLS as _HOME_TOOLS
+
+        home_tools = list(_HOME_TOOLS)
     core_tools: list[Any] = [
         *retrieval_tools,
         *profile_tools,
@@ -1359,6 +1437,7 @@ def build_orchestrator_agent(
         *guide_tool_list,
         *spawn_tools,
         *pin_tools,
+        *home_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,

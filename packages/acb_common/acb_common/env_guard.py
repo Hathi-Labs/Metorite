@@ -115,6 +115,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
     "IDENTITY_CUTOVER", "SELF_MUTATION_DISABLED", "WORKSPACE_BASE_DOMAIN",
     "SHARED_TOKEN",
+    # LD-8b: the member a local dev_up.sh --data prod stack signs in as. It is read
+    # only when auth is off (gateway.ts), and no chat setup may write it.
+    "DEV_SIGNED_IN_EMAIL",
     # The mail apps are the deployment's (D-EM-1). MICROSOFT_TENANT_ID pins
     # the directory of the Microsoft app, a per-deployment decision
     # (deploy.sh, H-13(a)). GOOGLE_CLIENT_* was the app of the retired
@@ -198,9 +201,16 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # PAR-8b (chat_parity.md section 6.4): the orgs whose main assistant holds the
+    # five Home tools. They join each request, so only the owner writes it.
+    "HOME_TOOLS_ORGS",
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9.4 WT-6a: the orgs where a held chat keeps
+    # the two archive tools of class C. It moves a guard, so only the owner
+    # writes it (work_plan.md §6 D4).
+    "HELD_CLASS_C_ORGS",
     # one_assistant_context.md §9 WT-1: the orgs where a member may continue
     # a held chat in a fresh chat. It opens a way around a hold, so only the
     # owner writes it (work_plan.md §6 D4).
@@ -211,6 +221,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
+    # crm_platform.md CRM-Q30c (task 3868): the orgs whose CRM read tools say
+    # how old the Zoho mirror of a module is. It changes what the chat reads
+    # for the org, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MIRROR_AGE_ORGS",
     # semantic_model.md SEM-7: the orgs where the CRM plan checks the kinds
     # measure, join and query, and org_facts serves them. It changes what the
     # chat reads for the org, so only the operator writes it.
@@ -219,6 +234,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # model of a connection. It changes what the chat may read for the org,
     # so only the operator writes it.
     "CONNECTION_MODEL_ORGS",
+    # crm_platform.md §18.7, task 3869: the orgs whose Zoho mirror reads each
+    # generic module in full once in 7 days. It spends the org's Zoho API
+    # credits, so only the operator writes it. The `CRM_` prefix covers it
+    # too, and the exact name keeps the fence if that prefix ever narrows.
+    "CRM_MODULE_REREAD_ORGS",
     # api_connections.md API-1 (D-API-8): the orgs whose chat may call an
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
@@ -291,6 +311,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
     # changes which task an agent takes first, so only the operator writes it.
     "MY_WORK_PLAN_ORDER_ORGS",
+    # SW-45: AGENT_CLAIM_SCOPE_MODES warns on or refuses an agent claim outside
+    # the member's own apps. A tenant that set it would change the claims of
+    # every org, so only the operator writes it.
+    "AGENT_CLAIM_SCOPE_MODES",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -338,6 +362,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.
     "MCP_IMAGE_UPLOAD_ORGS",
+    # WS-MCP SW-27c1: SEQUENCE_MARKS_ORGS lets an outside agent mark the
+    # numbers of its own run (`mark_number`). Only the owner opens it.
+    "SEQUENCE_MARKS_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
@@ -351,6 +378,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WS-MCP SW-44: APP_OWNER_ROOT_ORGS names the app root of each org. A
+    # tenant must not point the list of another org at a project, so only the
+    # owner writes it.
+    "APP_OWNER_ROOT_ORGS",
     # WS-AGA AGA-6: AGENTS_VIEW_ORGS opens the member view of agents for an
     # org. The view reads the agent runs of the org, so only the owner writes it.
     "AGENTS_VIEW_ORGS",
@@ -395,6 +426,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # changes what each member of the org sees, so only the operator writes
     # it (proactive_loop.md §7.2).
     "MY_DAY_LEARN_ORGS",
+    # LOOP-9: the shadow gate of a new nudge kind. It decides which kinds reach
+    # a member, so only the operator writes it (proactive_loop.md).
+    "PROACTIVE_KIND_MODES", "PROACTIVE_KIND_ORGS",
     # DEC-1: the orgs that may ask `decide` for a `projects.*` feature. It
     # moves what an org pays, so only the operator writes it.
     "PROJECTS_DECIDE_ORGS",
@@ -405,12 +439,19 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # capture run sets them. They choose the look and the size of a capture.
     "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
     "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
+    # WS-MDC CC-11: the visual capture of e2e/visual/cc11.visual.ts. Only a
+    # local capture run sets it. It adds the long card lots to the feed.
+    "CC11_LOTS",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # SBX-13: the sandbox door client reads the run capability from this name
+    # (sandbox/metorite_door.py). The broker sets it in the tool container. A
+    # tenant must never save it.
+    "METORITE_API_TOKEN",
     # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
     # reads its mode, its files and the merge bot log. A tenant must never save these.
     "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
