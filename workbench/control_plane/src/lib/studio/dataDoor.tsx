@@ -25,12 +25,14 @@ export interface RowsMeta {
   total?: number;
   /** The store counted this far and stopped. */
   atLeast?: number;
+  /** A tree read stopped at its cap. The rows are the first nodes only (D18-2b). */
+  truncated?: boolean;
 }
 const META = Symbol.for("studio.rowsMeta");
 
 /** Attach the paging facts of an answer to its rows. Returns the same array. */
 export function withMeta(rows: Row[], meta: RowsMeta): Row[] {
-  if (meta.total === undefined && meta.atLeast === undefined) return rows;
+  if (meta.total === undefined && meta.atLeast === undefined && meta.truncated !== true) return rows;
   Object.defineProperty(rows, META, { value: meta, enumerable: false, configurable: true });
   return rows;
 }

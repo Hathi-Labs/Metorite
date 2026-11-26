@@ -357,7 +357,7 @@ async def _chat(world, monkeypatch, who: str, act) -> Any:
         TransportError=httpx.TransportError, Response=httpx.Response))
     monkeypatch.setattr(client, "gateway_url", lambda: "http://gateway.test")
     monkeypatch.setattr(client, "current_user_email", lambda: who)
-    monkeypatch.setattr(client, "internal_token", lambda: tw.INTERNAL)
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", tw.INTERNAL)
     return await tw._in_scope(world, act)
 
 

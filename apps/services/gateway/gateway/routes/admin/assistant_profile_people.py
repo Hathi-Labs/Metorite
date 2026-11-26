@@ -50,8 +50,15 @@ as ``people/core.py::has_login`` does, and an unbound GUC matches no row
 (R5). The route takes no flag: the tool is the part behind
 ``ASSISTANT_PROFILE_ENABLED``.
 
+**The name route (WS-FIND FIND-6b).** :func:`saved_names` and
+:func:`members_named` give tier 1 and the members of the directory tier to
+``GET /search/names``, through ``retrieval/sources.py``. They run the SQL of
+this route and its rules, and add no second alias or member read.
+
 Fences: ``tests/unit/test_resolve_person.py`` and
 ``tests/unit/test_resolve_person_r8.py`` (R8, the one-org read).
+``tests/unit/test_resolve_name_tool.py`` and
+``tests/unit/test_find_near_visibility_r8.py`` fence the two reads above.
 """
 
 from __future__ import annotations
@@ -80,6 +87,8 @@ DIRECTORY_CAP = 2000
 MATCHES_MAX = 5
 #: The feature that opens the directory tiers.
 PEOPLE_FEATURE = "feature:people"
+#: The feature that opens the mail tier (CT-1).
+EMAIL_FEATURE = "feature:email"
 
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
@@ -260,6 +269,50 @@ def _near_tier(people: list[tuple[str, str, str]], members: list[tuple[str, str]
     return [{"name": b[1], "email": b[2]} for b in ranked], source
 
 
+# ── The reads of ``GET /search/names`` (WS-FIND FIND-6b) ────────────────────
+# ``gateway/retrieval/sources.py`` calls these two, so ``resolve_name`` reads
+# the aliases and the members with the SQL and the rules of this route. Each
+# opens its own session in the bound tenant. Spec: ``find_engine.md`` §5.2.
+
+
+async def saved_names(user: UserContext, name: str) -> list[dict[str, str]]:
+    """Tier 1 of this route for *name*: the member's own aliases whose fold
+    equals the fold of *name*, ``[{name, email}]``. :func:`_alias_tier` reads
+    them, and an alias of a person who left drops (:func:`email_in_org`).
+    No feature, as tier 1 needs none. The member and the tenant come from the
+    session. An unbound tenant raises, so the caller names the read failed."""
+    uid = getattr(user, "email", None) or ""
+    org = current_tenant()
+    wanted = fold(name)
+    if not uid or not org:
+        raise HTTPException(status_code=503, detail="unavailable")
+    if not wanted:
+        return []
+    async with _tenant_session() as db:
+        return await _alias_tier(db, uid, org, wanted, "")
+
+
+async def members_named(user: UserContext, word: str,
+                        k: int) -> tuple[list[dict[str, str]], bool]:
+    """The active members of the bound org whose display name or local part
+    holds *word*: :data:`MEMBERS_SQL`, the read of the directory tier.
+
+    At most *k* ``{name, email}``, and True when more may match: more than
+    *k* held the word, or the table gave :data:`DIRECTORY_CAP` rows. Only a
+    member who holds ``feature:people`` reads them, as in this route. The
+    caller tests the whole name, so this holds one word only."""
+    from sqlalchemy import text
+
+    wanted = fold(word)
+    if not wanted or not user.has_permission(PEOPLE_FEATURE):
+        return [], False
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(MEMBERS_SQL), {"cap": DIRECTORY_CAP})).fetchall()
+    found = [{"name": str(r.display_name or ""), "email": str(r.email)} for r in rows
+             if wanted in fold(r.display_name) or wanted in fold(str(r.email).split("@", 1)[0])]
+    return found[:k], len(found) > k or len(rows) >= DIRECTORY_CAP
+
+
 def _name(value: str) -> str:
     """The name, with its white space collapsed. 422 when it is out of range."""
     out = " ".join(str(value or "").split())
@@ -281,7 +334,11 @@ async def resolve_person_for_assistant(
     "total": n, "directory": bool, "truncated": bool, "near": bool}``.
     ``directory`` is false when the member lacks ``feature:people``, so only
     the aliases were searched. ``near`` is true when no name equals the input
-    and the matches are near spellings (HRD-18a), nearest first.
+    and the matches are near spellings (HRD-18a), nearest first. ``mail`` is
+    true when the directory found nobody and the matches are people of the
+    member's own mail (CT-1): near spellings, who are not members.
+    ``mail_searched`` is true when the mail tier ran, so the answer names
+    only the places that were searched. Both keys are absent when false.
     """
     uid = getattr(user, "email", None) or ""
     if not uid:
@@ -299,6 +356,8 @@ async def resolve_person_for_assistant(
     found: list[dict[str, str]] = []
     truncated = False
     near = False
+    mail = False
+    mail_searched = False
     try:
         async with _tenant_session() as db:
             found = await _alias_tier(db, uid, org, wanted, address)
@@ -313,11 +372,30 @@ async def resolve_person_for_assistant(
                     found, tier = await asyncio.to_thread(_near_tier, people, members, raw)
                     near = bool(found)
                 source = tier if found else None
+            if not found and not address and user.has_permission(EMAIL_FEATURE):
+                # CT-1: the directory found nobody. The member's own mail
+                # may hold the person: the one reader of the suggest door.
+                from gateway.routes.email.transport.contacts import mail_people
+
+                mail_searched = True
+                hits = await mail_people(db, uid, raw)
+                # A mail hit that is a member or a person is no stranger:
+                # it is dropped, because the directory missed its name only.
+                found = [{"name": h.name or h.email, "email": h.email} for h in hits
+                         if not await email_in_org(db, h.email)]
+                if found:
+                    source, near, mail = "mail", True, True
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.assistant_profile.resolve_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return {"source": source, "matches": found[:MATCHES_MAX], "total": len(found),
-            "directory": directory, "truncated": truncated, "near": near}
+    out: dict[str, Any] = {
+        "source": source, "matches": found[:MATCHES_MAX], "total": len(found),
+        "directory": directory, "truncated": truncated, "near": near}
+    if mail:
+        out["mail"] = True
+    if mail_searched:
+        out["mail_searched"] = True
+    return out

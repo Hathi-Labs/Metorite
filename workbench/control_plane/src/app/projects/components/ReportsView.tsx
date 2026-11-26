@@ -2846,7 +2846,7 @@ export default function ReportsView({
 
   function scopeName(row: ReportRow): string {
     if (row.project_id === null) return "Whole organization";
-    return scopes.find((s) => s.value === row.project_id)?.label ?? "Project";
+    return scopes.find((s) => s.value === row.project_id)?.label ?? "In a project";
   }
 
   function authorName(row: ReportRow): string {

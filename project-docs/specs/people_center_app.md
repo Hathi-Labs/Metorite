@@ -236,6 +236,11 @@ than a validation step bolted onto one:
   carry script and external references, and an avatar is displayed on every page in the
   product. EXIF, colour profiles and trailing payloads do not survive a re-encode, so the
   polyglot-file class of problem is gone rather than filtered for.
+- **Where the decode runs** — in a confined child, never in the request (task 2186,
+  2026-11-21). The child is `signature_image_worker.py` with the kind `avatar`. The parent kills
+  it after 10 seconds, and the child caps its own memory at 1 GB. A source over 12,000 pixels
+  on a side, or over 40 million pixels, is refused. The fence is
+  `tests/unit/test_people_avatar.py` section 5.
 
 **Where it lives:** a column on `people`, as a data URI — the shape
 `agent_avatars.sprite` already uses (migration 64), for the same reason. The roster is
@@ -1291,6 +1296,13 @@ it takes the caller's context, applies the tiers, and answers about people and t
 It exposes reads only. There is no agent-callable write to a person record in v1, because
 the first write an agent should be trusted with is not one that changes what a colleague is
 recorded as being.
+
+**`people_directory` is BUILT dark (P-5b-1, task 3114, 2026-11-25).** It is in the pack
+`people` (`acb_skills/people_tools.py`), with `people_me`, `people_work` and
+`reach_preview`. The first three tools send the People routes as the member, so the routes
+apply the tiers of §4.2. `reach_preview` sends the Reach routes (`GET /reach/status` and
+`GET /reach/preview`), not a People route. OD1 B decides the later self writes: one card for each write, and never
+`email`. `chat_parity.md` §6.4 holds the P-5b slices.
 
 ---
 

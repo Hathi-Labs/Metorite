@@ -17,6 +17,7 @@ import {
   precheckLogoFile,
   isRenderableLogoUri,
   readCachedBranding,
+  safeLocalStorage,
   writeCachedBranding,
   type OrgBranding,
   type OrgLogo,
@@ -257,6 +258,22 @@ describe("the first-paint cache (OI-3a)", () => {
     };
     expect(readCachedBranding(throwing)).toBeNull();
     expect(() => writeCachedBranding(throwing, good)).not.toThrow();
+  });
+
+  it("H-206: a browser that throws on the localStorage property gives no storage, not a crash", () => {
+    const g = globalThis as { window?: unknown };
+    const had = "window" in g;
+    const before = g.window;
+    g.window = Object.defineProperty({}, "localStorage", {
+      get() { throw new DOMException("blocked", "SecurityError"); },
+    });
+    try {
+      expect(safeLocalStorage()).toBeUndefined();
+      expect(readCachedBranding(safeLocalStorage())).toBeNull();
+      expect(() => writeCachedBranding(safeLocalStorage(), good)).not.toThrow();
+    } finally {
+      if (had) g.window = before; else delete g.window;
+    }
   });
 
   it("is a no-op on the server, where there is no storage at all", () => {

@@ -33,6 +33,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -198,7 +199,7 @@ async def test_a_declined_new_cycle_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
     out = await skill_projects.create_cycle(PID, "S", "2026-11-30", "2026-12-04")
-    assert out == C.CANCELLED and writes(calls) == []
+    assert out == card_outcome_text(CARD_DECLINED) and writes(calls) == []
 
 
 async def test_a_bulk_add_shows_one_card_with_every_task_then_writes(monkeypatch) -> None:
@@ -227,7 +228,7 @@ async def test_a_removal_goes_through_the_delete_route(monkeypatch) -> None:
 async def test_a_declined_plan_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch)
-    assert await skill_projects.plan_cycle(PLANNED, add_task_ids=T1) == C.CANCELLED
+    assert await skill_projects.plan_cycle(PLANNED, add_task_ids=T1) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -421,8 +422,8 @@ async def test_a_close_with_nothing_unfinished_needs_no_choice(monkeypatch) -> N
 async def test_a_declined_start_or_close_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch, cycles=[{**PLANNED_ROW, "tasks": 2, "hidden": 0}])
-    assert await skill_projects.start_cycle(PLANNED) == C.CANCELLED
-    assert await skill_projects.close_cycle(ACTIVE, "backlog") == C.CANCELLED
+    assert await skill_projects.start_cycle(PLANNED) == card_outcome_text(CARD_DECLINED)
+    assert await skill_projects.close_cycle(ACTIVE, "backlog") == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

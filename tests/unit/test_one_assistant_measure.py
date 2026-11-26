@@ -524,13 +524,18 @@ def test_the_tap_keeps_the_turn_kind_time_and_the_loads_of_a_pack() -> None:
 
 
 def test_the_card_reproduces_each_probe_of_the_router() -> None:
-    for probe in run.RATE_CARD["probes"]:
+    # TS-7a-cap: the card is keyed by the served model, and the probes of
+    # 2026-10-25 are deepseek-v4-pro calls.
+    from evals.one_assistant_measure import spend
+
+    card = spend.card_of("deepseek/deepseek-v4-pro", run.RATE_CARD)
+    for probe in run.RATE_CARD["models"]["deepseek-v4-pro"]["probes"]:
         usage = {"prompt_tokens": probe["prompt_tokens"],
                  "completion_tokens": probe["completion_tokens"],
                  "prompt_tokens_details": {"cached_tokens": probe["cached_tokens"]}}
-        usd, source = run.cost_of(usage)
+        usd, source = run.cost_of(usage, card)
         assert source == "card" and abs(usd - probe["cost"]) <= 0.01 * probe["cost"], (usd, probe)
-    assert run.cost_of({"cost": 0.25, "prompt_tokens": 9}) == (0.25, "vendor")
+    assert run.cost_of({"cost": 0.25, "prompt_tokens": 9}, card) == (0.25, "vendor")
 
 
 def test_a_live_run_with_real_specialists_refuses_a_send_that_is_not_the_router() -> None:
@@ -619,3 +624,62 @@ def test_a_merge_keeps_the_sha_of_each_chunk(tmp_path) -> None:
     assert data["sha"] == "mixed"
     assert [c["sha"] for c in data["chunks_run"]] == ["1111111", "2222222"]
     assert [r["sha"] for r in data["rows"]] == ["1111111", "2222222"]
+
+
+def test_a_scripted_chat_reaches_no_database_for_the_session_or_the_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TS-ORD. A scripted run reaches no database for the session load or for the
+    member's access. A PC with a stale dev database on a port stalled each turn
+    until the turn timeout. Mutation: drop a pin in ``run_chat`` -> the spy sees
+    the call -> red."""
+    import acb_graph
+    from acb_auth import access as access_mod
+
+    reached: list[str] = []
+    real_graph = acb_graph.tenant_session
+    real_factory = access_mod._get_session_factory
+    real_tenant = access_mod.tenant_session
+
+    def spy_graph(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_graph.tenant_session")
+        return real_graph(*args, **kwargs)
+
+    def spy_factory(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_auth.access session factory")
+        return real_factory(*args, **kwargs)
+
+    def spy_tenant(*args: Any, **kwargs: Any) -> Any:
+        reached.append("acb_auth.access.tenant_session")
+        return real_tenant(*args, **kwargs)
+
+    monkeypatch.setattr(acb_graph, "tenant_session", spy_graph)
+    monkeypatch.setattr(access_mod, "_get_session_factory", spy_factory)
+    monkeypatch.setattr(access_mod, "tenant_session", spy_tenant)
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    assert rows and rows[0]["model_calls"], rows[0]["error"]
+    assert reached == []
+
+
+def test_a_scripted_turn_may_take_more_than_the_live_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TS-ORD. The first scripted turn of a process loads the orchestrator and takes
+    20 s on a quiet PC and over 60 s on a busy one. A scripted run has no network, so
+    the turn limit is ``SCRIPTED_TURN_TIMEOUT`` and never the live default of 60 s.
+    Mutation: drop the ``max`` in ``run_chat`` -> the turn waits 60 s -> red."""
+    import asyncio
+
+    seen: list[float] = []
+    real = asyncio.wait_for
+
+    async def spy(aw: Any, timeout: Any = None, **kwargs: Any) -> Any:
+        if timeout is not None:
+            seen.append(float(timeout))
+        return await real(aw, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(asyncio, "wait_for", spy)
+    rows = run.run_chat(scenario("five_turns"), "pack")
+    assert rows and rows[0]["model_calls"], rows[0]["error"]
+    assert run.SCRIPTED_TURN_TIMEOUT >= 300.0
+    assert run.SCRIPTED_TURN_TIMEOUT in seen, seen

@@ -1552,6 +1552,13 @@ decision records the alternative.** A later slice may prefer a 502 for an
 exhausted streamed chain, and it would edit the fence at
 `test_customer_console_router.py:764`.
 
+**AO-3 (task 3682, 2026-11-17) replaces clause 5.** An exhausted streamed
+chain now answers HTTP 503 with `{"detail": {"reason": "unavailable"}}`
+(`main._stream_unavailable`). The 200 with a lone `[DONE]` read as an empty
+answer, and on 2026-11-17 the member saw an empty reply. Clause 4 still
+holds: no usage row and no refusal row. The same test is the fence.
+`chat_failure_modes.md` §4.8a holds the whole change.
+
 ⚠️ **`_REFUSAL_REASONS` (`main.py:4861`) stays CLOSED.** An exhausted chain
 writes no refusal row and mints no new reason slug. The three reasons in §8.1
 are customer walls — no credits, the run ceiling, an unknown tier. An upstream

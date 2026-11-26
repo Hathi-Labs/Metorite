@@ -47,12 +47,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
 import skill_projects
 from skill_projects import guarded
-from skill_projects import writes as W
 
 from tests.unit._projects_agent_fakes import SKILL_DIR, approve, deny, fake_gateway, writes
 
@@ -221,9 +221,9 @@ async def test_revoke_of_a_grant_that_is_not_there_shows_no_card(monkeypatch) ->
 async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch, LAUNCH, grants=[])
-    assert await skill_projects.grant_access(PID, "org") == W.CANCELLED
+    assert await skill_projects.grant_access(PID, "org") == card_outcome_text(CARD_DECLINED)
     calls += _gateway(monkeypatch, LAUNCH)
-    assert await skill_projects.revoke_access(PID, GRANT) == W.CANCELLED
+    assert await skill_projects.revoke_access(PID, GRANT) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
