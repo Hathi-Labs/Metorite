@@ -96,6 +96,9 @@ WHEN = {
     "calendar-connections": (
         "Load to sync a connected Google or Outlook calendar now, or to show or hide "
         "your tasks in it."),
+    # Task 3963: the notes pack of the same owner.
+    "notes": (
+        "Load for your meetings, a meeting transcript or the Note Taker settings."),
 }
 
 

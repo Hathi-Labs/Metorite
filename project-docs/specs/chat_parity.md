@@ -19,6 +19,10 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
+an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
+Spec only, and nothing is built. The place of the converter waits for the owner.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -539,17 +543,40 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
 debt.
 
+**P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
+the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
+`notes_meetings`, `notes_meeting`, `notes_settings`, `notes_templates`,
+`notes_glossary` and `notes_copilot_instructions`. They are the new pack
+`notes`, owned by `org-admin` as the pack `people` is (OD4 A). Each tool sends
+GET routes only, as the member. None writes, joins a meeting, starts a bot or
+reaches a person.
+
+The meeting text is the member's own words. A result shows it as written, inside
+the untrusted frame. A provider error of a failed run is not shown. A
+library over the route cap says "at least" and never says "last page". The
+pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
+`TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+The 32 Notes write rows stay debt. Thirteen read rows wait for task 3966. Twelve
+gateway routes read a meeting by its id with no owner check, or they refresh a
+bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
+`/context`, `/bot`, `/bot/diagnostics`, `/live/session`, `/live/roster`,
+`/bots/active`, `/bots/status` and `/live/sessions`.
+
+The thirteenth route is `/bot/identity`. Its status check starts a browser on
+the profile of the bot, and a bot join at the same time can fail.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Eleven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Twelve ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
 60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
-calendar to 2. PAR-9 took apps to 2.
+calendar to 2. PAR-9 took apps to 2. Task 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 263. The "Today" column above does not show
+The total of `DEBT_CEILING` is 257. The "Today" column above does not show
 all of these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -1033,6 +1060,108 @@ instruction.
    `.claude/commands/delivery-review.md` then adds the step.
 3. Whether a run prints examples at all, or the counts only.
 
+### 6.6 The documents rung (task 3979, spec only, 2026-11-26)
+
+**The report.** On 2026-11-26 a customer asked the production chat to edit an
+Excel file and to make a PDF of it. The chat could not do it.
+
+**The rung.** A member uploads a `.xlsx` or a `.docx` file in the chat. The
+member asks for a change and for a PDF. The chat edits a copy, converts it, and
+attaches the result to an email draft. No button of the UI does it, so it adds
+no row to the `DEBT` table (§1). The rung changes no ceiling.
+
+**Where it sits.** It is rung 9 of this ladder. That number is a name. The
+owner and the board set its order (D118), and a customer waits for it.
+
+#### What exists today (read from the code, 2026-11-26)
+
+| Step | Today |
+|---|---|
+| Read the file | Built. The shared reader reads the text of `.docx` and `.xlsx` (`email_app_master_plan.md` EM-T11 and EM-T11b) |
+| Make a new PDF | Built, from a spec only. `make_document` (`acb_skills/documents.py`) lays out a deck or a report. It converts no file |
+| Edit the file | Only `run_command` can do it, and it needs a healthy sandbox broker. The repo shows that production has none. The gateway unit hides the Docker socket (`box_hardening.md` BH-D5), and BH-3 and the image are open gates (WS43-G1 and WS43-G2) |
+| Convert the file to PDF | Not built. No image holds an office converter. `ai_studio.md` §19.4 leaves LibreOffice out for size |
+| Attach a file to a draft | Built. `draft_email` takes an `artifact:<agent>:<path>` ref of a chat file, and the server checks that the member can see it |
+
+#### The rules of the rung
+
+1. **No office file is opened for write or conversion in the gateway.** The file
+   is untrusted data. An isolated worker opens it.
+2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4, and
+   the `--network none` of SBX-18). The gateway side of the broker sends the
+   bytes in, and it takes the result out. The code in the worker calls nothing.
+3. **The tools run fixed code.** The model sends a list of edits as data. It
+   sends no script. So the rung does not wait for the user tools of rung 6 of
+   D224 (`agent_sandbox.md` §0b).
+4. **The source file never changes.** Each result is a new file in the chat
+   folder, with its own card.
+5. **The answer names each loss.** A library can drop a part of a workbook, for
+   example a chart, a picture or a macro. The tool checks for these parts
+   before the edit. The answer names them. It never says "kept" for a part that
+   the result does not hold.
+6. **The answer claims only a file that exists.** It says that it made a PDF
+   only when the PDF is in the chat folder.
+7. **An attach sends nothing.** The draft keeps the card and the rules that it
+   has today.
+
+#### The slices
+
+**Flags and gates.** The scope seam of `agent_sandbox.md` §0c binds this rung.
+
+- DOC-1 adds the target `convert` to `MAF_CODING_TARGETS`. The proposed name is
+  `convert`. An entry for a target that the parser does not know turns every
+  target off, so no entry goes on a box before the code does.
+- The flip that runs code is `convert:<org>` in `MAF_CODING_SCOPE`. It is an
+  owner gate. The `enforcement-flip` grant does not open it.
+- `CHAT_DOCUMENT_ORGS` (proposed, default empty, off) is the hot kill switch
+  only. It opens nothing alone.
+- The image on the box is gate WS43-G2, and the broker unit is WS43-G1
+  (`maf_coding_engine.md` §12). The scope flip is gate WS43-G3. The gates of
+  the remote box are in `agent_sandbox.md` §13.
+
+| Order | Slice | Task | Tier | Needs | State |
+|---|---|---|---|---|---|
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | Not made yet | HIGH | The answer on where it runs. SBX-15a | Not built |
+| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | Not made yet | HIGH | DOC-1 | Not built |
+| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | Not made yet | HIGH | DOC-1 | Not built |
+| 4 | DOC-4: the result goes on an email draft in the same turn | Not made yet | STANDARD | DOC-2 | Not built |
+| 5 | The demo of the rung, on production | Not made yet | none | DOC-2 to DOC-4 | Not built |
+
+#### Acceptance
+
+- **DOC-1.** A `.docx` and a `.xlsx` fixture each give a PDF on a local stack.
+  A socket probe in the container fails. The container environment holds no
+  secret. A file past the size cap, a run past the time limit and an output of
+  another type are each refused, with plain words. A macro does not run. A
+  workbook with an external link fetches nothing.
+- **DOC-1, limits.** The slice sets a size cap, a page cap and a time limit, and
+  it records the size of the image. It uses the org lock of the remote box
+  (SBX-15a), so one org at a time runs there. Orgs still share the box in turn.
+  The open risk of an escape that stays on the box (§0c of that spec) applies,
+  and a worker that opens hostile files raises its weight.
+- **DOC-2.** The tool takes a file of the current chat only. A file of another
+  chat, member or organization answers "not found". A busy or absent worker
+  gives plain words, and no claim of a file.
+- **DOC-3.** The tool takes a list of edits, and refuses an unknown edit kind.
+  It writes a new file. A real workbook with a formula keeps the formula, and
+  the PDF of DOC-2 shows its new value. A part that the edit cannot keep is
+  named in the answer (rule 5).
+- **DOC-4.** "Change the total, make a PDF and put it on a draft to X" gives one
+  draft with the PDF attached. Nothing is sent. The member sees the file name on
+  the draft card.
+- **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
+  container tests with the marker `sandbox_docker`.
+
+#### Where the converter runs (open, §7 item 14)
+
+| Option | What it means | Cost |
+|---|---|---|
+| **(a) Recommended.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
+| (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
+| (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
+
+No slice of this rung starts before the owner answers.
+
 ## 7. Decisions
 
 These decisions are local to this spec. They take no D-number of
@@ -1114,3 +1243,6 @@ he approves the merge.
     `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
     to the Metorite calendar when calendar write-out is on. It promises no
     delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
+14. **The documents rung (§6.6).** Say where the converter runs. The
+    recommendation is option (a), the sandbox worker `aroh-sandbox-1`, through
+    the broker.

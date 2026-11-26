@@ -519,6 +519,10 @@ the member, and it adds the affinity of each kind to the score. A needs card
 goes to Later at worst, and the bell does not change. `*` lists every org, and
 the default is empty. Empty gives the answer of before, byte for byte.
 
+The flag also adds `why_seen` to each card of the feed answer (LOOP-4b). It is
+a list of sentences that code writes, and My Day shows them under "Why am I
+seeing this". A failed state read or learned read gives no `why_seen`.
+
 The reach loop, the briefs and the chat brief read the same learned feed. So
 a kind that the member mutes leaves them too. A muted needs card in Later is
 no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
