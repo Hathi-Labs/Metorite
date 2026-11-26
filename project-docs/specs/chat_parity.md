@@ -1044,8 +1044,8 @@ Excel file and to make a PDF of it. The chat could not do it.
 
 **The rung.** A member uploads a `.xlsx` or a `.docx` file in the chat. The
 member asks for a change and for a PDF. The chat edits a copy, converts it, and
-attaches the result to an email draft. This is not a debt row of §5, because
-no button of the UI does it. The rung changes no ceiling.
+attaches the result to an email draft. No button of the UI does it, so it adds
+no row to the `DEBT` table (§1). The rung changes no ceiling.
 
 **Where it sits.** It is rung 9 of this ladder. That number is a name. The
 owner and the board set its order (D118), and a customer waits for it.
@@ -1056,7 +1056,7 @@ owner and the board set its order (D118), and a customer waits for it.
 |---|---|
 | Read the file | Built. The shared reader reads the text of `.docx` and `.xlsx` (`email_app_master_plan.md` EM-T11 and EM-T11b) |
 | Make a new PDF | Built, from a spec only. `make_document` (`acb_skills/documents.py`) lays out a deck or a report. It converts no file |
-| Edit the file | Only in a chat that holds `run_command`. D85 runs no such code on the gateway box (`agent_sandbox.md` §0c item 3) |
+| Edit the file | Only `run_command` can do it, and it needs a healthy sandbox broker. The repo shows that production has none. The gateway unit hides the Docker socket (`box_hardening.md` BH-D5), and BH-3 and the image are open gates (WS43-G1 and WS43-G2) |
 | Convert the file to PDF | Not built. No image holds an office converter. `ai_studio.md` §19.4 leaves LibreOffice out for size |
 | Attach a file to a draft | Built. `draft_email` takes an `artifact:<agent>:<path>` ref of a chat file, and the server checks that the member can see it |
 
@@ -1064,11 +1064,12 @@ owner and the board set its order (D118), and a customer waits for it.
 
 1. **No office file is opened for write or conversion in the gateway.** The file
    is untrusted data. An isolated worker opens it.
-2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4 and
-   §5.5). The gateway sends the bytes in, and it takes the result out. The code
-   in the worker calls nothing.
+2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4, and
+   the `--network none` of SBX-18). The gateway side of the broker sends the
+   bytes in, and it takes the result out. The code in the worker calls nothing.
 3. **The tools run fixed code.** The model sends a list of edits as data. It
-   sends no script. So the rung does not wait for the user tools of rung 6.
+   sends no script. So the rung does not wait for the user tools of rung 6 of
+   D224 (`agent_sandbox.md` §0b).
 4. **The source file never changes.** Each result is a new file in the chat
    folder, with its own card.
 5. **The answer names each loss.** A library can drop a part of a workbook, for
@@ -1082,9 +1083,18 @@ owner and the board set its order (D118), and a customer waits for it.
 
 #### The slices
 
-Each slice is dark behind one flag, `CHAT_DOCUMENT_ORGS` (proposed, default
-empty, off). A flip is gate `enforcement-flip`. A new image or a unit on the
-sandbox box keeps the gates of `agent_sandbox.md` §13.
+**Flags and gates.** The scope seam of `agent_sandbox.md` §0c binds this rung.
+
+- DOC-1 adds the target `convert` to `MAF_CODING_TARGETS`. The proposed name is
+  `convert`. An entry for a target that the parser does not know turns every
+  target off, so no entry goes on a box before the code does.
+- The flip that runs code is `convert:<org>` in `MAF_CODING_SCOPE`. It is an
+  owner gate. The `enforcement-flip` grant does not open it.
+- `CHAT_DOCUMENT_ORGS` (proposed, default empty, off) is the hot kill switch
+  only. It opens nothing alone.
+- The image on the box is gate WS43-G2, and the broker unit is WS43-G1
+  (`maf_coding_engine.md` §12). The scope flip is gate WS43-G3. The gates of
+  the remote box are in `agent_sandbox.md` §13.
 
 | Order | Slice | Task | Tier | Needs | State |
 |---|---|---|---|---|---|
@@ -1103,7 +1113,9 @@ sandbox box keeps the gates of `agent_sandbox.md` §13.
   workbook with an external link fetches nothing.
 - **DOC-1, limits.** The slice sets a size cap, a page cap and a time limit, and
   it records the size of the image. It uses the org lock of the remote box
-  (SBX-15a), so one org never shares the box with another.
+  (SBX-15a), so one org at a time runs there. Orgs still share the box in turn.
+  The open risk of an escape that stays on the box (§0c of that spec) applies,
+  and a worker that opens hostile files raises its weight.
 - **DOC-2.** The tool takes a file of the current chat only. A file of another
   chat, member or organization answers "not found". A busy or absent worker
   gives plain words, and no claim of a file.
@@ -1121,7 +1133,7 @@ sandbox box keeps the gates of `agent_sandbox.md` §13.
 
 | Option | What it means | Cost |
 |---|---|---|
-| **(a) Recommended.** The sandbox worker `aroh-sandbox-1` (D231), through the door | The broker sends the file to a sealed container under `runsc`. The gateway box opens no file | It waits for the box and its gates |
+| **(a) Recommended.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
 | (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
 | (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
 
@@ -1210,4 +1222,4 @@ he approves the merge.
     delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
 14. **The documents rung (§6.6).** Say where the converter runs. The
     recommendation is option (a), the sandbox worker `aroh-sandbox-1`, through
-    the door.
+    the broker.
