@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 _AGENT = (
     Path(__file__).resolve().parents[2]
@@ -243,7 +244,7 @@ async def test_removing_the_forward_of_a_rule_still_asks_a_card(gw: Gateway) -> 
     gw.answer = False
     out = await agents.update_rule(BOX, "r2", remove_action_types=["FORWARD"])
     assert len(gw.cards) == 1 and gw.writes == []
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 async def test_a_wider_edit_of_a_forward_rule_shows_the_target(gw: Gateway) -> None:
@@ -323,7 +324,7 @@ async def test_several_senders_ask_one_card_that_lists_each(gw: Gateway) -> None
     [card] = gw.cards
     assert card["title"] == f"Block 2 senders in {BOX_TEXT}?"
     assert card["context"].splitlines() == ["Each sender:", "- a@x.test", "- b@y.test"]
-    assert gw.writes == [] and out.startswith("Cancelled")
+    assert gw.writes == [] and out.startswith("Declined:")
     gw.answer = True
     await agents.set_sender_status(BOX, status="cold", emails=["a@x.test", "b@y.test"])
     assert [b["from_email"] for _m, p, b in gw.writes if p == "/email/cold-senders"] == [
@@ -396,7 +397,7 @@ async def test_applying_the_rules_to_one_email_asks_first(gw: Gateway) -> None:
     assert card["title"] == f'Apply the rules to "Invoice 7" from Kim in {BOX_TEXT}?'
     assert '- rule "Bank"' in card["context"]
     assert [p for _m, p, _b in gw.writes] == ["/email/messages/summaries"]
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
     gw.answer = True
     out = await agents.run_rules(BOX, scope="message", email_id="m1", dry_run=False)
     assert gw.writes[-1] == ("POST", "/email/rules/run-message",
@@ -485,7 +486,7 @@ async def test_a_copy_of_a_forward_rule_shows_its_target(gw: Gateway) -> None:
     out = await agents.copy_rules(BOX, BOX2)
     [card] = gw.cards
     assert "out@evil.test" in card["detail"] + card["context"]
-    assert gw.writes == [] and out.startswith("Cancelled")
+    assert gw.writes == [] and out.startswith("Declined:")
 
 
 async def test_a_held_run_copies_no_forward_rule(
@@ -674,7 +675,7 @@ async def test_save_shows_the_new_guide_and_refuses_hidden_text(gw: Gateway) -> 
 async def test_delete_asks_and_deletes_the_profile(gw: Gateway) -> None:
     gw.answer = False
     out = await agents.voice_profile(BOX, action="delete")
-    assert out.startswith("Cancelled") and gw.writes == []
+    assert out.startswith("Declined:") and gw.writes == []
     gw.answer = True
     await agents.voice_profile(BOX, action="delete")
     [(_m, path, _b, params)] = [c for c in gw.calls if c[0] == "DELETE"]
@@ -704,7 +705,8 @@ async def test_spam_moves_to_the_junk_folder_and_never_to_trash(gw: Gateway) -> 
     out = await agents.manage_inbox("spam", ["m1", "m2"])
     [card] = gw.cards
     assert card["title"].startswith("Move 2 messages") and card["title"].endswith("to Spam?")
-    assert out == "Cancelled — nothing was moved to Spam."
+    # HRD-7: the words of a declined card, from the one table.
+    assert out == card_outcome_text(CARD_DECLINED, "Nothing was moved to Spam.")
     assert [w for w in gw.writes if w[1] != "/email/messages/summaries"] == []
     gw.answer = True
     out = await agents.manage_inbox("junk", ["m1", "m2"])
@@ -758,7 +760,7 @@ async def test_disconnect_asks_alone_and_deletes(gw: Gateway) -> None:
     [card] = gw.cards
     assert card["title"] == f"Disconnect {BOX_TEXT}?"
     assert "The mail at the provider stays" in card["detail"]
-    assert gw.writes == [] and out.startswith("Cancelled")
+    assert gw.writes == [] and out.startswith("Declined:")
     gw.answer = True
     await agents.update_account(BOX, disconnect=True)
     assert gw.writes == [("DELETE", f"/email/accounts/{BOX}", None)]
@@ -845,7 +847,7 @@ async def test_a_new_draft_shows_each_recipient_and_the_text_then_saves(
     assert "- Cc: lee@contoso.test" in card["context"]
     assert "The quote is attached." in card["context"]
     assert "Nothing is sent." in card["detail"]
-    assert gw.writes == [] and out.startswith("Cancelled")
+    assert gw.writes == [] and out.startswith("Declined:")
     gw.answer = True
     out = await agents.edit_draft(BOX, to=["kim@contoso.test"], subject="Quote",
                                   body="Hi Kim,")
@@ -950,7 +952,7 @@ async def test_p2_3_a_list_that_drops_a_forward_names_it_on_the_card(gw: Gateway
     out = await agents.update_rule(BOX, "r2", actions=[{"type": "LABEL", "label": "y"}])
     [card] = gw.cards
     assert "- Removed: forwards" in card["context"]
-    assert out.startswith("Cancelled") and gw.writes == []
+    assert out.startswith("Declined:") and gw.writes == []
 
 
 # ── H-404: the outward acts of the action list ──────────────────────────────
@@ -1002,7 +1004,7 @@ async def test_update_rule_takes_an_outward_list_behind_the_outward_card(
     [card] = gw.cards
     assert card["title"] == "Change a rule that sends mail out of the mailbox?"
     assert "cfo@acme-group.test" in card["context"]
-    assert out.startswith("Cancelled") and gw.writes == []
+    assert out.startswith("Declined:") and gw.writes == []
 
 
 async def test_an_empty_cc_clears_the_cc_of_a_kept_forward(gw: Gateway, public: None) -> None:
@@ -1106,3 +1108,27 @@ async def test_p2_4_a_style_guide_that_the_card_would_cut_saves_nothing(gw: Gate
     out = await agents.voice_profile(BOX, action="save", style_guide="word " * 798)
     assert out.startswith("Nothing changed."), out
     assert gw.cards == [] and gw.writes == []
+
+
+# ── LOOP-19: sent mail by recipient and by file name ────────────────────────
+
+async def test_the_chat_search_tools_send_the_recipient_and_the_file_name(gw: Gateway) -> None:
+    """``search_emails`` and ``query_inbox`` carry a recipient and a file-name
+    word to the route that holds the mailbox seam. They send no other route."""
+    await agents.search_emails("NDA", folder="sent", to="Mahesh", attachment="nda")
+    await agents.query_inbox(folder="sent", to_email="mahesh", attachment_name="nda")
+    gets = [(path, params) for method, path, _, params in gw.calls
+            if method == "GET" and path == "/email/messages"]
+    assert len(gets) == 2
+    for _, params in gets:
+        assert params["folder"] == "sent"
+        assert params["to_addr"] in ("Mahesh", "mahesh")
+        assert params["attachment_name"] == "nda"
+
+
+async def test_the_chat_search_tools_send_no_filter_that_was_not_asked(gw: Gateway) -> None:
+    await agents.search_emails("NDA")
+    await agents.query_inbox(query="NDA")
+    for method, path, _, params in gw.calls:
+        if method == "GET" and path == "/email/messages":
+            assert "to_addr" not in params and "attachment_name" not in params

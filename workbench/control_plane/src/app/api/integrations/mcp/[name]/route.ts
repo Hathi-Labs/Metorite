@@ -1,7 +1,8 @@
 /**
  * DELETE /api/integrations/mcp/[name]
  * PATCH  /api/integrations/mcp/[name]   the two switches of an MCP server:
- *        "always confirm" (H-300) and the read-only key (MCP-C2)
+ *        "always confirm" (H-300) and the read-only key (MCP-C2), and its
+ *        description (CSY-7)
  *
  * Proxies to the FastAPI gateway. The gateway checks `integrations:manage`
  * and takes the organization from the session, never from the body.
@@ -17,19 +18,25 @@ export const dynamic = "force-dynamic";
 const SWITCH_KEYS = ["always_confirm", "read_only_key"] as const;
 
 /**
- * The switches of the body, or the words of a 422. Either key or both. A key
- * that is not a JSON boolean is 422, and so is a body with neither key.
+ * The fields of the body, or the words of a 422. Either switch, the
+ * description (CSY-7), or any of them. A switch that is not a JSON boolean
+ * is 422, and so is a description that is not a string. A body with no key
+ * is 422. The gateway holds the length bound.
  */
-function switchesOf(raw: unknown): Record<string, boolean> | string {
+function switchesOf(raw: unknown): Record<string, boolean | string> | string {
   const body = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  const out: Record<string, boolean> = {};
+  const out: Record<string, boolean | string> = {};
   for (const key of SWITCH_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
     const value = body[key];
     if (typeof value !== "boolean") return `${key} must be true or false.`;
     out[key] = value;
   }
-  return Object.keys(out).length ? out : "Send always_confirm, read_only_key, or both.";
+  if (Object.prototype.hasOwnProperty.call(body, "description")) {
+    if (typeof body.description !== "string") return "description must be text.";
+    out.description = body.description;
+  }
+  return Object.keys(out).length ? out : "Send always_confirm, read_only_key, description, or any of them.";
 }
 
 export async function PATCH(

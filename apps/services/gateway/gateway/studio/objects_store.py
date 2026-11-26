@@ -4899,6 +4899,24 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object (51 buffers for 2,000 edges). The
+#: walk down, in a READ and in the C18 WRITE CHECK, joins this set by the text of the parent id,
+#: so the plan does not choose an index for each step (task 3308 and its follow-up 3346). A
+#: lookup per step took the wrong index under stale statistics: 102,010 buffers and 0.8 s on the
+#: box to check a write that moves a node with a subtree of 2,000 nodes.
+#: COST, stated: a write that sets a parent now reads ALL child edges of the field of its object
+#: (a leaf write too), where the lookup per step read O(subtree). Estimated, not measured, at
+#: 1M edges in one object: 0.1 to 0.5 s for each batch that sets a parent; 100k edges: tens of ms.
+#: The join may also be a nested loop over the materialised set under odd statistics: the buffer
+#: fence in the R8 test cannot see that CPU shape (task 3346 keeps the read at 100k edges open).
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
+)
+
+
 #: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
 #: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
 #: ``object_id = ...`` test the planner can also take an index that leads with
@@ -4908,40 +4926,34 @@ MAX_TREE_NODES = 2_000
 #: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
 #: the object in the index prefix, or it scans the whole org.
 _HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
-#: The same for the lookup of a PARENT RECORD by id in ``studio_records``. CI plan of run
-#: 43682459066 (task 3308): with ``p.object_id = ...`` the planner took
-#: ``studio_records_object_id_key`` (organization, object) as the index condition and filtered
-#: ``id`` row by row: 1,999 lookups of 675 rows, 3.7 s. The primary key is the path with a full
-#: equality on ``id``.
-_REC_OF_OBJECT = "p.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: THE PARENT RECORD by id (task 3308, CI run 43696143611, never analyzed): the parent id is
+#: computed in the hot-row select (``pid``) and the record lookup compares two plain uuids.
+#: Before, ``p.id = CASE WHEN v_text ~ uuid-form THEN CAST(v_text AS uuid) END`` was a
+#: row-by-row FILTER in every CI plan, never an index condition (the org index: 249,875
+#: buffers for 2,000 lookups on the runner). PROBABLE cause, an inference that no planner
+#: trace has confirmed: the regex is not leakproof and the tables are under FORCE RLS. The fix
+#: does not depend on the cause. A lead for later: ``build_query`` compares a relation with
+#: the same regex shape (``_UUID_FORM``) and may be a Filter for the same reason.
 
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN LATERAL (SELECT h.v_text FROM studio_record_hot h "
+    "JOIN LATERAL (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     "WHERE h.organization_id = " + _BOUND_ORG + " "
     "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
     "JOIN LATERAL (SELECT p.id FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true "
-)
-
-#: The children of a record, by the text index of the hot rows.
-_TREE_CHILDREN = (
-    "JOIN LATERAL (SELECT h.record_id FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) OFFSET 0) h ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
 #: one past the cap), a cycle, the levels below it (the walk down, to the cap),
 #: and whether its parent is a record of this object.
 _TREE_CHECK_SQL = (
-    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WITH RECURSIVE " + _TREE_KIDS + ", s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
     "WHERE " + _IN_PACKAGE + "), "
     "up(start, id, depth, path, cyc) AS ("
     "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
@@ -4950,11 +4962,11 @@ _TREE_CHECK_SQL = (
     + _TREE_PARENT +
     "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
     "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
-    "down(start, id, depth, path) AS ("
-    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "down(start, id, depth, path, key) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id], CAST(s.id AS text) FROM s "
     "UNION ALL "
-    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
-    + _TREE_CHILDREN +
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+    "FROM down t JOIN kids h ON h.v_text = t.key "
     "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
     "SELECT s.id::text, "
     "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
@@ -4977,13 +4989,13 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM (SELECT h.v_text FROM studio_record_hot h "
+    "SELECT 1 FROM (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
     f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
     "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
     "JOIN LATERAL (SELECT 1 FROM studio_records p "
     "WHERE p.organization_id = " + _BOUND_ORG + " "
-    "AND " + _REC_OF_OBJECT + " "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
     "OFFSET 0) p ON true)"
 )
 
@@ -4991,21 +5003,6 @@ _TREE_ALL_ROOTS = (
 _TREE_ONE_ROOT = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = CAST(:root AS uuid)"
-)
-
-
-#: The child edges of the field, read once: one range scan on the full prefix
-#: ``(organization_id, object_id, field_key)`` of the object. The walk of a READ then joins this
-#: set by the text of the parent id, so the plan does not choose an index for each step, and the
-#: cost is one scan of the field plus the join (task 3308). The write check keeps a lookup for
-#: each step, because a write must not scan the whole field. RESIDUAL (follow-up of 3308): with
-#: stale statistics a write that moves a node with a LARGE subtree (about 2,000 nodes) can still
-#: take the wrong index for those lookups (about 0.9 s on the box, past the batch deadline on a
-#: slow runner). Writes of leaves and small subtrees are not affected.
-_TREE_KIDS = (
-    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
-    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
-    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
 )
 
 

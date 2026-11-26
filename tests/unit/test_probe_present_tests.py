@@ -4,7 +4,9 @@ scripts/bisect_main.sh and scripts/home_server/auto_revert.py.
 A failed test of a red batch can be new in the range. The good commit does not
 hold it. The helper leaves out each test id that is not in the probed tree, so
 that commit is good. When the file of an id is in the tree and pytest cannot
-collect it, the probe never passes.
+collect it, the probe never passes. CIV-31f: the rule applies to each file. A
+file that collects no test (a module-level skip) keeps its ids. A trailing CR
+of an id goes, and the match of a node id is exact.
 
 Each case runs the REAL helper in a small tree in tmp_path, with a real pytest
 of the current interpreter (PROBE_PYTEST_CMD). The end-to-end case runs the
@@ -176,6 +178,67 @@ def test_no_test_id_is_a_usage_error(tmp_path: Path) -> None:
     root = tree(tmp_path, {"test_a.py": PASSING})
     got = probe(tmp_path, root)
     assert got.returncode == 2
+
+
+# ── CIV-31f: the rule applies to each file ────────────────────────────────
+
+#: A file in the tree that collects no test: a module-level skip.
+MODULE_SKIPS = {
+    "importorskip": 'import pytest\n\npytest.importorskip("no_such_module_civ31f")\n\n' + PASSING,
+    "skip-module": 'import pytest\n\npytest.skip("not here", allow_module_level=True)\n\n'
+    + PASSING,
+}
+
+
+@pytest.mark.parametrize("kind", sorted(MODULE_SKIPS))
+def test_civ31f_a_module_level_skip_is_not_good(tmp_path: Path, kind: str) -> None:
+    """F3: the file collects no test (exit 5). Its ids are not absent, so they
+    run, and pytest exits 4: the caller cannot judge the commit."""
+    root = tree(tmp_path, {"test_a.py": MODULE_SKIPS[kind]})
+    for test_id in ("test_a.py::test_ok", "test_a.py::test_new"):
+        got = probe(tmp_path, root, test_id)
+        assert got.returncode not in (0, 1), (test_id, got.stdout + got.stderr)
+        assert "absent from this tree" not in got.stderr
+        assert "gives no node id of test_a.py" in got.stderr
+
+
+@pytest.mark.parametrize("kind", sorted(MODULE_SKIPS))
+def test_civ31f_a_module_level_skip_beside_a_normal_file_is_not_good(
+    tmp_path: Path, kind: str
+) -> None:
+    """F3: the collection exits 0 and lists only the node ids of the normal
+    file. The ids of the skipped file still run, so the probe is not good."""
+    root = tree(tmp_path, {"test_a.py": MODULE_SKIPS[kind], "test_b.py": PASSING})
+    got = probe(tmp_path, root, "test_a.py::test_ok", "test_b.py::test_ok")
+    assert got.returncode not in (0, 1), got.stdout + got.stderr
+    assert "absent from this tree" not in got.stderr
+    # An id that the normal file does not hold is still absent.
+    got = probe(tmp_path, root, "test_a.py::test_ok", "test_b.py::test_gone")
+    assert got.returncode not in (0, 1), got.stdout + got.stderr
+    assert "  test_b.py::test_gone" in got.stderr
+    assert "ALL_ABSENT" not in got.stderr
+
+
+def test_civ31f_an_id_with_a_trailing_cr_is_the_same_id(tmp_path: Path) -> None:
+    """F4: an id from a CRLF file ends with a CR. The helper removes it, so the
+    id names its file, and a test that fails gives exit 1."""
+    root = tree(tmp_path, {"test_a.py": "def test_bad():\n    assert False\n"})
+    got = probe(tmp_path, root, "test_a.py::test_bad\r")
+    assert got.returncode == 1, got.stdout + got.stderr
+    assert "1 failed" in got.stdout
+    assert "absent from this tree" not in got.stderr
+
+
+def test_civ31f_a_prefix_of_a_node_id_is_absent(tmp_path: Path) -> None:
+    """F5: the match is exact. test_x_s is a prefix of the node id test_x_sum,
+    and the file holds no test_x_s, so it is absent. A substring match (grep -F
+    with no -x) calls it present, and then pytest exits 4."""
+    root = tree(tmp_path, {"test_a.py": "def test_x_sum():\n    assert False\n"})
+    got = probe(tmp_path, root, "test_a.py::test_x_s")
+    assert got.returncode == 0, got.stdout + got.stderr
+    assert "ALL_ABSENT" in got.stderr and "  test_a.py::test_x_s" in got.stderr
+    got = probe(tmp_path, root, "test_a.py::test_x_sum")
+    assert got.returncode == 1, got.stdout + got.stderr
 
 
 # ── bisect_main.sh with its default probe ─────────────────────────────────

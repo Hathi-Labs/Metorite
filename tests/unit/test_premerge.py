@@ -303,6 +303,87 @@ def test_an_empty_selection_says_that_nothing_is_proven(repo):
     assert "UNPROVEN. The selector picked no test" in res.stdout
 
 
+def _frontend_pair(repo: Path) -> None:
+    """The branch adds one front-end file, main adds another: two PRs that each pass alone."""
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    _commit(repo, "workbench/control_plane/src/a.ts", "export const a = 1\n")
+    _advance_main(repo, "workbench/control_plane/src/b.ts", "export const b = 2\n")
+
+
+def test_tsc_runs_on_the_merge_result_for_a_front_end_diff(repo):
+    """CIV-MT-2 (task 3369): 2354 and 2295 each passed tsc alone, and main's tsc went red."""
+    _frontend_pair(repo)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert marker.exists() and "type check passed" in res.stdout
+
+
+def test_tsc_is_skipped_for_a_python_only_diff(repo):
+    _commit(repo, "scripts/x.py")
+    _advance_main(repo, "scripts/y.py")
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+
+
+def test_a_type_error_that_only_the_merge_has_blocks_and_is_named(repo):
+    _frontend_pair(repo)
+    both = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then '
+            'echo "src/a.ts(3,5): error TS2739: Type is missing the property layout"; exit 1; fi')
+    res = _run(repo, PREMERGE_TSC_CMD=both)
+    assert res.returncode == 1
+    assert "error TS2739" in res.stderr and "src/a.ts" in res.stderr
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert _git(repo, "symbolic-ref", "--short", "HEAD") == "feat"
+
+
+def test_a_type_error_that_main_has_alone_does_not_block(repo):
+    """Main's tsc was red for 50 minutes. That must not block every PR behind it."""
+    _frontend_pair(repo)
+    on_main = 'if [ -f src/b.ts ]; then echo "src/b.ts(1,1): error TS2322: boom"; exit 1; fi'
+    res = _run(repo, PREMERGE_TSC_CMD=on_main)
+    assert res.returncode == 0, res.stderr
+    assert "did not cause them" in res.stdout
+
+
+def test_a_baseline_that_gives_no_verdict_does_not_block(repo):
+    """Review of PR 2394, F1: a baseline run on main that times out or crashes cannot
+    clear or blame the merge. It is UNPROVEN, not a block."""
+    _frontend_pair(repo)
+    cmd = ('if [ -f src/a.ts ] && [ -f src/b.ts ]; then echo "src/a.ts(1,1): error TS2322: boom"; exit 1; fi; '
+           'if [ -f src/b.ts ]; then exit 134; fi')
+    res = _run(repo, PREMERGE_TSC_CMD=cmd)
+    assert res.returncode == 0, res.stderr
+    assert "UNPROVEN. The type check of" in res.stdout
+
+
+def test_a_lockfile_change_runs_npm_ci_even_with_node_modules(repo):
+    _commit(repo, "workbench/control_plane/package-lock.json", "{}\n")
+    _advance_main(repo, "workbench/control_plane/src/b.ts", "export const b = 2\n")
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    res = _run(repo, PREMERGE_TSC_CMD="true", PREMERGE_NPM_TIMEOUT="5")
+    assert "a lockfile changed: running npm ci" in res.stdout
+
+
+def test_a_front_end_config_file_triggers_the_type_check(repo):
+    (repo / "workbench/control_plane/node_modules").mkdir(parents=True, exist_ok=True)
+    _commit(repo, "workbench/control_plane/vitest.config.ts", "export default {}\n")
+    _advance_main(repo, "scripts/y.py")
+    marker = repo.parent / "tsc-ran"
+    _run(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert marker.exists()
+
+
+def test_tsc_off_switch(repo):
+    _frontend_pair(repo)
+    marker = repo.parent / "tsc-ran"
+    res = _run(repo, PREMERGE_TSC="0", PREMERGE_TSC_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stderr
+    assert not marker.exists()
+
+
 def test_an_unknown_flag_is_refused(repo):
     res = _run(repo, "--bogus")
     assert res.returncode == 1 and "--bogus" in res.stderr

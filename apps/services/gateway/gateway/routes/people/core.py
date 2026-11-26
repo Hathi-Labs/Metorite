@@ -17,7 +17,7 @@ from typing import Any
 
 from acb_auth import require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased here for the same reason every
@@ -167,6 +167,41 @@ async def names_of(db: Any, emails: Any) -> dict[str, str]:
         return {}
     rows = (await db.execute(text(_NAMES_SQL), {"emails": wanted})).fetchall()
     return {str(r.email): str(r.name) for r in rows if r.name}
+
+
+#: Which people in the directory cannot open a task that is given to them
+#: (task 3636): the ``people`` row is not membership. A former person
+#: (``people.status`` alumni), a member whose ``app_user`` is suspended or
+#: removed, and a person with no ``app_user`` row in THIS organization (a
+#: contractor or an imported person) or one who is only invited. The tenant
+#: scope is the rule of :func:`has_login`: a login in another customer's
+#: organization is no login here. ``NULLIF(…, '')`` fails closed.
+_REACH_SQL = (
+    "SELECT lower(p.email) AS email, p.status AS status, "
+    "  (SELECT u.status FROM app_user u WHERE lower(u.email) = lower(p.email) "
+    "    AND u.organization_id = CAST(NULLIF("
+    "          current_setting('app.tenant_id', true), '') AS uuid) LIMIT 1) AS login "
+    "FROM people p WHERE lower(p.email) = ANY(:emails) AND p.name <> ''"
+)
+
+
+async def not_reachable(db: Any, emails: Any) -> list[str]:
+    """The addresses of *emails* that the directory names and whose person
+    cannot open a task given to them, sorted, in lower case. ONE answer and no
+    reason: a suspended or removed account is a fact that only an admin route
+    shows (``admin:members:read``), so this read says "cannot open" and never
+    why. An address that the directory does not know is ABSENT (a stranger,
+    which :func:`names_of` tells by its absence). One read, in the caller's
+    tenant session."""
+    wanted = sorted({str(e).strip().lower() for e in emails or () if str(e).strip()})
+    if not wanted:
+        return []
+    rows = (await db.execute(text(_REACH_SQL), {"emails": wanted})).fetchall()
+    return sorted(
+        str(r.email) for r in rows
+        if str(r.status or "").strip().lower() == "alumni"
+        or str(r.login or "").strip().lower() != "active"
+    )
 
 
 # ── The shared read seam ────────────────────────────────────────────────────
@@ -348,25 +383,47 @@ async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
 
 # ── The avatar write, shared by both doors ──────────────────────────────────
 
-async def store_avatar(db: Any, person_id: str, data: bytes,
-                       crop: tuple[float, float, float] | None,
-                       actor: str) -> str:
-    """Normalise the upload and store it. Returns the data URI.
+async def avatar_uri(upload: Any, crop: tuple[float, float, float] | None) -> str:
+    """Read the upload and normalise it. Returns the data URI. Raises ``AvatarError``.
 
-    One implementation, two doors — `/people/me/avatar` (ungated, self) and
-    `/people/{id}/avatar` (gated, admin). They differ in who may call them,
-    which is the field-class authority's job and runs in front of this; they do
-    not differ in what reaches the column, because a second normaliser would be
-    a second answer to "what shape is an avatar".
+    ⚠️ **Call it with NO session open** (task 2186). The decode runs in a
+    confined child, and the wait can be the slot wait, the time bound and the
+    reap: about 17 seconds. A pooled connection held for that time is one that
+    no other request can use. So each door authorizes in one session, closes
+    it, calls this, and then writes in a second session that asks again.
+
+    The read stops at the byte cap plus one byte, as the signature upload
+    does, so a large upload is never read whole into memory.
+
+    One normaliser, two doors — `/people/me/avatar` (ungated, self) and
+    `/people/{id}/avatar` (gated, admin). A second normaliser would be a second
+    answer to "what shape is an avatar".
+    """
+    from gateway.avatar import MAX_UPLOAD_BYTES, normalise_async, to_data_uri
+
+    data = await upload.read(MAX_UPLOAD_BYTES + 1)
+    return to_data_uri(await normalise_async(data, crop=crop))
+
+
+def avatar_refusal(exc: Any) -> HTTPException:
+    """The HTTP answer of an ``AvatarError``: 400 for the member's image, and
+    503 when this server cannot read it now (busy, no start, no confinement,
+    or past the time bound)."""
+    return HTTPException(status_code=getattr(exc, "status", 400), detail=str(exc))
+
+
+async def store_avatar(db: Any, person_id: str, uri: str, actor: str) -> str:
+    """Store a picture that :func:`avatar_uri` made. Returns the data URI.
+
+    The two doors differ in who may call them, which is the field-class
+    authority's job and runs in front of this. They do not differ in what
+    reaches the column.
 
     `avatar_updated_at` is stamped here rather than left to `updated_at`: once
     anything else on the row moves, `updated_at` stops being able to answer
     "when did this person last change their picture", which is what the client
     caches against.
     """
-    from gateway.avatar import normalise, to_data_uri
-
-    uri = to_data_uri(normalise(data, crop=crop))
     await db.execute(
         text("UPDATE people SET avatar = :avatar, avatar_updated_at = now(), "
              "updated_by = :by, updated_at = now() "

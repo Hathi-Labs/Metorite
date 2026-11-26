@@ -184,7 +184,7 @@ The owner said that several apps can need a member. So the "Needs you" group of 
 
 1. **One tab for each app that has a needs provider.** The first tab is "All". Each other tab names one app, for example Projects, Email, Approvals, Waiting, CRM and Calendar. Each tab shows its count.
 2. **The source is the one feed.** `GET /shell/needs` already merges each app's provider (`navigation_shell.md` §7.2). The tabs filter that feed by app. No new read exists.
-3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 stays visible but quiet, so the row does not jump.
+3. **A tab shows only for an app that the member can open.** A pane in `preview` shows no tab. A tab with a count of 0 is not drawn (owner, 2026-11-22: approved as built, task 1973). The tab bar keeps its place, so the row does not jump. "See all" opens `/approvals` on the Approvals tab until `/waiting` ships.
 4. **A new app joins by its manifest.** It adds a provider. It adds no tab code (D89).
 5. **The Waiting tab shows the top 5** of `/waiting` and links to the page. `waiting_on_me.md` owns that page.
 6. **Each row acts in place** under D101 and D171.4. A row that needs more context opens the owning app.
@@ -396,8 +396,8 @@ A fence below is a test to write in the slice named. Each is advisory until that
 | The today's-focus cap holds, from 1 to 10. A mark past it answers 409, and a lower cap keeps the marks that exist | `tests/unit/test_today_focus_cap_r8.py` | CC-2 |
 | A focus-session row is tenant-scoped and private to the member | `tests/unit/test_focus_session_rls_r8.py` | CC-5 |
 | Capture from My Day lands in the Inbox. A time today also sets a reminder, and one Undo removes both | `src/lib/shell/captureTime.test.ts`, `e2e/my-day-capture.spec.ts` | CC-1 |
-| One focus session at a time, from any door | `src/lib/focus/singleSession.test.ts` | CC-4 |
-| Focus on a To do task moves it to In progress, with Undo | `tests/unit/test_focus_start_board_r8.py` | CC-4 |
+| One focus session at a time, from any door | `e2e/focus-anywhere.spec.ts` (a second start replaces the session, a double click starts once) and `src/app/tasks/lib/focusStart.fence.test.ts` (one door) | CC-4 |
+| Focus on a To do task moves it to In progress, with Undo | `e2e/focus-anywhere.spec.ts` (one PATCH, Undo puts it back) and `src/app/tasks/lib/focusStart.test.ts` (lane choice and Undo; no new SQL, so no R8 test) | CC-4 |
 | The phase default follows the clock and the day state | `src/app/my-day/phase.test.ts` | CC-7 |
 | A tab exists for each live provider only | `src/lib/shell/needsTabs.test.ts` | CC-11 |
 | `navigation_shell.md` §4.3 names the command centre | `tests/unit/test_my_day_command_centre_spec.py` | CC-0 follow-up |

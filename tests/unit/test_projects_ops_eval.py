@@ -28,6 +28,10 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import shutil
+import sys
+import tempfile
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -48,6 +52,25 @@ from evals.projects_ops.scripted import tool
 
 DS = D.load()
 LAUNCH = DS.project("Launch")
+
+
+@pytest.fixture
+def tmp_path(tmp_path: Path) -> Iterator[Path]:
+    """The dir of a test. On Windows it is a SHORT one (task 3586).
+
+    The run state of one task nests an org id and a thread id under it, and a
+    path past 260 characters fails there with WinError 206. The test name in
+    pytest's own dir is enough to cross the line. Linux keeps pytest's dir,
+    so what the test asserts there does not change.
+    """
+    if sys.platform != "win32":
+        yield tmp_path
+        return
+    short = Path(tempfile.mkdtemp(prefix="po"))
+    try:
+        yield short
+    finally:
+        shutil.rmtree(short, ignore_errors=True)
 
 
 def _failed(record: dict[str, Any]) -> set[str]:

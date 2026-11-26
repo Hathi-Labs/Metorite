@@ -1347,12 +1347,14 @@ class TestTheTables:
         second read of a package in this module is a second copy of the rule.
         B2c-2d adds two calls: the plan of a parked write
         (``plan_workflow_write``) and the write of a workflow node
-        (``run_workflow_write``) each run the same check once."""
+        (``run_workflow_write``) each run the same check once. I11a adds one:
+        ``_run_live`` runs the same second check after the body read of a
+        live preview read."""
         from pathlib import Path
 
         src = Path(invoke.__file__).read_text(encoding="utf-8")
         assert src.count("packages_store.get_package(") == 1
-        assert src.count("await _check(") == 4
+        assert src.count("await _check(") == 5
         assert src.count("_declared(package") == 1
 
     def test_each_refusal_is_one_short_sentence(self):

@@ -101,8 +101,11 @@ import {
   getSessions,
   renameSession,
   setSessionArchived,
+  setSessionPinned,
+  setSessionTopic,
   upsertSession,
   type ChatSession,
+  type SessionTopic,
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
@@ -121,7 +124,9 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markBuddyHello, markChatFirstMessage, setHelloPending } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending, useChatPinOn, useChatTopicsOn } from "./shellPrefs";
+import TopicChip from "./TopicChip";
+import { chipLabel, topicMenuIsOpen, topicMoveFailed } from "./chatTopics";
 import {
   dockFloats,
   dockFoldsNav,
@@ -170,8 +175,9 @@ import {
   type AssistantMode,
 } from "./assistant";
 import { surfaceOfPane } from "./surface";
-import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
+import { chatFilesHref, isPinned, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
+import { ContinuedMark } from "./ContinuedMark";
 import { useDocumentLook } from "@/lib/theme/glassTokens";
 import { useOptionalSidebarFold } from "@/components/SidebarFold";
 import { LAYER_CLASS } from "@/lib/layers";
@@ -600,6 +606,15 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       setRecoveredInput(opened.text);
       setAssistantSession(opened.sessionId);
       refresh();
+      // CO-13: the row made above holds no link. The server's list does, so
+      // merge it now and the "Continued from" line shows at once. A failed
+      // fetch stays silent, as in the effect above.
+      void fetchAndMergeSessionsFromDb()
+        .then((merged) => {
+          madeHere.current.note(merged);
+          setSessions(merged);
+        })
+        .catch(() => {});
     },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {
@@ -626,6 +641,29 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       if (!setSessionArchived(id, archived)) return;
       if (archived && id === activeId) openAssistant({ fresh: true });
       refresh();
+    },
+    /**
+     * CO-11: pin a chat for this member, or unpin it. The list draws the
+     * mark at once. A refusal of the server puts it back and draws again.
+     */
+    pin: (id: string, pinned: boolean) => {
+      if (setSessionPinned(id, pinned, refresh)) refresh();
+    },
+    /**
+     * CO-2b: move a chat into a topic for this member, or to "No topic". The
+     * list draws the move at once. A refusal of the server, or a lost
+     * connection, puts it back, and reads the topics again
+     * (`topicMoveFailed`). The words go in the notice line of the chat, never
+     * in a toast (owner, 2026-11-01), and only while that chat is on screen.
+     */
+    move: (id: string, topic: SessionTopic | null) => {
+      const failed = () => {
+        refresh();
+        topicMoveFailed((words) => {
+          if (assistantState().sessionId === id) setNotice(words);
+        });
+      };
+      if (setSessionTopic(id, topic, failed)) refresh();
     },
     activity: (info: { firstUserMessage?: string; lastPreview?: string; messageCount: number }) => {
       if (!activeId) return;
@@ -878,6 +916,15 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const form: AssistantMode = effectiveMode(st.mode, vw, phone);
   // Read once, as the other shell flags are. Off, a phone has no strip.
   const [chatFirst] = useState(() => chatFirstOn());
+  // CO-11: the shell read says whether the member may pin a chat.
+  const pinsOn = useChatPinOn();
+  // CO-2b: the shell read says whether the chats sort into topics.
+  const topicsOn = useChatTopicsOn();
+  // CO-2b: the phone's "…" control opens the topic menu, and the menu hangs
+  // from that control. It opens FOR one chat (`topicMenuIsOpen`), so a
+  // change of chat closes it, and it never opens again on its own.
+  const [topicMenuFor, setTopicMenuFor] = useState<string | null>(null);
+  const [topicAnchor, setTopicAnchor] = useState<HTMLElement | null>(null);
   const strip = phone && form === "peek";
   // Every desktop has the side panel. Below the floor it floats over the
   // page instead of sitting beside it (owner, 2026-10-14).
@@ -921,6 +968,12 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const moving = isMoving(phase);
 
   const active = chat.active;
+  // CO-2b (review P2-1): a change of chat closes the topic menu. It takes no
+  // focus as it closes, so the composer keeps the focus.
+  const activeChatId = active?.id ?? null;
+  useEffect(() => {
+    setTopicMenuFor(null);
+  }, [activeChatId]);
   const agent = active?.agentName ?? ASSISTANT_AGENT;
   const context = surfaceContext(here, facts);
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
@@ -1136,19 +1189,53 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
   // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
   const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
+  // CO-11: the chat on screen may take a pin when the server holds it (it
+  // has a message) and it is not archived. An archive takes it out of Pinned.
+  const pinnable = pinsOn && active != null && active.messageCount > 0 && !active.archivedAt;
+  const activePinned = active != null && isPinned(active);
+  // CO-2b: the chat on screen may take a topic when the server holds it (it
+  // has a message) and it is not archived, the rule of the pin. The move is
+  // the member's own.
+  const topicable = topicsOn && active != null && active.messageCount > 0 && !active.archivedAt;
+  const moveActive = (topic: SessionTopic | null) => chat.move(chat.activeId, topic);
+  const topicMenuOpen = topicMenuIsOpen(topicMenuFor, active?.id);
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
-        ? [{
-            icon: "FolderOpen",
-            label: "This chat's files",
-            onClick: () => {
-              closeAssistant();
-              router.push(chatFilesHref(chat.activeId));
+        ? [
+            {
+              icon: "FolderOpen",
+              label: "This chat's files",
+              onClick: () => {
+                closeAssistant();
+                router.push(chatFilesHref(chat.activeId));
+              },
             },
-          }]
+            // CO-11: the phone's header has no room for a sixth control, so
+            // the pin sits here, beside the files (CF-8).
+            ...(pinnable
+              ? [{
+                  icon: activePinned ? "PinOff" : "Pin",
+                  label: activePinned ? "Unpin this chat" : "Pin this chat",
+                  onClick: () => chat.pin(chat.activeId, !activePinned),
+                }]
+              : []),
+            // CO-2b: the topic menu, for the same reason as the pin. It hangs
+            // from the "…" control of this panel (`data-chat-more`), which
+            // is also the place Escape gives the focus back to.
+            ...(topicable
+              ? [{
+                  icon: "Tag",
+                  label: `Topic: ${chipLabel(active)}`,
+                  onClick: () => {
+                    setTopicAnchor(rootRef.current?.querySelector<HTMLElement>("[data-chat-more]") ?? null);
+                    setTopicMenuFor(chat.activeId);
+                  },
+                }]
+              : []),
+          ]
         : [],
-    [phoneChrome, chat.activeId, router],
+    [phoneChrome, chat, router, pinnable, activePinned, topicable, active],
   );
   const pickerProps = {
     sessions: chat.sessions,
@@ -1160,6 +1247,9 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     onRename: chat.rename,
     onArchive: chat.archive,
     onRemove: chat.remove,
+    onPin: chat.pin,
+    pinsOn,
+    topicsOn,
   };
 
   return (
@@ -1280,6 +1370,45 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             {phone ? null : "Files"}
           </Button>
         ) : null}
+        {topicable && !phoneChrome ? (
+          // CO-2b: the topic of the chat on screen, for this member. A press
+          // opens the menu that moves it. The full view shows the name. The
+          // side panel and a phone have no room for it beside the title, so
+          // they show the icon, whose name says the topic. The chat-first
+          // phone offers it in the chat's "…" control (CF-8).
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger={columnForm ? "chip" : "icon"}
+            phone={phone}
+          />
+        ) : null}
+        {topicable && phoneChrome ? (
+          <TopicChip
+            key={active.id}
+            session={active}
+            onMove={moveActive}
+            trigger="none"
+            phone
+            open={topicMenuOpen}
+            onOpenChange={(open) => setTopicMenuFor(open ? chat.activeId : null)}
+            anchor={topicAnchor}
+          />
+        ) : null}
+        {pinnable && !phone ? (
+          // CO-11: the member's own pin of the chat on screen. The phone
+          // offers it in the chat's "…" control (CF-8).
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon={activePinned ? "PinOff" : "Pin"}
+            aria-label={activePinned ? "Unpin this chat" : "Pin this chat"}
+            title={activePinned ? "Unpin" : "Pin to the top of your chats"}
+            data-chat-pin={activePinned ? "on" : "off"}
+            onClick={() => chat.pin(chat.activeId, !activePinned)}
+          />
+        ) : null}
         {columnForm ? <span ref={setHeadSlot} data-dock-head-slot="" className="flex shrink-0 items-center" /> : null}
         {/* The window controls, apart from the chat's own. */}
         <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
@@ -1322,6 +1451,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           onClick={() => morphAskBox("into-bar", closeAssistant)}
         />
       </header>
+      {/* CO-13: which chat this one continues. A row of its own, under the header. */}
+      <ContinuedMark mark={active?.continuedFrom} onOpen={pickerProps.onSelect} />
 
       <div className="relative flex min-h-0 flex-1">
         {columnForm && listOpen ? (
