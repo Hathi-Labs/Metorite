@@ -23,17 +23,31 @@ Mutations that turn this file red (R7):
 4. A token on stdout or in a log (for example ``say "$tok"``): the
    ``_assert_no_token`` checks of the success case.
 5. No helper check of the org file: ``test_a_loose_org_file_is_refused``.
+6. No signal trap: ``test_a_sigterm_during_the_proof_puts_the_old_box_env_back``.
+7. No ``flock``: ``test_a_second_run_exits_at_once_while_the_lock_is_held``.
+8. No ``S_ISREG`` check of ``box.env.prev``: ``test_a_symlink_is_refused_before_any_stop``.
+9. No host rule, or no user-name rule: ``test_a_foreign_address_is_refused_and_gets_no_request``.
+10. A proof that follows a redirect:
+    ``test_a_redirect_from_initialize_fails_and_the_target_gets_nothing``.
+11. No wait loop: ``test_the_wait_after_a_stop_polls_until_the_session_ends``. No
+    check after it: ``test_a_session_that_never_ends_stops_the_switch``.
+12. No read of the sessions after the proof:
+    ``test_a_session_that_starts_during_the_switch_is_named``.
+13. No lost-token check: ``test_a_token_that_no_org_file_holds_is_refused``.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -82,14 +96,26 @@ class _Handler(BaseHTTPRequestHandler):
         body = json.loads(raw or b"{}")
         auth = self.headers.get("Authorization") or ""
         srv.requests.append({"auth": auth, "method": body.get("method")})
-        who = srv.known.get(auth.removeprefix("Bearer "))
+        tok = auth.removeprefix("Bearer ")
+        who = srv.known.get(tok)
         if who is None:
             self._send(401, {"error": "invalid_token"})
+            return
+        if tok in srv.redirect and body.get("method") == "initialize":
+            self.send_response(302)
+            self.send_header("Location", srv.redirect[tok])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         if body.get("method") == "initialize":
             result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
                       "serverInfo": {"name": "throwaway", "version": "0"}}
         elif body.get("method") == "tools/call" and body["params"]["name"] == "whoami":
+            if tok in srv.delay:
+                srv.delayed.set()
+                srv.release.wait(timeout=30)
+            if tok in srv.on_whoami:
+                srv.on_whoami[tok]()
             who_out = {"email": who[0], "organization_id": who[1]}
             result = {"structuredContent": who_out,
                       "content": [{"type": "text", "text": json.dumps(who_out)}]}
@@ -99,22 +125,29 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class _Server:
-    def __init__(self, known: dict[str, tuple[str, str]]) -> None:
+    def __init__(self, known: dict[str, tuple[str, str]], host: str = "127.0.0.1") -> None:
         self.known = known
+        self.host = host
         self.requests: list[dict] = []
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.delay: set[str] = set()  # tokens whose whoami waits for release
+        self.delayed = threading.Event()
+        self.release = threading.Event()
+        self.redirect: dict[str, str] = {}  # token -> Location of a 302 on initialize
+        self.on_whoami: dict[str, object] = {}  # token -> a callable run at whoami
+        self.httpd = ThreadingHTTPServer((host, 0), _Handler)
         self.httpd.state = self  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}/mcp"
+        return f"http://{self.host}:{self.httpd.server_address[1]}/mcp"
 
     def __enter__(self) -> _Server:
         self.thread.start()
         return self
 
     def __exit__(self, *_exc) -> None:
+        self.release.set()
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=10)
@@ -130,13 +163,26 @@ with open(os.environ["FAKE_CLAUDE_LOG"], "a", encoding="utf-8") as fh:
 path = os.environ["FAKE_AGENTS"]
 agents = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
 if args[:2] == ["agents", "--json"]:
+    # A stopped session stays live for FAKE_STOP_POLLS reads (-1: for ever).
+    for a in agents:
+        left = a.get("polls_left")
+        if left == 0:
+            a.pop("pid", None)
+            a.pop("polls_left", None)
+        elif isinstance(left, int) and left > 0:
+            a["polls_left"] = left - 1
+    json.dump(agents, open(path, "w", encoding="utf-8"))
     print(json.dumps(agents))
     sys.exit(0)
 if args[:1] == ["stop"] and len(args) == 2:
+    polls = int(os.environ.get("FAKE_STOP_POLLS", "0"))
     for a in agents:
         if a.get("id") == args[1]:
-            a.pop("pid", None)
             a["state"] = "stopped"
+            if polls == 0:
+                a.pop("pid", None)
+            else:
+                a["polls_left"] = polls
     json.dump(agents, open(path, "w", encoding="utf-8"))
     sys.exit(0)
 sys.exit(3)
@@ -191,11 +237,22 @@ class Box:
         env.update(extra)
         return env
 
-    def run(self, *args: str, stdin: str | None = None, xtrace: bool = False,
-            **extra: str) -> subprocess.CompletedProcess:
+    def org_file(self, label: str, tok: str) -> Path:
+        orgs = self.dir / "orgs"
+        orgs.mkdir(mode=0o700, exist_ok=True)
+        f = orgs / f"{label}.env"
+        f.write_text(f"METORITE_BOX_TOKEN={tok}\n", encoding="utf-8")
+        f.chmod(0o600)
+        return f
+
+    def cmd(self, *args: str, xtrace: bool = False) -> list[str]:
         # The fake must be the claude that the script finds: never a real lane.
         assert shutil.which("claude", path=self.env()["PATH"]) == str(self.bin / "claude")
-        cmd = ["bash"] + (["-x"] if xtrace else []) + [str(_SCRIPT), *args]
+        return ["bash"] + (["-x"] if xtrace else []) + [str(_SCRIPT), *args]
+
+    def run(self, *args: str, stdin: str | None = None, xtrace: bool = False,
+            **extra: str) -> subprocess.CompletedProcess:
+        cmd = self.cmd(*args, xtrace=xtrace)
         return subprocess.run(cmd, input=stdin if stdin is not None else "",
                               env=self.env(**extra), cwd=self.home, capture_output=True,
                               text=True, encoding="utf-8", timeout=120, check=False)
@@ -216,6 +273,14 @@ class Box:
             for i, (sid, name) in enumerate(sessions)
         ] + [{"id": "deadbeef", "name": "old-lane", "sessionId": "x", "state": "done"}]),
             encoding="utf-8")
+
+    def add_live(self, sid: str, name: str) -> None:
+        agents = json.loads(self.agents.read_text(encoding="utf-8"))
+        agents.append({"id": sid, "name": name, "pid": 4242, "sessionId": f"{sid}-full"})
+        self.agents.write_text(json.dumps(agents), encoding="utf-8")
+
+    def agent_reads(self) -> int:
+        return sum(1 for c in self.calls() if c[:2] == ["agents", "--json"])
 
     @property
     def active(self) -> Path:
@@ -247,6 +312,7 @@ def server(tokens):
 def box(tmp_path: Path, server: _Server, tokens) -> Box:
     b = Box(tmp_path, server.url)
     b.box_env(tokens["a"])
+    b.org_file("org-a", tokens["a"])  # the token in box.env is held by an org file
     return b
 
 
@@ -306,7 +372,6 @@ def test_a_bad_label_is_refused(box: Box, label: str) -> None:
 
 
 def test_list_marks_the_active_org_and_prints_no_token(box: Box, tokens) -> None:
-    box.add("org-a", tokens["a"])
     box.add("org-b", tokens["b"])
     box.active.write_text("org-a\n", encoding="utf-8")
     run = box.run("list")
@@ -391,7 +456,6 @@ def test_a_failed_whoami_puts_the_old_box_env_back(box: Box, tokens, server: _Se
 # ── to: the switch ──────────────────────────────────────────────────────────
 
 def test_a_switch_writes_box_env_active_org_and_one_line_each(box: Box, tokens, server) -> None:
-    box.add("org-a", tokens["a"])
     box.add("org-b", tokens["b"])
     box.active.write_text("org-a\n", encoding="utf-8")
     box.note_log.parent.mkdir(parents=True)
@@ -477,3 +541,203 @@ def test_the_script_holds_no_token_literal_and_one_token_shape() -> None:
     assert "TOKEN_RE='" not in text
     assert '. "$helper_src"' in text
     assert "claude mcp" not in text.replace("No `claude mcp` command runs", "")
+
+
+# ── Fix round 1 (the verifier and the review of 2026-11-26) ────────────────
+
+def _assert_box_env_is(box: Box, tok: str) -> None:
+    assert box.env_file.read_text(encoding="utf-8") == f"METORITE_BOX_TOKEN={tok}\n"
+    assert _mode(box.env_file) == 0o600
+
+
+def test_a_sigterm_during_the_proof_puts_the_old_box_env_back(box: Box, tokens, server) -> None:
+    box.add("org-b", tokens["b"])
+    box.active.write_text("org-a\n", encoding="utf-8")
+    server.delay.add(tokens["b"])
+    proc = subprocess.Popen(box.cmd("to", "org-b"), env=box.env(), cwd=box.home,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert server.delayed.wait(timeout=60), "the proof never reached whoami"
+        # The new token is in box.env now, and not proved.
+        _assert_no_token(box.env_file.read_text(encoding="utf-8"), tokens["a"])
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=30)
+    finally:
+        server.release.set()
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 10, out + err
+    assert "a signal stopped the switch" in err
+    _assert_box_env_is(box, tokens["a"])
+    assert box.active.read_text(encoding="utf-8") == "org-a\n"
+    assert not box.state_log.exists()
+    _assert_no_token(out + err, tokens["a"], tokens["b"])
+
+
+def test_a_sigterm_with_no_old_box_env_removes_it(box: Box, tokens, server) -> None:
+    box.env_file.unlink()
+    box.add("org-b", tokens["b"])
+    server.delay.add(tokens["b"])
+    proc = subprocess.Popen(box.cmd("to", "org-b"), env=box.env(), cwd=box.home,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    try:
+        assert server.delayed.wait(timeout=60)
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=30)
+    finally:
+        server.release.set()
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 10, out + err
+    assert not box.env_file.exists()
+    assert not box.active.exists()
+
+
+@pytest.mark.parametrize("command", [("to", "org-b"), ("add", "org-c")])
+def test_a_second_run_exits_at_once_while_the_lock_is_held(box: Box, tokens, command) -> None:
+    box.add("org-b", tokens["b"])
+    lock = box.dir / ".switch-org.lock"
+    with open(lock, "a", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        start = time.monotonic()
+        run = box.run(*command, stdin=_token() + "\n")
+        assert time.monotonic() - start < 20
+    assert run.returncode == 12, run.stdout + run.stderr
+    assert "another org switch runs" in run.stderr
+    _assert_box_env_is(box, tokens["a"])
+    assert not (box.dir / "orgs" / "org-c.env").exists()
+    assert not box.active.exists()
+
+
+@pytest.mark.parametrize("which", ["box.env", "box.env.prev"])
+def test_a_symlink_is_refused_before_any_stop(box: Box, tokens, tmp_path: Path, which: str) -> None:
+    box.add("org-b", tokens["b"])
+    box.live(("aaaa1111", "lane-x"))
+    elsewhere = tmp_path / "elsewhere.env"
+    elsewhere.write_text(f"METORITE_BOX_TOKEN={tokens['a']}\n", encoding="utf-8")
+    elsewhere.chmod(0o600)
+    target = box.dir / which
+    if target.exists():
+        target.unlink()
+    target.symlink_to(elsewhere)
+    run = box.run("to", "org-b", "--stop-lanes")
+    assert run.returncode == 11, run.stdout + run.stderr
+    assert not [c for c in box.calls() if c[:1] == ["stop"]]
+    assert box.agent_reads() == 0  # refused before the sessions were even read
+    assert elsewhere.read_text(encoding="utf-8") == f"METORITE_BOX_TOKEN={tokens['a']}\n"
+    assert not box.active.exists()
+
+
+def test_a_loose_box_env_is_refused_before_any_stop(box: Box, tokens) -> None:
+    box.add("org-b", tokens["b"])
+    box.live(("aaaa1111", "lane-x"))
+    box.env_file.chmod(0o644)
+    run = box.run("to", "org-b", "--stop-lanes")
+    assert run.returncode == 11, run.stdout + run.stderr
+    assert not [c for c in box.calls() if c[:1] == ["stop"]]
+
+
+@pytest.mark.parametrize("make_url", [
+    lambda port: f"https://evil.example:{port}/mcp",
+    lambda port: f"http://mcp.metorite.com:{port}/mcp",   # not https
+    lambda port: f"http://user@127.0.0.1:{port}/mcp",      # userinfo
+    lambda port: f"http://127.0.0.2:{port}/mcp",           # loopback, but not the named host
+])
+def test_a_foreign_address_is_refused_and_gets_no_request(box: Box, tokens, make_url) -> None:
+    box.add("org-b", tokens["b"])
+    known = {tokens["a"]: ("a@example.com", "org-a-id"), tokens["b"]: ("b@example.com", "org-b-id")}
+    with _Server(known, host="127.0.0.2") as foreign:
+        url = make_url(foreign.httpd.server_address[1])
+        box.entry({"type": "http", "url": url,
+                   "headersHelper": f"{box.helper} {box.env_file}"})
+        run = box.run("to", "org-b")
+        assert run.returncode == 2, run.stdout + run.stderr
+        assert foreign.requests == []
+    _assert_box_env_is(box, tokens["a"])
+
+
+def test_a_redirect_from_initialize_fails_and_the_target_gets_nothing(box: Box, tokens, server) -> None:
+    box.add("org-b", tokens["b"])
+    with _Server({tokens["b"]: ("b@example.com", "org-b-id")}) as target:
+        server.redirect[tokens["b"]] = target.url
+        run = box.run("to", "org-b")
+        assert run.returncode == 10, run.stdout + run.stderr
+        assert "HTTP 302" in run.stderr
+        assert target.requests == []
+    _assert_box_env_is(box, tokens["a"])
+    assert not box.active.exists()
+
+
+def test_the_wait_after_a_stop_polls_until_the_session_ends(box: Box, tokens) -> None:
+    box.add("org-b", tokens["b"])
+    box.live(("aaaa1111", "lane-x"))
+    run = box.run("to", "org-b", "--stop-lanes", FAKE_STOP_POLLS="3")
+    assert run.returncode == 0, run.stdout + run.stderr
+    # One read before the stop, three reads that still show it live, one that
+    # shows it ended, and one read after the proof.
+    assert box.agent_reads() == 6
+    _assert_box_env_is(box, tokens["b"])
+
+
+def test_a_session_that_never_ends_stops_the_switch(box: Box, tokens) -> None:
+    box.add("org-b", tokens["b"])
+    box.live(("aaaa1111", "lane-x"))
+    run = box.run("to", "org-b", "--stop-lanes", FAKE_STOP_POLLS="-1",
+                  METORITE_SWITCH_STOP_WAIT_S="2")
+    assert run.returncode == 9, run.stdout + run.stderr
+    assert "still live after the stop" in run.stderr
+    assert "box.sh start lane-x" in run.stdout
+    _assert_box_env_is(box, tokens["a"])
+    assert not (box.dir / "box.env.prev").exists()
+    assert not box.active.exists()
+
+
+def test_a_session_that_starts_during_the_switch_is_named(box: Box, tokens, server) -> None:
+    box.add("org-b", tokens["b"])
+    box.note_log.parent.mkdir(parents=True)
+    box.note_log.write_text("", encoding="utf-8")
+    server.on_whoami[tokens["b"]] = lambda: box.add_live("cccc3333", "lane-z")
+    run = box.run("to", "org-b")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "started during the switch: lane-z. They hold the old org until a restart." in run.stdout
+    note = box.note_log.read_text(encoding="utf-8")
+    assert note.rstrip().endswith(
+        "Lanes stopped: 0. Started during the switch: lane-z. They hold the old org until a restart.")
+    assert "late=lane-z" in box.state_log.read_text(encoding="utf-8")
+
+
+def test_a_token_that_no_org_file_holds_is_refused(box: Box, tokens) -> None:
+    lost = _token()
+    box.box_env(lost)
+    box.add("org-b", tokens["b"])
+    box.live(("aaaa1111", "lane-x"))
+    run = box.run("to", "org-b", "--stop-lanes")
+    out = run.stdout + run.stderr
+    assert run.returncode == 11, out
+    assert "add <label>" in run.stderr
+    _assert_no_token(out, lost, tokens["b"])
+    _assert_box_env_is(box, lost)
+    assert not [c for c in box.calls() if c[:1] == ["stop"]]
+
+
+def test_a_failed_proof_prints_the_restart_hints(box: Box, tokens) -> None:
+    box.add("org-c", _token())  # unknown to the server
+    box.live(("aaaa1111", "lane-x"))
+    run = box.run("to", "org-c", "--stop-lanes")
+    assert run.returncode == 10, run.stdout + run.stderr
+    assert "box.sh start lane-x" in run.stdout
+    _assert_box_env_is(box, tokens["a"])
+
+
+def test_a_failed_state_log_only_warns(box: Box, tokens) -> None:
+    box.add("org-b", tokens["b"])
+    state = box.home / ".local" / "state"
+    state.mkdir(parents=True)
+    (state / "metorite").write_text("not a folder", encoding="utf-8")
+    run = box.run("to", "org-b")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert "WARNING" in run.stdout and "The switch is complete" in run.stdout
+    _assert_box_env_is(box, tokens["b"])
+    assert box.active.read_text(encoding="utf-8") == "org-b\n"
