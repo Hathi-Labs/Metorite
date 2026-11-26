@@ -19,6 +19,10 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
+an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
+Spec only, and nothing is built. The place of the converter waits for the owner.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -1033,6 +1037,96 @@ instruction.
    `.claude/commands/delivery-review.md` then adds the step.
 3. Whether a run prints examples at all, or the counts only.
 
+### 6.6 The documents rung (task 3979, spec only, 2026-11-26)
+
+**The report.** On 2026-11-26 a customer asked the production chat to edit an
+Excel file and to make a PDF of it. The chat could not do it.
+
+**The rung.** A member uploads a `.xlsx` or a `.docx` file in the chat. The
+member asks for a change and for a PDF. The chat edits a copy, converts it, and
+attaches the result to an email draft. This is not a debt row of §5, because
+no button of the UI does it. The rung changes no ceiling.
+
+**Where it sits.** It is rung 9 of this ladder. That number is a name. The
+owner and the board set its order (D118), and a customer waits for it.
+
+#### What exists today (read from the code, 2026-11-26)
+
+| Step | Today |
+|---|---|
+| Read the file | Built. The shared reader reads the text of `.docx` and `.xlsx` (`email_app_master_plan.md` EM-T11 and EM-T11b) |
+| Make a new PDF | Built, from a spec only. `make_document` (`acb_skills/documents.py`) lays out a deck or a report. It converts no file |
+| Edit the file | Only in a chat that holds `run_command`. D85 runs no such code on the gateway box (`agent_sandbox.md` §0c item 3) |
+| Convert the file to PDF | Not built. No image holds an office converter. `ai_studio.md` §19.4 leaves LibreOffice out for size |
+| Attach a file to a draft | Built. `draft_email` takes an `artifact:<agent>:<path>` ref of a chat file, and the server checks that the member can see it |
+
+#### The rules of the rung
+
+1. **No office file is opened for write or conversion in the gateway.** The file
+   is untrusted data. An isolated worker opens it.
+2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4 and
+   §5.5). The gateway sends the bytes in, and it takes the result out. The code
+   in the worker calls nothing.
+3. **The tools run fixed code.** The model sends a list of edits as data. It
+   sends no script. So the rung does not wait for the user tools of rung 6.
+4. **The source file never changes.** Each result is a new file in the chat
+   folder, with its own card.
+5. **The answer names each loss.** A library can drop a part of a workbook, for
+   example a chart, a picture or a macro. The tool checks for these parts
+   before the edit. The answer names them. It never says "kept" for a part that
+   the result does not hold.
+6. **The answer claims only a file that exists.** It says that it made a PDF
+   only when the PDF is in the chat folder.
+7. **An attach sends nothing.** The draft keeps the card and the rules that it
+   has today.
+
+#### The slices
+
+Each slice is dark behind one flag, `CHAT_DOCUMENT_ORGS` (proposed, default
+empty, off). A flip is gate `enforcement-flip`. A new image or a unit on the
+sandbox box keeps the gates of `agent_sandbox.md` §13.
+
+| Order | Slice | Task | Tier | Needs | State |
+|---|---|---|---|---|---|
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | Not made yet | HIGH | The answer on where it runs. SBX-15a | Not built |
+| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | Not made yet | HIGH | DOC-1 | Not built |
+| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | Not made yet | HIGH | DOC-1 | Not built |
+| 4 | DOC-4: the result goes on an email draft in the same turn | Not made yet | STANDARD | DOC-2 | Not built |
+| 5 | The demo of the rung, on production | Not made yet | none | DOC-2 to DOC-4 | Not built |
+
+#### Acceptance
+
+- **DOC-1.** A `.docx` and a `.xlsx` fixture each give a PDF on a local stack.
+  A socket probe in the container fails. The container environment holds no
+  secret. A file past the size cap, a run past the time limit and an output of
+  another type are each refused, with plain words. A macro does not run. A
+  workbook with an external link fetches nothing.
+- **DOC-1, limits.** The slice sets a size cap, a page cap and a time limit, and
+  it records the size of the image. It uses the org lock of the remote box
+  (SBX-15a), so one org never shares the box with another.
+- **DOC-2.** The tool takes a file of the current chat only. A file of another
+  chat, member or organization answers "not found". A busy or absent worker
+  gives plain words, and no claim of a file.
+- **DOC-3.** The tool takes a list of edits, and refuses an unknown edit kind.
+  It writes a new file. A real workbook with a formula keeps the formula, and
+  the PDF of DOC-2 shows its new value. A part that the edit cannot keep is
+  named in the answer (rule 5).
+- **DOC-4.** "Change the total, make a PDF and put it on a draft to X" gives one
+  draft with the PDF attached. Nothing is sent. The member sees the file name on
+  the draft card.
+- **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
+  container tests with the marker `sandbox_docker`.
+
+#### Where the converter runs (open, §7 item 14)
+
+| Option | What it means | Cost |
+|---|---|---|
+| **(a) Recommended.** The sandbox worker `aroh-sandbox-1` (D231), through the door | The broker sends the file to a sealed container under `runsc`. The gateway box opens no file | It waits for the box and its gates |
+| (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
+| (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
+
+No slice of this rung starts before the owner answers.
+
 ## 7. Decisions
 
 These decisions are local to this spec. They take no D-number of
@@ -1114,3 +1208,6 @@ he approves the merge.
     `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
     to the Metorite calendar when calendar write-out is on. It promises no
     delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
+14. **The documents rung (§6.6).** Say where the converter runs. The
+    recommendation is option (a), the sandbox worker `aroh-sandbox-1`, through
+    the door.
