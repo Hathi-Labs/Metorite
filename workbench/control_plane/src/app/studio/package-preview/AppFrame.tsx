@@ -24,6 +24,7 @@ import { EmptyState } from "@/components/EmptyState";
 import DeletePackageButton from "@/components/studio/DeletePackageButton";
 import PackageLifetimeBar from "@/components/studio/PackageLifetimeBar";
 import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioBlockState from "@/components/studio/StudioBlockState";
 import StudioCalendar from "@/components/studio/StudioCalendar";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioFilterBar from "@/components/studio/StudioFilterBar";
@@ -47,6 +48,7 @@ import {
 import { newButtons } from "@/lib/studio/dialogModel";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import { buildPage, viewObjectName } from "@/lib/studio/pageModel";
+import { pluralOf } from "@/lib/studio/blockState";
 import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@/lib/studio/packagePreview";
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
@@ -105,6 +107,34 @@ function FilteredList({ source, door, active, onClear, children }: {
     <div className={PANEL}>
       <EmptyState icon="SearchX" message="No match" hint="No record fits the search and the filters."
         action={{ label: "Clear filters", icon: "X", onClick: onClear }} />
+    </div>
+  );
+}
+
+/**
+ * The table of a page with a preset (STU-LY-2). It draws the shared states of `StudioBlockState`
+ * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
+ * It reads the same cached key as the block's own read, so this adds no second read.
+ */
+function LayoutList({ source, door, active, noun, onClear, children }: {
+  source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
+  active: number; noun: string; onClear: () => void; children: React.ReactNode;
+}) {
+  const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
+  const n = rows.data?.length ?? 0;
+  const failed = Boolean(rows.error) && rows.data === undefined;
+  const state = (
+    <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
+      forbidden={false} rows={n} filtersActive={active > 0} noun={noun}
+      onClearFilters={onClear} onRetry={rows.refresh} />
+  );
+  if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
+  return (
+    <div className="space-y-2">
+      <p role="status" className="text-xs text-muted-foreground">
+        {`${n} ${noun}${active > 0 ? " match the filters" : ""}`}
+      </p>
+      {children}
     </div>
   );
 }
@@ -179,6 +209,13 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
       case "node": {
         const node = <GenerativeUINode spec={model.node} />;
         const src = model.node.props.source as { action: string; args?: Record<string, unknown> } | undefined;
+        if (built.page.layout === "table_workspace" && src && id === built.page.regions.main?.[0]) {
+          const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
+          return (
+            <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
+              noun={pluralOf(object?.label || object?.name || "")} onClear={() => update(clearedBar)}>{node}</LayoutList>
+          );
+        }
         if (!bar || id !== bar.lens.view || !src) return node;
         return (
           <FilteredList source={src} door={door} active={activeCount(bar.fields, bar.value)}
