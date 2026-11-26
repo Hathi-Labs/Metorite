@@ -169,3 +169,20 @@ def test_the_outage_lines_hold_no_secret(monkeypatch):
         answer = client.get("/crm/leads", headers=kit.headers())
     assert answer.status_code == 503
     _clean(logs)
+
+
+def test_a_refusal_at_step_3_logs_at_info_and_step_4_at_warning(monkeypatch):
+    """Review note 1: a stranger causes a refusal at step 3 (an unknown,
+    expired or revoked token), so it logs at info. Step 4 and later log at
+    warning, because only a holder of a live capability reaches them."""
+    door = kit.make_app(monkeypatch)
+    kit.arm_door(monkeypatch, flag=kit.ORG_B)
+    with structlog.testing.capture_logs() as logs, TestClient(door.app) as client:
+        unknown = client.get("/crm/leads",
+                             headers={"X-Sandbox-Capability": "msbx_" + "B" * 43})
+        refused = client.get("/crm/leads", headers=kit.headers())
+    assert unknown.status_code == 401 and refused.status_code == 401
+    first, second = _door_lines(logs)
+    assert first["code"] == "capability" and first["log_level"] == "info"
+    assert second["code"] == "org" and second["log_level"] == "warning"
+    _clean(logs)
