@@ -1812,6 +1812,11 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "timezone": _SETTINGS_AFTER_CREATE_REASON,
         "task_prefix": _TASK_PREFIX_REASON,
         "position": "A new node takes no position, as the app's create sends none. move_project sets its place.",
+        # WS-39 SP-3a: the app's create sends no style, and a new node is Flow.
+        "work_style": (
+            "A new node starts as Flow. The app sets the style after the create, in "
+            "How this team works."
+        ),
     },
     ("PATCH", "/projects/nodes/{project_id}"): {
         "If-Match": (
@@ -1920,6 +1925,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
         "cooldown_days": "G26", "credit_budget": "G26", "If-Match": "G26",
     },
     ("POST", "/projects/cycles/{cycle_id}/start"): {"capacity": "G26"},
+    # G26 (WS-39 SP-3a): the style picker and the backlog read of the Backlog
+    # canvas. SP-5 sends each field.
+    ("PATCH", "/projects/nodes/{project_id}"): {"work_style": "G26"},
+    ("GET", "/projects/tasks"): {"cycle": "G26"},
     # G25 (WS-AP AP-8a): the person ask. AP-10 sends each field.
     ("POST", "/projects/tasks/{task_id}/asks"): {
         "addressee": "G25", "question": "G25", "choices": "G25", "due_at": "G25",
@@ -1992,6 +2001,13 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.deleteProject": "delete_project",
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
+    # ── projectsApi: the cycles of the Backlog canvas (WS-39 SP-3a) ──────
+    # SP-5a (Metorite task 964) built each tool, so no row is debt.
+    "projectsApi.cycles": "list_cycles",
+    "projectsApi.cycle": "cycle_detail",
+    "projectsApi.createCycle": "create_cycle",
+    "projectsApi.addCycleTask": "plan_cycle",
+    "projectsApi.removeCycleTask": "plan_cycle",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
     "projectsApi.load": "analytics_load",
