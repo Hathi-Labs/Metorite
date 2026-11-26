@@ -1,4 +1,4 @@
-"""PAR-4a (task 3960): the 12 WhatsApp read tools of the chat.
+"""P-4a (task 3960): the 12 WhatsApp read tools of the chat.
 
 Each tool reads one gateway route and sends nothing. The gateway is faked at
 ``_get``. The routes check the account owner, and their SQL has its own tests.

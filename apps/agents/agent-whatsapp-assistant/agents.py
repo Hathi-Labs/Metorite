@@ -507,7 +507,7 @@ async def draft_waiting_on_nudge(commitment_id: str) -> str:
     )
 
 
-# ── Settings, rules, calls and link reads (PAR-4a, task 3960) ───────────────
+# ── Settings, rules, calls and link reads (P-4a, task 3960) ───────────────
 # Each tool reads one gateway route as the member and sends nothing. The routes
 # check that the account is the member's own.
 

@@ -452,7 +452,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
 | crm | 74 | 67 | P-3 | 3678 (task 3951 paid 5) |
 | notes | 51 | 51 | P-4 | 3113 |
-| whatsapp | 25 | 13 | P-4 | 3113 (P-4a built) |
+| whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
@@ -478,12 +478,12 @@ debt.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Six ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Seven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12.
+and memory to 4, and P-5b-6 took people to 12. Task 3960 took whatsapp to 13.
 
-The total of `DEBT_CEILING` is 321. The "Today" column above does not show
+The total of `DEBT_CEILING` is 304. The "Today" column above does not show
 these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
