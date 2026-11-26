@@ -2583,6 +2583,8 @@ _INBOX_VERBS = {
 }
 #: The most messages that the card of a bulk act lists, one line each.
 _CARD_MESSAGE_LINES = 20
+#: ``request_confirmation`` clips the context of a card here, with no count.
+_CARD_CONTEXT_MAX = 4000
 
 
 def _capped_lines(lines: list[str], cap: int = _CARD_MESSAGE_LINES) -> list[str]:
@@ -2804,11 +2806,11 @@ class _TrashPlan:
             out.append((self.rule.message_label(m), " · ".join(f for f in facts if f)))
         return self.rule.unique(out)
 
-    def already_lines(self) -> list[str]:
+    def already_lines(self, cap: int = _CARD_MESSAGE_LINES) -> list[str]:
         if not self.already:
             return []
         return ["Already in Trash, so nothing happens to them:", *_capped_lines(
-            [f"- {_card_text(self.rule.message_label(m), 200)}" for m in self.already])]
+            [f"- {_card_text(self.rule.message_label(m), 180)}" for m in self.already], cap)]
 
 
 async def _trash_drafts(rule: Any, message_ids: list[str]) -> str | None:
@@ -2879,6 +2881,47 @@ def _trash_title(drafts: int, others: int) -> str:
     return text + " to Trash?"
 
 
+def _plain_card_context(
+    plan: _TrashPlan, drafts: list[dict[str, Any]], staying: list[dict[str, Any]],
+) -> str:
+    """The lines of the plain card, inside ``_CARD_CONTEXT_MAX``.
+
+    Each message that moves has its own line. A long card first shortens each
+    line. Then it lists fewer of the messages that do not move, and counts
+    the rest."""
+    pairs = plan.pairs(drafts + staying, plan.others)
+    kept_cap, already_cap = plan.rule.MAX_DRAFTS, _CARD_MESSAGE_LINES
+    short = False
+    while True:
+        if short:  # cut each half, so the facts that tell two lines apart stay
+            cut = plan.rule.unique(
+                [(_card_text(a, 70), _card_text(b, 80)) for a, b in pairs])
+            shown = [f"- {' · '.join(p)}" for p in cut]
+        else:
+            shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
+        # *shown* holds the drafts, then the staying drafts, then the others.
+        moving = [shown.pop(0) for _ in drafts]
+        kept = [shown.pop(0) for _ in staying]
+        lines: list[str] = []
+        if moving:
+            lines += ["Each draft that moves to Trash:", *moving]
+        if shown:
+            lines += ["Each other message that moves to Trash:", *_capped_lines(shown)]
+        if kept:
+            lines += ["These matching drafts stay in Drafts:",
+                      *_capped_lines(kept, kept_cap)]
+        lines += plan.already_lines(already_cap)
+        text = "\n".join(lines)
+        if len(text) <= _CARD_CONTEXT_MAX or (short and not (kept_cap or already_cap)):
+            return text
+        if not short:
+            short = True
+        elif kept_cap >= already_cap:
+            kept_cap -= 1
+        else:
+            already_cap -= 1
+
+
 async def _plain_drafts_card(plan: _TrashPlan, named_ids: set[str]) -> set[str] | str:
     """The ids that move after one Approve card, or the answer of a card that
     did nothing. The card lists each message that moves, by sender and
@@ -2890,23 +2933,10 @@ async def _plain_drafts_card(plan: _TrashPlan, named_ids: set[str]) -> set[str] 
             remaining=staying, cut=plan.cut, already=plan.already,
             unknown_ids=plan.unknown_ids), _card_text)
         return _framed_drafts(head, data, tail)
-    pairs = plan.pairs(drafts + staying, plan.others)
-    shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
-    # *shown* holds the drafts, then the staying drafts, then the others.
-    moving = [shown.pop(0) for _ in drafts]
-    kept = [shown.pop(0) for _ in staying]
-    lines: list[str] = []
-    if moving:
-        lines += ["Each draft that moves to Trash:", *moving]
-    if shown:
-        lines += ["Each other message that moves to Trash:", *_capped_lines(shown)]
-    if kept:
-        lines += ["These matching drafts stay in Drafts:",
-                  *_capped_lines(kept, plan.rule.MAX_DRAFTS)]
-    lines += plan.already_lines()
+    context = _plain_card_context(plan, drafts, staying)
     refusal = await _card_refusal(
         _trash_title(len(drafts), len(plan.others)), plan.detail(),
-        _NO_DRAFT_MOVED, "\n".join(lines))
+        _NO_DRAFT_MOVED, context)
     if refusal:
         return refusal
     return {str(m["id"]) for m in drafts + plan.others}

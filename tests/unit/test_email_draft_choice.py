@@ -578,6 +578,30 @@ async def test_the_plain_card_counts_each_staying_draft_that_it_cuts(box, monkey
     assert "+3 more" in staying
 
 
+@pytest.mark.asyncio
+async def test_a_long_plain_card_keeps_each_message_that_moves(box, monkeypatch):
+    """The card clips its context at 4000 characters, with no count."""
+    monkeypatch.setattr("acb_skills.ask_tools.rows_card_channel_open", lambda: False)
+    moving = [f"88888888-8888-4888-8888-{n:012d}" for n in range(draft_choice.MAX_IDS)]
+    long = "Re: " + "a very long subject " * 20
+    for mid in moving:
+        box.rows[mid] = _draft(mid, subject=long, snippet="words " * 40)
+    for n in range(draft_choice.MAX_DRAFTS + 2):
+        mid = f"99999999-9999-4999-8999-{n:012d}"
+        box.rows[mid] = _draft(mid, subject=long, snippet="words " * 40)
+    card = _card(monkeypatch, False)
+    await agents.manage_inbox("trash", moving)
+    context = card.shown[0]["context"]
+    assert len(context) <= agents._CARD_CONTEXT_MAX
+    head, rest = context.split("These matching drafts stay in Drafts:")
+    lines = [ln for ln in head.splitlines() if ln.startswith("- ")]
+    assert len(lines) == len(set(lines)) == len(moving)
+    listed = sum(ln.startswith("- ") for ln in rest.splitlines())
+    staying = len([r for r in box.rows.values() if r["folder"] == "drafts"
+                   and r["thread_id"] == "T"]) - len(moving)
+    assert f"+{staying - listed} more" in rest
+
+
 def test_the_title_of_one_other_message():
     assert agents._trash_title(1, 1) == "Move 1 draft and 1 other message to Trash?"
     assert agents._trash_title(0, 2) == "Move 2 messages to Trash?"
