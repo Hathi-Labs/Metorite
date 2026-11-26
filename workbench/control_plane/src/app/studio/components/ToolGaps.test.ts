@@ -6,11 +6,14 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { clearAll, put } from "@/lib/dataCache";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadToolGapsView,
   panelState,
+  readToolGaps,
+  TOOL_GAPS_KEY,
   TOOL_GAPS_ERROR,
   ToolGapsSection,
   type ToolGapsView,
@@ -144,5 +147,20 @@ describe("the panel stays dark until the route answered 200 once", () => {
   it("hides the off view, and shows the ok view", () => {
     expect(panelState(false, { kind: "off" }, true)).toBe("hidden");
     expect(panelState(false, ok, false)).toBe("view");
+  });
+});
+
+describe("a failed read over good rows", () => {
+  afterEach(() => clearAll());
+
+  it("throws, so the cache keeps the rows", async () => {
+    put(TOOL_GAPS_KEY, { kind: "ok", data: FULL });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 502 })));
+    await expect(readToolGaps()).rejects.toThrow(TOOL_GAPS_ERROR);
+  });
+
+  it("returns the error view when no rows were shown", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 502 })));
+    await expect(readToolGaps()).resolves.toEqual({ kind: "error", detail: TOOL_GAPS_ERROR });
   });
 });

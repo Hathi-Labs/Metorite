@@ -22,6 +22,7 @@
 import { EmptyState } from "@/components/EmptyState";
 import Badge from "@/components/ui/Badge";
 import { SkeletonRows } from "@/components/ui/Skeleton";
+import { peek } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 /** The cache key of the read. One key per org, because the cache binds the identity. */
@@ -207,11 +208,18 @@ export function panelState(
   return "view";
 }
 
-/** The read: the view, and the hint kept up to date. */
-async function readToolGaps(): Promise<ToolGapsView> {
+/**
+ * The read: the view, and the hint kept up to date. A failed read over good
+ * rows throws, so the cache keeps the rows on screen (the rule in the header
+ * of `useCachedResource.ts`: an error does not clear the data).
+ */
+export async function readToolGaps(): Promise<ToolGapsView> {
   const view = await loadToolGapsView();
   if (view.kind === "ok") remember(true);
   if (view.kind === "off") remember(false);
+  if (view.kind === "error" && peek<ToolGapsView>(TOOL_GAPS_KEY)?.data.kind === "ok") {
+    throw new Error(view.detail);
+  }
   return view;
 }
 
