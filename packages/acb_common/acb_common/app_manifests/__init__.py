@@ -45,7 +45,9 @@ from acb_common.app_manifests.base import (
     scopes_of,
 )
 from acb_common.app_manifests.base import door_routes as _door_routes
+from acb_common.app_manifests.crm import CRM
 from acb_common.app_manifests.knowledge import KNOWLEDGE
+from acb_common.app_manifests.projects import PROJECTS_DOOR
 
 #: The Projects header (§19.1). Its door is the typed tools of §9.
 PROJECTS = App(
@@ -112,6 +114,50 @@ def door_op(app_id: object, op: object) -> DoorOp | None:
     return door_ops(found).get(op)
 
 
+# ── The sandbox door (SBX-2, ``agent_sandbox.md`` §12.2 decisions 2 and 7) ──
+#
+# The code of a user tool reads the CRM and Projects through the existing
+# routes, as the member. A row joins only with ``sandbox=True`` on its own
+# line (AD-3, D136). These two apps are not in :data:`APPS`, so the MCP door
+# serves none of their ops. Fence: ``tests/unit/test_sandbox_routes_coverage.py``.
+
+#: The apps whose rows the sandbox door may read. No other app.
+SANDBOX_APPS: tuple[App, ...] = (CRM, PROJECTS_DOOR)
+
+#: Each ``(method, template)`` pair that a ``sandbox=True`` row names, mapped
+#: to the read scope of its one app.
+_SANDBOX_SCOPES: Mapping[tuple[str, str], str] = {
+    (row.method, row.path): one.read_scope
+    for one in SANDBOX_APPS for row in one.routes if row.sandbox
+}
+
+#: The allowlist of the sandbox door: GET reads of class A only.
+SANDBOX_ROUTES: frozenset[tuple[str, str]] = frozenset(_SANDBOX_SCOPES)
+
+#: The read scope of each app of :data:`SANDBOX_APPS`.
+SANDBOX_READ_SCOPES: frozenset[str] = frozenset(one.read_scope for one in SANDBOX_APPS)
+
+#: Each class X pair of :data:`SANDBOX_APPS`. The door answers 403 for it.
+_SANDBOX_EXCLUDED: frozenset[tuple[str, str]] = frozenset(
+    (row.method, row.path) for one in SANDBOX_APPS for row in one.routes if row.cls == "X"
+)
+
+
+def sandbox_scope(pair: tuple[str, str | None]) -> str | None:
+    """The read scope that a pair of :data:`SANDBOX_ROUTES` needs, or ``None``
+    for any pair off the list."""
+    method, template = pair
+    if template is None:
+        return None
+    return _SANDBOX_SCOPES.get((method, template))
+
+
+def sandbox_excluded(pair: tuple[str, str | None]) -> bool:
+    """True when *pair* is a class X row of :data:`SANDBOX_APPS`."""
+    method, template = pair
+    return template is not None and (method, template) in _SANDBOX_EXCLUDED
+
+
 __all__ = [
     "APPS",
     "APP_ID_PATTERN",
@@ -121,6 +167,9 @@ __all__ = [
     "KNOWLEDGE",
     "OP_PATTERN",
     "PROJECTS",
+    "SANDBOX_APPS",
+    "SANDBOX_READ_SCOPES",
+    "SANDBOX_ROUTES",
     "TOOL_APPS",
     "UUID_PATTERN",
     "VERSION_ARG",
@@ -141,5 +190,7 @@ __all__ = [
     "every_app",
     "path_params",
     "route_for",
+    "sandbox_excluded",
+    "sandbox_scope",
 ]
 
