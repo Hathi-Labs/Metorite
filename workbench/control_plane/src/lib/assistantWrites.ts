@@ -75,6 +75,8 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
  */
 const CRM_WRITES: ReadonlySet<string> = new Set([
   "create_lead", "update_deal_status", "log_activity", "convert_lead",
+  // P-3 (task 3954): a suggestion of the field map changes what a list shows.
+  "crm_decide_suggestion", "crm_rerun_analysis",
   "crm_update_record", "crm_update_task", "crm_create_pipeline",
   "crm_edit_status", "crm_edit_lost_reason",
 ]);
@@ -97,6 +99,8 @@ const ARTIFACT_WRITES: ReadonlySet<string> = new Set([
  * two workflow writes (STB-6b, the `studio-workflows` pack) publish, roll back,
  * pause and turn on a workflow of the Studio library, so the library re-reads.
  * The four workflow writes of PAR-8a (run, save, build, module) do the same.
+ * The five Custom Apps writes of PAR-9 (the `studio-apps` pack) change an app
+ * of the Apps view of the library, so the library re-reads.
  * The read tools (draft, validate, patch, outline, plan, describe, list_actions,
  * package_get, record_list, skill_list, interview, workflow_read) change nothing
  * stored.
@@ -108,6 +112,9 @@ const STUDIO_WRITES: ReadonlySet<string> = new Set([
   // PAR-8a: a run, a make, a rename, a copy, a delete, a change of the draft and a
   // code module change what the Workflows view of the library shows.
   "studio_workflow_run", "studio_workflow_save", "studio_workflow_build", "studio_workflow_module",
+  // PAR-9 (task 3950): a rename, a copy, a pin, a file, a publish, a share and a stored
+  // value change what the Apps view of the library shows.
+  "custom_app_save", "custom_app_files", "custom_app_publish", "custom_app_share", "custom_app_data",
 ]);
 
 /**

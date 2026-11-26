@@ -794,6 +794,18 @@ async def patch_app(
         # The folder BEFORE the UPDATE: a row with no folder answers 409 and
         # the session rolls back, so no write commits (WS-STU A3).
         workspace = app_workspace(row) if manifest_fields else None
+        if fields.get("visibility") == "org":
+            # Task 3975: the org may not see a live version with write tools
+            # that no admin approved. The check runs before any write, on the
+            # values under the row lock. A late import keeps the order in
+            # which the routes register.
+            from gateway.routes.apps import publish as _publish
+
+            locked = await _publish.lock_app_row(db, str(row.id))
+            if locked.visibility != "org":
+                await _publish.require_org_review(
+                    db, str(row.id), locked.live_version, "org",
+                )
         if fields:
             sets = ", ".join(f"{k} = :{k}" for k in fields)
             await db.execute(

@@ -1101,7 +1101,7 @@ SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance
 
 **The third exception (EA-6h, EA3-51).** `POST /projects/tasks/{task_id}/agent-delete` was the first destructive pair of `MCP_WRITE_ROUTES`. MCP-G9 adds the second, `DELETE /projects/comments/{activity_id}` (§9.2). That pair is class C and not class X, so `CLASS_C_WRITES` names it (rule 2 below). The manifest row of the agent-delete is class X, because the chat never reaches it. The chat deletes through `delete_task` and its card. `CLASS_X_WRITES` of `test_mcp_edge_coverage.py` names it as a class X pair that rule 2 allows. `GET /auth/me/agent-access` is a named exception, as `GET /auth/me` is. Its `PUT` and the plain `DELETE /projects/tasks/{task_id}` stay out of `MCP_ROUTES`. IMG-3 (`projects_ai_chat.md` §30.4) adds the one class X read, `GET /projects/attachments/{attachment_id}/{filename}`, for `get_attachment`. `CLASS_X_READS` of the fence names it. It is class X because the chat answers with text and never reads raw bytes.
 
-**The second class X write (SW-27b).** `agent_coordination.md` SW-27, task 3893, adds `POST /projects/nodes/{project_id}/sequences/{name}/reserve` for `reserve_number`. The chat has no need to reserve a number, so the pair is class X in both manifests, and `CLASS_X_WRITES` names it. Its `{name}` is not an id, so `MCP_PATH_SHAPES` gives it `SEQUENCE_NAME_PATTERN`.
+**The second class X write (SW-27b).** `agent_coordination.md` SW-27, task 3893, adds `POST /projects/nodes/{project_id}/sequences/{name}/reserve` for `reserve_number`. The chat has no need to reserve a number, so the pair is class X in both manifests, and `CLASS_X_WRITES` names it. Its `{name}` is not an id, so `MCP_PATH_SHAPES` gives it `SEQUENCE_NAME_PATTERN`. SW-27c1 (task 3938) adds the third, `POST /projects/reservations/{reservation_id}/mark`, for `mark_number`. It is dark behind `sequence_marks_orgs`.
 
 **The fourth exception (MCP-G2).** The move and the PUT of the assignees gain `If-Match`, and the create gains `assignees`. Each field needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends none of the three.
 
@@ -1348,6 +1348,8 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 2. The edge unit runs in its own sandbox, with no read access to `.env` beyond its own variables. EA-10 builds the sandbox.
 3. The Caddy block of `api.metorite.com` strips `X-User-Email`, `X-User-Role` and `X-Actor-Via` from public requests. On 2026-10-11 it does not. The change edits `deploy/`, so it is an owner gate, and H-303 carries it.
 4. Before the edge goes live, a check proves that the box holds a value for `GATEWAY_INTERNAL_TOKEN`. The edge no longer holds the bearer, and EA-10 still needs this proof. The gateway itself falls back to the LLM key when that token is unset (`deps.py:104-149`).
+
+**The sandbox sibling of branch 0 (SBX-2, 2026-11-26).** `agent_sandbox.md` §12.2 adds a second identity step to `get_current_user`, for code in the sandbox. Any `X-Sandbox-` header triggers it, and it runs before branch 0. It never falls through to branch 0, 1a, 1b or 2. The member and the organization come from a row of `sandbox_capabilities`. Its allowlist is `SANDBOX_ROUTES`, from the app manifests. Its functions join `_BRANCH_ZERO`, so the scan, the tripwire, the one digest pin and the review rule of this section bind it. `agent_sandbox.md` §12.2 owns it.
 
 ### 10.2 Threat table
 

@@ -57,6 +57,8 @@ WHEN = {
     # CAL-1a: the day planner pack.
     "calendar-day": (
         "Load to rebuild the day, start or close it, block time, set the One Thing, roll over, or change calendar settings and day rules."),
+    # P-1b (task 3922): the task from a mail.
+    "mail-tasks": "Load to make a task from an email, or from a reply that the member sent.",
     # STU-G1: the Studio builder pack. STU-B2c-2b adds the record write tools,
     # so the line says "read and change". STB-6a adds the workflow reads.
     # WS-67 TS-1b: the core builds an app, and studio-more holds the rest.
@@ -76,6 +78,10 @@ WHEN = {
     "studio-share": (
         "Load to share a skill with the organization, end its share, or approve or reject "
         "a skill share."),
+    # PAR-9 (task 3950): the small pack of the Custom Apps, of the studio owner.
+    "studio-apps": (
+        "Load to read, change, publish, share or pin a Custom App of the App Workshop, its "
+        "files or its stored data."),
     # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
     # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
     # Integrations. PAR-4d (task 3936): the seats.
@@ -87,6 +93,13 @@ WHEN = {
     "people": (
         "Load for the people directory, your own row or its changes, your absences, the open "
         "work of a colleague, or the Reach preview."),
+    # P-1c (task 3923): the dark calendar-connections pack of the same owner.
+    "calendar-connections": (
+        "Load to sync a connected Google or Outlook calendar now, or to show or hide "
+        "your tasks in it."),
+    # Task 3963: the notes pack of the same owner.
+    "notes": (
+        "Load for your meetings, a meeting transcript or the Note Taker settings."),
 }
 
 

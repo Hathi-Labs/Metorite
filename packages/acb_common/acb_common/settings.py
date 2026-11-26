@@ -3086,6 +3086,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""
+    # SW-27c1 (agent_coordination.md SW-27, task 3938): the organizations where
+    # an outside agent may mark a number of a project sequence `used` or
+    # `released` (`mark_number`). The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, keeps it dark:
+    # the edge hides the tool, and the mark route answers 404 for a signed
+    # agent. `acb_auth.agent_oauth.sequence_marks_allowed` is the one reader.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    sequence_marks_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as
