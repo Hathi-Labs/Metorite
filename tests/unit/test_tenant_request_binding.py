@@ -1621,6 +1621,11 @@ _TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
          "        self.calls[0] += 1",
          "        return 'x-agent-connection' if self.calls[0] == 1 else 'host'",
          "_h = request.headers.get(_Sly('Host'))"]),
+    # ── SBX-2: a header of the sandbox sibling, read in branch 0 ──
+    "branch 0 reads authorization": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('authorization')"]),
+    "branch 0 tests for x-sandbox-capability": (
+        "_agent_user", _A_AGENT, ["_h = 'x-sandbox-capability' in request.headers"]),
     "3b dict.get on the scope, TypeError caught": (
         "_agent_user", _A_AGENT,
         ["try:", "    _h = dict.get(request.scope, 'server')",

@@ -294,6 +294,26 @@ def test_a_large_answer_without_a_capability_passes_untouched(monkeypatch, armed
     assert len(answer.content) == kit.BIG
 
 
+def test_the_real_gateway_refuses_a_capability_on_its_public_health_route(monkeypatch):
+    """Through ``gateway.main.app`` itself: ``/health`` is on ``PUBLIC_ROUTES``.
+    It answers a plain request, and a request with a capability gets 401
+    while the flag is empty, with no database read and no Redis call."""
+    from acb_common import db, get_settings, tenant_redis
+    from gateway.main import app
+
+    monkeypatch.setattr(get_settings(), "sandbox_door_orgs", "")
+    reads: list[str] = []
+    monkeypatch.setattr(db, "get_session_factory", lambda *a, **k: reads.append("db"))
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda *a, **k: reads.append("redis"))
+    client = TestClient(app)  # no lifespan: the route and the middleware only
+    plain = client.get("/health")
+    refused = client.get("/health", headers=kit.headers())
+    assert plain.status_code == 200, plain.text
+    assert refused.status_code == 401
+    assert refused.json() == {"detail": "Authentication required"}
+    assert reads == []
+
+
 def test_the_record_of_the_sibling_reaches_the_middleware_of_the_gateway():
     """Decision 9: the ContextVar reaches the middleware. The gateway installs
     ``SandboxDoorLimits`` inside ``TenantScopeMiddleware``, as the small

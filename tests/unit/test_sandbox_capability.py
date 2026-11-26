@@ -242,6 +242,33 @@ def test_a_redis_client_that_cannot_be_built_is_503(monkeypatch, armed_tripwire)
 _MINT_CALLERS: frozenset[str] = frozenset()
 
 
+def _calls_mint(tree: ast.AST) -> bool:
+    """True when the module imports ``mint`` or reaches ``.mint`` on the store,
+    under any alias: ``from acb_auth import sandbox_capabilities as sc``,
+    ``import acb_auth.sandbox_capabilities as sc`` or the dotted path."""
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").endswith("sandbox_capabilities") and any(
+                    a.name in ("mint", "*") for a in node.names):
+                return True
+            for a in node.names:
+                if a.name == "sandbox_capabilities":
+                    aliases.add(a.asname or a.name)
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.endswith("sandbox_capabilities") and a.asname:
+                    aliases.add(a.asname)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "mint":
+            target = node.value
+            if isinstance(target, ast.Name) and target.id in aliases:
+                return True
+            if isinstance(target, ast.Attribute) and target.attr == "sandbox_capabilities":
+                return True
+    return False
+
+
 def _mint_callers(root: Path = _ROOT) -> set[str]:
     found: set[str] = set()
     store = (root / "packages/acb_auth/acb_auth/sandbox_capabilities.py").resolve()
@@ -256,14 +283,8 @@ def _mint_callers(root: Path = _ROOT) -> set[str]:
             text = path.read_text(encoding="utf-8", errors="replace")
             if "mint" not in text or "sandbox_capabilities" not in text:
                 continue
-            tree = ast.parse(text)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
-                        "sandbox_capabilities") and any(a.name == "mint" for a in node.names):
-                    found.add(path.relative_to(root).as_posix())
-                if isinstance(node, ast.Attribute) and node.attr == "mint" and isinstance(
-                        node.value, ast.Name) and node.value.id == "sandbox_capabilities":
-                    found.add(path.relative_to(root).as_posix())
+            if _calls_mint(ast.parse(text)):
+                found.add(path.relative_to(root).as_posix())
     return found
 
 
@@ -281,7 +302,19 @@ def test_the_mint_scan_turns_red(tmp_path):
         encoding="utf-8")
     (fake / "caller2.py").write_text(
         "from acb_auth.sandbox_capabilities import mint\n", encoding="utf-8")
-    assert _mint_callers(tmp_path) == {"apps/x/caller.py", "apps/x/caller2.py"}
+    (fake / "caller3.py").write_text(
+        "import acb_auth.sandbox_capabilities as sc\nsc.mint\n", encoding="utf-8")
+    (fake / "caller4.py").write_text(
+        "from acb_auth import sandbox_capabilities as sc\nsc.mint\n", encoding="utf-8")
+    (fake / "caller5.py").write_text(
+        "import acb_auth.sandbox_capabilities\nacb_auth.sandbox_capabilities.mint\n",
+        encoding="utf-8")
+    (fake / "caller6.py").write_text(
+        "from acb_auth.sandbox_capabilities import mint as m\n", encoding="utf-8")
+    (fake / "reader.py").write_text(
+        "from acb_auth import sandbox_capabilities as sc\nsc.lookup\n", encoding="utf-8")
+    assert _mint_callers(tmp_path) == {
+        f"apps/x/caller{n}.py" for n in ("", "2", "3", "4", "5", "6")}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
