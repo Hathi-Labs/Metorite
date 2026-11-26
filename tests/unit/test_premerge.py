@@ -11,6 +11,7 @@ repo with a bare `origin`, so they need git and bash, and no network.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -233,16 +234,53 @@ def test_a_cr_in_the_picker_output_never_reaches_pytest(repo):
     assert "\r" not in args and "tests/a.py|" in args and "tests/b.py|" in args
 
 
-def test_a_picker_that_does_not_finish_is_unproven_not_a_hang(repo):
-    """CIV-MT-3: on the merger PC the default ran past 1000 s. The picker has its own cap."""
+def _bash_stub(repo: Path, name: str, body: str) -> str:
+    """A PREMERGE_PY that is a bash script: it runs in place of python, with the picker's args."""
+    path = repo.parent / name
+    path.write_text(body, encoding="utf-8")
+    return f"bash {path.as_posix()}"
+
+
+def test_a_picker_that_hits_its_cap_fails(repo):
+    """Verifier of PR 2407 at 4cdde6256d, 3a: main has no picker cap and blocked a red-together
+    test. A picker with no verdict is a FAIL, never a pass. The cap is 20 s, so the real
+    `timeout` in sel() must end the 60 s stub (task 4052)."""
     _stub_picker(repo, "import time\ntime.sleep(60)\n")
     _advance_main(repo, "other.py")
     fake = _fake_pytest(repo)
-    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="20",
                PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
-    assert res.returncode == 0, res.stderr
-    assert "UNPROVEN. The picker had no verdict within 1s" in res.stdout
+    assert res.returncode == 1, res.stdout
+    assert "the picker hit its cap of 20 s with no verdict" in res.stderr
+    assert "stage picker:" in res.stdout
     assert not (repo.parent / "pytest-args").exists(), "no test may run after a picker timeout"
+
+
+def test_no_time_for_the_picker_fails_and_names_the_seconds(repo):
+    """Verifier of PR 2407 at 4cdde6256d, 3b: with too little budget left, the picker did not
+    start, no test ran, and the run passed with "no verdict within -23s". Now it FAILs and
+    names the seconds that are left, never a negative number."""
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    fake = _fake_pytest(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="50",
+               PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 1, res.stdout
+    assert re.search(r"no time is left for the picker \(\d+ s of the budget", res.stderr), res.stderr
+    assert "-" not in re.search(r"picker \(([^)]*)\)", res.stderr).group(1)
+    assert "stage picker:" in res.stdout
+    assert not (repo.parent / "pytest-args").exists()
+
+
+def test_a_picker_killed_before_its_cap_fails(repo):
+    """Verifier of PR 2407 at 4cdde6256d, 3c: exit 137 for another reason (the system ran out
+    of memory) read as a timeout and passed. Main's `sel || fail` FAILs, so this does too."""
+    _stub_picker(repo, _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    py = _bash_stub(repo, "killed.sh", "kill -9 $$\n")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY=py, PREMERGE_PYTEST_CMD="false")
+    assert res.returncode == 1, res.stdout
+    assert "the picker was killed after" in res.stderr and "before its cap" in res.stderr
 
 
 def test_a_short_budget_still_runs_the_picked_tests(repo):
@@ -269,30 +307,57 @@ def test_a_short_budget_still_runs_the_affected_tests(repo):
     assert "tests/t.py::test_a" in res.stderr
 
 
-def test_a_picker_that_needs_the_kill_is_unproven_too(repo):
-    """timeout -k ends with 137 when the child ignores TERM. That is a timeout, not a failure."""
-    _stub_picker(repo, "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n")
+def test_a_picker_that_ignores_the_stop_is_killed_and_fails(repo):
+    """timeout -k ends with 137 when the child ignores TERM. The picker gave no verdict: FAIL."""
+    _stub_picker(repo, _PICKER_CRLF)
     _advance_main(repo, "other.py")
-    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_PICKER_TIMEOUT="1",
+    py = _bash_stub(repo, "deaf.sh", "trap '' TERM\nsleep 60\n")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY=py, PREMERGE_PICKER_TIMEOUT="20",
                PREMERGE_PYTEST_CMD="false")
-    assert res.returncode == 0, res.stderr
-    assert "UNPROVEN. The picker had no verdict" in res.stdout
+    assert res.returncode == 1, res.stdout
+    assert "the picker did not stop at its cap of 20 s, so it was killed (exit 137)" in res.stderr
 
 
-def test_a_short_budget_skips_the_type_check_and_still_runs_the_tests(repo):
-    """Finding 1 and 2 of the review of PR 2407: the picker and the baseline run took their full cap.
-    At 150 s the type check cannot keep PREMERGE_RESERVE, so it does not start. The picker and
-    the tests still run (the tests get at least 60 s)."""
+def test_no_time_for_the_type_check_fails(repo):
+    """Main runs tsc with no budget, so a type check that the budget cannot start is a FAIL.
+    At 150 s the type check cannot keep PREMERGE_RESERVE (200 s)."""
     _frontend_pair(repo)
     _stub_picker(repo, _PICKER_CRLF)
     marker = repo.parent / "tsc-ran"
     fake = _fake_pytest(repo)
     res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="150",
                PREMERGE_TSC_CMD=f"touch {marker.as_posix()}", PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
-    assert res.returncode == 0, res.stderr
+    assert res.returncode == 1, res.stdout
     assert not marker.exists()
-    assert "UNPROVEN. The type check did not run" in res.stdout
-    assert (repo.parent / "pytest-args").exists()
+    assert "no time is left for the type check" in res.stderr
+    assert "stage type check:" in res.stdout
+    assert not (repo.parent / "pytest-args").exists()
+
+
+@pytest.mark.timeout(300)
+def test_a_type_check_that_the_budget_cut_fails(repo):
+    """Main gives tsc its full 240 s. A run that hits a cap the budget cut below that could
+    have blocked on main, so it FAILs. Budget 270 and reserve 200 give the merged run about 68 s."""
+    _frontend_pair(repo)
+    res = _run(repo, PREMERGE_TOTAL_BUDGET="270", PREMERGE_RESERVE="200", PREMERGE_TSC_CMD="sleep 120")
+    assert res.returncode == 1, res.stdout
+    assert "the type check of the merge result had only" in res.stderr
+    assert "stage type check:" in res.stdout
+
+
+@pytest.mark.timeout(300)
+def test_tests_that_the_budget_cut_fail(repo):
+    """Main sets the test cap before the picker runs. Here the picker takes 5 s of the budget,
+    so the cap is below main's, and a timeout under it could hide a red that main finds: FAIL.
+    A timeout at main's own cap stays UNPROVEN (test_a_timeout_is_unproven_and_not_a_red)."""
+    _stub_picker(repo, "import time\ntime.sleep(5)\n" + _PICKER_CRLF)
+    _advance_main(repo, "other.py")
+    slow = _bash_stub(repo, "slow_pytest.sh", "sleep 200\n")
+    res = _run(repo, PREMERGE_AFFECTED_CMD="", PREMERGE_PY="python3", PREMERGE_TOTAL_BUDGET="90",
+               PREMERGE_RERUN_TIMEOUT="1", PREMERGE_PYTEST_CMD=slow)
+    assert res.returncode == 1, res.stdout
+    assert "the affected tests hit a cap of" in res.stderr and "that the budget cut" in res.stderr
+    assert "stage tests:" in res.stdout
 
 
 def test_each_stage_says_how_long_it_took(repo):
