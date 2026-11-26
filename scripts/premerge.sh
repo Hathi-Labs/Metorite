@@ -57,8 +57,8 @@ started=$SECONDS
 # One budget for the whole run (CIV-MT-3, 2026-11-15: on the merger PC the default ran past
 # 1000 s, above the 900 s of merge_bot). Each stage gets what is left, never more than its own
 # cap, and says how long it took. A stage that has no time left says UNPROVEN and is skipped.
-# The tests are the exception: they always get at least 60 s, as on main. The callers allow
-# 900 s, so the 140 s above the budget hold that floor.
+# The tests are the exception: when a list was picked (or PREMERGE_AFFECTED_CMD is set), they
+# get at least 60 s, as on main. The callers allow 900 s, so the 140 s above the budget hold it.
 BUDGET="${PREMERGE_TOTAL_BUDGET:-760}"
 remaining() { echo $(( BUDGET - (SECONDS - started) )); }
 stage_t=$SECONDS
