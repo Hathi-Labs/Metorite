@@ -15,7 +15,7 @@ the ``metorite`` line. The state is one of:
   line. Logged only. It neither notifies nor resets, so a flaky check never
   pages the owner.
 - ``stale``: the OAuth access token of ``metorite`` expired more than
-  :data:`STALE_S` ago, and no lane refreshed it. DOWN.
+  :data:`STALE_S` ago while lanes are active, so their refreshes fail. DOWN.
 
 **The token gate (review finding P1, 2026-11-26).** ``claude mcp list``
 connects to ``metorite``. With an expired access token it spends the
@@ -27,7 +27,8 @@ the check it reads ``expiresAt`` of the ``metorite`` entry in
 
 - no OAuth entry with a refresh token (a box token, or no sign-in): check;
 - the access token has :data:`MIN_LEFT_S` or more left: check;
-- expired more than :data:`STALE_S` ago: ``stale``, with no check;
+- expired more than :data:`STALE_S` ago, with a lane transcript changed in
+  the last :data:`ACTIVE_S`: ``stale``, with no check;
 - else: skip, read as ``error``.
 
 On the first DOWN after ``ok`` or unknown, it writes one NOTE line to the
@@ -68,7 +69,11 @@ CREDS_PATH = pathlib.Path(os.environ.get(
     "METORITE_ALARM_CREDS", str(HOME / ".claude/.credentials.json")))
 LIST_TIMEOUT_S = 90
 MIN_LEFT_S = 600
-STALE_S = 2 * 3600
+STALE_S = 30 * 60
+ACTIVE_S = 15 * 60
+METORITE_URL = os.environ.get("METORITE_ALARM_URL", "https://mcp.metorite.com/mcp")
+PROJECTS_DIR = pathlib.Path(os.environ.get(
+    "METORITE_ALARM_PROJECTS", str(HOME / ".claude/projects")))
 GH_REPO = os.environ.get("METORITE_ALARM_GH_REPO", "Hathi-Labs/Metorite")
 DOWN = ("auth", "missing", "stale")
 
@@ -97,8 +102,34 @@ def classify(text: str, returncode: int = 0) -> str:
     return "error" if returncode != 0 else "missing"
 
 
+def lanes_active(now_s: float) -> bool:
+    """True when a Claude session transcript changed in :data:`ACTIVE_S`.
+
+    The alarm itself writes no transcript (``claude mcp list`` starts no
+    session). Lanes call ``metorite`` at least once a minute while they work.
+    """
+    try:
+        for f in PROJECTS_DIR.glob("*/*.jsonl"):
+            try:
+                if now_s - f.stat().st_mtime < ACTIVE_S:
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
 def token_gate(now_s: float | None = None) -> str:
-    """``check``, ``skip`` or ``stale``. Reads ``expiresAt`` only, never a token."""
+    """``check``, ``skip`` or ``stale``. Reads ``expiresAt`` only, never a token.
+
+    Every ``metorite`` entry of :data:`METORITE_URL` counts (round-2 review
+    P2: Claude Code keys entries by a hash of the config, so two can exist).
+    The check runs only when EACH entry that holds a refresh token has
+    :data:`MIN_LEFT_S` or more left. ``stale`` needs every such entry expired
+    more than :data:`STALE_S` ago AND active lanes (round-2 review P1: an
+    expired token on an idle box only means that nobody called).
+    """
     now_s = now_utc().timestamp() if now_s is None else now_s
     try:
         d = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
@@ -107,22 +138,29 @@ def token_gate(now_s: float | None = None) -> str:
     entries = d.get("mcpOAuth") if isinstance(d, dict) else None
     if not isinstance(entries, dict):
         return "check"
+    lefts: list[float | None] = []
     for v in entries.values():
         if not isinstance(v, dict) or v.get("serverName") != "metorite":
             continue
+        if (v.get("serverUrl") or "").rstrip("/") != METORITE_URL:
+            continue
         if not v.get("refreshToken"):
-            return "check"
+            continue
         exp = v.get("expiresAt")
         if not isinstance(exp, (int, float)):
-            return "skip"
+            lefts.append(None)
+            continue
         exp_s = exp / 1000 if exp > 1e12 else exp
-        left = exp_s - now_s
-        if left >= MIN_LEFT_S:
-            return "check"
-        if left < -STALE_S:
-            return "stale"
+        lefts.append(exp_s - now_s)
+    if not lefts:
+        return "check"  # no refresh token to spend: a box token, or no sign-in
+    if None in lefts:
         return "skip"
-    return "check"
+    if all(left >= MIN_LEFT_S for left in lefts):
+        return "check"
+    if all(left < -STALE_S for left in lefts) and lanes_active(now_s):
+        return "stale"
+    return "skip"
 
 
 def run_list(cwd: pathlib.Path) -> tuple[str, int] | None:

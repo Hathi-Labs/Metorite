@@ -507,8 +507,11 @@ alarm can make a lane present a spent refresh token, and then the server
 signs out every lane. So the alarm reads `expiresAt` of the `metorite`
 entry in `~/.claude/.credentials.json` first. It runs the check only when
 the access token has 10 minutes or more left, or when no OAuth entry
-exists (a box token). When the token expired more than 2 hours ago and no
-lane refreshed it, the alarm reports `stale` with no check.
+exists (a box token). Lanes call `metorite` each minute. So when a lane
+transcript changed in the last 15 minutes and the token expired more than
+30 minutes ago, the refreshes fail. The alarm then reports `stale` with no
+check. On an idle box, an old token only means that nobody called, and the
+alarm reports nothing.
 
 - Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
   enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
