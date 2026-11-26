@@ -19,12 +19,12 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
 import skill_projects
 from skill_projects import manifest as m
-from skill_projects import writes as W
 
 from tests.unit._projects_agent_fakes import approve, deny, fake_gateway, writes
 
@@ -123,7 +123,7 @@ async def test_add_refuses_a_non_http_link_before_any_call(url: str, monkeypatch
 async def test_a_declined_add_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.add_task_ref(TASK_ID, PR_URL) == W.CANCELLED
+    assert await skill_projects.add_task_ref(TASK_ID, PR_URL) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 
@@ -170,7 +170,7 @@ async def test_remove_with_two_matches_asks_for_the_ref_id(monkeypatch) -> None:
 async def test_a_declined_remove_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway())
-    assert await skill_projects.remove_task_ref(TASK_ID, PR_URL) == W.CANCELLED
+    assert await skill_projects.remove_task_ref(TASK_ID, PR_URL) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

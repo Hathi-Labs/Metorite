@@ -7,8 +7,10 @@ The sync engine calls these methods without knowing the provider details.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Generator
@@ -31,6 +33,96 @@ class ProviderRateLimited(Exception):
     then backs off (WS-17 EM-G4a item 9, EM-G4b-f3). The scheduler reads it
     where it degrades other failures, so a rate limit is never degraded
     (EM-G4b review round 1, F2)."""
+
+
+class ProviderDidNotAnswer(Exception):
+    """A provider did not answer a request that writes (HRD-20, task 3224).
+
+    A 502, 503 or 504, or a read timeout, on a send, a reply or a draft write.
+    The write may have landed, so no code tries it again. It holds the name of
+    the provider and the kind of write, and nothing else. It never takes a
+    URL, a request or a response, and it never subclasses
+    ``httpx.HTTPStatusError``, whose text holds the URL. The gateway answers
+    503 with :attr:`detail` (``main._provider_did_not_answer``).
+
+    ``kind`` is ``"send"`` or ``"draft"``. The text never says that nothing
+    was written, because the provider may have done the write before the
+    failure."""
+
+    def __init__(self, provider: str, kind: str) -> None:
+        self.provider = provider
+        self.kind = kind
+        if kind == "draft":
+            tail = "It may not have saved the draft. Check Drafts before you try again."
+        else:
+            tail = "It may not have sent the mail. Check Sent before you try again."
+        self.detail = f"{provider} did not answer. {tail}"
+        super().__init__(self.detail)
+
+
+#: A gateway fault of a mail API. A read that gets one is tried again. A write
+#: that gets one is not, because the write may have landed (HRD-20).
+GATEWAY_FAULTS = frozenset({502, 503, 504})
+#: The waits before the tries again of a read, and the cap of ``Retry-After``.
+READ_FAULT_WAITS = (0.5, 1.5)
+READ_RETRY_MAX_WAIT_SECS = 5.0
+
+
+def guard_client(
+    client: httpx.AsyncClient, provider: str,
+    write_kind: Callable[[httpx.Request], str | None],
+    *, retry_reads: Callable[[], bool] | bool = True,
+) -> httpx.AsyncClient:
+    """Give *client* the two rules of HRD-20 (task 3224), and return it.
+
+    * A GET that gets 502, 503 or 504 is tried again, twice at most. The wait
+      is ``Retry-After`` up to :data:`READ_RETRY_MAX_WAIT_SECS`, else a short
+      back-off. ``retry_reads`` is a flag, or a function that gives it at each
+      request. Outlook gives ``provider.read_retry_429``, which is OFF unless
+      the caller holds no database session (H-352). Gmail gives False, because
+      ``test_gmail_rate_limits.py`` fences "a 5xx is not retried" (§12.3.5.1).
+    * A request for which *write_kind* gives ``"send"`` or ``"draft"`` is
+      never tried again. A 502, 503 or 504, or a read timeout, raises
+      :class:`ProviderDidNotAnswer`, because the write may have landed.
+
+    It wraps ``client.send`` on the instance, and not a subclass, so a test
+    that replaces ``httpx.AsyncClient`` still reaches the guard.
+    Fence: ``tests/unit/test_outlook_gateway_faults.py`` and
+    ``tests/unit/test_gmail_gateway_faults.py``."""
+    inner = client.send
+
+    async def send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.method == "GET" and (
+                retry_reads() if callable(retry_reads) else retry_reads):
+            waits = list(READ_FAULT_WAITS)
+            while True:
+                resp = await inner(request, **kwargs)
+                if resp.status_code not in GATEWAY_FAULTS or not waits:
+                    return resp
+                wait = waits.pop(0)
+                if "Retry-After" in resp.headers:
+                    with contextlib.suppress(ValueError):
+                        asked = float(resp.headers["Retry-After"])
+                        # nan and inf are no wait that a caller can use.
+                        if math.isfinite(asked):
+                            wait = asked
+                    wait = min(max(wait, 0.0), READ_RETRY_MAX_WAIT_SECS)
+                await resp.aclose()
+                await asyncio.sleep(wait)
+        kind = write_kind(request) if request.method != "GET" else None
+        if kind is None:
+            return await inner(request, **kwargs)
+        try:
+            resp = await inner(request, **kwargs)
+        except httpx.ReadTimeout:
+            raise ProviderDidNotAnswer(provider, kind) from None
+        if resp.status_code in GATEWAY_FAULTS:
+            await resp.aclose()
+            raise ProviderDidNotAnswer(provider, kind)
+        return resp
+
+    client.send = send  # type: ignore[method-assign]
+    return client
 
 
 class FolderCheckIncomplete(ValueError):

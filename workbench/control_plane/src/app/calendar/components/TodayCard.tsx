@@ -15,9 +15,11 @@ import Link from "next/link";
 import { useMemo } from "react";
 
 import { projectsKey } from "@/app/projects/lib/api";
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { lensFetchScheduled } from "@/app/tasks/lib/lens";
 import type { MyTask } from "@/app/tasks/lib/types";
 import { fmtClock } from "@/app/tasks/lib/utils";
+import Button from "@/components/ui/Button";
 import { SkeletonRows } from "@/components/ui/Skeleton";
 import { CardError, HomeCard } from "@/lib/shell/HomeCard";
 import { blockState, todayWindow } from "@/lib/shell/myDay";
@@ -56,6 +58,7 @@ export default function TodayCard({
   className?: string;
 }) {
   const plan = { href: "/calendar", label: "Plan my day" };
+  const start = useStartFocus();
   const nowMs = now?.getTime() ?? 0;
   let body: React.ReactNode;
   if (today.data === undefined) {
@@ -77,19 +80,30 @@ export default function TodayCard({
           // A block already over draws muted, so the eye goes to what is left.
           const over = now !== null && blockState(task.scheduledStart, task.scheduledEnd, nowMs) === "past";
           return (
-            <li key={task.id}>
+            <li key={task.id} className="flex items-center gap-1">
               {/* The time sits over the title, not beside it. Today is a
                   narrow rail from `xl`, and a column of times there left the
                   titles three words long. */}
               <Link
                 href="/calendar"
-                className="flex min-h-11 flex-col justify-center rounded-lg px-2 py-1.5 hover:bg-secondary/60 tech-transition"
+                className="flex min-h-11 min-w-0 flex-1 flex-col justify-center rounded-lg px-2 py-1.5 hover:bg-secondary/60 tech-transition"
               >
                 <span className="text-xs tabular-nums text-muted-foreground">{timeRange(task)}</span>
                 <span className={`truncate text-sm ${over ? "text-muted-foreground" : "text-foreground"}`}>
                   {task.title}
                 </span>
               </Link>
+              {task.disposition === "DONE" ? null : (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  icon="Play"
+                  aria-label={`Start focus: ${task.title}`}
+                  title="Start focus"
+                  data-testid="today-start-focus"
+                  onClick={() => void start(task.id, { minimized: true })}
+                />
+              )}
             </li>
           );
         })}

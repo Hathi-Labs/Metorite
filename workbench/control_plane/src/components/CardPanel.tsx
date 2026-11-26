@@ -28,6 +28,11 @@
  * the page instead (`useCardStop`). The toggle hides, because it has nowhere
  * to go, and the member's choice stays stored for a wider page.
  *
+ * **The motion is the host's.** The host wraps its mount in `SidePanelMotion`
+ * (task 7). At the side stop this host carries `SIDE_DOCKED_ATTR`, and the
+ * card opens and closes with the one motion of a docked panel. Over the page
+ * and on a phone the card shows and goes at once.
+ *
  * This frame is not a `Modal`, because the AI pill must stay in reach (D172.4).
  * So it gives back by hand what the old drawer took from `Modal`: over the page
  * the page goes `inert`, and a close gives the focus to the last control the
@@ -38,6 +43,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect
 
 import { focusLandmark, LANDMARK } from "@/components/ui/Modal";
 import { TASK_CARD_FRAME } from "@/lib/layers";
+import { SIDE_DOCKED_ATTR } from "@/lib/panelMotion";
 import {
   DEFAULT_PANEL_MODE,
   PANEL_WIDTH_CLASS,
@@ -54,10 +60,21 @@ export type CardStop = PanelMode | "phone";
 /** The page root that holds the card. A key from inside it reaches the card. */
 export const CARD_PAGE_ATTR = "data-card-page";
 
+/**
+ * The page column beside the card, for a host whose column is not `<main>`.
+ * A page inside the shell's own `<main>` uses it, so the page keeps ONE main
+ * landmark (My Day, PK-1). Without it, the card measures the first `<main>`.
+ */
+export const CARD_PAGE_COLUMN_ATTR = "data-card-page-column";
+
 /** The width of a docked card: `TASK_PANEL_WIDTH`, `max-w-sm`. */
 const SIDE_CARD_REM = 24;
 
-/** The narrowest page beside a docked card: one list column and its tools. */
+/**
+ * The narrowest page beside a docked card: one list column and its tools.
+ * A host whose page needs more room passes its own (`useCardStop`). My Day's
+ * rows keep their acts at the end, so it passes 36 (PK-1, D213).
+ */
 export const PAGE_MIN_REM = 20;
 
 /**
@@ -67,9 +84,9 @@ export const PAGE_MIN_REM = 20;
  * views). Neither one depends on the stop, so the answer cannot flip the stop
  * and flip back. An unmeasured row (0 before the first layout) says yes.
  */
-export function sideCardFits(rowWidth: number, railWidth: number, rem: number): boolean {
+export function sideCardFits(rowWidth: number, railWidth: number, rem: number, pageMinRem = PAGE_MIN_REM): boolean {
   if (!(rowWidth > 0)) return true;
-  return rowWidth - railWidth - SIDE_CARD_REM * rem >= PAGE_MIN_REM * rem;
+  return rowWidth - railWidth - SIDE_CARD_REM * rem >= pageMinRem * rem;
 }
 
 /** The classes of the three parts at one stop. Pure, so a test reads them. */
@@ -179,10 +196,11 @@ export function usePanelMode(): [PanelMode, (next: PanelMode) => void] {
 }
 
 /** Watch the row that holds the card. True while it holds a docked card too. */
-function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
+function useSideCardFits(asideRef: RefObject<HTMLElement | null>, pageMinRem: number): boolean {
   const [fits, setFits] = useState(true);
   useLayoutEffect(() => {
-    const main = asideRef.current?.closest(`[${CARD_PAGE_ATTR}]`)?.querySelector("main");
+    const page = asideRef.current?.closest(`[${CARD_PAGE_ATTR}]`);
+    const main = page?.querySelector(`[${CARD_PAGE_COLUMN_ATTR}]`) ?? page?.querySelector("main");
     const row = main?.parentElement;
     if (!main || !row || typeof ResizeObserver === "undefined") return;
     const measure = () => {
@@ -193,7 +211,7 @@ function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
           child === main || child.contains(asideRef.current) ? sum : sum + child.getBoundingClientRect().width,
         0,
       );
-      setFits(sideCardFits(row.clientWidth, railWidth, rem));
+      setFits(sideCardFits(row.clientWidth, railWidth, rem, pageMinRem));
     };
     measure();
     const watcher = new ResizeObserver(measure);
@@ -201,22 +219,23 @@ function useSideCardFits(asideRef: RefObject<HTMLElement | null>): boolean {
     // A rail that folds moves `<main>` and leaves the row the same width.
     watcher.observe(main);
     return () => watcher.disconnect();
-  }, [asideRef]);
+  }, [asideRef, pageMinRem]);
   return fits;
 }
 
 /**
  * The stop to draw, and the toggle for the shared header. A phone and a page
- * too narrow for a docked card have no toggle.
+ * too narrow for a docked card have no toggle. `pageMinRem` is the narrowest
+ * page the host keeps beside a docked card ({@link PAGE_MIN_REM} by default).
  */
-export function useCardStop(phone: boolean): {
+export function useCardStop(phone: boolean, pageMinRem = PAGE_MIN_REM): {
   stop: CardStop;
   expand: { expanded: boolean; onToggle: () => void } | undefined;
   asideRef: RefObject<HTMLElement | null>;
 } {
   const [mode, setMode] = usePanelMode();
   const asideRef = useRef<HTMLElement>(null);
-  const fits = useSideCardFits(asideRef);
+  const fits = useSideCardFits(asideRef, pageMinRem);
   if (phone) return { stop: "phone", expand: undefined, asideRef };
   if (!fits) return { stop: "full", expand: undefined, asideRef };
   return {
@@ -318,7 +337,9 @@ export default function CardPanel({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const aside = asideRef.current;
-      if (!aside) return;
+      // A card on its way out is inert (`SidePanelMotion`). Its close ran
+      // once, and a second Escape must not walk the history again.
+      if (!aside || aside.closest("[inert]")) return;
       const target = event.target as (HTMLElement & KeyTarget) | null;
       const page = aside.closest(`[${CARD_PAGE_ATTR}]`);
       const inReach =
@@ -344,6 +365,9 @@ export default function CardPanel({
     <div
       ref={hostRef}
       className={classes.host}
+      // At the side stop the card is a column of the page row, so the frame
+      // of `SidePanelMotion` round it opens and closes with the one motion.
+      {...(stop === "side" ? { [SIDE_DOCKED_ATTR]: "" } : {})}
       role="presentation"
       onMouseDown={
         stop === "full"

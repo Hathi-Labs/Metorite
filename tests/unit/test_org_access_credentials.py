@@ -248,23 +248,38 @@ def test_each_run_path_hands_the_session_member_to_the_check() -> None:
     ``session_user``. A call without it reads the body alone, and the stream
     route has removed the body's claim (H-337). The route's own half, that it
     passes ``session_user=_session_member(user)``, is fenced in
-    ``tests/unit/test_usage_attribution.py``."""
+    ``tests/unit/test_usage_attribution.py``.
+
+    MCP-C3: the streaming sub-run has no session of its own. It passes
+    ``session_user=None`` by name, and the check reads its parent's member
+    from the run binding (``tests/unit/test_delegated_integration_filter.py``).
+    """
     import ast
     from pathlib import Path
 
     import orchestrator.executor as executor
 
     tree = ast.parse(Path(executor.__file__).read_text(encoding="utf-8"))
+    sub_run = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_run_sub_agent_streaming"
+    )
+    in_sub_run = {id(node) for node in ast.walk(sub_run)}
     calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_integration_authorizer"
     ]
-    assert len(calls) >= 2, "the two run paths no longer call the check"
+    assert len(calls) >= 3, "the two run paths and the sub-run no longer call the check"
     for call in calls:
         passed = {kw.arg: kw.value for kw in call.keywords}
         value = passed.get("session_user")
+        if id(call) in in_sub_run:
+            assert isinstance(value, ast.Constant) and value.value is None, (
+                f"line {call.lineno}: the sub-run names a member of its own")
+            continue
         assert isinstance(value, ast.Name) and value.id == "session_user", (
             f"line {call.lineno}: the check gets no session member")
 

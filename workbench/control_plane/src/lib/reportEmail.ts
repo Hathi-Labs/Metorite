@@ -512,15 +512,30 @@ export function reportLayout(
       },
       // One bar a week, scaled to the busiest week, with no "of": a week's
       // count is not a share of anything.
+      //
+      // ⚠️ The running week is the LAST bar (the route's `weekly_sql` always
+      // ends on it). It is part-way through, so on a Monday it reads 0. The
+      // in-app panel dims it, and the text says "so far" in its place. The
+      // list keeps the NEWEST weeks when `maxRows` cuts it, so the running
+      // week is never the one that goes.
       items: (() => {
-        const weeks = thr.series ?? [];
+        const all = thr.series ?? [];
+        const weeks = maxRows >= all.length ? all : all.slice(all.length - Math.max(0, maxRows));
         const peak = Math.max(0, ...weeks.map((w) => w.completed));
         return weeks.map(
-          (w) =>
-            `Week of ${day(w.week_start)}: ${textBar(w.completed, peak)} ${w.completed}`,
+          (w, i) =>
+            `Week of ${day(w.week_start)}: ${textBar(w.completed, peak)} ${w.completed}` +
+            (i === weeks.length - 1 ? " so far" : ""),
         );
       })(),
-      notes: clearNote("throughput", thr),
+      notes: [
+        ...moreNote(
+          (thr.series ?? []).length,
+          Math.min((thr.series ?? []).length, maxRows),
+          "earlier weeks",
+        ),
+        ...clearNote("throughput", thr),
+      ],
     });
   }
 

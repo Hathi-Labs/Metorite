@@ -198,6 +198,28 @@ async def test_the_card_event_carries_the_registry_id(monkeypatch: pytest.Monkey
     queue: asyncio.Queue = asyncio.Queue()
     monkeypatch.setattr(executor, "resolve_run_queue", lambda _sid: queue)
 
+    # No real socket. A refused connect to 127.0.0.1:9 is instant on Linux and
+    # takes over 2 s on Windows, which broke the 2 s wait below on the PC.
+    import httpx
+
+    class _NoNetwork:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        async def __aenter__(self) -> "_NoNetwork":
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            return None
+
+        async def patch(self, *_a, **_k) -> None:
+            return None
+
+        async def post(self, *_a, **_k) -> None:
+            return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", _NoNetwork)
+
     async def _run(flag: bool, meta):
         monkeypatch.setattr(get_settings(), "artifact_registry_enabled", flag)
         fut = asyncio.get_running_loop().create_future()

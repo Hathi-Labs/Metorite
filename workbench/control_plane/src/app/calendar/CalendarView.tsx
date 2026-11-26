@@ -11,6 +11,7 @@
 // calendar_ai_review.md.
 
 import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -49,6 +50,7 @@ import {
   HOUR_PX,
   addMonths,
   plannerCandidates,
+  startOfMonthGrid,
   startOfWeek,
   useNow,
   type Mode,
@@ -60,8 +62,11 @@ import { EndOfDayReview } from "./components/EndOfDayReview";
 import { ScheduleSheet } from "./components/ScheduleSheet";
 import { PlanDayPanel } from "./components/PlanDayPanel";
 import { CalendarSettings } from "./components/CalendarSettings";
+import { CalendarConnectPrompt, CalendarConnectReturn } from "./components/CalendarConnections";
+import type { ReturnNotice } from "./lib/calendarConnections";
 import { TimeGrid } from "./components/TimeGrid";
-import { MonthGrid } from "./components/MonthGrid";
+import { MonthGrid } from "@/components/calendar/MonthGrid";
+import { monthEventsForDay, openMonthEvent } from "./lib/gridAdapter";
 import { UnscheduledRail } from "./components/UnscheduledRail";
 import { CalendarDeepLink } from "./components/CalendarDeepLink";
 import { scrollTopFor, type CalendarLink, type ClockTime } from "./lib/calendarLink";
@@ -81,6 +86,9 @@ import {
   type MoveBack,
   type ZonedTime,
 } from "./lib/reminders";
+import { calendarEventsOn } from "@/lib/shell/calendarEventsFlag";
+import { ExternalSheet } from "./components/ExternalSheet";
+import { useExternalEntries, visibleWindow } from "./lib/useExternalEntries";
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
@@ -113,6 +121,10 @@ export function CalendarView() {
   const [mode, setMode] = useState<Mode>("day");
   const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // CE-10c: what the calendar consent redirect said, shown in the settings sheet.
+  const [connectNotice, setConnectNotice] = useState<ReturnNotice | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const openConnectSettings = useCallback(() => setSettingsOpen(true), []);
   // The AI planner panel: "plan" fills free slots from unscheduled next actions;
   // "replan" reorganizes the rest of today's flexible blocks from now. null = shut.
   const [planMode, setPlanMode] = useState<null | "plan" | "replan">(null);
@@ -132,6 +144,16 @@ export function CalendarView() {
   // The grid draws on the browser's wall clock, so every reminder computation
   // uses the browser's zone. `settings.timezone` is "UTC" until settings load.
   const remZone = gridZone(browserTimeZone());
+  // Google and Outlook events (CE-5a). Flag off: no read, an empty list.
+  const [externalId, setExternalId] = useState<string | null>(null);
+  const { views: externals, note: externalNote } = useExternalEntries(
+    mode === "month"
+      ? visibleWindow(startOfMonthGrid(anchor), addDays(startOfMonthGrid(anchor), 42))
+      : mode === "week"
+        ? visibleWindow(startOfWeek(anchor), addDays(startOfWeek(anchor), 7))
+        : visibleWindow(anchor, addDays(anchor, 1)),
+  );
+  const externalOpen = externalId ? externals.find((x) => x.id === externalId) : undefined;
   const [remForm, setRemForm] = useState<{ mode: "new"; title?: string } | { mode: "move"; id: string } | null>(null);
   // `/calendar?reminder=<id>` (RX-2): the Reminders panel marks this row.
   const [markReminder, setMarkReminder] = useState<string | null>(null);
@@ -236,7 +258,8 @@ export function CalendarView() {
   const now = useNow();
   // Focus Mode — the store-held session (F1): the room + its minimizable dock
   // live globally in AppShell now, so entering here survives navigation.
-  const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
+  // CC-4: the one start door. It also moves a to-do company task to In progress.
+  const startFocusSession = useStartFocus();
   // Startup ritual (F0): the modal itself + the once-a-day offer banner. Both
   // resolve client-side from focusPrefs in an effect (localStorage isn't
   // available during SSR, and reading it in render would mismatch hydration).
@@ -713,7 +736,13 @@ export function CalendarView() {
         <CalendarSettings
           settings={settings}
           onChange={(patch) => void updateSettings(patch)}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setGuideOpen(false);
+          }}
+          guideOpen={guideOpen}
+          connectNotice={connectNotice}
+          onDismissConnectNotice={() => setConnectNotice(null)}
         />
       )}
     </>
@@ -725,6 +754,7 @@ export function CalendarView() {
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>
         <CalendarDeepLink onLink={openLink} />
+        <CalendarConnectReturn onNotice={setConnectNotice} onOpenSettings={openConnectSettings} />
       </Suspense>
       {/* The command bar's "New reminder" job (RX-6, `?do=new-reminder`): it
           opens the form and saves nothing. A filled title is a suggestion. */}
@@ -768,12 +798,21 @@ export function CalendarView() {
         onComplete={completeBlock}
         onStart={(item) => {
           startFocus(item);
-          enterFocusSession(item.id);
+          void startFocusSession(item.id);
         }}
         onFillGap={() => {
           // idle gap → the Gap Filler sheet, anchored to right now
           const at = new Date(Math.ceil(Date.now() / 300000) * 300000);
           setSheet({ day: startOfDay(new Date()), at });
+        }}
+      />
+
+      {/* CE-10c: offer Connect Google Calendar / Outlook when none is connected. Draws nothing
+          until the gateway says the feature is on. */}
+      <CalendarConnectPrompt
+        onOpenGuide={() => {
+          setGuideOpen(true);
+          setSettingsOpen(true);
         }}
       />
 
@@ -801,6 +840,12 @@ export function CalendarView() {
         </div>
       )}
 
+      {externalNote && (
+        <div role="status" className="border-b border-border px-4 py-1.5 text-xs text-muted-foreground">
+          {externalNote}
+        </div>
+      )}
+
       {overdueCount > 0 && (
         <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
@@ -825,15 +870,20 @@ export function CalendarView() {
           {mode === "month" ? (
             <MonthGrid
               anchor={anchor}
-              items={items}
+              eventsForDay={(day) =>
+                monthEventsForDay(day, items, remShown ? remList.rows : [], remZone, externals)
+              }
               onPickDay={(d) => {
                 pickAnchor(d);
                 setMode("day");
               }}
-              onOpen={openFocus}
-              reminders={remShown ? remList.rows : []}
-              reminderZone={remZone}
-              onOpenReminder={openReminder}
+              onOpenEvent={(e) =>
+                openMonthEvent(e, {
+                  onOpen: openFocus,
+                  onOpenReminder: openReminder,
+                  onOpenExternal: setExternalId,
+                })
+              }
             />
           ) : (
             <TimeGrid
@@ -853,7 +903,7 @@ export function CalendarView() {
               onToggleOneThing={handleToggleOneThing}
               onFocusMode={(item) => {
                 if (!item.actualStart || item.actualEnd) startFocus(item);
-                enterFocusSession(item.id);
+                void startFocusSession(item.id);
               }}
               onOpen={openFocus}
               onUnschedule={unschedule}
@@ -872,6 +922,9 @@ export function CalendarView() {
               onMoveReminder={(id, to) => void moveReminderTo(id, to)}
               onPickReminderMove={(id) => setRemForm({ mode: "move", id })}
               onResolveReminder={(id, action) => void resolveReminderAs(id, action)}
+              externals={externals}
+              reserveAllDay={calendarEventsOn()}
+              onOpenExternal={setExternalId}
             />
           )}
         </div>
@@ -968,6 +1021,8 @@ export function CalendarView() {
         </Modal>
       )}
 
+      {externalOpen && <ExternalSheet entry={externalOpen} zone={remZone} onClose={() => setExternalId(null)} />}
+
       {sheet && (
         <ScheduleSheet
           day={sheet.day}
@@ -984,7 +1039,7 @@ export function CalendarView() {
             // room — the Gap Filler's zero-ceremony start (§4.5).
             if (at && Math.abs(at.getTime() - Date.now()) < 5 * 60000) {
               startFocus(t);
-              enterFocusSession(t.id);
+              void startFocusSession(t.id);
             }
           }}
           onDoNow={(t) => quickDispose(t.id, "DONE")}

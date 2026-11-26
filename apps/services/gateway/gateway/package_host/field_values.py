@@ -101,7 +101,7 @@ MAX_VALUE_BYTES = 65536
 #: The point of a field declaration (§4).
 FIELDS_POINT = "fields"
 #: The types that PKG-13 refuses in a declaration (§8.3).
-REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file"})
+REFUSED_TYPES: frozenset[str] = frozenset({"relation", "file", "autonumber"})
 #: The parts of a field spec that a declaration may not set (§8.3).
 REFUSED_SPEC_KEYS: tuple[str, ...] = ("required", "hot", "to")
 
@@ -110,9 +110,10 @@ _FIELD_KEY_RE = re.compile(NAME_PATTERN, re.ASCII)
 #: An install that has not ended. The text of ``resolve.INSTALLS_SQL``, with
 #: the alias ``i`` in place of ``package_install`` (§5.2 step 2).
 LIVE_INSTALL = "(i.ends_at IS NULL OR i.ends_at > now())"
-#: The app of the install is a Studio package that is not archived. The text
-#: of ``resolve.INSTALLS_SQL``. ``test_package_field_values.py`` holds both.
-LIVE_APP = "a.format = 'manifest' AND a.status <> 'archived'"
+#: The app of the install is a Studio package that is not archived and not
+#: paused (WS-STU J3a). The text of ``resolve.INSTALLS_SQL``.
+#: ``test_package_field_values.py`` holds both.
+LIVE_APP = "a.format = 'manifest' AND a.status <> 'archived' AND a.paused_at IS NULL"
 
 _JOIN_APP = (
     " JOIN apps AS a ON a.organization_id = i.organization_id AND a.id = i.app_id"
@@ -158,7 +159,7 @@ _DELETE_RECORD_SQL = (
 #: stored type is the type of the current declaration.
 _GET_SQL = (
     "SELECT CAST(v.install_id AS text), CAST(i.app_id AS text), v.field_key,"
-    " v.field_type, CAST(v.value AS text)"
+    " v.field_type, CAST(v.value AS text), CAST(c.payload AS text)"
     " FROM package_field_value AS v"
     " JOIN package_install AS i"
     " ON i.organization_id = v.organization_id AND i.id = v.install_id"
@@ -361,8 +362,10 @@ async def get_values(
 
     *install_ids* are the installs that the viewer sees. An empty set answers
     ``[]`` and runs no statement. A value whose stored type differs from the
-    current declaration is left out. The store does not check that the viewer
-    may see the record. The host door of PKG-14a owns that check.
+    current declaration is left out. So is a value that the current
+    declaration refuses (STU-C14: the units of a quantity, the format of a
+    barcode, or the bounds of a rating changed). The store does not check that
+    the viewer may see the record. The host door of PKG-14a owns that check.
     """
     kind = _record_kind(record_kind)
     record = _record_id(record_id)
@@ -372,8 +375,16 @@ async def get_values(
     await _bound(db, "a read of field values")
     rows = (await db.execute(text(_GET_SQL), {
         "kind": kind, "record": record, "ids": sorted(ids)})).all()
-    return [FieldValue(install_id=str(r[0]), app_id=str(r[1]), field_key=str(r[2]),
-                       field_type=str(r[3]), value=json.loads(r[4])) for r in rows]
+    out: list[FieldValue] = []
+    for r in rows:
+        value = json.loads(r[4])
+        try:
+            check_value(declared_field(str(r[2]), json.loads(r[5])), value)
+        except FieldError:
+            continue  # stale: the declaration changed after the value was written
+        out.append(FieldValue(install_id=str(r[0]), app_id=str(r[1]), field_key=str(r[2]),
+                              field_type=str(r[3]), value=value))
+    return out
 
 
 async def delete_values(db: Any, *, record_kind: str, record_id: str) -> int:

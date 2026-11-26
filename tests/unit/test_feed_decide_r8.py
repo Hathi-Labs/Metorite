@@ -14,6 +14,8 @@ the Redis are fakes from ``test_feed_decide.py``. No test reaches a network.
 * **No tenant text** in any column.
 * **The context reads**: the corrections, the habit counts and the One
   Thing, each through its real SQL.
+* **The affinity counts** (LOOP-4a): five shown and three "Not useful" give
+  -12, the clock of P2, and the org predicate for a role that skips RLS.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -24,6 +26,7 @@ import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -34,7 +37,7 @@ from acb_auth.roles import UserContext, UserRole
 from acb_common import tenant_redis
 from acb_common.tenant_redis import TenantRedis
 from gateway.db import tenant_session
-from gateway.routes.shell import feed, feed_decide
+from gateway.routes.shell import feed, feed_decide, feed_rank, state
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -268,6 +271,8 @@ class TestTheContextReads:
                 "INSERT INTO calendar_day_state (user_id, day, one_thing_id, organization_id) "
                 "VALUES (:e, :d, CAST(:t AS uuid), CAST(:o AS uuid))"),
                 {"e": email, "d": NOW.date(), "t": task, "o": p.org_b})
+            # LOOP-4a P2: a card counts as shown by when the member saw it, and
+            # never by `updated_at`. So each row carries its sighting.
             for sid, kind, acted, nu, age in (
                     ("tasks:h1", "overdue", True, False, 1),
                     ("tasks:h2", "overdue", False, True, 2),
@@ -275,9 +280,10 @@ class TestTheContextReads:
                     ("tasks:h4", "due_today", False, False, 40)):
                 c.execute(text(
                     "INSERT INTO my_day_card_state (organization_id, member_email, signal_id, "
-                    "kind, state, acted_at, not_useful_at, updated_at) VALUES "
+                    "kind, state, acted_at, not_useful_at, last_seen_at, updated_at) VALUES "
                     "(CAST(:o AS uuid), :m, :s, :k, 'seen', "
                     "CASE WHEN :acted THEN now() END, CASE WHEN :nu THEN now() END, "
+                    "now() - make_interval(days => :age), "
                     "now() - make_interval(days => :age))"),
                     {"o": p.org_b, "m": email, "s": sid, "k": kind, "acted": acted,
                      "nu": nu, "age": age})
@@ -304,3 +310,111 @@ class TestTheContextReads:
         assert ctx.habits == {"overdue": {"shown": 3, "acted": 1, "not_useful": 1}}
         assert ctx.local_date == NOW.date().isoformat() and ctx.day_hours == "07-22"
         assert ctx.local_time == (NOW).strftime("%H:%M")
+
+
+_CARD_SQL = (
+    "INSERT INTO my_day_card_state (organization_id, member_email, signal_id, kind, "
+    "state, last_seen_at, acted_at, not_useful_at, updated_at) VALUES "
+    "(CAST(:o AS uuid), :m, :s, :k, 'seen', now() - make_interval(days => :seen), "
+    "CASE WHEN CAST(:acted AS int) IS NULL THEN NULL "
+    "ELSE now() - make_interval(days => CAST(:acted AS int)) END, "
+    "CASE WHEN CAST(:nu AS int) IS NULL THEN NULL "
+    "ELSE now() - make_interval(days => CAST(:nu AS int)) END, "
+    "now() - make_interval(days => :upd))"
+)
+
+
+class TestTheAffinityCounts:
+    """WS-58 LOOP-4a on the real table (``proactive_loop.md`` §7.2 P1, P2, P6
+    and R5). One address in two orgs. In org B it saw five ``stale_next``
+    cards and marked three "Not useful", so its affinity is -12. In org A it
+    acted on five ``stale_next`` cards, which must never count in org B.
+
+    ``deal_quiet`` holds the clock of P2. A "Not useful" of 40 days ago on a
+    card seen two days ago does not count. An act of three days ago on a row
+    whose ``updated_at`` is 40 days old does count. A card seen 45 days ago
+    is not shown. The old ``updated_at`` window gave ``(2, 0, 2)`` here.
+
+    Mutations, each killed here: the org predicate taken out of
+    ``_HABITS_SQL`` (the owner role then counts org A), the ``updated_at``
+    window put back (``deal_quiet`` changes), and the count read of the
+    learned path pointed at another member."""
+
+    @pytest.fixture
+    def counted(self, promoted):  # noqa: F811
+        p = promoted
+        email = f"aff-{TAG}@md6a.test"
+        rows = [(p.org_b, f"tasks:s{i}", "stale_next", 2, None, 1 if i < 3 else None, 0)
+                for i in range(5)]
+        rows += [(p.org_b, "crm:q0", "deal_quiet", 2, None, 40, 0),
+                 (p.org_b, "crm:q1", "deal_quiet", 3, 3, None, 40),
+                 (p.org_b, "crm:q2", "deal_quiet", 45, None, 45, 0)]
+        rows += [(p.org_a, f"tasks:a{i}", "stale_next", 1, 1, None, 0) for i in range(5)]
+        with p.admin_engine.begin() as c:
+            for org, sid, kind, seen, acted, nu, upd in rows:
+                c.execute(text(_CARD_SQL), {"o": org, "m": email, "s": sid, "k": kind,
+                                            "seen": seen, "acted": acted, "nu": nu,
+                                            "upd": upd})
+            c.execute(text(
+                "INSERT INTO user_settings (user_id, timezone, my_day_prefs, organization_id) "
+                "VALUES (:e, 'UTC', CAST(:prefs AS jsonb), CAST(:o AS uuid))"),
+                {"e": email, "o": p.org_b, "prefs": json.dumps({"mutes": ["deal_quiet"]})})
+        yield SimpleNamespace(email=email)
+        with p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM my_day_card_state WHERE member_email = :e"),
+                      {"e": email})
+            c.execute(text("DELETE FROM user_settings WHERE user_id = :e"), {"e": email})
+
+    WANT: ClassVar[dict[str, dict[str, int]]] = {
+        "stale_next": {"shown": 5, "acted": 0, "not_useful": 3},
+        "deal_quiet": {"shown": 2, "acted": 1, "not_useful": 0}}
+
+    async def test_five_shown_and_three_not_useful_give_minus_12(self, promoted, counted):  # noqa: F811
+        p = promoted
+        async with _as_member(p, p.org_b), tenant_session() as db:
+            got = await feed_decide._habits(db, counted.email)
+        assert got == self.WANT
+        assert feed_rank.affinity(got["stale_next"]) == -12
+        # `deal_quiet` was shown 2 times, fewer than 5, so it has no term.
+        assert state.affinities(got) == {"stale_next": -12}
+
+    async def test_the_predicate_alone_holds_the_org_for_an_owner_role(
+            self, promoted, counted):  # noqa: F811
+        p = promoted
+        with p.admin_engine.begin() as c:
+            assert c.execute(text(
+                "SELECT rolsuper OR rolbypassrls FROM pg_roles "
+                "WHERE rolname = current_user")).scalar() is True
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": p.org_b})
+            mine = c.execute(text(feed_decide._HABITS_SQL), {"m": counted.email}).all()
+            bare = feed_decide._HABITS_SQL.replace(
+                f"organization_id = {state._BOUND_ORG} AND ", "")
+            assert bare != feed_decide._HABITS_SQL
+            both = c.execute(text(bare), {"m": counted.email}).all()
+        got = {r.kind: {"shown": r.shown, "acted": r.acted, "not_useful": r.not_useful}
+               for r in mine}
+        assert got == self.WANT
+        # Non-vacuity: with no predicate, a role that skips RLS counts org A too.
+        assert {r.kind: r.shown for r in both}["stale_next"] == 10
+
+    async def test_the_learned_path_reads_the_real_rows_and_keeps_the_day_value(
+            self, promoted, counted, monkeypatch):  # noqa: F811
+        from zoneinfo import ZoneInfo
+
+        from acb_common.settings import get_settings
+
+        p = promoted
+        fake_redis = FakeRedis()
+        monkeypatch.setattr(tenant_redis, "get_tenant_redis",
+                            lambda **_: TenantRedis(fake_redis))
+        monkeypatch.setattr(get_settings(), "my_day_learn_orgs", p.org_b)
+        monkeypatch.setattr(state, "LEARN_TIMEOUT_S", 30.0)  # room for a cold database
+        day = state.Day(ZoneInfo("UTC"))
+        async with _as_member(p, p.org_b):
+            taught = await state.learned(_user(counted.email, p.org_b), NOW, day)
+        assert taught is not None and taught.ok
+        assert (taught.mutes, dict(taught.affinity)) == (
+            frozenset({"deal_quiet"}), {"stale_next": -12})
+        key = f"cc:{p.org_b}:my_day:affinity:{counted.email}:{day.feed_day(NOW).isoformat()}"
+        assert json.loads(fake_redis.store[key]) == {"stale_next": -12}
+        assert fake_redis.ttl[key] == 26 * 3600

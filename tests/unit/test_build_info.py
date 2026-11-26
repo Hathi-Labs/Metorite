@@ -136,6 +136,37 @@ def test_packed_refs_peel_lines_are_not_mistaken_for_refs(tmp_path: Path) -> Non
     assert build_info._sha_from_git_dir(git_dir) == "1" * 40
 
 
+def _linked_worktree(tmp_path: Path) -> Path:
+    """A shared git dir plus `.git/worktrees/wt`, which holds HEAD and `commondir`."""
+    shared = tmp_path / "repo" / ".git"
+    wt_dir = shared / "worktrees" / "wt"
+    wt_dir.mkdir(parents=True)
+    (wt_dir / "HEAD").write_text("ref: refs/heads/feat\n", encoding="utf-8")
+    (wt_dir / "commondir").write_text("../..\n", encoding="utf-8")
+    return wt_dir
+
+
+def test_a_linked_worktree_reads_a_loose_ref_from_the_common_dir(tmp_path: Path) -> None:
+    """Task 2633: the branch ref lives in the shared dir, not in `worktrees/<name>`."""
+    wt_dir = _linked_worktree(tmp_path)
+    shared = wt_dir.parent.parent
+    (shared / "refs" / "heads").mkdir(parents=True)
+    (shared / "refs" / "heads" / "feat").write_text("e" * 40, encoding="utf-8")
+    assert build_info._sha_from_git_dir(wt_dir) == "e" * 40
+
+
+def test_a_linked_worktree_reads_packed_refs_from_the_common_dir(tmp_path: Path) -> None:
+    wt_dir = _linked_worktree(tmp_path)
+    shared = wt_dir.parent.parent
+    packed = "# pack-refs" + chr(10) + "f" * 40 + " refs/heads/feat" + chr(10)
+    (shared / "packed-refs").write_text(packed, encoding="utf-8")
+    assert build_info._sha_from_git_dir(wt_dir) == "f" * 40
+
+
+def test_a_linked_worktree_without_the_ref_answers_none(tmp_path: Path) -> None:
+    assert build_info._sha_from_git_dir(_linked_worktree(tmp_path)) is None
+
+
 def test_a_worktree_git_file_resolves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

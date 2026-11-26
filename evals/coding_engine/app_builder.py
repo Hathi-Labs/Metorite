@@ -215,6 +215,9 @@ class AppHarness:
         self._patches.set(executor, "load_agent", lambda *a, **k: _AppLoaded(self))
         self._patches.set(executor, "build_integrations", lambda *a, **k: ({}, {}))
         self._patches.set(executor, "_session_workspace_override", lambda *a, **k: str(app))
+        # The seeded app has no ``apps`` row, so the broker's owner check
+        # (task 2462) counts it as an app of the sweep's org.
+        self._patches.set(executor, "_app_workspace_of_org", lambda *a, **k: True)
         self._patches.set(routes_agent, "_load_dynamic_agents", lambda: [])
         return self
 

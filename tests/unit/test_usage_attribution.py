@@ -991,3 +991,267 @@ class TestAFixedAgentHeaderCannotClaimAnAutomationName:
 
         monkeypatch.setattr(system_one, "_calling_agent", lambda: "email.rule_match")
         assert decide_tools._decide_attribution()["agent"] == "agent:email.rule_match"
+
+
+# ── AUTO-8b-2c: a headless turn names itself ────────────────────────────────
+#
+# ``proactive_agent.md`` §4.4 and §9 row AUTO-8b-2c. One round of a headless
+# turn is one ``run_agent`` run of the internal agent ``worker``. The run bound
+# ``worker`` and the app of its config (``chat``), so the usage row named the
+# chat. ``run_attribution_scope`` names the turn instead. The wire half, with
+# the REAL worker, is in ``test_subagent_worker.py``.
+#
+# Mutations (each was run, then restored):
+# * ``executor._run_agent_label`` returns ``agent_name`` -> the executor cases
+#   below and ``test_subagent_worker.py::test_a_headless_round_names_the_turn_on_the_wire``.
+# * ``_bind_run_app`` ignores the scope -> the same cases.
+# * a second module binds the scope -> ``test_only_the_headless_turn_binds_the_scope``.
+
+
+@pytest.fixture
+def _no_scope():
+    from acb_common import _log
+
+    _log._RUN_ATTRIBUTION.set(None)
+    yield
+    _log._RUN_ATTRIBUTION.set(None)
+
+
+@pytest.mark.usefixtures("_no_vouch", "_no_scope")
+class TestTheRunAttributionScope:
+    def test_it_binds_inside_and_is_gone_after(self):
+        from acb_common import run_attribution, run_attribution_scope
+
+        assert run_attribution() is None
+        with run_attribution_scope(app="auto", agent="auto.headless"):
+            assert run_attribution() == ("auto", "auto.headless")
+        assert run_attribution() is None
+
+    def test_it_is_gone_after_an_ERROR(self):
+        from acb_common import run_attribution, run_attribution_scope
+
+        with contextlib.suppress(RuntimeError), run_attribution_scope(
+                app="auto", agent="auto.headless"):
+            raise RuntimeError("the round failed")
+        assert run_attribution() is None
+
+    def test_a_task_started_OUTSIDE_never_sees_it(self):
+        """A ContextVar: a task copies the context of its start, so a run
+        that started outside the scope reads None while the scope is open."""
+        from acb_common import run_attribution, run_attribution_scope
+
+        async def scenario() -> tuple[object, object]:
+            opened, done = asyncio.Event(), asyncio.Event()
+
+            async def outside() -> object:
+                await opened.wait()
+                seen = run_attribution()
+                done.set()
+                return seen
+
+            async def read() -> object:
+                return run_attribution()
+
+            task = asyncio.create_task(outside())
+            with run_attribution_scope(app="auto", agent="auto.headless"):
+                inner = asyncio.create_task(read())
+                opened.set()
+                await done.wait()
+                return await task, await inner
+
+        outside, inside = asyncio.run(scenario())
+        assert outside is None
+        assert inside == ("auto", "auto.headless")
+
+    @pytest.mark.parametrize(("app", "agent"), [
+        ("auto", "worker"), ("auto", "agent:auto.headless"), ("Auto", "auto.headless"),
+        ("", "auto.headless"), ("auto", ""), ("a b", "auto.headless"),
+    ])
+    def test_a_value_of_ANOTHER_shape_is_refused(self, app, agent):
+        """The two values are code constants, so another shape is a bug."""
+        from acb_common import run_attribution, run_attribution_scope
+
+        with pytest.raises(ValueError), run_attribution_scope(app=app, agent=agent):
+            pass
+        assert run_attribution() is None
+
+    def test_the_scope_agent_is_reported_AS_IT_IS(self):
+        """Not ``agent:auto.headless``. The gateway forwards ``X-CC-Agent``
+        as it is, and the Console groups the spend on that name."""
+        from acb_common import run_attribution_scope
+        from acb_llm.routed import run_attribution
+
+        with run_attribution_scope(app="auto", agent="auto.headless"):
+            bind_run_context(run_id="r-1", agent="auto.headless", app="auto",
+                             user="ana@acme.com", member_verified=True)
+            out = attribution_headers()
+            assert (out["X-CC-Agent"], out["X-CC-Module"], out["X-CC-Run"]) == (
+                "auto.headless", "auto", "r-1")
+            assert run_attribution()["agent"] == "auto.headless"
+
+    def test_with_NO_scope_a_chat_agent_still_cannot_claim_the_name(self):
+        bind_run_context(agent="auto.headless", app="auto")
+        assert attribution_headers()["X-CC-Agent"] == "agent:auto.headless"
+
+
+class _ProbeAgent:
+    """A MAF-shaped agent that keeps the run context it reads in ``run``."""
+
+    def __init__(self, seen: list[dict]) -> None:
+        self.name = "attribution-probe"
+        self.tools: list = []
+        self.default_options: dict = {}
+        self._seen = seen
+
+    async def run(self, *_a, **_k):
+        self._seen.append(dict(get_run_context()))
+        return type("R", (), {"text": "ok", "messages": []})()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a) -> bool:
+        return False
+
+
+class _ProbeLoad:
+    def __init__(self, seen: list[dict], agent_dir: Path) -> None:
+        self.agent_dir = agent_dir
+        self.agent_name = "attribution-probe"
+        self.config = {"app": "chat"}
+        self._seen = seen
+
+    def build_agents(self) -> list:
+        return [_ProbeAgent(self._seen)]
+
+    def cleanup(self) -> None:
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a) -> bool:
+        return False
+
+
+@pytest.fixture
+def probe(tmp_path, monkeypatch):
+    """Both executors, wired to the probe. No clone, no model, no audit row."""
+    from acb_common import get_settings
+    from orchestrator import executor
+
+    seen: list[dict] = []
+    monkeypatch.setattr(get_settings(), "agents_clone_dir", str(tmp_path / "agents"))
+    monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _ProbeLoad(seen, tmp_path))
+    monkeypatch.setattr(executor, "build_integrations", lambda *a, **k: ({}, {}))
+    monkeypatch.setattr(executor, "record", lambda *a, **k: None)
+    return seen
+
+
+_PROBE_ORG = "0d4b8f5e-0000-4000-8000-0000000000c3"
+
+
+async def _batch(scoped: bool) -> None:
+    from acb_common import run_attribution_scope
+    from orchestrator import executor
+
+    payload = {"message": "x", "user_email": "ana@acme.com"}
+    if not scoped:
+        await executor.run_agent("attribution-probe", payload, run_id="r-batch",
+                                 organization_id=_PROBE_ORG)
+        return
+    with run_attribution_scope(app="auto", agent="auto.headless"):
+        await executor.run_agent("attribution-probe", payload, run_id="r-batch",
+                                 organization_id=_PROBE_ORG)
+
+
+async def _stream(scoped: bool) -> None:
+    from acb_common import run_attribution_scope
+    from orchestrator import executor
+
+    async def drain() -> None:
+        async for _ in executor.run_agent_stream(
+                "attribution-probe", {"message": "x", "user_email": "ana@acme.com"},
+                run_id="r-stream", organization_id=_PROBE_ORG):
+            pass
+
+    if not scoped:
+        await drain()
+        return
+    with run_attribution_scope(app="auto", agent="auto.headless"):
+        await drain()
+
+
+@pytest.mark.usefixtures("_no_vouch", "_no_scope")
+@pytest.mark.filterwarnings("ignore:coroutine .*run.* was never awaited:RuntimeWarning")
+class TestTheExecutorReadsTheScope:
+    """The four binding sites: the agent and the app, on the batch path and
+    on the stream path. ``_bind_run_app`` serves both app sites."""
+
+    @pytest.mark.parametrize("path", [_batch, _stream], ids=["batch", "stream"])
+    def test_a_scoped_run_binds_the_scope(self, probe, path):
+        asyncio.run(path(True))
+        assert probe, "the probe did not run"
+        assert {(c.get("agent"), c.get("app")) for c in probe} == {("auto.headless", "auto")}
+
+    @pytest.mark.parametrize("path", [_batch, _stream], ids=["batch", "stream"])
+    def test_a_run_with_no_scope_binds_its_own_name_and_app(self, probe, path):
+        asyncio.run(path(False))
+        assert probe, "the probe did not run"
+        assert {(c.get("agent"), c.get("app")) for c in probe} == {
+            ("attribution-probe", "chat")}
+
+
+# ── The fence: only the headless turn binds the scope ──────────────────────
+
+_SCOPE_BINDER = "apps/services/gateway/gateway/jobs/headless_turn.py"
+_SCOPE_HOME = "packages/acb_common/acb_common/_log.py"
+
+
+def _scope_uses(src: str) -> tuple[int, int, int]:
+    """In *src*: the calls of ``run_attribution_scope``, its aliases, and the
+    uses of the ContextVar ``_RUN_ATTRIBUTION``."""
+    import ast
+
+    calls = aliases = var = 0
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")
+            calls += name == "run_attribution_scope"
+        elif isinstance(node, ast.alias):
+            aliases += node.name.rsplit(".", 1)[-1] == "run_attribution_scope" and bool(
+                node.asname)
+        elif isinstance(node, ast.Name | ast.Attribute):
+            var += (getattr(node, "id", None) or getattr(node, "attr", None)) == "_RUN_ATTRIBUTION"
+    return calls, aliases, var
+
+
+class TestOnlyTheHeadlessTurnBindsTheScope:
+    def test_the_scan_sees_each_form(self):
+        assert _scope_uses("run_attribution_scope(app='a', agent='a.b')")[0] == 1
+        assert _scope_uses("import acb_common\nacb_common.run_attribution_scope()")[0] == 1
+        assert _scope_uses("from acb_common import run_attribution_scope as s")[1] == 1
+        assert _scope_uses("from acb_common import _log\n_log._RUN_ATTRIBUTION.set(1)")[2] == 1
+        assert _scope_uses("x = run_attribution()") == (0, 0, 0)
+
+    def test_only_the_headless_turn_binds_the_scope(self):
+        """R5: only server code names the agent and the app of a bill, and
+        only the turn that pays for itself. A second binder fails here."""
+        callers: dict[str, int] = {}
+        offenders: list[str] = []
+        for base in ("apps", "packages"):
+            for path in (ROOT / base).rglob("*.py"):
+                if "node_modules" in path.parts or ".venv" in path.parts:
+                    continue
+                src = path.read_text(encoding="utf-8", errors="replace")
+                if "run_attribution_scope" not in src and "_RUN_ATTRIBUTION" not in src:
+                    continue
+                rel = path.relative_to(ROOT).as_posix()
+                calls, aliases, var = _scope_uses(src)
+                if calls:
+                    callers[rel] = calls
+                if aliases or (var and rel != _SCOPE_HOME):
+                    offenders.append(rel)
+        assert callers == {_SCOPE_BINDER: 1}, callers
+        assert offenders == [], offenders
