@@ -7,10 +7,13 @@
   (§0a): a user tool is an AI Studio package. **D224** sets the order of
   work on 2026-11-15 (§0b): chains of existing actions first, code last.
   **D227** (2026-11-19, §0c) opens SBX-9 to the beta orgs, and rung 6a′ runs compute first.
-  SBX-8, SBX-15a and SBX-18 are built dark (2026-11-19, §12). SBX-2 is built
-  dark (2026-11-26, §12.2): only tests mint, and `SANDBOX_DOOR_ORGS` is empty.
-  Its review and verification of `external_agent_access.md` §10.1 are owed.
-  Nothing else is built.
+  SBX-8, SBX-15a, SBX-18 and SBX-19 are built dark (2026-11-19), and SBX-15c
+  too (merged 2026-11-26). SBX-2 is built dark (2026-11-26, §12.2): only tests
+  mint, and `SANDBOX_DOOR_ORGS` is empty. Its review and verification of
+  `external_agent_access.md` §10.1 are owed. No other build slice is on
+  `main` (read 2026-11-26).
+  **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
+  chat turn (SBX-20, SBX-21).
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
   of D187 were read on 2026-11-07 at `main` `f2671c706`. Re-verify every
   anchor at dispatch.
@@ -28,7 +31,7 @@
 - **Owner tasks:** #234 to #242 in the Metorite project. §1 maps each one to
   a section.
 - **Reads:** D12, D15, D16, D56, D58, D64, D83, D85, D86, D90, D93, D97,
-  D99, D100, D126, D127, D139, D146, D147, D180, D187, D227, R5 to R8.
+  D99, D100, D126, D127, D139, D146, D147, D180, D187, D227, D233, R5 to R8.
 - **Owns:**
   - tool-gap detection, and the tool lifecycle on the one Studio library
     (D187),
@@ -274,7 +277,7 @@ the entry `*` is not allowed now, for `tools` and for the compute run.
 4. **What SBX-9 must add for a list.** The parser takes a list and `*`.
    `parse_maf_coding_scope` in `sandbox_broker.py` accepts `<target>:<org>`
    and `<target>:*`. But `tools` is not in `MAF_CODING_TARGETS`
-   (`sandbox_broker.py:104`). The parser raises `ValueError` on an unknown
+   (`sandbox_broker.py:126`). The parser raises `ValueError` on an unknown
    target, and the check then turns **every** target off. So an early
    `tools:` entry would stop `code_task`, `app_builder` and `projects` on that
    box. SBX-4 adds `tools` to the set. SBX-18 adds `compute` to it.
@@ -469,7 +472,7 @@ only. So 6a′ can reach production before 6b and 6e.
 | **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1 | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
 | **6a′. The compute run** | In the chat, a member asks for a calculation on rows that a tool returned. The chat runs pandas code in a sealed container and shows a CSV or PNG card. This is the first rung that runs code in production | SBX-8, SBX-15a, SBX-18, SBX-19 | SBX-G9 to SBX-G11, SBX-G13, WS43-G1 (BH-3, or the waiver), WS43-G2, WS43-G5, SBX-G6 |
 | **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
-| **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first | SBX-3, SBX-5 | None |
+| **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first. (D233) On no match, the chat builds and answers in the same turn, with one progress line | SBX-3, SBX-5, SBX-20, SBX-21 (D233) | None |
 | **6d. Repair, review and metering (dev-stack preview)** | A failed tool gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall. A step with no `sandbox` price row is refused | SBX-12, SBX-6, SBX-7 | None |
 | **6e. The tools half of the remote backend (dev-stack preview)** | A build, a smoke test and a run of a tool go to a second local daemon under `runsc`. A second org waits while the first holds the box | SBX-15b, BH-3 (unconditional) | The install of BH-3 on the box is WS43-G1 |
 | **6f. Production on the dedicated box, the beta orgs** | The HathiLabs org runs a tool on the real box. The same day, `tools:<org>` opens it to each beta org of the list | SBX-9 | SBX-G1, SBX-G6, SBX-G9 to SBX-G11, WS43-G1 to WS43-G5 |
@@ -489,22 +492,26 @@ only. So 6a′ can reach production before 6b and 6e.
 
 Statuses were read from `origin/main` at `fe470c832` on 2026-11-19. A gate
 that lives on a box is "not verified", because this slice reads no box.
+The rows SBX-4, SBX-8, SBX-15a, SBX-15c, SBX-18 and SBX-19 were read again on
+2026-11-26 at `4804312a4` (SBX-0f, task 3996). The other rows keep the first
+reading.
 
 | Needs | Status | Evidence |
 |---|---|---|
 | SBX-1 | Not built | `git grep tool_gaps` finds no code or SQL |
 | SBX-2 | Not built | `git grep SANDBOX_ROUTES` finds nothing |
 | SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
-| SBX-4 | Not built | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:104`) |
+| SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26 | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
 | SBX-7 | Not built | No `sandbox` row in `task_catalog` (`git grep` of the SQL) |
-| SBX-8 | Not built | `git grep runsc` finds no code |
+| SBX-8 | Built, dark (PR 2625, 2026-11-19). The cost of gVisor is not measured | `RUNTIME_RUNSC` in `sandbox_broker.py` |
 | SBX-12 | Not built | Needs SBX-5 |
 | SBX-13 | Not built | `git grep metorite_door` finds nothing |
-| SBX-15a, the remote backend and the org lock | Not built | `git grep docker-remote` finds nothing |
+| SBX-15a, the remote backend and the org lock | Built, dark (PR 2625, 2026-11-19) | `BACKEND_REMOTE` in `sandbox_broker.py`. `tests/unit/test_sandbox_remote_backend.py` |
+| SBX-15c, three follow-ups of 15a | Built, dark (PR 2839, merged 2026-11-26) | Merge `e8b692f04`. Its §12 row |
 | SBX-15b, the tools half | Not built | Needs SBX-4 and WS-43g |
-| SBX-18, SBX-19, the compute run | Not built | `git grep compute_run` finds nothing |
+| SBX-18, SBX-19, the compute run | Built, dark (PRs 2616 and 2623, 2026-11-19). No production flip. `compute_run` writes no `usage_event` yet | `acb_skills/compute_run.py`, `COMPUTE_TARGET` in `sandbox_broker.py`. Tests `test_compute_run.py` and `test_sandbox_broker_compute.py` |
 | BH-3, the broker unit (WS43-G1) | Not built. The install on the box is an owner gate, not verified | `git ls-files` lists no `acb-sandbox-broker` unit, and `tests/unit/test_sandbox_broker_socket.py` is absent. `box_hardening.md` §5 BH-3 specifies both |
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
@@ -535,6 +542,123 @@ that lives on a box is "not verified", because this slice reads no box.
   parses to an error, when an org in `user_tool_disabled_orgs` still runs, or
   when `tools` is absent from `MAF_CODING_TARGETS`. It is advisory until
   SBX-6 and SBX-9 build it.
+
+---
+
+## 0d. Amendment, 2026-11-26 (D233)
+
+**Asked by:** the owner, 2026-11-26, in chat to metorite-78. `work_plan.md`
+§3 records it as D233. The text below gives the meaning of the four
+decisions. It is not a quote.
+
+### The four decisions
+
+1. **AI Studio is unpaused** for the long tail of use cases. The chat builds
+   the tool that it lacks, in the sandbox, and keeps it.
+2. **The work is split.** The PC lanes build the sandbox path: rung 6 of this
+   spec, with its sub-rungs 6a to 6f (§0b, §0c). Ishaan's lanes build the
+   Studio rungs 1 to 5: save, repair, share and connected-system skills. Those
+   lanes also land the aging Studio pull requests, and keep chat parity. A PC
+   lane takes no task and no pull request of Ishaan's lanes.
+3. **Credentials go through the door.** Sandbox code acts as the member
+   through the one Metorite door (§5.1 to §5.4). The gateway calls Zoho,
+   Outlook and each other connector with the stored credential. No provider
+   token and no platform secret enters the sandbox. A read runs. A write waits
+   for the card of the member.
+4. **The member sees no seam.** While the sandbox builds and tests a tool, the
+   member sees one progress line, as for any long turn. The answer arrives as
+   usual. A card appears only when the result writes something. The new skill
+   is kept, and the chat reuses it silently.
+
+### What changes
+
+- **The order (the reading of the agent).** The split puts rung 6 and rungs 1
+  to 5 side by side. It changes the order of the §0b ladder and of "Rung 6
+  runs first" in §0c. The owner has not said how the two orders combine.
+- **SBX-20 (task 3981), the background build and same-turn hand-back.** It
+  starts when the no-match path of `find_tools` answers `no_match` (§6.1,
+  D225). A `compose` answer means that a chain covers the ask, so no build
+  starts. The build, the smoke test and the first run go to a sandbox sub-run
+  inside the same chat turn. The main chat shows one progress line. When the
+  smoke test passes, the chat calls the new tool in the same turn and answers.
+- **A failure in SBX-20.** The chat answers what it can. It says plainly what
+  it could not do. The gap goes to the gap log (SBX-1, task 3800) and to the
+  tool failure log (`tool_failure_log.md`, task 1793).
+- **The failure row.** TOF-2b built the store, dark
+  (`acb_common/failure_log.py`). Its source `sandbox` is for a member report
+  through TOF-2g, and that slice is not dispatchable. So the SBX-20 audit
+  decides which call and which source write the row.
+- **SBX-21 (task 3982), the progress-line contract.** The member sees one
+  line. It names no tool, and it does not use the word "sandbox". The line
+  lives in the one run status of `chat_run_continuity.md` §4.10. Its words are
+  fixed words of the client, as `RUN_PHASE_WORDS` is (`chat_failure_modes.md`,
+  CS-3b). The server sends no text for this line.
+- **No second line.** A tool call past 6 seconds gets a server line today
+  (`chat_run_continuity.md` §4.11, dark). On the SBX-20 path, that would be a
+  second line. So the build and run calls of this path send no §4.11 line.
+  SBX-21 builds that exception and writes it in §4.11.
+- **Member copy.** The busy answer of §6.2 and §0c names "the sandbox". The
+  model can read that string, but the member must not see it. SBX-21 gives the
+  member copy.
+- **Writes.** A write still shows the normal card of §5.3.
+- **Keeping.** §6.5 stands: the tool persists only after a successful first
+  run. Then the chat reuses it silently.
+- **Approval.** §8 stands with no change. The owner of a private tool needs no
+  approval (§8.1, D180.2). The first time that a skill is kept for the org, a
+  holder of `studio:publish` approves one version. The brief of SBX-0e asked
+  for this line.
+- **Order.** SBX-20 and SBX-21 belong to rung 6c (keep and reuse). SBX-20
+  needs SBX-3 (task 3802) and SBX-5 (task 3804). SBX-21 needs SBX-20. This
+  amendment adds neither slice to the dependencies of SBX-9.
+- **Tier.** The agent tiers both slices HIGH, because they run code.
+- **Dark.** SBX-20 ships behind its own per-org flag, default off. The
+  proposed name is `USER_TOOL_INLINE_ORGS`, and the SBX-20 audit confirms it.
+  The agent proposes that SBX-21 uses the same flag. The flag must not turn on
+  before SBX-21 merges, because the §4.11 exception comes with SBX-21. This
+  amendment flips no flag and opens no owner gate of §13.
+
+### The build card: the reading of the agent, and the open points
+
+Decision 4 says that a card appears only when the result writes something.
+§6.1, SBX-F8 and the "Build a tool" row of §8.1 ask for an approved build
+card before each build. The agent reads decision 4 as this: on the SBX-20
+path, no build card shows before the build. The three texts stay as they are
+for each other path.
+
+The owner has not confirmed this reading. The agent asks
+on task 3981. SBX-20 changes the card rule of SBX-F8 for its path only.
+
+The build card does more than ask for a yes. These defaults hold until the
+owner answers on that task.
+
+| What the card gives today | The default of the SBX-20 path | The recommendation |
+|---|---|---|
+| The warning of a marked session (§5.7) | No silent build in a marked session. The build card of §6.1 shows | Keep this default |
+| The approval of a `web:` host (§5.5) | No `web:` profile on the silent path | Keep this default |
+| The estimated credits (§10) | No estimate shows. The metering of SBX-7 and the hard cap of D19.3 still bind | Keep this default |
+| The list of packages | Only packages that the image already holds (§6.9) | Keep this default |
+| What the tool will do | No sentence shows before the build | Keep this default |
+| The read scopes | Nobody approves them. The access of the member is the ceiling (§5.1), and an approver reads them before a share (§8.1) | Keep this default |
+| The write scopes | A scope writes nothing alone. Each write waits for the card of §5.3 | Keep this default |
+
+The result card of §6.5 has the "This is wrong" control for 24 hours. The
+default keeps it as a control on the answer. It asks for no approval.
+
+§6.4 shows each output file as an artifact card. The agent reads this card as
+a part of the answer, and it asks for no approval. The default keeps it.
+
+**For the SBX-20 audit.** A build step has up to 600 seconds, and a run step
+up to 900 seconds (§5.6). So one chat turn can be long. The audit must show
+how the turn survives a lost stream (`chat_run_continuity.md` §4.10), and what
+the member sees when the box is busy.
+
+§6.1 refuses a gap id older than 30
+minutes (SBX-F8), and the sub-run keeps that rule.
+
+**For the SBX-2 audit.** Decision 3 names Zoho, Outlook and other connectors.
+`SANDBOX_ROUTES` starts from `MCP_ROUTES` and adds the CRM and email read
+routes (§5.2). The audit lists each other connector route that the door needs. A connector with no
+route stays out of reach.
 
 ---
 
@@ -1724,6 +1848,8 @@ tenancy and outward writes also get mutation testing
 | SBX-F24 | `tests/unit/test_sandbox_scope_all_orgs.py` | (D227) `tools:*` parses to an error, an org in `user_tool_disabled_orgs` still runs, or `tools` is absent from `MAF_CODING_TARGETS`. Advisory until SBX-6 and SBX-9 build it |
 | SBX-F25 | `tests/unit/test_compute_run.py` | (D227) `compute_run` takes an input that is not a `tr_` ref of its own org, member and thread, or a foreign ref does not answer "not found". A short tool result gets no ref while compute is on. One org evicts the refs of another. The output text is not framed as untrusted. A run passes the daily cap of 50 for an org or 20 for a member. A log line holds code or output text. An org outside the scope runs |
 | SBX-F26 | `tests/unit/test_sandbox_broker_compute.py` | (D227) The `compute` argv holds a mount, a network, or limits other than 1 CPU, 1g and pids 64. The tar reader accepts a link, a nested name, a type outside csv, png, json and txt, more than 5 files, a file over 1 MB or more than 3 MB in total. `compute` is absent from `MAF_CODING_TARGETS`, or `compute:*` does not parse, or an unknown target no longer raises `ValueError`. Production runs without `docker-remote` and `runsc`. A start skips the org lock |
+| SBX-F27 | `tests/unit/test_user_tool_inline_build.py` | (D233) With the flag off, a build starts in a turn without the build card. A silent build runs in a marked session, gets a `web:` profile, or starts on an answer that is not `no_match`. A failed smoke test or a failed first run persists a tool, or leaves no gap row or no failure row. Advisory until SBX-20 builds it |
+| SBX-F28 | `tests/unit/test_user_tool_progress_line.py`, with a `vitest` half | (D233) The member sees a second progress line, the §4.11 line included, a tool name or the word "sandbox" for a build in the turn. The client draws a server string. A write runs with no card. Advisory until SBX-21 builds it |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
 with the `sandbox_docker` marker, as WS43-F4 does. A skip fails that
@@ -1759,8 +1885,9 @@ the A2 model.
 | **SBX-0** | ✅ Done 2026-10-27. D130 answers §14, and the board row is WS-TO | Nothing | Done |
 | **SBX-0b** (task 1962) | (D187) This amendment, 2026-11-07, Metorite task 1962. Docs only: §0a, D187 in `work_plan.md` §3, and one line each in `ai_studio.md` and `package_host.md` | SBX-0 | AGENT-SAFE. Docs |
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
+| **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
 | **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
-| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin needs the diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 before the merge | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
+| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin needs the diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 before the merge. §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
@@ -1771,15 +1898,17 @@ the A2 model.
 | **SBX-10** (task 3809) | The `e2b` backend (§4.4) and the public door name. (D187) The alternative to the box of §4.6 | SBX-5, SBX-Q1 | AGENT-SAFE to build on a free test account. The account, the key and the DNS record are **OWNER-GATE** |
 | **SBX-11** (task 3810) | The SPACE check through ECW (§4.5) | SBX-10, the three triggers of §4.5 | **OWNER-GATE**. A new host costs money |
 | **SBX-12** (task 3427) | (D187) **Repair, levels (a) and (b)** (§6.7): the three signals, the cap of 1, the contract check, the card that names the writes that landed, and the repair version of the store with its private pin (§8.2). **Done when:** a fixture tool that exits 1 gets one repair, and the fixed version runs and persists. A second failure stops with no second build. A level (b) version runs for its author only, and the org pin does not move | SBX-5. SBX-6 for level (b) | AGENT-SAFE. Dark |
-| **SBX-13** (task 3428) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
+| **SBX-13** (task 3428) | (D187) **The door client** `metorite_door` in the sandbox image (§6.9). §12.3 holds the full slice. **Done when:** in a `sandbox_docker` test, a tool reads two pages through the door with the capability and no other code. The client calls no host but the door name. The image test (WS43-F25) lists the module | SBX-2 | AGENT-SAFE. The image on a box is WS43-G2 |
 | **SBX-14** (task 3429) | (D187) **Repair, level (c)** (§6.7): `find_tool` with `failed_tool`, the private workaround, the report to the failure log with its consent rule, and the archive of a workaround when its fix ships. **Done when:** a fixture failure of a built-in tool files one report with no error text before consent. The workaround runs for this member only. A release that marks the report fixed archives the workaround install | SBX-5, the spec and the store of the tool failure log (task 1793), SBX-Q8 | AGENT-SAFE. Dark |
 | **SBX-15a** (task 3430) | (D187) (D227) **The `docker-remote` backend and the org lock** (§4.6, §0c): the broker drives a second Docker daemon over `DOCKER_HOST`, moves the files in and out with no bind mount, and runs `runsc` only. The lock is one org for each remote box across every target, counted by the broker's org label on the remote daemon. **Done when:** on the dev stack, a run goes to a second local daemon and the outputs come back through the safe opener. A second org waits while the first holds the box. In production mode the broker refuses a `runc` run on that backend. 🔨 **BUILT dark** (2026-11-19, branch `mt-97db21a4-sbx15-remote-runsc`). The settings are `sandbox_backend` (default `docker`), `sandbox_docker_host` (default empty), `sandbox_docker_cert_path` (default empty) and `sandbox_remote_workspace_mb` (default 512).<br>• Only the broker's own `docker` child gets `DOCKER_HOST`. A log line shows the scheme and the host only. Outside dev a loopback host refuses, and `tcp://` needs TLS with a client certificate.<br>• A container on the remote box has no mount. Its `/workspace` is a tmpfs. Before each command the broker sends the working dir as a tar on the stdin of `docker exec -i`. After the command it reads `/workspace` back as a tar on the stdout of `docker exec`. Both tars use the GNU format. `docker cp` cannot write a `--read-only` root or read a tmpfs.<br>• The copy out takes regular files only, and writes each file in chunks through the safe opener. The copy never sends or deletes a name with a backslash or a byte that is not UTF-8. The model hears which names stayed behind.<br>• Outside dev (`acb_env`) the backend refuses `runc`. Of the mounted targets it runs `code_task` only, and refuses `projects` and `app_builder`. The `compute` target of SBX-18 runs there too.<br>• The org lock: every start of every target awaits `_remote_org_admit` inside one start gate, until `docker run` returns. The admit reads every registry and the org labels on the daemon. The reaper removes only a container whose removal failed. `sandbox_max_per_org` is the one cap of an org, and a start refuses when it is above `sandbox_max_total`.<br>• The end of a run removes its remote container.<br>• Fence SBX-F21. **Done when: met** for `code_task`. A run went to a second local daemon (`docker:dind`) under `runc`, and the outputs came back through the safe opener. A second org waits (`SandboxBusy`) while the first holds the box | The broker (WS-43c), SBX-8 | AGENT-SAFE to build and test on the dev stack. The box, its network and its DNS are **OWNER-GATE** (SBX-G9, SBX-G10) |
 | **SBX-15b** (task 3817) | (D227) **The tools half of the remote backend:** a build, a smoke test and a run of a tool go to the remote daemon. It sets `user_tool_max_total` from the measured box and keeps `user_tool_max_per_org` below it (§0c, Gap B) | SBX-4, WS-43g, SBX-15a | AGENT-SAFE. Dark |
 | **SBX-15c** (task 3819) | Three follow-ups of the SBX-15a review, before SBX-G13. 1. `DockerCLI.collect` scrubs its stderr through `_scrub`, because `run_compute` gives that stderr to the model. `_scrub` cuts the daemon address to its scheme and host, and removes the cert dir, the home dir of the gateway and each credential shape of `acb_common.secret_shapes`. On the path to the model it also removes the host of the sandbox box and each port. 2. When the `rm -f` of the startup sweep fails, each id goes to the orphan record, and the reaper removes it. 3. When `docker run` times out or a cancel stops it, its start label goes to the orphan record. The reaper looks it up on each tick for 600 s, so a container that the daemon makes late does not stay. The fence of SBX-F21 also checks that the admit is a statement before the run in the start gate. 🔨 **BUILT dark** (2026-11-25). **Done when:** each fix has a test in `test_sandbox_remote_backend.py` that fails before the fix, and the `sandbox_docker` half passes on a local daemon | SBX-15a, SBX-18 | AGENT-SAFE. Dark |
 | **SBX-16** (task 3431) | (D187) **The platform counts view** (§6.8, §9.2) in the Operator Console. A later slice. **Done when:** a platform admin sees counts by category and by built-in tool, and no tenant text. A tenant session gets 404 | SBX-1, SBX-5, SBX-14 | AGENT-SAFE |
 | **SBX-17** (task 3432) | (D187) **The adoption consent** (§6.8): the consent card for an owner of the source organization, and the consent record that a PR names. **Done when:** no path reads the files of a tool of a tenant for adoption without a consent row. A consent row names one tool, one version and one person of the source organization | SBX-16, SBX-6, SBX-Q9 | AGENT-SAFE to build. Each adoption is **OWNER-GATE** (SBX-G12) |
-| **SBX-18** (task 3815) | (D227) **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total`, default 1. It starts containers through the org lock of SBX-15a. `compute` is in `MAF_CODING_TARGETS`. The flip is `compute:<org>` in `MAF_CODING_SCOPE` (SBX-G13). `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the hot kill switch only, for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15a (tasks 3807, 3430), for the production guard and the lock | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, SBX-G13, WS43-G2, WS43-G5, SBX-G6). WS43-G1 (BH-3) binds it too (D127.2, §4.6). The owner decides on task 3786 to build BH-3 or waive it for rung 6a′ only. The waiver amends §4.6, and a gateway compromise then gets root on the sandbox box |
-| **SBX-19** (task 3816) | (D227) **The `compute_run(code, inputs, timeout_s)` chat tool** for the main chat agent `orchestrator`. The inputs are `tr_` refs of tool results that the turn holds, from the one spill store `tool_result_spill`, keyed by org, member and thread. A `KeepForCompute` step keeps a ref for every plain-text tool result of the turn, from 1 character to 2 MB, while compute is on for the org. It does not depend on `TOOL_RESULT_SPILL` or on the 24,000-character threshold. Eviction works for each owner. The output is framed as untrusted. Files reach the chat as artifacts through the `write_artifact` seam. A daily cap of 50 runs for each org and 20 for each member goes through `tenant_redis`. Log lines hold no code and no output text. A run writes a `usage_event` at price 0 through the one meter if that is one call, and if not, SBX-7 does it. **Done when:** SBX-F25 passes | SBX-18 | AGENT-SAFE. Dark |
+| **SBX-18** (task 3815) | (D227) 🔨 **BUILT dark** (2026-11-19, PR 2616). **The `compute` broker target** (§0c, rung 6a′): no mount, a `--tmpfs /workspace` workdir and `--network none`. Files go in and out as tar over `docker exec`, parsed in memory. It takes regular files only, with flat names, no links, the types csv, png, json and txt, at most 5 files, 1 MB each and 3 MB in total. Limits: 1 CPU, 1g and pids 64. Its own caps are `compute_max_per_org=1` and `compute_max_total`, default 1. It starts containers through the org lock of SBX-15a. `compute` is in `MAF_CODING_TARGETS`. The flip is `compute:<org>` in `MAF_CODING_SCOPE` (SBX-G13). `COMPUTE_RUN_ORGS` reloads on SIGHUP and is the hot kill switch only, for one org or all orgs. A reaper stops the containers of a de-listed org. A production guard refuses unless the backend is `docker-remote` with `runsc`. **Done when:** SBX-F26 passes | SBX-8 and SBX-15a (tasks 3807, 3430), for the production guard and the lock | AGENT-SAFE. Dark. The flip is **OWNER-GATE** (SBX-G9 to SBX-G11, SBX-G13, WS43-G2, WS43-G5, SBX-G6). WS43-G1 (BH-3) binds it too (D127.2, §4.6). The owner decides on task 3786 to build BH-3 or waive it for rung 6a′ only. The waiver amends §4.6, and a gateway compromise then gets root on the sandbox box |
+| **SBX-19** (task 3816) | (D227) 🔨 **BUILT dark** (2026-11-19, PR 2623). **The `compute_run(code, inputs, timeout_s)` chat tool** for the main chat agent `orchestrator`. The inputs are `tr_` refs of tool results that the turn holds, from the one spill store `tool_result_spill`, keyed by org, member and thread. A `KeepForCompute` step keeps a ref for every plain-text tool result of the turn, from 1 character to 2 MB, while compute is on for the org. It does not depend on `TOOL_RESULT_SPILL` or on the 24,000-character threshold. Eviction works for each owner. The output is framed as untrusted. Files reach the chat as artifacts through the `write_artifact` seam. A daily cap of 50 runs for each org and 20 for each member goes through `tenant_redis`. Log lines hold no code and no output text. A run writes a `usage_event` at price 0 through the one meter if that is one call, and if not, SBX-7 does it. **Done when:** SBX-F25 passes | SBX-18 | AGENT-SAFE. Dark |
+| **SBX-20** (task 3981) | (D233) **The background build and same-turn hand-back** (§0d, rung 6c). On `no_match`, the build, the smoke test and the first run go to a sandbox sub-run inside the same chat turn. The chat shows one progress line. On a smoke pass it calls the new tool in the same turn and answers. On a failure it answers what it can and says what it could not do. The gap goes to the gap log and the tool failure log. HIGH. **Done when:** on the dev stack, one turn builds, calls and answers. A failed build gives a plain answer and both log rows. With the flag off, nothing changes. Fence SBX-F27 | SBX-3, SBX-5 | AGENT-SAFE. Dark |
+| **SBX-21** (task 3982) | (D233) **The progress-line contract** (§0d, rung 6c): one line in the run status, with fixed client words, no tool name and no "sandbox". A write still shows the card of §5.3. The kept skill is reused silently. The build and run calls of the SBX-20 path send no §4.11 line. The SBX-20 flag stays off until this slice merges. The approval of §8 does not change. HIGH. **Done when:** a test fails on a second progress line, on a tool name or on "sandbox" in member copy. Fence SBX-F28 | SBX-20 | AGENT-SAFE. Dark |
 
 ### 12.1 SBX-1 — the first dispatchable slice
 
@@ -2056,8 +2185,9 @@ anonymous, and that route's own check refuses it.
 The sibling does not call `_bind_session_member`, because no row of
 `SANDBOX_ROUTES` calls a model (decision 2).
 
-**The log level.** A refusal before step 3 logs at info, because anybody on
-the network can cause it. A refusal after step 3 logs at warning, as
+**The log level.** A refusal before step 4 logs at info, because anybody on
+the network can cause it. That includes step 3: an unknown, expired or
+revoked token. A refusal at step 4 or later logs at warning, as
 `_UNSIGNED_REFUSALS` (`deps.py:436`) splits branch 0.
 
 **The digest.** The two new functions that see the request,
@@ -2069,10 +2199,13 @@ the ONE digest pin (`_BRANCH_ZERO_DIGESTS`, `:1210`) cover the sibling.
 - Why not a second pin: the scan already refuses a request handed to a
   function outside `_BRANCH_ZERO`. A second pin for the same boundary would
   be a second fence that drifts.
-- The scan's header list gains `x-sandbox-capability`. It also gains the
-  four header names that the sibling reads only to refuse: `authorization`,
-  `x-user-email`, `x-user-role` and `x-actor-via`. The sibling reads the
-  `x-agent-` prefix through the header names, as branch 0 does.
+- The sibling gets its own header set in the scan: `x-sandbox-capability`,
+  and the header names that it reads only to refuse: `authorization`,
+  `x-user-email` and `x-user-role` (`x-actor-via` is in the shared set
+  already). Only `_is_sandbox_request` and `_sandbox_user` may name them, so
+  the scan still refuses such a read in `_agent_user`. The tripwire allows
+  them only while the sibling runs. The sibling reads the `x-agent-` prefix
+  through the header names, as branch 0 does.
 - `_TRIGGER_PREFIX` (`test_tenant_request_binding.py:360`) becomes a tuple:
   `("x-agent-", "x-sandbox-")`.
 - The ContextVar of decision 9 stays. The scan allows only
@@ -2346,7 +2479,7 @@ holds `@`. `ACTOR_VIA_PATTERN` (`agent_oauth.py:983`,
   `revoked_step` or `swept`), `expires_at` and the count of read scopes.
 - `sandbox.door.call`: org, run, phase, method, route template, status, the
   refusal code or `allowed`, `call_n` (the counter after the call) and the
-  answer bytes. A refusal before step 3 has no org and no run.
+  answer bytes. A refusal before step 4 has no org and no run.
 - No line holds the token, its hash, a header value, a query value or an
   answer body. SBX-4 copies `call_n` and the bytes into `user_tool_runs`.
 - SBX-2 writes no audit row for a read. §8.4 names the acts that write one.
@@ -2461,7 +2594,8 @@ also get mutation testing (`engineering_practice.md` §4).
 ### 12.3 SBX-13 — the door client `metorite_door`
 
 **Board.** Metorite task 3428. Risk tier STANDARD: one module in the image,
-and no gateway change. It depends on SBX-2.
+and no gateway change. Its end-to-end proof needs SBX-2. It may merge
+before SBX-2.
 
 **Scope.** One module that a tool imports to read Metorite as the member,
 through the door of §12.2. It goes in the sandbox image, read-only. It uses
@@ -2548,8 +2682,10 @@ class Door:
   the key of the answer that holds the rows. The builder reads them from the
   route. `page_size` is at most 100, the door cap.
 - SBX-F22 fails when a path of that table is not in `SANDBOX_ROUTES`. The
-  test imports `acb_common.app_manifests.SANDBOX_ROUTES`, and a skip is not
-  allowed. So whichever of SBX-2 and SBX-13 merges second adds this check.
+  test imports `acb_common.app_manifests.SANDBOX_ROUTES` when it exists.
+  SBX-13 may merge first. Then SBX-2 adds the check that each path of
+  `PAGED_ROUTES` of `metorite_door` is in `SANDBOX_ROUTES`. When SBX-2 merges
+  first, the test of SBX-13 makes the check, and a skip is not allowed.
 - It stops on an empty page, on a page shorter than `page_size`, or after
   `max_pages`. It yields each row. It never asks for a page above the door
   cap.
@@ -2750,3 +2886,10 @@ here, and each needs its own check before anyone acts on it.
   every target, the compute target of SBX-18 too. Fence SBX-F21.
 - 2026-11-25 — SBX-15c built dark (task 3819). The broker scrubs the compute stderr.
   A failed sweep removal and a timed-out `docker run` go to the orphan record.
+- 2026-11-26 — D233 (SBX-0e, task 3980). AI Studio is unpaused. PC lanes
+  take rung 6, and Ishaan's lanes take rungs 1 to 5. New slices SBX-20 and
+  SBX-21: the build in the same turn, with one progress line. §0d holds the
+  open points of the build card. Nothing built.
+- 2026-11-26 — SBX-0f (task 3996). Status refresh only: the header, five rows
+  of the §0c critical path, one line anchor, the §12 rows of SBX-18 and SBX-19,
+  and the INDEX row. No rule changes.
