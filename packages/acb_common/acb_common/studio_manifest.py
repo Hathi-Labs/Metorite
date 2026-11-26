@@ -72,7 +72,7 @@ STUDIO_VERSION = 1
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
 )  # fmt: skip
 
 #: The five record verbs of an object. ``studio_tools.complete_record_actions``
@@ -188,7 +188,10 @@ MAX_CONNECTIONS = 32
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
-CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: API-5 adds an API connection of a template (``api:<template>``), such as
+#: ``api:zoho_books`` (``api_connections.md`` §2.2). The connector list holds
+#: that id, and each id of the list matches this grammar.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|api:{_NAME}|{_NAME}")
 #: STU-I9a. The two whose-account values of a connection need.
 CONNECTION_AS = ("org", "member")
 #: STU-I9a. The most scopes, and the longest scope, of one connection need.
@@ -314,6 +317,24 @@ class FieldDef(_Strict):
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
+    #: C15a. The parts of an `autonumber`: the text before the number, the pad
+    #: width and `never` or `day`. `studio_fields._check_extras` holds the rules.
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
+
+
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
 
 
 class ObjectDef(_Strict):
@@ -327,6 +348,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -351,7 +374,7 @@ class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None
@@ -1080,6 +1103,8 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 # never into a form of the app. The narrow rule, because a
                 # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)

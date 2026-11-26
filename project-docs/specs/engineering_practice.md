@@ -271,8 +271,9 @@ owner sees a missing preview, because no approval arrives.
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
 **Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
-production at the 21:30 UTC release. LD-8a and LD-8b are in build. The
-spec-auditor gave GO-NARROWED and split LD-8 into three slices.
+production at the 21:30 UTC release. LD-8b is built on its branch, and the
+branch is now in a pull request. It was tested on a fake copy only. LD-8a is in
+build. The spec-auditor gave GO-NARROWED and split LD-8 into three slices.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -353,6 +354,38 @@ no sudo.
 - Fences: new cases in `tests/unit/test_dev_up.py`. R8 on the restored copy:
   `relforcerowsecurity` holds on the tenant tables, `push_subscriptions` has 0
   rows, and `acb_app` reads 0 rows of another organization.
+
+**How LD-8b runs (as built).**
+
+```sh
+bash scripts/dev_up.sh --data prod --as <email>     # the newest copy
+bash scripts/dev_up.sh --data prod --copy <DIR> --as <email>
+bash scripts/dev_up.sh --data prod --db-only        # the database only
+bash scripts/dev_up.sh --reset --data demo          # back to the demo seed
+```
+
+- The copy folders are in `~/.metorite/prod-copy/`. `PROD_COPY_DIR` changes
+  the folder. A run takes the newest folder by name. A name that starts with
+  `.` is a pull that did not finish, so the run ignores it.
+- Before a restore, the script checks that all five files are there, and that
+  `SHA256SUMS` names the four data files. Then it runs `sha256sum -c`.
+- The pg17 container starts with `-c maintenance_work_mem=256MB`, after the
+  image name. An IVFFlat index on a large mailbox needs more than the 64 MB
+  default. A server flag reaches every session. `PGOPTIONS` is not used,
+  because the Supabase session pooler ignores it (measured 2026-10-31).
+- The stack keeps the copy that it restored, and its `flags.env`. A newer copy
+  needs `--reset`.
+- The member check reads the list of active members as `acb`, and matches
+  `--as` in the script. The email never goes into the SQL.
+- `--db-only` builds the database and stops, with no gateway and no web app.
+  The R8 fence uses it.
+- `--check` skips the tenant-isolation check in this mode, because that check
+  reads the demo seed.
+- `--refresh-flags` read the staging box, and the owner retired that box
+  (D144). Now `--refresh-flags` exits 2 and names `--data prod`.
+- R8 fence: `tests/unit/test_dev_up_prod_r8.py`. It builds a fake copy in a
+  private `pgvector/pgvector:pg17` container, from the ladder and the RLS
+  promotion, by the queries of `scripts/staging_export.sh`. It needs Docker.
 
 **Non-goals.** No write to production. No change to the export schedule. The
 copy is never used by CI, never goes into git, a log, a PR or a chat message,

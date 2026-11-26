@@ -30,7 +30,7 @@ export const INLINE_TYPES: ReadonlySet<FieldType> = new Set<FieldType>([
   "text", "number", "select", "checkbox", "date", "url", "email", "phone",
 ]);
 
-/** The keys that a `formula` or a `rollup` rule fills. The server refuses a write to them. */
+/** The keys that a `formula` or a `rollup` rule fills. The server refuses a write to them. An `autonumber` key is no part of this set: INLINE_TYPES leaves its type out. */
 export function computedKeys(rules: unknown): ReadonlySet<string> {
   const out = new Set<string>();
   if (!Array.isArray(rules)) return out;

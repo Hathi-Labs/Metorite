@@ -26,6 +26,11 @@ open child is a legal state (WS-27p, "shown, never enforced"). A move is
 different, because it would split the tree. So a move REFUSES when any
 descendant is hidden (:func:`hidden_refusal`).
 
+**Only what an open project holds** (ARC-2b, ``one_projects_app.md`` §9b.6
+rule 2). Complete and archive skip a descendant in an archived project in the
+same way (:func:`in_archived_project`). A move of such a descendant meets the
+guard in ``tasks.move_task_in`` and refuses the whole move.
+
 This module imports only ``core``, so ``tasks``, ``personal`` and ``bulk``
 can all import it without a cycle.
 """
@@ -46,6 +51,7 @@ from gateway.routes.projects.core import (
     emit,
     load_default_status,
     now,
+    project_is_archived,
     record_activity,
     status_owner_id,
     task_visibility_clause,
@@ -97,6 +103,19 @@ async def load_subtree(db: Any, vis: Any, task_id: str) -> list[Any]:
         {"root": str(task_id), "max_depth": MAX_DEPTH, **vis.params},
     )).fetchall()
     return list(rows)
+
+
+async def in_archived_project(db: Any, row: Any, seen: dict[str, bool]) -> bool:
+    """True when the project of *row* carries ``archived_at`` (ARC-2b).
+
+    *seen* holds one answer for each project, as ``bulk.bulk_edit`` holds its
+    own, so a subtree in one project costs one read. The caller makes a new
+    dict for each act.
+    """
+    pid = str(row.project_id)
+    if pid not in seen:
+        seen[pid] = await project_is_archived(db, pid)
+    return seen[pid]
 
 
 def task_ref(row: Any) -> str:
@@ -154,13 +173,19 @@ async def complete_subtree(
     closed. "Only this task" still works, because it touches no child.
 
     Skipped: a closed descendant (nothing to do), an archived one (it is off
-    every board) and a hidden one (the actor cannot act on it).
+    every board), a hidden one (the actor cannot act on it) and one in an
+    archived project (ARC-2b: its status is the work of a filed project).
     """
     out = Cascade()
+    filed: dict[str, bool] = {}
     for row in await load_subtree(db, vis, task_id):
         if not row.visible or getattr(row, "archived_at", None) is not None:
             continue
         if getattr(row, "status_category", None) in CLOSING_CATEGORIES:
+            continue
+        # Before the Done lane read, so a filed set with no Done lane cannot
+        # refuse the cascade.
+        if await in_archived_project(db, row, filed):
             continue
         owner = await status_owner_id(db, str(row.project_id))
         try:
@@ -203,10 +228,15 @@ async def archive_subtree(
     ⚠️ **Unarchive does NOT cascade.** A child can be on the shelf for its
     own reason, and nothing on the row tells the two apart. The client's Undo
     restores exactly ``ids``, which are the tasks THIS cascade shelved.
+
+    ARC-2b: a descendant in an archived project is skipped, as a hidden one is.
     """
     out = Cascade()
+    filed: dict[str, bool] = {}
     for row in await load_subtree(db, vis, task_id):
         if not row.visible or getattr(row, "archived_at", None) is not None:
+            continue
+        if await in_archived_project(db, row, filed):
             continue
         await update_row(db, "pm_tasks", str(row.id), {"archived_at": now()})
         await record_activity(
@@ -299,6 +329,7 @@ __all__ = [
     "current_category",
     "emit_all",
     "hidden_refusal",
+    "in_archived_project",
     "load_subtree",
     "movable_subtree",
     "privacy_refusal",

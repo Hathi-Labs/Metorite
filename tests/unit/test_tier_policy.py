@@ -435,6 +435,32 @@ class TestTurnKind:
         assert payload["items"][0]["options"] == ["chat", "code", "plan", "analysis"]
 
     @pytest.mark.usefixtures("_patient")
+    def test_the_question_asks_for_no_reason_so_the_answer_is_short(self, monkeypatch) -> None:
+        """Task 3592: the turn never reads a reason, and the reason was about
+        half of the output. The request names no ``reason`` key, and its
+        ceiling is the short one. A timeout wasted the call in 36 of 51
+        production turns."""
+        from acb_skills import system_one
+
+        wire = _wire(monkeypatch, _turn_reply("code"))
+        _kind(SECRET, tools=("run_command", "vocabulary"))
+        body = wire.bodies[0]
+        system = " ".join(
+            str(m.get("content")) for m in body["messages"] if m.get("role") == "system"
+        )
+        assert "`reason`" not in system
+        assert system_one.INSTRUCTIONS_NO_REASON.split("\n")[0] in system
+        limit = body.get("max_completion_tokens") or body.get("max_tokens")
+        assert limit == system_one.max_tokens_for(1, reasons=False)
+        assert limit < system_one.max_tokens_for(1) / 2
+
+    def test_the_decide_tool_still_asks_for_a_reason(self) -> None:
+        from acb_skills import system_one
+
+        assert "`reason`" in system_one.INSTRUCTIONS
+        assert system_one.max_tokens_for(3) == 32 + 160 * 3
+
+    @pytest.mark.usefixtures("_patient")
     def test_a_message_under_12_words_sends_no_request(self, monkeypatch) -> None:
         wire = _wire(monkeypatch, _turn_reply("code"))
         eleven = "one two three four five six seven eight nine ten eleven"

@@ -13,6 +13,7 @@ reads that file to prove what the pass wrote to GitHub, and what it did not.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import importlib.util
 import json
@@ -341,6 +342,14 @@ if os.path.exists(p):
 
 GOOD = "def add(a, b):\n    return a + b\n"
 BAD = "def add(a, b):\n    return a - b\n"
+#: CIV-31f: a real test of calc.add, for the cases that run the default probe.
+CALC_TEST = "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+#: CIV-31f: the default probe (probe_present_tests.sh) with the pytest of this
+#: interpreter, in place of the fake probe of Box.env.
+DEFAULT_PROBE: dict[str, str | None] = {
+    "BISECT_TEST_CMD": None,
+    "PROBE_PYTEST_CMD": '"$PY" -m pytest',
+}
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -384,10 +393,14 @@ class Box:
         git(tmp, "init", "-q", "--bare", "-b", "main", str(self.origin))
         git(tmp, "clone", "-q", str(self.origin), str(self.seed))
         git(self.seed, "checkout", "-q", "-b", "main")
-        self.commit(100, "base (#100)", {"calc.py": GOOD, ".gitignore": "__pycache__/\n"})
+        base: dict[str, str | None] = {"calc.py": GOOD, ".gitignore": "__pycache__/\n"}
+        if variant in ("pytest", "move"):
+            # CIV-31f: a real test file, for the default probe.
+            base["test_a.py"] = CALC_TEST
+        self.commit(100, "base (#100)", base)
         for n in range(101, 107):
             # One note file per PR, so the revert of one PR applies cleanly.
-            files = {f"note_{n}.txt": f"{n}\n"}
+            files: dict[str, str | None] = {f"note_{n}.txt": f"{n}\n"}
             subject = f"change number {n} (#{n})"
             if n == 104:
                 files["calc.py"] = BAD
@@ -397,6 +410,10 @@ class Box:
                 files["calc.py"] = "def add(a, b):\n    return (a - b)\n"
             if n == 105 and variant == "broken":
                 files["BROKEN"] = "yes\n"
+            if n == 105 and variant == "move":
+                # CIV-31f (S1): PR 105 moves the test that PR 104 breaks.
+                files.update({"test_a.py": None, "test_b.py": CALC_TEST})
+                subject = "move test_a to test_b (#105)"
             self.commit(n, subject, files)
         if variant == "merge":
             git(self.seed, "checkout", "-q", "-b", "side", self.sha[105])
@@ -439,8 +456,12 @@ class Box:
             url="https://github.com/o/r/pull/104",
         )
 
-    def commit(self, n: int, message: str, files: dict[str, str]) -> None:
+    def commit(self, n: int, message: str, files: dict[str, str | None]) -> None:
+        """Commit `files` on the seed. A text None deletes that file (CIV-31f)."""
         for name, text in files.items():
+            if text is None:
+                (self.seed / name).unlink()
+                continue
             (self.seed / name).parent.mkdir(parents=True, exist_ok=True)
             (self.seed / name).write_text(text, encoding="utf-8", newline="\n")
         git(self.seed, "add", "-A")
@@ -983,7 +1004,7 @@ def _open_revert_pr(box: Box) -> None:
     (box.fix / "poll.txt").unlink()
 
 
-def _land(box: Box, n: int, files: dict[str, str]) -> str:
+def _land(box: Box, n: int, files: dict[str, str | None]) -> str:
     box.commit(n, f"lands (#{n})", files)
     git(box.seed, "push", "-q", "origin", "main")
     return box.sha[n]
@@ -2540,6 +2561,325 @@ def test_the_verify_line_needs_a_pure_revert_and_every_proof_run() -> None:
     assert not mod.verify_line(case).startswith("VERIFY")
     case.pure, case.proof_runs = False, mod.FLAKE_RUNS
     assert mod.verify_line(case).startswith("Not verified")
+
+
+# ── CIV-31e: a failed test that the culprit added ─────────────────────────
+
+
+def test_civ31e_the_default_probe_is_the_helper_of_this_checkout() -> None:
+    """The pass and the bisect name one helper, by its absolute path in the
+    running checkout. A probed tree can predate the helper, and a relative
+    path then exits 127: "cannot judge" on every probe."""
+    mod = load_module()
+    helper = ROOT / "scripts" / "probe_present_tests.sh"
+    assert helper.is_file()
+    assert helper.is_absolute()
+    want = f'bash {shlex.quote(helper.as_posix())} "$@"'
+    assert want == mod.DEFAULT_TEST_CMD
+    text = (ROOT / "scripts" / "bisect_main.sh").read_text(encoding="utf-8")
+    assert '"$SCRIPT_DIR/probe_present_tests.sh"' in text
+    assert 'TEST_CMD="${BISECT_TEST_CMD:-$DEFAULT_TEST_CMD}"' in text
+
+
+def _small_repo(tmp_path: Path):
+    """A git repo in tmp_path/repo, and a function that commits files to it.
+
+    A text None deletes that file. The function returns the new sha.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+
+    def commit(message: str, files: dict[str, str | None]) -> str:
+        for name, text in files.items():
+            if text is None:
+                (repo / name).unlink()
+            else:
+                (repo / name).write_text(text, encoding="utf-8", newline="\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-q", "-m", message)
+        return git(repo, "rev-parse", "HEAD")
+
+    return repo, commit
+
+
+def _default_cfg(mod, repo: Path, monkeypatch: pytest.MonkeyPatch):
+    """A Config that runs the REAL default probe (probe_present_tests.sh) in `repo`."""
+    assert BASH is not None
+    monkeypatch.setattr(mod, "bash", lambda: BASH)
+    monkeypatch.delenv("BISECT_TEST_CMD", raising=False)
+    monkeypatch.setenv("PY", PY)
+    monkeypatch.setenv("PROBE_PYTEST_CMD", '"$PY" -m pytest')
+    return dataclasses.replace(_cfg(mod, repo), test_cmd=mod.DEFAULT_TEST_CMD, timeout_s=120)
+
+
+def test_civ31e_the_parent_and_the_revert_tree_pass_when_the_culprit_added_the_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The culprit ADDED the failed test. Its parent and the revert tree do not
+    hold the test. CIV-31f: the default probe exits 0 there, and probe() reads
+    its note: the answer is absent, not pass, because no test ran. A tree that
+    holds the test and that pytest cannot collect stays unknown."""
+    repo, commit = _small_repo(tmp_path)
+    parent = commit("base (#100)", {"calc.py": GOOD})
+    culprit = commit(
+        "add a test (#104)",
+        {
+            "test_new.py": "import pytest\n\nfrom calc import add\n\n"
+            '@pytest.mark.parametrize("state", ["requests closed"])\n'
+            "def test_rank(state):\n    assert add(1, 2) == 4\n"
+        },
+    )
+    git(repo, "revert", "--no-edit", culprit)
+    revert = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "-b", "side", culprit)
+    broken = commit("a broken conftest (#105)", {"conftest.py": 'raise RuntimeError("x")\n'})
+
+    mod = load_module()
+    cfg = _default_cfg(mod, repo, monkeypatch)
+    ids = ["test_new.py::test_rank[requests closed]"]
+    assert mod.probe(cfg, parent, ids) == "absent"
+    assert mod.probe(cfg, culprit, ids) == "fail"
+    assert mod.probe(cfg, revert, ids) == "absent"
+    assert mod.probe(cfg, broken, ids).startswith("unknown")
+    # The probe names the ids that it left out, for the PR body.
+    assert mod.probe_ids(cfg, parent, ids) == ("absent", ids)
+    # A wrapper that sends stderr to stdout still reads as absent.
+    merged = dataclasses.replace(cfg, test_cmd=mod.DEFAULT_TEST_CMD + " 2>&1")
+    assert mod.probe_ids(merged, revert, ids) == ("absent", ids)
+    # One id absent and one present that fails: exit 1 stays fail.
+    two = [*ids, "calc_test_gone.py::test_x"]
+    assert mod.probe(cfg, culprit, two) == "fail"
+    assert len(git(repo, "worktree", "list").splitlines()) == 1
+
+
+# ── CIV-31f: a probe that ran no test is not a pass ───────────────────────
+
+
+def _helper(tmp_path: Path, root: Path, *ids: str) -> subprocess.CompletedProcess[str]:
+    """Run the REAL probe_present_tests.sh in `root`, with the pytest of this interpreter."""
+    assert BASH is not None
+    env = {k: v for k, v in os.environ.items() if k != "BISECT_TEST_CMD"}
+    return subprocess.run(
+        [BASH, (ROOT / "scripts" / "probe_present_tests.sh").as_posix(), *ids],
+        cwd=root,
+        env={**env, "PY": PY, "PROBE_PYTEST_CMD": '"$PY" -m pytest'},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+
+
+def test_civ31f_the_absent_notes_are_one_contract(tmp_path: Path) -> None:
+    """The helper writes two absent notes on stderr, and probe() reads them.
+    Each text lives in one place on each side, and the two sides agree. A change
+    of one side alone turns this test red, not a probe that reads as pass."""
+    mod = load_module()
+    text = (ROOT / "scripts" / "probe_present_tests.sh").read_text(encoding="utf-8")
+    prefix = re.search(r'^note\(\) \{ echo "(probe_present_tests: )\$\*" >&2; \}$', text, re.M)
+    absent = re.search(r'^ABSENT_NOTE="([^"]+)"$', text, re.M)
+    all_absent = re.search(r'^ALL_ABSENT_NOTE="([^"]+)"$', text, re.M)
+    assert prefix and absent and all_absent
+    assert prefix.group(1) + absent.group(1) == mod.PROBE_ABSENT_NOTE
+    assert (prefix.group(1) + all_absent.group(1)).startswith(mod.PROBE_ALL_ABSENT)
+    # The helper writes each note only through its variable, and each id after
+    # two spaces on its own line.
+    assert text.count(absent.group(1)) == 1 and text.count("ALL_ABSENT:") == 1
+    assert 'note "$ABSENT_NOTE"' in text and 'note "$ALL_ABSENT_NOTE"' in text
+    assert "printf '  %s\\n' \"${absent[@]}\" >&2" in text
+    # The reader holds each text once, in its constants.
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert source.count(absent.group(1)) == 1 and source.count("ALL_ABSENT:") == 1
+
+    # The REAL helper: both forms read as absent, with the ids that it left out.
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "test_a.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    every = _helper(tmp_path, root, "test_gone.py::test_x", "test_a.py::test_gone")
+    assert every.returncode == 0, every.stdout + every.stderr
+    assert mod.PROBE_ALL_ABSENT in every.stderr
+    assert mod.absent_ids(every.stderr) == ["test_gone.py::test_x", "test_a.py::test_gone"]
+    some = _helper(tmp_path, root, "test_gone.py::test_x", "test_a.py::test_ok")
+    assert some.returncode == 0, some.stdout + some.stderr
+    assert mod.PROBE_ABSENT_NOTE in some.stderr and mod.PROBE_ALL_ABSENT not in some.stderr
+    assert mod.absent_ids(some.stderr) == ["test_gone.py::test_x"]
+    # With no absent id, the helper writes no note, and the answer is a pass.
+    none = _helper(tmp_path, root, "test_a.py::test_ok")
+    assert none.returncode == 0 and mod.absent_ids(none.stdout + none.stderr) is None
+
+
+def test_civ31f_a_vacuous_case_does_not_verify_itself() -> None:
+    """A pure revert with 3 green proof runs, where no test ran on the parent and
+    on the revert tree: no VERIFY: PASS line, and no text that says pass there."""
+    mod = load_module()
+    case = mod.Case(
+        run_id="1",
+        culprit="c" * 40,
+        pr="104",
+        ids=[TEST_ID],
+        revert_sha="e" * 40,
+        parent="b" * 40,
+        tip="d" * 40,
+    )
+    case.pure, case.proof_runs = True, mod.FLAKE_RUNS
+    assert mod.verify_line(case).startswith("VERIFY: PASS")
+    case.vacuous = True
+    case.absent = {mod.VACUOUS_PARENT: [TEST_ID], mod.VACUOUS_REVERT: [TEST_ID]}
+    line = mod.verify_line(case)
+    assert line.startswith("Not verified") and "vacuous=yes" in line
+    body = mod.pr_body(case)
+    assert "VERIFY: PASS" not in body
+    assert "pass on its parent" not in body and "They pass on this revert tree" not in body
+    assert "Vacuous proof (vacuous=yes)" in body and f"- `{TEST_ID}`" in body
+    assert "pass on this revert tree" not in mod.revert_message(case)
+
+
+@pytest.mark.parametrize("mode", ["dry", "on"])
+def test_civ31f_a_culprit_that_adds_a_failing_test_gets_a_vacuous_proof(
+    tmp_path: Path, mode: str
+) -> None:
+    """S4: PR 104 adds a test that fails only on the box. Its parent and the
+    revert tree do not hold that test, so no test runs there. dry writes
+    vacuous=yes, and no VERIFY: PASS. on opens the PR with no VERIFY: PASS
+    line, does not hand it over, and writes one PERSON line (the non-pure path)."""
+    added = "test_new.py::test_rank"
+    box = Box(tmp_path, extra104={"test_new.py": "def test_rank():\n    assert 1 + 1 == 3\n"})
+    box.result(ids=[added])
+    got = box.run(mode, **DEFAULT_PROBE)
+    assert got.returncode == 0, got.stderr
+    report = box.report()
+    assert "absent (want pass)" in report and "vacuous=yes" in report
+    assert "VERIFY: PASS" not in report
+    if mode == "dry":
+        lines = box.lines()
+        assert len(lines) == 1 and " WOULD-REVERT " in lines[0], lines
+        assert "pure=yes" in lines[0] and "vacuous=yes" in lines[0]
+        assert "Vacuous proof (vacuous=yes)" in report and f"- `{added}`" in report
+        assert box.gh_writes() == []
+    else:
+        body = json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))["body"]
+        assert not any(ln.startswith("VERIFY: PASS") for ln in body.splitlines())
+        assert "VERIFY: PASS" not in body
+        assert "Vacuous proof (vacuous=yes)" in body and f"- `{added}`" in body
+        assert "pass on its parent" not in body
+        assert not box.queue.exists()
+        assert any(" REVERT " in ln and "revert_pr=900" in ln for ln in box.lines())
+        line = person(box)
+        assert "revert_pr=900" in line and "vacuous=yes" in line
+        assert "did not hand it over" in line
+        assert {tuple(c[:2]) for c in box.gh_writes()} == {("pr", "create")}
+        assert _state(box).exists()
+        branch = f"refs/heads/auto-revert/{box.sha[104][:12]}"
+        git(box.repo, "fetch", "-q", "origin", branch)
+        message = git(box.repo, "log", "-1", "--format=%B", box.remote_heads()[branch])
+        assert "pass on this revert tree" not in message
+    box.assert_clean()
+
+
+def test_civ31f_a_moved_test_through_the_real_bisect_is_a_vacuous_proof(tmp_path: Path) -> None:
+    """S1: PR 104 breaks calc, and PR 105 moves test_a.py to test_b.py. The batch
+    fails test_b.py::test_add. The REAL bisect with its default probe names PR
+    105, the wrong commit. The pass in dry then finds that no test ran on the
+    parent and on the revert tree: vacuous=yes, and no VERIFY: PASS."""
+    box = Box(tmp_path, variant="move")
+    ids = ["test_b.py::test_add"]
+    assert BASH is not None
+    found = subprocess.run(
+        [BASH, (ROOT / "scripts" / "bisect_main.sh").as_posix(), box.sha[101], box.tip, *ids],
+        cwd=box.repo,
+        env=box.env("dry", **DEFAULT_PROBE),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+    )
+    assert found.returncode == 0, found.stdout + found.stderr
+    line = found.stdout.strip()
+    assert line.startswith(f"FIRST_BAD {box.sha[105]} move test_a to test_b"), line
+    box.result(culprit=105, ids=ids, line=line)
+    got = box.run("dry", **DEFAULT_PROBE)
+    assert got.returncode == 0, got.stderr
+    lines = box.lines()
+    assert len(lines) == 1 and " WOULD-REVERT " in lines[0], lines
+    assert f"culprit={box.sha[105]}" in lines[0] and "vacuous=yes" in lines[0]
+    report = box.report()
+    assert "VERIFY: PASS" not in report
+    assert "Vacuous proof (vacuous=yes)" in report and "- `test_b.py::test_add`" in report
+    assert box.gh_writes() == []
+    box.assert_clean()
+
+
+def test_civ31f_a_test_that_main_renames_does_not_close_the_revert_pr(tmp_path: Path) -> None:
+    """S5: revert PR 900 of PR 104 is open. Then main moves test_a.py to
+    test_b.py. On the new tip the failed test is absent, and the renamed test
+    still fails. recheck_main runs the DEFAULT probe: one PERSON line, and the
+    PR stays open. Before CIV-31f, the tip read as a pass, and the pass closed
+    the PR."""
+    box = Box(tmp_path, variant="pytest")
+    ids = ["test_a.py::test_add"]
+    # A pass in mode on left these behind (as _open_revert_pr does).
+    box.log.write_text(
+        f"2026-11-15T00:00:00Z REVERT run=29 culprit={box.sha[104]} revert_pr=900 "
+        f"task_id={TASK_ID}\n",
+        encoding="utf-8",
+    )
+    box.pr_view(900, state="OPEN", headRefName=f"auto-revert/{box.sha[104][:12]}")
+    _state(box).parent.mkdir(parents=True)
+    _state(box).write_text(
+        json.dumps({"culprit": box.sha[104], "run": "29", "ids": ids, "tip": box.tip}),
+        encoding="utf-8",
+    )
+    moved = _land(box, 108, {"test_a.py": None, "test_b.py": CALC_TEST})
+    got = box.run("on", **DEFAULT_PROBE)
+    assert got.returncode == 0, got.stderr
+    last = box.lines()[-1]
+    assert " PERSON " in last and "revert_pr=900" in last, box.lines()
+    assert "give absent on the new tip" in last and "stays open" in last
+    assert not any(" SKIP " in ln for ln in box.lines())
+    assert _closes(box) == []
+    assert json.loads((box.fix / "pr_900.json").read_text(encoding="utf-8"))["state"] == "OPEN"
+    state = json.loads(_state(box).read_text(encoding="utf-8"))
+    assert state["person"] == moved and state["tip"] == box.tip and "close_at" not in state
+
+
+@pytest.mark.parametrize("name", ["the tip of main", "the culprit"])
+def test_civ31f_absent_on_a_tree_that_must_fail_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """The first tip check and the culprit check want fail. There, ABSENT counts
+    as unknown: the pass stops with a PERSON line, and the case is not vacuous."""
+    repo, commit = _small_repo(tmp_path)
+    sha = commit("base (#100)", {"calc.py": BAD, "test_a.py": CALC_TEST})
+    mod = load_module()
+    cfg = _default_cfg(mod, repo, monkeypatch)
+    case = mod.Case(run_id="1", culprit="c" * 40, pr="", ids=["test_gone.py::test_add"])
+    rep = mod.Report("dry", {"run_id": 1})
+    with pytest.raises(mod.Stop) as stop:
+        mod.same(cfg, case, rep, name, sha, "fail")
+    assert f"give absent on {name}" in stop.value.reason
+    assert "cannot judge" in stop.value.reason
+    assert case.vacuous is False and case.absent == {}
+
+
+def test_civ31f_a_new_tip_with_no_failed_test_is_not_a_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fixed_on_new_tip: main moved, and the new tip holds none of the failed
+    tests. That is no fix: the pass stops with a PERSON line and no SKIP."""
+    repo, commit = _small_repo(tmp_path)
+    commit("base (#100)", {"calc.py": BAD, "test_a.py": CALC_TEST})
+    renamed = commit("move the test (#101)", {"test_a.py": None, "test_b.py": CALC_TEST})
+    mod = load_module()
+    cfg = _default_cfg(mod, repo, monkeypatch)
+    case = mod.Case(run_id="1", culprit="c" * 40, pr="", ids=["test_a.py::test_add"], tip=renamed)
+    rep = mod.Report("dry", {"run_id": 1})
+    with pytest.raises(mod.Stop) as stop:
+        mod.fixed_on_new_tip(cfg, case, rep)
+    assert "give absent on the new tip" in stop.value.reason
+    assert "cannot judge" in stop.value.reason
+    assert "absent (want fail)" in "\n".join(rep.lines)
+    assert len(git(repo, "worktree", "list").splitlines()) == 1
 
 
 # ── A reverted patch does not land again unchanged (premerge.sh) ──────────

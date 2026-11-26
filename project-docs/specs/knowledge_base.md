@@ -919,6 +919,15 @@ loads tool packs (OA-7), every app's writes are such tools.
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
 
+WS-FIND FIND-6 (`find_engine.md` §5.4) ends the paragraph with the standing
+rule. Only an org of `FIND_ORGS` with `CONTEXT_RECENCY` on gets it. Every
+other org keeps the paragraph above, byte for byte:
+
+> When the member names a person, a company or a record, call
+> `search_company` once, with all their words. Read how each hit matched. A
+> near or related hit is a lead: say the spelling or the link you used.
+> Before you say that a record does not exist, read the "Where else" line.
+
 The sentences on work in one app came from the chat speed review
 (owner go, 2026-10-25). Before them, a request to write an email searched
 first and then delegated, and the email agent searched again. In
@@ -1699,8 +1708,9 @@ page.
 
 - **Input.** `q` (2 to 300 characters), `apps` (an optional comma list of
   source keys), `k` (1 to 10 hits an app, default 5).
-- **Order.** The sources run one after another, never at once. The pool
-  budget is small, and `search.py` records why. Each gets 1.5 s, and the
+- **Order.** The sources run at once, four at most (`FIND_SESSIONS`,
+  D-FIND-6, HRD-4). The pool budget is small, and `search.py` records why.
+  A fifth source waits for a slot. Each gets 1.5 s from its own start, and the
   whole answer 4 s. A source can fail, refuse or run out of time. Then the
   answer leaves it out and names it in `skipped`. It never fails the call.
 - **Fusion.** Each app ranks its own hits, and the scores of two apps do not
