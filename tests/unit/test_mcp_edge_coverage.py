@@ -146,6 +146,10 @@ CLASS_X_WRITES: dict[tuple[str, str], str] = {
         " reserve_number gives an outside agent the next number of a project"
         " sequence. The chat has no need to reserve a number."
     ),
+    ("POST", "/projects/reservations/{reservation_id}/mark"): (
+        "SW-27c1 (task 3938). The MCP door only: mark_number marks a number of"
+        " the agent's own run used or released. A person's release is SW-27c3."
+    ),
     # WS-MCP SW-114 (agent_coordination.md SW-114, §3.12.7 rule 11).
     ("POST", "/projects/agent-runs/{run_id}/children"): (
         "SW-114. The MCP door only: a hook of the agent reports a sub-agent"
@@ -269,6 +273,8 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         # WS-MCP SW-27b: `reserve_number` (agent_coordination.md SW-27). Each
         # call takes the next number of a project sequence.
         ("POST", "/projects/nodes/{project_id}/sequences/{name}/reserve"),
+        # WS-MCP SW-27c1: `mark_number`, dark behind `sequence_marks_orgs`.
+        ("POST", "/projects/reservations/{reservation_id}/mark"),
     }
     assert expected == set(MCP_WRITE_ROUTES)
 
@@ -479,6 +485,10 @@ DESTRUCTIVE_WRITES: dict[str, dict[str, bool]] = {
                        "idempotentHint": True, "openWorldHint": False},
     "delete_comment": {"readOnlyHint": False, "destructiveHint": True,
                        "idempotentHint": True, "openWorldHint": False},
+    # SW-27c1. A release burns the number for good. The same mark twice
+    # changes nothing more.
+    "mark_number": {"readOnlyHint": False, "destructiveHint": True,
+                    "idempotentHint": True, "openWorldHint": False},
 }
 
 #: The tools of a write pair that write nothing, each with its reason. Each
@@ -924,3 +934,47 @@ def test_the_sequence_name_rule_is_one_rule():
     from gateway.routes.projects.sequences import NAME_RE
 
     assert NAME_RE.pattern == SEQUENCE_NAME_PATTERN
+
+
+def test_the_sequence_route_texts_have_one_copy():
+    """SW-27c1. The gateway sends the shared details of ``agent_oauth``, so
+    the edge's map by detail matches them."""
+    from acb_auth import agent_oauth
+    from gateway.routes.projects import sequences
+
+    assert sequences.RUN_NOT_YOURS is agent_oauth.SEQUENCE_RUN_NOT_YOURS
+    assert sequences.NOT_YOUR_RUN is agent_oauth.SEQUENCE_NOT_YOUR_RUN
+
+
+@pytest.mark.parametrize("detail,expected", [
+    ("agent_writes_disabled", "other"),
+    ("This number is not a number of your run.", "not_yours"),
+    ("Feature not enabled", "other"),
+])
+def test_mark_number_maps_a_403_by_its_detail(monkeypatch, detail, expected):
+    """Review P2. The tool's own mapping: a 403 of another cause keeps its
+    own text. Before the fix, every 403 read as "not your run". Mutation:
+    map ``texts={403: ...}`` again, and the "other" cases turn red."""
+    import asyncio
+
+    from acb_auth import agent_oauth
+    from agent_edge import tools as edge_tools
+    from agent_edge.gateway_client import Answer
+
+    if detail == "agent_writes_disabled":
+        detail = agent_oauth.WRITES_DISABLED_CODE
+    answer = Answer(status=403, body={"detail": detail})
+
+    async def fake_write(ctx, method, template, not_found, **kw):
+        keep = {k: v for k, v in kw.items()
+                if k in ("texts", "details", "coded", "prefixes", "coded_statuses")}
+        return edge_tools._written(answer, not_found, **keep)
+
+    monkeypatch.setattr(edge_tools, "_write", fake_write)
+    with pytest.raises(edge_tools.ToolError) as exc:
+        asyncio.run(edge_tools._mark_number(None, {
+            "reservation_id": "00000000-0000-4000-8000-000000000001", "state": "used"}))
+    if expected == "not_yours":
+        assert str(exc.value) == edge_tools.TEXT_MARK_NOT_YOURS
+    else:
+        assert str(exc.value) != edge_tools.TEXT_MARK_NOT_YOURS

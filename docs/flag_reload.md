@@ -530,6 +530,10 @@ the member, and it adds the affinity of each kind to the score. A needs card
 goes to Later at worst, and the bell does not change. `*` lists every org, and
 the default is empty. Empty gives the answer of before, byte for byte.
 
+The flag also adds `why_seen` to each card of the feed answer (LOOP-4b). It is
+a list of sentences that code writes, and My Day shows them under "Why am I
+seeing this". A failed state read or learned read gives no `why_seen`.
+
 The reach loop, the briefs and the chat brief read the same learned feed. So
 a kind that the member mutes leaves them too. A muted needs card in Later is
 no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect on
@@ -579,6 +583,14 @@ names `field_filters`, and each other answer stays byte for byte.
 Its one reader is `gateway.routes.crm.flags.semantic_model_allowed`. Each
 plan write, each facts read and each module total ask it. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`SEQUENCE_MARKS_ORGS` lets an outside agent mark each number that its own run reserved
+`used` or `released` (`mark_number`, `agent_coordination.md` SW-27c1). Off, the
+mark route answers 404 for a signed agent, and the edge hides the tool. Its one
+reader is `acb_auth.agent_oauth.sequence_marks_allowed`. The gateway asks it at
+each call, so a reload applies a change there. The edge reads its flags at
+start, so set the same value for both units and restart the agent edge. Any
+value other than empty is gate `enforcement-flip`.
 
 `STUDIO_CHAT_TOOLS_ORGS` opens the catalog source `tool` of AI Studio
 (`ai_studio.md` §14 TOF-1a). For each listed org, `GET /studio/actions` serves
