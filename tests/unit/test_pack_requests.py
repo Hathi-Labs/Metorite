@@ -315,6 +315,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                              "delete the workflow that chases invoices"),
     "studio_workflow_build": ("change the workflow so it also sends a summary",),
     "studio_workflow_module": ("write a code module that splits a full name",),
+    # -- studio-apps: the Custom Apps of the App Workshop (PAR-9, task 3950) --
+    "custom_app_read": ("list my custom apps", "show the files of the custom app expenses"),
+    "custom_app_save": ("rename the custom app expenses to Team expenses",
+                        "pin the app expenses to my sidebar"),
+    "custom_app_files": ("change the index.html of my custom app",
+                         "restore the app checkpoint from this morning"),
+    "custom_app_publish": ("publish the custom app expenses",
+                           "roll back the custom app to version 2"),
+    "custom_app_share": ("share the custom app with ravi@acme.test",),
+    "custom_app_data": ("delete the stored data of the app for key q3",),
     # -- studio-share: the share of a skill with the org (WS-STU J2d) --
     "studio_skill_share": ("share my skill with the team",
                            "approve the skill share that waits for me"),

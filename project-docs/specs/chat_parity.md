@@ -250,6 +250,41 @@ card shows module code with a number for each line.
 - A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
   line is the switch.
 
+**PAR-9 (task 3950, rung 8) is BUILT, 2026-11-25, dark.** It pays 26 of
+the 28 debt rows of Custom Apps, so the apps ceiling goes from 28 to 2. Six
+tools join the new pack `studio-apps` of the owner `studio-builder`
+(`acb_skills/custom_app_tools.py`). `custom_app_read` reads the list, one app,
+its versions, its shares, its checkpoints, its files and its stored data.
+
+The five writes are `custom_app_save`, `custom_app_files`,
+`custom_app_publish`, `custom_app_share` and `custom_app_data`. Each tool sends
+the route of the UI as the member, so the route keeps its gates. A publish, a
+roll back, each share act, a file delete, a restore and a data delete ALWAYS
+show one card. The other writes show one card only in a chat that read outside
+mail.
+
+The pack has no surface and is not in `FOLLOWS`, so the owner turns it on with
+a `TOOL_PACKS` line. Fence: `tests/unit/test_custom_app_tools.py`.
+
+**PAR-9, the facts for the owner.**
+
+- **Decide: two rows wait for a ruling on their kind.** The code of an app
+  sends `POST /api/apps/{}/ai/complete` and `POST /api/apps/{}/tools/{}`
+  through the `cc` bridge (`ccBridge.ts`). No member click sends them, and no
+  kind of §2 fits. A `runtime` kind would take the apps debt to 0. The tool
+  registry of the second route is empty since D52, so each call fails today.
+- **A share does what the share form does, and no more.** The App Workshop
+  shares an app with one email address in the role `use`. The route also takes
+  an agent subject and the roles `edit` and `own`, but the page leaves them out
+  on purpose. So the chat refuses them with plain words and no card.
+- **A publish can widen who opens the app.** The card names who can open the
+  app after the publish, and who can open it now.
+- **A file write and a value write show no card in a clear chat**, as the App
+  Workshop does. The live version changes only at a publish, which always
+  shows a card.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
 **P-1a (task 3112) is BUILT, 2026-11-22, with no flag.** The chat lists the
 connected calendars, and proposes a clearer title or the missing fields of a
 task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
@@ -486,7 +521,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | knowledge | 17 | 19 | P-5 | 3105 |
 | memory | 5 | 5 | P-5 | 3114 |
 | workflows | 24 | 0 | P-6 | 3115, 3903 (PAR-8a built) |
-| apps | 29 | 28 | P-6 | 3115 |
+| apps | 29 | 28 | P-6 | 3115, 3950 (PAR-9 built) |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
 | shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
@@ -507,14 +542,14 @@ debt.
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Ten ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Eleven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
 60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
-calendar to 2.
+calendar to 2. PAR-9 took apps to 2.
 
-The total of `DEBT_CEILING` is 289. The "Today" column above does not show
+The total of `DEBT_CEILING` is 263. The "Today" column above does not show
 all of these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -858,6 +893,9 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
   Home feed and Needs you, and changes a Home card. The demo needs the owner
   to add `studio-workflows` to `TOOL_PACKS` and to set `HOME_TOOLS_ORGS` (§7,
   item 1).
+- **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
+  pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
+  demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -1023,8 +1061,10 @@ he approves the merge.
    Home tools of PAR-8b.
    Add `people` before the demo of rung 7 (task 3907). It holds the four
    reads of P-5b-1.
-   Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
-   the act of P-1c.
+    Add `studio-apps` before the demo of rung 8 (task 3908). It holds the six
+    Custom Apps tools of PAR-9.
+    Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
+    the act of P-1c.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller

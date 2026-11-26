@@ -194,7 +194,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
             (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
-            (3115, 3903)),
+            (3115, 3903, 3950)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3925, 3107, 3935, 3936, 3108, 3109, 3932)),
@@ -231,6 +231,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/chat_pin_tools.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
+    # PAR-9 (task 3950): the studio-apps pack sends the routes of the Custom Apps.
+    "packages/acb_skills/acb_skills/custom_app_tools.py",
     # PAR-8b: the Home tools send the shell routes, the brief and the test push.
     "packages/acb_skills/acb_skills/home_tools.py",
     # SEM-8: ``org_facts`` sends the verified-question routes of the CRM.
@@ -603,6 +605,35 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "POST /api/workflows/modules": "studio_workflow_module",
     "PUT /api/workflows/modules/{}": "studio_workflow_module",
     "DELETE /api/workflows/modules/{}": "studio_workflow_module",
+    # PAR-9 (task 3950, chat_parity.md section 6.4 rung 8): 26 acts of the Custom Apps,
+    # as the member, in the dark pack studio-apps. A publish, a roll back, a share act,
+    # a file delete, a restore and a data delete each show ONE card first.
+    "GET /api/apps": "custom_app_read",
+    "GET /api/apps/pins": "custom_app_read",
+    "GET /api/apps/{}": "custom_app_read",
+    "GET /api/apps/{}/versions": "custom_app_read",
+    "GET /api/apps/{}/usage": "custom_app_read",
+    "GET /api/apps/{}/grants": "custom_app_read",
+    "GET /api/apps/{}/checkpoints": "custom_app_read",
+    "GET /api/apps/{}/me": "custom_app_read",
+    "GET /api/apps/{}/files": "custom_app_read",
+    "GET /api/apps/{}/files/content": "custom_app_read",
+    "GET /api/apps/{}/data/{}": "custom_app_read",
+    "GET /api/apps/{}/data/{}/{}": "custom_app_read",
+    "PATCH /api/apps/{}": "custom_app_save",
+    "POST /api/apps/{}/fork": "custom_app_save",
+    "DELETE /api/apps/{}/pin": "custom_app_save",
+    "PUT /api/apps/{}/files/content": "custom_app_files",
+    "DELETE /api/apps/{}/files/content": "custom_app_files",
+    "POST /api/apps/{}/build": "custom_app_files",
+    "POST /api/apps/{}/sync": "custom_app_files",
+    "POST /api/apps/{}/restore": "custom_app_files",
+    "POST /api/apps/{}/publish": "custom_app_publish",
+    "POST /api/apps/{}/rollback": "custom_app_publish",
+    "POST /api/apps/{}/grants": "custom_app_share",
+    "DELETE /api/apps/{}/grants/{}": "custom_app_share",
+    "PUT /api/apps/{}/data/{}/{}": "custom_app_data",
+    "DELETE /api/apps/{}/data/{}/{}": "custom_app_data",
 }
 
 #: A covered action that more than one chat tool sends -> the other tools.
@@ -1111,34 +1142,11 @@ DEBT: dict[str, str] = {
     # ── Workflows ──
     # PAR-8a (task 3903) paid each Workflows row. The Workflows app has no debt.
     # ── Custom Apps ──
-    "DELETE /api/apps/{}/data/{}/{}": "P-6",
-    "DELETE /api/apps/{}/files/content": "P-6",
-    "DELETE /api/apps/{}/grants/{}": "P-6",
-    "DELETE /api/apps/{}/pin": "P-6",
-    "GET /api/apps": "P-6",
-    "GET /api/apps/pins": "P-6",
-    "GET /api/apps/{}": "P-6",
-    "GET /api/apps/{}/checkpoints": "P-6",
-    "GET /api/apps/{}/data/{}": "P-6",
-    "GET /api/apps/{}/data/{}/{}": "P-6",
-    "GET /api/apps/{}/files": "P-6",
-    "GET /api/apps/{}/files/content": "P-6",
-    "GET /api/apps/{}/grants": "P-6",
-    "GET /api/apps/{}/me": "P-6",
-    "GET /api/apps/{}/usage": "P-6",
-    "GET /api/apps/{}/versions": "P-6",
-    "PATCH /api/apps/{}": "P-6",
+    # PAR-9 (task 3950) paid 26 rows. The code of an app sends these two through the
+    # cc bridge (ccBridge.ts), and no member click sends them. No kind of EXEMPT_KINDS
+    # fits, so each waits for an owner ruling (chat_parity.md section 6.4, PAR-9).
     "POST /api/apps/{}/ai/complete": "P-6",
-    "POST /api/apps/{}/build": "P-6",
-    "POST /api/apps/{}/fork": "P-6",
-    "POST /api/apps/{}/grants": "P-6",
-    "POST /api/apps/{}/publish": "P-6",
-    "POST /api/apps/{}/restore": "P-6",
-    "POST /api/apps/{}/rollback": "P-6",
-    "POST /api/apps/{}/sync": "P-6",
     "POST /api/apps/{}/tools/{}": "P-6",
-    "PUT /api/apps/{}/data/{}/{}": "P-6",
-    "PUT /api/apps/{}/files/content": "P-6",
     # ── Agent Registry ──
     "DELETE /api/agent/mutations/{}/delete": "P-6",
     "DELETE /api/agent/mutations/{}/dismiss": "P-6",
@@ -1300,7 +1308,7 @@ DEBT_CEILING: dict[str, int] = {
     "knowledge": 4,  # PAR-3 (task 3105) built create_page, edit_page, create_space and edit_space, which pay POST and PATCH of a page and of a space (19 to 15). PAR-3b (task 3901) built move_page, revert_page and eight reads (15 to 4). Publish, archive, restore (chat_parity.md §7 item 7) and the search (AD-11) stay.
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
-    "apps": 28,
+    "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).

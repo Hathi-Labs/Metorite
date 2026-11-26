@@ -1054,6 +1054,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-9 (chat_parity.md section 6.4, rung 8, task 3950): the Custom Apps of
+    # the App Workshop. Six tools call the /apps routes as the member
+    # (custom_app_tools.py). It has no surface and is NOT in FOLLOWS: only the
+    # owner's pack list turns it on. Fence: test_custom_app_tools.py.
+    "studio-apps": {
+        "label": "AI Studio Custom Apps",
+        "summary": (
+            "Read the Custom Apps of the App Workshop, change their files and stored data, "
+            "rename, copy or pin one, publish it, roll it back, or share it."
+        ),
+        "description": (
+            "A tool pack: the acts of the Custom Apps of the App Workshop, for the main "
+            "assistant to load when a turn asks to read, change, publish or share a "
+            "Custom App. A publish, a roll back, each share act, a file delete, a "
+            "restore and a delete of a stored value show one card. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "custom_app_read",
+            "custom_app_save",
+            "custom_app_files",
+            "custom_app_publish",
+            "custom_app_share",
+            "custom_app_data",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
     # small pack of the same owner. It has no surface, so a plain Studio turn
     # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
