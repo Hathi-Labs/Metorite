@@ -203,7 +203,13 @@ class Box:
         self.cfg = self.home / "cfg"
         self.cfg.mkdir(parents=True)
         real = Path(os.path.expanduser("~")).resolve()
-        assert real not in self.home.resolve().parents and self.home.resolve() != real
+        # The fake HOME must never be the real HOME, nor sit inside a real
+        # config folder. On GitHub the pytest tmp dir is under the runner's
+        # HOME (/home/runner/work/_temp), so "not under HOME" is too strict.
+        fake = self.home.resolve()
+        assert fake != real
+        for kept in (real / ".config", real / ".claude", real / "lanes"):
+            assert not fake.is_relative_to(kept), (fake, kept)
         self.bin = tmp / "bin"
         self.bin.mkdir()
         fake = self.bin / "claude"
