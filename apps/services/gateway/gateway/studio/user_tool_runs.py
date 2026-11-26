@@ -57,14 +57,16 @@ _ERROR_CLASS = re.compile(r"[a-z0-9_]{1,64}")
 #: The insert. It selects the chat under the bound tenant, so a chat of
 #: another org, or no chat, gives no row. The org comes from the column
 #: DEFAULT, and the policy checks it. The write counts take their DEFAULT 0,
-#: and the measures of SBX-7 stay NULL.
+#: and the measures of SBX-7 stay NULL. ``started_at`` is clamped to the
+#: clock of the database (``LEAST(..., now())``): a host clock that runs
+#: ahead would else break the CHECK ``ended_at >= started_at``.
 _INSERT_SQL = (
     "INSERT INTO user_tool_runs (member_email, run_id, thread_id, phase, backend, "
     "outcome, exit_code, wall_ms, api_reads, error_class, gap_id, app_id, version, "
     "started_at, ended_at) "
     "SELECT :member, :run, s.id, :phase, :backend, :outcome, :exit_code, :wall_ms, "
     ":api_reads, :error_class, CAST(:gap AS uuid), CAST(:app AS uuid), :version, "
-    "COALESCE(CAST(:started AS timestamptz), now()), now() "
+    "LEAST(COALESCE(CAST(:started AS timestamptz), now()), now()), now() "
     "FROM chat_session s WHERE s.id = :thread "
     "RETURNING CAST(id AS text)"
 )

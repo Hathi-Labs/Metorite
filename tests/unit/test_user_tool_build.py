@@ -46,3 +46,31 @@ def test_the_broker_agent_names_are_reserved_at_registration(monkeypatch) -> Non
         assert exc.value.status_code == 409, name
         assert "reserved" in str(exc.value.detail), name
     assert saved == []
+
+
+def test_one_module_runs_sql_on_user_tool_runs() -> None:
+    """SBX-4b1 decision 10 (R7): `gateway/studio/user_tool_runs.py` is the
+    one module that runs SQL on `user_tool_runs`. Mutation: add a query of the
+    table to any other source file, and this test fails."""
+    import re
+
+    pattern = re.compile(
+        r"(?i)\b(?:from|into|update|join|table)\s+user_tool_runs\b")
+    owner = REPO_ROOT / "apps/services/gateway/gateway/studio/user_tool_runs.py"
+    others = []
+    for root in ("apps", "packages"):
+        for path in (REPO_ROOT / root).rglob("*.py"):
+            if path == owner or "/tests/" in str(path) or ".venv" in path.parts:
+                continue
+            if pattern.search(path.read_text(encoding="utf-8", errors="ignore")):
+                others.append(str(path.relative_to(REPO_ROOT)))
+    assert others == [], others
+
+
+def test_a_future_start_is_clamped_to_the_database_clock() -> None:
+    """Review P2: a host clock ahead of the database must not break the CHECK
+    `ended_at >= started_at`. Mutation: drop the LEAST, and this test fails."""
+    from gateway.studio import user_tool_runs
+
+    assert ("LEAST(COALESCE(CAST(:started AS timestamptz), now()), now())"
+            in user_tool_runs._INSERT_SQL)

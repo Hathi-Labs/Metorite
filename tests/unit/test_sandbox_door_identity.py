@@ -670,9 +670,11 @@ _STORE_DIGESTS: dict[tuple[int, int], str] = {
     # 35c1dc2e... (3.13).
     # SBX-4b1 (task 3986, 2026-11-26): the refusal counter of §12.4 decision
     # 9 (the note in `lookup`, the mark in `log_door_call`, `count_refusal`
-    # and `door_counts`). CPython 3.12.16 and 3.13.18 gave it. The Opus
-    # diff-reviewer review and the independent verification are OWED, and
-    # the commit that carries them names them.
+    # and `door_counts`). CPython 3.12.16 and 3.13.18 gave it. Reviewed:
+    # the Opus diff-reviewer APPROVE of 532a1b2cd0, which names both values
+    # ("approved by this review"). Verified: the independent Opus
+    # ws-verifier of 532a1b2cd0 (done-when 1, 2 and 4 to 7 met, R8 15 of 15
+    # on a real database, mutations a to d red). Task 3986, 2026-11-26.
     (3, 12): "a226cce603ff9e613d6ce99dc5a1f1eda4f9c6b5e5b6ef786abbc512137bec11",
     (3, 13): "ac7483eb0fee46d5a277cbe890607e3cea41632287024bd23ed9ac71dd1a8a27",
 }
