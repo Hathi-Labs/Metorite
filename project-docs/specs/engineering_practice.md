@@ -888,7 +888,9 @@ the label for a decision.
    `landing: "queued"`. LBB-2 makes `hand_over.sh` print that call as its last
    line. A `queued` mark expires after 24 hours, so a PR that the bot sent
    BACK counts again by the next day. A lane that re-queues sends the mark
-   again. At each merge, the merger sends `landing: "gone"`.
+   again. At each merge, the merger sends `landing: "gone"`. LBB-1 owns that
+step in `scripts/home_server/lanes/lane-merge.md`, because LBB-1 also removes
+the Done at the merge.
 4. **The refusal is for an agent.** It names each PR, its age in hours, its
    task number and one next step.
 
@@ -933,14 +935,18 @@ row level security (255), so the columns inherit it (R5).
   person, with an open question).
 
 **The refusal.** A 422 through `_refuse_claim` (`tasks.py`), with
-`detail.error = "land_your_pr"`. The body lists up to 5 counted PRs, oldest
+`detail.error = "land_your_pr"`. `_refuse_claim` gains an optional `prs`
+list for the body. The body lists up to 5 counted PRs, oldest
 first. Each entry has the PR number (parsed from `ref`), the age in hours,
 the task number and a `next` code. It also has the URL, but only when the
 URL matches `^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$`. The edge adds
 `land_your_pr` to its coded claim refusals (`_CLAIM_CODED`, `tools.py`),
-because `coded_statuses=(422, 403)` already carries a 422. It renders a fixed
+because `coded_statuses=(422, 403)` already carries a 422. It also adds
+`land_your_pr` to `_OUTSIDE_CODED`, which `set_assignees` uses, and 422 to the
+coded statuses of `start_agent_run`. So all three doors show the same text. It renders a fixed
 text from these values, never text that a person wrote. The `next` code:
-- `answer` when a run on the task has the state `answered`: "A person
+- `answer` when `AGENT_RUN_ANSWER_WAITS_SQL` (`filters.py`) finds an
+  answered run on the task. "Answered" is a derived state, not a status: "A person
   answered on task T. Read the answer and act on it."
 - `land` otherwise: "Merge main into PR N, verify it, and queue it. Then call
   add_task_reference on task T with landing queued."
@@ -948,10 +954,14 @@ text from these values, never text that a person wrote. The `next` code:
   add_task_reference on task T with landing gone."
 
 **The `my_work` row.** `my_work` takes an optional `agent_label`, as
-`claim_task` does. With no label, it lists the PRs bound to no label.
+`claim_task` does, and joins `_TAKES_LABEL` in
+`tests/unit/test_agent_label_fence.py`. With no label, it lists the PRs bound
+to no label.
 - A new gateway read lists the counted PRs over 24 hours for the caller and
   label: `GET /projects/agent-work/landing` in
-  `gateway/routes/projects/claim_gate.py`.
+  `gateway/routes/projects/claim_gate.py`. The pair
+  `("GET", "/projects/agent-work/landing")` joins `MCP_ROUTES`
+  (`packages/acb_auth/acb_auth/agent_oauth.py`).
 - The edge adds `land_your_pr` to `MY_WORK_REASONS` (`tools.py`). The row
   keys gain `pr_number`, `pr_url` (same pattern as above, else null) and
   `age_hours`.
@@ -979,15 +989,21 @@ one more day, `*`. Each step is gate `enforcement-flip`. The grant of
 `.claude/OWNER_GRANTS.md` ends on 2026-11-30, so a step after that date needs
 a new grant line or the owner's own hand.
 
+**Accepted risk.** Every session with no label shares one bucket. So a
+session with no label can be refused for a PR of another session with no
+label. metorite-78 measures this on the shadow day, before `CLAIM_GATE_ORGS`
+goes on.
+
 **Fences.**
 - `tests/unit/test_claim_gate_r8.py`, on a real database: each rule of "A
   counted PR", each exemption of trap 2, the three doors, the shadow flag
   refuses nothing, and the `landing` write.
-- `tests/unit/test_claim_gate_edge.py`: the refusal text for each `next` code,
-  a URL that fails the pattern is left out, and the `my_work` row and its
-  position.
+- `tests/unit/test_claim_gate_edge.py`: the refusal text for each `next` code
+  at each of the three doors, a URL that fails the pattern is left out, and
+  the `my_work` row and its position.
 - `tests/unit/test_agent_label_fence.py`: `claim_gate.py` is the one allowed
-  decision reader of the label.
+  decision reader of the label. No SQL constant outside `claim_gate.py` names
+  `agent_label` in a `WHERE` clause.
 - `tests/unit/test_flag_reload.py`: one reader test per flag, in the shape of
   the `_READERS` table (PR 2380) or of the per-flag tests on main.
 
