@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
 import sys
 import uuid
@@ -77,9 +78,11 @@ class FakeTransport(BaseAdapter):
         super().__init__()
         self.handler = handler
         self.sent: list[requests.PreparedRequest] = []
+        self.kwargs: list[dict[str, Any]] = []
 
-    def send(self, request: requests.PreparedRequest, **_: Any) -> requests.Response:  # type: ignore[override]
+    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:  # type: ignore[override]
         self.sent.append(request)
+        self.kwargs.append(kwargs)
         status, body, headers = self.handler(request)
         answer = requests.Response()
         answer.status_code = status
@@ -366,6 +369,29 @@ def test_the_proxy_scan_sees_each_case(source: str) -> None:
 )
 def test_the_url_scan_sees_each_case(source: str) -> None:
     assert url_problems(source)
+
+
+def test_a_netrc_adds_no_authorization_and_the_env_proxy_still_applies(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """trust_env stays on, so requests reads the proxy. A netrc must not add auth."""
+    netrc = tmp_path / "netrc"
+    netrc.write_text("default login x password y\n", encoding="utf-8")
+    monkeypatch.setenv("NETRC", str(netrc))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    door, fake = _door(_answers((200, {"rows": [], "total": 0}, {})))
+    assert door._session.trust_env is True
+    door.get("/crm/leads")
+    list(door.pages("/crm/leads"))
+    assert len(fake.sent) == 2
+    for sent, kwargs in zip(fake.sent, fake.kwargs, strict=True):
+        assert "Authorization" not in sent.headers
+        assert sent.headers["X-Sandbox-Capability"] == TOKEN
+        assert kwargs["proxies"].get("http") == "http://proxy.example:3128"
 
 
 def test_the_client_sends_the_capability_header_and_no_other_auth() -> None:
@@ -825,6 +851,10 @@ def test_each_paged_route_takes_its_keys_and_answers_its_rows_key() -> None:
         model = getattr(route, "response_model", None)
         if model is not None and hasattr(model, "model_fields"):
             assert paging.rows_key in model.model_fields, f"GET {path}: no {paging.rows_key}"
+        else:
+            # A dict route: the handler must build its answer with the key.
+            source = inspect.getsource(route.endpoint)
+            assert f'"{paging.rows_key}":' in source, f"GET {path}: no {paging.rows_key!r} key"
 
 
 # --------------------------------------------------------------------------

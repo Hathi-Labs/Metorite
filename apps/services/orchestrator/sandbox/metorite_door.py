@@ -185,6 +185,21 @@ def _error(answer: requests.Response, path: str) -> DoorError:
     return DoorError(code or fixed, status=status, path=path, retry_after=_retry_after(answer))
 
 
+class _NoAuth(requests.auth.AuthBase):
+    """Sends no auth header, and stops requests from reading a netrc.
+
+    With ``trust_env`` on and no auth, requests reads ``NETRC`` or
+    ``~/.netrc`` and adds ``Authorization: Basic``. HOME is writable in the
+    image, so a tool could plant one. An auth that is set skips that read.
+    """
+
+    def __call__(self, request: requests.PreparedRequest) -> requests.PreparedRequest:
+        return request
+
+
+_NO_AUTH = _NoAuth()
+
+
 def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
@@ -195,6 +210,7 @@ class Door:
     def __init__(self, timeout_s: float = 30.0) -> None:
         self._timeout_s = float(timeout_s)
         self._session = requests.Session()
+        self._session.auth = _NO_AUTH
 
     def _send(self, path: str, params: dict[str, Any] | None) -> requests.Response:
         token = _capability()
@@ -204,6 +220,7 @@ class Door:
                 params=params,
                 headers={CAPABILITY_HEADER: token, "Accept": "application/json"},
                 timeout=self._timeout_s,
+                auth=_NO_AUTH,
                 allow_redirects=False,
             )
         except requests.RequestException:
