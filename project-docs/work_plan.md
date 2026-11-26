@@ -6773,6 +6773,10 @@ and one thing that cannot be written until a second person exists.
 > it: the owner approves the preview before the flip.
 > `specs/proactive_loop.md` §7.2 is the authority.
 >
+> The flag also adds `why_seen` to each card of the feed answer (LOOP-4b).
+> It is a list of sentences that code writes. My Day shows them under "Why am I
+> seeing this", so the preview must show that box too.
+>
 > The reach loop, the briefs and the chat brief read the same learned feed.
 > So a kind that the member mutes leaves them too. A muted needs card in Later
 > is no interrupt, and it is in no brief. LOOP-5 owns the rest of the effect
