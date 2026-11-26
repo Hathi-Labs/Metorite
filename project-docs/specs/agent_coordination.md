@@ -2273,7 +2273,7 @@ They keep their own gates.
 
 #### AMR-1 · The Graph lens of the Agents view
 
-- **Metorite task.** To make (the board was not reachable on 2026-11-26). Epic 321.
+- **Metorite task.** 4020. Epic 321.
 - **Scope.** §3.12.8 for the Graph and the details. The flag `AGENT_LENSES_ORGS`, its shell field `agent_lenses`, and `waiting_on` and `waiting_until` on each run of the map read and of `get_agent_map`.
 - **Done when.** With the flag on, the canvas shows the four columns, and each line comes from a field of the read. With the flag off, the canvas is the map of SW-103. A waiting run gives its wait, and every other run gives two nulls.
 - **Fence.** `lib/agentLenses.test.ts`, `lib/agentGraph.test.ts`, `components/AgentLenses.test.ts`, `tests/unit/test_agent_map_r8.py` and `tests/unit/test_auth_me_shell.py`.
@@ -2281,7 +2281,7 @@ They keep their own gates.
 
 #### AMR-2 · The Board and List lenses, and the toolbar
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4021. Epic 321.
 - **Scope.** The toolbar of §3.12.8, and the Board and List lenses over the same model. The words and the icons of a state come from `AGENT_STATES` and the board lanes.
 - **Done when.** Each lens shows the same sessions under the same filters.
 - **Fence.** `lib/agentLenses.test.ts` and `components/AgentLenses.test.ts`.
@@ -2289,7 +2289,7 @@ They keep their own gates.
 
 #### AMR-3 · The phone view of the Agents view
 
-- **Metorite task.** To make. Epic 321.
+- **Metorite task.** 4022. Epic 321.
 - **Scope.** The phone view of §3.12.8.
 - **Done when.** At 390 pixels, no graph draws. A question that waits on the member takes an answer on its card. A session opens in the bottom sheet.
 - **Fence.** `components/AgentLenses.test.ts`.
@@ -2297,7 +2297,7 @@ They keep their own gates.
 
 #### AMR-4 · The Agents view at scale
 
-- **Metorite task.** Owed (the lane did not reach the board on 2026-11-26). Epic 321.
+- **Metorite task.** 4023. Epic 321.
 - **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
 - **Done when.** A fleet of 500 sessions and 2000 subagents draws no more than 40 session cards on a canvas. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
 - **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts` and `components/AgentScale.test.ts`.
