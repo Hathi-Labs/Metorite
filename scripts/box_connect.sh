@@ -90,15 +90,6 @@ usage() {
   sed -n '/^#   box_connect.sh \[/,/^#   --no-verify/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
-# The token shape has one definition, in the header helper (TOKEN_RE).
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-helper_src="$script_dir/metorite_box_headers.sh"
-[ -f "$helper_src" ] || die "$helper_src is missing. Run the script from a full checkout." 4
-TOKEN_RE=""
-# shellcheck source=/dev/null  # it only sets TOKEN_RE, then returns.
-. "$helper_src"
-[ -n "$TOKEN_RE" ] || die "$helper_src does not define TOKEN_RE." 4
-
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) [ $# -ge 2 ] || die "--url needs a value." 2; URL="$2"; shift 2 ;;
@@ -111,6 +102,16 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument. The token is never an argument: the script reads it from a hidden prompt or from stdin. Run with --help." 2 ;;
   esac
 done
+
+# The token shape has one definition, in the header helper (TOKEN_RE).
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+helper_src="$script_dir/metorite_box_headers.sh"
+[ -f "$helper_src" ] || die "$helper_src is missing. Run the script from a full checkout." 4
+TOKEN_RE=""
+REFUSED_BEARER=""
+# shellcheck source=/dev/null  # it only sets TOKEN_RE and REFUSED_BEARER, then returns.
+. "$helper_src"
+if [ -z "$TOKEN_RE" ] || [ -z "$REFUSED_BEARER" ]; then die "$helper_src does not define TOKEN_RE and REFUSED_BEARER." 4; fi
 
 : "${HOME:?HOME is not set}"
 if ! [[ "$URL" =~ $PRINTABLE_RE ]] || [[ "$URL" == *[\"\\]* ]]; then
@@ -357,11 +358,17 @@ case "$entry_rc" in
   4) die "the user-scope '$NAME' entry holds a static header next to the header helper. Run this script again with --replace." 7 ;;
   *) die "the user-scope '$NAME' entry in $claude_json does not name the header helper $helper_cmd. Run this script again with --replace." 7 ;;
 esac
-# The helper must read the token file now. Its stdout holds the token, so it
-# goes to /dev/null. Its stderr never holds the token.
-if ! "$helper_path" "$env_file" >/dev/null; then
+# The helper must read the token file now. A refusal exits 0 and prints the
+# sentinel bearer, so the script checks the output and not the exit code. The
+# output holds the token, so it stays in a variable and is never printed. The
+# stderr of the helper never holds the token.
+helper_rc=0
+helper_out="$("$helper_path" "$env_file")" || helper_rc=$?
+if [ "$helper_rc" -ne 0 ] || [ -z "$helper_out" ] || [[ "$helper_out" == *"$REFUSED_BEARER"* ]]; then
+  unset -v helper_out
   die "the header helper $helper_path refused $env_file. See the line above." 7
 fi
+unset -v helper_out
 say "in $verify_dir the effective '$NAME' entry is the user entry with the header helper."
 
 # 6b. Does it connect?

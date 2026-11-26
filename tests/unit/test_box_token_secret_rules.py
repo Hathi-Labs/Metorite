@@ -45,6 +45,11 @@ Mutations that turn this file red (R7):
     ``test_an_invalid_entry_stops_before_any_remove``.
 11. A header helper with no mode check (the ``[ "$mode" = "600" ]`` line
     removed): ``test_the_helper_refuses_a_loose_mode``.
+11b. A refusal that prints no header, or exits nonzero: the
+    ``*_helper_refuses_*`` cases (``_assert_refused``), and
+    ``test_a_refused_helper_starts_no_oauth`` in the client file.
+11c. A verify step that trusts the exit code of the helper:
+    ``test_a_helper_refusal_at_install_stops_the_verify``.
 12. A helper that names the token in a refusal: the ``*_helper_refuses_*``
     cases.
 13. An entry with a static ``Authorization`` header next to the helper:
@@ -341,6 +346,8 @@ if args[:2] == ["mcp", "add-json"]:
     entry = json.loads(body)
     if mode == "static-header":
         entry["headers"] = {"Authorization": "Bearer ${METORITE_BOX_TOKEN}"}
+    if mode == "loosen-env":
+        os.chmod(os.path.join(os.environ["HOME"], ".config", "metorite", "box.env"), 0o644)
     d = load(); servers = d.setdefault("mcpServers", {})
     if name in servers:
         print(f"MCP server {name} already exists in user config"); sys.exit(1)
@@ -891,9 +898,15 @@ def _token_file(folder: Path, line: str, mode: int = 0o600) -> Path:
     return path
 
 
+# A refusal keeps an Authorization header: with none, Claude Code starts OAuth
+# discovery and Dynamic Client Registration (review of 2026-11-26).
+_REFUSED = {"Authorization": "Bearer box-token-helper-refused"}
+
+
 def _assert_refused(run: subprocess.CompletedProcess, tok: str | None, reason: str) -> None:
-    assert run.returncode != 0, run.stdout
-    assert run.stdout == ""
+    assert run.returncode == 0, run.stderr  # a nonzero exit makes the client ignore stdout
+    assert json.loads(run.stdout) == _REFUSED
+    assert run.stdout.count("{") == 1
     assert reason in run.stderr, run.stderr
     assert len(run.stderr.splitlines()) == 1, run.stderr
     if tok:
@@ -1037,3 +1050,49 @@ def test_a_home_that_needs_quoting_is_refused(tmp_path: Path) -> None:
         encoding="utf-8", timeout=60, check=False)
     assert run.returncode == 2, run.stdout + run.stderr
     assert b.calls() == []
+
+
+def test_a_helper_refusal_at_install_stops_the_verify(box: Box) -> None:
+    """A refusal exits 0, so the verify step must read the sentinel."""
+    tok = _token()
+    run = box.run(tok + "\n", mode="loosen-env")
+    out = run.stdout + run.stderr
+    assert run.returncode == 7, out
+    assert "refused" in out and "must have mode 0600" in out
+    assert "box-token-helper-refused" not in out  # the helper stdout is not printed
+    _assert_no_token(out, tok)
+    assert [c["argv"][:2] for c in box.calls()][-1] == ["mcp", "get"]  # no list
+
+
+def test_help_works_from_a_partial_copy(tmp_path: Path) -> None:
+    lone = tmp_path / "box_connect.sh"
+    shutil.copy2(_SCRIPT, lone)
+    run = subprocess.run(["bash", str(lone), "--help"], capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=False)
+    assert run.returncode == 0, run.stderr
+    assert "--no-verify" in run.stdout
+
+
+def test_the_helper_refuses_a_hard_link(tmp_path: Path) -> None:
+    tok = _token()
+    path = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n")
+    os.link(path, tmp_path / "second-name")
+    _assert_refused(_helper(path, tmp_path), tok, "has 2 hard links")
+
+
+def test_the_helper_refuses_a_fifo_without_a_wait(tmp_path: Path) -> None:
+    fifo = tmp_path / "box.env"
+    os.mkfifo(fifo, 0o600)
+    t0 = time.monotonic()
+    _assert_refused(_helper(fifo, tmp_path), None, "not a regular file")
+    assert time.monotonic() - t0 < 10  # inside the 10 s limit of the client
+
+
+def test_the_helper_checks_and_reads_one_open_descriptor() -> None:
+    """A name swap after the checks must not change what is read."""
+    body = _HELPER.read_text(encoding="utf-8")
+    opened = body.index('{ exec {fd}<"$box_env"; }')
+    after = body[opened:]
+    assert '"/dev/fd/$fd"' in after and 'done <&"$fd"' in after
+    assert '<"$box_env"' not in after.replace('{ exec {fd}<"$box_env"; }', "")
+    assert "stat -c" not in body.replace('stat -L -c', "")

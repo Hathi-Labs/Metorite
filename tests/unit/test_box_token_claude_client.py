@@ -23,7 +23,9 @@ temp ``HOME`` and a temp ``CLAUDE_CONFIG_DIR``. The real home, the live
   ``claude`` runs with no ``METORITE_BOX_TOKEN`` in its environment, like a
   lane that a long-lived ``claude daemon`` starts. The server still sees the
   bearer, because Claude Code runs the helper when it connects.
-- A revoked token through the helper fails loud and starts no OAuth.
+- A revoked token through the helper fails loud and starts no OAuth. So does
+  a helper that refuses `box.env` (a loose mode, a missing file): it prints a
+  sentinel bearer, and the client sees a 401, never an OAuth prompt.
 - A project ``.mcp.json`` that names the same server with no header, and
   approved in the settings, wins over the user entry. ``claude mcp get``
   then names the Project scope, and the script stops with exit 7. With the
@@ -371,4 +373,35 @@ def test_an_approved_project_entry_wins_and_the_script_stops(home: Path, tmp_pat
         out = run.stdout + run.stderr
         assert run.returncode == 0, out
         assert "'metorite' is connected" in out
+        assert good not in out
+
+
+@pytest.mark.parametrize("break_it", ["loose-mode", "missing-file"])
+def test_a_refused_helper_starts_no_oauth(home: Path, break_it: str) -> None:
+    """A refusal keeps an Authorization header, so the client starts no OAuth.
+
+    The review of 2026-11-26 proved that a helper that prints nothing (or exits
+    nonzero) makes Claude Code run OAuth discovery and POST /register. The
+    helper now prints a sentinel bearer, the server answers 401, and the client
+    does not fall back to OAuth.
+    """
+    good = _sample_token()
+    env_file = home / ".config" / "metorite" / "box.env"
+    with _Server(good) as server:
+        run = _run_script(home, good, "--url", server.url)
+        assert run.returncode == 0, run.stdout + run.stderr
+        if break_it == "loose-mode":
+            env_file.chmod(0o644)
+        else:
+            env_file.unlink()
+        server.requests.clear()
+
+        listed = _claude(home, "mcp", "list")
+        out = listed.stdout + listed.stderr
+        line = _line(listed.stdout, "metorite")
+        assert "Failed to connect" in line, out
+        assert "OAuth fallback is disabled" in line, line
+        assert _oauth_requests(server) == [], server.requests
+        assert server.requests, "the server saw no request"
+        assert all(r["auth"] == "Bearer box-token-helper-refused" for r in server.requests)
         assert good not in out

@@ -70,7 +70,11 @@ For an old entry, the script shows the type, the address and the kind of header,
 
 The old entry used the header `Bearer ${METORITE_BOX_TOKEN}`. Claude Code expands that variable from its own environment. On the box, a long-lived `claude daemon` starts each `claude --bg` lane, and the daemon never loaded `box.env`. So the old header could go out with no token. To move a box from the old entry to the helper, run the script again with `--replace`.
 
-The helper refuses `box.env` when the file does not exist, is a symlink, is not mode 0600, or is not owned by you. It also refuses a token of the wrong shape. A refusal shows one line on stderr and never the token. To test the helper by hand, run `~/.local/bin/metorite-box-headers >/dev/null`. Exit code 0 means that it reads the token.
+The helper refuses `box.env` when the file does not exist, is a symlink, has a second hard link, is not mode 0600, or is not owned by you. It also refuses a token of the wrong shape. A refusal shows one line on stderr and never the token.
+
+A refusal still prints an `Authorization` header with the bearer `box-token-helper-refused`, and exits 0. The server answers 401 to it, and Claude Code then starts no OAuth. Without that header, Claude Code starts OAuth discovery and registers a client (review of 2026-11-26). So a refused `box.env` shows as "Failed to connect", never as a sign-in prompt.
+
+The session-start hook `.claude/hooks/session-handoff.mjs` also runs the helper when `METORITE_BOX_TOKEN` is not set. It reads the refusal bearer as no credential. To test the helper by hand, run `~/.local/bin/metorite-box-headers >/dev/null`. No line on stderr means that it reads the token. The exit code is 0 in both cases.
 
 The helper takes the path of `box.env` from the entry only. No environment variable changes the path, because a project settings file can set a variable.
 
@@ -103,9 +107,9 @@ The script does not edit a settings file or `.mcp.json`. A local-scope entry win
 
 ## 6. Revoke
 
-1. In **Integrations**, **AI agents**, select **Revoke** on the box row.
-2. On the box, delete `~/.config/metorite/box.env` and `~/.local/bin/metorite-box-headers`.
-3. Remove the entry with `claude mcp remove -s user metorite`.
+1. On the box, remove the entry first: `claude mcp remove -s user metorite`.
+2. In **Integrations**, **AI agents**, select **Revoke** on the box row.
+3. On the box, delete `~/.config/metorite/box.env` and `~/.local/bin/metorite-box-headers`.
 
 The revoke takes effect on the next call.
 
