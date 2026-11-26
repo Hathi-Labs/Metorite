@@ -4174,7 +4174,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             return twice
         pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
         call_args = _call_args(fn, args, kwargs)
-        if marks_chat(owner, name, call_args):  # task 2492: a read marks, a send does not
+        if marks_chat(owner, name, call_args):  # task 2492: only a call that can bring outside text
             await _mark_pack_session(owner, ctx)
         # TOF-3a F12b: a tool of a loaded skill notes its outcome on the run.
         notes = _skill_notes_of(ctx, run_key, name)
