@@ -94,6 +94,10 @@ RUN_ERROR_CODES: tuple[str, ...] = (
     # 503. The chat draws the resting card with "Try again". A transport
     # failure (nothing listened) stays `connection`.
     "ai_unavailable",
+    # HRD-16, the browser's own: a card answer that a run already took, from
+    # another device or a double tap. `POST /agent/respond-input` refuses the
+    # repeat with 409 `answered_once`, and the chat sends nothing again.
+    "answered_once",
 )
 
 #: The longest raw text a RUN_ERROR keeps. It is shown inside the fold only.

@@ -7,7 +7,8 @@ back as a NEW message, so the answer acted twice.
 
 This module keeps one small mark for each answered request id. The route
 sets it after a run took the answer, and reads it before the restart path.
-A marked request id gets an ``ok`` with no resend.
+A marked request id gets a 409 ``answered_once``. The browser then says that
+someone answered the card, and it sends nothing again.
 
 The key goes through the tenant-prefix wrapper (R5c), under the session's
 organization. A Redis failure never blocks an answer: the mark is a guard,

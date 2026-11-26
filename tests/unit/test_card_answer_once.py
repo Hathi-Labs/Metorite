@@ -5,7 +5,8 @@ Mutations this suite catches:
 * ``buffer_guidance`` no longer drops a repeated signal id: two notes.
 * ``mark_answered`` is a no-op: the second ``was_answered`` read is False.
 * the route no longer reads ``was_answered`` before the restart path: the
-  source check below fails.
+  source check and the route tests below fail.
+* the repeat gets the plain 409 again: the route tests below fail.
 
 Hermetic: the Redis client is a fake. No SQL, so R8 does not apply.
 """
@@ -120,7 +121,117 @@ def test_route_checks_the_mark_before_the_restart_path():
     assert calls.get("mark_answered")
 
 
-def test_repeat_answer_is_a_409_not_a_false_success():
-    src = pathlib.Path("apps/services/gateway/gateway/routes/agent.py").read_text(encoding="utf-8")
-    i = src.index("was_answered(_org_id")
-    assert "raise _plain_409()" in src[i:i + 900]
+# ── The route, called for real: a repeat names itself and starts nothing ─────
+#
+# Owner decision 2026-11-23: "Distinct 409 detail, client does not resend".
+# Mutations these catch:
+#
+# * the repeat raises the plain 409 again: the detail is a string, not
+#   ``answered_once``, and the browser resends (red).
+# * the ``was_answered`` check moves after the late-decline branch: a repeat
+#   decline reaches ``_resume_from_row`` (red).
+# * the check reads the mark for every 409: a stale card with no mark gets
+#   ``answered_once`` and loses today's path (red).
+
+
+@pytest.fixture
+def route(monkeypatch, fake):
+    """``respond_user_input`` with no run, no Redis and no database.
+
+    ``world["delivered"]`` says whether a run takes the answer. Each late path
+    records its call, so a test can prove that a repeat never reaches it.
+    """
+    from types import SimpleNamespace
+
+    agent_routes = pytest.importorskip("gateway.routes.agent")
+    executor = pytest.importorskip("orchestrator.executor")
+    stream_relay = pytest.importorskip("orchestrator.stream_relay")
+    chat_recovery = pytest.importorskip("gateway.chat_recovery")
+    reply_card = pytest.importorskip("acb_skills.reply_card")
+
+    world: dict = {"delivered": False, "calls": []}
+
+    monkeypatch.setattr(
+        agent_routes, "_resolve_room", lambda *_a, **_k: SimpleNamespace(can_send=True))
+    monkeypatch.setattr(
+        executor, "resolve_user_input", lambda *_a, **_k: world["delivered"])
+
+    async def _dispatch(*_a, **_k):
+        return False
+
+    monkeypatch.setattr(stream_relay, "dispatch_control", _dispatch)
+
+    async def _record(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(reply_card, "record_reply_answer", _record)
+
+    def _spy(name, result):
+        async def _f(*_a, **_k):
+            world["calls"].append(name)
+            return result
+        return _f
+
+    monkeypatch.setattr(agent_routes, "_resume_from_row", _spy("_resume_from_row", None))
+    monkeypatch.setattr(agent_routes, "_late_decline_from_row", _spy("_late_decline_from_row", False))
+    monkeypatch.setattr(
+        agent_routes, "_late_answer_from_row", _spy("_late_answer_from_row", (None, False)))
+    monkeypatch.setattr(
+        chat_recovery, "card_answer_after_restart", _spy("card_answer_after_restart", None))
+
+    user = SimpleNamespace(email="a@x.io", organization_id="org1")
+
+    def call(*, declined: bool = False, rid: str = "req1"):
+        req = agent_routes.UserInputResponseRequest(
+            request_id=rid, answer="" if declined else "yes",
+            thread_id="t1", declined=declined,
+        )
+        return asyncio.run(agent_routes.respond_user_input(req, user))
+
+    world["call"] = call
+    return world
+
+
+def _refusal(call, **kw):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as e:
+        call(**kw)
+    return e.value
+
+
+@pytest.mark.parametrize("declined", [False, True])
+def test_a_repeat_gets_the_answered_once_409_and_reaches_no_late_path(route, declined):
+    route["delivered"] = True
+    first = route["call"](declined=declined)
+    assert first.get("ok") is True
+    route["delivered"] = False
+    err = _refusal(route["call"], declined=declined)
+    assert err.status_code == 409
+    assert isinstance(err.detail, dict) and err.detail["error"] == "answered_once"
+    # The repeat starts nothing: no late resume, no late decline, no resend.
+    assert route["calls"] == []
+
+
+def test_a_repeated_decline_never_reaches_the_late_decline_resume(route):
+    """The reviewer's open point: the source order alone did not prove it."""
+    route["delivered"] = True
+    route["call"](declined=True)
+    route["delivered"] = False
+    for _ in range(2):
+        _refusal(route["call"], declined=True)
+    assert "_resume_from_row" not in route["calls"]
+    assert "_late_decline_from_row" not in route["calls"]
+
+
+@pytest.mark.parametrize("declined", [False, True])
+def test_a_stale_card_with_no_mark_keeps_todays_plain_409(route, declined):
+    """A card whose run ended, with no answer taken: today's path, unchanged."""
+    err = _refusal(route["call"], declined=declined, rid="stale")
+    assert err.status_code == 409
+    assert isinstance(err.detail, str) and "No pending question" in err.detail
+    assert "_resume_from_row" in route["calls"]
+    if declined:
+        assert "_late_decline_from_row" in route["calls"]
+    else:
+        assert "card_answer_after_restart" in route["calls"]
