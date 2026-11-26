@@ -564,6 +564,12 @@ source ask it on each call, so a reload applies at the next 15-minute bucket.
 It needs `JOB_QUEUE` on, and the deployment key needs `serve`. A flip stays
 OWNER-GATE (`enforcement-flip`).
 
+`SANDBOX_DOOR_ORGS` opens the sandbox door (`agent_sandbox.md` §12.2,
+SBX-2). Empty, each request with a capability gets 401 before any read. `*`
+lists every org, and it is allowed only while self-serve signup is off. Its
+one reader is `acb_auth.sandbox_capabilities.door_orgs`. A reload applies a
+change. The flip stays OWNER-GATE (`enforcement-flip`).
+
 `SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
 (`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the
 kinds `measure`, `join` and `query`, and `org_facts` serves the approved

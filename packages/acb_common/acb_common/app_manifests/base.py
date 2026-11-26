@@ -209,6 +209,10 @@ class Route:
     #: has no chat tool, so the chat rules do not run. An :class:`App`
     #: refuses it.
     api: bool = False
+    #: SBX-2 (``agent_sandbox.md`` §12.2 decision 2): the sandbox door reads
+    #: this row. Off by default, so a row joins only by an edit to its own
+    #: line. Only a GET row of class A may set it.
+    sandbox: bool = False
 
     def __post_init__(self) -> None:
         where = f"{self.method} {self.path}"
@@ -216,6 +220,8 @@ class Route:
             raise ValueError(f"{where}: the method is not one of {METHODS}")
         if self.cls not in CLASSES:
             raise ValueError(f"{where}: class {self.cls!r} is not one of {CLASSES}")
+        if self.sandbox and (self.cls != "A" or self.method != "GET"):
+            raise ValueError(f"{where}: the sandbox door reads a GET row of class A only")
         if self.api:
             self._check_api(where)
         else:
