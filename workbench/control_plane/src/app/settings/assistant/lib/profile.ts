@@ -11,7 +11,7 @@
  * answer, the full profile, as the new state.
  */
 
-import { invalidate } from "@/lib/dataCache";
+import { invalidate, put } from "@/lib/dataCache";
 import { filenameFromDisposition } from "@/lib/export";
 import { FOLLOW_UPS_KEY, followUpsOn } from "@/lib/followUpPref";
 
@@ -566,11 +566,13 @@ export async function fetchProfileAndGate(): Promise<{
 
 /**
  * The switch "Show follow-up suggestions" (task 4002). After the save, the
- * open chats read the setting again.
+ * saved value goes into the cache, so each open chat takes it with no second
+ * read. A read that is out at that moment cannot store its older answer.
  */
 export async function saveFollowUps(value: boolean): Promise<void> {
   await call("", "PUT", { key: "apps", value: { chat: { follow_up_suggestions: value } } });
   invalidate(FOLLOW_UPS_KEY);
+  put(FOLLOW_UPS_KEY, value);
 }
 
 /** The switch "Keep chat summaries". Forget keeps it. */

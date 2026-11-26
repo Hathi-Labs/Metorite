@@ -1146,8 +1146,8 @@ function FollowUpsSection({ v }: { v: AssistantPaneViewProps }) {
         <span className="space-y-0.5">
           <span className="block text-sm font-medium text-foreground">Show follow-up suggestions</span>
           <span className="block text-xs text-muted-foreground">
-            The chat offers next messages under an answer, with the label Follow up. It is off
-            until you turn it on.
+            The chat offers next messages under an answer, with the label Follow up. This is off
+            by default.
           </span>
         </span>
       </label>

@@ -1,6 +1,6 @@
 // The Assistant pane's pure rules (WS-63 PZ-7).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { peek, put } from "@/lib/dataCache";
+import { clearAll, peek, put, read, subscribe } from "@/lib/dataCache";
 import { FOLLOW_UPS_KEY } from "@/lib/followUpPref";
 import {
   EMPTY_PROFILE,
@@ -280,7 +280,7 @@ describe("fetchBlock", () => {
 describe("Follow-up suggestions (task 4002)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("writes the switch through the apps key, and open chats read it again", async () => {
+  it("writes the switch through the apps key, and caches the saved value", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
     put(FOLLOW_UPS_KEY, false);
     await saveFollowUps(true);
@@ -291,7 +291,29 @@ describe("Follow-up suggestions (task 4002)", () => {
       key: "apps",
       value: { chat: { follow_up_suggestions: true } },
     });
-    expect(peek(FOLLOW_UPS_KEY)).toBeUndefined();
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(true);
+  });
+
+  it("wakes an open chat that never got an answer", async () => {
+    clearAll();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    const woke = vi.fn();
+    const off = subscribe(FOLLOW_UPS_KEY, woke);
+    await saveFollowUps(true);
+    off();
+    expect(woke).toHaveBeenCalled();
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(true);
+  });
+
+  it("drops the older answer of a read that is still out", async () => {
+    clearAll();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    let answer: (on: boolean) => void = () => {};
+    const slow = read<boolean>(FOLLOW_UPS_KEY, () => new Promise<boolean>((r) => (answer = r)));
+    await saveFollowUps(false);
+    answer(true);
+    expect(await slow).toBe(false);
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(false);
   });
 
   it("keeps the cached answer when the save fails", async () => {
