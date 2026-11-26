@@ -2579,6 +2579,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
