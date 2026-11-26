@@ -45,12 +45,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["ImageInfo", "UnsupportedImage", "probe_image", "sniff_image_mime"]
+__all__ = [
+    "RASTER_MIMES",
+    "ImageInfo",
+    "UnsupportedImage",
+    "looks_like_svg",
+    "probe_image",
+    "sniff_image_mime",
+]
 
 #: The first bytes of each image type that :func:`sniff_image_mime` names.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _JPEG_MAGIC = b"\xff\xd8"
 _GIF_MAGICS = (b"GIF87a", b"GIF89a")
+
+#: The four types that :func:`sniff_image_mime` names (CIV-14b). An SVG is
+#: not one of them.
+RASTER_MIMES: frozenset[str] = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+#: The first bytes that :func:`looks_like_svg` reads.
+_SVG_HEAD_BYTES = 1024
+
+
+def looks_like_svg(data: bytes) -> bool:
+    """True when the first bytes of *data* open an SVG document (CIV-14b).
+
+    The test reads the start of the text, after white space and a UTF-8 byte
+    order mark: ``<svg``, or an XML prolog with ``<svg`` in the first KB. An
+    HTML file that holds an inline ``<svg>`` is not an SVG document here,
+    because the serve route downloads HTML and never shows it inline.
+    """
+    head = bytes(data[:_SVG_HEAD_BYTES]).lstrip(b"\xef\xbb\xbf").lstrip().lower()
+    if head.startswith(b"<svg"):
+        return True
+    return head.startswith(b"<?xml") and b"<svg" in head
 
 
 def sniff_image_mime(data: bytes) -> str | None:

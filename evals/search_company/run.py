@@ -79,10 +79,14 @@ async def run_set(ask: Ask, questions: list[Question]) -> list[Outcome]:
         seconds = time.perf_counter() - started
         hits = list(answer.get("hits") or [])
         rank, place = score.locate(hits, q.source, q.gold)
+        # FIND-3: a gold among the related records is named apart, never a hit.
+        related = any(str(h.get("id")) in q.gold for h in answer.get("related") or []
+                      if isinstance(h, dict))
         out.append(Outcome(
             q.id, q.source, rank, place, seconds,
             hits=dict(Counter(str(h.get("app")) for h in hits)),
             skipped=tuple(str(s) for s in answer.get("skipped") or ()),
+            related=related,
         ))
     return out
 
@@ -163,14 +167,14 @@ def switches(org: str) -> Any:
               "knowledge_orgs": org, "knowledge_embed": ""}
     missing = object()
     before = {k: getattr(settings, k, missing) for k in wanted}
-    budgets = (company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S)
+    budgets = (company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S, company.RELATED_BUDGET_S)
     for key, value in wanted.items():
         object.__setattr__(settings, key, value)
-    company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S = 30.0, 60.0
+    company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S, company.RELATED_BUDGET_S = 30.0, 60.0, 30.0
     try:
         yield
     finally:
-        company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S = budgets
+        company.SOURCE_TIMEOUT_S, company.TOTAL_BUDGET_S, company.RELATED_BUDGET_S = budgets
         for key, value in before.items():
             if value is missing:
                 with contextlib.suppress(AttributeError):

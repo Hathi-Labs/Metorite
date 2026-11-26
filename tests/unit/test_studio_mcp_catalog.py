@@ -18,7 +18,9 @@ This file proves:
 - a description is data: a prompt-injection marker, a colour and a pixel size
   stay as text and change no class;
 - a tools list of a server outside the list of the caller gives no row;
-- the real catalog gives no ``mcp`` row and calls no server;
+- the real catalog gives no ``mcp`` row and calls no server on an empty
+  cache (B1b-2 adds the cache, ``test_studio_mcp_tools.py``);
+- two items of one name give the stricter class (B1b-2, trap 2);
 - the door refuses an ``mcp:`` action: ``not_in_catalog`` when the catalog
   does not list it, else ``source_not_open``, for a direct call too.
 
@@ -84,8 +86,17 @@ def _tool(name: str, annotations: Any = None, description: Any = "") -> dict[str
     return item
 
 
+def _rows(servers: list[Any], tools: Any) -> list[dict[str, Any]]:
+    """``mcp_rows`` with each listed tool approved (B1b-3), so the class rule of
+    B1b-1 shows. ``test_studio_mcp_approvals.py`` fences the changed tools."""
+    approved = {(s.name, t["name"]): mcp_actions.tool_text_hash(t)
+                for s in servers for t in tools.get(s.name, ())
+                if isinstance(t, dict) and isinstance(t.get("name"), str)}
+    return mcp_actions.mcp_rows(servers, tools, approved=approved)
+
+
 def _one(tool: dict[str, Any], **server: Any) -> dict[str, Any]:
-    rows = mcp_actions.mcp_rows([_server(**server)], {"github": [tool]})
+    rows = _rows([_server(**server)], {"github": [tool]})
     assert len(rows) == 1, rows
     return rows[0]
 
@@ -160,13 +171,13 @@ def test_a_name_with_another_source_cannot_parse_as_that_source(uses):
 ])
 def test_a_tool_whose_name_the_grammar_refuses_gives_no_row(name):
     assert mcp_actions.action_id("github", name) is None
-    rows = mcp_actions.mcp_rows([_server()], {"github": [_tool(name), _tool("ok")]})
+    rows = _rows([_server()], {"github": [_tool(name), _tool("ok")]})
     assert [r["id"] for r in rows] == ["mcp:github.ok"]
 
 
 def test_a_name_that_is_not_text_gives_no_row():
     items: list[Any] = [{"name": 7}, {"name": None}, "get_issue", None, {"name": ["x"]}]
-    assert mcp_actions.mcp_rows([_server()], {"github": items}) == []
+    assert _rows([_server()], {"github": items}) == []
 
 
 # ── The class rule ─────────────────────────────────────────────────────────
@@ -196,13 +207,13 @@ def test_a_tool_with_no_hints_is_b():
 def test_an_always_confirm_server_gives_b_for_each_tool():
     tools = [_tool("a", {"readOnlyHint": True}), _tool("b", {"destructiveHint": True}),
              _tool("c")]
-    rows = mcp_actions.mcp_rows([_server(always_confirm=True)], {"github": tools})
+    rows = _rows([_server(always_confirm=True)], {"github": tools})
     assert [r["class"] for r in rows] == ["B", "B", "B"]
 
 
 def test_a_damaged_always_confirm_value_gives_b():
     server = SimpleNamespace(name="github", enabled=True, always_confirm="no")
-    rows = mcp_actions.mcp_rows([server], {"github": [_tool("a", {"readOnlyHint": True})]})
+    rows = _rows([server], {"github": [_tool("a", {"readOnlyHint": True})]})
     assert rows[0]["class"] == "B"
 
 
@@ -285,7 +296,7 @@ def test_a_row_holds_nothing_else_of_the_server():
     row = _one(_tool("get", {"readOnlyHint": True, "junk": "x"}, "Get one issue."))
     assert set(row) == {"id", "title", "source", "class", "input_schema", "output_schema",
                         "connection", "app", "tool", "server", "mcp_tool", "description",
-                        "hints"}
+                        "hints", "changed", "text_hash"}
     assert row["source"] == "mcp" and row["server"] == "github" and row["mcp_tool"] == "get"
     assert row["connection"] == "mcp:github" and row["tool"] is None
     assert row["hints"] == {"readOnlyHint": True}
@@ -293,10 +304,23 @@ def test_a_row_holds_nothing_else_of_the_server():
     assert "secret-host" not in text and "SECRET" not in text
 
 
-def test_the_first_tool_of_a_name_wins():
-    tools = [_tool("t", {"destructiveHint": True}), _tool("t", {"readOnlyHint": True})]
-    rows = mcp_actions.mcp_rows([_server()], {"github": tools})
-    assert [(r["id"], r["class"]) for r in rows] == [("mcp:github.t", "B")]
+@pytest.mark.parametrize("write_first", [True, False])
+def test_the_stricter_tool_of_a_name_wins(write_first):
+    """B1b-2, trap 2: two items of one name give one row of class B, in each
+    order. The first item used to win, so a read-only copy first made a
+    write look like a read."""
+    tools = [_tool("t", {"destructiveHint": True}, "wipe"), _tool("t", {"readOnlyHint": True})]
+    if not write_first:
+        tools.reverse()
+    rows = _rows([_server()], {"github": tools})
+    assert [(r["id"], r["class"], r["description"]) for r in rows] == [
+        ("mcp:github.t", "B", "wipe")]
+
+
+def test_two_items_of_one_class_keep_the_first():
+    tools = [_tool("t", {"readOnlyHint": True}, "one"), _tool("t", {"readOnlyHint": True}, "two")]
+    rows = _rows([_server()], {"github": tools})
+    assert [r["description"] for r in rows] == ["one"]
 
 
 # ── The org scope of the caller ────────────────────────────────────────────
@@ -304,33 +328,45 @@ def test_the_first_tool_of_a_name_wins():
 
 def test_a_tools_list_of_a_server_outside_the_list_gives_no_row():
     tools = {"github": [_tool("a")], "other-org-srv": [_tool("b")]}
-    rows = mcp_actions.mcp_rows([_server("github")], tools)
+    rows = _rows([_server("github")], tools)
     assert [r["id"] for r in rows] == ["mcp:github.a"]
-    assert mcp_actions.mcp_rows([], tools) == []
+    assert _rows([], tools) == []
 
 
 def test_a_server_that_is_not_enabled_gives_no_row():
-    rows = mcp_actions.mcp_rows([_server(enabled=False)], {"github": [_tool("a")]})
+    rows = _rows([_server(enabled=False)], {"github": [_tool("a")]})
     assert rows == []
 
 
 def test_a_server_whose_key_the_grammar_refuses_gives_no_row():
-    rows = mcp_actions.mcp_rows([_server("Bad.Key")], {"Bad.Key": [_tool("a")]})
+    rows = _rows([_server("Bad.Key")], {"Bad.Key": [_tool("a")]})
     assert rows == []
 
 
 # ── The real catalog calls no server ───────────────────────────────────────
 
 
-def test_the_real_catalog_gives_no_mcp_row_and_reads_no_server(monkeypatch):
-    from gateway.connections import mcp
+async def test_the_real_catalog_gives_no_mcp_row_and_reads_no_server(monkeypatch):
+    """B1b-2: the catalog reads the cache only. With no bound org, and with an
+    empty cache, it gives no row, reads no registry and calls no server."""
+    from acb_common.tenant_redis import TenantRedis
+    from gateway import outbound_guard
+    from gateway.connections import mcp, mcp_tools
+
+    from tests.unit.test_studio_mcp_tools import RawRedis
 
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("the catalog read a server")
 
     for name in ("servers_for_org", "enabled_meta", "list_servers", "get_one"):
         monkeypatch.setattr(mcp, name, _boom)
-    assert actions._mcp_rows() == []
+    monkeypatch.setattr(mcp_tools, "_sdk_list", _boom)
+    monkeypatch.setattr(outbound_guard, "mcp_client", _boom)
+    monkeypatch.setattr(mcp_tools, "_redis", lambda: TenantRedis(RawRedis()))
+    monkeypatch.setattr(actions, "current_tenant", lambda: None)
+    assert await actions._mcp_rows() == ([], True)
+    monkeypatch.setattr(actions, "current_tenant", lambda: "org-a")
+    assert await actions._mcp_rows() == ([], True)
 
 
 def test_the_mcp_module_reaches_no_store_and_no_network():
@@ -343,8 +379,10 @@ def test_the_mcp_module_reaches_no_store_and_no_network():
             names.add(node.module)
         elif isinstance(node, ast.Import):
             names.update(a.name for a in node.names)
+    # B1b-3: ``hashlib``, ``json`` and ``hidden_text`` make the pure text hash.
     assert names <= {"__future__", "collections.abc", "typing", "acb_common.studio_manifest",
-                     "acb_skills.permission_policy", "acb_skills.skill_packs"}, names
+                     "acb_skills.permission_policy", "acb_skills.skill_packs",
+                     "acb_skills.hidden_text", "hashlib", "json"}, names
 
 
 # ── The door ───────────────────────────────────────────────────────────────

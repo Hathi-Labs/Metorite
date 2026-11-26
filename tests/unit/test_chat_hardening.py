@@ -39,8 +39,12 @@ def test_reconnect_endpoint_enforces_thread_ownership():
     from gateway.routes import agent as agent_routes
 
     src = inspect.getsource(agent_routes.reconnect_agent_stream)
-    assert "_thread_owner_ok" in src
+    # RESUME-2d: the route reads the room once (`_thread_room`), and the
+    # guard is the answer of `_thread_owner_ok` for it (`_room_readable`).
+    assert "_thread_room" in src and "_room_readable" in src
     assert "403" in src
+    owner_src = inspect.getsource(agent_routes._thread_owner_ok)
+    assert "_room_readable(_thread_room(" in owner_src
 
 
 def test_session_upsert_attributes_real_user_and_never_downgrades():

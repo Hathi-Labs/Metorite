@@ -48,9 +48,54 @@ waits. An answer during the park drops it again (``drop_offer``). The gateway
 turns it into a grant of one use only on a late APPROVE. Dark behind
 ``CHAT_LATE_APPROVE_ORGS``.
 
+**The stored call** (RESUME-1a, ``chat_run_continuity.md`` §4.12.4 item 1).
+The card gate (``ask_tools.request_confirmation``) binds the call of a plain
+card of a listed write to its request id with :func:`bind_call`, before the
+card goes out. The bind is out of band, keyed by the request id, because on
+path A :func:`note_event` runs in the executor's drain and cannot read the
+tool's context. :func:`note_event` takes the entry, and :func:`insert_ask`
+writes it in the column ``stored_call`` (migration 448). ``_COLUMNS`` leaves
+the column out, so no browser read returns it. :func:`read_stored_call` is the
+one reader, and :func:`claim_stored_call` the one claim (RESUME-2a).
+:func:`claim_declined_call` is the claim of a late decline (RESUME-4a-2).
+:func:`restore_stored_call` gives a claim back when its run never started. A move to
+``answered`` or ``closed`` sets it to NULL, and a park keeps it. Dark behind
+``CHAT_RESUME_ORGS`` (``acb_skills.stored_call``): off, nothing binds, and
+each row is as before.
+
+**The same reply** (RESUME-2b, §4.12.4 item 2, case A). :func:`_record` adds
+the id of the run's reply row to the stored call (``message_id``), from the
+run's ``run_liveness`` record. :func:`park` keeps the stream of the parked run
+for 24 hours (D-RES-7, ``stream_relay.keep_parked_stream``) when both resume
+flags name the org. So a late Approve can go on in the same reply.
+
+**Park at the stop** (RESUME-5, §4.12.5). The gateway's stop step calls
+:func:`park_at_stop` once, through ``POST /internal/drain/park``. Each wait
+that took an entry (:func:`stop_wait`) parks in its own task, with
+:func:`park_for_stop`. Only where ``CHAT_DURABLE_ASKS`` is on and both resume
+flags name the org. A card that opens after the call does not park. Fences:
+``tests/unit/test_pending_ask_flow.py``, ``tests/unit/test_gateway_drain.py``
+and ``tests/unit/test_resume_continuation.py``.
+
+**Retention** (task 3435, ``chat_run_continuity.md`` §4.12.4 item 1). No
+reader takes a row past ``expires_at``, and no move changes one. So
+:func:`prune` is the one end of an old row. It runs as a hook of the daily
+prune of the job worker (:func:`prune_hook`, ``gateway.jobs.worker
+.prune_hooks``), once for each org, in the org's own session. An expired row
+loses its stored call at the next prune: the arguments of a call never
+outlive the card. A row past ``expires_at`` plus :data:`PENDING_ASK_KEEP_DAYS`
+goes, with its payload and its answer. A row that still waits, and has not
+expired, never changes. The member purge deletes the rows that ask a leaver
+(``routes/admin/members.py``, ``chat_pending_asks``). These two are the only
+deletes of the table. It runs only with ``JOB_QUEUE`` on.
+
 Fences (R7): ``tests/unit/test_pending_ask_store.py`` (R8: the SQL and the
 row level security, as the NOBYPASSRLS app role) and
-``tests/unit/test_pending_ask_flow.py`` (the flow).
+``tests/unit/test_pending_ask_flow.py`` (the flow). The stored call:
+``tests/unit/test_resume_stored_call.py`` and
+``tests/unit/test_resume_stored_call_r8.py`` (R8). The retention:
+``tests/unit/test_pending_ask_prune.py`` and
+``tests/unit/test_pending_ask_prune_r8.py`` (R8).
 """
 from __future__ import annotations
 
@@ -170,10 +215,56 @@ def card_of(event: Any) -> CardAsk | None:
 # tests/unit/test_pending_ask_store.py.
 # ---------------------------------------------------------------------------
 
+#: The columns of each read that a browser route reaches (``read_ask``,
+#: ``waiting_asks``, the RETURNING of ``move_ask``). ⚠️ ``stored_call`` is NOT
+#: one of them (RESUME-1a): it holds the arguments of a call, and only
+#: :func:`read_stored_call` reads it. Fence: ``test_resume_stored_call.py``.
 _COLUMNS = (
     "request_id, thread_id, run_id, actor_email, agent_name, kind, question, "
     "payload, state, answer, asked_at, parked_at, answered_at, expires_at"
 )
+
+#: The insert of a row. A row with a stored call names the column, and a row
+#: with none sends the statement of before, byte for byte (RESUME-1a).
+_INSERT_SQL = (
+    "INSERT INTO chat_pending_ask (organization_id, request_id, "
+    "  thread_id, run_id, actor_email, agent_name, kind, question, "
+    "  payload, expires_at) "
+    "VALUES (CAST(:org AS uuid), :rid, :tid, :run, :actor, :agent, "
+    "  :kind, :question, CAST(:payload AS jsonb), "
+    "  now() + make_interval(hours => :ttl)) "
+    "ON CONFLICT (organization_id, request_id) DO NOTHING"
+)
+_INSERT_STORED_SQL = (
+    "INSERT INTO chat_pending_ask (organization_id, request_id, "
+    "  thread_id, run_id, actor_email, agent_name, kind, question, "
+    "  payload, stored_call, expires_at) "
+    "VALUES (CAST(:org AS uuid), :rid, :tid, :run, :actor, :agent, "
+    "  :kind, :question, CAST(:payload AS jsonb), CAST(:stored AS jsonb), "
+    "  now() + make_interval(hours => :ttl)) "
+    "ON CONFLICT (organization_id, request_id) DO NOTHING"
+)
+
+
+def _stored_text(stored: Any) -> str | None:
+    """*stored* as the JSON text of the column, or None when it is no stored
+    call: not a dict, a value that JSON cannot hold (a lone surrogate, a NUL), or more than
+    :data:`_PAYLOAD_BYTES` bytes of UTF-8 (RESUME-1a)."""
+    if not isinstance(stored, dict) or not stored:
+        return None
+    try:
+        text = json.dumps(stored, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":"), sort_keys=True)
+        too_big = len(text.encode("utf-8")) > _PAYLOAD_BYTES
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if too_big:
+        return None
+    if "\\u0000" in text:
+        # json.dumps escapes a NUL (in a value or a key) as \u0000, and
+        # Postgres jsonb refuses it. Store no call: fail closed.
+        return None
+    return text
 
 
 def _row(r: Any) -> dict[str, Any]:
@@ -188,34 +279,33 @@ def _row(r: Any) -> dict[str, Any]:
 
 
 def insert_ask(organization_id: str, row: dict[str, Any]) -> bool:
-    """Write one ``open`` row. A second write of the same request is a no-op."""
+    """Write one ``open`` row. A second write of the same request is a no-op.
+
+    RESUME-1a: ``row["stored_call"]``, when :func:`_stored_text` reads it, goes
+    into the column ``stored_call``. A row with none writes NULL with the
+    statement of before."""
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
 
+    params: dict[str, Any] = {
+        "org": organization_id,
+        "rid": row["request_id"],
+        "tid": row["thread_id"],
+        "run": row.get("run_id"),
+        "actor": (row.get("actor_email") or "").strip().lower(),
+        "agent": row.get("agent_name"),
+        "kind": row["kind"],
+        "question": row.get("question") or "",
+        "payload": json.dumps(row.get("payload") or {}, default=str),
+        "ttl": _ttl_hours(),
+    }
+    stored = _stored_text(row.get("stored_call"))
+    sql = _INSERT_SQL
+    if stored is not None:
+        sql = _INSERT_STORED_SQL
+        params["stored"] = stored
     with tenant_session(organization_id) as s:
-        result = s.execute(
-            text(
-                "INSERT INTO chat_pending_ask (organization_id, request_id, "
-                "  thread_id, run_id, actor_email, agent_name, kind, question, "
-                "  payload, expires_at) "
-                "VALUES (CAST(:org AS uuid), :rid, :tid, :run, :actor, :agent, "
-                "  :kind, :question, CAST(:payload AS jsonb), "
-                "  now() + make_interval(hours => :ttl)) "
-                "ON CONFLICT (organization_id, request_id) DO NOTHING"
-            ),
-            {
-                "org": organization_id,
-                "rid": row["request_id"],
-                "tid": row["thread_id"],
-                "run": row.get("run_id"),
-                "actor": (row.get("actor_email") or "").strip().lower(),
-                "agent": row.get("agent_name"),
-                "kind": row["kind"],
-                "question": row.get("question") or "",
-                "payload": json.dumps(row.get("payload") or {}, default=str),
-                "ttl": _ttl_hours(),
-            },
-        )
+        result = s.execute(text(sql), params)
         return bool(result.rowcount)
 
 
@@ -231,14 +321,17 @@ def move_ask(
 
     One statement, so two answers that race move the row once. The second
     gets ``None`` and resends nothing. An expired row never moves.
+
+    RESUME-1a: a move to ``answered`` or ``closed`` sets ``stored_call`` to
+    NULL, because no answer may run the call after that. A park keeps it.
     """
     from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
     from sqlalchemy import text
 
     stamp = {
         "parked": "parked_at = now()",
-        "answered": "answered_at = now(), answer = :answer",
-        "closed": "answered_at = COALESCE(answered_at, now())",
+        "answered": "answered_at = now(), answer = :answer, stored_call = NULL",
+        "closed": "answered_at = COALESCE(answered_at, now()), stored_call = NULL",
     }.get(to)
     if stamp is None:
         raise ValueError(f"unknown state {to!r}")
@@ -267,7 +360,8 @@ def close_thread_asks(
     Runs inside the CALLER's tenant transaction (the chat delete, or an edit
     of the last message), so the rows change together with the caller's own
     write. With *actor_email*, only the questions that member was asked
-    close: an edit never closes the card of another member in a room.
+    close: an edit never closes the card of another member in a room. A
+    closed row keeps no stored call (RESUME-1a).
     """
     from sqlalchemy import text
 
@@ -275,7 +369,7 @@ def close_thread_asks(
     result = session.execute(
         text(
             "UPDATE chat_pending_ask SET state = 'closed', "
-            "  answered_at = COALESCE(answered_at, now()) "
+            "  answered_at = COALESCE(answered_at, now()), stored_call = NULL "
             "WHERE thread_id = :tid AND state = ANY(:waiting) "
             "  AND (:who = '' OR actor_email = :who)"
         ),
@@ -299,6 +393,52 @@ def read_ask(organization_id: str, request_id: str) -> dict[str, Any] | None:
             {"rid": request_id, "waiting": list(WAITING)},
         ).first()
         return _row(r) if r is not None else None
+
+
+#: The second witness of the late approve (HRD-22b item 2). A confirmation row
+#: of the member, in ANY thread, with the same visible card, answered APPROVE
+#: after the row was asked. An APPROVE with edits (``APPROVE {...}``, the edit
+#: card of EAC-1) is an APPROVE too: the act ran with the edited values. The org predicate stands beside RLS, as in
+#: ``move_ask``.
+_TWIN_APPROVED_SQL = (
+    "SELECT 1 FROM chat_pending_ask "
+    "WHERE organization_id = CAST(:org AS uuid) AND actor_email = :actor "
+    "  AND kind = 'confirmation' AND state = 'answered' "
+    "  AND (upper(btrim(coalesce(answer, ''))) = 'APPROVE' "
+    "       OR upper(coalesce(answer, '')) LIKE 'APPROVE %') "
+    "  AND answered_at > CAST(:asked AS timestamptz) AND request_id <> :rid "
+    "  AND coalesce(payload->>'title', '') = :title "
+    "  AND coalesce(payload->>'detail', '') = :detail "
+    "  AND coalesce(payload->>'context', '') = :context "
+    "LIMIT 1"
+)
+
+
+def twin_approved_since(organization_id: str, member: str, row: dict[str, Any]) -> bool:
+    """True when a twin of *row* (the same member, the same title, detail and
+    context) moved to ``answered`` with ``APPROVE`` after *row* was asked, in
+    any thread. It is also True when *row* cannot be compared (no card text
+    or no ``asked_at``), the fail-closed side: the grant then waits for the
+    normal card. Sync: callers run it in a thread. R8 fence:
+    ``tests/unit/test_late_approve_twin_r8.py``."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    payload = row.get("payload")
+    asked = row.get("asked_at")
+    if not isinstance(payload, dict) or payload.get("truncated") or not asked:
+        return True
+    title = str(payload.get("title") or "")
+    if not title:
+        return True
+    params = {
+        "org": organization_id, "actor": (member or "").strip().lower(),
+        "asked": str(asked), "rid": str(row.get("request_id") or ""),
+        "title": title, "detail": str(payload.get("detail") or ""),
+        "context": str(payload.get("context") or ""),
+    }
+    with tenant_session(organization_id) as s:
+        return s.execute(text(_TWIN_APPROVED_SQL), params).first() is not None
 
 
 def waiting_asks(
@@ -335,6 +475,342 @@ def waiting_asks(
     return [_row(r) for r in rows]
 
 
+def read_stored_call(organization_id: str, request_id: str) -> dict[str, Any] | None:
+    """The stored call of one row that still waits, or None (RESUME-1a).
+
+    THE one reader of ``stored_call``. No browser read may call it. RESUME-2a:
+    only ``gateway.routes.agent._resume_from_row`` calls it, on a late
+    Approve, before :func:`claim_stored_call`. It reads a row
+    of the caller's tenant only, under RLS and with the org predicate beside
+    it, as :func:`waiting_asks` does (R5). An answered, closed or expired row
+    gives None, and so does a row with no stored call.
+    """
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        r = s.execute(
+            text(
+                "SELECT stored_call FROM chat_pending_ask "
+                "WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
+                "  AND state = ANY(:waiting) AND expires_at > now() "
+                "  AND stored_call IS NOT NULL"
+            ),
+            {"org": organization_id, "rid": request_id, "waiting": list(WAITING)},
+        ).first()
+    value = r[0] if r is not None else None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+#: RESUME-2a: the claim of a stored call, in ONE statement. The CTE locks the
+#: row and keeps its stored call. The UPDATE moves the row to ``answered``,
+#: sets the column to NULL, and gives back the value of the CTE. Postgres 16
+#: has no ``RETURNING OLD``, and ``move_ask`` leaves the column out of its
+#: RETURNING, so the CTE is the one way to read the old value in the move.
+#: The org predicate stands beside RLS (R5). A row of another member, another
+#: thread, a row that expired, and a row with no stored call never move.
+_CLAIM_OLD = (
+    "WITH old AS ("
+    "  SELECT organization_id, request_id, stored_call FROM chat_pending_ask "
+    "  WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
+    "    AND state = ANY(:waiting) AND expires_at > now() "
+    "    AND actor_email = :member AND thread_id = :tid "
+    "    AND stored_call IS NOT NULL "
+    "  FOR UPDATE"
+    ") "
+)
+_CLAIM_SQL = _CLAIM_OLD + (
+    "UPDATE chat_pending_ask AS p SET state = 'answered', answered_at = now(), "
+    "  answer = :answer, stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: RESUME-4a-2 (task 3478, D-RES-9): the claim of a late decline, in ONE
+#: statement. The same CTE as :data:`_CLAIM_SQL` locks the row and keeps its
+#: stored call, under the same predicates. The UPDATE moves the row to
+#: ``closed`` (a decline is no answer, as ``move_ask(to="closed")``), sets
+#: the column to NULL, and gives back the old stored call. No tool runs it:
+#: the continuation only tells the model that nothing was done.
+_CLAIM_DECLINED_SQL = _CLAIM_OLD + (
+    "UPDATE chat_pending_ask AS p SET state = 'closed', "
+    "  answered_at = COALESCE(p.answered_at, now()), stored_call = NULL "
+    "FROM old "
+    "WHERE p.organization_id = old.organization_id "
+    "  AND p.request_id = old.request_id "
+    "RETURNING old.stored_call"
+)
+
+#: The SQLSTATE codes that mean "no claim": a deadlock, and a lock that did
+#: not come in time (``lock_timeout``).
+_NO_CLAIM_CODES = frozenset({"40P01", "55P03"})
+
+#: How long the claim waits for the lock of the row.
+_CLAIM_LOCK_TIMEOUT = "5s"
+
+
+def _sqlstate(exc: BaseException) -> str:
+    """The SQLSTATE of a driver error, for psycopg 3 and psycopg2."""
+    orig = getattr(exc, "orig", None) or exc
+    return str(getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None) or "")
+
+
+def claim_stored_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+    answer: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row, ONCE (RESUME-2a).
+
+    ``gateway.routes.agent._resume_from_row`` is the one caller. One
+    statement (:data:`_CLAIM_SQL`) moves the row from ``parked`` or ``open``
+    to ``answered`` and gives back the stored call that it held. So two
+    Approves that race claim the row once, and the second gets None.
+
+    *member* and *thread_id* come from the session and the request's own
+    thread, which the route checked against the row. They must equal the
+    row's ``actor_email`` and ``thread_id``. The org is the session's, under
+    RLS and with the org predicate beside it (R5). A deadlock and a lock
+    timeout give None: no claim. It adds no state: ``answered`` is one of the
+    four states of ``chat_pending_ask_state_known``.
+    """
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_SQL, extra={"answer": (answer or "")[:_ANSWER_CHARS]})
+
+
+def claim_declined_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+) -> dict[str, Any] | None:
+    """Claim the stored call of one waiting row for a late DECLINE, ONCE.
+
+    RESUME-4a-2 (task 3478, D-RES-9). ``gateway.routes.agent._resume_from_row``
+    is the one caller. One statement (:data:`_CLAIM_DECLINED_SQL`) moves the
+    row from ``parked`` or ``open`` to ``closed`` and gives back the stored
+    call that it held. Nothing runs the call: the continuation only tells
+    the model that nothing was done. The predicates are those of
+    :func:`claim_stored_call`, and so are the "no claim" codes. It adds no
+    state: ``closed`` is one of the four states."""
+    return _claim(organization_id, request_id, member=member, thread_id=thread_id,
+                  sql=_CLAIM_DECLINED_SQL, extra={})
+
+
+def _claim(
+    organization_id: str, request_id: str, *, member: str, thread_id: str,
+    sql: str, extra: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Run ONE claim statement (:data:`_CLAIM_SQL` or
+    :data:`_CLAIM_DECLINED_SQL`), and give back the old stored call."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    who = (member or "").strip().lower()
+    if not who or not thread_id or not isinstance(request_id, str) \
+            or not _REQUEST_ID.match(request_id):
+        return None
+    try:
+        with tenant_session(organization_id) as s:
+            s.execute(text(f"SET LOCAL lock_timeout = '{_CLAIM_LOCK_TIMEOUT}'"))
+            r = s.execute(
+                text(sql),
+                {
+                    "org": organization_id, "rid": request_id,
+                    "waiting": list(WAITING), "member": who, "tid": thread_id,
+                    **extra,
+                },
+            ).first()
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _NO_CLAIM_CODES:
+            _log.info("pending_ask.claim_not_taken", request_id=request_id[:12],
+                      code=_sqlstate(exc))
+            return None
+        raise
+    value = r[0] if r is not None else None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+#: RESUME-2a review, P2: the give-back of a claim whose run never started.
+#: ONE statement moves the row from ``answered`` back to ``parked`` with the
+#: stored call that the claim took. The WHERE is the claim's own: the org
+#: beside RLS, the request id, the member, the thread, a row that has not
+#: expired, and a column that the claim set to NULL. No run waits on the card
+#: (the thread was at rest), so ``parked`` is its true state. A declined
+#: claim (:func:`claim_declined_call`) is never given back: its ``closed``
+#: row never matches (review of RESUME-4a-2, P2-1).
+_RESTORE_SQL = (
+    "UPDATE chat_pending_ask SET state = 'parked', answer = NULL, "
+    "  answered_at = NULL, parked_at = COALESCE(parked_at, now()), "
+    "  stored_call = CAST(:stored AS jsonb) "
+    "WHERE organization_id = CAST(:org AS uuid) AND request_id = :rid "
+    "  AND state = 'answered' AND stored_call IS NULL AND expires_at > now() "
+    "  AND actor_email = :member AND thread_id = :tid "
+    "RETURNING request_id"
+)
+
+
+def restore_stored_call(
+    organization_id: str,
+    request_id: str,
+    *,
+    member: str,
+    thread_id: str,
+    stored: dict[str, Any],
+) -> bool:
+    """Give back the claim of :func:`claim_stored_call` when its run never
+    started (RESUME-2a review, P2). True when the row waits again.
+
+    ``gateway.routes.agent._resume_from_row`` is the one caller, and only
+    when the run route refused BEFORE ``stream_relay.start_detached`` began.
+    So the card can be answered again, and the call runs at most once.
+    *member*, *thread_id* and *stored* are the claim's own. The org is the
+    session's, under RLS with the org predicate beside it (R5). A stored
+    call that :func:`_stored_text` refuses gives back nothing."""
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    who = (member or "").strip().lower()
+    body = _stored_text(stored)
+    if not who or not thread_id or body is None or not isinstance(request_id, str) \
+            or not _REQUEST_ID.match(request_id):
+        return False
+    with tenant_session(organization_id) as s:
+        r = s.execute(
+            text(_RESTORE_SQL),
+            {"org": organization_id, "rid": request_id, "member": who,
+             "tid": thread_id, "stored": body},
+        ).first()
+    return r is not None
+
+
+# ---------------------------------------------------------------------------
+# Retention (task 3435). The SQL runs on the session of the daily prune job of
+# the gateway's job worker. R8 fence: tests/unit/test_pending_ask_prune_r8.py.
+# ---------------------------------------------------------------------------
+
+#: The days that a row stays after ``expires_at``. In that time the row keeps
+#: its question, its payload and its answer, but no stored call. Then
+#: :func:`prune` deletes it. No reader takes an expired row, so the days only
+#: let a person who looks into a fault read the card.
+PENDING_ASK_KEEP_DAYS = 7
+#: The most rows that one prune of one org deletes, and the most rows that it
+#: clears. One run never holds a long transaction. The daily run keeps up only while an
+#: org makes fewer than this many expired cards a day. Above that, the table
+#: grows until task 3560 raises the bound or runs the prune more often.
+PENDING_ASK_PRUNE_BATCH = 1000
+
+#: The tenant that the session binds. NULL when no tenant is bound, and then a
+#: statement matches no row. The text of ``gateway.routes.tasks.settings``.
+_BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
+
+#: The prune of the bound org, in ONE statement and one snapshot.
+#:
+#: * ``doomed``: the rows past ``expires_at`` plus :data:`PENDING_ASK_KEEP_DAYS`,
+#:   in each state. They go, with the payload and the answer.
+#: * ``stale``: each other row past ``expires_at`` that still holds a stored
+#:   call. The column goes to NULL. ``NOT EXISTS`` keeps the two sets apart,
+#:   so no row changes twice in the statement. ``doomed`` is MATERIALIZED, so
+#:   its LIMIT gives one set to both readers of it.
+#:
+#: A row that has not expired is in neither set, in each state. So a card that
+#: still waits, and a call that a claim can still take, never change. Each
+#: statement names the bound org beside RLS (R5). The DELETE and the UPDATE
+#: test the age again, so a row that a concurrent write changed is read again
+#: after its lock. The CTEs read the key only, never the stored call.
+_PRUNE_SQL = (
+    "WITH doomed AS MATERIALIZED ("
+    "  SELECT request_id "
+    "  FROM chat_pending_ask "
+    f"  WHERE organization_id = {_BOUND_ORG} "
+    "    AND expires_at <= now() - make_interval(days => :keep) "
+    "  ORDER BY expires_at LIMIT :batch"
+    "), stale AS ("
+    "  SELECT request_id "
+    "  FROM chat_pending_ask AS s "
+    f"  WHERE s.organization_id = {_BOUND_ORG} "
+    "    AND s.expires_at <= now() AND s.stored_call IS NOT NULL "
+    "    AND NOT EXISTS (SELECT 1 FROM doomed AS d WHERE d.request_id = s.request_id) "
+    "  ORDER BY s.expires_at LIMIT :batch"
+    "), deleted AS ("
+    "  DELETE FROM chat_pending_ask AS p USING doomed "
+    f"  WHERE p.organization_id = {_BOUND_ORG} "
+    "    AND p.request_id = doomed.request_id "
+    "    AND p.expires_at <= now() - make_interval(days => :keep) "
+    "  RETURNING 1"
+    "), cleared AS ("
+    "  UPDATE chat_pending_ask AS p SET stored_call = NULL FROM stale "
+    f"  WHERE p.organization_id = {_BOUND_ORG} "
+    "    AND p.request_id = stale.request_id "
+    "    AND p.expires_at <= now() AND p.stored_call IS NOT NULL "
+    "  RETURNING 1"
+    ") "
+    "SELECT (SELECT count(*) FROM deleted) AS deleted, "
+    "  (SELECT count(*) FROM cleared) AS cleared"
+)
+
+
+async def prune(db: Any) -> tuple[int, int]:
+    """Prune the rows of the bound org: ``(deleted, cleared)`` (task 3435).
+
+    *db* is an async session that the caller opened with ``tenant_session``.
+    The org is the tenant of that session, never an argument. No bound
+    tenant changes nothing. One statement (:data:`_PRUNE_SQL`)."""
+    from sqlalchemy import text
+
+    row = (await db.execute(text(_PRUNE_SQL), {
+        "keep": PENDING_ASK_KEEP_DAYS, "batch": PENDING_ASK_PRUNE_BATCH,
+    })).first()
+    if row is None:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+async def prune_hook(db: Any, today: Any) -> None:
+    """The ``gateway.jobs.worker.prune_hooks`` hook (task 3435). It never
+    raises: a hook that raises fails the whole prune of the org. A savepoint
+    keeps the transaction of the prune usable after a failure. The log names
+    the class only, because a DB message can echo a value of a row."""
+    try:
+        async with db.begin_nested():
+            deleted, cleared = await prune(db)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("pending_ask.prune_failed", error=type(exc).__name__)
+        return
+    if deleted or cleared:
+        _log.info("pending_ask.pruned", deleted=deleted, cleared=cleared)
+
+
+def register_prune() -> bool:
+    """Add :func:`prune_hook` to the prune of the job worker, once. True when
+    the hook is in the list. A process with no gateway has no job worker, so
+    nothing is added there."""
+    try:
+        from gateway.jobs import worker
+    except ImportError:
+        return False
+    if prune_hook not in worker.prune_hooks:
+        worker.prune_hooks.append(prune_hook)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # The run side: in this process, beside the Future.
 # ---------------------------------------------------------------------------
@@ -350,6 +826,42 @@ _THREAD_OF: dict[str, str] = {}
 #: entry outlives the wait, and the oldest go once there are too many.
 _PARKED: dict[str, None] = {}
 _PARKED_KEEP = 1000
+#: RESUME-1a: the stored call of each plain card, by request id, oldest
+#: first. The card gate binds it before the card goes out (:func:`bind_call`),
+#: and :func:`note_event` takes it into the row. The card gate's wait drops
+#: what is left when it ends (:func:`unbind_call`), so nothing stays with
+#: ``CHAT_DURABLE_ASKS`` off. The oldest go once there are too many.
+_STORED: dict[str, dict[str, Any]] = {}
+_STORED_KEEP = _PARKED_KEEP
+
+
+def bind_call(request_id: str, stored: Any) -> bool:
+    """Bind the stored call of the card *request_id*, before the card goes
+    out (RESUME-1a). True when bound.
+
+    ``acb_skills.ask_tools.request_confirmation`` is the one caller. It binds
+    out of band, by the request id, because on path A :func:`note_event` runs
+    in the executor's drain, where the tool's context is not. Nothing binds
+    for a request id of another shape, a value that is not a dict, a value
+    that JSON cannot hold (a lone surrogate, a NUL), or more than :data:`_PAYLOAD_BYTES` bytes of
+    UTF-8. The map keeps the value as JSON gives it back. Never raises.
+    """
+    if not isinstance(request_id, str) or not _REQUEST_ID.match(request_id):
+        return False
+    text = _stored_text(stored)
+    if text is None:
+        return False
+    _STORED.pop(request_id, None)
+    _STORED[request_id] = json.loads(text)
+    while len(_STORED) > _STORED_KEEP:
+        _STORED.pop(next(iter(_STORED)))
+    return True
+
+
+def unbind_call(request_id: str) -> None:
+    """Drop the stored call of *request_id*, when the card's wait ends
+    (RESUME-1a). The card gate calls it on every way out. Never raises."""
+    _STORED.pop(str(request_id or ""), None)
 
 
 def was_parked(request_id: str) -> bool:
@@ -363,14 +875,19 @@ def _remember_parked(request_id: str) -> None:
         _PARKED.pop(next(iter(_PARKED)))
 
 
-async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None, str]:
-    """``(org, run_id, agent, actor)`` of the run on *thread_id*, server side."""
+async def _run_facts(
+    thread_id: str,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
+    """``(org, run_id, agent, actor, message_id)`` of the run on *thread_id*,
+    server side. ``message_id`` is the id of the run's reply row, from the
+    ``run_liveness`` record of the run (RESUME-2b). :func:`_record` reads the
+    first four by position, so a stand-in that gives four still works."""
     org: str | None = None
     with contextlib.suppress(Exception):
         from acb_common.db import current_tenant
 
         org = current_tenant()
-    run_id = agent = None
+    run_id = agent = message_id = None
     with contextlib.suppress(Exception):
         from orchestrator import run_liveness, stream_relay
 
@@ -381,31 +898,62 @@ async def _run_facts(thread_id: str) -> tuple[str | None, str | None, str | None
             org = org or (str(rec.get("org")) if rec.get("org") else None)
             run_id = str(rec.get("runId") or "") or None
             agent = str(rec.get("agent") or "") or None
+            message_id = str(rec.get("messageId") or "") or None
     actor = ""
     with contextlib.suppress(Exception):
         from orchestrator.stream_relay import get_run_actor
 
         actor = (await get_run_actor(thread_id) or "").strip().lower()
-    return org, run_id, agent, actor
+    return org, run_id, agent, actor, message_id
 
 
-async def _record(thread_id: str, ask: CardAsk) -> str | None:
-    org, run_id, agent, actor = await _run_facts(thread_id)
+async def _record(thread_id: str, ask: CardAsk,
+                  stored: dict[str, Any] | None = None) -> str | None:
+    facts = await _run_facts(thread_id)
+    org, run_id, agent, actor = facts[:4]
     if not org:
         # No tenant, so no row: the fail-closed answer (a run with no org has
         # no tenant to be listed under, as in ``register_live_run``).
         return None
+    message_id = facts[4] if len(facts) > 4 else None
+    if stored is not None and message_id:
+        # RESUME-2b: the stored call names the reply row of the card, from
+        # the run's own record, never from an event field. The key is
+        # additive: version 1 stays, and each reader allows a call with none.
+        stored = {**stored, "message_id": message_id}
     row = {
         "request_id": ask.request_id, "thread_id": thread_id, "run_id": run_id,
         "actor_email": actor, "agent_name": agent, "kind": ask.kind,
         "question": ask.question, "payload": ask.payload,
     }
+    if stored is not None:
+        # RESUME-1a: only a row with a stored call names the key, so a row
+        # with none is the row of before.
+        row["stored_call"] = stored
+    failed: str | None = None
     try:
         await asyncio.to_thread(insert_ask, org, row)
-    except Exception:
-        _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
-                     thread_id=thread_id[:12], exc_info=True)
-        return None
+    except Exception as exc:
+        if stored is None:
+            _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
+                         thread_id=thread_id[:12], exc_info=True)
+            return None
+        failed = type(exc).__name__
+    if failed is not None:
+        # The stored call must never cost the card its row: log the error
+        # TYPE only (no argument text), then write the row of before. The
+        # retry runs OUTSIDE the except block, so its exception has no
+        # __context__ that holds the first one's bound parameters.
+        _log.warning("pending_ask.stored_insert_failed",
+                     request_id=ask.request_id[:12],
+                     thread_id=thread_id[:12], error=failed)
+        row.pop("stored_call", None)
+        try:
+            await asyncio.to_thread(insert_ask, org, row)
+        except Exception:
+            _log.warning("pending_ask.insert_failed", request_id=ask.request_id[:12],
+                         thread_id=thread_id[:12], exc_info=True)
+            return None
     _log.info("pending_ask.recorded", request_id=ask.request_id[:12],
               thread_id=thread_id[:12], kind=ask.kind)
     await _bump_my_day(org, actor)
@@ -454,9 +1002,12 @@ def note_event(thread_id: str, event: Any) -> None:
         loop = asyncio.get_running_loop()
     except Exception:
         return
+    # RESUME-1a: the stored call that the card gate bound for this request
+    # id, out of band. Only a confirmation card takes one.
+    stored = _STORED.pop(ask.request_id, None) if ask.kind == "confirmation" else None
     _THREAD_OF[ask.request_id] = thread_id
     _INSERTS[ask.request_id] = loop.create_task(
-        _record(thread_id, ask), name=f"cc-ask-{ask.request_id[:12]}",
+        _record(thread_id, ask, stored), name=f"cc-ask-{ask.request_id[:12]}",
     )
 
 
@@ -487,8 +1038,10 @@ async def settle(request_id: str, *, answer: str | None) -> None:
         row = await asyncio.to_thread(
             move_ask, org, request_id, to=to, from_states=("open",), answer=answer,
         )
-    except Exception:
-        _log.warning("pending_ask.settle_failed", request_id=request_id[:12], exc_info=True)
+    except Exception as exc:
+        # Class and id only (task 3538): the answer is a statement parameter.
+        _log.warning("pending_ask.settle_failed", request_id=request_id[:12],
+                     error=type(exc).__name__)
         return
     if row:
         # The question no longer waits, so it leaves My Day at once.
@@ -612,9 +1165,26 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
         for event in closed_card_text_events(take_closed_card_line()):
             await stream_relay.push_event(thread_id, event)
     with contextlib.suppress(Exception):
+        # Task 3595 (PARK-LINE): the approved acts that ran in this reply,
+        # in one line, and the card that waits. No act sends nothing.
+        from acb_skills.ask_tools import closed_card_text_events, take_park_line
+
+        for event in closed_card_text_events(take_park_line(str(row.get("question") or ""))):
+            await stream_relay.push_event(thread_id, event)
+    with contextlib.suppress(Exception):
         await stream_relay.push_event(thread_id, {
             "type": "RUN_FINISHED", "threadId": thread_id, "parked": True,
         })
+    # D-RES-7 (RESUME-2b): the park ends the stream here, so the stream lives
+    # 24 hours from now. Only where a late Approve can go on in the same
+    # reply: CHAT_RESUME_ORGS and CHAT_LATE_APPROVE_ORGS both name the org.
+    # Off, the stream keeps the life of before. It never raises.
+    with contextlib.suppress(Exception):
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        if chat_resume_on(org) and late_approve_on(org):
+            await stream_relay.keep_parked_stream(thread_id)
     _log.info("pending_ask.parked", request_id=request_id[:12], thread_id=thread_id[:12])
     # The drain's finally saves the reply so far (on_complete), marks the run
     # inactive and clears its live-run entry. That save is the checkpoint.
@@ -622,7 +1192,163 @@ async def park(request_id: str, thread_id: str, fut: Any = None) -> bool:
     return True
 
 
+# ── RESUME-5: park at the stop (chat_run_continuity.md §4.12.5) ─────────────
+#
+# The gateway's stop step calls ``POST /internal/drain/park`` once, before its
+# first count (``gateway.routes.drain``). That route calls :func:`park_at_stop`.
+# It wakes each wait that took an entry here, and each wait then parks IN ITS
+# OWN TASK (``executor.wait_user_future``). The park must run there, because
+# it reads two ContextVars of the run: the HRD-22 offer reads the card of the
+# wait (``ask_tools.waiting_card``), and the "Not done" line reads the closed
+# cards of the run (``ask_tools.take_closed_card_line``). A call from the route
+# task would lose both.
+#
+# Only a wait whose org both resume flags name takes an entry, and the park
+# checks the flags again with the org of the row (:func:`park_for_stop`). With
+# a flag off, no entry exists and each wait is the wait of before.
+#
+# The stop wakes only the entries that exist when it runs. A card that opens
+# after that does not park: it takes the restart path of before (the owner's
+# decision of 2026-11-19).
+
+#: The waits that can park at the stop, by request id: ``(wake, outcome,
+#: thread id)``. The stop sets ``wake`` once. The wait sets ``outcome`` to
+#: True when its run parked, and to False when it did not.
+_STOP_WAITS: dict[str, tuple[asyncio.Future[None], asyncio.Future[bool], str]] = {}
+
+#: How long :func:`park_at_stop` waits for the parks that it woke. A park is
+#: one UPDATE and a few Redis writes. The stop script waits longer for the
+#: answer (``GATEWAY_DRAIN_PARK_SECONDS`` in ``gateway-drain.sh``).
+STOP_PARK_SECONDS = 5.0
+
+
+def resume_flags_on(org: str | None) -> bool:
+    """True when ``CHAT_RESUME_ORGS`` and ``CHAT_LATE_APPROVE_ORGS`` both name
+    *org*. A missing org reads False, also for ``*``. Never raises."""
+    if not org:
+        return False
+    try:
+        from acb_skills.late_approve import late_approve_on
+        from acb_skills.stored_call import chat_resume_on
+
+        return bool(chat_resume_on(org) and late_approve_on(org))
+    except Exception:
+        return False
+
+
+def stop_wait(request_id: str, thread_id: str) -> asyncio.Future[None] | None:
+    """The Future that the stop sets for the wait on *request_id* (RESUME-5),
+    or None for no park at the stop.
+
+    ``executor.wait_user_future`` is the one caller, once, at the start of a
+    durable wait, in the run's own task. The org is the tenant that the run
+    bound, never an event field. None unless both resume flags name that org,
+    and None for a second wait on one request id. Sync, and never raises.
+    """
+    if not request_id or not thread_id or request_id in _STOP_WAITS:
+        return None
+    try:
+        from acb_common.db import current_tenant
+
+        if not resume_flags_on(current_tenant()):
+            return None
+        loop = asyncio.get_running_loop()
+    except Exception:
+        return None
+    wake: asyncio.Future[None] = loop.create_future()
+    _STOP_WAITS[request_id] = (wake, loop.create_future(), thread_id)
+    return wake
+
+
+def end_stop_wait(request_id: str) -> None:
+    """Drop the entry of *request_id*, and give the stop its outcome: True
+    when this process parked the request. The wait calls it on each way out,
+    and after a park at the stop that did not park. Sync, and never raises."""
+    entry = _STOP_WAITS.pop(str(request_id or ""), None)
+    if entry is None:
+        return
+    wake, outcome, _thread = entry
+    with contextlib.suppress(Exception):
+        if not wake.done():
+            wake.cancel()
+    with contextlib.suppress(Exception):
+        if not outcome.done():
+            outcome.set_result(request_id in _PARKED)
+
+
+def parking_threads() -> set[str]:
+    """The threads whose wait the stop woke, and whose park has not ended.
+
+    ``GET /internal/drain`` counts each of them as a running run, and not as
+    a run that waits on a person. Until its park pops the Future, the thread
+    reads as waiting (``executor.threads_waiting_on_a_person``). Without
+    this, a first count of 0 lets the stop cut a park in the middle, before
+    the drain of the run saves the reply.
+
+    Each entry gives the thread of its wait AND the owner thread that the
+    Future recorded (``_pending_user_input.owner_of``), the key of that skip
+    set. So the two can never differ."""
+    try:
+        from orchestrator.executor import _pending_user_input
+
+        owner_of = _pending_user_input.owner_of
+    except Exception:
+        def owner_of(_request_id: str) -> str | None:
+            return None
+    out: set[str] = set()
+    for request_id, (wake, outcome, thread) in list(_STOP_WAITS.items()):
+        if wake.done() and not wake.cancelled() and not outcome.done():
+            out.add(thread)
+            owner = owner_of(request_id)
+            if owner:
+                out.add(owner)
+    return out
+
+
+async def park_for_stop(request_id: str, thread_id: str, fut: Any = None) -> bool:
+    """Park the run that waits on *request_id*, at the stop (RESUME-5). True
+    when parked.
+
+    The org is the org of the card's row (the insert), as :func:`park` reads
+    it. Both resume flags must name it, else nothing changes. Then it is
+    :func:`park`, unchanged: the row goes to ``parked``, the stream ends with
+    the parked ``RUN_FINISHED``, the stream lives 24 hours (D-RES-7), and the
+    run ends. The drain of the run saves the reply and forgets its record, so
+    the next process writes no ``run_interrupted`` mark."""
+    org = await _insert_org(request_id, pop=False)
+    if not resume_flags_on(org):
+        return False
+    return await park(request_id, thread_id, fut)
+
+
+async def park_at_stop(bound: float = STOP_PARK_SECONDS) -> dict[str, int]:
+    """Wake each wait that can park at the stop, and wait at most *bound*
+    seconds for their outcomes (RESUME-5). ``{"tried", "parked"}``.
+
+    ``gateway.routes.drain`` is the one caller. It wakes only the entries that
+    exist now: a card that opens later does not park. Never raises.
+    """
+    entries = list(_STOP_WAITS.values())
+    for wake, _outcome, _thread in entries:
+        if not wake.done():
+            wake.set_result(None)
+    outcomes = [outcome for _wake, outcome, _thread in entries]
+    if outcomes:
+        with contextlib.suppress(Exception):
+            await asyncio.wait(outcomes, timeout=max(0.0, float(bound)))
+    parked = sum(
+        1 for o in outcomes if o.done() and not o.cancelled() and o.result() is True
+    )
+    _log.info("pending_ask.parked_at_stop", tried=len(entries), parked=parked)
+    return {"tried": len(entries), "parked": parked}
+
+
 def _reset_for_tests() -> None:
     _INSERTS.clear()
     _THREAD_OF.clear()
     _PARKED.clear()
+    _STORED.clear()
+    _STOP_WAITS.clear()
+
+
+register_prune()

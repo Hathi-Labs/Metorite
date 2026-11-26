@@ -5,13 +5,15 @@ Spec: ``project-docs/specs/projects_settings.md`` §7 row PS-3, and
 
     GET    /projects/vocabulary
     GET    /projects/vocabulary/{kind}/{row_id}/impact
+    GET    /projects/nodes/{project_id}/vocabulary/reach   (HRD-9a)
 
 Until this route, an org-wide row (``project_id IS NULL``, migration 175) was
 visible only as one member of a space's union, and no read listed the
 organization's rows as a set. So nobody could see what the organization had
 minted, and HANDOFF H-4 stayed open. The writes already exist: a rename goes
 through ``PATCH /tags|fields|types/{id}``, which D-PM-33 opened for org-wide
-rows. This module adds the list and nothing else.
+rows. This module adds the list, the impact counts and the reach of a space
+(HRD-9a). It adds no write.
 
 **No project anchor, so the tenant is composed explicitly.** Every other
 vocabulary read anchors on ``:root``, a project the caller was shown
@@ -45,6 +47,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    vocabulary_reach,
 )
 from gateway.routes.projects.custom_fields import _definition_row
 from gateway.routes.projects.tags import _row as _tag_row
@@ -181,3 +184,27 @@ async def vocabulary_impact(
         "tasks": int(counted.tasks or 0),
         "projects": int(counted.projects or 0),
     }
+
+
+@router.get("/nodes/{project_id}/vocabulary/reach")
+async def describe_vocabulary_reach(
+    project_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """The space of a node, and how many projects its own vocabulary reaches.
+
+    HRD-9a (``chat_failure_modes.md`` §6, C5). A tag, a custom field or a task
+    type of a space is a row of the tree's root (D-PM-16), so a change of it
+    reaches every project in that tree. The chat card names the space and N.
+    ``core.vocabulary_reach`` is the one count. A node that the caller cannot
+    see, or a node of another organization, answers 404.
+
+    The answer is ``{root_id, root_name, root_kind, projects}``. ``root_name``
+    is ``None`` when the caller cannot see the root. ``root_kind`` is
+    ``space`` or ``personal``.
+
+    ⚠️ Not the ``projects`` of the two impact reads above. Those count the
+    distinct TREES that a shared row reaches, not the projects.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        return await vocabulary_reach(db, vis, project_id)

@@ -282,6 +282,9 @@ const SEAM: {
       "app/projects/components/SpaceSummary.tsx":
         "the same 'Direct work' row, in the space table of Reports' " +
         "Overview (WS-27bn R5f). A project fact, not a subtask",
+      "components/studio/StudioTree.tsx":
+        "the 'Move under' button on a record row (STU-D18-2b). The glyph " +
+        "is an action, not a parent crumb. A Studio record is not a subtask",
     },
   },
   {

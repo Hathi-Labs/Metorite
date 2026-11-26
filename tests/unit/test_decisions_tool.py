@@ -100,7 +100,7 @@ def test_answer_decision_cannot_post_without_a_confirmed_card(monkeypatch) -> No
     calls = _gateway(monkeypatch)
     asked = deny(monkeypatch)
     said = _run(skill_projects.answer_decision(DID, "yes"))
-    assert "Cancelled" in said and len(asked) == 1
+    assert said.startswith("Declined:") and len(asked) == 1  # HRD-7: the one table
     assert writes(calls) == []
 
 

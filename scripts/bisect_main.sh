@@ -13,7 +13,12 @@
 # Environment:
 #   BISECT_TEST_CMD    The probe command. The script runs it with `bash -c`
 #                      in the probe worktree, and the test ids are "$@".
-#                      Default: uv run python -m pytest -x -q -p no:cacheprovider -- "$@"
+#                      Default (CIV-31e): bash <this dir>/probe_present_tests.sh "$@",
+#                      by the absolute path of the running checkout, because the
+#                      probed commit can be older than the helper. The helper
+#                      runs uv run python -m pytest -x -q -p no:cacheprovider -- <ids>,
+#                      and it leaves out each id that is not in the probed tree.
+#                      When no id is in the tree, the commit is good.
 #                      Exit 0 = good, 1 = bad. Any other code = the commit
 #                      cannot be judged. The search skips it, as `git bisect skip` does.
 #   BISECT_TIMEOUT_S   Limit of one probe in seconds. Default 1800.
@@ -22,8 +27,11 @@
 # The ci_local.sh lanes are not called here. To reuse a prepared lane or venv,
 # set BISECT_TEST_CMD to a command that does.
 #
-# Stdout: the answer line, `FIRST_BAD <sha> <subject> PR=<number or none>`.
-# Stderr: one PROBE line per probe, and the reasons.
+# Stdout: one answer line and nothing else. Exit 0 prints
+# `FIRST_BAD <sha> <subject> PR=<number or none>`, exit 4 prints
+# `UNJUDGEABLE_RANGE <first> <last>`, and exits 3 and 5 print the reason
+# (`ASSUMPTION FAILED: ...`, `PROBE CAP: ...`). bisect_poll.sh reads that line.
+# Stderr: one PROBE line per probe, the output of each probe, and the reasons.
 # Exit codes:
 #   0  the first bad commit is found
 #   2  the arguments are wrong
@@ -42,7 +50,9 @@ bad_arg="$2"
 shift 2
 test_ids=("$@")
 
-TEST_CMD="${BISECT_TEST_CMD:-uv run python -m pytest -x -q -p no:cacheprovider -- \"\$@\"}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+DEFAULT_TEST_CMD="bash $(printf '%q' "$SCRIPT_DIR/probe_present_tests.sh") \"\$@\""
+TEST_CMD="${BISECT_TEST_CMD:-$DEFAULT_TEST_CMD}"
 TIMEOUT_S="${BISECT_TIMEOUT_S:-1800}"
 MAX_PROBES="${BISECT_MAX_PROBES:-12}"
 
@@ -56,6 +66,16 @@ probe_pid=""
 VERDICT=""
 
 say() { echo "$*" >&2; }
+
+# give_up <exit code> <reason>: the reason goes to stderr, and to stdout as the
+# one answer line.
+give_up() {
+  local code="$1"
+  shift
+  say "$*"
+  echo "$*"
+  exit "$code"
+}
 
 cleanup() {
   local code=$?
@@ -83,16 +103,16 @@ probe() {
   local sha="$1" rc=0
   probes=$((probes + 1))
   if [ "$probes" -gt "$MAX_PROBES" ]; then
-    say "PROBE CAP: ${MAX_PROBES} probes used."
-    exit 5
+    give_up 5 "PROBE CAP: ${MAX_PROBES} probes used."
   fi
   say "PROBE ${probes} ${sha:0:12} $(git -C "$repo" log -1 --format=%s "$sha")"
   probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/bisect.XXXXXX")"
-  git -C "$repo" worktree add --detach -q "$probe_dir/wt" "$sha"
+  git -C "$repo" worktree add --detach -q "$probe_dir/wt" "$sha" >&2
+  # CIV-31e: the probe writes to stderr, so stdout holds only the answer line.
   (
     cd "$probe_dir/wt"
     exec timeout "$TIMEOUT_S" bash -c "$TEST_CMD" bisect "${test_ids[@]}"
-  ) &
+  ) >&2 &
   probe_pid=$!
   wait "$probe_pid" || rc=$?
   probe_pid=""
@@ -110,24 +130,20 @@ probe() {
 mapfile -t commits < <(git -C "$repo" rev-list --first-parent --reverse "${good}..${bad}")
 n=${#commits[@]}
 if [ "$n" -eq 0 ]; then
-  say "ASSUMPTION FAILED: the range (${good:0:12}, ${bad:0:12}] holds no first-parent commit."
-  exit 3
+  give_up 3 "ASSUMPTION FAILED: the range (${good:0:12}, ${bad:0:12}] holds no first-parent commit."
 fi
 if [ "${commits[$((n - 1))]}" != "$bad" ]; then
-  say "ASSUMPTION FAILED: the bad commit is not on the first-parent line above the good commit."
-  exit 3
+  give_up 3 "ASSUMPTION FAILED: the bad commit is not on the first-parent line above the good commit."
 fi
 
 # Check the two assumptions first.
 probe "$good"
 if [ "$VERDICT" != "good" ]; then
-  say "ASSUMPTION FAILED: the good commit ${good:0:12} does not pass (${VERDICT})."
-  exit 3
+  give_up 3 "ASSUMPTION FAILED: the good commit ${good:0:12} does not pass (${VERDICT})."
 fi
 probe "$bad"
 if [ "$VERDICT" != "bad" ]; then
-  say "ASSUMPTION FAILED: the bad commit ${bad:0:12} does not fail (${VERDICT})."
-  exit 3
+  give_up 3 "ASSUMPTION FAILED: the bad commit ${bad:0:12} does not fail (${VERDICT})."
 fi
 
 # commits[hi] is known bad. Every index below lo is known good or irrelevant.

@@ -263,8 +263,10 @@ async def test_draft_with_ai_reads_the_files_of_a_new_reply(monkeypatch, body, r
 
 
 async def test_a_streamed_draft_sends_no_image(monkeypatch) -> None:
-    """The composer streams with no Router hop, so no model is chosen for an
-    image (review round 1, P1-c). The image is named as not read."""
+    """The composer streams, and the streamed call sends no ``vision`` task.
+    So the Router does not pick a model that reads an image (review round 1,
+    P1-c). Neither task 3541 nor task 3542 added one. The drafter names the
+    image as not read."""
     seen: list[dict[str, Any]] = []
 
     async def fake(*, model, messages, on_delta=None, **kw):

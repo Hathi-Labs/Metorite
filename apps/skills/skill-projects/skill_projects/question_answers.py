@@ -27,7 +27,7 @@ from acb_common.no_person import NO_PERSON_TEXT, no_person_present
 
 from skill_projects.client import GatewayRefusal, data, get, post, uuid_of
 from skill_projects.refusals import REFUSED
-from skill_projects.writes import CANCELLED, _confirm, _fields_block
+from skill_projects.writes import _confirm, _fields_block, _not_confirmed
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -195,7 +195,7 @@ async def answer_agent_question(run_id: str, answer: str = "", option_ids: str =
             card, lead="The answer goes on the task as a comment that everyone who can open "
                        "the task reads. The agent then reads it."),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # The server answers the newest open question at POST time, so read again.
     if not await _still_open(rid, question):
         return STALE_CARD
