@@ -166,3 +166,57 @@ def test_a_run_stops_before_a_chat_that_would_start_in_a_peak_band(monkeypatch, 
     assert data["rows"] == [] and "peak band" in data["stopped"]
     data, _ = _live(monkeypatch, tmp_path, 0.1, budget=5.0, clock=lambda: at(2, 7), allow=True)
     assert data["rows"] and data["stopped"] is None
+
+
+# ── the owner ceiling of USD 10 (task 3649) ──────────────────────────────────
+
+
+def test_the_owner_ceiling_is_ten_dollars() -> None:
+    """Mutation: raise ``OWNER_SPEND_CEILING_USD`` -> red."""
+    assert spend.OWNER_SPEND_CEILING_USD == 10.0 == run.OWNER_SPEND_CEILING_USD
+
+
+def test_the_ceiling_gate_allows_up_to_ten_and_refuses_above() -> None:
+    """Mutation: drop the ``> ceiling`` check in ``ceiling_gate`` -> 6+5 passes -> red."""
+    assert spend.ceiling_gate(5.0, 0.0) == (True, "")
+    assert spend.ceiling_gate(5.0, 5.0) == (True, "")
+    ok, why = spend.ceiling_gate(6.0, 5.0)
+    assert not ok and "ceiling" in why
+
+
+def test_the_ceiling_gate_refuses_a_negative_or_odd_figure() -> None:
+    for budget, before in ((-1.0, 0.0), (5.0, -0.5), (float("nan"), 0.0),
+                           (float("inf"), 0.0), ("x", 0.0), (None, 0.0)):
+        assert spend.ceiling_gate(budget, before)[0] is False  # type: ignore[arg-type]
+
+
+def test_live_main_refuses_above_the_ceiling_before_any_credential(monkeypatch, capsys) -> None:
+    """Mutation: drop the ``ceiling_gate`` call in ``main`` -> ``router_env`` runs -> red."""
+    def boom(*_a, **_k):
+        raise AssertionError("a credential or network step ran")
+
+    monkeypatch.setattr(run, "router_env", boom)
+    monkeypatch.setattr(run, "_preflight", boom)
+    code = run.main(["--live", "--budget-usd", "6", "--spent-before", "5"])
+    assert code == run.EXIT_NO_GO == 2
+    assert "ceiling" in capsys.readouterr().out
+
+
+def test_the_scripted_run_ignores_the_ceiling(monkeypatch) -> None:
+    monkeypatch.setattr(run, "run_scripted", lambda *a, **k: ([], []))
+    assert run.main(["--scripted", "--budget-usd", "99"]) == run.EXIT_PASS
+
+
+def test_the_harness_package_turns_off_the_remote_price_map() -> None:
+    """Mutation: drop the ``setdefault`` in ``evals/one_assistant_measure/__init__.py`` -> red.
+    A fresh interpreter, so no earlier import of ``litellm`` has set the variable."""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "LITELLM_LOCAL_MODEL_COST_MAP"}
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import os, evals.one_assistant_measure; print(os.environ['LITELLM_LOCAL_MODEL_COST_MAP'])"],
+        capture_output=True, text=True, env=env, timeout=60, check=True).stdout.strip()
+    assert out == "True"

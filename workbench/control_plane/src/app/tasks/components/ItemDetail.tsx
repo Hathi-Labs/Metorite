@@ -1,5 +1,6 @@
 "use client";
 
+import { useStartFocus } from "../lib/focusStart";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
@@ -294,7 +295,7 @@ export function TaskDetail({
   const removal = useRemoval();
   const archiveItem = useTaskStore((s) => s.archiveItem);
   const openFocus = useTaskStore((s) => s.openFocus);
-  const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
+  const startFocus = useStartFocus();
   const isArchived = !!item.archivedAt;
   // S6e — the shared body needs the one store's routes, which the demo
   // backend does not serve. The strip draws in both modes.
@@ -788,7 +789,7 @@ export function TaskDetail({
                     layout="inline-flex items-center"
                     icon="Timer"
                     type="button"
-                    onClick={() => enterFocusSession(item.id)}
+                    onClick={() => void startFocus(item.id)}
                     title="Start Focus Mode — a full-screen timer for this task"
                     className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
                   >

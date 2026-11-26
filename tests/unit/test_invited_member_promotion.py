@@ -197,6 +197,40 @@ class TestThePromotion:
             await promote_invited_member(email="not-an-address")
 
 
+class TestTheFirstSignInReadsFresh:
+    """OB-0d (task 1350): a cached refusal must not outlive the promotion."""
+
+    async def test_a_cached_refusal_is_dropped_by_the_promotion(self, eng):
+        """An earlier resolve cached the person as refused. After the promotion,
+        the cache holds no entry for them, so the first /auth/me reads the
+        database. Shown red by removing ``invalidate(email)`` from
+        ``promote_invited_member``."""
+        import time
+
+        from acb_auth import access
+        from acb_auth.access import promote_invited_member
+
+        email = f"fresh-{uuid.uuid4().hex[:8]}@x.example"
+        slug = f"fresh-{uuid.uuid4().hex[:8]}"
+        with eng.begin() as conn:
+            org, _ = _seed(conn, slug=slug, email=email,
+                           om_status="invited", au_status="invited")
+        key = email.lower()
+        other = f"other-{uuid.uuid4().hex[:8]}@x.example"
+        try:
+            access._cache[key] = (time.monotonic() + 60, object())
+            access._cache[other] = (time.monotonic() + 60, object())
+            async with tenant_engine_scope(_URL):
+                await promote_invited_member(email=email)
+            assert key not in access._cache, "the stale refusal must be dropped"
+            assert other in access._cache, "only this member's entry goes"
+        finally:
+            access._cache.pop(key, None)
+            access._cache.pop(other, None)
+            with eng.begin() as conn:
+                _cleanup(conn, email=email, org=org)
+
+
 class TestTheSeamIsStructural:
     def test_the_app_user_write_runs_only_inside_tenant_session(self):
         """``app_user`` is RLS-FORCED in production, so the authoritative UPDATE

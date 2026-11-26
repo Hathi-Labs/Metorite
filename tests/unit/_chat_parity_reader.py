@@ -1174,18 +1174,42 @@ def _seg_match(pattern: list[str], segs: list[str]) -> bool:
     return all(p == "{}" or p == s or s == "{}" for p, s in zip(pattern, segs, strict=True))
 
 
-def bff_route_for(path: str, routes: tuple[BffRoute, ...]) -> BffRoute | None:
+def _strict(pattern: list[str], segs: list[str]) -> bool:
+    """True when no id segment of the UI (``{}``) stands on a static segment
+    of the BFF template. Only the literal text of the UI path matches a
+    static segment, as in Next.js."""
+    head = pattern[:-1] if pattern and pattern[-1] == "**" else pattern
+    return not any(s == "{}" and p not in ("{}", "**") for p, s in zip(head, segs, strict=False))
+
+
+def bff_route_for(
+    path: str, routes: tuple[BffRoute, ...], verb: str | None = None
+) -> BffRoute | None:
+    """The BFF route that serves ``path``.
+
+    An id segment of the UI (``{}``) matches a static segment of a BFF route
+    only when no dynamic or catch-all route also matches (PAR-8a). So
+    ``POST /api/workflows/{}/run`` goes to the catch-all, as Next.js sends
+    it, and not to ``/api/workflows/hooks/{}``. A UI segment that code fills,
+    such as ``${kind}`` for approve or reject, still finds the static routes
+    when nothing else matches. With a ``verb``, a route whose handlers the
+    reader read, and none of them for that verb, is passed over when a later
+    route also matches."""
     segs = path.strip("/").split("/")
-    for route in routes:
-        if _seg_match(route.template.strip("/").split("/"), segs):
-            return route
-    return None
+    found = [r for r in routes if _seg_match(r.template.strip("/").split("/"), segs)]
+    strict = [r for r in found if _strict(r.template.strip("/").split("/"), segs)]
+    found = strict or found
+    if verb is not None:
+        for route in found:
+            if not route.gateway or verb in route.gateway:
+                return route
+    return found[0] if found else None
 
 
 def gateway_paths(verb: str, path: str, routes: tuple[BffRoute, ...]) -> tuple[str, ...] | None:
     """The gateway paths that a BFF request reaches, or ``None`` when no BFF
     route serves it."""
-    route = bff_route_for(path, routes)
+    route = bff_route_for(path, routes, verb)
     if route is None:
         return None
     if route.template.endswith("/**"):
@@ -1410,7 +1434,7 @@ def registered_tools() -> set[str]:
 
     import skill_my_tasks
     import skill_projects
-    from acb_skills import knowledge_tools, profile_tools
+    from acb_skills import chat_pin_tools, knowledge_tools, profile_tools
     from acb_skills.skill_families import SKILL_FAMILIES
 
     names: set[str] = set()
@@ -1422,6 +1446,12 @@ def registered_tools() -> set[str]:
     names |= set(skill_projects.__all__) | set(skill_my_tasks.__all__)
     names |= set(knowledge_tools.__all__)
     names |= {fn.__name__ for fn in profile_tools.WRITE_TOOLS} | {"resolve_person"}
+    # CO-11b (task 3563): the pin of this chat, a core tool of the orchestrator.
+    names |= {fn.__name__ for fn in chat_pin_tools.TOOLS}
+    # PAR-8b (task 3903): the Home tools, core tools of the orchestrator.
+    from acb_skills import home_tools
+
+    names |= {fn.__name__ for fn in home_tools.HOME_TOOLS}
     return names
 
 

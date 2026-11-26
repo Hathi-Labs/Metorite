@@ -32,6 +32,11 @@ R7 fences named here, each a test class:
   parses on the ONE bounded pool of ``acb_skills.attachment_tools``, with no
   database session open, and a parse that never stops answers within the
   bound (22 s by default).
+* ``email-attachment-hold-thread`` (:class:`TestTheReleaseFromTheWorkerThread`,
+  task 3888). A release of the read hold on the parse worker thread wakes a
+  waiter of the loop at once, with loop debug off and on. A second release
+  keeps the hold of a new read. A release after the loop closed drops the
+  hold and logs the error class only.
 * ``email-attachment-download-same-bytes``
   (:class:`TestTheDownloadRouteIsUnchanged`). The download route answers the
   same bytes and the same headers through the shared helper.
@@ -266,9 +271,9 @@ def _spy_parse(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     real = tools.parse_bounded
 
-    async def _spy(data: bytes, suffix: str) -> Any:
+    async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
         calls.append(suffix)
-        return await real(data, suffix)
+        return await real(data, suffix, **kw)
 
     monkeypatch.setattr(m, "parse_bounded", _spy)
     return calls
@@ -601,6 +606,83 @@ class TestTheTextRoute:
         assert h.provider_calls == 1
         assert list(h.text_redis.store) == [f"cc:{ORG_A}:email-att-text:{ATT_ID}"]
 
+    async def test_a_cached_read_answers_while_another_read_holds_the_hold(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865 review P2: the cache answers before the hold, so a cached
+        file never waits behind a slow read of the same member."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        first = await _text()  # fills the cache
+        assert first.text == "words"
+        m._READING.add((ORG_A, OWNER))  # another read holds the member's hold
+        try:
+            got = await asyncio.wait_for(_text(), 2)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert got.text == "words" and got.kind == first.kind
+        assert not m._WAITERS
+        assert h.provider_calls == 1
+
+    async def test_a_woken_then_cancelled_waiter_passes_the_turn_on(self) -> None:
+        """Task 3865 review P3: the reviewer's lost wake-up. A waiter is woken
+        by ``release``, and then its task is cancelled before it takes the
+        hold. The next waiter must get the free hold."""
+        user = SimpleNamespace(organization_id=ORG_A, email=OWNER)
+        holder, first, second = (m._ReadHold(user) for _ in range(3))
+        assert holder.take()
+        t1 = asyncio.create_task(first.take_waiting(5))
+        await asyncio.sleep(0)
+        t2 = asyncio.create_task(second.take_waiting(5))
+        await asyncio.sleep(0)
+        holder.release()  # wakes t1's future
+        t1.cancel()  # t1 is cancelled before it runs again
+        await asyncio.gather(t1, return_exceptions=True)
+        assert await asyncio.wait_for(t2, 2) is True
+        second.release()
+        assert not m._READING and not m._WAITERS
+
+    async def test_a_second_read_of_one_member_waits_and_succeeds(
+        self, monkeypatch,
+    ) -> None:
+        """Task 3865. The model reads 3 files of one mail at once. The second
+        read waits for the first, and then parses. Nothing answers busy."""
+        h = _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        gate = asyncio.Event()
+        parses: list[str] = []
+        real = tools.parse_bounded
+
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
+            # H-253 passes ``on_worker_done``. A fake that refuses the keyword
+            # raises before it records the call, and the wait below spins.
+            parses.append(suffix)
+            if len(parses) == 1:
+                await gate.wait()
+            return await real(data, suffix, **kw)
+
+        monkeypatch.setattr(m, "parse_bounded", _slow)
+        first = asyncio.create_task(_text())
+        while not parses:
+            await asyncio.sleep(0.001)
+        second = asyncio.create_task(_text())
+        await asyncio.sleep(0.05)
+        assert not second.done(), "the second read did not wait"
+        gate.set()
+        assert (await asyncio.wait_for(first, 5)).text == "words"
+        assert (await asyncio.wait_for(second, 5)).text == "words"
+        assert not m._READING and not m._WAITERS
+        assert h.provider_calls >= 1
+
+    async def test_a_wait_past_the_limit_answers_busy(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="notes.txt", payload=b"words")
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
+        m._READING.add((ORG_A, OWNER))
+        try:
+            got = await asyncio.wait_for(_text(), 5)
+        finally:
+            m._READING.discard((ORG_A, OWNER))
+        assert (got.kind, got.reason) == ("unreadable", m._BUSY_REASON)
+        assert not m._WAITERS
+
     async def test_one_member_runs_one_read_at_a_time(self, monkeypatch) -> None:
         """Review round 1, P2. A second read of the same member, while the
         first parses, answers busy and parses nothing. Another member reads."""
@@ -610,10 +692,10 @@ class TestTheTextRoute:
         parses: list[str] = []
         real = tools.parse_bounded
 
-        async def _slow(data: bytes, suffix: str) -> Any:
+        async def _slow(data: bytes, suffix: str, **kw: Any) -> Any:
             parses.append(suffix)
             await gate.wait()
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         async def _until(ready: Any) -> None:
             """A bound on each wait, so a broken guard fails and never hangs."""
@@ -623,6 +705,7 @@ class TestTheTextRoute:
                 await asyncio.sleep(0.001)
 
         monkeypatch.setattr(m, "parse_bounded", _slow)
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)  # Task 3865: the wait ends
         first = asyncio.create_task(_text())
         try:
             await _until(lambda: parses)
@@ -711,9 +794,9 @@ class TestTheParseIsBounded:
         seen: list[bool] = []
         real = tools.parse_bounded
 
-        async def _spy(data: bytes, suffix: str) -> Any:
+        async def _spy(data: bytes, suffix: str, **kw: Any) -> Any:
             seen.append(h.session_open)
-            return await real(data, suffix)
+            return await real(data, suffix, **kw)
 
         monkeypatch.setattr(m, "parse_bounded", _spy)
         got = await _text()
@@ -732,6 +815,11 @@ class TestTheParseIsBounded:
 
         monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
         monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
         monkeypatch.setattr(tools, "extract_text", _stuck)
         _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7")
         try:
@@ -750,6 +838,228 @@ class TestTheParseIsBounded:
         while _free_slots() < tools.MAX_PARSES and time.monotonic() < deadline:
             time.sleep(0.05)
         assert _free_slots() == tools.MAX_PARSES
+
+
+class TestTheHoldFollowsTheWorker:
+    """H-253, EM-T11 slot gap. The hold of a member ends with the worker that
+    holds the parse slot, and not with the request."""
+
+    @staticmethod
+    def _fast(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(at, "DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(tools, "_WAIT_MARGIN", 0.3)
+        # Task 3865: a second read of one member waits HOLD_WAIT_S for the
+        # hold before it answers busy. These tests pin that the hold stays
+        # while the worker runs, so the wait is short here. TestTheTextRoute
+        # pins the wait itself.
+        monkeypatch.setattr(m, "HOLD_WAIT_S", 0.05)
+
+    @staticmethod
+    def _wait(ready: Any) -> None:
+        end = time.monotonic() + 30
+        while not ready() and time.monotonic() < end:
+            time.sleep(0.02)
+        assert ready(), "the wait timed out"
+
+    async def test_a_stuck_worker_keeps_the_hold_until_it_ends(self, monkeypatch) -> None:
+        self._fast(monkeypatch)
+        go_on = threading.Event()
+        calls: list[int] = []
+
+        def _extract(_data: bytes, _suffix: str) -> Any:
+            calls.append(1)
+            if len(calls) == 1:
+                go_on.wait(20)
+            raise at.AttachmentRefused("late")
+
+        monkeypatch.setattr(tools, "extract_text", _extract)
+        _Harness(monkeypatch, filename="slow.pdf", payload=b"%PDF-1.7",
+                 owners=frozenset({OWNER, SECOND}))
+        try:
+            first = await _text()
+            assert "took too long" in (first.reason or "")
+            assert _free_slots() == tools.MAX_PARSES - 1
+            again = await _text()
+            assert (again.kind, again.reason) == ("unreadable", m._BUSY_REASON)
+            assert len(calls) == 1, "the second read of one member parsed"
+            # Member B still gets the free slot.
+            other = await _text(email=SECOND)
+            assert other.reason == "late"
+            assert len(calls) == 2
+        finally:
+            go_on.set()
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+        third = await _text()
+        assert third.reason == "late", "the hold stayed after the worker ended"
+        assert not m._READING
+        await asyncio.to_thread(self._wait, lambda: _free_slots() == tools.MAX_PARSES)
+
+    async def test_the_hold_goes_when_the_worker_raises(self, monkeypatch) -> None:
+        def _boom(_data: bytes, _suffix: str) -> Any:
+            raise RuntimeError("bug")
+
+        monkeypatch.setattr(tools, "extract_text", _boom)
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        got = await _text()
+        assert got.kind == "unreadable"
+        await asyncio.to_thread(self._wait, lambda: not m._READING)
+
+    async def test_the_hold_goes_when_no_slot_is_free(self, monkeypatch) -> None:
+        _Harness(monkeypatch, filename="a.pdf", payload=b"%PDF-1.7")
+        taken = 0
+        while tools._SLOTS.acquire(blocking=False):
+            taken += 1
+        try:
+            got = await _text()
+            assert "Another file is being read" in (got.reason or "")
+            assert not m._READING, "the hold leaked when no slot was free"
+        finally:
+            for _ in range(taken):
+                tools._SLOTS.release()
+
+
+class _LogSpy:
+    """Records each log call of the route module, by event and fields."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    debug = info = warning = error = _record
+
+
+class _ThreadSet(set):
+    """A set that records the thread of each change."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.threads: set[int] = set()
+
+    def add(self, item: Any) -> None:
+        self.threads.add(threading.get_ident())
+        super().add(item)
+
+    def discard(self, item: Any) -> None:
+        self.threads.add(threading.get_ident())
+        super().discard(item)
+
+
+class TestTheReleaseFromTheWorkerThread:
+    """Task 3888. ``parse_bounded`` calls ``hold.release`` on the parse worker
+    thread (H-253). A waiter of the loop must wake at once, and the release
+    must change ``_READING`` and ``_WAITERS`` on the loop thread only.
+
+    Each test runs a private loop. So no other timer or I/O wakes the loop,
+    and a wake that debug mode loses fails the test and never hangs the run.
+    """
+
+    _KEY = (ORG_A, OWNER)
+    _USER = SimpleNamespace(organization_id=ORG_A, email=OWNER)
+
+    def _run(self, scenario: Any, *, debug: bool = False) -> Any:
+        loop = asyncio.new_event_loop()
+        loop.set_debug(debug)
+        try:
+            return loop.run_until_complete(scenario())
+        finally:
+            # A waiter that never woke stays pending. Close drops it, and
+            # nothing awaits it, so the run never hangs.
+            loop.close()
+            m._WAITERS.pop(self._KEY, None)
+            m._READING.discard(self._KEY)
+
+    @pytest.mark.parametrize("debug", [False, True], ids=["debug-off", "debug-on"])
+    def test_a_release_on_a_worker_thread_wakes_the_waiter_at_once(
+        self, debug: bool, monkeypatch,
+    ) -> None:
+        stamps: dict[str, float] = {}
+        workers: list[threading.Thread] = []
+        reading = _ThreadSet()
+        monkeypatch.setattr(m, "_READING", reading)
+
+        async def _scenario() -> bool:
+            holder, second = m._ReadHold(self._USER), m._ReadHold(self._USER)
+            assert holder.take()
+
+            async def _wait() -> bool:
+                got = await second.take_waiting(10)
+                stamps["woke"] = time.monotonic()
+                return got
+
+            waiter = asyncio.create_task(_wait())
+            await asyncio.sleep(0)
+            assert m._WAITERS.get(self._KEY), "the second read did not queue"
+
+            def _worker() -> None:
+                time.sleep(0.1)  # the loop sleeps in its selector by now
+                stamps["released"] = time.monotonic()
+                tools._run_quietly(holder.release)  # as `_Slot.release` runs it
+
+            workers.append(threading.Thread(target=_worker, daemon=True))
+            workers[0].start()
+            # The only timer of the loop before the waiter's own is 3 s away.
+            done, _ = await asyncio.wait({waiter}, timeout=3)
+            woke = waiter in done and waiter.result() is True
+            if woke:
+                second.release()
+            return woke
+
+        try:
+            woke = self._run(_scenario, debug=debug)
+        finally:
+            for worker in workers:
+                worker.join(5)
+        assert woke, "the waiter never took the hold that a worker thread released"
+        gap = stamps["woke"] - stamps["released"]
+        assert gap < 1.0, f"the waiter woke {gap:.2f} s after the release"
+        assert not m._READING and not m._WAITERS
+        # The loop ran on this thread, so no other thread changed the set.
+        assert reading.threads == {threading.get_ident()}, (
+            "a thread other than the loop changed _READING"
+        )
+
+    def test_a_second_release_from_a_thread_keeps_a_new_hold(self) -> None:
+        async def _scenario() -> None:
+            holder, other = m._ReadHold(self._USER), m._ReadHold(self._USER)
+            assert holder.take()
+            await asyncio.to_thread(tools._run_quietly, holder.release)
+            await asyncio.sleep(0)
+            assert self._KEY not in m._READING, "the release from a thread did not land"
+            assert other.take()
+            await asyncio.to_thread(tools._run_quietly, holder.release)
+            await asyncio.sleep(0)
+            assert self._KEY in m._READING, "a second release dropped another read's hold"
+            other.release()
+            assert self._KEY not in m._READING
+
+        self._run(_scenario)
+
+    def test_a_release_after_the_loop_closed_drops_the_hold(self, monkeypatch) -> None:
+        spy = _LogSpy()
+        monkeypatch.setattr(m, "_log", spy)
+        loop = asyncio.new_event_loop()
+
+        async def _take() -> Any:
+            hold = m._ReadHold(self._USER)
+            assert hold.take()
+            return hold
+
+        try:
+            hold = loop.run_until_complete(_take())
+        finally:
+            loop.close()
+        try:
+            worker = threading.Thread(target=tools._run_quietly, args=(hold.release,))
+            worker.start()
+            worker.join(5)
+            assert self._KEY not in m._READING, "the hold stayed after its loop closed"
+            assert spy.events == [
+                ("attachment_text.hold_loop_closed", {"error": "RuntimeError"}),
+            ]
+        finally:
+            m._READING.discard(self._KEY)
 
 
 # ── 3. The download route is unchanged ──────────────────────────────────────

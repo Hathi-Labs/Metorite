@@ -22,6 +22,38 @@ after the split. The test holds
 the code to ``split``, and it holds the difference of the two columns to the
 changes that the audit named (:data:`NAMED_CHANGES`).
 
+CE-15 (task 3463) added one tool, ``my_tasks_list_events``, to the pack
+``calendar-day``. Each row of BOTH columns that holds that pack gained the
+name and one tool, so its count is one more than the audit's count. No
+other field of a row changed.
+
+PAR-8a (task 3903) added seven tools to the dark pack ``studio-workflows``.
+Each row of BOTH columns that holds that pack gained the seven names and
+seven tools (82 to 89). No other field of a row changed.
+
+P-1a (task 3112) added three more tools to ``calendar-day``:
+``my_tasks_list_calendar_connections``, ``my_tasks_suggest_title`` and
+``my_tasks_enrich``. Each row of BOTH columns that holds that pack gained the
+three names and three tools. A ``main`` count above 110 is the audit's count
+plus the growth of the pack. It is not a request that main sent. One more
+field changed, in BOTH columns: in
+``calendar_projects_and_calendar_day_sticky_with_email|held=off`` the run holds
+107 tools, so ``projects-cycles`` (6 tools) no longer fits the cap of 110, and
+the loader does not offer it.
+
+P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
+surface and another owner. :func:`_allowed` leaves it out, as it leaves out
+``org-admin``, so no row of the golden file changed.
+
+P-1b (task 3922) added the pack ``mail-tasks`` of two tools. It follows
+``projects``, so :func:`_allowed` holds it. Each row whose loader offer held
+the Projects packs gained ``mail-tasks`` in ``offered``, in BOTH columns. No
+other field of a row changed.
+
+P-1c (task 3923) added the dark pack ``calendar-connections`` of one tool,
+with no surface and the owner ``org-admin``. :func:`_allowed` leaves it out
+for the same reason, so no row of the golden file changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a
@@ -184,8 +216,20 @@ def _allowed(workflows: bool) -> frozenset[str]:
     """The packs of a box whose ``TOOL_PACKS`` names each pack that follows no
     other, less the dark ``studio-workflows`` (an owner-only line). The
     followers come in through :func:`tool_packs.with_followers`, as
-    ``packs_on`` adds them. So an entry of FOLLOWS changes this list."""
-    every = frozenset(sf.pack_slugs())
+    ``packs_on`` adds them. So an entry of FOLLOWS changes this list. The dark
+    ``studio-share`` (WS-STU J2d, one tool, no surface) is out of the matrix in
+    both lists: the matrix holds the split of TS-1b. The dark ``studio-repair``
+    (TOF-3a F12c, two tools, no surface) is out for the same reason. Only an
+    owner ``TOOL_PACKS`` line turns it on, and the run drops it from the allow
+    list while the org is off its switches (``_tool_injection._apply_tool_packs``).
+    The dark ``org-admin`` (PAR-2a, four tools, no surface, another owner) is out
+    for the same reason. The dark ``people`` (P-5b-1, task 3114, four tools, no
+    surface, owner ``org-admin``) is out for the same reason. The dark
+    ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
+    reason. ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
+    ``org-admin``) is out for the same reason."""
+    every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
+                                          "people", "studio-apps", "calendar-connections"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}
@@ -205,7 +249,8 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
         surface=str(case.get("surface", "studio")),
         skills=tuple(case.get("skills", ())),
     )
-    choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS)
+    choice = tp.choose(turn, allowed=allow, base_tools=BASE, specialists=SPECIALISTS,
+                       skill_packs=case.get("skill_packs"))
     skills = [str(s.slug) for s in choice.skills]
     named = {name for s in choice.skills for name in s.tools}
     needs = [slug for slug in choice.slugs if named & set(sf.SKILL_FAMILIES[slug]["tools"])]
@@ -236,8 +281,9 @@ def _row(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def matrix() -> dict[str, dict[str, Any]]:
-    """Each case under each value of ``HELD_CARD_WRITES_ORGS``."""
+def matrix(cases: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    """Each case of *cases* (:data:`CASES` when None) under each value of
+    ``HELD_CARD_WRITES_ORGS``."""
     from acb_common import get_settings
 
     settings = get_settings()
@@ -246,7 +292,7 @@ def matrix() -> dict[str, dict[str, Any]]:
     try:
         for held, value in HELD.items():
             settings.held_card_writes_orgs = value
-            for name, case in CASES.items():
+            for name, case in (CASES if cases is None else cases).items():
                 out[f"{name}|held={held}"] = _row(case)
     finally:
         settings.held_card_writes_orgs = before
@@ -279,7 +325,7 @@ def _both(case: str, *fields: str) -> dict[str, frozenset[str]]:
 #: the fields of :func:`_view` that differ between ``main`` and ``split``. Every
 #: other case and field is the same. The values are in the golden file.
 NAMED_CHANGES: dict[str, frozenset[str]] = {
-    # 108 becomes 95: the turn loses studio-more, the last pack that came by
+    # 112 becomes 99: the turn loses studio-more, the last pack that came by
     # the surface alone (``choose``, task 1573).
     **_both("studio_with_crm_records_and_calendar_day", "tools", "names"),
     # 99 becomes 109: the core now fits. With the switch off, the three packs
@@ -301,11 +347,11 @@ NAMED_CHANGES: dict[str, frozenset[str]] = {
     # crm-records, which left, is on offer in its place.
     "studio_with_two_sticky_packs|held=on": frozenset({"tools", "names", "evicted", "offered"}),
     # Review P2-a: both Studio packs are sticky and tie. The follow pack leaves
-    # (``_follower_first``), so the core stays: 108 becomes 95. On main the chat
+    # (``_follower_first``), so the core stays: 112 becomes 99. On main the chat
     # had no studio-more, so nothing left.
     **_both("studio_with_a_sticky_pair_and_two_word_packs", "tools", "names", "evicted"),
     # Review round 2: the same pair, but studio-more was used later. No tie, so
-    # the core leaves as the least recently used: 108 becomes 98. The rule of
+    # the core leaves as the least recently used: 112 becomes 102. The rule of
     # the twin applies to a tie only.
     **_both("studio_with_a_sticky_pair_the_follower_used_later", "tools", "names", "evicted"),
     # The three cases on another surface (OTHER_SURFACE_CASES) are not here:
@@ -372,11 +418,11 @@ def test_the_core_stays_and_comes_first() -> None:
     [
         ("studio_alone", 80, 80),
         ("studio_with_email", 110, 110),
-        ("studio_with_crm_records_and_calendar_day", 108, 95),
+        ("studio_with_crm_records_and_calendar_day", 112, 99),
         ("studio_with_email_and_crm_records", 99, 109),
         ("studio_with_projects_reminders", 99, 99),
         ("studio_with_two_sticky_packs", 98, 86),
-        ("studio_with_a_sticky_pair_and_two_word_packs", 108, 95),
+        ("studio_with_a_sticky_pair_and_two_word_packs", 112, 99),
     ],
 )
 def test_the_tool_counts_of_the_audit(case: str, before: int, after: int) -> None:
@@ -393,13 +439,13 @@ def test_a_sticky_pair_keeps_the_core_and_moves_studio_more_out() -> None:
     """Review P2-a. Both Studio packs are sticky, with the same use and the
     same answer to "named now". Only the first load differs, and the core was
     loaded first. The cap must move studio-more out, not the core. Before the
-    fix the core left: 98 tools with studio-more, crm-records and calendar-day.
+    fix the core left: 102 tools with studio-more, crm-records and calendar-day.
     Mutation: drop ``_follower_first`` from the cap of ``choose`` -> red."""
     for held in HELD:
         row = _golden()["split"][f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row == matrix()[f"studio_with_a_sticky_pair_and_two_word_packs|held={held}"]
         assert row["packs"] == ["studio", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio-more"] and row["tools"] == 95, held
+        assert row["evicted"] == ["studio-more"] and row["tools"] == 99, held
 
 
 def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
@@ -412,7 +458,7 @@ def test_the_twin_rule_does_not_fire_without_a_tie() -> None:
         row = matrix()[key]
         assert row == _golden()["split"][key]
         assert row["packs"] == ["studio-more", "crm-records", "calendar-day"], held
-        assert row["evicted"] == ["studio"] and row["tools"] == 98, held
+        assert row["evicted"] == ["studio"] and row["tools"] == 102, held
 
 
 def test_the_other_follow_packs_keep_the_order_of_main() -> None:
@@ -445,6 +491,72 @@ def test_studio_workflows_stays_out_of_follows_and_out_of_the_matrix() -> None:
         case = key.split("|", 1)[0]
         if "studio-workflows" in row["packs"]:
             assert case in WORKFLOW_WORD_CASES and CASES[case].get("workflows"), key
+
+
+# -- TOF-1b: the layer "skill" has its own rows, outside the golden -----------
+
+#: TOF-1b. A skill that brings the pack of its chat tool
+#: (``ai_studio_rows/TOF-1b.md``). These cases are NOT in :data:`CASES`, so
+#: the golden file and its rows do not change. Each keeps its row inline
+#: (:data:`SKILL_LAYER_ROWS`).
+SKILL_LAYER_CASES: dict[str, dict[str, Any]] = {
+    # No surface and no pack word: the skill brings crm-records, which takes
+    # its place last with the layer "skill". 57 + 13 - 1 = 69 tools.
+    "a_skill_brings_crm_records": {
+        "surface": "",
+        "words": "run my lead digest",
+        "skills": (_skill("skill-lead-digest", "create_lead"),),
+        "skill_packs": {"skill-lead-digest": ("crm-records",)},
+    },
+    # The Studio surface loads both Studio packs, so the skill and its pack need
+    # 4 places. The skill is refused with "pack_cap", and the code packs stay.
+    "studio_with_a_skill_that_brings_a_pack": {
+        "words": "make the form blue and run my lead digest",
+        "skills": (_skill("skill-lead-digest", "create_lead"),),
+        "skill_packs": {"skill-lead-digest": ("crm-records",)},
+    },
+}
+
+#: The pinned fields of each row of :data:`SKILL_LAYER_CASES`, the same for
+#: each value of ``HELD_CARD_WRITES_ORGS``. The loader offer is not pinned, so
+#: a new pack elsewhere does not move these rows.
+SKILL_LAYER_ROWS: dict[str, dict[str, Any]] = {
+    "a_skill_brings_crm_records": {
+        "packs": ["crm-records"], "layers": {"crm-records": "skill"}, "skipped": [],
+        "evicted": [], "skills": ["skill-lead-digest"], "skills_skipped": [], "tools": 69,
+    },
+    "studio_with_a_skill_that_brings_a_pack": {
+        "packs": ["studio", "studio-more"],
+        "layers": {"studio": "surface", "studio-more": "surface"}, "skipped": [],
+        "evicted": [], "skills": [], "skills_skipped": [], "tools": 80,
+    },
+}
+
+
+def test_a_skill_pack_has_its_own_layer_outside_the_golden() -> None:
+    """TOF-1b, decisions 3 to 5. A pack that a skill brings has the layer
+    "skill" and comes last. Where the places are full, the code packs of the
+    turn stay as the matrix gives them with no map. The golden rows do not
+    move, because these cases are not in :data:`CASES`. Mutation: give the
+    brought pack the layer "words", or move a Studio pack out for it -> red."""
+    got = matrix(SKILL_LAYER_CASES)
+    assert not set(SKILL_LAYER_CASES) & set(CASES)
+    assert sorted(got) == sorted(f"{n}|held={h}" for n in SKILL_LAYER_CASES for h in HELD)
+    for key, row in got.items():
+        want = SKILL_LAYER_ROWS[key.split("|", 1)[0]]
+        assert {field: row[field] for field in want} == want, key
+    for held in HELD:
+        assert "crm-records" not in got[f"a_skill_brings_crm_records|held={held}"]["offered"]
+    # The refused skill: the same row as with no map, and one "pack_cap".
+    studio = SKILL_LAYER_CASES["studio_with_a_skill_that_brings_a_pack"]
+    plain = _row({key: value for key, value in studio.items() if key != "skill_packs"})
+    assert plain["packs"] == got["studio_with_a_skill_that_brings_a_pack|held=off"]["packs"]
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), TURN, (), str(studio["words"]),
+                       True, surface="studio", skills=tuple(studio["skills"]))
+    choice = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS,
+                       skill_packs=studio["skill_packs"])
+    assert [(s.slug, why, packs) for s, why, packs in choice.skills_refused] == [
+        ("skill-lead-digest", "pack_cap", ("crm-records",))]
 
 
 # -- The sticky state of a chat from before the split (item 7) ---------------

@@ -49,12 +49,14 @@ import {
 import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 import { isDefaultAgent } from "@/lib/chatMemorySave";
 import { wholeToolArgs } from "@/lib/toolArgs";
-import { takeHandoff } from "@/lib/chatStream";
+import { RUN_PHASE_EVENT, takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
+import { SAVED_FAILURE_CODES, failedMarker } from "@/lib/chatRunFailed";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
+import { runResumedFrameOf } from "@/lib/chatResume";
 import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
 import { unsafeGatewayPath } from "@/lib/gatewayPath";
 
@@ -411,7 +413,14 @@ async function translateAndPersistStream(
           progressLines.push(name);
           if (progressLines.length > 20) progressLines.shift();
           enqueue({ type: "progress", name });
-          out = { type: "tool_start", id: ev.toolCallId, name, args: {} };
+          // CSY-10: the server's own stamp of an MCP tool (name and label, never
+          // an argument), passed on as it came.
+          const mcp = ev.mcp as { server?: unknown; label?: unknown } | undefined;
+          out = {
+            type: "tool_start", id: ev.toolCallId, name, args: {},
+            ...(mcp && typeof mcp.server === "string" && typeof mcp.label === "string"
+              ? { mcp: { server: mcp.server, label: mcp.label } } : {}),
+          };
         } else if (t === "TOOL_CALL_ARGS") {
           const id = String(ev.toolCallId ?? "");
           toolArgs[id] = (toolArgs[id] ?? "") + String(ev.delta ?? "");
@@ -472,6 +481,12 @@ async function translateAndPersistStream(
           out = { type: "state", snapshot: ev.snapshot ?? {} };
         } else if (t === "STATE_DELTA") {
           out = { type: "state_delta", delta: ev.delta ?? [] };
+        } else if (t === "CUSTOM" && ev.name === RUN_PHASE_EVENT) {
+          // CS-3b: the server's phase of the run (`acb_skills.run_phase`).
+          // It is forwarded as a custom event, and never saved: it does not
+          // join `customEvents`. The client draws a fixed word for a known
+          // name and ignores any other (`phaseWordOf`).
+          out = { type: "custom", name: RUN_PHASE_EVENT, value: ev.value ?? null };
         } else if (t === "CUSTOM") {
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
           // A dispatched browser action (H-164) is a side effect, not part
@@ -547,15 +562,34 @@ async function translateAndPersistStream(
             }
           }
           out = { type: "done", run_id: ev.runId || ev.run_id };
+          // RESUME-3a: a park ends the run, and its card still waits. The
+          // chat then shows no "Done" (§4.12.4 item 5). Every other frame is
+          // as before.
+          if (ev.parked === true) out.parked = true;
+          // RESUME-2d: the gateway kept the run from this reader (D-RES-10).
+          // The chat does not attach to that run again (`attach_withheld`).
+          if (ev.withheld === true) out.withheld = true;
         } else if (t === "RUN_ERROR") {
           // The server names the failure (`acb_llm.run_errors`). Pass its
           // code and ref through, and never derive one from the text here.
+          // AO-3b: a failure whose card must survive a reload leaves its
+          // marker on the saved reply (`lib/chatRunFailed.ts`).
+          if (typeof ev.code === "string" && SAVED_FAILURE_CODES.has(ev.code)) {
+            customEvents.push(failedMarker(ev.code, typeof ev.ref === "string" ? ev.ref : null, segments.length));
+          }
           out = {
             type: "error",
             content: String(ev.message ?? "Agent run error"),
             ...(typeof ev.code === "string" ? { code: ev.code } : {}),
             ...(typeof ev.ref === "string" ? { ref: ev.ref } : {}),
           };
+        } else if (t === "RUN_STARTED") {
+          // RESUME-3b: a second start of THIS run, marked `resumed` (case A
+          // of RESUME-2b), says that the run goes on after its park. The
+          // binding above accepted it, so its run id is this reader's. The
+          // chat then keeps the reply open past an earlier `done`. A plain
+          // start sends no frame, as before.
+          out = runResumedFrameOf(ev);
         }
 
         // Forward the Redis stream ID so the frontend can track the last

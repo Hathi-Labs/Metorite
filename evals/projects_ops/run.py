@@ -76,6 +76,11 @@ class OpsHarness(coding.Harness):
 
         self._patches.set(executor, "_run_sub_agent_streaming", self.email.run_sub_agent)
         settings = get_settings()
+        if not self.scripted:
+            # Task 3554: a call that the Router does not take runs on a dev
+            # box only. The executor's error recovery calls `complete` in
+            # process, so the Router run says dev, as `one_assistant_measure`.
+            self._patches.set(settings, "acb_env", "dev")
         if hasattr(settings, "maf_coding_scope"):
             # The coding harness sets the scope for its own sweep. This sweep
             # sets it only when it asks for a covered run.
