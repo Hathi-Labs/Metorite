@@ -874,3 +874,52 @@ def test_the_unlink_command_says_so_when_the_copy_cannot_be_deleted(capsys):
     assert linkcli.do_unlink(Settings(link_url="https://link.test"), store, FakeLink().api(),
                              delete_copy=broken) == 1
     assert "delete-copy" in capsys.readouterr().err and store.state is None
+
+
+def test_the_real_unlink_command_deletes_the_copy_end_to_end(tmp_path, capsys):
+    """Verifier F1: the CLI wiring itself (_copy_deleter), not an injected
+    callback. LINK_URL is empty, so no revoke goes out; the copy still goes."""
+    from datetime import UTC, datetime
+
+    from tally_bridge import __main__ as cli
+    from tally_bridge.localcopy import CopyStore, DevFileKeyProvider
+    from tally_bridge.localcopy.store import Snapshot
+    from tally_bridge.settings import FileSettingsStore
+
+    copy_dir, key = tmp_path / "copy", tmp_path / "copy.key"
+    FileSettingsStore(tmp_path / "settings.json").save(Settings(copy_dir=str(copy_dir)))
+    copy = CopyStore(copy_dir, DevFileKeyProvider(key))
+    copy.save(Snapshot("Alpha Co", datetime(2026, 11, 25, tzinfo=UTC)))
+    assert list(copy_dir.glob("*"))
+    DevFileLinkStore(tmp_path / "link.json").save(
+        LinkState(CREDENTIAL, "conn-1", "Acme Traders", confirmed=True))
+    assert cli.main(["unlink", "--settings-file", str(tmp_path / "settings.json"),
+                     "--dev-link-file", str(tmp_path / "link.json"),
+                     "--dev-copy-key-file", str(key)]) == 0
+    assert list(copy_dir.glob("*")) == []
+    assert not (tmp_path / "link.json").exists()
+
+
+def test_serve_hands_the_copy_gate_to_the_copy_loop(monkeypatch):
+    """Verifier F1: _serve_with_copy passes copy_allowed into run_forever."""
+    from tally_bridge import __main__ as cli
+    from tally_bridge.localcopy import schedule
+
+    seen = {}
+
+    async def fake_loop(reader, copy, live, allowed=None):
+        seen["allowed"] = allowed
+
+    monkeypatch.setattr(schedule, "run_forever", fake_loop)
+
+    class Server:
+        should_exit = False
+
+        async def serve(self):
+            await asyncio.sleep(0.05)
+
+    def gate() -> bool:
+        return False
+
+    asyncio.run(cli._serve_with_copy(Server(), None, object(), None, None, None, gate))
+    assert seen["allowed"] is gate
