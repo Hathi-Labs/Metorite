@@ -29,6 +29,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import httpx
+
 from tests.unit._card_words import assert_card_words
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -104,7 +106,8 @@ def fake_gateway(
     calls: list[dict] = []
     monkeypatch.setattr(
         module, "httpx",
-        SimpleNamespace(AsyncClient=lambda **_kw: client_class(calls, responder)),
+        SimpleNamespace(AsyncClient=lambda **_kw: client_class(calls, responder),
+                        HTTPError=httpx.HTTPError),
     )
     if user is not None:
         monkeypatch.setattr(module, "_current_user_email", lambda: user)

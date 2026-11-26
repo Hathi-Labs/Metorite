@@ -207,6 +207,11 @@ GATED_ROUTERS: dict[str, set[str]] = {
     # No exemption: the callback runs behind the member session through the
     # BFF. The webhook is a separate router in PUBLIC_ROUTES.
     "gateway.routes.github.connect": set(),
+    # API-2 — the connect flow of an API template (Zoho Books). Gated on
+    # `feature:integrations` after the `API_CONNECTIONS_ORGS` 404, and each
+    # route also needs `integrations:manage`. No exemption: the callback runs
+    # behind the member session through the CRM BFF callback.
+    "gateway.routes.integrations_api_connect": set(),
     "gateway.routes.workflows": {
         "/workflows/hooks/{hook_token}",
     },
@@ -385,6 +390,15 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "and no member from the request "
             "(`test_feed_measure_r8.py::TestTheTenancyBoundary`)."
         ),
+        "/shell/setup": (
+            "OB-1a. It needs no feature, as `/shell/feed/prefs` needs none. Each "
+            "step of `setup_status.REGISTRY` carries its own permission and "
+            "feature, and the route passes the session's own checks, so a "
+            "member never sees a step of an app they lack. It reads rows of the "
+            "caller only, in the bound tenant, and a signed agent gets 404. The "
+            "route takes no member and no org from the request "
+            "(`test_setup_status_r8.py`, `test_setup_status_source.py`)."
+        ),
         "/shell/waiting": (
             "WS-AP AP-1a. `WAITING_ORGS` answers 404 first, and a signed agent "
             "gets 404. Each provider in `waiting.PROVIDERS` checks the features "
@@ -419,7 +433,10 @@ DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
             "app's switch. The CRM source also applies the access rule, and a "
             "refusal gives no row (`test_resolve_name_tool.py`). The route takes "
             "no member and no org from the request "
-            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`)."
+            "(`test_resolve_name_tool.py::TestTheRouteTakesNoTenant`). FIND-6b: "
+            "a member row comes through People, so it needs `feature:people`. The "
+            "saved names are the session member's own, read only with the "
+            "assistant profile on for the org (`sources.aliases_reach`)."
         ),
     },
 }

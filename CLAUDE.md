@@ -416,6 +416,10 @@ Rules that make it work:
   commands, the keeper, the merge queue, the accounts and the traps. **To size
   lanes, sub-agents, runners and CI to the machines you have, or to add a
   machine such as a cloud VPS, read `docs/dev_capacity.md`.**
+- **Google Cloud is the aroh deployment** (D229, D230). Project
+  `metorite-513907` holds the dev box `aroh-dev-1`. Every new resource there
+  takes the name `aroh`. **Read `docs/gcp_aroh.md` before you touch it.** It
+  holds the access, the network plan, the box and the traps.
 - **GitHub `pr-check` is the gate (D218).** Push when the verifier passes, not
   after each commit, so `pr-check` runs once for each round.
   `bash scripts/ci_local.sh` runs the whole pr-check suite locally. It is

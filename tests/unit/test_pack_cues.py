@@ -67,8 +67,25 @@ WHEN = {
         "Load for AI Studio: manage skills, ready apps, delete an app, read workflows, "
         "or read and change the records of a package."),
     # STB-6b: the small pack of the workflow writes, of the studio owner.
+    # PAR-8a: the pack holds each act of the Workflows app.
     "studio-workflows": (
-        "Load to publish a workflow, roll it back to a version, pause it or turn it on again."),
+        "Load to run a workflow, read its runs, make, change or delete it, its code modules, or to publish or pause it."),
+    # TOF-3a F12c: the small pack of the repair of a skill, of the studio owner.
+    "studio-repair": "Load to fix a skill that failed, or to undo the newest version of a skill.",
+    # WS-STU J2d: the small pack of the share of a skill, of the studio owner.
+    "studio-share": (
+        "Load to share a skill with the organization, end its share, or approve or reject "
+        "a skill share."),
+    # PAR-2a (task 3102): the members of the org. PAR-4a (task 3107): the groups,
+    # the roles, the overrides and the name of the org. PAR-6a (task 3109): the
+    # Integrations. PAR-4d (task 3936): the seats.
+    "org-admin": (
+        "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
+        "integrations, MCP servers, plugins, GitHub."),
+    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    "people": (
+        "Load for the people directory, your own row, the open work of a colleague, or the "
+        "Reach preview."),
 }
 
 

@@ -300,6 +300,24 @@ _PROPOSALS_SWAP: tuple[str, str] = (
     "  edit behind a card. A person accepts it in the Knowledge app. You never publish\n",
 )
 
+# PAR-3 (task 3105, chat_parity.md wave P-5). With KNOWLEDGE_CHAT_WRITES on
+# too, the tool list of the persona gains the line of the four Knowledge
+# writes, by one more exact swap. Off, the persona does not change, byte for
+# byte. Fence: tests/unit/test_kb_chat_writes.py.
+_KB_WRITES_SWAP: tuple[str, str] = (
+    _COMPANY_SEARCH_SWAPS[0][1],
+    _COMPANY_SEARCH_SWAPS[0][1]
+    + "- create_page, edit_page, create_space, edit_space: when the member asks you to\n"
+    "  write a page, change a draft page, or make or change a space in Knowledge. Each\n"
+    "  one shows the full text on a card first. A new page is a draft. edit_page changes\n"
+    "  only a draft. For a published page, use propose_edit. You never publish\n"
+    # PAR-3b (task 3901): the move, the revert and the eight more reads.
+    "- move_page, revert_page: move a draft page, or bring back an old version of a\n"
+    "  draft, behind a card. A person moves or reverts a published page in the app\n"
+    "- list_pages, list_recent, read_page_version, list_backlinks, list_proposals,\n"
+    "  list_sources, list_gaps, list_maintenance: read more of Knowledge\n",
+)
+
 
 # WS-63 PZ-6a (personalization.md §5.5). With ASSISTANT_PROFILE_ENABLED on,
 # the memory tools of the persona gain the line of the four profile writes,
@@ -409,7 +427,7 @@ _SPAWN_ANCHOR = "THE SHAPE OF A ROUTINE REPLY."
 def _orchestrator_instructions(
     company_search: bool, recency: bool = False, proposals: bool = False,
     *, profile: bool = False, constraints: bool = False, spawn: bool = False,
-    card_writes: bool = False, find: bool = False,
+    card_writes: bool = False, find: bool = False, kb_writes: bool = False,
 ) -> str:
     """The persona. Off, ``_PULL_INSTRUCTIONS`` itself. On, the three swaps.
 
@@ -421,7 +439,8 @@ def _orchestrator_instructions(
     is on too. *profile* (PZ-6a) adds :data:`_PROFILE_SWAP`
     on its own, and *card_writes* (PZ-32) then adds :data:`_PROFILE_CARD_SWAP`.
     *constraints* (WS-67 OA-4) adds :data:`_CONSTRAINTS_SWAP` on its own.
-    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`.
+    *spawn* (WS-67 OA-9e) adds :data:`_SPAWN_BLOCK`. *kb_writes* (PAR-3)
+    adds :data:`_KB_WRITES_SWAP`, only with *company_search* on too.
     """
     if not company_search and not profile and not constraints and not spawn:
         return _PULL_INSTRUCTIONS
@@ -430,6 +449,7 @@ def _orchestrator_instructions(
         (_COMPANY_SEARCH_SWAPS if company_search else ())
         + ((_RECENCY_SWAP,) if company_search and recency else ())
         + ((_PROPOSALS_SWAP,) if company_search and proposals else ())
+        + ((_KB_WRITES_SWAP,) if company_search and kb_writes else ())
         + ((_FIND_SWAP,) if company_search and recency and find else ())
         + ((_PROFILE_SWAP,) if profile else ())
         + ((_PROFILE_CARD_SWAP,) if profile and card_writes else ())
@@ -464,6 +484,15 @@ def _knowledge_propose_enabled() -> bool:
     except ImportError:  # pragma: no cover — acb_skills ships with the platform
         return False
     return knowledge_propose_enabled()
+
+
+def _knowledge_chat_writes_enabled() -> bool:
+    """The one reader of ``KNOWLEDGE_CHAT_WRITES``, in ``acb_skills`` (PAR-3)."""
+    try:
+        from acb_skills.knowledge_tools import knowledge_chat_writes_enabled
+    except ImportError:  # pragma: no cover — acb_skills ships with the platform
+        return False
+    return knowledge_chat_writes_enabled()
 
 
 def _chat_constraints_enabled() -> bool:
@@ -558,6 +587,57 @@ def _spawn_subagents_enabled(org: str | None = None) -> bool:
 
             org = _current_run_org()
         return spawn_subagents_on(org)
+    except Exception:
+        return False
+
+
+def _chat_pin_enabled(org: str | None = None) -> bool:
+    """True when the pin tool of this chat is on for this assistant's org.
+
+    WS-CO CO-11b (``chat_organization.md`` §18). The rule is the one reader of
+    ``CHAT_PIN_TOOL_ORGS``, ``gateway.chat_session_member.pin_tool_allowed``.
+    It needs ``CHAT_PIN_ORGS`` too (owner, 2026-11-21, task 3563). The org is
+    found as :func:`_spawn_subagents_enabled` finds it, and a caller with none
+    fails closed. The route asks ``pin_allowed`` again at each call. Never
+    raises.
+    """
+    try:
+        from gateway.chat_session_member import pin_tool_allowed
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return pin_tool_allowed(org)
+    except Exception:
+        return False
+
+
+def _home_tools_enabled(org: str | None = None) -> bool:
+    """True when the Home tools are on for this assistant's org.
+
+    PAR-8b (``chat_parity.md`` §6.4, task 3903). The rule is the one reader of
+    ``HOME_TOOLS_ORGS``, ``acb_skills.home_tools.home_tools_on``. The org is
+    found as :func:`_spawn_subagents_enabled` finds it, and a caller with none
+    fails closed. Each route asks its own gates again at each call. Never
+    raises.
+    """
+    try:
+        from acb_skills.home_tools import home_tools_on
+
+        if not org:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        if not org:
+            from orchestrator.executor import _current_run_org
+
+            org = _current_run_org()
+        return home_tools_on(org)
     except Exception:
         return False
 
@@ -678,11 +758,27 @@ async def show_in_app(path: str, why: str) -> dict:
     one sentence. Call it at most once per reply.
 
     Args:
-        path: An in-app path. It starts with one "/" and names a pane:
-            /projects, /projects?project=<id>, /projects?task=<id>, /tasks,
-            /calendar, /email, /email?email=<id>, /crm, /people, /knowledge,
-            /notes, /artifacts, /whatsapp, /dashboard, /chat. Never a full
-            URL, and never another site.
+        path: An in-app path. It starts with one "/" and names a pane. Never a
+            full URL, and never another site. The pages, and what a member
+            does there:
+            /projects (also /projects?project=<id>, /projects?task=<id>):
+            Plan work, boards and tasks, and your own list of tasks.
+            /calendar: Plan your days and time-block tasks.
+            /email (also /email?email=<id>): Read and answer mail.
+            /whatsapp: Your WhatsApp conversations.
+            /crm: Deals, contacts and accounts.
+            /people: The company directory. /people/me: your own profile.
+            /knowledge: The company wiki and its search.
+            /artifacts: Files and documents the assistant made.
+            /chat: Ask the assistant, or have it do the work.
+            /studio: Build apps, workflows and skills for your company.
+            /integrations: Every tool your company has connected.
+            /approvals: Check what the AI will send before it goes out.
+            /settings/organization: Invite members, change roles, assign
+            seats and set your brand. Opens only for an admin of the
+            organization. Add ?tab=members to land on Members & roles
+            (other tabs: seats, branding, requests, email).
+            /settings/appearance: Light or dark, spacing and accent colour.
         why: One short sentence the member reads, such as "Here is the
             board for Website relaunch."
 
@@ -727,7 +823,15 @@ async def show_in_app(path: str, why: str) -> dict:
     # show_in_app must see it. It is pending until the check ends. A refusal
     # gives it back.
     queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
-    reason = _iap.refusal(path, await _iap.member_features())
+    # PAR-1: an admin page opens for an admin of the org only. The right is read for
+    # the verified run member, and only when the pane needs it.
+    pane = _iap.pane_of(path)
+    admin = False
+    if pane is not None and pane.admin:
+        from orchestrator.guide_tools import member_is_admin
+
+        admin = await member_is_admin()
+    reason = _iap.refusal(path, await _iap.member_features(), admin)
     if reason is not None:
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
@@ -799,25 +903,15 @@ async def spawn_copilot_agent(    task: str,
 ) -> str:
     """Spawn a GitHub Copilot SDK agent to create or modify code, skills, or scripts.
 
-    Use this tool when the user asks to:
-    - Create a new skill or script in an agent repo
-    - Add a new capability / automation to an existing agent
-    - Fix a bug or improve an existing script
-    - Write tests, add documentation, or refactor code
-    - Self-improve any part of the system
-
-    The Copilot SDK agent runs in an isolated container with full access to the
-    agent's repository, executes the task autonomously (write code, run tests,
-    commit, push), and returns a summary of what was done.
+    Use it when the user asks to add a skill, script or capability to an
+    agent, fix a bug, write tests or docs, refactor code, or improve any part
+    of the system. The agent works in an isolated container on the agent's
+    repository (code, tests, commit, push) and returns a summary.
 
     Args:
-        task: Natural language description of what to build or fix.
-              Be specific: include file paths, function names, inputs/outputs.
+        task: What to build or fix. Name file paths, functions, inputs and outputs.
         agent_name: Which agent repo to work in (default: current agent).
         agent_dir: Absolute path to the local clone (auto-resolved if omitted).
-
-    Returns:
-        Summary of actions taken and files changed.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -877,9 +971,8 @@ async def spawn_copilot_agent(    task: str,
 async def delegate_to_agent(agent_name: str, message: str) -> str:
     """Delegate a task to a specialist agent and return its response.
 
-    Use this tool when the user's request is clearly in the domain of a specialist agent.
-    The specialist agent loads its own system prompt, skills, and tools from its GitHub repo
-    and handles the request fully — its response is returned here verbatim.
+    Use it when the request is clearly in the domain of a specialist agent.
+    The agent handles the request fully, and its response comes back verbatim.
 
     When to delegate (examples):
     - CRM records, pipeline and deal questions → "crm-assistant"
@@ -895,8 +988,6 @@ async def delegate_to_agent(agent_name: str, message: str) -> str:
         agent_name: Exact registered name, e.g. "crm-assistant", "projects-assistant".
         message:    The user's full request, reworded if needed to be self-contained.
 
-    Returns:
-        The specialist agent's full response text.
     """
     import uuid as _uuid  # noqa: PLC0415
 
@@ -1168,6 +1259,9 @@ def build_orchestrator_agent(
     # WS-61 KB-5a: read once too, so the persona line and the two tools agree.
     # Off until KB-5b ships the Review view, where a person accepts.
     proposals = company_search and _knowledge_propose_enabled()
+    # PAR-3 (task 3105): read once too, so the persona line and the four
+    # Knowledge writes agree.
+    kb_writes = company_search and _knowledge_chat_writes_enabled()
     # WS-63 PZ-5: read once, so the tool list follows one reading of the flag.
     # PZ-25: per organization, so read it on the bound run, never at import.
     profile_on = _assistant_profile_enabled(organization_id)
@@ -1188,7 +1282,8 @@ def build_orchestrator_agent(
                                               constraints=constraints_on,
                                               spawn=_spawn_subagents_enabled(organization_id),
                                               card_writes=card_writes_on,
-                                              find=find_on)
+                                              find=find_on,
+                                              kb_writes=kb_writes)
 
     # Memory tools — active read/write to Mem0 + Graphiti knowledge graph.
     # Gives the orchestrator the same memory capabilities that injected
@@ -1243,6 +1338,16 @@ def build_orchestrator_agent(
                                read_page, list_spaces]
         if proposals:
             retrieval_tools += [propose_page, propose_edit]
+        # PAR-3 (task 3105): the four Knowledge writes, only with
+        # KNOWLEDGE_CHAT_WRITES on. Each shows the full text on one card.
+        if kb_writes:
+            from acb_skills.knowledge_tools import MORE_READ_TOOLS as _KB_MORE_READS
+            from acb_skills.knowledge_tools import MOVE_REVERT_TOOLS as _KB_MOVE_REVERT
+            from acb_skills.knowledge_tools import WRITE_TOOLS as _KB_WRITE_TOOLS
+
+            # PAR-3b (task 3901): the move, the revert and the eight more
+            # reads, on the same flag, after the four writes.
+            retrieval_tools += [*_KB_WRITE_TOOLS, *_KB_MOVE_REVERT, *_KB_MORE_READS]
     else:
         retrieval_tools = [retrieve_entity_context, retrieve_sales_context]
     # WS-63 PZ-5: `resolve_person`, only with the profile on for the org (PZ-25).
@@ -1252,10 +1357,12 @@ def build_orchestrator_agent(
     # WS-63 PZ-6a: the four profile writes, on the same one path, with the
     # persona line of `_PROFILE_SWAP`. Each refuses outside the member's own
     # chat. Fence: tests/unit/test_profile_write_tools.py.
-    # WS-FIND FIND-6: `resolve_person` stays in the list. `resolve_name` has
-    # no member, no saved alias and no address yet, so the parity of D-FIND-3
-    # does not hold (find_engine.md §5.3, as built). For an org of FIND_ORGS
-    # it takes the guard of the find tools.
+    # WS-FIND FIND-6: `resolve_person` stays in the list. FIND-6b gave
+    # `resolve_name` the member, the saved alias and the address, so the
+    # parity of D-FIND-3 holds, except for the limits that find_engine.md
+    # §5.2 lists ("Limits of FIND-6b"). `resolve_person` leaves one release
+    # later, in the next PR (find_engine.md §5.3). For an org of FIND_ORGS it
+    # takes the guard of the find tools.
     if profile_on:
         from acb_skills.profile_tools import WRITE_TOOLS, resolve_person
 
@@ -1304,6 +1411,22 @@ def build_orchestrator_agent(
         from acb_skills.agent_tools import spawn_subagents
 
         spawn_tools = [spawn_subagents]
+    # WS-CO CO-11b (chat_organization.md §18): the pin of this chat, the
+    # orchestrator's own, on this one path. Dark until CHAT_PIN_TOOL_ORGS and
+    # CHAT_PIN_ORGS both name the org. Fence: tests/unit/test_chat_pin_tool.py.
+    pin_tools: list[Any] = []
+    if _chat_pin_enabled(organization_id):
+        from acb_skills.chat_pin_tools import TOOLS as _PIN_TOOLS
+
+        pin_tools = list(_PIN_TOOLS)
+    # PAR-8b (chat_parity.md §6.4, task 3903): the Home page, Needs you and the
+    # shell, the orchestrator's own, on this one path. Dark until
+    # HOME_TOOLS_ORGS names the org. Fence: tests/unit/test_home_tools.py.
+    home_tools: list[Any] = []
+    if _home_tools_enabled(organization_id):
+        from acb_skills.home_tools import HOME_TOOLS as _HOME_TOOLS
+
+        home_tools = list(_HOME_TOOLS)
     core_tools: list[Any] = [
         *retrieval_tools,
         *profile_tools,
@@ -1313,6 +1436,8 @@ def build_orchestrator_agent(
         *page_tools,
         *guide_tool_list,
         *spawn_tools,
+        *pin_tools,
+        *home_tools,
         spawn_copilot_agent,
         delegate_to_agent,
         *_memory_tools,
