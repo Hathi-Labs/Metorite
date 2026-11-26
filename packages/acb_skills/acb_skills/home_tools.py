@@ -75,6 +75,7 @@ from acb_common.settings import internal_auth_headers
 
 from acb_skills.company_search_tools import _gateway_url
 from acb_skills.hidden_text import body_hidden_problem
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import annotate
 
 _log = get_logger("acb_skills.home_tools")
@@ -250,7 +251,7 @@ def _member() -> str:
         bound = str(artifact_context().get("member") or "").strip()
     except Exception:
         return ""
-    if not user or "@" not in user or user.lower() != bound.lower():
+    if not user or run_member_address(user) is None or user.lower() != bound.lower():
         return ""
     return user
 

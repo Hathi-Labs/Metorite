@@ -108,6 +108,8 @@ from typing import Any
 
 from acb_common import get_logger
 
+from acb_skills.memory_tools import run_member_address
+
 _log = get_logger("acb_skills.late_approve")
 
 #: The tenant Redis namespace of an offer: the act of a parked plain card, by
@@ -504,7 +506,7 @@ async def record_offer(org: str, thread_id: str, request_id: str,
         if str(row.get("kind") or "") != "confirmation":
             return False
         member = _run_member()
-        if "@" not in member or member != str(row.get("actor_email") or "").strip().lower():
+        if run_member_address(member) is None or member != str(row.get("actor_email") or "").strip().lower():
             return False
         from acb_skills.ask_tools import waiting_card
 
@@ -544,7 +546,7 @@ async def drop_offer(org: str, member: str, thread_id: str, request_id: str) -> 
     the next twin wrote the act again (RESUME-2a follow-up, P2-1)."""
     try:
         who = str(member or "").strip().lower()
-        if not org or "@" not in who or not thread_id or not late_approve_on(org):
+        if not org or run_member_address(who) is None or not thread_id or not late_approve_on(org):
             return
         from acb_common.tenant_redis import key, organization_scope
 
@@ -585,7 +587,7 @@ async def grant_from_offer(org: str, member: str, row: Mapping[str, Any], answer
         who = str(member or "").strip().lower()
         thread = str(row.get("thread_id") or "")
         rid = str(row.get("request_id") or "")
-        if "@" not in who or not thread or not rid:
+        if run_member_address(who) is None or not thread or not rid:
             return False
         if str(answer or "").strip().upper() != APPROVE:
             await drop_offer(org, who, thread, rid)
@@ -658,7 +660,7 @@ def _run_scope(*, spend: bool = False) -> tuple[str, str, str] | None:
     if not org or not (late_approve_on(org) or (spend and _resume_on(org))):
         return None
     member, thread = _run_member(), _run_thread()
-    if "@" not in member or not thread:
+    if run_member_address(member) is None or not thread:
         return None
     return org, member, thread
 

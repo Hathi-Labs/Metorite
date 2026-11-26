@@ -116,6 +116,8 @@ from typing import Any
 
 from acb_common import get_logger
 
+from acb_skills.memory_tools import run_member_address
+
 _log = get_logger("acb_skills.decide_tools")
 
 #: The flag is off, the box is not wired, the tier is unbound, the box needs a
@@ -236,7 +238,7 @@ def _proven_member() -> str | None:
         member = _verified_member()
     except Exception:  # an unreadable binding proves nothing
         return None
-    return member if "@" in member else None
+    return run_member_address(member)
 
 
 async def decide(

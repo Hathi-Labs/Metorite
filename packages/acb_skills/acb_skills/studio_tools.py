@@ -122,6 +122,7 @@ from acb_common.studio_patch import PatchError, apply_patch
 from acb_common.studio_runtime import RUNTIME_KINDS, SANDBOX_MODULES
 
 from acb_skills.hidden_text import body_hidden_problem, find_hidden, hidden_problem, strip_hidden
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import annotate
 
 #: The most characters of one serialized manifest in a tool call (G1 cap).
@@ -233,7 +234,7 @@ def _headers() -> dict[str, str]:
     user = _current_user_email()
     if not user:
         raise _Refused(_NO_MEMBER)
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(_SHARED_ROOM)
     return {
         **internal_auth_headers(),
@@ -3276,7 +3277,7 @@ def _member_part() -> str:
     """The member of the run as one key part: a hash of the address, never the
     address. "" when the run has no member."""
     member = _current_user_email().strip().lower()
-    if "@" not in member:
+    if run_member_address(member) is None:
         return ""
     return hashlib.blake2b(member.encode("utf-8"), digest_size=12).hexdigest()
 

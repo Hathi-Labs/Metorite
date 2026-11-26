@@ -43,6 +43,8 @@ from typing import NamedTuple as _NamedTuple
 
 from acb_common.no_person import no_person_present as _no_person_present
 
+from acb_skills.memory_tools import run_member_address
+
 if TYPE_CHECKING:  # the edit card of a new task (EAC-1), for the annotations only
     from acb_skills.task_card import TaskEdit
 
@@ -2751,7 +2753,7 @@ def _task_edit_form(edit: dict | None, rows: list[dict] | None, reply: dict | No
     from acb_skills.task_card import clean_task_edit_form
 
     form = clean_task_edit_form(edit)
-    if "@" not in member or not task_edit_card_channel_open():
+    if run_member_address(member) is None or not task_edit_card_channel_open():
         return None
     return form
 

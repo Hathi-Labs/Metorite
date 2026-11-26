@@ -77,6 +77,7 @@ from typing import Any
 import structlog
 
 from acb_skills.handoff import CONSTRAINTS_MARK, DECISIONS_LINE
+from acb_skills.memory_tools import run_member_address
 
 _log = structlog.get_logger(__name__)
 
@@ -563,7 +564,7 @@ async def decisions_of(org: str, session: str, member: str) -> list[dict[str, st
     if not chat_constraints_enabled():
         return []
     who = str(member or "").strip().lower()
-    if not (org and session and "@" in who):
+    if not (org and session and run_member_address(who)):
         return []
     items = await _read_redis(org, session, who)
     if items is None:
@@ -583,7 +584,7 @@ async def undo_decision(org: str, session: str, member: str, wanted: str) -> tup
     orchestrator reads Redis again at the start of each turn
     (``load_constraints(fresh=True)``)."""
     who = str(member or "").strip().lower()
-    if not chat_constraints_enabled() or not (org and session and "@" in who):
+    if not chat_constraints_enabled() or not (org and session and run_member_address(who)):
         return UNDO_UNAVAILABLE, None
     if not await _lock(org, session, who):
         return UNDO_UNAVAILABLE, None

@@ -102,6 +102,7 @@ from acb_skills.attachment_text import (
     text_state,
     unsupported_sentence,
 )
+from acb_skills.memory_tools import run_member_address
 from acb_skills.untrusted import UntrustedFrame
 from acb_skills.write_artifact import artifact_context
 
@@ -715,7 +716,7 @@ async def analyze_image(file_name: str, question: str) -> str:
     if not image_analysis_for(org):
         return IMAGE_OFF
     member = _run_member()
-    if "@" not in member:
+    if run_member_address(member) is None:
         return IMAGE_NO_MEMBER
     got = await read_attachment_bytes(file_name)
     if isinstance(got, str):

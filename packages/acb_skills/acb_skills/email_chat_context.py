@@ -46,6 +46,7 @@ from acb_common.settings import internal_auth_headers
 from acb_common.tool_refusals import strip_id_label
 
 from acb_skills.ask_tools import CARD_APPROVED, CARD_OUTCOMES, CLOSED_BY_YOUR_MESSAGE
+from acb_skills.memory_tools import run_member_address
 
 _log = structlog.get_logger(__name__)
 
@@ -529,7 +530,7 @@ async def prime_mailboxes(org: str, member: str) -> None:
     The executor awaits it once for each orchestrator turn, before the agent
     loads, so the sync per-turn context only reads the cache.
     """
-    if not (org and member and "@" in member):
+    if not (org and member and run_member_address(member)):
         return
     slot = (org.strip().lower(), member.strip().lower())
     now = time.monotonic()

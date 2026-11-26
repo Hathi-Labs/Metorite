@@ -93,6 +93,60 @@ def _get_memory_user_id() -> str:
     return _memory_user_id.get()
 
 
+#: Task 4017. The prefixes of a memory id that names no member. A shared room
+#: binds ``room:<thread id>`` (``acb_memory.resolve_clearance``, the gateway's
+#: stream route). The others are the reserved compartments of
+#: ``acb_memory.compartments`` and the grant subject ``group:<slug>`` (D12).
+#: The thread id is the client's chosen chat id, so ``room:team@x`` is a real
+#: shape, and a bare ``"@" in`` test reads it as a member.
+SHARED_ID_PREFIXES: tuple[str, ...] = ("room:", "group:", "agent:", "prefs:", "org:")
+
+#: The longest address that a member can have (RFC 5321 path limit).
+_ADDRESS_MAX = 320
+
+_FROM_RUN = object()
+
+
+def run_member_address(value: object = _FROM_RUN) -> str | None:
+    """The member address of this run, or ``None`` when the run names no member.
+
+    Task 4017. The one test of "is this run a member's own, or a shared room".
+    With no argument it reads the run's memory id (:func:`_get_memory_user_id`).
+    A caller that holds another run-bound value (the verified ``user`` of the
+    run context, the billed member) passes it, and the same rules apply.
+
+    ``None`` for each of these:
+
+    * not a string, or empty after a strip
+    * a value with a prefix of :data:`SHARED_ID_PREFIXES`, in any case
+    * not exactly one ``@``, an empty local part or an empty domain
+    * a ``:``, a space or a control character anywhere, or over 320 characters
+
+    Else the value, stripped. The run has no explicit shared flag that this
+    package can read. ``executor.run_is_solo`` is False for a shared room and
+    also for each unattended run (a workflow, a headless turn), so it cannot
+    say "shared". The server-set ``room:`` id is the signal. Fence:
+    ``tests/unit/test_run_member_address.py``.
+    """
+    if value is _FROM_RUN:
+        value = _memory_user_id.get()
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > _ADDRESS_MAX:
+        return None
+    if text.lower().startswith(SHARED_ID_PREFIXES):
+        return None
+    if text.count("@") != 1 or ":" in text:
+        return None
+    if any(ch.isspace() or not ch.isprintable() for ch in text):
+        return None
+    local, _, domain = text.partition("@")
+    if not local or not domain:
+        return None
+    return text
+
+
 def _bind_memory_user_id(user_id: str) -> MemoryUserBinding:
     """Bind the acting user for exactly one agent run; return a reset token.
 

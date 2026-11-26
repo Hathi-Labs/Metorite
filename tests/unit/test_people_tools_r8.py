@@ -93,6 +93,8 @@ class _World:
         self.users: dict[str, UserContext] = {}
         self.ids: dict[str, str] = {}
         self.member = self.mel
+        #: The callers of each request that reached the routes (task 4017).
+        self.hits: list[str] = []
 
     @property
     def url(self) -> str:
@@ -130,6 +132,7 @@ def _app(w: _World) -> Any:
 
     async def bound(scope: Any, receive: Any, send: Any) -> None:
         caller = dict(scope.get("headers") or []).get(b"x-user-email", b"").decode()
+        w.hits.append(caller)
         user = w.users.get(caller)
         token = bind_tenant(user.organization_id) if user is not None else None
         try:
@@ -256,3 +259,24 @@ def test_c_people_me_returns_only_the_callers_row(world) -> None:
         assert other not in out["person"]
     zed = w.act(w.zed, pt.people_me)
     assert _rows(zed["person"])["email"] == w.zed and w.mel not in zed["person"]
+
+
+# ── d. A shared room (task 4017) ────────────────────────────────────────────
+
+#: A shared room's memory id, from a chosen chat id that holds an "@".
+ROOM = "room:team@p5b-a.example.test"
+
+
+def test_d_a_room_id_with_an_at_sign_gets_the_refusal_and_reads_no_row(world) -> None:
+    """The route WOULD answer this caller: it is a principal with the admin
+    right. So a bare ``"@" in`` gate leaks the directory into the room. The
+    helper refuses before any request, and no row is read."""
+    w = world
+    w.principal(ROOM, w.p.org_a, ADMIN_PERMS)
+    for tool in (pt.people_directory, pt.people_me):
+        out = w.act(ROOM, tool)
+        assert out == {"ok": False, "error": pt._SHARED_ROOM}, out
+    assert w.hits == []
+    # Non-vacuity: a member's own run reaches the real route.
+    assert w.act(w.mel, pt.people_directory, limit=50)["ok"] is True
+    assert w.hits == [w.mel]

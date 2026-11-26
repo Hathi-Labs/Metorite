@@ -96,6 +96,7 @@ from typing import Any
 import httpx
 from acb_common.settings import internal_auth_headers
 
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (``narrowing.py`` convention).
@@ -303,7 +304,7 @@ def _headers() -> dict[str, str]:
             "No acting user for this run, so there is nobody to act as — "
             "refusing to call the gateway as the platform itself."
         )
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(SHARED_ROOM)
     return {
         **internal_auth_headers(),
@@ -1383,7 +1384,7 @@ def _names_headers() -> dict[str, str]:
     user = _current_user_email()
     if not user:
         raise _Refused(NAMES_NO_MEMBER)
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(NAMES_SHARED_ROOM)
     return {
         **internal_auth_headers(),

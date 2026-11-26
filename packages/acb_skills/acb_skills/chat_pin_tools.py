@@ -54,9 +54,10 @@ from urllib.parse import quote
 
 import httpx
 from acb_common import get_logger
-
 from acb_common.settings import internal_auth_headers
+
 from acb_skills.company_search_tools import _gateway_url
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 _log = get_logger("acb_skills.chat_pin_tools")
@@ -122,7 +123,7 @@ def _member() -> str:
         bound = str(artifact_context().get("member") or "").strip()
     except Exception:
         return ""
-    if not user or "@" not in user or user.lower() != bound.lower():
+    if not user or run_member_address(user) is None or user.lower() != bound.lower():
         return ""
     return user
 

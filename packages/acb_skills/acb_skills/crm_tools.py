@@ -114,6 +114,7 @@ from acb_common.tool_refusals import (
     strip_kind_prefix,
 )
 
+from acb_skills.memory_tools import run_member_address
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The most rows one tool answer holds (the owner's D1, 2026-10-13).
@@ -282,7 +283,7 @@ def _headers() -> dict[str, str]:
             "No acting user for this run, so there is nobody to act as — "
             "refusing to call the gateway as the platform itself."
         )
-    if "@" not in user:
+    if run_member_address(user) is None:
         raise _Refused(CRM_SHARED_ROOM)
     return {
         **internal_auth_headers(),
@@ -4101,7 +4102,7 @@ async def _late_answer_matches(question_id: str, choice: str) -> bool:
     GETDEL, so it serves one pick, also a pick that does not match. A
     Redis fault reads as False, so the gate fails closed."""
     org, member = _run_org(), _current_user_email().strip().lower()
-    if not org or "@" not in member:
+    if not org or run_member_address(member) is None:
         return False
     try:
         from acb_common.tenant_redis import key, organization_scope
