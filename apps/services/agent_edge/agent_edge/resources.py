@@ -20,9 +20,12 @@ module adds no gateway route and no scope. A client lists the two as
 templates (``resources/templates/list``). ``resources/list`` holds no concrete
 row, because a list of every project would be one more gateway read.
 
-``metorite://company/context`` is not served. Its read, ``get_company_context``
-(EA-5, D-EA-6), does not exist yet. The slice that adds the tool adds the
-resource here.
+EA-5 (D-EA-6) adds one concrete resource, ``metorite://company/context``. Its
+read is the tool ``get_company_context``, so it has the authority of that
+tool call: the route of ``whoami``, the scope ``context:read`` and the
+organization of the token row. The body holds the keys ``name`` and ``slug``
+only. ``resources/list`` holds its row for a token with ``context:read``. A
+token without that scope gets no row and a not-found read.
 
 **Fixed text and the validated id only.** An id passes only as a UUID. A body
 leaves as the JSON of the tool result, so each free-text value is already
@@ -34,7 +37,8 @@ found". The text never echoes the URI.
 (``agent_oauth.resources_allowed``, the organization of the token row). While
 it does not name the organization, the list is empty and a read is not found.
 
-Fence: ``tests/unit/test_mcp_edge_resources.py``.
+Fence: ``tests/unit/test_mcp_edge_resources.py``. The company context also
+has ``tests/unit/test_mcp_edge_company_context_r8.py``.
 """
 from __future__ import annotations
 
@@ -63,6 +67,8 @@ MIME = "application/json"
 PLAYBOOK_PREFIX = "metorite://playbook/"
 _PLAYBOOK_URI = re.compile(r"metorite://playbook/([A-Za-z0-9]+(?:[/-][A-Za-z0-9]+)*)", re.ASCII)
 PLAYBOOK_SCOPE = agent_oauth.PROJECTS_READ
+#: EA-5. The one URI of the company context. Only an exact match reads it.
+COMPANY_CONTEXT_URI = "metorite://company/context"
 #: KIT-5. One small resource with the current kit version of each client. It
 #: is not a topic: no topic file has this slug.
 KIT_VERSION_SLUG = "kit-version"
@@ -127,10 +133,35 @@ def _playbook_on(scopes: Iterable[str], organization_id: object) -> bool:
             and PLAYBOOK_SCOPE in frozenset(scopes))
 
 
+def _company_on(scopes: Iterable[str], organization_id: object) -> bool:
+    """EA-5. The company context shows: the transport flag, the scope of
+    ``get_company_context`` and the tool's own flag. Each comes from the token
+    row, never from input."""
+    tool = tools.GET_COMPANY_CONTEXT
+    return (offered(organization_id) and tool.required_scope in frozenset(scopes)
+            and tools.offered(tool, organization_id))
+
+
+def _company_row() -> dict[str, Any]:
+    return {
+        "uri": COMPANY_CONTEXT_URI, "name": "company-context",
+        "title": "The company context",
+        "description": ("The organization name and its slug. The same read as the"
+                        " tool get_company_context."), "mimeType": MIME,
+    }
+
+
 def listed(scopes: Iterable[str], organization_id: object) -> list[dict[str, Any]]:
-    """``resources/list``. One row for each playbook topic while the playbook
-    is on, and nothing else: no project and no task row, because a list of
-    them would be one more gateway read. Empty, never an error, while dark."""
+    """``resources/list``. The company context for a token with
+    ``context:read`` (EA-5), then one row for each playbook topic while the
+    playbook is on, and nothing else: no project and no task row, because a
+    list of them would be one more gateway read. Empty, never an error, while
+    dark."""
+    rows = [_company_row()] if _company_on(scopes, organization_id) else []
+    return rows + _playbook_rows(scopes, organization_id)
+
+
+def _playbook_rows(scopes: Iterable[str], organization_id: object) -> list[dict[str, Any]]:
     if not _playbook_on(scopes, organization_id):
         return []
     try:
@@ -203,6 +234,21 @@ def _read_playbook(slug: str, scopes: Iterable[str], organization_id: object) ->
     }]}
 
 
+async def _read_company(ctx: tools.Context, organization_id: object) -> dict[str, Any]:
+    """EA-5. The result of ``get_company_context``. Not found while dark, for a
+    token without ``context:read`` and for any tool error: one answer."""
+    if not _company_on(ctx.caller.scopes, organization_id):
+        raise ResourceNotFound(TEXT_NOT_FOUND)
+    try:
+        body = await tools.GET_COMPANY_CONTEXT.run(ctx, {})
+    except tools.ToolError:
+        raise ResourceNotFound(TEXT_NOT_FOUND) from None
+    return {"contents": [{
+        "uri": COMPANY_CONTEXT_URI, "mimeType": MIME,
+        "text": json.dumps(body, ensure_ascii=False),
+    }]}
+
+
 async def read(ctx: tools.Context, params: Any) -> dict[str, Any]:
     """``resources/read``. Raise :class:`ResourceBadParams` or :class:`ResourceNotFound`.
 
@@ -216,6 +262,8 @@ async def read(ctx: tools.Context, params: Any) -> dict[str, Any]:
     playbook = _playbook_match(uri)
     if playbook is not None:
         return _read_playbook(playbook, ctx.caller.scopes, org)
+    if uri == COMPANY_CONTEXT_URI:
+        return await _read_company(ctx, org)
     found = _match(uri)
     if found is None or not offered(org):
         raise ResourceNotFound(TEXT_NOT_FOUND)
@@ -235,5 +283,5 @@ async def read(ctx: tools.Context, params: Any) -> dict[str, Any]:
     }]}
 
 
-__all__ = ["NOT_FOUND", "RESOURCES", "Resource", "ResourceBadParams", "ResourceNotFound",
+__all__ = ["COMPANY_CONTEXT_URI", "NOT_FOUND", "RESOURCES", "Resource", "ResourceBadParams", "ResourceNotFound",
            "listed", "offered", "read", "templates"]

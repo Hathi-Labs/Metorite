@@ -80,6 +80,7 @@ def build_setup_routes(
     on_saved: Callable[[Settings], object] | None = None,
     link: Any = None,
     on_machine_saved: Callable[[Settings], str | None] | None = None,
+    machine_check: Callable[[Settings], str | None] | None = None,
 ) -> list[Route]:
     """``on_saved`` runs after a new allow-list is saved. Address mode passes
     the delete of the local copy of each company that left the list (TLY-4).
@@ -87,7 +88,7 @@ def build_setup_routes(
     (TLY-2d) applies the two machine switches and returns an error text, or
     None. Only the entry point makes it, because ``setup`` must not import the
     Windows side."""
-    api = _SetupApi(live, store, secrets, reader, on_saved, link, on_machine_saved)
+    api = _SetupApi(live, store, secrets, reader, on_saved, link, on_machine_saved, machine_check)
     return [
         Route("/setup", api.page, methods=["GET"]),
         Route("/setup/app.js", api.asset("setup.js", "text/javascript; charset=utf-8")),
@@ -123,7 +124,11 @@ class _SetupApi:
         on_saved: Callable[[Settings], object] | None = None,
         link: Any = None,
         on_machine_saved: Callable[[Settings], str | None] | None = None,
+        machine_check: Callable[[Settings], str | None] | None = None,
     ) -> None:
+        #: Task 3974: why the sign-in task is off, or None. The page shows it
+        #: whenever the start switch is on, so a refusal at install shows too.
+        self._machine_check = machine_check
         self._on_machine_saved = on_machine_saved
         self._on_saved = on_saved
         self._link = link
@@ -173,6 +178,14 @@ class _SetupApi:
 
         return serve
 
+    def _problem(self, s: Settings) -> str | None:
+        if self._machine_check is None or not s.start_tally_at_signin:
+            return None
+        try:
+            return self._machine_check(s)
+        except Exception:
+            return "The rights of the TallyPrime folder cannot be checked now."
+
     async def state(self, request: Request) -> Response:
         if (no := self._refused_api(request, post=False)) is not None:
             return no
@@ -185,6 +198,8 @@ class _SetupApi:
                 "start_tally_at_signin": s.start_tally_at_signin,
                 "tally_exe": s.tally_exe,
                 "keep_awake": s.keep_awake,
+                # The DACL reads run off the event loop, as the save does.
+                "problem": await asyncio.to_thread(self._problem, s),
             }
             if link.get("mode") != "off"
             else None

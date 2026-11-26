@@ -158,19 +158,22 @@ CRM = App(
         # ── statuses ──
         Route("GET", "/crm/statuses/{kind}", "crm_aggregate", "A",
               also=("crm_list_records",), off_door=_DOOR_READ),
-        Route("POST", "/crm/statuses/{kind}", "", "B", planned="CRM-M2e", off_door=_SETUP),
+        # CRM-M2e (task 3951): add, change and reset the order on one card.
+        # The PUT of the order and the DELETE stay planned: the agent sends no
+        # PUT and no DELETE (apps/AGENTS.md, `_ALLOWED_METHODS`).
+        Route("POST", "/crm/statuses/{kind}", "crm_edit_status", "B", off_door=_SETUP),
         Route("PUT", "/crm/statuses/{kind}/order", "", "B", planned="CRM-M2e", off_door=_SETUP),
-        Route("POST", "/crm/statuses/{kind}/order/reset", "", "B",
-              planned="CRM-M2e", off_door=_SETUP),
-        Route("PATCH", "/crm/statuses/{kind}/{status_id}", "", "B",
-              planned="CRM-M2e", off_door=_SETUP),
+        Route("POST", "/crm/statuses/{kind}/order/reset", "crm_edit_status", "B",
+              off_door=_SETUP),
+        Route("PATCH", "/crm/statuses/{kind}/{status_id}", "crm_edit_status", "B",
+              off_door=_SETUP),
         Route("DELETE", "/crm/statuses/{kind}/{status_id}", "", "C",
               planned="CRM-M2e", off_door=_SETUP),
         # ── lost-reasons ──
         Route("GET", "/crm/lost-reasons", "update_deal_status", "A", off_door=_DOOR_READ),
-        Route("POST", "/crm/lost-reasons", "", "B", planned="CRM-M2e", off_door=_SETUP),
-        Route("PATCH", "/crm/lost-reasons/{reason_id}", "", "B",
-              planned="CRM-M2e", off_door=_SETUP),
+        Route("POST", "/crm/lost-reasons", "crm_edit_lost_reason", "B", off_door=_SETUP),
+        Route("PATCH", "/crm/lost-reasons/{reason_id}", "crm_edit_lost_reason", "B",
+              off_door=_SETUP),
         Route("DELETE", "/crm/lost-reasons/{reason_id}", "", "C",
               planned="CRM-M2e", off_door=_SETUP),
         # ── fields ──

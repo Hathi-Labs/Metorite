@@ -450,7 +450,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 72 | P-3 | 3678 |
+| crm | 74 | 67 | P-3 | 3678 (task 3951 paid 5) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -646,7 +646,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 14 and 11 (14 before P-1a) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 72 | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 67 (72 before task 3951) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
