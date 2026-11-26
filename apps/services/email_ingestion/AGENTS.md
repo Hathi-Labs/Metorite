@@ -26,6 +26,7 @@ providers/
 ├── factory.py     — build_provider, the one name-to-class seam
 ├── app_credentials.py — oauth_app, the one reader of the OAuth app credentials
 inbound.py         — aiosmtpd inbound SMTP receiver (persists to email_messages)
+addresses.py       — the one parse of an address header (From, To, Cc, Bcc)
 scheduler.py       — Background sync scheduler (per-account asyncio tasks)
 persist.py         — the message upsert
 reconcile.py       — the reconcile of rows that the provider deleted
@@ -99,6 +100,10 @@ All providers implement the `BaseEmailProvider` abstract interface:
 18. **The HTML hot window.** `html_tier.py` is the one owner of the window and of `EMAIL_HTML_FROM_PROVIDER` and `EMAIL_HTML_HOT_ONLY`. Fence: `test_email_html_tier.py`.
    - No other module reads the two flags or writes the number 90 next to `received_at`. Neither `html_tier.py` nor `import_window.py` imports the other.
    - A new writer of `body_html` uses the same rule and joins `ALLOWED_HTML_WRITERS`. `_html_to_text` is the one text maker, and it runs in linear time. Fence: `test_email_html_hot_only.py`.
+19. **The parse of an address header.** `addresses.py` is the one parse, for IMAP, the inbound receiver and Gmail (task 4016). Never take the text inside the first `<...>` pair, because a display name can hold `"<ceo@company.test>"`.
+   - It splits the RAW header and decodes a display name only after the split. IMAP and the inbound receiver read the raw value through `raw_header_values`, never `str(msg.get(...))`.
+   - `parse_sender` gives an empty address for a sender that is malformed or ambiguous, never a guess. Two `From` headers with different addresses give an empty address too.
+   - Fence: `test_email_from_parser.py`. It also refuses a `split("<")` in this package.
 
 ## Inbound SMTP Server
 

@@ -39,10 +39,15 @@ from typing import Any
 
 from acb_common.public_address import PublicAddressRefused, pinned_public_address
 
+from ..addresses import (
+    first_raw_header,
+    parse_address_list,
+    parse_sender,
+    raw_header_values,
+)
 from .base import (
     Attachment,
     BaseEmailProvider,
-    EmailAddress,
     EmailFolder,
     EmailMessage,
     SyncResult,
@@ -854,50 +859,6 @@ def _decode_imap_header(value: str) -> str:
         return value
 
 
-def _parse_imap_address(raw: str) -> EmailAddress | None:
-    """Parse an email address from an IMAP header value."""
-    if not raw:
-        return None
-    decoded = _decode_imap_header(raw)
-    if "<" in decoded and ">" in decoded:
-        name = decoded.split("<")[0].strip().strip('"')
-        email = decoded.split("<")[1].split(">")[0].strip()
-        return EmailAddress(name=name, email=email)
-    return EmailAddress(name="", email=decoded.strip())
-
-
-def _parse_imap_address_list(raw: str) -> list[EmailAddress]:
-    """Parse a comma-separated list of email addresses."""
-    if not raw:
-        return []
-    decoded = _decode_imap_header(raw)
-    addresses: list[EmailAddress] = []
-    for part in _split_imap_addresses(decoded):
-        addr = _parse_imap_address(part.strip())
-        if addr and addr.email:
-            addresses.append(addr)
-    return addresses
-
-
-def _split_imap_addresses(raw: str) -> list[str]:
-    """Split comma-separated addresses respecting quoted names."""
-    parts: list[str] = []
-    current: list[str] = []
-    in_quote = False
-    for ch in raw:
-        if ch == '"':
-            in_quote = not in_quote
-            current.append(ch)
-        elif ch == "," and not in_quote:
-            parts.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        parts.append("".join(current).strip())
-    return parts
-
-
 def _parse_imap_internaldate(raw_date: str) -> datetime | None:
     """Parse IMAP INTERNALDATE format into a timezone-aware datetime."""
     if not raw_date:
@@ -993,10 +954,12 @@ def _parse_imap_raw_message(
 
     # Headers
     subject = _decode_imap_header(str(parsed.get("Subject", "(no subject)")))
-    from_addr = _parse_imap_address(str(parsed.get("From", "")))
-    to_addrs = _parse_imap_address_list(str(parsed.get("To", "")))
-    cc_addrs = _parse_imap_address_list(str(parsed.get("Cc", "")))
-    bcc_addrs = _parse_imap_address_list(str(parsed.get("Bcc", "")))
+    # The address headers parse RAW, never the decoded value of the policy
+    # (task 4016). Each ``From`` header counts, so two senders give none.
+    from_addr = parse_sender(raw_header_values(parsed, "From"))
+    to_addrs = parse_address_list(first_raw_header(parsed, "To"))
+    cc_addrs = parse_address_list(first_raw_header(parsed, "Cc"))
+    bcc_addrs = parse_address_list(first_raw_header(parsed, "Bcc"))
     thread_id_raw = str(parsed.get("Message-ID", "")).strip()
     in_reply_to = str(parsed.get("In-Reply-To", "")).strip()
 
