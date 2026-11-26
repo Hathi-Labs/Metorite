@@ -854,3 +854,23 @@ def test_a_link_command_without_the_rights_says_run_as_an_administrator(monkeypa
     monkeypatch.setattr(linkcli, "link_store", denied)
     assert cli.main(["unlink", "--windows"]) == 2
     assert "administrator" in capsys.readouterr().err
+
+
+def test_the_unlink_command_deletes_the_local_copy():
+    """TLY-4 (§3.8.13 point 6): unlink, and the refusal of a company, delete
+    the copy of the books too."""
+    deleted: list[str] = []
+    store = _confirmed()
+    assert linkcli.do_unlink(Settings(link_url="https://link.test"), store, FakeLink().api(),
+                             delete_copy=lambda: deleted.append("copy")) == 0
+    assert deleted == ["copy"] and store.state is None
+
+
+def test_the_unlink_command_says_so_when_the_copy_cannot_be_deleted(capsys):
+    def broken():
+        raise OSError("in use")
+
+    store = _confirmed()
+    assert linkcli.do_unlink(Settings(link_url="https://link.test"), store, FakeLink().api(),
+                             delete_copy=broken) == 1
+    assert "delete-copy" in capsys.readouterr().err and store.state is None
