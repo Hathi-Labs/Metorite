@@ -162,6 +162,12 @@ with open(os.environ["FAKE_CLAUDE_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps(args) + "\n")
 path = os.environ["FAKE_AGENTS"]
 agents = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+if args[:2] == ["agents", "--json"] and os.environ.get("FAKE_LEAVE_CHILD"):
+    # A daemon that the CLI leaves behind keeps each fd it inherits.
+    import subprocess
+    subprocess.Popen(["sleep", os.environ["FAKE_LEAVE_CHILD"]], close_fds=False,
+                     start_new_session=True, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
 if args[:2] == ["agents", "--json"]:
     # A stopped session stays live for FAKE_STOP_POLLS reads (-1: for ever).
     for a in agents:
@@ -741,3 +747,15 @@ def test_a_failed_state_log_only_warns(box: Box, tokens) -> None:
     assert "WARNING" in run.stdout and "The switch is complete" in run.stdout
     _assert_box_env_is(box, tokens["b"])
     assert box.active.read_text(encoding="utf-8") == "org-b\n"
+
+
+def test_a_child_that_lives_on_does_not_hold_the_lock(box: Box, tokens) -> None:
+    # Verifier round 2: the lock fd had no close-on-exec, so a daemon that a
+    # `claude` call left alive kept the flock, and each later run exited 12.
+    box.add("org-b", tokens["b"])
+    box.add("org-a2", tokens["a"])
+    first = box.run("to", "org-b", "--dry-run", FAKE_LEAVE_CHILD="20")
+    assert first.returncode == 0, first.stdout + first.stderr
+    second = box.run("to", "org-b", "--dry-run")
+    assert second.returncode != 12, second.stdout + second.stderr
+    assert "another org switch runs" not in second.stderr

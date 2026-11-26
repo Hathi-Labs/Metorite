@@ -77,7 +77,6 @@ export LC_ALL=C
 unset -v METORITE_BOX_TOKEN
 
 LABEL_RE='^[a-z0-9][a-z0-9-]{0,31}$'
-PRINTABLE_RE='^[!-~]+$'
 tok=""
 tmp_file=""
 who_out=""
@@ -316,7 +315,7 @@ esac
 # sentinel bearer, so the script checks the output. The output holds the
 # token, so it stays in a variable and is never printed.
 helper_out=""
-helper_out="$("$helper_path" "$org_file")" || true
+helper_out="$("$helper_path" "$org_file" {lock_fd}>&-)" || true
 if [ -z "$helper_out" ] || [[ "$helper_out" == *"$REFUSED_BEARER"* ]]; then
   unset -v helper_out
   die "the header helper refused the org file $org_file. See the line above." 8
@@ -381,7 +380,7 @@ old_label="$(active_label)"
 # "<id>\t<name>\t<session id>". Exit 1 when the list cannot be read.
 live_sessions() {
   local raw
-  raw="$(timeout 60 claude agents --json 2>/dev/null </dev/null)" || return 1
+  raw="$(timeout 60 claude agents --json 2>/dev/null </dev/null {lock_fd}>&-)" || return 1
   python3 -I - "$raw" <<'PY'
 import json, re, sys
 try:
@@ -441,7 +440,7 @@ if [ "$n_live" -gt 0 ]; then
   fi
   while IFS=$'\t' read -r sid name _; do
     [ -n "$sid" ] || { restart_hints; die "a live session ($name) has no short id to stop. The token did not change." 9; }
-    timeout 60 claude stop "$sid" >/dev/null 2>&1 </dev/null \
+    timeout 60 claude stop "$sid" >/dev/null 2>&1 </dev/null {lock_fd}>&- \
       || { restart_hints; die "'claude stop $sid' ($name) failed. Stop it by hand, then run again. The token did not change." 9; }
     stopped_names+=("$name")
     say "stopped $name ($sid)."
@@ -543,7 +542,7 @@ PY
 # be revoked already.
 old_org="?"
 if [ -e "$env_file" ]; then
-  old_who="$(python3 -I -c "$WHOAMI_PY" "$url" "$helper_path" "$env_file" "$REFUSED_BEARER" 2>/dev/null </dev/null)" \
+  old_who="$(python3 -I -c "$WHOAMI_PY" "$url" "$helper_path" "$env_file" "$REFUSED_BEARER" 2>/dev/null </dev/null {lock_fd}>&-)" \
     && old_org="${old_who#*$'\t'}" || true
 fi
 
@@ -572,9 +571,15 @@ restore_box_env() {
   fi
 }
 proof_pid=""
+proved=""
 # shellcheck disable=SC2317  # the signal trap calls it.
 on_signal() {
   trap - INT TERM HUP
+  if [ -n "$proved" ]; then
+    # The proof passed: keep the new box.env, and make active-org agree.
+    write_atomic "$active_file" "$label"$'\n'
+    die "a signal stopped the switch after the proof. box.env and active-org name '$label'. The NOTE and the state log were not written." 10
+  fi
   if [ -n "$proof_pid" ]; then kill "$proof_pid" 2>/dev/null || true; fi
   restore_box_env
   restart_hints
@@ -602,14 +607,16 @@ if [ "$proof_rc" -ne 0 ] || [ -z "$new_who" ]; then
   restart_hints
   die "the server did not accept the token of '$label'. box.env is put back as it was. The active org is still $old_label." 10
 fi
-trap - INT TERM HUP
+proved=1
 email="${new_who%%$'\t'*}"
 new_org="${new_who#*$'\t'}"
 say "the new identity: $email, organization $new_org."
 
 # 8. active-org, the sessions that started during the switch, the NOTE line
 # and the state log. The switch is complete, so a failed log only warns.
+# The trap stays on until active-org agrees with box.env.
 write_atomic "$active_file" "$label"$'\n'
+trap - INT TERM HUP
 late=""
 if after="$(live_sessions)"; then
   if [ -n "$after" ]; then
