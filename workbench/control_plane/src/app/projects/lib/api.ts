@@ -10,6 +10,7 @@ import {
   type AgentStartBody,
   type AgentStartResult,
   type AgentState,
+  type AgentPlanSummary,
   type AgentWaiting,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
@@ -20,6 +21,14 @@ import {
   normalizeRunDetail,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
+import {
+  type QuestionScope,
+  type QuestionSort,
+  type QuestionsPage,
+  questionsPage,
+  questionsQuery,
+} from "./agentQuestions";
+import type { TaskHeldBy } from "./agentHolder";
 import type { EpicRollup } from "./epicRollup";
 import {
   ATTENTION_LIMIT,
@@ -28,8 +37,10 @@ import {
   attentionPage,
   resumeBody,
 } from "./needsAttention";
-import { type AgentsOverview, parseOverview } from "./agentsAtWork";
+import { type AgentRuns, type AgentsOverview, parseAgentRuns, parseOverview } from "./agentsAtWork";
+import { type AgentMap, parseAgentMap } from "./agentMap";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import type { TemplateApplyResult, TemplateRow } from "./templates";
 import { taskVersions } from "./taskUndo";
 
 /**
@@ -47,6 +58,8 @@ export interface ArchiveResult {
   projects: number;
   /** Open tasks in the subtree. Reported, never acted on (D-PM-26). */
   open_tasks: number;
+  /** The root row's new `updated_at`, when an archive stamped the root (WT-6a). */
+  updated_at?: string | null;
 }
 
 /**
@@ -1855,6 +1868,16 @@ export interface TaskRow {
   agent_client_via?: string | null;
   agent_member_email?: string | null;
   /**
+   * WS-MCP SW-7b — the name that the agent gave its session, such as
+   * "backend-worker-3". Display data only. The card shows it beside the client.
+   */
+  agent_label?: string | null;
+  /**
+   * SW-5 — who holds the task now: the member, the client, since when. The
+   * gateway sets it for an open run (`filters.held_by_of`). Null for a free task.
+   */
+  held_by?: TaskHeldBy | null;
+  /**
    * WS-55 EA-13d (EA3-41) — the first line of the newest thing the agent said
    * on its open run, at most 140 characters. The pill shows it on hover.
    */
@@ -1864,6 +1887,11 @@ export interface TaskRow {
    * `waiting`: what it waits on and when the wait ends. Null in any other state.
    */
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /**
+   * SW-32 (task 1049) — the plan of the open run, as a count and the step in
+   * progress. Null while the run has no plan.
+   */
+  agent_plan?: AgentPlanSummary | null;
   /**
    * WS-55 EA-13d (EA3-48) — the ONE pull request that the gateway picked for
    * the task, with its CI. `lib/taskCard.pullRequestChip` draws it.
@@ -3254,6 +3282,42 @@ export const refsApi = {
 };
 
 /**
+ * WS-39 TPL-1b: project templates (`routes/projects/templates.py`).
+ * `list` gives `null` while `PROJECTS_TEMPLATES_ORGS` does not hold the org.
+ * Every route then answers 404, and the page draws neither the menu item nor
+ * the picker.
+ */
+export const templatesApi = {
+  list: async (): Promise<TemplateRow[] | null> => {
+    try {
+      const res = await call<{ rows: TemplateRow[] }>("templates");
+      return (res.rows ?? []).filter((t) => t.kind === "project");
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  save: (body: { project_id: string; name: string; description?: string | null }) =>
+    call<TemplateRow>("templates", { method: "POST", body: JSON.stringify(body) }),
+
+  apply: (
+    templateId: string,
+    body: {
+      idempotency_key: string;
+      parent_project_id: string;
+      name?: string | null;
+      description?: string | null;
+      start_date: string;
+    },
+  ) =>
+    call<TemplateApplyResult>(`templates/${encodeURIComponent(templateId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+/**
  * WS-ALN ALN-2b — the decisions of a task (`project_alignment.md` §3.2). The
  * pure rules are in `decisions.ts`. `forTask` gives `null` while the routes
  * are OFF (`DECISIONS_ORGS`): every route answers 404, and the block draws
@@ -3434,6 +3498,50 @@ export const agentsOverviewApi = {
   },
 };
 
+/** The query string of one map read. `project_id` is present only for a project. */
+export function agentMapQuery(opts: { showQuiet?: boolean; projectId?: string } = {}): string {
+  let query = "shape=map";
+  if (opts.projectId) query += `&project_id=${encodeURIComponent(opts.projectId)}`;
+  if (opts.showQuiet) query += "&show_quiet=true";
+  return query;
+}
+
+/**
+ * WS-MCP SW-103: the orchestration map (`GET /projects/agents/overview?shape=map`).
+ * `null` means the map is dark for this member (404, 401 or 403).
+ */
+export const agentMapApi = {
+  read: async (opts: { showQuiet?: boolean; projectId?: string } = {}): Promise<AgentMap | null> => {
+    try {
+      // SW-112: a project id scopes the map to that project's subtree. Without it the map is the fleet.
+      const query = agentMapQuery(opts);
+      const map = parseAgentMap(await call<unknown>(`agents/overview?${query}`));
+      if (!map) throw new ProjectsApiError("The map answer could not be read.", 200);
+      return map;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
+/**
+ * WS-AGA AGA-9: the last runs of one agent (`GET /projects/agents/{key}/runs`).
+ * `null` means the member may not see this agent (404, 401 or 403).
+ */
+export const agentRecentRunsApi = {
+  read: async (agentKey: string): Promise<AgentRuns | null> => {
+    try {
+      const runs = parseAgentRuns(await call<unknown>(`agents/${encodeURIComponent(agentKey)}/runs`));
+      if (!runs) throw new ProjectsApiError("The runs answer could not be read.", 200);
+      return runs;
+    } catch (err) {
+      if (err instanceof ProjectsApiError && [401, 403, 404].includes(err.status)) return null;
+      throw err;
+    }
+  },
+};
+
 /**
  * WS-55 SW-11a — Needs attention (`external_agent_access.md` §12.7). The
  * stalled runs, the open runs of closed tasks and the tasks blocked by parked
@@ -3454,6 +3562,38 @@ export const attentionApi = {
    */
   mine: async (): Promise<AttentionPage> =>
     attentionPage(await call<unknown>(`needs-attention?mine=true&limit=${ATTENTION_LIMIT}`)),
+};
+
+/**
+ * WS-55 EA-18b — Questions for me (`external_agent_access.md` §12.8). The open
+ * agent questions that wait on a person. One route feeds the Projects pane,
+ * and later the My Day card and the Approvals tab. The words are in
+ * `agentQuestions.ts`.
+ */
+export const questionsApi = {
+  /**
+   * One page. `null` means the route is OFF: `AGENT_QUESTIONS_ORGS` does not
+   * hold the org, the route answers 404, and the sidebar draws no entry.
+   */
+  list: async (opts: {
+    scope?: QuestionScope;
+    project?: string | null;
+    sort?: QuestionSort;
+    limit?: number;
+  }): Promise<QuestionsPage | null> => {
+    try {
+      return questionsPage(await call<unknown>(`agent-questions?${questionsQuery(opts)}`));
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      // A member without the Projects feature gets 403 on "For me": the door is
+      // off for them, not broken. "Everyone" keeps its 403 (the reader is not a
+      // reviewer), which the list handles itself.
+      if (err instanceof ProjectsApiError && err.status === 403 && (opts.scope ?? "mine") === "mine") {
+        return null;
+      }
+      throw err;
+    }
+  },
 };
 
 export interface NotificationRow {

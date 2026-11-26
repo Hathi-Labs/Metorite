@@ -51,7 +51,8 @@ def _copilot_permission_handler(existing: Any = None, *, tools: Any = None) -> A
 
     *existing* is a handler that the agent's own factory set (its
     ``on_permission_request``). It stays the agent's handler, and B6 does not
-    replace it (H-211 owns that).
+    replace it. No first-party factory sets one since task 560 (H-211), and
+    ``tests/unit/test_no_first_party_approve_all.py`` fails if one does.
 
     D85: whichever handler it picks, it returns it inside
     ``permission_policy.guard_shared_agent_shell``. So a shared agent's

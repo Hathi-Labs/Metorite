@@ -4,6 +4,12 @@
 run proved the timer. **The off-box copy is BUILT (2026-10-08).** It stays
 OFF until the owner does the four steps in §4.2 (H-123).
 
+**2026-11-21, H-170 (task 507):** the deploy backs up the Console database
+before the Console ladder, and a failed backup stops the deploy. It is BUILT,
+and nobody has measured it on the box yet. The proof is the deploy log line
+`Console backup complete:` and a `<stamp>-console` dir under
+`/opt/acb/backups`. §2, "H-170 Console backup gate", holds the acceptance.
+
 **2026-10-31, LD-8c:** the deep verify failed on the night of 2026-10-31.
 The restore of a vector index needed 65 MB, and the verify container gave it
 64 MB. The container now starts with `-c maintenance_work_mem=256MB`, under
@@ -161,6 +167,30 @@ it is not built. `box_hardening.md` §5 BH-6 owns the change.
   - ⚠️ `restore_db.sh` still hides the exit code of `pg_restore` behind
     `| tail -20 || true`. A failed index build prints an error, and the
     script goes on. That is a known gap (H-441).
+
+### H-170 Console backup gate (2026-11-21)
+
+The deploy applies the Console ladder to the Console's own database. Before
+H-170, no backup of that database came first. Task 507 closes the gap. The
+fence is `tests/unit/test_console_backup_gate.py`.
+
+Acceptance:
+
+1. `scripts/backup_db.sh --console-only` dumps only the Console database. It
+   checks the dump with `pg_restore --list`, and it asks the app cluster
+   nothing.
+2. The deploy log shows `Console backup complete: <dir>` before the first
+   `applying 0NN` line of the Console ladder.
+3. A failed Console backup stops the deploy before the applier runs. An
+   unset DSN, or a DSN that the checks refuse, also exits 1.
+4. With no Console DSN, the deploy skips the backup and the ladder, and it
+   says so in the log. The other cases of the DSN check stay as they were.
+5. Each Console dump goes into `<stamp>-console`. The nightly glob `[0-9]*Z`
+   does not count those dirs, so they do not shrink the 14 nights. The
+   console-only run keeps the newest 5.
+
+`restore_db.sh` does not list the `<stamp>-console` dirs. To restore one,
+use `pg_restore` on its `customer_console.dump` into a scratch database.
 
 ## 3. Runbook
 

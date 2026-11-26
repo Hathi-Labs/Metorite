@@ -544,7 +544,8 @@ else
   # apply of origin/main ships the day's untested merges to customers.
   #
   # So the target is ONE NAMED COMMIT, and never the tip of a moving branch:
-  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its GITHUB_SHA,
+  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its release
+  #     commit (CIV-30: `green/main` on a slot run, else its GITHUB_SHA),
   #     and vps_pull.sh sends origin/$RELEASE_REF as a sha.
   #   • origin/$RELEASE_REF otherwise (default `release`). That covers a hand
   #     run during an incident: it re-applies what production should serve.
@@ -710,6 +711,21 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   sed -i 's/^GRAPHITI_ENABLED=true/GRAPHITI_ENABLED=false/' "$ENV_FILE"
   echo "    Disabled GRAPHITI (Neo4j) — saves ~500MB RAM"
 fi
+
+# 2449 S1 (owner rule 2026-11-08, every AI call goes through the console): Mem0
+# and Graphiti call an embeddings vendor with their own key, and D132 item 4
+# keeps both off. A line with any value but false is written back as false on
+# EVERY release, also when an earlier line of the same key says false (the last
+# line wins in the env file). The guard compares the number of lines of the key
+# with the number of lines that say false. env_edit_in_place keeps the inode of
+# .env and keeps a full copy when the write fails.
+# Fence: tests/unit/test_no_direct_ai_vendor_calls_web.py.
+for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
+  if [ "$(grep -cE "^${_var}=" "$ENV_FILE" 2>/dev/null)" != "$(grep -cxE "${_var}=false" "$ENV_FILE" 2>/dev/null)" ]; then
+    env_edit_in_place "$ENV_FILE" sed "s/^${_var}=.*/${_var}=false/"
+    echo "    = forced $_var=false in .env"
+  fi
+done
 
 echo "==> Ensuring public-URL env vars"
 # This block used to also seed MICROSOFT_TENANT_ID / AUTH_MICROSOFT_ENTRA_ID_TENANT
@@ -1131,6 +1147,24 @@ if [ -n "$CC_DSN" ] && ! cc_reachable; then
   echo "       serve the Console -> ladder SKIPPED, deploy CONTINUES."
   echo "       ⚠️ Still a defect: the .env names a database that does not answer."
 elif [ -n "$CC_DSN" ]; then
+  # 🔴 H-170: back up the Console database BEFORE its ladder, and fail closed.
+  # The pre-migration backup of apply_migrations.sh never covered it: it has no
+  # Console DSN, and it does not run when no tenant migration is pending. So a
+  # Console migration ran with no restore point. Now a failed or refused dump
+  # stops the deploy here, and the ladder below never runs.
+  # The DSN is the libpq form that the applier uses, so the backup reads the
+  # same database that the ladder writes. backup_db.sh sends the stderr of
+  # pg_dump to a file, so no password reaches this log. It is not in the
+  # applier, because pr-check and dev_db.sh run that on throwaway databases.
+  # Fence: tests/unit/test_console_backup_gate.py.
+  cc_backup_dsn="${CC_DSN/+psycopg2/}"
+  cc_backup_dsn="${cc_backup_dsn/+psycopg/}"
+  if ! CUSTOMER_CONSOLE_DATABASE_URL="$cc_backup_dsn" bash scripts/backup_db.sh --console-only < /dev/null; then
+    echo "    !! ERROR: the Console backup FAILED, so the Console ladder did NOT run."
+    echo "       A Console migration runs only after a good dump of its database."
+    echo "       Read the backup lines above, fix the cause, then deploy again."
+    exit 1
+  fi
   CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
     bash scripts/apply_customer_console_migrations.sh < /dev/null
 elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then

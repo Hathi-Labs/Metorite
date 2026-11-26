@@ -8,7 +8,10 @@ export type RunStatus =
 export type TriggerKind = "manual" | "api" | "schedule" | "webhook" | "event";
 export type NodeType =
   | "trigger" | "agent" | "tool" | "module" | "condition" | "set"
-  | "approval" | "wait" | "output";
+  | "approval" | "wait" | "output"
+  // WFC-4a-1: each node type of the engine (`graph.NODE_TYPES`), so a graph
+  // from the API or the Copilot draws. Only `human_step` has a palette item.
+  | "human_step" | "studio_write" | "pm_task" | "pm_lifecycle";
 
 export type WorkflowNodeData = {
   label: string;
@@ -276,9 +279,13 @@ export function categoryForType(type: NodeType): string {
     type === "condition" ||
     type === "set" ||
     type === "approval" ||
-    type === "wait"
+    type === "wait" ||
+    type === "human_step"
   )
     return "logic";
+  // A write to an app of Metorite draws as an action, beside the tools.
+  if (type === "studio_write" || type === "pm_task" || type === "pm_lifecycle")
+    return "tool";
   return type;
 }
 

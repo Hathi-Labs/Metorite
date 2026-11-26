@@ -164,7 +164,11 @@ describe("with the flag and the key set", () => {
     const urls = [
       ...`${body.text} ${body.html}`.matchAll(/https?:\/\/[^\s"'<>)]+/g),
     ].map((m) => m[0]);
-    for (const url of urls) expect(url).not.toContain("?");
+    // OB-0c: the one parameter is the recipient's own address, a prefill.
+    for (const url of urls) {
+      const u = new URL(url.replace(/&amp;/g, "&").replace(/\.$/, ""));
+      expect([...u.searchParams.keys()]).toEqual(["email"]);
+    }
   });
 
   it("takes the org name from the GATEWAY, never from the request body", async () => {

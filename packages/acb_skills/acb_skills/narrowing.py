@@ -612,6 +612,7 @@ async def _pick_batch(
     use_decide: bool,
     attribution: Mapping[str, Any],
     short_only: bool = False,
+    not_short: list[int] | None = None,
 ) -> _Batch:
     """Ask one batch. Never raises. A failure in both engines checks nothing.
 
@@ -620,6 +621,10 @@ async def _pick_batch(
     ``decide_tools.short_context``. A longer state is not a short summary, so
     it goes to System 1 and logs ``narrowing.pick_fallback`` with the reason
     ``no_egress_not_short`` (review P1).
+
+    *not_short* is the list of a whole PICK step. A batch that is not short
+    adds its size to it and logs nothing, so the step logs ONE line for all
+    its batches (task 3716). Without the list, the batch logs its own line.
     """
     keys = _keys(batch)
     state = _state(query, batch, keys)
@@ -627,8 +632,11 @@ async def _pick_batch(
         from acb_skills.decide_tools import NOT_SHORT, short_context
 
         if not short_context(state):
-            _log.info("narrowing.pick_fallback", reason=NOT_SHORT,
-                      batch_size=len(batch), request=number)
+            if not_short is None:
+                _log.info("narrowing.pick_fallback", reason=NOT_SHORT,
+                          batch_size=len(batch), request=number)
+            else:
+                not_short.append(len(batch))
             use_decide = False
     if use_decide:
         reason: str
@@ -797,13 +805,14 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
         attribution = run_attribution()
 
     results: list[_Batch | None] = [None] * len(batches)
+    not_short: list[int] = []
     gate = asyncio.Semaphore(MAX_IN_FLIGHT)
 
     async def _one(n: int, batch: list[Candidate]) -> None:
         async with gate:
             results[n] = await _pick_batch(
                 n + 1, query, batch, use_decide=use_decide, attribution=attribution,
-                short_only=no_egress,
+                short_only=no_egress, not_short=not_short,
             )
 
     tasks = [asyncio.create_task(_one(n, b)) for n, b in enumerate(batches)]
@@ -827,6 +836,13 @@ async def _pick(query: str, candidates: Sequence[Candidate]) -> _Picked:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    if not_short:
+        # Task 3716: a `no_egress` run never fits a long batch in the short
+        # bound, so every batch falls back. One line says so, with the counts.
+        from acb_skills.decide_tools import NOT_SHORT
+
+        _log.info("narrowing.pick_fallback", reason=NOT_SHORT,
+                  batches=len(not_short), items=sum(not_short))
     picked = _Picked(verdicts=[], bound_hit=bound_hit)
     for batch, result in zip(batches, results, strict=True):
         if result is None:  # the step bound cut it off: not checked, kept

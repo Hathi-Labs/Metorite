@@ -50,6 +50,14 @@ The parallel start (chat speed, 2026-10-30, §4.3), dark behind
   when a tool starts. A cancelled request sent nothing to the member, so the
   turn still has one model (the box in §4.4).
 
+The wait of a delegated run (chat speed, task 3592), dark behind
+``AI_TURN_KIND_NOWAIT_ORGS`` (:func:`turn_kind_nowait_on`):
+
+* A delegated run has no seam that can start it again. It must wait for the
+  answer before its first request, or never use it. With the flag on, such a
+  run asks no question (``ask=False``): the source is ``nowait`` and the kind
+  is ``chat``. The cheap sources (``max``, ``short``, ``pinned``) stay.
+
 🔴 **One home for the policy.** §4.1 puts the table here, and nothing else
 holds a second copy. Add a rung here, never at a call site.
 
@@ -342,6 +350,36 @@ def turn_kind_parallel_on(agent: str | None) -> bool:
     return ALL_AGENTS in names or name in names
 
 
+def turn_kind_nowait_on(org: object = None) -> bool:
+    """True when ``AI_TURN_KIND_NOWAIT_ORGS`` names *org*. THE reader (task 3592).
+
+    With it on, a delegated run asks no turn-kind question, so it never waits
+    up to :data:`TURN_KIND_TIMEOUT_S` before its first request. *org*
+    defaults to the bound tenant. The value is a comma list of org ids, or
+    ``*``. Empty is off, the default. It reads the settings on each call, so a
+    flag reload applies a change with no restart. Any fault reads as off.
+    """
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "ai_turn_kind_nowait_orgs", "") or "")
+    except Exception:  # a broken settings read keeps the question
+        return False
+    entries = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not entries:
+        return False
+    if ALL_AGENTS in entries:
+        return True
+    if org is None:
+        try:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        except Exception:
+            return False
+    return str(org or "").strip().lower() in entries
+
+
 def tier_routing_on(agent: str | None) -> bool:
     """True when the tier policy covers *agent*. ONE reader, and it fails closed.
 
@@ -486,9 +524,11 @@ class TurnKind:
     """The kind of one turn, and how it was found.
 
     ``source`` is ``system_one``, ``short``, ``max``, ``pinned``, ``unsure``,
-    ``timeout``, ``unavailable`` or ``error``. ``latency_ms`` is the time of
-    the System-1 question, or ``None`` when no question went out. ``pinned``
-    means the agent's default tier cannot move (:func:`kind_can_move`).
+    ``timeout``, ``unavailable``, ``error`` or ``nowait``. ``latency_ms`` is
+    the time of the System-1 question, or ``None`` when no question went out.
+    ``pinned`` means the agent's default tier cannot move
+    (:func:`kind_can_move`). ``nowait`` means the caller asked no question
+    (:data:`SOURCE_NOWAIT`).
 
     ``effort`` is :data:`TEXT_EFFORT` when the member's words explicitly ask
     for deep work, else ``None`` (the run keeps its effort). ``effort_source``
@@ -505,6 +545,10 @@ class TurnKind:
     #: held no pack item, and after a timeout or a failure.
     packs: tuple[str, ...] = ()
 
+
+#: The source of a turn whose caller asked no question (task 3592). The run
+#: cannot wait for the answer, and it cannot start again with it.
+SOURCE_NOWAIT = "nowait"
 
 #: The id of a pack item is this prefix and the slug of the pack. The ids
 #: ``turn`` and ``effort`` never start with it.
@@ -555,6 +599,7 @@ async def turn_kind(
     read_effort: bool = False,
     default: str | None = None,
     packs: Iterable[str] = (),
+    ask: bool = True,
 ) -> TurnKind:
     """Ask System 1 the kind of this turn. ONE ``tier-fast`` request, or none.
 
@@ -589,6 +634,11 @@ async def turn_kind(
     timeout, a failure or a garbled answer loads nothing. A pack item never
     changes the kind, the effort or the source. With no *packs* the request
     is the one of before.
+
+    *ask* False (task 3592): the caller cannot use an answer that it does not
+    wait for. The cheap sources above stay as they are. Where a question
+    would go out, none does: the kind is ``chat`` and the source is
+    :data:`SOURCE_NOWAIT`. The keyword check still reads the effort.
     """
     mode = normalise_effort(effort)
     if mode == "max":
@@ -601,6 +651,11 @@ async def turn_kind(
         return TurnKind("chat", "short")
     if default is not None and not wants_effort and not kind_can_move(default):
         return TurnKind("chat", "pinned")
+    if not ask:
+        if wants_effort and asks_for_depth(message):
+            return TurnKind("chat", SOURCE_NOWAIT, effort=TEXT_EFFORT,
+                            effort_source="keyword")
+        return TurnKind("chat", SOURCE_NOWAIT)
     from acb_skills import system_one
 
     item = system_one.Item(
@@ -629,6 +684,10 @@ async def turn_kind(
             system_one.ask(
                 _turn_context(message, tools), items,
                 timeout_s=TURN_KIND_TIMEOUT_S,
+                # The turn never reads a reason. No reason means fewer
+                # output tokens, so the answer comes inside the budget
+                # more often (task 3592).
+                reasons=False,
             ),
             timeout=TURN_KIND_TIMEOUT_S,
         )

@@ -37,6 +37,14 @@ seconds (``handled.handled_run``). The answer gains ``handled``, what the
 apps closed for the member today, and ``handled_ok``, the claim flag. Neither
 is a card or a group, and neither counts against ``limit``.
 
+**Why am I seeing this** (MD-9, LOOP-4b, ``proactive_loop.md`` §7.2 W1 to
+W5). For an org in ``MY_DAY_LEARN_ORGS``, ``feed_answer`` adds ``why_seen`` to
+each card of its answer, after the order and the cut. It is a list of
+sentences that code writes (``feed_why.explain``). A failed state read or a
+failed learned read gives no key, and an org off the list keeps its bytes.
+``feed_cards`` adds no key, so the reach loop and the briefs see none. Fence:
+``tests/unit/test_feed_why.py`` and ``test_my_day_state.py``.
+
 **The read cache** (MD-5a, §8.4) wraps the run: ``shell_feed`` asks
 ``cache.serve``, and only a miss calls ``feed_answer``. ``feed_answer`` hands
 back the answer with its time edges, so the cache knows when the clock changes
@@ -98,7 +106,7 @@ from zoneinfo import ZoneInfo
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException, Request, Response
-from gateway.routes.shell import cache, feed_rank, handled, needs, state
+from gateway.routes.shell import cache, feed_rank, feed_why, handled, needs, state
 from gateway.routes.shell.needs import (
     PER_APP,
     Found,
@@ -1015,6 +1023,93 @@ register(Provider("people", ("people", "tasks", "projects"), _people, PEOPLE_KIN
 register(Provider("chat", ("chat",), _chat, CHAT_KINDS, needs=False, gated=True))
 
 
+# ── Questions for me (WS-55 EA-18c, external_agent_access.md §12.8, feed only) ─
+#
+# `agent_questions`: the agent questions that wait on the member, as ONE card.
+# The source reads `agent_questions.read_mine`, which runs `read_questions` and
+# keeps the rows that carry a `why` (the "For me" scope). It writes no SQL.
+# The oldest 3 questions go on the card, and `total` is the count of the list,
+# so the card, the Projects sidebar badge and the Approvals tab say one number.
+#
+# Gated like the other feed-only sources (MD-3b): it runs only while
+# `MY_DAY_PROVIDERS` lists `agent_questions`, so the answer of the feed does not
+# change by one byte before the flip. The flag `AGENT_QUESTIONS_ORGS` gates it
+# inside too (`SourceAbsent`), as the route answers 404. Turn on both to show
+# the card. Its one act opens the list in Projects, where an answer runs the
+# same write as the list (D100, D101). The session is the Projects app's own:
+# `agent_questions.read_mine`. This file opens none.
+#
+# Fence: `tests/unit/test_feed_agent_questions.py` and its `_r8` twin.
+
+QUESTION_KINDS = frozenset({"agent_questions"})
+#: The questions on the card, oldest first.
+QUESTIONS_SHOWN = 3
+#: The longest question, and the longest option label, on the card.
+QUESTION_CLIP = 140
+OPTION_CLIP = 40
+OPTIONS_SHOWN = 4
+#: The link of the card: the Questions section of Projects (``?app=questions``).
+QUESTIONS_HREF = "/projects?app=questions"
+
+
+def _clip(value: Any, size: int) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= size else text[: size - 1].rstrip() + "\u2026"
+
+
+def _question_fact(row: dict[str, Any]) -> dict[str, Any]:
+    """The facts of one question on the card, from a row of the list."""
+    q = row.get("question") or {}
+    path = " \u203a ".join(str(s.get("name") or "") for s in row.get("project_path") or []
+                           if s.get("name"))
+    return {
+        "activity_id": row["activity_id"], "task_id": row["task_id"],
+        "path": path or str(row.get("task_title") or ""),
+        "question": _clip(q.get("body"), QUESTION_CLIP),
+        "options": [_clip(o.get("label"), OPTION_CLIP) for o in (q.get("options") or [])
+                    if isinstance(o, dict) and o.get("label")][:OPTIONS_SHOWN],
+        "agent": row.get("agent_name"),
+    }
+
+
+def _agent_questions_signal(rows: list[dict[str, Any]], total: int,
+                            newest: Any = None) -> Signal:
+    """The one card of the member's questions: the 3 oldest *rows* of the list,
+    *total*, the whole "mine" count, and *newest*, the time of the newest
+    question of the whole list. ``waiting_since`` is that NEWEST time, as the
+    state fingerprint hashes it, so a new question brings a dismissed card back
+    (the rule of ``agent_asks``)."""
+    shown = [_question_fact(r) for r in rows]
+    title = ("An agent question waits for you" if total == 1
+             else f"{total} agent questions wait for you")
+    asked = _iso(rows[0].get("asked_at"))
+    since = _iso(newest) if newest else asked
+    return Signal(
+        signal_id="questions:mine", app="projects", kind="agent_questions",
+        entity={"type": "questions", "id": "mine", "label": title}, title=title,
+        facts={"total": total, "questions": shown, "waiting_since": since,
+               "request_ids": [q["activity_id"] for q in shown]},
+        href=QUESTIONS_HREF, acts=(link("answer", "Answer", QUESTIONS_HREF),),
+        at=asked,
+    )
+
+
+async def _agent_questions(user: UserContext) -> Found:
+    from gateway.routes.projects import agent_questions as aq
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    if not agent_questions_allowed(getattr(user, "organization_id", None)):
+        raise needs.SourceAbsent("AGENT_QUESTIONS_ORGS does not hold the org")
+    # The Projects app's own read: its session, its tenant and its visibility.
+    rows, total_mine, newest = await aq.read_mine(user, QUESTIONS_SHOWN)
+    signals = [_agent_questions_signal(rows, total_mine, newest)] if rows else []
+    return Found([], total_mine, capped=False, signals=lambda: signals)
+
+
+register(Provider("agent_questions", ("projects",), _agent_questions, QUESTION_KINDS,
+                  needs=False, gated=True, app="projects"))
+
+
 # ── Knowledge (WS-61 KB-9a and KB-9b, knowledge_base.md §9, feed only, gated) ─
 #
 # Three kinds, one source. `kb_gap` keys on `knowledge:gap:<id>`: a question
@@ -1351,6 +1446,13 @@ def _source_line(facts: dict[str, Any]) -> str:
     return "The last three syncs failed."
 
 
+def _provider_line(_facts: dict[str, Any]) -> str:
+    """The why line of ``provider_alert`` (AO-2). The source gives no feed
+    signal today, so no card uses it. A fixed sentence: never a word that a
+    vendor wrote."""
+    return "An AI vendor account needs a look. Open the provider page."
+
+
 def _review_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
     """The why line of ``doc_needs_review`` (KB-9b). It names the review date
     and nothing else: no person."""
@@ -1372,11 +1474,15 @@ _ORG_CARD_LINES: dict[str, tuple[str, Any]] = {
     "digest_ready": ("digest_ready", lambda f, _tz, _today: _digest_line(f)),
     "crm_open_questions": ("open_questions", lambda f, _tz, _today: _questions_line(f)),
     "kb_gap": ("gap", lambda f, _tz, _today: _gap_line(f)),
+    # WS-55 EA-18c: the agent questions that wait on the member.
+    "agent_questions": ("agent_questions", lambda f, _tz, _today: _questions_card_line(f)),
     # KB-9b: the two page cards.
     "doc_needs_review": ("review_due", _review_line),
     "doc_shared_with_me": ("shared", lambda f, _tz, _today: _shared_line(f)),
     # KB-9b slice 2: a source that the member connected stopped syncing.
     "source_sync_failed": ("source_failed", lambda f, _tz, _today: _source_line(f)),
+    # AO-2: the AI vendor alert of the operator's admins.
+    "provider_alert": ("provider_alert", lambda f, _tz, _today: _provider_line(f)),
 }
 
 
@@ -1431,6 +1537,23 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
         return "asks", (f"Asked {_when(at, tz, today)} at {_clock(at, tz)}. "
                         "The run waits for your answer.")
     raise KeyError(kind)
+
+
+def _questions_card_line(facts: dict[str, Any]) -> str:
+    """The why line of ``agent_questions`` (WS-55 EA-18c): the project path,
+    the oldest question and its options, and how many more wait. The question
+    is the agent's own words, clipped. The card draws no other model text."""
+    shown = facts.get("questions") or []
+    if not shown:
+        return "An agent waits for your answer."
+    first = shown[0]
+    line = f"{first['path']}: {first['question']}" if first.get("question") else str(first["path"])
+    if first.get("options"):
+        line += " Options: " + ", ".join(first["options"]) + "."
+    more = int(facts.get("total") or len(shown)) - 1
+    if more > 0:
+        line += f" {more} more {'question waits' if more == 1 else 'questions wait'}."
+    return line
 
 
 def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date, *,
@@ -1795,6 +1918,13 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
     joined, closed, now, tz = fr.joined, fr.closed, fr.now, fr.tz
     assert closed is not None  # read=True runs the Handled reads
     cards = feed_rank.order(fr.cards, size)
+    # LOOP-4b (W1, W2): only the cards of this answer take `why_seen`, each in
+    # a new dict, so no card of `fr.cards` changes. Only when the org learns
+    # and both reads were sound. So an org off the list keeps its bytes (P5).
+    taught = joined.taught
+    if joined.ok and taught is not None and taught.ok:
+        cards = [{**c, "why_seen": feed_why.explain(c, taught, joined.acted, now)}
+                 for c in cards]
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
     body = {
         "cards": cards,
@@ -1823,4 +1953,7 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
               if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
-    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok and fr.band_ok))
+    # LOOP-4a: a fault of the learned path sets `cacheable` False and leaves
+    # `ok` True, so the answer is served and not stored.
+    kept = joined.ok and joined.cacheable and fr.band_ok
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=kept))

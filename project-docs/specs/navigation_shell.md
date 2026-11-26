@@ -852,6 +852,12 @@ acts in the table above for that feed:** a card acts in place, unless the act
 needs more context. `my_day_feed.md` §11 holds the rule. This spec keeps the
 page frame, the bell, the manifest and the flags.
 
+**D213 (owner, 2026-11-09) changes "A longer act opens the owning app" for
+each link to a task.** Behind `NEXT_PUBLIC_MY_DAY_PEEK`, a row's link or an
+act's link opens the task in a panel on My Day, and the member stays on My
+Day. An act with its own button runs in place. "Open in Projects" and a
+Ctrl-click still open the app. `my_day_feed.md` §11.5 holds the rule.
+
 ### 4.4 Cards
 
 An app declares its cards in its manifest (§5.1). Each card names the
@@ -1516,10 +1522,11 @@ display order stays as below.
 - Each item has `id`, `app`, `kind`, `title`, `detail`, `href`, `at`, `act`
   and `act_ref`.
 - `id` is `tasks:<task id>`, `approvals:<pending action id>`,
-  `projects:<notification id>`, `email:<account id>:<thread id>` or
-  `reminders:<reminder id>`.
+  `projects:<notification id>`, `email:<account id>:<thread id>`,
+  `reminders:<reminder id>` or `providers:<vendor>` (AO-2).
 - `kind` is `overdue`, `approval`, `due_today`, `notification`,
-  `needs_reply`, `reminder_due`, `reminder_check` or `reminder_unconfirmed`.
+  `needs_reply`, `reminder_due`, `reminder_check`, `reminder_unconfirmed` or
+  `provider_alert` (AO-2).
   The three reminder kinds come last in `KIND_ORDER`, in that order.
 - `act` is `done`, `read` or null. `done` runs
   `POST /projects/tasks/{act_ref}/complete`. `read` runs
@@ -1556,6 +1563,21 @@ is a link only, to `/chat?do=new-chat&reminder=<id>`. The source has no
 sidebar count (`calendar_events_reminders.md` RM-2b decision 5). A failed
 `reminders` source prints "Calendar did not answer, so its reminders may be
 missing."
+
+**The AI vendor source (AO-2, task 3683, amended 2026-11-18).** This amendment
+adds the `providers` source, the `providers:<vendor>` item id and the kind
+`provider_alert`. It tells the admins of the operator org that an AI vendor
+is out of credit, is low, or serves again (`customer_console.md` §6A.17b).
+
+- The gate is `feature:chat` and the admin test. `PROVIDER_ALERT_ORGS` must
+  list the org, or the source reads `absent`.
+- The rows come from the last alert that `gateway/provider_alerts.py` sent,
+  in the tenant Redis of the org. The source writes no table.
+- The kind sorts after the two fired reminder kinds and before `overdue`. An
+  empty vendor account stops the chat for every member.
+- The row is a link only, to the provider page of the Operator Console. It
+  has no act, no feed signal and no sidebar count. Its app id is `providers`,
+  and the client has no app entry for it, as for `studio`.
 
 **The order.** Overdue rows come first, the oldest first. Then approvals,
 with the action that waited longest first, because the work of an agent

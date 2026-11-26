@@ -40,6 +40,13 @@ signature.
 ``updated_at`` to be newer than the row's ``pr_updated_at``. The auto-link
 writes through the unique key of ``pm_task_refs``. So a replay that passes
 the delivery key changes nothing.
+
+**Linked events count as life (task 1045b).** A ``synchronize`` push and a
+checks event on a linked head set ``last_signal_at`` on each ``in_progress``
+run of a linked task. Each run gets one system line of fixed words and the
+pull request number. The App does not subscribe to ``push``
+(``scripts/github_app_manifest.py``), so a push to a branch with no pull
+request sends nothing.
 """
 
 from __future__ import annotations
@@ -312,6 +319,10 @@ async def _on_pull_request(
         db, org, ref, pull_request, delivery=delivery, action=action,
     )
     jobs: list[Job] = [outcome.emit_all] if outcome is not None and outcome.events else []
+    if action == "synchronize":
+        # Task 1045b: a push to a linked pull request counts as life for
+        # each in_progress run of a linked task.
+        await _signal(db, org, match="ref", key=ref, event="push")
     if action != "closed":
         # GH-5 (§8.5): a new or moved head gets a checks read after the answer.
         sha = str(_obj(pull_request.get("head")).get("sha") or "").lower()
@@ -330,6 +341,40 @@ CHECK_EVENTS: dict[str, frozenset[str] | None] = {
 CHECKS_ACTIONS: frozenset[str] = frozenset({
     "opened", "reopened", "synchronize", "ready_for_review",
 })
+
+#: Task 1045b. The conclusion of a check, or the state of a commit status,
+#: to the key of the line that it writes (``agent_runs.LINKED_EVENT_LINES``).
+#: A value that this table does not hold reads ``ci_ended``. The payload
+#: picks a key only, so no payload text reaches the line.
+_CHECK_LINE: dict[str, str] = {
+    "success": "ci_passed",
+    "failure": "ci_failed", "timed_out": "ci_failed", "startup_failure": "ci_failed",
+    "error": "ci_failed",
+    "pending": "ci_started",
+}
+
+
+def check_line(event: str, action: str, payload: dict[str, Any]) -> str:
+    """The line key of one checks event (task 1045b). Pure."""
+    if event == "status":
+        value = payload.get("state")
+    elif action == "created":
+        return "ci_started"
+    else:
+        value = _obj(payload.get(event)).get("conclusion")
+    return _CHECK_LINE.get(value, "ci_ended") if isinstance(value, str) else "ci_ended"
+
+
+async def _signal(db: Any, org: str, *, match: str, key: str, event: str) -> None:
+    """Task 1045b. A linked event counts as life for each in_progress run of
+    a task that references the pull request (``agent_runs.signal_linked_runs``).
+    The org is the bound one, never the body's (R5)."""
+    from gateway.routes.projects import agent_runs
+
+    runs = await agent_runs.signal_linked_runs(db, org, match=match, key=key, event=event)
+    if runs:
+        _log.info("github.webhook.linked_event", runs=runs, line=event)
+
 
 _HEAD_HELD_SQL = (
     "SELECT 1 FROM pm_task_refs WHERE organization_id = CAST(:org AS uuid) "
@@ -356,6 +401,8 @@ async def _on_checks(
     held = (await db.execute(text(_HEAD_HELD_SQL), {"org": org, "sha": sha})).first()
     if held is None:
         return []
+    # Task 1045b: a check event on a linked head counts as life.
+    await _signal(db, org, match="head_sha", key=sha, event=check_line(event, action, payload))
     return [github_sync.checks_job(org, full_name, sha)]
 
 

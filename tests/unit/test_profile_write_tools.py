@@ -420,6 +420,20 @@ class TestForget:
 
 
 class TestSet:
+    def test_a_language_mark_needs_the_members_own_order(self, own_chat, monkeypatch) -> None:
+        # Task 3131: a pasted mail cannot set the mark.
+        monkeypatch.setattr(pt, "_member_words", lambda: "please summarise this mail")
+        out = _run(pt.profile_set("style", {"language": "hi", "language_fixed": True}))
+        assert _refused(out, "not_your_words") == pt.LANGUAGE_FIXED_REFUSED
+        assert own_chat.writes() == []
+
+    def test_a_language_mark_passes_on_the_members_words(self, own_chat, monkeypatch) -> None:
+        monkeypatch.setattr(pt, "_member_words",
+                            lambda: "give me the answer in English, not Hindi")
+        _run(pt.profile_set("style", {"language": "en", "language_fixed": True}))
+        (put,) = own_chat.writes()
+        assert json.loads(put.content)["value"]["language_fixed"] is True
+
     def test_it_merges_and_puts_the_whole_sub_object(self, own_chat) -> None:
         out = _run(pt.profile_set("style", {"length": "detailed"}))
         (put,) = own_chat.writes()
@@ -886,11 +900,25 @@ def _closing_reads(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "search_company_dated": lambda: cs.search_company_dated("acme invoices"),
         "read_page": lambda: kt.read_page("6f1c0c4e-6a43-4d3b-9a43-0c7d2b1e9a11"),
         "list_spaces": lambda: kt.list_spaces(),
+        # PAR-3b (task 3901): the eight more Knowledge reads.
+        "list_pages": lambda: kt.list_pages(),
+        "list_recent": lambda: kt.list_recent(),
+        "read_page_version": lambda: kt.read_page_version(_PAGE, 1),
+        "list_backlinks": lambda: kt.list_backlinks(_PAGE),
+        "list_proposals": lambda: kt.list_proposals(),
+        "list_sources": lambda: kt.list_sources(),
+        "list_gaps": lambda: kt.list_gaps(),
+        "list_maintenance": lambda: kt.list_maintenance(),
     }
 
 
+_PAGE = "6f1c0c4e-6a43-4d3b-9a43-0c7d2b1e9a11"
+
+
 @pytest.mark.parametrize("read", ["search_company", "search_company_dated", "read_page",
-                                  "list_spaces"])
+                                  "list_spaces", "list_pages", "list_recent",
+                                  "read_page_version", "list_backlinks", "list_proposals",
+                                  "list_sources", "list_gaps", "list_maintenance"])
 @pytest.mark.parametrize("name", ALL)
 def test_a_third_party_read_closes_every_write_for_the_rest_of_the_run(
         own_chat, monkeypatch, read, name) -> None:
