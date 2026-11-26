@@ -59,6 +59,8 @@ anchors. A symbol survives an edit above it; a line number does not.
    status resolve to one `EffectiveAccess`, cached 60s. Status is a property of
    the *result*, not a filter on the query, so a stale cache can never outlive a
    suspension by more than the TTL.
+   An organization's integration access rule narrows this result at the same
+   point (`integrations_console.md` §3.9, task 3985, PLAN).
 
 **The invariant:** an app never establishes identity. It receives one. If you
 find yourself writing code that decides *who the caller is*, you are in the

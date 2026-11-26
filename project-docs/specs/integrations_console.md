@@ -1084,7 +1084,9 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 ### 3.9 Who can use an integration (task 3985, PLAN)
 
 > **Status:** 📝 PLAN, owner ask of 2026-11-26. Verified against code at `origin/main` `e8b692f04`.
-> No slice is built. The owner questions are in §10, ACC-Q1 to ACC-Q3.
+> No slice is built. An audit on 2026-11-26 returned NO-GO on the first text, and this text holds its fixes.
+> The owner questions are in §10.
+>
 > This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
 #### 3.9.1 What exists
@@ -1100,33 +1102,65 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 
 #### 3.9.2 The model
 
-**Rule.** An organization may hold one access rule for each integration. The rule only narrows. It never grants.
+**Rule.** An organization may hold one access rule for each service. The rule only narrows. It never grants.
 
-| Mode | Who may use the integration |
+**The services, a closed list.** Any other service gets 422.
+
+| Kind | Service name | Source |
+|---|---|---|
+| MCP server of the organization | `mcp-<name>` | `connections/mcp.py` (`mcp:<name>`) |
+| API connection | `api-<template>` | `connections/api/template.py` (`TEMPLATE_ID_PATTERN`) |
+| Built-in agent connector | A key of `_REGISTRY` | `acb_skills/integrations.py` |
+
+**Not in scope.** The app connections have no rule: the CRM Zoho sync, mailboxes, WhatsApp and Google. No check of `integrations:use` gates their app screens (`routes/crm/import_zoho.py`, `routes/crm/stage_metadata.py`). A rule on a `_REGISTRY` key stops the credentials of agent runs only, and the console says so. ACC-Q4 asks about the app connections.
+
+| Mode | Who may use the service |
 |---|---|
 | No rule (everyone) | Each member whose roles and overrides allow it. This is today, and it is the default |
-| Chosen (`subjects`) | A member who is on the list, or in a listed group. The list uses the D12 subjects `group:<slug>` and an email address. The word `org` is not stored, because it is the same as no rule |
+| Chosen people | A member on the list of email addresses |
+| Chosen teams (needs ACC-Q2) | A member of a listed `group:<slug>`, or on the list of addresses |
 | Admins only | A member who holds `integrations:manage`. It is a chosen rule with an empty list |
 
+The word `org` is not stored, because it is the same as no rule.
+
 1. A member who holds `integrations:manage` passes each rule. So an admin cannot lock out every admin.
-2. A member who fails a rule gets a deny of the exact permission `integrations:use:<service>` in the resolved access. The resolver adds it. So no check changes, and no second check exists.
+2. A member who fails a rule gets a deny of the exact permission `integrations:use:<service>` in the resolved access. So no check changes, and no second check exists.
 3. A rule never gives a permission. A `guest` on the list still has no integration. A per-member deny still wins.
 4. An exact allow override of one member does not pass a rule. The list is the one place.
-5. A member who joins later is not on a chosen list. So the rule holds for a new member.
-6. A group change takes effect at the next resolve, because the resolver reads group membership then.
-7. A rule that the code cannot read counts as admins only. A rule read that fails gives the same result as a failed access read today.
+5. A member who joins later is not on a list. So the rule holds for a new member.
+6. A group change takes effect at the next resolve.
+7. A rule that the code cannot read means admins only for that service.
 
-**Storage (recommended, ACC-Q2).** The rules sit in `organization.settings` under `integration_access`, one key for each service:
+**Storage.** The rules sit in `organization.settings` under `integration_access`, one key for each service:
 
 ```json
-{"integration_access": {"mcp-tally": {"subjects": ["group:finance"], "set_by": "a@x.com", "set_at": "..."}}}
+{"integration_access": {"mcp-tally": {"subjects": ["a@x.com"], "set_by": "b@x.com", "set_at": "..."}}}
 ```
 
-The access query of `acb_auth.access` reads this key and the member's group slugs in the one statement that reads roles. So the rule needs no new table, no migration and no new session. A write is one `jsonb_set` on the row of the caller's organization. `organization` has no row security, so each write names the organization id of the session (R5). A removal deletes the key.
+This needs no table and no migration. `organization` has no row security, so each statement names the organization id of the session (R5). No other code writes this key.
 
-**A new rule for the code.** `org_group` rows scope and never authorize today (`138_groups_and_session_participants.sql`). A chosen group here decides who keeps an integration. It never gives a permission. ACC-Q2 asks the owner to accept that.
+**The write.** One statement sets the key, and it creates the parent object when none exists. A plain `jsonb_set` on a missing parent changes nothing and reports success.
 
-**Where the rule applies.** `resolve_access` and `resolve_access_in_org` apply it after `build_access`. So does the access preview of one member (`routes/admin/members.py`). The preview shows the rule as the reason.
+```sql
+UPDATE organization SET settings = jsonb_set(settings, '{integration_access}',
+       COALESCE(settings->'integration_access', '{}'::jsonb) || jsonb_build_object(:svc, CAST(:rule AS jsonb)))
+ WHERE id = CAST(:org AS uuid)
+```
+
+The route checks that one row changed, and it reads the rule back. A removal deletes the key.
+
+**The read.** The read is a separate statement, and never a part of `_ACCESS_SQL`. A failure in `_ACCESS_SQL` removes all access, and it can mark the access tables as missing until a restart. The statement returns the raw JSON and the member's group slugs. It joins `org_group` with `g.organization_id = u.organization_id`, because `org_group` has no row security. `org_group_member` has the same row policy as `user_role`, so the group read agrees with the role read.
+
+- One pure function parses the rules and narrows the access. It never raises, because an exception in the run authorizer means "no filter".
+- A failed read refuses `integrations:use:*` to each member who holds no `integrations:manage`. It changes no other permission.
+- `resolve_access`, `resolve_access_in_org` and the access preview of one member use the same function. The preview shows the source `integration-rule`, and it lists each ruled service.
+
+**Group writes.** A group member write needs only `admin:members:manage` today, and a chat tool calls the same route. So a team mode needs two more rules (`groups_sessions_authority.md` §1 and §5):
+
+1. A member write to a group that a rule names also needs `admin:access:manage`.
+2. Nobody can delete a group that a rule names.
+
+`org_group` rows scope and never authorize today. A team here decides who keeps a service. It never gives a permission. ACC-Q2 asks the owner to accept this.
 
 #### 3.9.3 The sites that obey it
 
@@ -1141,19 +1175,23 @@ Each site below reads the resolved access, so the rule reaches it with no change
 | A shared session | The fold denies when one member fails the rule |
 | A delegated run | It acts as the member of its parent |
 
-**Limits, stated.** A run with no member, such as a cron run, gets no filter, as today. A batch or scheduled run gets no MCP server at all. 
+**Limits, stated.**
 
-A rule controls use through the assistant and agents. It does not hide data that a sync already copied into Metorite, such as CRM records.
+- A run with no member gets no filter, and every server attaches. The stream path adds MCP servers to each run, and the batch path adds them on a named chat thread. LNK-Q7 and rule c of §3.8.7 own this gap for link connectors.
+- An org-visible room expands to every member. So one restriction removes the service from each such room.
+- The room caps read allow overrides only (`routes/rooms.py`). So they do not name the rule as the cause.
+- A rule controls use through the assistant and agents. It does not hide data that a sync already copied into Metorite, such as CRM records.
+- A member-scoped connection (`scope_kind = 'member'`) has no rule. The `grant = admin` mark of an API connection (`api_connections.md` §2.3a) still applies on top.
+- Tasks 2959 and 3351 are existing gaps, and this section does not close them.
 
-A member-scoped connection (`scope_kind = 'member'`) has no rule. The `grant = admin` mark of an API connection (`api_connections.md` §2.3a) still applies on top. Tasks 2959 and 3351 are existing gaps, and this section does not close them.
-
-**How fast.** The access cache lives 60 seconds in one process. A write clears it, so the gateway process obeys at once. The ACC-1 audit lists each other process that caches access, and its bound is 60 seconds.
+**How fast.** The rule holds at the next run. The one gateway process holds the only access cache, and the orchestrator runs inside it. A write clears the cache. A run in flight keeps its access, and a retry keeps its credential names.
 
 #### 3.9.4 Routes, audit and the flag
 
-- `GET /admin/integration-access` lists each integration of the organization with its rule. `PUT /admin/integration-access/{service}` takes `{"mode": "everyone"|"chosen"|"admins", "groups": [], "people": []}`.
+- `GET /admin/integration-access` lists each service of the closed list with its rule. `PUT /admin/integration-access/{service}` takes `{"mode": "everyone"|"chosen"|"admins", "groups": [], "people": []}`.
 - Both need `integrations:manage` **and** `admin:access:manage`, because a rule is an access write.
-- A group must exist in the organization, and a person must be a member of it. Else the answer is 422.
+- A group must exist in the organization, and a person must be a member of it. An unknown service, group or address, and the word `org`, get 422. Until ACC-Q2, a non-empty `groups` gets 422.
+- Without either permission the answer is 403.
 - Each write calls `record_admin_change` with the service, the mode and the subjects, and then `invalidate()` for all members.
 - The flag `INTEGRATION_ACCESS_ORGS` is empty by default. For an organization off the flag, each route answers 404 and the console shows no control. The resolver applies a rule that exists, whatever the flag says. So a flag change never widens access.
 
@@ -1298,12 +1336,31 @@ LNK-2 needs LNK-1, because it checks the credential that LNK-1 mints. TLY-2 need
 
 ACC-1 comes first. ACC-2 and ACC-3 need it.
 
-| Id | What | Gate | Done when |
-|---|---|---|---|
-| **ACC-1** (task 3987) | Backend: the rule in `organization.settings`, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4) | 🔴 HIGH: permissions | R8: a refused member reaches no MCP server, no API call and no credential. A new member is refused. A group removal refuses. An admin passes. Org B is unchanged. The flag off answers 404 |
-| **ACC-2** (task 3988) | The "Who can use" control on each connection (§3.9.5) | STANDARD: UI, with an owner preview | Visual review passes in four contexts |
-| **ACC-3** (task 3989) | The integrations list in My access, and `GET /auth/me/integrations` | HIGH: it shows access | A member sees their own result only |
-| **ACC-4** (task 3990) | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
+| Id | Rung | What | Gate | Done when |
+|---|---|---|---|---|
+| **ACC-1** (task 3987) | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, people, admins only. The team mode joins after ACC-Q2, with its two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
+| **ACC-2** (task 3988) | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
+| **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
+| **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
+
+**ACC-1 acceptance, R8** (`test_integration_access_r8.py`, two organizations, a real database):
+
+- **ACC-a.** With no rule, the resolved access of each of the five roles is the same as today.
+- **ACC-b.** For a refused member, the run authorizer refuses `mcp-x`, and `_maf_servers` drops the server. No credential of a ruled `_REGISTRY` key reaches the run. The `api-y` route answers 404. `_may_use` answers False.
+- **ACC-c.** A listed person passes. A new member is refused. With the team mode, a listed group member passes, and a removal refuses at the next resolve with no restart.
+- **ACC-d.** A holder of `integrations:manage` passes. A member with an exact allow override is refused. A guest on the list is refused.
+- **ACC-e.** A shared session with a refused participant denies, for an email, group or org subject. A delegated run also denies.
+- **ACC-f.** Organization B does not change. The first write on empty settings persists, and a second key keeps the first.
+- **ACC-g.** A malformed rule and a failed read refuse integrations only. Neither raises, and neither marks the access tables as missing.
+
+**ACC-1 acceptance, hermetic** (`test_integration_access_rules.py`):
+
+- Both routes answer 404 for an organization off the flag, and 403 without either permission.
+- An unknown service, group or address, and `org`, answer 422.
+- Each write records the audit line and clears the cache.
+- Each service name equals the output of `mcp_service` in both modules, and of `api-<template>`.
+- The preview shows the rule as the source.
+- With the team mode, the group-write gate holds.
 
 ---
 
@@ -1326,7 +1383,18 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missing
 
 Each slice adds its own test file to this list.
 
-ACC-1 adds `test_integration_access_rules.py` and `test_integration_access_r8.py`. The R8 suite needs the scratch database.
+**Verify ACC-1 (§3.9).** The first two files are new. No R8 suite may skip.
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_integration_access_rules.py tests/unit/test_integration_access_r8.py \
+  tests/unit/test_org_access_credentials.py tests/unit/test_delegated_integration_filter.py \
+  tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_confirm.py tests/unit/test_api_connections_r8.py \
+  tests/unit/test_admin_groups.py tests/unit/test_identity_pool_timeout.py tests/unit/test_member_of_org_read.py \
+  tests/unit/test_session_authority.py tests/unit/test_org_access_control.py \
+  tests/unit/test_org_access_enforcement.py tests/unit/test_studio_live_preview.py -v -rs
+uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
+```
 
 **Verify WS-LNK (§3.8, APPROVED, D232).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
 
@@ -1411,10 +1479,9 @@ The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LN
 
 ### Access rule questions (§3.9, task 3985)
 
-The owner answers these on task 3985.
+The owner answers these on task 3985. The default is not open: the owner ask of 2026-11-26 names "everyone" as the default. The agent decides that an admin always keeps access, because an admin can open any rule again. The owner may overrule it.
 
 | Id | Question | Recommendation |
 |---|---|---|
-| **ACC-Q1** | What is the default for each integration? | Everyone in the organization, until an admin restricts it. This is today |
-| **ACC-Q2** | May a chosen group decide who keeps an integration, with the rules in `organization.settings` and no new table? | Yes. A group rule only narrows, and it gives no permission. The other choice is a new table in the D12 grant shape, with a migration |
-| **ACC-Q3** | Does an admin (`integrations:manage`) always keep access? | Yes. An admin can open any rule again, so a lock gives no protection |
+| **ACC-Q2** | May a team decide who keeps an integration? A change of that team's members then also needs the access right | Yes. A team only narrows, and it gives no permission |
+| **ACC-Q4** | Do the app connections (CRM Zoho, mailboxes, WhatsApp, Google) get a rule in a later slice? | Later, one app at a time. The assistant and agents come first |
