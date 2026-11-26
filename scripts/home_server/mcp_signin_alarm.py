@@ -15,7 +15,12 @@ the ``metorite`` line. The state is one of:
   line. Logged only. It neither notifies nor resets, so a flaky check never
   pages the owner.
 - ``stale``: the OAuth access token of ``metorite`` expired more than
-  :data:`STALE_S` ago while lanes are active, so their refreshes fail. DOWN.
+  :data:`STALE_S` ago. Logged only, like ``error``: an expired token can
+  mean that nobody called, so it never pages.
+
+**The blind spot.** A dead refresh token that no session retries keeps
+``expiresAt`` in the past, so the gate never checks. The per-box token
+(task 1819) has no refresh token and removes this case.
 
 **The token gate (review finding P1, 2026-11-26).** ``claude mcp list``
 connects to ``metorite``. With an expired access token it spends the
@@ -27,8 +32,7 @@ the check it reads ``expiresAt`` of the ``metorite`` entry in
 
 - no OAuth entry with a refresh token (a box token, or no sign-in): check;
 - the access token has :data:`MIN_LEFT_S` or more left: check;
-- expired more than :data:`STALE_S` ago, with a lane transcript changed in
-  the last :data:`ACTIVE_S`: ``stale``, with no check;
+- expired more than :data:`STALE_S` ago: ``stale``, logged, with no check;
 - else: skip, read as ``error``.
 
 On the first DOWN after ``ok`` or unknown, it writes one NOTE line to the
@@ -70,12 +74,8 @@ CREDS_PATH = pathlib.Path(os.environ.get(
 LIST_TIMEOUT_S = 90
 MIN_LEFT_S = 600
 STALE_S = 30 * 60
-ACTIVE_S = 15 * 60
-METORITE_URL = os.environ.get("METORITE_ALARM_URL", "https://mcp.metorite.com/mcp")
-PROJECTS_DIR = pathlib.Path(os.environ.get(
-    "METORITE_ALARM_PROJECTS", str(HOME / ".claude/projects")))
 GH_REPO = os.environ.get("METORITE_ALARM_GH_REPO", "Hathi-Labs/Metorite")
-DOWN = ("auth", "missing", "stale")
+DOWN = ("auth", "missing")
 
 RESIGN = ("Re-sign: docs/home_box.md section 5.2 and docs/box_connect.md "
           "(claude mcp login metorite --no-browser, then send the callback address).")
@@ -102,33 +102,16 @@ def classify(text: str, returncode: int = 0) -> str:
     return "error" if returncode != 0 else "missing"
 
 
-def lanes_active(now_s: float) -> bool:
-    """True when a Claude session transcript changed in :data:`ACTIVE_S`.
-
-    The alarm itself writes no transcript (``claude mcp list`` starts no
-    session). Lanes call ``metorite`` at least once a minute while they work.
-    """
-    try:
-        for f in PROJECTS_DIR.glob("*/*.jsonl"):
-            try:
-                if now_s - f.stat().st_mtime < ACTIVE_S:
-                    return True
-            except OSError:
-                continue
-    except OSError:
-        return False
-    return False
-
-
 def token_gate(now_s: float | None = None) -> str:
     """``check``, ``skip`` or ``stale``. Reads ``expiresAt`` only, never a token.
 
-    Every ``metorite`` entry of :data:`METORITE_URL` counts (round-2 review
-    P2: Claude Code keys entries by a hash of the config, so two can exist).
-    The check runs only when EACH entry that holds a refresh token has
-    :data:`MIN_LEFT_S` or more left. ``stale`` needs every such entry expired
-    more than :data:`STALE_S` ago AND active lanes (round-2 review P1: an
-    expired token on an idle box only means that nobody called).
+    Every ``metorite`` entry that holds a refresh token counts, whatever
+    its URL (review rounds 2 and 3: Claude Code keys entries by a hash of the
+    config, so two can exist, and a changed URL must not open the refresh
+    path). The check runs only when EACH such entry has :data:`MIN_LEFT_S`
+    or more left. ``stale``: every such entry expired more than
+    :data:`STALE_S` ago. It is logged only and never pages (review rounds 2
+    and 3: an expired token can mean that nobody called).
     """
     now_s = now_utc().timestamp() if now_s is None else now_s
     try:
@@ -141,8 +124,6 @@ def token_gate(now_s: float | None = None) -> str:
     lefts: list[float | None] = []
     for v in entries.values():
         if not isinstance(v, dict) or v.get("serverName") != "metorite":
-            continue
-        if (v.get("serverUrl") or "").rstrip("/") != METORITE_URL:
             continue
         if not v.get("refreshToken"):
             continue
@@ -158,7 +139,7 @@ def token_gate(now_s: float | None = None) -> str:
         return "skip"
     if all(left >= MIN_LEFT_S for left in lefts):
         return "check"
-    if all(left < -STALE_S for left in lefts) and lanes_active(now_s):
+    if all(left < -STALE_S for left in lefts):
         return "stale"
     return "skip"
 
@@ -274,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     if gate == "check":
         observed = check(pathlib.Path(a.cwd))
     elif gate == "stale":
-        observed = "stale"
+        print("signin-alarm: access token expired long ago, no check (no refresh)",
+              file=sys.stderr)
+        observed = "error"
     else:
         print("signin-alarm: access token near expiry, check skipped (no refresh)",
               file=sys.stderr)

@@ -135,20 +135,9 @@ def _creds(al, tmp_path, monkeypatch, *entries):
     monkeypatch.setattr(al, "CREDS_PATH", p)
 
 
-def _active(al, tmp_path, monkeypatch, age_s, now):
-    import os as _os
-    d = tmp_path / "projects" / "p"
-    d.mkdir(parents=True, exist_ok=True)
-    f = d / "s.jsonl"
-    f.write_text("{}", encoding="utf-8")
-    _os.utime(f, (now - age_s, now - age_s))
-    monkeypatch.setattr(al, "PROJECTS_DIR", tmp_path / "projects")
-
-
 def test_gate_never_lets_the_check_refresh(al, tmp_path, monkeypatch):
     now = 1_800_000_000.0
     base = {"serverName": "metorite", "serverUrl": URL, "refreshToken": "r", "accessToken": "a"}
-    _active(al, tmp_path, monkeypatch, 60, now)
     _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now + 3000) * 1000})
     assert al.token_gate(now) == "check"
     _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now + 100) * 1000})
@@ -163,14 +152,8 @@ def test_gate_never_lets_the_check_refresh(al, tmp_path, monkeypatch):
     assert al.token_gate(now) == "check"
 
 
-def test_idle_box_is_not_stale(al, tmp_path, monkeypatch):
-    now = 1_800_000_000.0
-    base = {"serverName": "metorite", "serverUrl": URL, "refreshToken": "r"}
-    _creds(al, tmp_path, monkeypatch, {**base, "expiresAt": (now - 5 * 3600) * 1000})
-    _active(al, tmp_path, monkeypatch, 3 * 3600, now)
-    assert al.token_gate(now) == "skip"
-    monkeypatch.setattr(al, "PROJECTS_DIR", tmp_path / "none")
-    assert al.token_gate(now) == "skip"
+def test_stale_never_pages(al):
+    assert "stale" not in al.DOWN
 
 
 def test_two_entries_each_must_be_safe(al, tmp_path, monkeypatch):
@@ -185,13 +168,9 @@ def test_two_entries_each_must_be_safe(al, tmp_path, monkeypatch):
     assert al.token_gate(now) == "skip"
     _creds(al, tmp_path, monkeypatch, ok, {**ok})
     assert al.token_gate(now) == "check"
-    other = {**live, "serverUrl": "https://elsewhere.example/mcp"}
-    _creds(al, tmp_path, monkeypatch, other, ok)
-    assert al.token_gate(now) == "check"  # another server's entry does not count
-
-
-def test_stale_is_down(al):
-    assert "stale" in al.DOWN
+    moved = {**live, "serverUrl": "https://new-host.example/mcp"}
+    _creds(al, tmp_path, monkeypatch, moved, ok)
+    assert al.token_gate(now) == "skip"  # a changed URL still holds a refresh token
 
 
 def test_failed_gh_send_writes_one_note(al, monkeypatch):
