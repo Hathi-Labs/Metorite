@@ -28,12 +28,12 @@ import uuid
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
 import skill_projects
 from skill_projects import manifest
-from skill_projects import writes as W
 
 from tests.unit._projects_agent_fakes import (
     FakeResponse,
@@ -127,9 +127,9 @@ async def test_with_the_flag_off_no_tool_makes_a_card_or_a_write(monkeypatch) ->
 async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch, pins=[])
-    assert await skill_projects.pin_authority(PID, PAGE) == W.CANCELLED
+    assert await skill_projects.pin_authority(PID, PAGE) == card_outcome_text(CARD_DECLINED)
     calls += _gateway(monkeypatch, pins=[READABLE])
-    assert await skill_projects.unpin_authority(PID, PIN) == W.CANCELLED
+    assert await skill_projects.unpin_authority(PID, PIN) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

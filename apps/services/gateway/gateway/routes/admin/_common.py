@@ -60,9 +60,8 @@ from fastapi import APIRouter, Depends, HTTPException
 # caller's `app_user` row (`_with_resolved_access` → `bind_tenant`), which is
 # the SAME source `get_org_id` below resolves — S1-1's explicit
 # `organization_id` predicates stay as defense in depth on top of it.
-# `get_db` (unbound) remains re-exported ONLY for `routes/agent_skills.py`,
-# which reaches the seam through this module and is not this package's to
-# convert.
+# `get_db` (unbound) is still re-exported, but nothing reads it here: the last
+# user, `routes/agent_skills.py`, moved to `tenant_session` (H2, task 566).
 from gateway.db import get_db  # noqa: F401
 from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401

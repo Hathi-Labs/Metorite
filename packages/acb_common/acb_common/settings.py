@@ -1,6 +1,7 @@
 """Centralised env-driven settings. One source of truth for every service."""
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -9,6 +10,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from acb_common.flag_registry import FlagRegistry
+
 
 class Settings(FlagRegistry):
     """Loaded from environment + .env at process start."""
@@ -288,6 +290,16 @@ class Settings(FlagRegistry):
     # A value on a box is the grant `enforcement-flip`. Fence:
     # tests/unit/test_crm_answer_check.py.
     crm_answer_check: str = "off"
+    # `find_claim_check` (WS-FIND FIND-7, `find_engine.md` §5.5 and §8) is the
+    # "not found" check of a chat answer: `off` (the default), `shadow` (log
+    # one line for an answer that says a record does not exist with no pass 2
+    # of `search_company` in the turn, no hold and no retry) or `on` (hold the
+    # answer and give the chat one more pass, the one retry of the run). Any
+    # other value reads as `off`. The one reader is `find_claim_check_mode`
+    # below. It is not a `*_ORGS` or `*_MODES` key, so a change needs a
+    # restart. `shadow` is AGENT-SAFE. `on` is the grant `enforcement-flip`,
+    # after 7 days of shadow (D-FIND-8). Fence: tests/unit/test_answer_not_found.py.
+    find_claim_check: str = "off"
 
     # `tool_result_spill` (CTX-1, Metorite #825, `one_assistant_context.md`
     # §7.1) keeps a large tool result out of the prompt: the model reads a
@@ -476,6 +488,16 @@ class Settings(FlagRegistry):
     # calls it through `gateway.routes.knowledge.flags`. AGENT-SAFE: it spends
     # nothing. Fences: tests/unit/test_kb_flags.py, test_company_search_tool.py.
     knowledge_proposals: bool = False
+    # PAR-3 (task 3105, chat_parity.md §5 wave P-5). The assistant's own
+    # Knowledge writes, default OFF. ON gives the orchestrator `create_page`,
+    # `edit_page`, `create_space`, `edit_space` and their persona line (with
+    # COMPANY_SEARCH_ENABLED on too). Each one shows the full text on one card
+    # before it saves. A new page is always a draft. No tool publishes. OFF
+    # keeps the four tools out. The routes do not change, because the web
+    # already uses them. The one reader is
+    # `acb_skills.knowledge_tools.knowledge_chat_writes_enabled`. AGENT-SAFE:
+    # it spends nothing. Fence: tests/unit/test_kb_chat_writes.py.
+    knowledge_chat_writes: bool = False
     # WS-61 KB-9a (knowledge_base.md §8.4 door 3 and §13). The organization
     # ids whose `search_company` reads with no Knowledge hit write a
     # `kb_gaps` row, in the grammar of `knowledge_orgs`. `*` is each org.
@@ -506,6 +528,7 @@ class Settings(FlagRegistry):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+
 
     reach_enabled: bool = False
     reach_members: str = ""
@@ -575,6 +598,14 @@ class Settings(FlagRegistry):
     # calendar_events_reminders.md §5.9 and §10.2. Fence:
     # tests/unit/test_push_subscriptions.py.
     web_push_enabled: bool = False
+    # TOF-3b F4b: STUDIO_SKILL_TESTS_CAP_CREDITS is the most credits that ONE
+    # run of a skill's tests may spend. It has NO default value: empty means
+    # unset, and then the runner refuses every test run with `cap_unset`
+    # before any model call. A value that is no finite number above 0 reads
+    # as unset. A request may only lower it. Reader:
+    # `gateway.routes.studio.flags.skill_tests_cap`. It is no `*_ORGS` key, so
+    # a change needs a restart. The owner sets it. Spec: ai_studio_rows/F4.md.
+    studio_skill_tests_cap_credits: str = ""
     # WS-PKG PKG-10b: PACKAGE_EXPIRY_ENABLED starts the daily expiry loop of
     # package_host.md section 6.2. Default OFF. While it is false, the gateway
     # starts no loop task, and a tick reads nothing. When it is on, the tick
@@ -731,6 +762,8 @@ class Settings(FlagRegistry):
     # tests/unit/test_assistant_profile_org_rollout.py.
     assistant_profile_enabled: bool = False
 
+
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -790,6 +823,20 @@ class Settings(FlagRegistry):
     # Fence: tests/unit/test_tool_packs_registry.py.
     tool_packs: str = ""
 
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
+
     # ── The floor trim of the one assistant (WS-67 OA-8f) ──────────────────
     #
     # ON takes ten floor tools out of the orchestrator's request: the tools
@@ -817,6 +864,40 @@ class Settings(FlagRegistry):
     # tests/unit/test_tool_argument_shapes.py.
     tool_arg_shapes: bool = False
 
+    # ── The tool failure log (WS-TOF TOF-2b, D225) ──────────────────────────
+    #
+    # `tool_failure_log_orgs` lists the organization ids whose tool failures
+    # the capture sites record, or `*` for each one. Empty means off, and no
+    # site writes a row. The one reader is
+    # `acb_common.failure_log.failure_log_on`, and it fails closed. A SIGHUP
+    # reload applies a change (docs/flag_reload.md).
+    # `tool_failure_tasks` runs the sync job `failure.sync` and the prune of
+    # the failure rows (TOF-2e). Off by default, and a change needs a restart.
+    # Flip both together, or the event rows stay with no prune
+    # (tool_failure_log.md §5.4).
+    #
+    # 🔴 OWNER-GATE on a box (`enforcement-flip`, tool_failure_log.md §12).
+    # A customer org on the list waits for the owner's answer to TOF-Q2.
+    # Fences: tests/unit/test_failure_log_queue.py,
+    # tests/unit/test_failure_store_r8.py.
+    #
+    # TOF-2e (tool_failure_log.md §7 and §11). `tool_failure_org_id` is the
+    # internal org that runs the sync job. `tool_failure_project_id` is the
+    # project "Tool failures" in that org, and GH-6 skips its tasks.
+    # `tool_failure_run_as` is the member that makes each task. With any of
+    # the three empty, the job does nothing. `tool_failure_external_min` is
+    # the day count of §7.2 for a code that we do not own.
+    # `tool_failure_close_days` is the watch of §7.4. The one reader of the
+    # five is `gateway.failures.sync.config`. A change needs a restart.
+    # 🔴 OWNER-GATE on a box (`env-write`, tool_failure_log.md §12).
+    # Fence: tests/unit/test_tool_failure_tasks_r8.py.
+    tool_failure_close_days: int = 7
+    tool_failure_external_min: int = 20
+    tool_failure_org_id: str = ""
+    tool_failure_project_id: str = ""
+    tool_failure_run_as: str = ""
+    tool_failure_tasks: bool = False
+
     # `web_reader_remote` is `jina` or empty. With `jina`, an org of
     # `web_research_orgs` asks Jina Reader last, and only when the local text
     # is under 200 characters. Any other value means no remote reader.
@@ -837,6 +918,8 @@ class Settings(FlagRegistry):
     # `acb_skills.web_render_client`. Fence: tests/unit/test_web_render.py.
     web_worker_url: str = ""
     web_worker_token: str = ""
+
+
 
     my_day_decide_org_daily_calls: int = 0
 
@@ -952,6 +1035,18 @@ class Settings(FlagRegistry):
     # email_app_master_plan.md §10.4.17 PR-A. Fences:
     # tests/unit/test_email_triage_once.py and test_email_ai_cost.py.
     email_triage_once_per_cycle: bool = False
+
+    # ── One Reply Zero classify of a mailbox at a time (WS-17 EM-T16 H-285)
+    #
+    # True: a second call of the classify for a mailbox skips while a first
+    # call of the same mailbox runs. The webhook, the manual sync and the
+    # scheduler hook all end in that call. A mailbox with no running call,
+    # and any other mailbox, runs as before. False is the default, and then
+    # two calls can run at once. The guard lives in one gateway process.
+    # The one reader is `email_ingestion.post_sync.classify_one_at_a_time`.
+    # A value of `true` on a box is gate `enforcement-flip`. Fence:
+    # tests/unit/test_email_classify_one_at_a_time.py.
+    email_classify_one_at_a_time: bool = False
 
     # ── No rule match when the conversation status decides (WS-17 EM-T16 PR-B)
     #
@@ -1345,8 +1440,11 @@ class Settings(FlagRegistry):
     sandbox_exec_max_timeout_seconds: int = 300
     sandbox_output_cap_bytes: int = 12288
     # Caps of §7.1 rule 8: the per-organization fair share, and the box cap.
+    # A start refuses when `sandbox_max_per_org` is above `sandbox_max_total`.
     sandbox_max_per_org: int = 2
     sandbox_max_total: int = 4
+    compute_max_per_org: int = 1
+    compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
@@ -1363,6 +1461,31 @@ class Settings(FlagRegistry):
     # It must lie outside every mount root. "" resolves to
     # {agents_clone_dir}/sandbox-broker, a sibling of state/ and repos/.
     sandbox_state_dir: str = ""
+    # SBX-8 (agent_sandbox.md §4.3). The container runtime: `runc` (the
+    # default, Docker's own) or `runsc` (gVisor). Any other value refuses
+    # each start. Plain `str`, so a bad value refuses a start and never
+    # stops the boot. To install `runsc` on a box is the owner gate WS43-G5.
+    sandbox_runtime: str = "runc"
+    # SBX-15 (agent_sandbox.md §4.6, D187). `docker` (the default) runs the
+    # containers on the local daemon. `docker-remote` runs them on the
+    # daemon of the dedicated sandbox box, at `sandbox_docker_host`
+    # (`ssh://user@10.x.x.x` or `tcp://`). Only the broker's own `docker`
+    # child gets that value, as DOCKER_HOST. On `docker-remote` a start
+    # outside dev (ACB_ENV) refuses `runc`, so production runs `runsc` only.
+    # The remote backend runs the `code_task` target only. To set it on
+    # production is the owner gate SBX-G11.
+    sandbox_backend: str = "docker"
+    sandbox_docker_host: str = ""
+    # Outside dev, `ssh://` and `tcp://` refuse a loopback host, and
+    # `tcp://` needs TLS with a client certificate. This is the dir of that
+    # certificate (ca.pem, cert.pem, key.pem). Only the broker's `docker`
+    # child gets it, as DOCKER_CERT_PATH with DOCKER_TLS_VERIFY=1.
+    sandbox_docker_cert_path: str = ""
+    # The size of the `/workspace` tmpfs of a remote container. The broker
+    # copies the working dir in before each command and copies it back
+    # after, so a working dir above this size refuses. Keep it below
+    # `sandbox_memory`, because a tmpfs uses the memory of the container.
+    sandbox_remote_workspace_mb: int = 512
 
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'
@@ -1438,6 +1561,7 @@ class Settings(FlagRegistry):
     # How long a parked question stays answerable, in hours.
     chat_ask_ttl_hours: int = 168
 
+
     # ── The run cap (WS-51 D-3, owner decision 2026-10-10) ──────────────────
     #
     # `CHAT_MAX_RUNS_PER_MEMBER`, default 5. A member may have at most this
@@ -1488,6 +1612,7 @@ class Settings(FlagRegistry):
     # Zoho access token cache (refresh_token already above)
     zoho_access_token: str = ""
     zoho_token_expiry: str = ""
+
 
     # Apollo.io (prospecting, contact enrichment)
     apollo_api_key: str = ""
@@ -1879,14 +2004,17 @@ class Settings(FlagRegistry):
         """
         return (self.litellm_master_key or "").strip() or "sk-local"
 
+
 #: The one instance that the next build of ``get_settings`` returns, set by
 #: :func:`install_settings` and taken by that build.
 _NEXT: list[Settings] = []
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Cached accessor; call from anywhere."""
     return _NEXT.pop() if _NEXT else Settings()  # type: ignore[call-arg]
+
 
 def install_settings(new: Settings) -> None:
     """Make *new* the cached settings (``gateway/flag_reload.py``).
@@ -1899,8 +2027,49 @@ def install_settings(new: Settings) -> None:
     get_settings.cache_clear()
     get_settings()
 
+
+# ── The internal service token (WS-24c slice 2) ──────────────────────────────
+
+
+def internal_service_token() -> str:
+    """The ONE caller-side reader of the service-identity token.
+
+    A caller that sends a request to a gateway business route (``/tasks``,
+    ``/crm``, ``/email``) reads its bearer here. It reads
+    ``GATEWAY_INTERNAL_TOKEN``, then the ``gateway_internal_token`` field. That
+    is the order of ``acb_auth.deps._get_internal_token``, so a caller sends
+    the value that the gateway checks. There is NO fallback to the LLM key
+    (WS-24b). ``""`` means unprovisioned. A settings load that fails also
+    gives ``""``.
+
+    Never give this value to a ``/v1`` client. Use ``Settings.llm_api_key``.
+    Fences: ``tests/unit/test_service_identity_and_webhook_auth.py``
+    (``test_no_copy_of_the_internal_token_reader``).
+    """
+    tok = os.getenv("GATEWAY_INTERNAL_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        return (getattr(get_settings(), "gateway_internal_token", "") or "").strip()
+    except Exception:  # a broken settings load is an unset token
+        return ""
+
+
+def internal_auth_headers() -> dict[str, str]:
+    """The ``Authorization`` header of an internal call, or ``{}``.
+
+    An empty token gives NO header. ``Bearer `` with no token is an illegal
+    header value, and httpx raises ``LocalProtocolError`` before the request
+    leaves. With no header the gateway answers a clean 401. A caller spreads
+    this into its headers: ``{**internal_auth_headers(), ...}``.
+    """
+    tok = internal_service_token()
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
+
+
 #: The modes of ``CRM_ANSWER_CHECK`` (WS-53 CRM-Q29).
 CRM_ANSWER_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
 
 def crm_answer_check_mode() -> str:
     """The ONE reader of ``CRM_ANSWER_CHECK``: ``off``, ``shadow`` or ``on``.
@@ -1916,8 +2085,30 @@ def crm_answer_check_mode() -> str:
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
 
+
+#: The modes of ``FIND_CLAIM_CHECK`` (WS-FIND FIND-7).
+FIND_CLAIM_CHECK_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
+
+def find_claim_check_mode() -> str:
+    """The ONE reader of ``FIND_CLAIM_CHECK``: ``off``, ``shadow`` or ``on``.
+
+    Any other value, and a settings load that fails, read as ``off``. It
+    lives here, beside :func:`crm_answer_check_mode`, so that the
+    orchestrator reads the mode before it imports the check
+    (``find_engine.md`` §5.5).
+    """
+    try:
+        raw = str(getattr(get_settings(), "find_claim_check", "off") or "off")
+    except Exception:  # a broken settings load never turns the check on
+        return "off"
+    mode = raw.strip().lower()
+    return mode if mode in FIND_CLAIM_CHECK_MODES else "off"
+
+
 #: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
 TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
 
 def tenant_session_abort_mode() -> str:
     """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
@@ -1933,8 +2124,10 @@ def tenant_session_abort_mode() -> str:
     mode = raw.strip().lower()
     return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
+
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).
 TOOL_RESULT_SPILL_MODES: tuple[str, ...] = ("off", "shadow", "on")
+
 
 def tool_result_spill_mode() -> str:
     """The ONE reader of ``TOOL_RESULT_SPILL``: ``off``, ``shadow`` or ``on``.
@@ -1948,6 +2141,7 @@ def tool_result_spill_mode() -> str:
     mode = raw.strip().lower()
     return mode if mode in TOOL_RESULT_SPILL_MODES else "off"
 
+
 def _positive_int(name: str, default: int) -> int:
     try:
         value = int(getattr(get_settings(), name, default))
@@ -1955,9 +2149,11 @@ def _positive_int(name: str, default: int) -> int:
         return default
     return value if value > 0 else default
 
+
 def tool_result_spill_chars() -> int:
     """``TOOL_RESULT_SPILL_CHARS``: the size above which a result spills."""
     return _positive_int("tool_result_spill_chars", 24000)
+
 
 def tool_result_preview_chars() -> int:
     """``TOOL_RESULT_PREVIEW_CHARS``: the head of a result that stays in the prompt."""

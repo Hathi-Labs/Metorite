@@ -39,10 +39,23 @@ from tests.unit._decide_flag import (
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
 
-#: D85: an agent with no config reads as SHARED and loses the shell tools.
-#: These tests pin the S3 rules over the WHOLE floor, so the fake agent is
-#: personal. The block itself is ``test_shared_agent_shell_tools.py``.
+#: D85 and D129: every agent but the root dev agent loses the shell tools,
+#: a personal one too. These tests pin the S3 rules over the WHOLE floor, so
+#: the fixture below gives the fake agent its shell tools back, as a sandbox
+#: cover does (D130). The block itself is ``test_shared_agent_shell_tools.py``.
 _PERSONAL = {"sharing": {"instancing": "personal"}}
+_REAL_WITHHELD_SHELL_TOOLS = ti._withheld_shell_tools
+
+
+@pytest.fixture(autouse=True)
+def _whole_floor(monkeypatch):
+    """The fake agent holds the whole floor. Every other name keeps D85."""
+    def _withheld(agent_name, agent_config):
+        if agent_name == "fake-copilot":
+            return frozenset()
+        return _REAL_WITHHELD_SHELL_TOOLS(agent_name, agent_config)
+
+    monkeypatch.setattr(ti, "_withheld_shell_tools", _withheld)
 
 
 # ── 1. The section registries source from SKILL_FAMILIES (drift gate) ──────

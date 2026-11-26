@@ -28,6 +28,8 @@ c. A draft, a paused and an archived skill never load, and nor does a
 d. Org B's skill never loads for org A, also when the caller names its id.
 e. A turn that names a skill loads its rules and its tools. A turn that names
    a skill that the member may not load gets none.
+f. TOF-1c (``ai_studio_rows/TOF-1c.md``): a turn loads a skill by its
+   description only when the member may load that skill.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -39,8 +41,12 @@ e. A turn that names a skill loads its rules and its tools. A turn that names
 * M3. ``_LOADABLE_WHERE`` and ``_LOADABLE_VERSIONS_SQL``: drop each
   ``organization_id = _BOUND_ORG`` filter AND the FORCE RLS lines of both
   tables. ``test_r8_org_b_skill_never_loads_for_org_a`` goes red.
-* M4. ``_LOADABLE_VERSIONS_SQL``: drop ``AND v.version = s.current_version``.
+* M4. ``_LOADABLE_VERSIONS_SQL``: drop ``AND v.version = _LOADABLE_VERSION``.
   ``test_r8_a_turn_loads_the_rules_of_its_skill`` reads two rows → red.
+* M5 (TOF-1c). ``_LOADABLE_WHERE``: widen ``OR s.visibility = 'org'`` to
+  ``OR s.visibility <> 'private'``. Ben's group skill loads for Ana by its
+  description, so ``test_r8_a_description_loads_only_a_skill_the_member_may_load``
+  goes red. Run on 2026-11-16: red as expected.
 """
 from __future__ import annotations
 
@@ -105,10 +111,11 @@ def _body(name: str) -> dict[str, Any]:
 
 
 async def _make(org: str, member: str, name: str, *, state: str = "published",
-                versions: int = 1) -> str:
+                versions: int = 1, description: str = "") -> str:
     slug = f"{name.lower().replace(' ', '-')}-{TAG}"
     async with tenant_session(org) as db:
-        skill = await store.create_skill(db, member, name=name, slug=slug)
+        skill = await store.create_skill(db, member, name=name, slug=slug,
+                                         description=description)
         for _ in range(versions):
             await store.add_version(db, member, skill.id, _body(name))
         await store.set_state(db, member, skill.id, state)
@@ -116,10 +123,15 @@ async def _make(org: str, member: str, name: str, *, state: str = "published",
 
 
 def _share(world: Any, skill_id: str, visibility: str) -> None:
-    """No writer of the visibility exists before J2, so the superuser sets it."""
+    """The superuser sets the visibility, so this suite needs no holder. For
+    ``org`` it pins the current version too, as an approve of J2c does
+    (``skills_store.approve_share``). The share routes have their own suite:
+    ``test_studio_skill_share_r8.py``."""
     with world.p.admin_engine.begin() as c:
-        c.execute(text("UPDATE studio_skills SET visibility = :v WHERE id = CAST(:i AS uuid)"),
-                  {"v": visibility, "i": skill_id})
+        c.execute(text(
+            "UPDATE studio_skills SET visibility = :v, shared_version = CASE "
+            "WHEN :v = 'org' THEN current_version END WHERE id = CAST(:i AS uuid)"),
+            {"v": visibility, "i": skill_id})
 
 
 async def _loadable(org: str, member: str, ids: list[str]) -> tuple[list[str], list[str]]:
@@ -250,6 +262,61 @@ def test_r8_a_turn_loads_the_rules_of_its_skill(world, monkeypatch) -> None:
     assert got[ids["mine"]].version == 1
     miss = _go(world, lambda: go("Open the payroll notes and the layoff plan"))
     assert miss.skills == ()
+
+
+_REFUND = "Use this when a customer asks for a refund of a delayed shipment."
+
+
+def test_r8_a_description_loads_only_a_skill_the_member_may_load(world, monkeypatch) -> None:
+    """TOF-1c, decision 8, through ``_turn_with_skills`` on the real database
+    with ``STUDIO_CHAT_TOOLS_ORGS`` open. The description pass reads the
+    heads of ``list_loadable`` only. So Ben's private skill and his group
+    skill never load for Ana by their description, and org B's skill never
+    loads in org A. Ana's own skill loads by its description, and Ben's turn
+    loads his private skill, so the words do match. Mutation M5 of the header
+    turns it red."""
+    from orchestrator import _tool_injection as ti
+    from orchestrator import executor as ex
+
+    a, b = world.p.org_a, world.p.org_b
+    repair = "Use this to plan the repair of a broken machine."
+    chase = "Use this to chase an overdue supplier order."
+
+    async def seed() -> dict[str, str]:
+        return {
+            "mine": await _make(a, ANA, "Desk one", description=repair),
+            "private": await _make(a, BEN, "Desk two", description=_REFUND),
+            "group": await _make(a, BEN, "Desk three", description=chase),
+            "orgb": await _make(b, ANA, "Desk four", description=_REFUND),
+        }
+
+    ids = _go(world, seed)
+    _share(world, ids["group"], "group")
+    _share(world, ids["orgb"], "org")
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    monkeypatch.setattr(ti, "_chat_tools_open", lambda: True)
+
+    async def _open() -> bool:
+        return True
+
+    monkeypatch.setattr(ti, "_studio_member_open", _open)
+
+    def _ids(member: str, words: str) -> list[str]:
+        monkeypatch.setattr(ex, "_verified_run_member", lambda: member)
+
+        async def go() -> Any:
+            with _tenant(a):
+                turn = tp.PackTurn(a, "chat-tof1c-r8", tp._member_part(member), 1, (), words,
+                                   True)
+                return await ti._turn_with_skills(turn)
+
+        return [s.skill_id for s in _go(world, go).skills]
+
+    assert _ids(ANA, "My customer wants a refund for the delayed shipment") == []
+    assert _ids(ANA, "Chase the overdue supplier order") == []
+    assert _ids(ANA, "The broken machine needs a repair") == [ids["mine"]]
+    assert _ids(BEN, "My customer wants a refund for the delayed shipment") == [ids["private"]]
+    assert _ids(BEN, "Chase the overdue supplier order") == [ids["group"]]
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:

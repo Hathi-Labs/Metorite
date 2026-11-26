@@ -264,7 +264,7 @@ async def put_settings(
                 "auto_dispatch_tasks, auto_dispatch_emails, auto_dispatch_docs) "
                 "VALUES (:e, :i, :d, :s, CAST(:t AS JSONB), :tpl, :bn, :lt, "
                 ":adt, :ade, :add) "
-                "ON CONFLICT (owner_email) DO UPDATE SET "
+                "ON CONFLICT (organization_id, owner_email) DO UPDATE SET "
                 "instructions = EXCLUDED.instructions, "
                 "copilot_default_on = EXCLUDED.copilot_default_on, "
                 "copilot_sensitivity = EXCLUDED.copilot_sensitivity, "

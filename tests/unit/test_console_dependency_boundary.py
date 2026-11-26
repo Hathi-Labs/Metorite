@@ -296,10 +296,17 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: Routing them is what closes that, and routing means reaching the one Console
 #: client this fence guards.
 #:
-#: ⚠️ **It calls ``chat_completion_on_console`` and nothing else.** That hop
-#: allocates no seat and names no person, which is the property this list's own
-#: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
-#: allocator this fence exists for — is not reachable from it.
+#: ⚠️ **It calls the chat hop and no other door.** That is
+#: ``chat_completion_on_console`` and, since task 3542, its streamed twin
+#: ``stream_completion_on_console``, the same hop that ``v1_compat`` streams
+#: through. It also reads ``router_is_wired`` and the two error classes of
+#: the hop (``ConsoleRouterUnavailable``, ``ConsoleRouterVerdict``). Neither
+#: hop allocates a seat or names a person, which is the property this list's
+#: own message already records for ``v1_compat``. ``resolve_for_signin``, the
+#: seat allocator this fence exists for, is not reachable from it.
+#:
+#: Advisory (R7). No ``_ALLOWED_NAMES`` set pins the names that ``routed.py``
+#: reads from ``console_resolve``, so no test fails when that list grows.
 _THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
 #: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
 #: and the argument for it, because the paragraph above is this list's own
@@ -439,6 +446,22 @@ _THE_TRANSCRIBE_CALLER = "apps/services/gateway/gateway/routes/chat_transcribe.p
 #: ``job_member_scope``, never a payload value (R11). The entry is NARROWED
 #: by ``test_the_headless_meter_touches_only_the_run_spend_client`` below.
 _THE_RUN_SPEND_CALLER = "apps/services/gateway/gateway/jobs/headless_turn.py"
+#: ⚠️ **The FIFTEENTH entry — the AI vendor alert, AO-2, 2026-11-18 — and the
+#: argument.**
+#:
+#: ``gateway/provider_alerts.py`` reads one alert word per vendor through
+#: ``provider_health_on_console`` (``customer_console.md`` §6A.17b). It is a
+#: READ with an empty body, it **allocates no seat**, and it never touches
+#: ``resolve_for_signin``.
+#:
+#: **Why it had to be added.** The Console judges each vendor, and the box
+#: owns the members, the bell and the push. Every arrow runs from the box to
+#: the Console, so the box asks, through the ONE Console client.
+#:
+#: 📌 It is not a route, so no request reaches it. The org comes from
+#: ``PROVIDER_ALERT_ORGS`` and the job worker, never from a payload (R5). The
+#: entry is NARROWED by ``test_the_vendor_alert_touches_only_its_read`` below.
+_THE_PROVIDER_ALERT_CALLER = "apps/services/gateway/gateway/provider_alerts.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -454,11 +477,18 @@ _ALLOWED_CALLERS = (
     _THE_RENAME_CALLER,
     _THE_TRANSCRIBE_CALLER,
     _THE_RUN_SPEND_CALLER,
+    _THE_PROVIDER_ALERT_CALLER,
 )
 
 #: The ONLY names ``jobs/headless_turn.py`` may read from ``console_resolve``:
 #: the run spend client and its outage type (AUTO-8b-2d).
 _RUN_SPEND_ALLOWED_NAMES = frozenset({"run_spend_on_console", "ConsoleBillingUnavailable"})
+
+#: The ONLY names ``provider_alerts.py`` may read from ``console_resolve``: the
+#: vendor alert read and its outage type (AO-2).
+_PROVIDER_ALERT_ALLOWED_NAMES = frozenset(
+    {"provider_health_on_console", "ConsoleProviderHealthUnavailable"}
+)
 
 #: The ONLY names ``routes/admin/organization.py`` may read from
 #: ``console_resolve``: the rename client and the wiring question. The mirror
@@ -615,6 +645,22 @@ def test_the_headless_meter_touches_only_the_run_spend_client() -> None:
         f"jobs/headless_turn.py reads "
         f"{sorted((used | imported) - _RUN_SPEND_ALLOWED_NAMES)} from "
         f"console_resolve, beyond {sorted(_RUN_SPEND_ALLOWED_NAMES)}"
+    )
+
+
+def test_the_vendor_alert_touches_only_its_read() -> None:
+    """``provider_alerts.py`` is on the list for TWO names (AO-2).
+
+    The list admits the FILE. This admits only the vendor alert read and its
+    outage type, so a later edit cannot reach a seat write or the resolve
+    from the job worker.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_PROVIDER_ALERT_CALLER))
+    assert used or imported, "the vendor alert no longer reaches console_resolve"
+    assert (used | imported) <= _PROVIDER_ALERT_ALLOWED_NAMES, (
+        f"provider_alerts.py reads "
+        f"{sorted((used | imported) - _PROVIDER_ALERT_ALLOWED_NAMES)} from "
+        f"console_resolve, beyond {sorted(_PROVIDER_ALERT_ALLOWED_NAMES)}"
     )
 
 
