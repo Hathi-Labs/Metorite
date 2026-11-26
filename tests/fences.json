@@ -110,6 +110,7 @@
       "tests/unit/test_provider_registry.py",
       "tests/unit/test_psycopg_seam.py",
       "tests/unit/test_pull_retries_failed_apply.py",
+      "tests/unit/test_release_freeze.py",
       "tests/unit/test_sandbox_broker_seam.py",
       "tests/unit/test_sandbox_capability.py",
       "tests/unit/test_sandbox_door_identity.py",
