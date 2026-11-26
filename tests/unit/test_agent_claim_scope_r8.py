@@ -681,6 +681,14 @@ async def _hold(world, door: str, task: str) -> tuple[bool, str]:
     return False, r.text
 
 
+async def _refused(world, door: str, task: str) -> None:
+    """The hold through *door* gets the claim scope refusal, and no other one
+    (a 409 ``task_held`` of the gate is not this refusal)."""
+    passed, text_ = await _hold(world, door, task)
+    assert not passed, text_
+    assert "This task is outside your apps." in text_ or "outside_apps" in text_, text_
+
+
 DOORS = ("claim", "start")
 
 
@@ -732,8 +740,7 @@ class TestTheMemberPasses:
         task = _task(live, live.theirs, f"colleague run {door}")
         _run_row(live, task, member_email=OTHER, connection_id=live.c["write"],
                  client_via=tw.R8_VIA, status="created", started_by=OTHER)
-        passed, text_ = await _hold(live, door, task)
-        assert not passed, text_
+        await _refused(live, door, task)
         assert _assignees(live, task) == []
 
     @pytest.mark.parametrize("door", DOORS)
@@ -745,8 +752,7 @@ class TestTheMemberPasses:
         first = await _start(live, task)
         assert first.status_code == 201, first.text
         mode("refuse")
-        passed, text_ = await _hold(live, door, task)
-        assert not passed, text_
+        await _refused(live, door, task)
         assert _assignees(live, task) == []
 
     async def test_ask_on_task_outside_is_refused(self, live, mode, runs_on):
@@ -770,8 +776,7 @@ class TestTheMemberPasses:
         live.seeder.one("UPDATE pm_agent_runs SET status = :s,"
                         " ended_at = CASE WHEN :s = 'stopping' THEN NULL ELSE now() END"
                         " WHERE task_id = CAST(:t AS uuid) RETURNING id", s=status, t=task)
-        passed, text_ = await _hold(live, "claim", task)
-        assert not passed, text_
+        await _refused(live, "claim", task)
         assert _assignees(live, task) == []
 
     async def test_a_run_queued_on_another_connection_does_not_pass(self, live, mode,
@@ -780,8 +785,7 @@ class TestTheMemberPasses:
         task = _task(live, live.theirs, "queued elsewhere")
         queued = await _queue(live, task, signed_as="pin_mine")
         assert queued.status_code == 201, queued.text
-        passed, text_ = await _hold(live, "claim", task)
-        assert not passed, text_
+        await _refused(live, "claim", task)
 
     @pytest.mark.parametrize("door", DOORS)
     @pytest.mark.parametrize("where", ["root", "area"])
@@ -802,8 +806,7 @@ class TestTheMemberPasses:
         mode("refuse")
         tree = _personal(live)
         task = _task(live, tree.team, f"team node {door}", root=tree.root)
-        passed, text_ = await _hold(live, door, task)
-        assert not passed, text_
+        await _refused(live, door, task)
         assert _assignees(live, task) == []
 
     async def test_another_members_personal_project_does_not_pass(self, live, mode,
@@ -837,5 +840,4 @@ class TestTheMemberPasses:
         task = _task(live, live.theirs, f"other made {door}")
         live.seeder.one("UPDATE pm_tasks SET created_by = :w WHERE id = CAST(:t AS uuid)"
                         " RETURNING id", w=OTHER, t=task)
-        passed, text_ = await _hold(live, door, task)
-        assert not passed, text_
+        await _refused(live, door, task)
