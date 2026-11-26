@@ -212,10 +212,26 @@ def test_off_this_check_fails_closed_on_linux():
 
 @pytest.mark.skipif(sys.platform != "win32", reason="the real DACL check runs on Windows only")
 def test_the_real_reader_on_windows(tmp_path):
-    """windows-latest (PR 2837): System32 is locked; a folder in the profile is not."""
+    """windows-latest (PR 2837), task 3999: an install folder under Program
+    Files, locked with the three commands of the message, passes. A folder in
+    the profile does not. (System32 is the wrong target: it holds files that
+    service SIDs own, so the check refuses it, as it should.)"""
     import os
+    import shutil
+    import subprocess
+    import uuid
 
-    acl.check(os.path.join(os.environ["SYSTEMROOT"], "System32", "notepad.exe"))
+    folder = os.path.join(os.environ["PROGRAMFILES"], f"TallyBridgeTest-{uuid.uuid4().hex[:8]}")
+    os.makedirs(folder)
+    try:
+        exe = os.path.join(folder, "tally.exe")
+        with open(exe, "wb") as fh:
+            fh.write(b"MZ")
+        for command in acl.lock_commands(folder):
+            subprocess.run(command, check=True, capture_output=True)
+        acl.check(exe)  # the real reader on a locked folder: no refusal
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
     mine = tmp_path / "tally.exe"
     mine.write_bytes(b"MZ")
     with pytest.raises(acl.UnsafeTallyFolder):
@@ -339,3 +355,14 @@ def test_the_data_warning_comes_before_the_commands():
     text = acl.message(ROOT_INSTALL, "S-1-5-11 can change the program there",
                        r"C:\TallyPrime", True)
     assert text.index("company data") < text.index("(1) icacls")
+
+
+
+def test_the_message_shows_the_lock_commands_word_for_word():
+    """The Windows test runs lock_commands(); the message must show the same."""
+    folder = r"C:\TallyPrime"
+    text = acl.message(ROOT_INSTALL, "S-1-5-11 can change the program there", folder, True)
+    for command in acl.lock_commands(folder):
+        assert acl._shown(command) in text
+    assert acl.lock_commands(folder)[0] == ["icacls", folder, "/setowner", "*S-1-5-32-544",
+                                            "/T", "/C"]
