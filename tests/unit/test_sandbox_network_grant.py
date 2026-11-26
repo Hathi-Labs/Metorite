@@ -549,6 +549,20 @@ async def test_the_sweep_leaves_a_remote_daemon_s_networks_alone(
     assert docker.network_calls("ls") == [] and docker.network_calls("rm") == []
 
 
+async def test_the_sweep_empties_the_env_folder(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """Review round 2: an env file that a crash left still holds a token."""
+    folder = broker.state_dir() / "egress" / "env"
+    grant = sb.EgressGrant(
+        token="t" * 43, org=ORG, run="r", agent="agent-x", approver=MEMBER,
+        hosts=("pypi.org",), expires_at=0.0, network=sb.egress_network_name(ORG),
+    )
+    left = sb.write_egress_env_file(folder, "2" * 32, grant)
+    await broker.sweep()
+    assert not left.exists() and list(folder.iterdir()) == []
+
+
 def test_the_proxy_carries_the_label_that_the_sweep_removes(tmp_path: Path) -> None:
     argv = sb.build_proxy_argv(
         image="sha256:" + "a" * 64, bin_dir=tmp_path / "bin", grants_dir=tmp_path / "grants",

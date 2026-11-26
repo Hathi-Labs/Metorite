@@ -25,6 +25,7 @@ import json
 import socket
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
@@ -796,3 +797,96 @@ def test_an_ipv4_translated_address_is_refused(address: str) -> None:
     assert ep.address_refusal(address) == "ipv4_translated"
     refusal = _refusal(["pypi.org"], "pypi.org", resolve=Resolver([address]))
     assert refusal.reason == "address_ipv4_translated"
+
+
+# ── review round 2 (2026-11-26) ──────────────────────────────────────────────
+
+
+def test_a_c1_control_byte_is_refused() -> None:
+    with pytest.raises(ep.Refused) as caught:
+        ep.parse_head(b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\nX-A: v\x85w")
+    assert caught.value.reason == "control_byte"
+
+
+def test_one_peer_holds_at_most_its_preauth_share(
+    proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Idle connections of one peer cannot take the slots of another peer."""
+    proxy = proxy_env["proxy"]
+    idle: list[tuple[socket.socket, threading.Thread]] = []
+    try:
+        for _ in range(ep.MAX_PREAUTH_PER_PEER):
+            client, server = socket.socketpair()
+            worker = threading.Thread(
+                target=proxy.handle, args=(server, "10.0.0.7"), daemon=True,
+            )
+            worker.start()
+            idle.append((client, worker))
+        deadline = time.monotonic() + HANG_S
+        while proxy._preauth.get("10.0.0.7") != ep.MAX_PREAUTH_PER_PEER:
+            assert time.monotonic() < deadline, "the idle connections never took a slot"
+            time.sleep(0.01)
+        # A fifth idle connection of the same peer is refused at once.
+        client, server = socket.socketpair()
+        client.settimeout(HANG_S)
+        proxy.handle(server, "10.0.0.7")
+        assert client.recv(4096).startswith(b"HTTP/1.1 503")
+        client.close()
+        assert json.loads(proxy_env["lines"][-1])["reason"] == "peer_busy"
+        # Another peer still gets a slot: its request reaches the token check.
+        proxy_env["write"](["pypi.org"])
+        other, other_server = socket.socketpair()
+        other.settimeout(HANG_S)
+        worker = threading.Thread(
+            target=proxy.handle, args=(other_server, "10.0.0.8"), daemon=True,
+        )
+        worker.start()
+        other.sendall(b"CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")
+        assert other.recv(4096).startswith(b"HTTP/1.1 407")
+        worker.join(HANG_S)
+        other.close()
+    finally:
+        for client, worker in idle:
+            client.close()
+            worker.join(HANG_S)
+    assert proxy._preauth == {}, "every pre-auth slot comes back"
+
+
+def test_requests_one_after_another_never_run_out_of_grant_slots(
+    proxy_env: dict[str, Any],
+) -> None:
+    """Each request gives its grant slot back, so the count ends empty."""
+    proxy_env["write"](["pypi.org"])
+    proxy_env["proxy"].resolve = Resolver(["151.101.0.223"])
+    for _ in range(ep.MAX_PER_GRANT + 3):
+        proxy_env["upstream"] = Upstream(_echo_upstream)
+        reply = _exchange(
+            proxy_env["proxy"], b"CONNECT pypi.org:443 HTTP/1.1\r\n" + _auth() + b"\r\n",
+        )
+        assert reply.startswith(b"HTTP/1.1 200"), reply[:40]
+    reasons = [json.loads(x)["reason"] for x in proxy_env["lines"]]
+    assert "grant_busy" not in reasons and len(reasons) == ep.MAX_PER_GRANT + 3
+    assert proxy_env["proxy"]._per_grant == {}
+    assert proxy_env["proxy"]._preauth == {}
+
+
+def test_the_internal_error_line_names_the_grant_when_one_was_found(
+    proxy_env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_: Any, **__: Any) -> None:
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(ep, "check_host_header", boom)
+    proxy_env["write"](["pypi.org"])
+    reply = _exchange(
+        proxy_env["proxy"],
+        b"GET http://pypi.org/ HTTP/1.1\r\nHost: pypi.org\r\n" + _auth() + b"\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 500")
+    (line,) = proxy_env["lines"]
+    parsed = json.loads(line)
+    assert parsed["reason"] == "internal_error"
+    assert (parsed["organization"], parsed["run"], parsed["approver"]) == (
+        "org-a", "run-1", "member@example.com",
+    )
+    assert parsed["host"] == "pypi.org" and parsed["method"] == "GET"

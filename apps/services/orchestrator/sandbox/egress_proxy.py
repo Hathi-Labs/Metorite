@@ -82,7 +82,7 @@ _V4TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 _LENGTH_RE = re.compile(r"[0-9]{1,10}")
 #: A control byte other than tab. CR is allowed only as part of CRLF.
-_CONTROL_RE = re.compile(rb"[\x00-\x08\x0a-\x1f\x7f]")
+_CONTROL_RE = re.compile(rb"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
 
 #: A host name: lower-case letters, digits, dots and hyphens, no empty label.
 _HOST_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
@@ -102,6 +102,10 @@ HEAD_DEADLINE_S = 10.0
 #: The most requests in flight for one grant token, below :data:`MAX_CLIENTS`.
 #: So one sandbox cannot take every slot from the others.
 MAX_PER_GRANT = 8
+#: The most connections from one peer address that have not yet passed the
+#: token check. It is checked BEFORE a slot of :data:`MAX_CLIENTS` is taken,
+#: so idle connections of one container cannot starve the other orgs.
+MAX_PREAUTH_PER_PEER = 4
 #: The connect and read timeout of a plain HTTP forward.
 FORWARD_TIMEOUT_S = 60.0
 #: The most requests in flight. The container's pids limit is 64.
@@ -574,6 +578,7 @@ class Proxy:
         self._slots = threading.BoundedSemaphore(MAX_CLIENTS)
         self._per_grant: dict[str, int] = {}
         self._per_grant_lock = threading.Lock()
+        self._preauth: dict[str, int] = {}
 
     def _take_grant_slot(self, key: str) -> bool:
         with self._per_grant_lock:
@@ -591,41 +596,77 @@ class Proxy:
             else:
                 self._per_grant.pop(key, None)
 
-    def handle(self, client: socket.socket) -> None:
+    def _take_peer_slot(self, peer: str) -> bool:
+        with self._per_grant_lock:
+            held = self._preauth.get(peer, 0)
+            if held >= MAX_PREAUTH_PER_PEER:
+                return False
+            self._preauth[peer] = held + 1
+            return True
+
+    def _give_peer_slot(self, peer: str) -> None:
+        with self._per_grant_lock:
+            held = self._preauth.get(peer, 0) - 1
+            if held > 0:
+                self._preauth[peer] = held
+            else:
+                self._preauth.pop(peer, None)
+
+    def handle(self, client: socket.socket, peer: str = "") -> None:
         """Serve ONE request on *client*, log it once, and close.
 
-        Any error that the steps do not handle still gets a reply and one
-        ``internal_error`` log line, so no request leaves the log.
+        *peer* is the address of the client. Before the token check, one
+        peer holds at most :data:`MAX_PREAUTH_PER_PEER` connections, checked
+        before a global slot is taken. Any error that the steps do not handle
+        still gets a reply and one ``internal_error`` log line.
         """
-        if not self._slots.acquire(blocking=False):
+        if not self._take_peer_slot(peer):
             with contextlib.suppress(OSError):
-                client.sendall(_reply(503, "busy"))
-            return
-        try:
-            self._handle(client)
-        except Exception:
-            with contextlib.suppress(OSError):
-                client.sendall(_reply(500, "internal_error"))
+                client.sendall(_reply(503, "peer_busy"))
             self.emit(log_line(
                 grant=None, method="", host="", port=None, address="",
-                decision="refuse", reason="internal_error",
+                decision="refuse", reason="peer_busy",
             ))
+            _close(client)
+            return
+        call = _Call(peer=peer)
+        try:
+            if not self._slots.acquire(blocking=False):
+                with contextlib.suppress(OSError):
+                    client.sendall(_reply(503, "busy"))
+                return
+            try:
+                self._handle(client, call)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    client.sendall(_reply(500, "internal_error"))
+                self.emit(log_line(
+                    grant=call.grant, method=call.method, host=call.host, port=call.port,
+                    address="", decision="refuse", reason="internal_error",
+                ))
+            finally:
+                self._slots.release()
         finally:
-            self._slots.release()
-            with contextlib.suppress(OSError):
-                client.shutdown(socket.SHUT_RDWR)
-            with contextlib.suppress(OSError):
-                client.close()
+            self._authed(call)
+            _close(client)
 
-    def _handle(self, client: socket.socket) -> None:
+    def _authed(self, call: _Call) -> None:
+        """Give the pre-auth slot of *call* back, once."""
+        if call.preauth:
+            call.preauth = False
+            self._give_peer_slot(call.peer)
+
+    def _handle(self, client: socket.socket, call: _Call | None = None) -> None:
+        call = call if call is not None else _Call(preauth=False)
         method, host, port, grant = "", "", None, None
         try:
             client.settimeout(FORWARD_TIMEOUT_S)
             head, extra = _read_head(client)
             client.settimeout(FORWARD_TIMEOUT_S)
             request = parse_head(head)
-            method = request.method
+            method = call.method = request.method
             host, port, path = request_target(request)
+            call.host, call.port = host, port
             token = token_from(request.header("Proxy-Authorization"))
             grant, target = decide(
                 doc=load_grants(self.grants_path), token=token, method=method,
@@ -633,6 +674,8 @@ class Proxy:
                 capability=bool(request.header(CAPABILITY_HEADER)),
                 now=self.clock(), resolve=self.resolve,
             )
+            call.grant = grant
+            self._authed(call)
             if method != "CONNECT":
                 try:
                     check_host_header(request, host)
@@ -705,6 +748,25 @@ class Proxy:
             address=target.address, decision="allow", reason=reason,
             bytes_up=up, bytes_down=down,
         ))
+
+
+@dataclass
+class _Call:
+    """What one request knows so far. The catch-all log line reads it."""
+
+    peer: str = ""
+    preauth: bool = True
+    grant: Grant | None = None
+    method: str = ""
+    host: str = ""
+    port: int | None = None
+
+
+def _close(client: socket.socket) -> None:
+    with contextlib.suppress(OSError):
+        client.shutdown(socket.SHUT_RDWR)
+    with contextlib.suppress(OSError):
+        client.close()
 
 
 def _print_line(line: str) -> None:
@@ -839,7 +901,8 @@ def _tunnel(client: socket.socket, upstream: socket.socket, extra: bytes) -> tup
 
 class _Handler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
-        self.server.proxy.handle(self.request)  # type: ignore[attr-defined]
+        peer = str(self.client_address[0]) if self.client_address else ""
+        self.server.proxy.handle(self.request, peer)  # type: ignore[attr-defined]
 
 
 class _Server(socketserver.ThreadingTCPServer):

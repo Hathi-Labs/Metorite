@@ -4112,6 +4112,12 @@ class SandboxBroker:
         with contextlib.suppress(OSError, SandboxError):
             if self._grants_path().exists():
                 self._write_grants()
+        # An env file of a start that a crash cut short still holds a token.
+        with contextlib.suppress(OSError, SandboxError):
+            env_dir = self._egress_dir() / "env"
+            if env_dir.is_dir():
+                for path in env_dir.iterdir():
+                    path.unlink()
         if self._is_remote():
             return 0
         try:

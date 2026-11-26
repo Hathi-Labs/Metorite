@@ -813,13 +813,17 @@ of an `--internal` network sends outside names out. The 24.x line has no fix.
   so it never routes a packet between its networks.
 - Its limits (review round 1, 2026-11-26):
   - The whole request head must arrive in 10 s (`HEAD_DEADLINE_S`).
+  - One peer address holds at most 4 connections that have not passed the
+    token check (`MAX_PREAUTH_PER_PEER`). The proxy checks this before it
+    takes a slot of `MAX_CLIENTS`. A fifth gets 503 and one log line.
   - One grant token holds at most 8 requests at a time (`MAX_PER_GRANT`).
     The proxy holds at most 32 in all (`MAX_CLIENTS`).
   - A tunnel closes after 300 s with no byte (`TUNNEL_IDLE_S`).
   - A tunnel closes after 1800 s in any case (`TUNNEL_MAX_S`). That is the
     longest grant.
-- It refuses a request head with a control byte other than tab, or a CR
-  outside a CRLF. So one header line cannot hide a second header.
+- It refuses a request head with a control byte other than tab, a C1 byte
+  (`0x80` to `0x9f`), or a CR outside a CRLF. So one header line cannot
+  hide a second header.
 
 **What the proxy refuses:**
 
