@@ -59,6 +59,16 @@ from sqlalchemy import text
 
 VISIBILITIES = ("private", "people", "org")
 
+#: The only review states that a rollback lets go live (task 3967). ``auto``
+#: means the publish needed no review, and ``approved`` means an admin
+#: approved it. Every other state, known or not, is refused (fail closed).
+_MAY_GO_LIVE = ("auto", "approved")
+
+
+def _may_go_live(review_status: Any) -> bool:
+    """True only for a review state in :data:`_MAY_GO_LIVE`."""
+    return review_status in _MAY_GO_LIVE
+
 # Sent on every bundle response: even a direct visit renders sandboxed, and
 # nothing sniffs the payload into another content type.
 _BUNDLE_HEADERS = {
@@ -248,18 +258,31 @@ async def rollback_app(
     body: RollbackRequest,
     user: UserContext = Depends(require_app_author),
 ) -> dict[str, Any]:
-    """Repoint the live version at an existing snapshot."""
+    """Repoint the live version at an existing snapshot.
+
+    Task 3967: only an ``approved`` version, or an ``auto`` one (no review
+    needed), can go live by this route. Any other review state (§4.8), such
+    as ``pending`` or ``rejected``, is 409, because it would skip the review."""
     async with _tenant_session() as db:
         row, _grants = await get_app_or_404(db, slug, user, edit=True)
-        exists = (await db.execute(
+        target = (await db.execute(
             text(
-                "SELECT 1 FROM app_versions "
+                "SELECT review_status FROM app_versions "
                 "WHERE app_id = :app_id AND version = :version"
             ),
             {"app_id": str(row.id), "version": body.version},
         )).fetchone()
-        if not exists:
+        if not target:
             raise HTTPException(status_code=404, detail="Version not found")
+        if not _may_go_live(target.review_status):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Version {body.version} cannot go live: its admin review "
+                    f"is {target.review_status}. Only an approved version, or "
+                    "one that needed no review, can go live."
+                ),
+            )
         await db.execute(
             text(
                 "UPDATE apps SET live_version = :version, updated_at = now() "
