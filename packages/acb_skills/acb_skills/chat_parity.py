@@ -687,6 +687,12 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "with no choice of their own (PKG-17b). No member click sends it. The chat sets no org default here.",
     ),
     # ── AI Studio ──
+    "POST /api/studio/skills/match": (
+        "stream",
+        "The card \"Save this as a skill?\" asks whether a saved skill matches the words of a finished turn, "
+        "so it shows no offer for a turn that ran a skill (task 3830). No member click sends it. It reads "
+        "only, and it answers a boolean. The chat loads a matched skill on its own.",
+    ),
     "GET /api/studio/packages/{}/lifetime": (
         "stream",
         "The app page reads the end date of the private install of the owner, to draw the end-date bar "

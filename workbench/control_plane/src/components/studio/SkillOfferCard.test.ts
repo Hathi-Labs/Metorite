@@ -19,6 +19,9 @@
  * - pass `onName={() => {}}`, or `pressSave` with the draft name: the press
  *   test in `SkillOfferCard.press.test.ts` and "the card hands the typed name";
  * - draw a card when the catalog read gives null: "a catalog 404 draws nothing";
+ * - draw a card while the match read has no answer, or when it failed (task 3830):
+ *   "a turn that ran a saved skill draws nothing";
+ * - key the rows by the id only (`key={a.id}`): "two calls of one tool are two rows";
  * - mount `SkillOfferCard` a second time, or above the action bar: "the one mount";
  * - pass `streaming: false`, `solo: true` or `ranByViewer: true` in the turn
  *   of `MessageBubble`: "the bubble hands the card the real turn";
@@ -54,7 +57,7 @@ import {
 import { __setSkillOfferForTests, skillOfferOn } from "@/lib/shell/shellPrefs";
 import { createSkill, type CatalogAction } from "@/lib/studio/skillsApi";
 
-import SkillOfferCard, { OFFER_CATALOG_KEY, loadOfferCatalog } from "./SkillOfferCard";
+import SkillOfferCard, { OFFER_CATALOG_KEY, loadOfferCatalog, loadSkillRan, offerRanKey } from "./SkillOfferCard";
 
 const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const read = (rel: string) => readFileSync(`${SRC}/${rel}`, "utf8").replace(/\r\n/g, "\n");
@@ -110,6 +113,8 @@ function stubFetch(answer: (url: string, n: number) => { status: number; body: u
 beforeEach(() => {
   __setSkillOfferForTests(true);
   put(OFFER_CATALOG_KEY, CATALOG);
+  // The answer of the match read: no saved skill ran on this turn.
+  put(offerRanKey("m-1"), false);
 });
 
 afterEach(() => {
@@ -179,6 +184,46 @@ describe("the card shows the skill that Save makes", () => {
     expect(html).not.toMatch(/overflow-(?:y-)?auto|overflow-scroll/);
     const card = code(read("components/studio/SkillOfferCard.tsx"));
     expect(card.indexOf("<ShowMore>")).toBeLessThan(card.indexOf("data-skill-offer-draft"));
+  });
+
+  it("two calls of one tool are two rows with their targets (task 3832)", () => {
+    const PAGE2 = "2f3e4d5c-6b7a-4980-9a1b-0c1d2e3f4a5b";
+    const calls = [
+      { ...EVENTS[0] },
+      { ...EVENTS[1], id: "call-5", args: { page_id: "7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f" } },
+      { ...EVENTS[1], id: "call-6", args: { page_id: PAGE2 } },
+    ];
+    const html = draw(turn({ calls }));
+    expect(html.match(/data-skill-offer-action="knowledge\.get_page"/g)).toHaveLength(2);
+    expect(html).toContain("7c6d5e4f-3a2b-4c1d-9e8f-7a6b5c4d3e2f");
+    expect(html).toContain(PAGE2);
+    expect(html).toContain(`3. Read page ${PAGE2} (tool read_page)`);
+  });
+
+  it("a turn that ran a saved skill draws nothing, and so does an unknown or failed match (task 3830)", async () => {
+    put(offerRanKey("m-1"), true);
+    expect(draw()).toBe("");
+    put(offerRanKey("m-1"), null);
+    expect(draw()).toBe("");
+    clearAll();
+    __setSkillOfferForTests(true);
+    put(OFFER_CATALOG_KEY, CATALOG);
+    expect(draw()).toBe("");
+    put(offerRanKey("m-1"), false);
+    expect(draw()).toContain(OFFER_TITLE);
+    // The loader: a match answers true, a miss false, a failure null.
+    const sent = stubFetch(() => ({ status: 200, body: { matched: true } }));
+    expect(await loadSkillRan("Run the onboarding check")).toBe(true);
+    expect(sent).toEqual([{ url: "/api/studio/skills/match", method: "POST", body: { words: "Run the onboarding check" } }]);
+    stubFetch(() => ({ status: 200, body: { matched: false } }));
+    expect(await loadSkillRan("x")).toBe(false);
+    stubFetch(() => ({ status: 404, body: { detail: "Not found" } }));
+    expect(await loadSkillRan("x")).toBeNull();
+  });
+
+  it("the match read waits for the turn to ask, as the catalog read does (source fence)", () => {
+    const card = code(read("components/studio/SkillOfferCard.tsx"));
+    expect(card).toMatch(/useCachedResource\(\s*asks \? offerRanKey\(turn\.messageId\) : null/);
   });
 
   it("a turn that the rule refuses draws nothing", () => {
@@ -385,7 +430,7 @@ describe("the wiring", () => {
     const body = card.slice(card.indexOf("export default function SkillOfferCard"));
     const firstReturn = body.indexOf("return");
     const hooks = [...body.matchAll(/\buse[A-Z]\w*(?:<[^>]*>)?\(/g)].map((m) => m.index ?? 0);
-    expect(hooks.length).toBe(4);
+    expect(hooks.length).toBe(5);
     expect(Math.max(...hooks)).toBeLessThan(firstReturn);
   });
 });
