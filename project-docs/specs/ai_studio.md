@@ -1129,7 +1129,9 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E5.md) |
 | **E6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/E6.md) |
 | **E7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E7.md) |
+| **E7a** | 🔨 BUILT (2026-11-15, task 3341) | STD | AGENT-SAFE | [row](ai_studio_rows/E7a.md) |
 | **E7f** | 🔨 BUILT (2026-11-15, task 3382) | STD | AGENT-SAFE | [row](ai_studio_rows/E7f.md) |
+| **E7b** | 🔨 BUILT (2026-11-15, task 3340) | STD | AGENT-SAFE | [row](ai_studio_rows/E7b.md) |
 | **E8a** | 🔨 BUILT, dark (2026-11-13, task 3095) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8a.md) |
 | **E8b** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E8b.md) |
 | **E8c** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E8c.md) |
@@ -1249,7 +1251,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I3.md) |
 | **I4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/I4.md) |
 | **I5** | 🔨 BUILT, dark: the backend seam only (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/I5.md) |
-| **I6** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
+| **I6** | 🔨 FHIR map BUILT (2026-11-11), ABDM link open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
 | **I7** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I7.md) |
 | **I8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8.md) |
 | **I8a** | 🔨 BUILT, dark (2026-11-14), task 3168 | STD | AGENT-SAFE | [row](ai_studio_rows/I8a.md) |

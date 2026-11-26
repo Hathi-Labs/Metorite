@@ -87,6 +87,8 @@ class FlagRegistry(BaseSettings):
     # the default. On, the Agents canvas of Projects draws the Board, Graph and
     # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
     # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # AMR-4: on, the map read also answers `detail=summary` and `session=`,
+    # through the same reach rule as the map.
     # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
     # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
     # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
