@@ -12,7 +12,8 @@ own, so FORCE RLS binds every read and write. One organization holds:
   ``pinned`` (``projects:write``, pinned to project ONE) and ``read``
   (``projects:read`` only);
 * two team projects that MEMBER can see, ONE and TWO, each with one task;
-* one agent run on the task of ONE.
+* one completed agent run on the task of ONE, with no connection, so no agent
+  owns it (SW-27c1). The agents start their own runs through the edge.
 
 A second organization holds a project with one task.
 
@@ -31,6 +32,10 @@ The gate is ``TENANT_LADDER_DATABASE_URL``. A skip is not a pass. Run::
   ``test_r1_two_calls_get_one_and_two`` turns red: the edge client refuses the
   pair before it signs a call (``gateway_client._path``). Branch 0 holds the
   same list, and ``test_r4`` sends the signed POST past the edge.
+* SW-27c1. M-a: the mark route skips ``own_run`` -> ``test_m3_*``. M-b: the
+  reserve route skips ``own_run`` -> ``test_r6_*`` and ``test_r6b_*``. M-c:
+  the mark route skips the flag -> ``test_m5_*``. M-d: a final state may
+  change -> ``test_m2_*``.
 * Drop the agent narrowing of ``load_visible_project`` only, and
   ``test_r8_a_pin_on_a_subproject_does_not_reach_its_parent`` turns red: the
   task loads, and only the project load can refuse.
@@ -128,7 +133,7 @@ def world():
     run = str(a.one(
         "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, client_via,"
         " status, started_by) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), :m, 'mcp:test',"
-        " 'in_progress', :m) RETURNING id", o=org, t=t["one"], m=MEMBER))
+        " 'completed', :m) RETURNING id", o=org, t=t["one"], m=MEMBER))
 
     b = w._Seeder(eng, org_b)
     b.number = 400_000
@@ -162,7 +167,9 @@ def live_app(monkeypatch, world, redis_fake):
             ("agent_access_orgs", "*"), ("agent_edge_signing_key", tw.KEY),
             ("agent_edge_signing_key_previous", ""), ("agent_issuer", w.ISSUER),
             ("agent_resource", w.RESOURCE),
-            ("agent_edge_gateway_url", "http://gateway.test")):
+            ("agent_edge_gateway_url", "http://gateway.test"),
+            # SW-27c1: the runs of the agent, and the mark tool.
+            ("agent_runs_enabled", True), ("sequence_marks_orgs", "*")):
         monkeypatch.setattr(settings, name, value)
     monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", w.INTERNAL)
     monkeypatch.setenv("IDENTITY_CUTOVER", "1")
@@ -193,6 +200,19 @@ async def _reserve(world, conn: str, project: str, task: str, sequence: str,
     return await tw._mcp(world, conn, "reserve_number", {
         "project_id": world.p[project], "sequence": sequence,
         "task_id": world.t[task], **extra})
+
+
+async def _own_run(world, conn: str, task: str) -> str:
+    """The run of connection *conn* on *task*, started through the edge, so
+    its member, client, connection and session are those of the caller."""
+    started = await tw._mcp(world, conn, "start_agent_run", {
+        "task_id": world.t[task], "idempotency_key": f"sw27c1-{conn}-{task}"})
+    assert started["isError"] is False, started
+    return str(started["structuredContent"]["run"]["id"])
+
+
+async def _mark(world, conn: str, rid: str, state: str) -> dict[str, Any]:
+    return await tw._mcp(world, conn, "mark_number", {"reservation_id": rid, "state": state})
 
 
 def _refused(result: dict[str, Any], text_: str) -> bool:
@@ -261,11 +281,22 @@ class TestReserveNumberOnARealDatabase:
         assert _rows(live, "r5") == []
 
     async def test_r6_the_run_is_stored_and_must_be_a_run_of_the_task(self, live):
-        ok = await _reserve(live, "write", "one", "one", "r6", run_id=live.run)
-        assert ok["structuredContent"]["run_id"] == live.run
-        wrong = await _reserve(live, "write", "two", "two", "r6", run_id=live.run)
+        """SW-27c1, decision 1: the run is the caller's own. The seeded run
+        has no connection, so no agent owns it."""
+        own = await _own_run(live, "write", "one")
+        ok = await _reserve(live, "write", "one", "one", "r6", run_id=own)
+        assert ok["structuredContent"]["run_id"] == own, ok
+        wrong = await _reserve(live, "write", "two", "two", "r6", run_id=own)
         assert _refused(wrong, tools.TEXT_RESERVE_RUN), wrong
-        assert [str(r.run_id) for r in _rows(live, "r6")] == [live.run]
+        seeded = await _reserve(live, "write", "one", "one", "r6", run_id=live.run)
+        assert _refused(seeded, tools.TEXT_RESERVE_RUN_NOT_YOURS), seeded
+        assert [str(r.run_id) for r in _rows(live, "r6")] == [own]
+
+    async def test_r6b_another_connection_cannot_name_my_run(self, live):
+        own = await _own_run(live, "write", "one")
+        theirs = await _reserve(live, "pinned", "one", "one", "r6b", run_id=own)
+        assert _refused(theirs, tools.TEXT_RESERVE_RUN_NOT_YOURS), theirs
+        assert _rows(live, "r6b") == []
 
     async def test_r7_a_task_of_another_project_is_refused(self, live):
         result = await _reserve(live, "write", "one", "two", "r7")
@@ -284,3 +315,70 @@ class TestReserveNumberOnARealDatabase:
         # The unpinned connection may use the parent's sequence for the task.
         parent = await _reserve(live, "write", "one", "sub", "r8p")
         assert parent["structuredContent"]["value"] == 1
+
+
+class TestMarkNumberOnARealDatabase:
+    """SW-27c1 (task 3938): the agent marks a number of its own run."""
+
+    async def _reserved(self, live, sequence: str, conn: str = "write") -> tuple[str, str]:
+        own = await _own_run(live, conn, "one")
+        got = await _reserve(live, conn, "one", "one", sequence, run_id=own)
+        assert got["isError"] is False, got
+        return own, got["structuredContent"]["reservation_id"]
+
+    async def test_m1_the_own_run_marks_used_and_a_second_mark_changes_nothing(self, live):
+        _own, rid = await self._reserved(live, "m1")
+        first = await _mark(live, "write", rid, "used")
+        assert first["isError"] is False, first
+        body = first["structuredContent"]
+        assert set(body) == set(tools.MARK_KEYS)
+        assert body["state"] == "used" and body["used_at"] and body["released_at"] is None
+        again = await _mark(live, "write", rid, "used")
+        assert again["structuredContent"]["used_at"] == body["used_at"]
+
+    async def test_m2_a_released_number_is_final(self, live):
+        _own, rid = await self._reserved(live, "m2")
+        released = await _mark(live, "write", rid, "released")
+        assert released["structuredContent"]["state"] == "released"
+        back = await _mark(live, "write", rid, "used")
+        assert _refused(back, tools.TEXT_MARK_FINAL), back
+        with live.admin.begin() as c:
+            state = c.execute(text("SELECT state FROM pm_sequence_reservations"
+                                   " WHERE id = CAST(:i AS uuid)"), {"i": rid}).scalar_one()
+        assert state == "released"
+
+    async def test_m3_another_connection_cannot_mark_my_number(self, live):
+        _own, rid = await self._reserved(live, "m3")
+        theirs = await _mark(live, "pinned", rid, "released")
+        assert _refused(theirs, tools.TEXT_MARK_NOT_YOURS), theirs
+        plain = await _reserve(live, "write", "one", "one", "m3")
+        no_run = await _mark(live, "write", plain["structuredContent"]["reservation_id"], "used")
+        assert _refused(no_run, tools.TEXT_MARK_NOT_YOURS), no_run
+
+    async def test_m4_a_person_does_not_mark_here(self, live):
+        _own, rid = await self._reserved(live, "m4")
+        r = await tw._send(live, "POST", f"/projects/reservations/{rid}/mark",
+                           body={"state": "used"}, signed=None)
+        assert r.status_code == 403, (r.status_code, r.text)
+
+    async def test_m5_dark_behind_the_flag(self, live, monkeypatch):
+        _own, rid = await self._reserved(live, "m5")
+        monkeypatch.setattr(get_settings(), "sequence_marks_orgs", "")
+        hidden = await _mark(live, "write", rid, "used")
+        assert _refused(hidden, tools.TEXT_MARKS_OFF), hidden
+        r = await tw._send(live, "POST", f"/projects/reservations/{rid}/mark",
+                           body={"state": "used"})
+        assert r.status_code == 404, (r.status_code, r.text)
+        with live.admin.begin() as c:
+            state = c.execute(text("SELECT state FROM pm_sequence_reservations"
+                                   " WHERE id = CAST(:i AS uuid)"), {"i": rid}).scalar_one()
+        assert state == "reserved"
+
+    async def test_m6_a_number_outside_the_pins_or_of_another_org_is_not_found(self, live):
+        own = await _own_run(live, "write", "two")
+        got = await _reserve(live, "write", "two", "two", "m6", run_id=own)
+        rid = got["structuredContent"]["reservation_id"]
+        pinned = await _mark(live, "pinned", rid, "used")
+        assert _refused(pinned, tools.TEXT_MARK_NOT_FOUND), pinned
+        missing = await _mark(live, "write", "00000000-0000-4000-8000-000000000000", "used")
+        assert _refused(missing, tools.TEXT_MARK_NOT_FOUND), missing
