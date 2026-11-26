@@ -37,7 +37,7 @@ import sys
 import tarfile
 import uuid
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
 import pytest
@@ -1314,13 +1314,19 @@ _SSH_DROP = (
 )
 
 
+def _set_home(monkeypatch: pytest.MonkeyPatch, home: str) -> None:
+    """Give ``Path.home()`` the POSIX path *home* on every platform. The broker
+    runs on Linux. On Windows ``Path.home()`` does not read ``HOME``."""
+    monkeypatch.setattr(sb.Path, "home", classmethod(lambda cls: PurePosixPath(home)))
+
+
 async def test_the_stderr_of_a_compute_run_holds_no_address_path_or_key(
     env: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SBX-15c fix 1. ``run_compute`` gives the stderr of ``collect`` to the
     model, so ``collect`` scrubs it through ``_scrub``, the one scrub of the
     broker."""
-    monkeypatch.setenv("HOME", "/home/acb")
+    _set_home(monkeypatch, "/home/acb")
     monkeypatch.setattr(env["settings"], "sandbox_docker_cert_path", "/etc/metorite/sandbox-tls")
 
     async def fake_exec(*args: Any, **kw: Any) -> _StreamProc:
@@ -1349,12 +1355,12 @@ def test_the_scrub_takes_a_whole_host_path_on_any_backend(
 ) -> None:
     monkeypatch.setattr(env["settings"], "sandbox_backend", "docker")
     monkeypatch.setattr(env["settings"], "sandbox_docker_host", "")
-    monkeypatch.setenv("HOME", "/root")
+    _set_home(monkeypatch, "/root")
     out = sb._scrub("open /root/.ssh/id: no; /rootfs/bin and /root.bak stay; /root. Bearer abc.def")
     assert out == (
         "open (host path)/.ssh/id: no; /rootfs/bin and /root.bak stay; (host path). (secret)"
     )
-    monkeypatch.setenv("HOME", "/")
+    _set_home(monkeypatch, "/")
     assert sb._scrub("/usr/bin/python") == "/usr/bin/python", "a home of / takes nothing"
 
 

@@ -323,28 +323,28 @@ class TestProjectSequencesOnARealDatabase:
         assert got.status_code == 201, got.text
         assert got.json()["value"] == 1
 
-    async def test_the_run_is_stored_and_must_be_a_run_of_the_task(self, world):
+    async def test_a_person_names_no_run(self, world):
+        """SW-27c1, the owner's decision 1: a reservation names only the
+        caller's own run, and a person owns no agent run. A run of another
+        task stays 422 too. The agent's own run is in
+        ``test_mcp_edge_reserve_r8.py``."""
         w = world
         run = _seed_run(w.p, w.p.org_a, w.ta.task, w.a_email)
         stranger = _seed(w.p, w.p.org_a, w.a_email)
         other_run = _seed_run(w.p, w.p.org_a, stranger.task, w.a_email)
         async with _session(w.p) as call:
-            ok = await call(
-                w.a, "POST", _reserve(w.ta.project), {"task_id": w.ta.task, "run_id": run}
+            mine = await call(
+                w.a, "POST", _reserve(w.ta.project, "personrun"),
+                {"task_id": w.ta.task, "run_id": run},
             )
             bad = await call(
-                w.a, "POST", _reserve(w.ta.project), {"task_id": w.ta.task, "run_id": other_run}
+                w.a, "POST", _reserve(w.ta.project, "personrun"),
+                {"task_id": w.ta.task, "run_id": other_run},
             )
-        assert ok.status_code == 201 and ok.json()["run_id"] == run
+        assert mine.status_code == 422, mine.text
+        assert mine.json()["detail"] == "The run is not your own run on this task."
         assert bad.status_code == 422
-        with w.p.admin_engine.connect() as c:
-            row = c.execute(
-                text(
-                    "SELECT run_id, state FROM pm_sequence_reservations WHERE id = CAST(:i AS uuid)"
-                ),
-                {"i": ok.json()["reservation_id"]},
-            ).one()
-        assert str(row.run_id) == run and row.state == "reserved"
+        assert bad.json()["detail"] == "The run is not a run of this task."
 
     @pytest.mark.parametrize(
         "name", ["Migration", "1st", "a b", "x" * 41, "a;drop", "migration%0A"]
@@ -531,12 +531,17 @@ class TestTheRunKey:
         w = world
         doomed = _seed(w.p, w.p.org_a, w.a_email)
         run = _seed_run(w.p, w.p.org_a, doomed.task, "seq-run2@r8.test")
-        async with _session(w.p) as call:
-            got = await call(
-                w.a, "POST", _reserve(doomed.project), {"task_id": doomed.task, "run_id": run}
-            )
-        assert got.status_code == 201, got.text
-        rid = got.json()["reservation_id"]
+        # A person names no run (SW-27c1), so the row with a run is seeded.
+        with w.p.admin_engine.begin() as c:
+            seq = c.execute(text(
+                "INSERT INTO pm_project_sequences (organization_id, project_id, name, last_value)"
+                " VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'doomed', 1) RETURNING id"),
+                {"o": w.p.org_a, "p": doomed.project}).scalar_one()
+            rid = str(c.execute(text(
+                "INSERT INTO pm_sequence_reservations (organization_id, sequence_id, value,"
+                " task_id, run_id) VALUES (CAST(:o AS uuid), :s, 1, CAST(:t AS uuid),"
+                " CAST(:r AS uuid)) RETURNING id"),
+                {"o": w.p.org_a, "s": seq, "t": doomed.task, "r": run}).scalar_one())
         with w.p.admin_engine.begin() as c:
             c.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": doomed.task})
             row = c.execute(

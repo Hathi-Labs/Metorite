@@ -617,29 +617,32 @@ decisions. It is not a quote.
   before SBX-21 merges, because the §4.11 exception comes with SBX-21. This
   amendment flips no flag and opens no owner gate of §13.
 
-### The build card: the reading of the agent, and the open points
+### The build card: the owner answer, and the defaults of the agent
 
 Decision 4 says that a card appears only when the result writes something.
 §6.1, SBX-F8 and the "Build a tool" row of §8.1 ask for an approved build
-card before each build. The agent reads decision 4 as this: on the SBX-20
-path, no build card shows before the build. The three texts stay as they are
-for each other path.
+card before each build.
 
-The owner has not confirmed this reading. The agent asks
-on task 3981. SBX-20 changes the card rule of SBX-F8 for its path only.
+**The owner answered on task 3981, 2026-11-26** (answer `8c7fc3a3`, option
+`safe`): "No build card, but keep the card for outside content". So the SBX-20
+path shows no build card in a normal chat. After outside content, the build
+card still shows. The silent path gets no web host and no extra package. It
+shows no credit estimate, and the cap of the org still binds. The three texts
+above stay as they are for each other path. SBX-20 changes the card rule of
+SBX-F8 for its path only.
 
-The build card does more than ask for a yes. These defaults hold until the
-owner answers on that task.
+The first four rows below follow from that answer. The question did not name
+the last three rows. Those three are defaults of the agent.
 
-| What the card gives today | The default of the SBX-20 path | The recommendation |
+| What the card gives today | The rule of the SBX-20 path | Source |
 |---|---|---|
-| The warning of a marked session (§5.7) | No silent build in a marked session. The build card of §6.1 shows | Keep this default |
-| The approval of a `web:` host (§5.5) | No `web:` profile on the silent path | Keep this default |
-| The estimated credits (§10) | No estimate shows. The metering of SBX-7 and the hard cap of D19.3 still bind | Keep this default |
-| The list of packages | Only packages that the image already holds (§6.9) | Keep this default |
-| What the tool will do | No sentence shows before the build | Keep this default |
-| The read scopes | Nobody approves them. The access of the member is the ceiling (§5.1), and an approver reads them before a share (§8.1) | Keep this default |
-| The write scopes | A scope writes nothing alone. Each write waits for the card of §5.3 | Keep this default |
+| The warning of a marked session (§5.7) | No silent build in a marked session. The build card of §6.1 shows | Owner |
+| The approval of a `web:` host (§5.5) | No `web:` profile on the silent path | Owner |
+| The estimated credits (§10) | No estimate shows. The metering of SBX-7 and the hard cap of D19.3 still bind | Owner |
+| The list of packages | Only packages that the image already holds (§6.9) | Owner |
+| What the tool will do | No sentence shows before the build | Agent default |
+| The read scopes | Nobody approves them. The access of the member is the ceiling (§5.1), and an approver reads them before a share (§8.1) | Agent default |
+| The write scopes | A scope writes nothing alone. Each write waits for the card of §5.3 | Agent default |
 
 The result card of §6.5 has the "This is wrong" control for 24 hours. The
 default keeps it as a control on the answer. It asks for no approval.
@@ -1848,7 +1851,7 @@ tenancy and outward writes also get mutation testing
 | SBX-F24 | `tests/unit/test_sandbox_scope_all_orgs.py` | (D227) `tools:*` parses to an error, an org in `user_tool_disabled_orgs` still runs, or `tools` is absent from `MAF_CODING_TARGETS`. Advisory until SBX-6 and SBX-9 build it |
 | SBX-F25 | `tests/unit/test_compute_run.py` | (D227) `compute_run` takes an input that is not a `tr_` ref of its own org, member and thread, or a foreign ref does not answer "not found". A short tool result gets no ref while compute is on. One org evicts the refs of another. The output text is not framed as untrusted. A run passes the daily cap of 50 for an org or 20 for a member. A log line holds code or output text. An org outside the scope runs |
 | SBX-F26 | `tests/unit/test_sandbox_broker_compute.py` | (D227) The `compute` argv holds a mount, a network, or limits other than 1 CPU, 1g and pids 64. The tar reader accepts a link, a nested name, a type outside csv, png, json and txt, more than 5 files, a file over 1 MB or more than 3 MB in total. `compute` is absent from `MAF_CODING_TARGETS`, or `compute:*` does not parse, or an unknown target no longer raises `ValueError`. Production runs without `docker-remote` and `runsc`. A start skips the org lock |
-| SBX-F27 | `tests/unit/test_user_tool_inline_build.py` | (D233) With the flag off, a build starts in a turn without the build card. A silent build runs in a marked session, gets a `web:` profile, or starts on an answer that is not `no_match`. A failed smoke test or a failed first run persists a tool, or leaves no gap row or no failure row. Advisory until SBX-20 builds it |
+| SBX-F27 | `tests/unit/test_user_tool_inline_build.py` | (D233) With the flag off, a build starts in a turn without the build card. A silent build runs in a marked session, installs a package that the image lacks, gets a `web:` profile, or starts on an answer that is not `no_match`. A failed smoke test or a failed first run persists a tool, or leaves no gap row or no failure row. Advisory until SBX-20 builds it |
 | SBX-F28 | `tests/unit/test_user_tool_progress_line.py`, with a `vitest` half | (D233) The member sees a second progress line, the §4.11 line included, a tool name or the word "sandbox" for a build in the turn. The client draws a server string. A write runs with no card. Advisory until SBX-21 builds it |
 
 **Where the Docker halves run.** On `.github/workflows/sandbox-docker.yml`,
@@ -2893,3 +2896,5 @@ here, and each needs its own check before anyone acts on it.
 - 2026-11-26 — SBX-0f (task 3996). Status refresh only: the header, five rows
   of the §0c critical path, one line anchor, the §12 rows of SBX-18 and SBX-19,
   and the INDEX row. No rule changes.
+- 2026-11-26 — SBX-0g (task 4000). The owner answered the build card question
+  of SBX-20 on task 3981 (answer `8c7fc3a3`). §0d, SBX-F27 and D233 record it.

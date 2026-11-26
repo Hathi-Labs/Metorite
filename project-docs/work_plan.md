@@ -6490,7 +6490,7 @@ The owner asked this on 2026-11-26, in chat to metorite-78. Owner spec: `specs/a
 3. **Credentials through the door.** Sandbox code acts as the member through the one Metorite door. The gateway calls each connector with the stored credential. No provider token and no platform secret enters the sandbox. A read runs, and a write waits for the card of the member.
 4. **No seam for the member.** The member sees one progress line, as for any long turn. The answer arrives as usual. A card appears only when the result writes something. The new skill is kept and reused silently.
 5. **New slices.** SBX-20 (task 3981) is the build and hand-back in the same turn. SBX-21 (task 3982) is the progress-line contract. Both ship dark and are HIGH, a choice of the PC lanes. The admin approval of a skill kept for the org does not change (`agent_sandbox.md` §8).
-6. **Open.** The agent reads item 4 as removing the build card on the SBX-20 path. The owner has not confirmed this. `agent_sandbox.md` §0d holds the safe defaults, and the question is on task 3981.
+6. **The build card (answered 2026-11-26, task 3981, answer `8c7fc3a3`).** Vijay Varada chose "No build card, but keep the card for outside content". The new path shows no build card in a normal chat. After outside content the card still shows. The silent path gets no web host and no extra package. It shows no credit estimate, and the cap of the org binds. `agent_sandbox.md` §0d holds the table.
 
 This decision flips no flag and opens no owner gate.
 
@@ -6773,6 +6773,10 @@ and one thing that cannot be written until a second person exists.
 > it spends no credits. So its flip is the `enforcement-flip` act. D218 binds
 > it: the owner approves the preview before the flip.
 > `specs/proactive_loop.md` §7.2 is the authority.
+>
+> The flag also adds `why_seen` to each card of the feed answer (LOOP-4b).
+> It is a list of sentences that code writes. My Day shows them under "Why am I
+> seeing this", so the preview must show that box too.
 >
 > The reach loop, the briefs and the chat brief read the same learned feed.
 > So a kind that the member mutes leaves them too. A muted needs card in Later
