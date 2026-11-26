@@ -656,7 +656,13 @@ def _personal(world) -> SimpleNamespace:
         a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
               " organization_id) VALUES (CAST(:p AS uuid), :s, :s, CAST(:o AS uuid))"
               " RETURNING project_id", p=area, s=MEMBER, o=world.org)
-        world.personal = SimpleNamespace(root=mine, area=area,
+        # A team node below the tree: no stamp, and a grant to OTHER. The one
+        # walk of a personal tree stops there (migration 297), so it is team work.
+        team = _sub(a, "Shared", mine)
+        a.one("INSERT INTO pm_project_grants (project_id, subject, created_by,"
+              " organization_id) VALUES (CAST(:p AS uuid), :s, :m, CAST(:o AS uuid))"
+              " RETURNING project_id", p=team, s=OTHER, m=MEMBER, o=world.org)
+        world.personal = SimpleNamespace(root=mine, area=area, team=team,
                                          other=root(OTHER, "Other inbox"))
     return world.personal
 
@@ -698,8 +704,8 @@ class TestTheMemberPasses:
       ``test_a_run_queued_on_another_connection_does_not_pass``.
     * M20. ``G/claim_scope.py`` ``check_claim_scope`` drops
       ``in_own_personal_tree``. ``test_the_own_personal_tree_passes``.
-    * M21. ``G/authority.py`` ``in_own_personal_tree`` answers True for any
-      owner. ``test_another_members_personal_project_does_not_pass``.
+    * M21. ``G/authority.py`` ``in_own_personal_tree`` answers True for
+      every node. ``test_a_team_node_below_the_tree_does_not_pass``.
     * M22. ``G/claim_scope.py`` ``check_claim_scope`` drops
       ``made_by_member``. ``test_a_task_the_member_created_passes``.
     * M23. ``G/authority.py`` ``made_by_member`` answers True for any
@@ -789,14 +795,30 @@ class TestTheMemberPasses:
         assert _scope_lines(live, task) == []
 
     @pytest.mark.parametrize("door", DOORS)
-    async def test_another_members_personal_project_does_not_pass(self, live, mode,
-                                                                  runs_on, door):
+    async def test_a_team_node_below_the_tree_does_not_pass(self, live, mode,
+                                                            runs_on, door):
+        """The pass reads the one walk of a personal tree, so a team node
+        below the member's tree is outside it."""
         mode("refuse")
         tree = _personal(live)
-        task = _task(live, tree.other, f"other personal {door}", root=tree.other)
+        task = _task(live, tree.team, f"team node {door}", root=tree.root)
         passed, text_ = await _hold(live, door, task)
         assert not passed, text_
-        assert "Task not found" not in text_
+        assert _assignees(live, task) == []
+
+    async def test_another_members_personal_project_does_not_pass(self, live, mode,
+                                                                  runs_on):
+        """OTHER's personal tree is private, also with a grant to the member.
+        The visibility load answers 404 before the scope check, so neither
+        door holds the task."""
+        mode("refuse")
+        tree = _personal(live)
+        task = _task(live, tree.other, "other personal", root=tree.other)
+        claim = await _send(live, "POST", f"/projects/tasks/{task}/claim", body={})
+        assert claim.status_code == 404, claim.text
+        start = await _start(live, task)
+        assert start.status_code == 404, start.text
+        assert _assignees(live, task) == [] and _runs(live, task) == []
 
     @pytest.mark.parametrize("door", DOORS)
     async def test_a_task_the_member_created_passes(self, live, mode, runs_on, door):
