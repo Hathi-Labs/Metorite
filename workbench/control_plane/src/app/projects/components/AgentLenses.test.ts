@@ -40,9 +40,9 @@ const phone = (over: Partial<AgentsPhoneProps> = {}) =>
   );
 
 describe("the toolbar and the lenses", () => {
-  it("draws the four chips, the person filter, find and one switch of three lenses", () => {
+  it("draws the six chips, the person filter, find and one switch of three lenses", () => {
     const out = lenses();
-    for (const word of ["Needs you", "Working", "Waiting", "Idle", "Everyone", "Find a session or task"]) {
+    for (const word of ["Needs you", "Failed", "Working", "Waiting", "Idle", "Done", "Everyone", "Find a session, task or subagent"]) {
       expect(out).toContain(word);
     }
     for (const lens of ["Board", "Graph", "List"]) expect(out).toContain(`>${lens}<`);
@@ -76,10 +76,11 @@ describe("the phone view", () => {
     expect(out).not.toContain("data-agent-graph");
     expect(out).not.toContain('role="toolbar"');
   });
-  it("draws three counts, the idle line and the people on the first screen", () => {
+  it("draws four counts, the idle link and the people with their squares on the first screen", () => {
     const out = phone();
-    for (const state of ["you", "working", "waiting"]) expect(out).toContain(`data-agent-phone-tile="${state}"`);
-    expect(out).toContain("2 idle sessions");
+    for (const state of ["you", "failed", "working", "waiting"]) expect(out).toContain(`data-agent-phone-tile="${state}"`);
+    expect(out).toContain("2 idle");
+    expect(out).toContain('data-agent-square="you"');
     expect(out).toContain("ben@x.test");
     expect(out).not.toContain("data-agent-session=");
   });
@@ -98,7 +99,8 @@ describe("the phone view", () => {
       ],
     });
     expect(group).toContain("lane-a");
-    expect(group).toContain("1 idle session");
+    expect(group).toContain('data-agent-phone-section="waiting"');
+    expect(group).toContain('aria-label="1 idle"');
   });
 });
 
@@ -143,7 +145,8 @@ describe("a question of another member (EA3-50)", () => {
   it("pins the first run of the details, so a re-read does not swap the panel", () => {
     const source = readFileSync(new URL("./AgentDetails.tsx", import.meta.url), "utf-8");
     expect(source).toContain("useState<string | null>(() => firstRun(session)?.run_id ?? null)");
-    expect(source).toContain("session.runs.find((r) => r.run_id === picked) ?? firstRun(session)");
+    // AMR-4: the rows come from the read of the session, else from the map.
+    expect(source).toContain("runs.find((r) => r.run_id === picked) ?? firstRun({ runs })");
   });
 });
 

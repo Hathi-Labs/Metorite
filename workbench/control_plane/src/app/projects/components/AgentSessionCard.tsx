@@ -3,6 +3,11 @@
 /**
  * The Agents view · the card of one session (WS-MCP AMR-1).
  *
+ * AMR-4: a session with sub-agents says how many, on its second line, in the
+ * place of the machine. The count takes a short form, so the task or the
+ * question keeps most of the line. The accessible name holds the full words. In
+ * the graph that count is a button that opens them.
+ *
  * It is the board's task card with the agent edge of `agentCardLook`
  * (`data-agent-edge`, drawn by `globals.css`): the spectrum travels while the
  * session works, a still edge waits, a warning edge needs a person, and a slow
@@ -10,12 +15,14 @@
  * Every name and line is untrusted text, drawn as text.
  */
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { relativeTime } from "@/lib/taskCard";
 
 import {
   type LensCounts,
   type LensSession,
   type LensState,
+  type SubCounts,
   countWords,
   lensChip,
   lensEdge,
@@ -23,6 +30,8 @@ import {
   lensWord,
   machineWord,
   sessionLine,
+  subParts,
+  subWords,
 } from "../lib/agentLenses";
 
 export const STATE_PILL = "inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px text-[11px] font-medium";
@@ -49,8 +58,48 @@ export function pressKeys(act: () => void) {
 
 /** The words that a screen reader says for a session card. */
 export function sessionSpoken(s: LensSession, nowMs: number): string {
-  return `${s.name}. ${lensWord(s.state)}. ${sessionLine(s, nowMs)}. Machine ${machineWord(s)}.`;
+  const subs = subWords(s.subs);
+  return `${s.name}. ${lensWord(s.state)}. ${sessionLine(s, nowMs)}. Machine ${machineWord(s)}.${subs ? ` ${subs}.` : ""}`;
 }
+
+/** The count of the sub-agents, with the failed ones in the destructive ink. */
+export function SubCount({ session }: { session: Pick<LensSession, "subs"> }) {
+  const parts = subParts(session.subs);
+  return (
+    <>
+      {[parts.total, parts.working].filter(Boolean).join(" · ")}
+      {parts.failed ? (
+        <>
+          {" · "}
+          <span className="text-destructive">{parts.failed}</span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The short form of the sub-agent count on a card: the total, the working ones,
+ * then the failed ones as a number beside the failed icon. A reader hears
+ * `subWords` in its place.
+ */
+export function SubShort({ subs, icon = "GitFork" }: { subs: SubCounts; icon?: string }) {
+  return (
+    <span aria-hidden className="inline-flex items-center gap-0.5 tabular-nums">
+      <Icon name={icon} size={11} />
+      <span>{[subs.total, subs.working > 0 ? `${subs.working} working` : ""].filter(Boolean).join(" · ")}</span>
+      {subs.failed > 0 ? (
+        <span className="ml-0.5 inline-flex items-center gap-0.5 text-destructive" data-agent-sub-failed="">
+          <Icon name={lensIcon("failed")} size={11} />
+          {subs.failed}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+const CHIP =
+  "max-w-[55%] shrink-0 overflow-hidden whitespace-nowrap rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
 
 /** The raised face of a card inside an agent edge. */
 export const CARD_FACE =
@@ -61,19 +110,30 @@ export function SessionCard({
   nowMs,
   onOpen,
   selected = false,
+  subsOpen = false,
+  onToggleSubs,
+  namesOnly = false,
 }: {
   session: LensSession;
   nowMs: number;
   onOpen: () => void;
   selected?: boolean;
+  /** AMR-4: its sub-agent rows show beside it. */
+  subsOpen?: boolean;
+  /** With it, the sub-agent count opens and closes the rows. */
+  onToggleSubs?: () => void;
+  /** AMR-4: the graph under 60 % zoom shows the name only. */
+  namesOnly?: boolean;
 }) {
-  const loud = session.state === "you" || session.state === "waiting";
+  const loud = session.state === "you" || session.state === "waiting" || session.state === "failed";
   const age = relativeTime(session.lastAt, nowMs);
+  const subs = session.subs.total > 0;
+  const toggle = subs && !namesOnly ? onToggleSubs : undefined;
   return (
     <div
       data-agent-edge={lensEdge(session.state) ?? undefined}
       data-agent-session={session.state}
-      className={`h-full rounded-lg ${selected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}
+      className={`relative h-full rounded-lg ${selected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : ""}`}
     >
       <div
         role="button"
@@ -84,24 +144,64 @@ export function SessionCard({
         onKeyDown={pressKeys(onOpen)}
         className={CARD_FACE}
       >
-        <span className="flex min-w-0 items-center gap-1.5">
-          {loud ? (
-            <StatePill state={session.state} />
-          ) : (
-            <Icon name={lensIcon(session.state)} size={13} className="shrink-0 text-muted-foreground" aria-hidden />
-          )}
-          <span className="min-w-0 truncate text-sm font-semibold">{session.name}</span>
-          {age ? <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{age}</span> : null}
-        </span>
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{sessionLine(session, nowMs)}</span>
-          {session.host ? (
-            <span className="max-w-[40%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground">
-              {session.host}
+        {namesOnly ? (
+          <span className="flex min-w-0 items-center gap-2">
+            <Icon name={lensIcon(session.state)} size={18} className="shrink-0 text-muted-foreground" aria-hidden />
+            <span className="min-w-0 truncate text-xl font-semibold">{session.name}</span>
+          </span>
+        ) : (
+          <>
+            <span className="flex min-w-0 items-center gap-1.5">
+              {loud ? (
+                <StatePill state={session.state} />
+              ) : (
+                <Icon name={lensIcon(session.state)} size={13} className="shrink-0 text-muted-foreground" aria-hidden />
+              )}
+              <span className="min-w-0 truncate text-sm font-semibold">{session.name}</span>
+              {age ? <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{age}</span> : null}
             </span>
-          ) : null}
-        </span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{sessionLine(session, nowMs)}</span>
+              {toggle ? (
+                // Holds the room of the button, which sits above the card.
+                <span aria-hidden className={`${CHIP} invisible`}>
+                  <SubShort subs={session.subs} />
+                </span>
+              ) : subs ? (
+                <span
+                  role="img"
+                  aria-label={subWords(session.subs)}
+                  title={subWords(session.subs)}
+                  className={CHIP}
+                  data-agent-sub-count=""
+                >
+                  <SubShort subs={session.subs} />
+                </span>
+              ) : session.host ? (
+                <span className="max-w-[40%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground">
+                  {session.host}
+                </span>
+              ) : null}
+            </span>
+          </>
+        )}
       </div>
+      {toggle ? (
+        <Button
+          variant="ghost"
+          size="none"
+          selected={subsOpen}
+          aria-expanded={subsOpen}
+          aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(session.subs)} of ${session.name}`}
+          title={subWords(session.subs)}
+          data-agent-sub-toggle={session.id}
+          onClick={toggle}
+          layout={`!absolute bottom-2 right-2.5 z-10 flex ${CHIP} items-center`}
+        >
+          {/* The open rows turn the icon, so the button takes no room of its own. */}
+          <SubShort subs={session.subs} icon={subsOpen ? "ChevronDown" : "GitFork"} />
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -109,9 +209,10 @@ export function SessionCard({
 /** "1 needs you · 2 working", with the need in the warning tone. */
 export function CountLine({ counts }: { counts: LensCounts }) {
   return (
-    <span className="flex min-w-0 gap-2 truncate text-[11px] text-muted-foreground">
+    // A block, not a flex row: only inline text gets the ellipsis when it is cut.
+    <span className="block min-w-0 truncate text-[11px] text-muted-foreground">
       {countWords(counts).map((part) => (
-        <span key={part.state} className={part.state === "you" ? "text-warning" : undefined}>
+        <span key={part.state} className={part.state === "you" ? "mr-2 text-warning" : "mr-2"}>
           {part.text}
         </span>
       ))}
