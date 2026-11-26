@@ -951,7 +951,7 @@ The approval screen asks three things. The program cannot decide them.
 
 | Choice | Default | Notes |
 |---|---|---|
-| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open (rule g). **A candidate fix, not verified:** LNK-3 marks the row, and the injection accepts only an exact allow override for that server. A new member holds none. `decide()` already tells an exact override from a role grant: it returns `allow-override` or `role` (`permissions.py:423-442`). The open point is the shared session, which folds the access of each member into one yes or no. The candidate binds both grant checks of rule g. A write of an override needs `admin:access:manage`. An approver with `integrations:manage` only cannot pick people. Then the row stays closed to every member, and the screen names an admin who can open it |
+| **Who may use it** | "Only these people", offered first, with the approving admin chosen | The grant stays `integrations:use:mcp-<name>`. A role holds `integrations:use:*`, so a deny for each other member leaves a later joiner open (rule g). **A candidate fix, not verified:** LNK-3 marks the row, and the injection accepts only an exact allow override for that server. A new member holds none. `decide()` already tells an exact override from a role grant: it returns `allow-override` or `role` (`permissions.py:423-442`). The open point is the shared session, which folds the access of each member into one yes or no. The candidate binds both grant checks of rule g. A write of an override needs `admin:access:manage`. An approver with `integrations:manage` only cannot pick people. Then the row stays closed to every member, and the screen names an admin who can open it. ⚠️ §3.9 (task 3985) replaces this candidate. LNK-3 uses the rule of §3.9 |
 | **The data notice** | The admin must accept it to approve | The words are LNK-Q2 |
 | **Read only** | Fixed in rung 2: `read_only_key` on, Always confirm off | Writes need rung 3, a second connector and Always confirm on |
 
@@ -1001,7 +1001,7 @@ The local build brief of task 3655 (version 2) holds a draft contract in its §6
 | The door: the edge or a gateway route | The LNK-2 audit | The edge (§3.8.5) |
 | The queue primitive and the capacity ceiling | The LNK-2 audit | Pick by the measures of §3.8.5 |
 | Whether the frame and the session mark of rule d also bind a URL server | The board | A finding of its own. This section binds the link only |
-| Whether the exact-override candidate for "Only these people" works, and stays inside D12 | The LNK-3 audit, then the owner if it is a third axis | Keep the outcome of rule g. `decide()` already tells an override from a role grant. Use the candidate only if the shared session keeps that difference |
+| Whether "Only these people" works for a later joiner | Closed by §3.9 | The rule of §3.9 adds a deny at resolve time, and the shared session keeps a deny |
 | The questions LNK-Q1 to LNK-Q9 | The owner | §10 |
 
 #### 3.8.13 The program on the customer's machine (owner, 2026-11-18)
@@ -1080,6 +1080,88 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 - The program reads its stored state before each poll. An `unlink` or a new pairing ends a running loop at once.
 - An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
 - Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
+
+### 3.9 Who can use an integration (task 3985, PLAN)
+
+> **Status:** 📝 PLAN, owner ask of 2026-11-26. Verified against code at `origin/main` `e8b692f04`.
+> No slice is built. The owner questions are in §10, ACC-Q1 to ACC-Q3.
+> This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
+
+#### 3.9.1 What exists
+
+| Fact | Evidence |
+|---|---|
+| A run gets a credential only with `integrations:use:<service>`. An MCP server is `mcp-<name>` and an API connection is `api-<template>` | `executor._integration_authorizer`, `_maf_mcp.mcp_service`, `routes/api_connections.py` |
+| Each check ends in `EffectiveAccess.has`, so a deny pattern in the resolved access stops each of them | `acb_auth/permissions.py` (`decide`) |
+| The roles `admin`, `manager` and `member` hold `integrations:use:*`. `guest` does not | migrations 131, 179 and 200 |
+| The only control is one switch for all integrations on one member page | `settings/members/[email]/page.tsx` |
+| A shared session folds each member's access. The fold keeps every deny | `EffectiveAccess.intersect`, `resolve_session_access` |
+| A run with no member gets no integration filter | `_integration_authorizer` returns `None` |
+
+#### 3.9.2 The model
+
+**Rule.** An organization may hold one access rule for each integration. The rule only narrows. It never grants.
+
+| Mode | Who may use the integration |
+|---|---|
+| No rule (everyone) | Each member whose roles and overrides allow it. This is today, and it is the default |
+| Chosen (`subjects`) | A member who is on the list, or in a listed group. The list uses the D12 subjects `group:<slug>` and an email address. The word `org` is not stored, because it is the same as no rule |
+| Admins only | A member who holds `integrations:manage`. It is a chosen rule with an empty list |
+
+1. A member who holds `integrations:manage` passes each rule. So an admin cannot lock out every admin.
+2. A member who fails a rule gets a deny of the exact permission `integrations:use:<service>` in the resolved access. The resolver adds it. So no check changes, and no second check exists.
+3. A rule never gives a permission. A `guest` on the list still has no integration. A per-member deny still wins.
+4. An exact allow override of one member does not pass a rule. The list is the one place.
+5. A member who joins later is not on a chosen list. So the rule holds for a new member.
+6. A group change takes effect at the next resolve, because the resolver reads group membership then.
+7. A rule that the code cannot read counts as admins only. A rule read that fails gives the same result as a failed access read today.
+
+**Storage (recommended, ACC-Q2).** The rules sit in `organization.settings` under `integration_access`, one key for each service:
+
+```json
+{"integration_access": {"mcp-tally": {"subjects": ["group:finance"], "set_by": "a@x.com", "set_at": "..."}}}
+```
+
+The access query of `acb_auth.access` reads this key and the member's group slugs in the one statement that reads roles. So the rule needs no new table, no migration and no new session. A write is one `jsonb_set` on the row of the caller's organization. `organization` has no row security, so each write names the organization id of the session (R5). A removal deletes the key.
+
+**A new rule for the code.** `org_group` rows scope and never authorize today (`138_groups_and_session_participants.sql`). A chosen group here decides who keeps an integration. It never gives a permission. ACC-Q2 asks the owner to accept that.
+
+**Where the rule applies.** `resolve_access` and `resolve_access_in_org` apply it after `build_access`. So does the access preview of one member (`routes/admin/members.py`). The preview shows the rule as the reason.
+
+#### 3.9.3 The sites that obey it
+
+Each site below reads the resolved access, so the rule reaches it with no change. The R8 suite proves each row.
+
+| Site | Effect of a refusal |
+|---|---|
+| Chat MCP injection (`_maf_servers`, `is_authorized`) | The server is not attached |
+| Integration credentials of a run (`acb_skills.integrations.build_integrations`) | No credential. The agent gets a warning |
+| API connection calls (`routes/api_connections.py`) | 404, as for an unknown name |
+| MCP tool list refresh and live read (`connections/mcp_tools._may_use`) | Refused |
+| A shared session | The fold denies when one member fails the rule |
+| A delegated run | It acts as the member of its parent |
+
+**Limits, stated.** A run with no member, such as a cron run, gets no filter, as today. A batch or scheduled run gets no MCP server at all. 
+
+A rule controls use through the assistant and agents. It does not hide data that a sync already copied into Metorite, such as CRM records.
+
+A member-scoped connection (`scope_kind = 'member'`) has no rule. The `grant = admin` mark of an API connection (`api_connections.md` §2.3a) still applies on top. Tasks 2959 and 3351 are existing gaps, and this section does not close them.
+
+**How fast.** The access cache lives 60 seconds in one process. A write clears it, so the gateway process obeys at once. The ACC-1 audit lists each other process that caches access, and its bound is 60 seconds.
+
+#### 3.9.4 Routes, audit and the flag
+
+- `GET /admin/integration-access` lists each integration of the organization with its rule. `PUT /admin/integration-access/{service}` takes `{"mode": "everyone"|"chosen"|"admins", "groups": [], "people": []}`.
+- Both need `integrations:manage` **and** `admin:access:manage`, because a rule is an access write.
+- A group must exist in the organization, and a person must be a member of it. Else the answer is 422.
+- Each write calls `record_admin_change` with the service, the mode and the subjects, and then `invalidate()` for all members.
+- The flag `INTEGRATION_ACCESS_ORGS` is empty by default. For an organization off the flag, each route answers 404 and the console shows no control. The resolver applies a rule that exists, whatever the flag says. So a flag change never widens access.
+
+#### 3.9.5 The screens and the chat
+
+- **Console (slice b).** Each row of Connections gets "Who can use", with the three modes, a group picker and a people picker. A row with no rule says "Everyone".
+- **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
+- **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 
 ---
 
@@ -1212,6 +1294,17 @@ LNK-2 needs LNK-1, because it checks the credential that LNK-1 mints. TLY-2 need
 | **TLY-3** | 3768 | The tray icon (§3.8.13): three states, and a click that opens the setup page | The icon shows each state within 10 seconds of a change. With the user signed out, the service still serves | The tests of the program | LOW. The owner may drop it | TLY-2 |
 | **TLY-4** | 3769 | The local copy (§3.8.13): the first copy, the copy of changes by `AlterID`, the read from the copy with its age, the maximum age, the encryption and the deletes. The time of the last good copy on each poll | With TallyPrime closed, a read answers from the copy and names its age. A copy older than the maximum age answers nothing. The copy on disk is not plain text. Disconnect deletes it | The tests of the program, on a synthetic company with a known set of changes | STANDARD: book data on disk | TLY-2, LNK-Q8, LNK-Q9 |
 
+### 7.5 Access rule slices (§3.9, task 3985)
+
+ACC-1 comes first. ACC-2 and ACC-3 need it.
+
+| Id | What | Gate | Done when |
+|---|---|---|---|
+| **ACC-1** (task 3987) | Backend: the rule in `organization.settings`, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4) | 🔴 HIGH: permissions | R8: a refused member reaches no MCP server, no API call and no credential. A new member is refused. A group removal refuses. An admin passes. Org B is unchanged. The flag off answers 404 |
+| **ACC-2** (task 3988) | The "Who can use" control on each connection (§3.9.5) | STANDARD: UI, with an owner preview | Visual review passes in four contexts |
+| **ACC-3** (task 3989) | The integrations list in My access, and `GET /auth/me/integrations` | HIGH: it shows access | A member sees their own result only |
+| **ACC-4** (task 3990) | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
+
 ---
 
 ## 8. Verification commands
@@ -1232,6 +1325,8 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/missing
 ```
 
 Each slice adds its own test file to this list.
+
+ACC-1 adds `test_integration_access_rules.py` and `test_integration_access_r8.py`. The R8 suite needs the scratch database.
 
 **Verify WS-LNK (§3.8, APPROVED, D232).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
 
@@ -1313,3 +1408,13 @@ The owner answers these on task 3653. LNK-Q1 and LNK-Q7 gate LNK-1 and LNK-3. LN
 | **LNK-Q7** | May a run with no member use a link tool? | No. Refuse it (rule c of §3.8.7). A batch, scheduled or webhook run gets no MCP server today. Rule c closes the rest: a run that reaches the injection with no member, such as a `system:` principal. A later slice can give such a run a named member |
 | **LNK-Q8** | Does a copy of the books also live in Metorite, so that reads work while the customer's machine is off? | No, not now. The copy stays on the customer's machine (§3.8.13). A copy in Metorite moves the books into our database, and the data notice of LNK-Q2 must then say so. Ask again if customers' machines are off too often |
 | **LNK-Q9** | The default interval of the local copy, and its default maximum age | Every 30 minutes while TallyPrime is open, and a maximum age of 7 days. The admin can change both. Each answer from the copy names its age, so the member judges it |
+
+### Access rule questions (§3.9, task 3985)
+
+The owner answers these on task 3985.
+
+| Id | Question | Recommendation |
+|---|---|---|
+| **ACC-Q1** | What is the default for each integration? | Everyone in the organization, until an admin restricts it. This is today |
+| **ACC-Q2** | May a chosen group decide who keeps an integration, with the rules in `organization.settings` and no new table? | Yes. A group rule only narrows, and it gives no permission. The other choice is a new table in the D12 grant shape, with a migration |
+| **ACC-Q3** | Does an admin (`integrations:manage`) always keep access? | Yes. An admin can open any rule again, so a lock gives no protection |
