@@ -84,6 +84,7 @@ not write a second copy of that seam. A bare test file name is under
    - `FindTools` builds the found tools again at call time through the guarded builder, so the held answer of the call holds. A found tool never joins `PackRun.holds`.
    - The answer gives `_rules_block` of each owning pack once in a run. A pack that becomes held later gets its hold note alone.
    - `PackRun.lock` is the ONE lock of the live tool list. `LoadSkillTools` and `FindTools` hold it through the check, the build and `add_tools`. Do not give either a lock of its own. Fence: `test_find_tools_guards.py`.
+   - SBX-1a (`agent_sandbox.md` §6.1): `FindTools` takes an optional hook `on_gap(query, live)`, as it takes the builder and the measure, so this package imports no gateway code. `_no_match` runs it only where the rank gave no tool, never after a refusal. With no hook, the answer is `FIND_NONE` byte for byte. The hook has `FIND_GAP_TIMEOUT_S` (8 s). Its sentence follows `FIND_NONE` after a blank line. None, a timeout or a fault gives `FIND_NONE`, and `tool_packs.find_gap_failed` logs the class only. Do not change `_FIND_DESCRIPTION` or `find_tool()` for it. Fences: `test_tool_gap_detection.py`, `test_sandbox_log_lines.py`.
    - `owner_scope(owner, held)` binds `no_egress` for any value of `held` but `False`. Fences: `test_tool_packs_registry.py`, `test_pack_guards.py`.
 5a-2. skill_packs.py -- a published Studio skill as a pack of one turn (WS-STU F3, spec `ai_studio.md` §14 F3). It does no I/O and never imports the orchestrator or the gateway.
    - `orchestrator._tool_injection._turn_with_skills` is the ONE reader. It runs inside `_apply_tool_packs`, so only where `packs_on` gives a pack. It also needs `STUDIO_ORGS` and `feature:studio`, and it fails closed.
@@ -100,6 +101,7 @@ not write a second copy of that seam. A bare test file name is under
    - It imports `_plain` and `_word_re` from `tool_packs`. Do not copy them. Fence: `test_tool_search_index.py`.
    - TOF-1c: `match_skill_descriptions` reads a separate corpus, the skill descriptions that its caller passes, for scores only. The text never enters the index, and only a skill id and a hit count leave the function.
    - The match needs 2 shared whole-word stems, with no prefix credit and no stop word or "use". It reads the first 32 content stems of the turn and 200 characters of each description. A tie gives None. Its one caller is `_turn_with_skills`. Fence: `test_tool_search_index.py` section (g).
+   - SBX-1a: `shared_stems(words, text)` is the count of the same stems, pure. Only a count leaves it. The no-match path of `find_tools` ranks with it (`gateway/studio/package_search.py`, `orchestrator/tool_gap_path.py`). It never touches `build_index` or `rank`. Fences: `test_tool_gap_detection.py`, `test_user_tool_registry.py` (R8).
 5b. decide_tools.py -- the `decide` core-floor tool (spec `customer_console.md` §6A.14). It sends no member and never logs `context`.
    - `decide_tool_enabled()` is its ONE switch. `decide_tool_for(agent_name)` is the one place that picks `system_one_decide` or the Jev `decide`.
    - Fences: `test_decide_tool.py`, `test_system_one_tool.py`.
