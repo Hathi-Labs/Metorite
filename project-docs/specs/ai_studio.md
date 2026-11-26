@@ -1250,7 +1250,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **I3** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I3.md) |
 | **I4** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/I4.md) |
 | **I5** | 🔨 BUILT, dark: the backend seam only (2026-11-11) | STD | AGENT-SAFE | [row](ai_studio_rows/I5.md) |
-| **I6** | open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
+| **I6** | 🔨 FHIR map BUILT (2026-11-11), ABDM link open | HIGH | OWNER-GATE | [row](ai_studio_rows/I6.md) |
 | **I7** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/I7.md) |
 | **I8** | open | STD | AGENT-SAFE | [row](ai_studio_rows/I8.md) |
 | **I8a** | 🔨 BUILT, dark (2026-11-14), task 3168 | STD | AGENT-SAFE | [row](ai_studio_rows/I8a.md) |
