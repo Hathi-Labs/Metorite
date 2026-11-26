@@ -6,11 +6,13 @@ from __future__ import annotations
 import functools
 import json
 import time
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
@@ -60,6 +62,10 @@ from gateway.routes.email.provider_errors import (
 )
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -216,6 +222,8 @@ async def list_messages(
     has_attachments: bool | None = Query(None),
     importance: str | None = Query(None),       # high | normal | low
     from_email: str | None = Query(None),       # substring match on sender address
+    to_addr: str | None = Query(None),          # substring on any To/Cc recipient (LOOP-19)
+    attachment_name: str | None = Query(None),  # substring on a file name (LOOP-19)
     sender_category: str | None = Query(None),  # email_senders category
     sort: str = Query("newest"),                # newest | oldest | importance
     collapse: bool = Query(False),              # one row per conversation
@@ -338,6 +346,10 @@ async def list_messages(
         if has_attachments is not None:
             where_clauses.append("em.has_attachments = :has_attachments")
             params["has_attachments"] = has_attachments
+        for clause in (recipient_clause(params, to_addr),
+                       attachment_name_clause(params, attachment_name)):
+            if clause:
+                where_clauses.append(clause)
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
@@ -817,6 +829,23 @@ class MessageSummariesRequest(BaseModel):
     ids: list[str]
 
 
+def summary_ids(raw: list[str] | None) -> list[str]:
+    """The valid message ids of a summaries request, canonical, in order.
+
+    A client may send ``id=<uuid>``, the label that the list tools print, so
+    the label drops first. An id that is not a UUID drops out. One bad id
+    must never fail the batch: asyncpg raised ``DataError`` for it, and the
+    route answered 500 for every row (task 3863).
+    """
+    out: list[str] = []
+    for item in raw or []:
+        try:
+            out.append(str(uuid.UUID(strip_id_label(item))))
+        except ValueError:
+            continue
+    return out
+
+
 @router.post("/messages/summaries")
 async def message_summaries(
     req: MessageSummariesRequest,
@@ -830,7 +859,7 @@ async def message_summaries(
     server-side, so the card is self-contained regardless of which list tool
     (or none) surfaced the id. Owner-scoped; unknown/foreign ids are omitted.
     Order follows the input ``ids`` so the agent's grouping is preserved."""
-    ids = [i for i in (req.ids or []) if i]
+    ids = summary_ids(req.ids)
     if not ids:
         return {"summaries": []}
     async with _tenant_session() as db:

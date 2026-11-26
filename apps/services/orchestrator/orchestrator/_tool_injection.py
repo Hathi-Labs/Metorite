@@ -65,9 +65,10 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # via a bounded Copilot session (code_task) and cheaply re-run the durable
     # scripts it accumulated (run_script). Workspace-jailed + env-scrubbed;
     # list_integrations shows what a script may reach (names, never values).
-    # ⚠️ D85: the floor NAMES the two shell tools, and a SHARED agent still
-    # does not get them. `_withheld_shell_tools` takes every SHELL_TOOLS
-    # member away from a shared agent until the sandbox broker covers it.
+    # ⚠️ D85 and D129: the floor NAMES the two shell tools, and no agent but
+    # the root dev agent gets them. `_withheld_shell_tools` takes every
+    # SHELL_TOOLS member away, a personal agent's too, until the sandbox
+    # broker covers the agent.
     "run_script", "code_task", "list_integrations",
     # Inter-agent delegation (multi_agent_orchestration.md Phase 0.1): the
     # floor previously guaranteed every tool an agent needs to work ALONE and
@@ -209,8 +210,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
     Only that may lift the host half of D85. No such path exists: the
     container of ``copilot_sandbox.py`` is not the broker's (it holds the
     model loop, a key and a network, §4.2), and WS-43h moves app-builder off
-    the CLI instead of into it. So this is ``False`` for every agent, and a
-    shared agent's CLI shell is always refused today.
+    the CLI instead of into it. So this is ``False`` for every agent, and
+    the CLI shell of every agent in scope is always refused today.
     """
     del agent_name, organization_id
     return False
@@ -218,7 +219,8 @@ def _copilot_cli_in_broker_sandbox(agent_name: str, organization_id: str) -> boo
 
 #: Agents that D85 leaves as they are, by name. ``metorite`` is the root dev
 #: agent (repo-root ``agents.py``). It edits platform code and runs the tests
-#: through its Copilot CLI shell, with its own ``approve_all`` (H-211). Its root
+#: through its Copilot CLI shell, under the B6 handler of the run's mode (its
+#: factory sets no handler since task 560, H-211). Its root
 #: ``config.json`` has no ``sharing`` block, so D85 would read it as shared.
 #: The owner decided on 2026-10-03 (``maf_coding_engine.md`` §15.4): only an
 #: admin of the first-party organization may run it, through any path, and it
@@ -232,25 +234,17 @@ _D85_OWNER_PENDING: frozenset[str] = frozenset({"metorite"})
 def _d85_leaves_alone(agent_name: str | None, agent_config: dict[str, Any] | None) -> bool:
     """True for an agent that D85 does not touch, in either half.
 
-    * A ``personal`` agent. The owner left personal agents out of scope
-      (HANDOFF H-225 asks for the same rule there).
-    * A name in :data:`_D85_OWNER_PENDING`: the root dev agent, which only a
-      first-party admin may run (owner, 2026-10-03, §15.4).
+    Only a name in :data:`_D85_OWNER_PENDING` is left alone: the root dev
+    agent, which only a first-party admin may run (owner, 2026-10-03, §15.4).
 
-    Every other agent is in scope: ``shared`` (the default when the config has
-    no ``sharing`` block), ``team``, a config that does not parse, and
-    ``agent_config=None``. So a caller that forgets the config fails closed.
+    Every other agent is in scope, whatever its config says: ``shared`` (the
+    default when the config has no ``sharing`` block), ``team``, ``personal``,
+    a config that does not parse, and ``agent_config=None``. D129 (task 808,
+    H-225) put ``personal`` in scope on 2026-10-27, because a member reaches a
+    personal agent too, and a shared agent can delegate to one.
     """
-    if agent_name in _D85_OWNER_PENDING:
-        return True
-    try:
-        from acb_skills.manifest import AgentManifest
-        instancing = AgentManifest.from_config(
-            agent_config, name=agent_name,
-        ).sharing.instancing
-    except Exception:  # a config that does not parse is shared
-        instancing = "shared"
-    return instancing == "personal"
+    del agent_config  # the scope reads the name only since D129
+    return agent_name in _D85_OWNER_PENDING
 
 
 def _run_org() -> str | None:
@@ -271,7 +265,8 @@ def _withheld_shell_tools(
     ``install_dependency``) run code on the HOST today. ``run_script`` has the
     network and the agent's integration credentials. A SHARED agent serves
     every member of an organization from one process, so the owner blocked
-    these tools for it on 2026-10-03 until the sandbox covers it.
+    these tools for it on 2026-10-03 until the sandbox covers it. D129 blocked
+    them for a PERSONAL agent too on 2026-10-27.
 
     It withholds nothing for an agent that :func:`_d85_leaves_alone`, and all
     three for every other one, unless :func:`_sandbox_covers` says the broker
@@ -827,7 +822,7 @@ def _resolve_injected_scope(
     The declared scope and the skill toggles resolve first
     (:func:`_resolve_declared_scope`). ``withheld`` then takes names away,
     the core floor included. It is the D85 interim block: the shell tools
-    that :func:`_withheld_shell_tools` keeps from a shared agent. An unscoped
+    that :func:`_withheld_shell_tools` keeps from an agent. An unscoped
     agent with a withheld tool gets an explicit set, so the addendum, the
     skill bodies and the injection read ONE scope that lacks the tool. With
     no withheld names the result is byte-identical to the declared scope.
@@ -1091,6 +1086,33 @@ def _card_call(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     return card_call(fn, args, kwargs, keyless=is_delegation_tool(fn))
 
 
+def _forget_card_marks() -> None:
+    """``acb_skills.ask_tools.forget_card_marks`` (task 3595): no title and
+    no proof of an act carry into this call. A fault is no act, so it
+    records nothing later either."""
+    try:
+        from acb_skills.ask_tools import forget_card_marks
+    except Exception:
+        return
+    forget_card_marks()
+
+
+def _note_approved_act() -> None:
+    """``acb_skills.ask_tools.note_approved_act`` for one call that returned
+    (task 3595, PARK-LINE). It records the act of the call's card only when
+    the member approved it AND the tool said at its success site that the
+    act ran (``ask_tools.act_ran``). It reads no result text. A park then
+    names it. A delegation tool records nothing itself: each tool of its
+    child run records its own act into the parent's record. It never
+    raises, so the tool's result always reaches the model."""
+    try:
+        from acb_skills.ask_tools import note_approved_act
+
+        note_approved_act()
+    except Exception:  # a line is never worth a lost result
+        _log.debug("park_line.note_failed", exc_info=True)
+
+
 def _permission_gate(
     tool_name: str, call_kwargs: dict[str, Any] | None, *, surface: str,
     facts: dict[str, Any] | None = None,
@@ -1226,7 +1248,13 @@ def _gate_injected_tool(fn: Any) -> Any:
             # outside a WhatsApp run with writes on. Task 3130: the act key
             # of each card that this call draws.
             with _whatsapp_tool_call(fn, args, kwargs), _card_call(fn, args, kwargs):
-                return await fn(*args, **kwargs)
+                _forget_card_marks()
+                result = await fn(*args, **kwargs)
+            # Task 3595: an approved card whose tool said "the act ran" at
+            # its success site. A raise never reaches this line.
+            if not is_delegation_tool(fn):
+                _note_approved_act()
+            return result
         return _register_platform_wrapper(fn, _agated)
 
     @functools.wraps(fn)
@@ -2491,12 +2519,11 @@ def _inject_agent_tools(
     reaches another tool in-process asks the same answer (§14.10 of
     ``projects_ai_chat.md``). Empty when nothing was injected.
 
-    ``agent_config`` is the agent's parsed ``config.json``. Its ``sharing``
-    block decides the D85 interim block (:func:`_withheld_shell_tools`): a
-    shared agent gets no ``SHELL_TOOLS`` member until the sandbox broker
-    covers it. ``None`` reads as shared, so a caller that forgets it fails
-    closed. Every executor call site passes it, and
-    ``tests/unit/test_shared_agent_shell_tools.py`` says so. Its
+    ``agent_config`` is the agent's parsed ``config.json``. The D85 interim
+    block (:func:`_withheld_shell_tools`) gives no agent but the root dev
+    agent a ``SHELL_TOOLS`` member until the sandbox broker covers it, a
+    personal agent included (D129). Every executor call site passes the
+    config, and ``tests/unit/test_shared_agent_shell_tools.py`` says so. Its
     ``floor_opt_out`` list takes floor and workflow tools away from this
     agent (:func:`_floor_opt_out`).
 
@@ -2573,9 +2600,10 @@ def _inject_agent_tools(
             "executor.skill_families_disabled",
             agent=agent_name, families=sorted(_disabled_families),
         )
-    # D85 (the interim block): a shared agent gets no shell tool until the
-    # sandbox broker covers it. The withheld names leave the SCOPE, so the
-    # addendum below never describes a tool this agent does not hold.
+    # D85 (the interim block) and D129: an agent gets no shell tool until the
+    # sandbox broker covers it, a personal agent too. The withheld names leave
+    # the SCOPE, so the addendum below never describes a tool this agent does
+    # not hold.
     _withheld = _withheld_shell_tools(agent_name, agent_config)
     if _withheld:
         _log.info(
@@ -4551,6 +4579,11 @@ async def _apply_tool_packs(
         facts = _SKILL_FACTS.get() or {}
     finally:
         _SKILL_FACTS.reset(facts_token)
+    # CSY-4 (chat_connected_systems.md §3.4): the words of the servers that may
+    # attach, and the mail mark, read once before ``choose``. Dark behind
+    # MCP_MAIL_PRECEDENCE_ORGS. G2: a WhatsApp turn keeps the choice of main.
+    turn = await _with_server_words(turn, agent, agent_name, run_ctx, is_authorized,
+                                    read_only=read_only)
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)
     _COMPUTE_ROOM.set(base + 1 <= tool_packs.MAX_REQUEST_TOOLS)  # a no-pack exit keeps it
@@ -4590,9 +4623,11 @@ async def _apply_tool_packs(
             skill_packs=skill_map)
     _log_skills_refused(choice.skills_refused)
     await tool_packs.drop_sticky(turn, choice.evicted)
+    # CSY-4: the reason of an eviction rides on the log line only.
+    reason = _server_named_field(choice)
     if not choice.slugs:
         _log.info("executor.packs_chosen", packs=[], evicted=list(choice.evicted),
-                  skipped=list(choice.skipped), base_tools=base)
+                  skipped=list(choice.skipped), base_tools=base, **reason)
         if not offer_loader and not choice.skills:
             return None
     run_key = secrets.token_urlsafe(24)
@@ -4705,7 +4740,7 @@ async def _apply_tool_packs(
             held=dict(record.held), replaced=sorted(replaced), via_loader=sorted(via),
             refused=sorted(record.refusals),
             evicted=list(choice.evicted), skipped=list(choice.skipped),
-            base_tools=base, pack_tools=sum(len(b.tools) for b in builds),
+            base_tools=base, pack_tools=sum(len(b.tools) for b in builds), **reason,
         )
     _log.info(
         "executor.pack_plan", offered=list(plan.offered), via_loader=sorted(via),
@@ -5314,34 +5349,150 @@ async def _mcp_may_attach(
     loader asks first. The same early exits, then the registry rows, listed
     with no token refresh and no header read (``enabled_meta``). A row that the run could use counts, so the answer
     errs toward True. A fault reads as True (fail closed): then the
-    specialist of a mail owner stays, as it did before OA-7i."""
+    specialist of a mail owner stays, as it did before OA-7i. The rows and
+    their filter are those of :func:`_attachable_rows`, and the row rule runs
+    inside the ``try``, so a fault of the rule (a grant that raises) also
+    reads as True. It reads the whole list: the grant is a pure test, and
+    the answer is the answer of a stop at the first row."""
     from acb_common.db import current_tenant
-
-    from orchestrator import _maf_mcp
 
     if no_egress or held_untrusted or agent_name in UNTRUSTED_INPUT_AGENTS:
         return False
-    org = current_tenant()
-    if not org or not _maf_mcp.is_native_maf_agent(agent):
-        return False
-    if not _maf_mcp.maf_mcp_org_allowed(org):
-        return False
     try:
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, current_tenant(), is_authorized)
     except Exception as exc:  # the class only: a DB message can echo a value
         _log.warning("executor.pack_mcp_lookahead_failed", error=type(exc).__name__)
         return True
-    for srv in rows:
-        if not srv.enabled or not _in_scope(list(srv.agent_scope), agent_name):
-            continue
-        if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-            continue
-        if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-            continue
-        return True
-    return False
+    return bool(rows)
+
+
+def _row_may_attach(srv: Any, agent_name: str, is_authorized: Any, *,
+                    log_stdio: bool = False, parked: bool = False) -> bool:
+    """THE one row rule of a lookahead on the registry metadata (CSY-4 §3.4,
+    HRD-1d, task 3866): a row that is enabled, in scope for *agent_name*, not
+    stdio (D85), on an HTTP transport with a URL, and that the run's grant
+    allows. It is the filter that :func:`_inject_mcp_servers` applies through
+    :func:`_keep_mcp_server` and :func:`_maf_servers`. Each ``enabled_meta``
+    lookahead reads it through :func:`_attachable_rows`, and
+    :func:`_reconnect_rows` reads it with *parked*. No other code repeats it.
+    With *log_stdio* the scope and the stdio test go through
+    :func:`_keep_mcp_server`, which logs ``mcp.stdio_refused``. It logs
+    nothing else.
+
+    A falsy ``enabled`` refuses the row, as both rules before the merge did
+    for ``False``. A row with no ``enabled`` field counts as enabled, because
+    ``StoredServer`` always carries the field. *parked* is a row of
+    ``needs_reconnect_meta``: its ``enabled`` is False by construction
+    (``StoredServer.enabled`` is ``status == connected``), and it is named,
+    never attached. So *parked* skips the ``enabled`` test, and every other
+    test applies."""
+    from orchestrator import _maf_mcp
+
+    if not parked and not getattr(srv, "enabled", True):
+        return False
+    if log_stdio:
+        if not _keep_mcp_server(srv, agent_name):
+            return False
+    elif not _in_scope(list(srv.agent_scope), agent_name) or srv.transport == "stdio":
+        return False
+    if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
+        return False
+    return is_authorized is None or bool(is_authorized(_maf_mcp.mcp_service(str(srv.name))))
+
+
+async def _attachable_rows(agent: Any, agent_name: str, org: Any, is_authorized: Any, *,
+                           log_stdio: bool = False) -> list[Any]:
+    """THE one lookahead of the registry rows that may attach to this run.
+
+    The early exits of :func:`_inject_mcp_servers` (no org, not a native MAF
+    agent, ``MAF_MCP_ORGS`` off) give an empty list and read nothing. Else
+    one ``enabled_meta`` read (no header, no token refresh, inside
+    ``tenant_session(org)``), less each row that :func:`_row_may_attach`
+    refuses. It raises on a read fault, so each caller picks its own fail
+    side. Four callers: the OA-7i lookahead (:func:`_mcp_may_attach`), the
+    HRD-1d held-back servers (:func:`_note_withheld_servers`), the CSY-5
+    ``mail`` line (:func:`_note_mail_skipped`) and the CSY-4 server words
+    (:func:`_with_server_words`). The lookahead and the server words check
+    their own exits first: ``no_egress``, an agent that reads stranger text,
+    a held mail pack. The two notes run only at the skip of a held mail pack,
+    and they attach nothing."""
+    from orchestrator import _maf_mcp
+
+    if not org or not _maf_mcp.is_native_maf_agent(agent):
+        return []
+    if not _maf_mcp.maf_mcp_org_allowed(org):
+        return []
+    from gateway.connections import mcp as mcp_registry
+
+    rows = await mcp_registry.enabled_meta(str(org))
+    return [srv for srv in rows
+            if _row_may_attach(srv, agent_name, is_authorized, log_stdio=log_stdio)]
+
+
+async def _mail_mark_set(run_ctx: Mapping[str, Any]) -> bool:
+    """CSY-4: True only when the chat's mail mark reads ``MARK_MARKED``.
+
+    The eviction FAILS CLOSED on the mark: clear, unknown (a Redis fault) and
+    any raise read False, and then no pack leaves. So it reads
+    ``session_mark_state`` and compares to ``MARK_MARKED``. Never use a reader
+    that counts unknown as marked here: such a reader fails OPEN for an
+    eviction. *run_ctx* is the server-bound run context (R5)."""
+    try:
+        return await session_mark_state(run_ctx, fail_closed=True) == MARK_MARKED
+    except Exception as exc:  # the class only
+        _log.warning("executor.pack_mail_mark_unread", error=type(exc).__name__)
+        return False
+
+
+def _server_named_field(choice: Any) -> dict[str, list[str]]:
+    """CSY-4: the log field of ``Choice.server_named``, or no field when it is
+    empty, so a line of a run with no such eviction keeps its bytes."""
+    named = list(getattr(choice, "server_named", ()) or ())
+    return {"server_named": named} if named else {}
+
+
+async def _with_server_words(
+    turn: Any, agent: Any, agent_name: str, run_ctx: Mapping[str, Any], is_authorized: Any,
+    *, read_only: bool = False,
+) -> Any:
+    """*turn* with the words of the servers that may attach and the mail mark
+    (CSY-4, ``chat_connected_systems.md`` §3.4), or *turn* as it was.
+
+    It acts only while ``MCP_MAIL_PRECEDENCE_ORGS`` names the bound tenant,
+    the turn holds a sticky pack of an owner that reads stranger text, and
+    the run could get a server at all (not ``no_egress``, not an agent that
+    reads stranger text, no mail tool held). Then ONE read of the attachable
+    rows (:func:`_attachable_rows`), and, only when the words of the turn
+    name one of them, ONE read of the mark (:func:`_mail_mark_set`). A fault
+    of the read gives *turn* as it was. ``tool_packs.choose`` applies the
+    rule. With the flag off it awaits nothing. *read_only* is the WhatsApp
+    turn (G2), which keeps the choice of main."""
+    from acb_common.db import current_tenant
+    from acb_skills import server_match, tool_packs
+    from acb_skills.egress import mcp_mail_precedence_on
+
+    org = current_tenant()
+    if read_only or not org or not mcp_mail_precedence_on(org):
+        return turn
+    if (bool(run_ctx.get("no_egress")) or agent_name in UNTRUSTED_INPUT_AGENTS
+            or _holds_untrusted_pack(agent)):
+        return turn
+    if not any(str(tool_packs.SKILL_FAMILIES.get(str(getattr(e, "slug", "")), {}).get("owner"))
+               in UNTRUSTED_INPUT_AGENTS for e in getattr(turn, "sticky", ()) or ()):
+        return turn
+    try:
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("executor.pack_server_words_failed", error=type(exc).__name__)
+        return turn
+    servers = tuple(sorted(
+        (str(srv.name), words) for srv in rows
+        if (words := server_match.server_words(str(getattr(srv, "label", "") or ""),
+                                               str(srv.name)))))
+    if not servers or not server_match.named_servers(getattr(turn, "words", ""), dict(servers)):
+        return turn
+    return dataclasses.replace(turn, servers=servers,
+                               mail_marked=await _mail_mark_set(run_ctx))
 
 
 async def _pack_available(
@@ -5715,6 +5866,10 @@ async def _inject_mcp_servers(
         # in its own run, so it gets no server either. Packs load before
         # this step (OA-7c).
         _log.info("mcp.untrusted_pack_skipped", agent=agent_name)
+        # HRD-1d: the model can still call a tool of such a server from the
+        # history of the chat. Its answer then says why the tool did not run.
+        await _note_withheld_servers(
+            agent, agent_name, organization_id=organization_id, is_authorized=is_authorized)
         # CSY-5: the model learns WHY the system is off (reason `mail`).
         await _note_mail_skipped(agent, agent_name, organization_id, is_authorized)
         return
@@ -5743,6 +5898,9 @@ async def _inject_mcp_servers(
     servers = [srv for srv in stored if _keep_mcp_server(srv, agent_name)]
     if native:
         maf_servers = _maf_servers(servers, is_authorized)
+        attached: Any = []
+        reasons: dict[str, str] = {}
+        tools: Any = getattr(agent, "mcp_tools", None)
         if maf_servers:
             reserved = _reserved_tool_names(agent)
             failures: dict[str, str] = {}
@@ -5750,19 +5908,71 @@ async def _inject_mcp_servers(
                 agent, maf_servers, opened if opened is not None else [],
                 member_present=member_present,
                 on_unauthorized=_mark_unauthorized_for(str(org)),
+                on_needs_signin=_mark_needs_signin_for(str(org)),
                 failures=failures,
+                # Task 3924, review P2: a first-party name never autoloads a server tool.
+                reserved=reserved,
             )
             # CSY-10: only a server that attached (after the grant check and
             # the connect) gets a label, so a refused one never shows.
             _note_mcp_labels(servers, attached, reserved)
             tools = getattr(agent, "mcp_tools", None)
             reasons = await _mcp_reasons(str(org), maf_servers, attached, failures, tools, member_present)
-            _note_mcp_briefs(servers, attached, tools, reasons)
+        # Task 3866: a row in needs_reconnect is not read for a run, so it is
+        # named from a metadata read. Its tools never attach.
+        held_names = {str(srv.name) for srv in servers}
+        # A row that this read held was named by the connect (``failures``).
+        parked = [p for p in await _reconnect_rows(str(org), agent_name, is_authorized)
+                  if str(p.name) not in held_names]
+        for srv in parked:
+            reasons.setdefault(str(srv.name), "reconnect")
+        if maf_servers or parked:
+            _note_mcp_briefs([*servers, *parked], attached, tools, reasons)
             await _count_left_out(str(org), reasons)
         return
 
     for srv in servers:
         _log.info("mcp.copilot_registry_skipped", name=srv.name)
+
+
+async def _note_withheld_servers(
+    agent: Any, agent_name: str, *, organization_id: str | None, is_authorized: Any,
+) -> None:
+    """HRD-1d (task 3719): tell the unknown-tool answer of this run which MCP
+    servers the run held back, because it holds a pack that reads mail from
+    outside senders (OA-7b).
+
+    The servers are the ones that the injection would try without that pack:
+    :func:`_attachable_rows`, which has the same org, flag and native check as
+    :func:`_inject_mcp_servers`, then :func:`_row_may_attach`, the one row
+    rule. The org is the run's server-side stamp, never a tool argument or
+    the member's text. The read is ``enabled_meta``: no header and no OAuth
+    refresh. The value goes to
+    ``unknown_tool.note_withheld`` as the tool-name prefix of each server
+    (``_maf_mcp.tool_prefix``).
+
+    It reads only when the view holds a chat provider
+    (``unknown_tool.reads_withheld``), so a step and a later agent of the run
+    read nothing. Never raises. A fault leaves no value, and the answer stays
+    the answer of HRD-1c."""
+    try:
+        from acb_skills import unknown_tool
+
+        from orchestrator import _maf_mcp
+
+        if not unknown_tool.reads_withheld(agent):
+            return
+        org = organization_id or _run_org_or_none()
+        # No org, no native agent or the flag off: an empty list, and no read.
+        # An empty list then changes nothing (``note_withheld`` keeps no value).
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized)
+        names = [str(srv.name) for srv in rows]
+        if unknown_tool.note_withheld(
+                agent, [_maf_mcp.tool_prefix(n) for n in names],
+                reason=unknown_tool.WITHHELD_MAIL_REASON):
+            _log.info("mcp.withheld_noted", agent=agent_name, servers=len(names))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.withheld_unavailable", error=type(exc).__name__)
 
 
 #: Tools of the platform that no MCP server may take the look of.
@@ -5806,22 +6016,35 @@ async def _note_mail_skipped(agent: Any, agent_name: str, organization_id: str |
                 or not _maf_mcp.maf_mcp_org_allowed(org)
                 or not _maf_mcp.connected_systems_org_allowed(org)):
             return
-        from gateway.connections import mcp as mcp_registry
-
-        rows = await mcp_registry.enabled_meta(str(org))
+        rows = await _attachable_rows(agent, agent_name, org, is_authorized, log_stdio=True)
         notes = []
         for srv in rows:
-            if not _keep_mcp_server(srv, agent_name):
-                continue
-            if srv.transport not in _MAF_HTTP_TRANSPORTS or not srv.url:
-                continue
-            if is_authorized is not None and not is_authorized(_maf_mcp.mcp_service(str(srv.name))):
-                continue
             notes.append((str(srv.name), server_brief.reason_line(str(srv.label or srv.name), str(srv.name), "mail")))
         server_brief.set_attached([], notes)
         await _count_left_out(str(org), {n: "mail" for n, _ in notes})
     except Exception as exc:
         _log.warning("mcp.mail_notes_unavailable", error=type(exc).__name__)
+
+
+async def _reconnect_rows(org: str, agent_name: str, is_authorized: Any) -> list[Any]:
+    """Task 3866, CSY-5: the servers of *org* in ``needs_reconnect`` that this
+    run may name, as metadata only. The row rule is :func:`_row_may_attach`
+    with *parked* (such a row reads ``enabled`` False) and *log_stdio*, as
+    :func:`_note_mail_skipped` reads it. Only an org with
+    ``CONNECTED_SYSTEMS_ORGS`` on. Never attached. A fault gives none and
+    never blocks the run."""
+    try:
+        from orchestrator import _maf_mcp
+
+        if not _maf_mcp.connected_systems_org_allowed(org):
+            return []
+        from gateway.connections import mcp as mcp_registry
+
+        return [srv for srv in await mcp_registry.needs_reconnect_meta(org)
+                if _row_may_attach(srv, agent_name, is_authorized, log_stdio=True, parked=True)]
+    except Exception as exc:  # the class only
+        _log.warning("mcp.reconnect_notes_unavailable", error=type(exc).__name__)
+        return []
 
 
 async def _count_left_out(org: str, reasons: dict[str, str]) -> None:
@@ -5969,6 +6192,19 @@ def _mark_unauthorized_for(org: str) -> Any:
             org, str(server.name), dict(server.headers),
             refreshed=getattr(server, "oauth_refreshed", False) is True,
         )
+
+    return _mark
+
+
+def _mark_needs_signin_for(org: str) -> Any:
+    """Task 3866: the callback for a 401 or 403 with an OAuth challenge on the
+    connect of a row with no sign-in. It marks the row of *org*, the run
+    binding, never request input (``integrations_console.md`` §3.6.7)."""
+
+    async def _mark(server: Any) -> None:
+        from gateway.connections import mcp as mcp_registry
+
+        await mcp_registry.mark_needs_signin(org, str(server.name), str(server.url))
 
     return _mark
 

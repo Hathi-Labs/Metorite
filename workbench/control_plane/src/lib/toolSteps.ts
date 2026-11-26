@@ -231,9 +231,31 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   complete: { kind: "edit", verb: V.complete, object: "a task" },
   defer: { kind: "edit", verb: V.defer, object: "a task" },
   watch: { kind: "edit", verb: V.watch, object: "a task" },
+  // ── Home and the shell (PAR-8b, task 3903, `acb_skills/home_tools.py`) ─────
+  // Noun-first names. The derived words would read "Used home read".
+  home_read: { kind: "read", verb: V.read, object: "your Home page" },
+  home_card: { kind: "edit", verb: V.update, object: "a Home card" },
+  home_prefs: { kind: "edit", verb: V.save, object: "a Home setting" },
+  home_layout: { kind: "edit", verb: V.set, object: "the default sidebar" },
+  home_test_push: { kind: "run", verb: V.check, object: "your notifications" },
   // ── AI Studio (the `studio` pack) ─────────────────────────────────────────
   // STB-6a and STU-E4b: a noun-first name. The derived words would read "Used studio workflow read".
   studio_workflow_read: { kind: "read", verb: V.read, object: "a workflow" },
+  // PAR-8a (task 3903): the other acts of the Workflows app, noun-first names too.
+  studio_workflow_runs: { kind: "read", verb: V.read, object: "the runs of a workflow" },
+  studio_workflow_check: { kind: "read", verb: V.check, object: "a workflow" },
+  studio_workflow_catalog: { kind: "read", verb: V.read, object: "the parts of a workflow" },
+  studio_workflow_run: { kind: "edit", verb: V.ran, object: "a workflow" },
+  studio_workflow_save: { kind: "edit", verb: V.save, object: "a workflow" },
+  studio_workflow_build: { kind: "edit", verb: V.build, object: "a workflow" },
+  studio_workflow_module: { kind: "edit", verb: V.save, object: "a code module" },
+  // PAR-9 (task 3950): the Custom Apps of the App Workshop, noun-first names too.
+  custom_app_read: { kind: "read", verb: V.read, object: "a custom app" },
+  custom_app_save: { kind: "edit", verb: V.save, object: "a custom app" },
+  custom_app_files: { kind: "edit", verb: V.change, object: "the files of a custom app" },
+  custom_app_publish: { kind: "edit", verb: V.update, object: "the live version of a custom app" },
+  custom_app_share: { kind: "edit", verb: V.change, object: "who can open a custom app" },
+  custom_app_data: { kind: "edit", verb: V.change, object: "the stored data of a custom app" },
 };
 
 /** First word of a verb-first name → its verb and its step kind. */

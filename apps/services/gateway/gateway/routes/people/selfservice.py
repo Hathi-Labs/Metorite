@@ -58,6 +58,8 @@ from gateway.routes.people.absences import (
 )
 from gateway.routes.people.core import (
     _tenant_session,
+    avatar_refusal,
+    avatar_uri,
     can_manage_people,
     clear_avatar,
     find_self_row,
@@ -238,19 +240,34 @@ async def upload_my_avatar(
     only a file gets a centre crop rather than an error. **The server squares it
     either way** (D-PC-17): the cropper is a courtesy, the square is a
     guarantee.
+
+    Two sessions, and no session while the child decodes (task 2186). The
+    write session finds the caller's row again, and writes only when it is
+    the same row that the first session found.
     """
     async with _tenant_session() as db:
         row = await _my_row(db, user)
         authorize_write(["avatar"], is_admin=can_manage_people(user),
                         is_self=True)
-        try:
-            await store_avatar(db, str(row.id), await file.read(),
-                               (crop_x, crop_y, crop_size),
-                               getattr(user, "email", None) or "anonymous")
-        except AvatarError as exc:
-            # The refusal is a sentence about the file the person just chose,
-            # because they are the one who has to choose a different one.
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        mine = str(row.id)
+    try:
+        uri = await avatar_uri(file, (crop_x, crop_y, crop_size))
+    except AvatarError as exc:
+        # The refusal is a sentence about the file the person just chose,
+        # because they are the one who has to choose a different one. A 503
+        # says that this server, not the file, is the problem.
+        raise avatar_refusal(exc) from exc
+    async with _tenant_session() as db:
+        row = await _my_row(db, user)
+        authorize_write(["avatar"], is_admin=can_manage_people(user),
+                        is_self=True)
+        if str(row.id) != mine:
+            raise HTTPException(
+                status_code=409,
+                detail=("Your directory record changed while the picture was "
+                        "read. Upload the picture again."))
+        await store_avatar(db, mine, uri,
+                           getattr(user, "email", None) or "anonymous")
         saved = await _my_row(db, user)
         return await person_payload(db, saved, user)
 

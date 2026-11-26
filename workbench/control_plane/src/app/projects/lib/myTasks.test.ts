@@ -303,9 +303,9 @@ describe("the task panel keeps a disposition control", () => {
 // ── The tabs, the phone, the facts and the address ─────────────────────────
 
 describe("the tabs", () => {
-  it("are a project's canvases with the same ids and icons, less the Timeline", () => {
+  it("are a project's canvases with the same ids and icons, less the Timeline and the Agents map", () => {
     expect(MY_TASKS_MODES).toEqual(
-      VIEW_MODES.filter((m) => m.id !== "timeline").map((m) => ({ id: m.id, icon: m.icon })),
+      VIEW_MODES.filter((m) => m.id !== "timeline" && m.id !== "agents").map((m) => ({ id: m.id, icon: m.icon })),
     );
   });
 });

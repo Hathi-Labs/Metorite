@@ -174,7 +174,7 @@ def _init_tier_models() -> None:
         return
 
     try:
-        with config_path.open() as f:
+        with config_path.open(encoding="utf-8") as f:
             cfg: dict[str, Any] = yaml.safe_load(f) or {}
     except Exception as exc:
         _log.warning(
@@ -210,7 +210,7 @@ def _init_tier_models() -> None:
         overrides_path = root / "infra" / "litellm" / "tier_overrides.yaml"
         if overrides_path.exists():
             try:
-                with overrides_path.open() as f:
+                with overrides_path.open(encoding="utf-8") as f:
                     overrides = yaml.safe_load(f) or {}
             except Exception as exc:
                 _log.warning(

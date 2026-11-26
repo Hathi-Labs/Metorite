@@ -6,6 +6,8 @@ History of this file is in git (git log -p).
 Three distinct kinds of unit, grouped by lifecycle into subfolders. The split
 is load-bearing. **Services** are deployed processes. **Agents** and **skills**
 are *loaded by* a service at runtime and are never deployed on their own.
+A fourth kind, **connectors**, runs on the customer's machine. Metorite never
+deploys it (`connectors/` below).
 
 A bare test file name below is under `tests/unit/`, and a bare spec name is
 under `project-docs/specs/`.
@@ -15,7 +17,7 @@ under `project-docs/specs/`.
 - orchestrator/ -- Agent execution engine, mutation layer, MAF integration. Local contract: `apps/services/orchestrator/AGENTS.md`.
 - email_ingestion/ -- Multi-provider email sync engine (Gmail, Microsoft 365, IMAP/SMTP, aiosmtpd inbound, background scheduler). Local contract: `apps/services/email_ingestion/AGENTS.md`.
 - agent_edge/ -- The public edge for outside agents (WS-55, spec `external_agent_access.md`). It is a separate unit (D-EA-2) that holds a signing key and no internal bearer. Local contract: `apps/services/agent_edge/AGENTS.md`.
-- reconciler/ -- Nightly source-of-truth diff and escalation.
+- reconciler/ -- Nightly source-of-truth diff and escalation. No unit or timer runs `reconciler.main` now. ⚠️ Its `run_ok` row has no tenant, so it goes through `_audit`, and `refuse_tenantless` skips it with the bind on (task 2221). Fence: `test_audit_tick_writers_org_r8.py` (R8).
 - whatsapp_ingestion/ -- WhatsApp ingestion over the official Meta WhatsApp Business Cloud API.
 - whatsapp_bridge/ -- The unofficial WhatsApp transport (Go, whatsmeow) that pairs a personal number by QR code.
 - meeting_bot/ -- A self-hosted headless-Chrome worker that joins a meeting, records the audio and hands it to Metorite.
@@ -25,6 +27,7 @@ under `project-docs/specs/`.
   - Its sibling `client.py` stays read-only. `SETTINGS_API_VERSION` names the settings API version ONCE. A tenant that refuses it raises `ZohoApiVersionError`, and nothing tries a ladder of older versions.
   - **Receivers:** verify the credential, log, best-effort `queue.enqueue`, then schedule `emit_event(source, event_type, payload)` as a background task. **Never `await` the emit inline.** A provider webhook must never 5xx.
   - **Fail closed:** with `zoho_webhook_secret` or `gmail_pubsub_token` empty, each push gets 401. Provisioning them is an OWNER action.
+  - ⚠️ **An audit row here has no tenant** (task 2221). One shared secret serves the whole deployment, and no code maps a mailbox or a module to an org. So each receiver, `scheduler.py`, `scripts/reconciler.py` and `scripts/zoho_sync.py` records a row with tenant data through a local `_audit`. With `ACB_GRAPH_TENANT_BIND` on, `refuse_tenantless` skips the row, so it never goes under the operator org. Two `scheduler.py` rows hold no tenant data, the Zoho `run_ok` and `scheduler_started`. They call `record` and keep the operator org (Option-A). The AST fence names them, and it refuses any other call. Never take the org from the payload. Fences: `test_audit_tick_writers_org.py`, `test_audit_tick_writers_org_r8.py` (R8).
   - ⚠️ With `INGESTION_CONSUMER` set, a receiver enqueues only, and the consumer is the sole caller of `emit_event`. A failed `enqueue` then drops the event. Never "fix" it with a fallback to an inline emit.
   - **`(source, event_type)` is a user-visible vocabulary** (workflow event triggers match on it). Do not invent strings in a PR. Coerce the provider's value to `str` before `xadd`.
   - **Never pass `event=` to a logger**, because it is structlog's own message parameter. Use `zoho_event=` or `gmail_event=`. This rule is advisory (R7), because no guard pins it now.
@@ -125,11 +128,13 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - **Every write asks a human first and fails CLOSED.** Each write tool awaits `request_confirmation` **before it builds a mutating request**, and none passes `non_interactive_default="approve"`. Fence: `test_crm_agent_write.py`.
   - **The card must NAME the record being written to.** A tool takes names where a person speaks names, never creates vocabulary, and refuses a name that matches two rows. Identity is never an argument.
   - `_ALLOWED_METHODS` is `{"GET", "POST", "PATCH"}`, checked in the single `_request` helper. Do not add `DELETE` or `PUT`.
-  - **Any new tool must route its path segments through `_record_uuid` and `_entity_slug`** and bind the results to `slug` and `record`. Fence: `test_crm_agent.py::test_the_path_guard_is_structural_not_a_docstring`.
+  - `crm_edit_status` and `crm_edit_lost_reason` (CRM-M2e, task 3951) add and change a stage, a lead status and a lost reason, and reset the Zoho order. Each takes names and shows one card. The DELETE rows and the PUT of the order stay planned in the CRM manifest, because of the rule above. Fence: `test_crm_setup_tools.py`.
+  - **Any new tool must route its path segments through `_record_uuid`, and through `_entity_slug` or the closed map of `_status_kind`**, and bind the results to `record` and `slug`. Fence: `test_crm_agent.py::test_the_path_guard_is_structural_not_a_docstring`.
   - It imports the read tools of `acb_skills.crm_tools` and keeps no copy. A Mirror run drops the record writes (orchestrator contract 19). Fence: `test_crm_mirror_run_tools.py`.
-  - Each call sends `X-Actor-Via: chat:crm-assistant`, so the Change history row says `chat`. `crm_create_pipeline` leaves the run of an org off `CRM_PIPELINES_ORGS`. Fence: `test_crm_pipelines_native.py`.
+  - Each call sends `X-Actor-Via: chat:crm-assistant`, so a Change history row of the call says `chat`. Four routes log no Change history row yet, for the chat and for the UI: the approve, dismiss and undo of a field map suggestion, and the re-run of the AI analysis. task 3971 adds those rows. `crm_create_pipeline` leaves the run of an org off `CRM_PIPELINES_ORGS`. Fence: `test_crm_pipelines_native.py`.
   - `crm_create_pipeline` makes a lead pipeline too, with `kind="lead"` and an optional `feeds` (CRM-M4a). Its card names the kind and the fed deal pipeline, and a deal body sends neither key. Fence: `test_crm_agent_write.py`.
   - A zero of `search_crm` ("Nothing in … matches") ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). A near answer gets none. Fence: `test_find_tools.py`.
+  - `crm_mapping_suggestions`, `crm_preview_suggestion` and `crm_analysis_status` read the field map suggestions and the AI analysis (P-3, task 3954). `crm_decide_suggestion` uses, dismisses or undoes one suggestion, and `crm_rerun_analysis` starts the analysis, each on one card. These two writes log no Change history row yet (task 3971). The tool takes a suggestion by its list or its module. It reads the draft version, and the model never sends it. The slot of the path comes from `_slot_word` and binds to `slug`. Fence: `test_crm_suggestion_tools.py`.
 - agent-projects/ -- Projects assistant (`projects-assistant`, spec `projects_ai_chat.md`). ⚠️ **The directory is `agent-projects`, the agent is `projects-assistant`.** Its tools live in `apps/skills/skill-projects`, and `agents.py` holds identity only.
   - Every tool calls `/projects/*` as the acting member, so the route's rule is the one authority.
   - **The route manifest is the allowlist.** `skill_projects.manifest.MANIFEST` maps every `/projects` route to a tool and a class: A (read), B (reversible write), C (hard-to-undo write) or X (excluded). The client refuses a route that the manifest does not carry.
@@ -147,6 +152,7 @@ They run *inside* the orchestrator or gateway process, with no server of their o
   - SW-43c: `change_agent_answer` (class C, `guarded.py`) changes the member's own answer to an agent, or takes it back with `withdraw`, before the agent reads it. It refuses a run with no person present and the answer to an archive request (D-OP-13) before any card. `guarded.py` is the one module that names a path under a run. Fences: `test_agent_answer_tools.py`, `test_agent_answer_chat_r8.py` (R8), `test_projects_agent_requests_tools.py`.
 - agent-worker/ -- The internal sub-agent of `spawn_subagents` (WS-67 OA-9, spec `one_assistant_context.md` §6). It is in `_INTERNAL_AGENTS` and in no picker list. It refuses a run with no job, at run and never at build. A child holds only the tools of its job and the read tools of its packs (OA-9c, `Job.pack_tools`), through `subagent_contract.child_pin`. Fences: `test_subagent_worker.py`, `test_subagent_blocked_tools.py`.
   - Under `acb_common.run_attribution_scope` its client sends no fixed `X-CC-Agent`, so a headless round bills as `auto.headless` (AUTO-8b-2c). Fence: `test_subagent_worker.py`.
+- agent-org-admin/ -- The owner of the `org-admin` tool pack (PAR-2a, spec `chat_parity.md` §6.3). It is in `_PACK_OWNER_AGENTS` with `agent-studio-builder`, in no picker list, and it never runs as an agent. `agents.py` lists the tools of `acb_skills/org_admin_tools.py`, `acb_skills/org_admin_more_tools.py` (PAR-4a, task 3107, PAR-4c, task 3935, and the seats of PAR-4d, task 3936) and `acb_skills/integrations_admin_tools.py` (PAR-6a), and keeps no copy. Fence: `test_tool_packs_registry.py` section 10.
 - agent-app-builder/ -- App Workshop builder (Custom Apps). It enforces the platform contract (window.cc only, see docs/app-workshop/README.md §4.0). The factory picks the engine on each run (WS-43h, `maf_coding_engine.md` §7.8). An org that `MAF_CODING_SCOPE` names as `app_builder:<org>` gets a MAF harness agent, and its build runs in the sandbox broker, in an app's own workspace only. Every other org gets the Copilot SDK agent until WS-43j, and D85 refuses its Copilot CLI shell. Fence: `test_app_builder_engine.py`.
   - ⚠️ **A T2 build reads only the app's own files** (task 2464). Every app dir is a sibling under one apps root, across orgs. In both dependency modes, the one plugin of `build/build_t2.mjs` refuses an import whose real path leaves the app dir. A bare package name may also reach the vendor cache, and `@cc/ui` its one file. A vendor file may reach only the vendor cache. The template and `dist/` must be real paths in the app dir, and the build reads no tsconfig. It refuses a glob import before esbuild parses the file. A glob import is a `require()` or `import()` path built with `+` or `${}`. The check reads the text and esbuild's transform of it. onLoad gives esbuild the checked bytes, so esbuild never reads an app file itself. An import that does not resolve and one that leads out read the same. Before esbuild runs, the build refuses a package.json whose path field leads out of the app dir. It also refuses a bare name with a `.` or `..` part. A refusal of a file outside every root names no path, and each error line prints once. `build/install_t2_deps.mjs` refuses a dependency that npm takes from disk. Do not add a second build path or a second check. Fence: `test_app_builder_t2_containment.py`. Its build tests are `sandbox_docker`, so the "Sandbox Docker tests" job runs them with production's vendor versions, and it fails on a skip.
 
@@ -158,6 +164,13 @@ which holds SKILL.md and subprocess-script skills for the DOE-v2 registry agents
 - skill-projects/ -- the Projects tool family for `projects-assistant` over the gateway `/projects` API. `manifest.py` is the route allowlist and the coverage record (see `agent-projects/` above)
   - A zero of `find_tasks` ends with the pointer of `acb_skills.company_search_tools.with_zero_pointer` (WS-FIND FIND-6). `reads._with_zero_pointer` imports it as the other optional imports here. Fence: `test_find_tools.py`.
 
+## `connectors/` — programs on the customer's machine
+A customer installs a connector, and it reads a local system for the chat
+(spec `integrations_console.md` §3.8). It is not a uv workspace member, and it
+imports nothing from `services/` or `packages/`. Local contract:
+`apps/connectors/AGENTS.md`.
+- tally_bridge/ -- the Tally bridge (TLY-1, task 3656, brief `docs/tally_bridge_brief.md`). An MCP server that reads TallyPrime on 127.0.0.1:9000. Three modules: `reader`, `tools`, `transport`. Fence: `test_tally_bridge_fences.py`.
+
 ## Conventions
 - Each service, agent and skill has its own pyproject.toml and is a uv workspace member (`apps/services/*`, `apps/agents/*`, `apps/skills/*` — see root `pyproject.toml`)
 - Moving a dir between groups means updating its `local_path` (registry and gateway `_AGENT_REGISTRY`). Python imports are by package name and do not change.
@@ -167,6 +180,7 @@ which holds SKILL.md and subprocess-script skills for the DOE-v2 registry agents
 - The `/copilot/chat` endpoint in main.py stays for backward compatibility, but the workbench frontend no longer routes to it
 
 ## Child DOX Index
+- apps/connectors/AGENTS.md
 - apps/services/agent_edge/AGENTS.md
 - apps/services/gateway/AGENTS.md
 - apps/services/orchestrator/AGENTS.md

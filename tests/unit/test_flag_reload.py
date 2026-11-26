@@ -137,6 +137,23 @@ def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not waiting_allowed("globex")
 
 
+def test_app_owner_root_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-44, agent_coordination.md §3.10.1. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from gateway.routes.projects.needs_attention import app_roots_of
+
+    root = "11111111-2222-4333-8444-555555555555"
+    assert fr.reloadable("APP_OWNER_ROOT_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("APP_OWNER_ROOT_ORGS", "")
+    get_settings.cache_clear()
+    assert app_roots_of("acme") == ()
+    env(**{**_START, "APP_OWNER_ROOT_ORGS": f"acme={root}"})
+    assert fr.reload_flags().applied == ("APP_OWNER_ROOT_ORGS",)
+    assert app_roots_of("acme") == (root,)
+    assert app_roots_of("globex") == ()
+
+
 def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
     and the one reader sees a change with no restart."""
@@ -245,6 +262,27 @@ def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     assert not pin_allowed(None)
 
 
+def test_chat_pin_tool_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11b, chat_organization.md §18 (owner, 2026-11-21, task 3563).
+    The reload list holds the key. The one reader of the tool switch sees a
+    change with no restart, and it needs the pin switch too."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert fr.reloadable("CHAT_PIN_TOOL_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    monkeypatch.setenv("CHAT_PIN_TOOL_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme", "CHAT_PIN_TOOL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_TOOL_ORGS",)
+    assert pin_tool_allowed("acme")
+    assert not pin_tool_allowed("globex")
+    assert not pin_tool_allowed(None)
+
+
 def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
     reader of the compute switch sees a change with no restart."""
@@ -309,6 +347,20 @@ def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert not core_events_allowed("globex")
 
 
+def test_crm_mirror_age_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q30c, crm_platform.md §18.11.2. The reload list holds the
+    key, and the one reader of the age line sees a change with no restart."""
+    assert fr.reloadable("CRM_MIRROR_AGE_ORGS")
+    monkeypatch.setenv("CRM_MIRROR_AGE_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.mirror_age_allowed("acme")
+    env(**{**_START, "CRM_MIRROR_AGE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MIRROR_AGE_ORGS",)
+    assert crm_flags.mirror_age_allowed("ACME ")
+    assert not crm_flags.mirror_age_allowed("globex")
+    assert not crm_flags.mirror_age_allowed(None)
+
+
 def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
     """WS-53 CRM-Q34-7, crm_platform.md §18.17. The reload list holds the key,
     and the one reader of `q` across a module sees a change with no restart."""
@@ -320,6 +372,20 @@ def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -
     assert fr.reload_flags().applied == ("CRM_MODULE_FIND_ORGS",)
     assert crm_flags.module_find_allowed("acme")
     assert not crm_flags.module_find_allowed("globex")
+
+
+def test_crm_module_reread_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 task 3869, crm_platform.md §18.7. The reload list holds the key,
+    and the one reader of the weekly module read sees a change with no
+    restart."""
+    assert fr.reloadable("CRM_MODULE_REREAD_ORGS")
+    monkeypatch.setenv("CRM_MODULE_REREAD_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.module_reread_allowed("acme")
+    env(**{**_START, "CRM_MODULE_REREAD_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MODULE_REREAD_ORGS",)
+    assert crm_flags.module_reread_allowed("acme")
+    assert not crm_flags.module_reread_allowed("globex")
 
 
 def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
@@ -504,6 +570,21 @@ def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> No
     assert topics_allowed("ACME ")
     assert not topics_allowed("globex")
     assert not topics_allowed(None)
+
+
+def test_ai_turn_kind_nowait_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """Task 3592, ai_tier_routing.md §4.3. The reload list holds the key, and
+    the one reader of the delegated wait sees a change with no restart."""
+    from acb_skills.tier_policy import turn_kind_nowait_on
+
+    assert fr.reloadable("AI_TURN_KIND_NOWAIT_ORGS")
+    monkeypatch.setenv("AI_TURN_KIND_NOWAIT_ORGS", "")
+    get_settings.cache_clear()
+    assert not turn_kind_nowait_on("acme")
+    env(**{**_START, "AI_TURN_KIND_NOWAIT_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AI_TURN_KIND_NOWAIT_ORGS",)
+    assert turn_kind_nowait_on("ACME ")
+    assert not turn_kind_nowait_on("globex")
 
 
 def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
