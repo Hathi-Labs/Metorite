@@ -2881,6 +2881,15 @@ def _trash_title(drafts: int, others: int) -> str:
     return text + " to Trash?"
 
 
+def _short_label(label: str) -> str:
+    """"From sender: subject" or "To people: subject" with each part cut by
+    itself, so a long sender never takes the subject off the line."""
+    who, sep, subject = label.partition(": ")
+    if not sep:
+        return _card_text(label, 100)
+    return f"{_card_text(who, 45)}: {_card_text(subject, 55)}"
+
+
 def _plain_card_context(
     plan: _TrashPlan, drafts: list[dict[str, Any]], staying: list[dict[str, Any]],
 ) -> str:
@@ -2893,12 +2902,15 @@ def _plain_card_context(
     kept_cap, already_cap = plan.rule.MAX_DRAFTS, _CARD_MESSAGE_LINES
     short = False
     while True:
-        if short:  # cut each half, so the facts that tell two lines apart stay
+        if short:
             cut = plan.rule.unique(
-                [(_card_text(a, 70), _card_text(b, 80)) for a, b in pairs])
+                [(_short_label(a), _card_text(b, 70)) for a, b in pairs])
             shown = [f"- {' · '.join(p)}" for p in cut]
         else:
             shown = [f"- {_card_text(' · '.join(p), 300)}" for p in pairs]
+            if len(set(shown)) < len(shown):  # the cut took what told two apart
+                short = True
+                continue
         # *shown* holds the drafts, then the staying drafts, then the others.
         moving = [shown.pop(0) for _ in drafts]
         kept = [shown.pop(0) for _ in staying]
