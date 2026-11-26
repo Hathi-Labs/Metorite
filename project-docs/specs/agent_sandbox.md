@@ -1324,9 +1324,10 @@ gap id that is not `no_match`, not from this run, or older than 30 minutes
   At a cap, the tool answers "the sandbox is busy, try again in a minute".
 - **No fallback to the host,** as the broker's rule 14 says.
 - (SBX-4b, §12.4 decisions 1 and 2) `build_tool` starts the container through
-  `acquire_tool`, not `acquire()`. The mounts come from the subfolder
-  `<run-data>/user-tool/`, and `/workspace/outputs` is a folder of it, not
-  the output folder of the thread.
+  `acquire_tool`, not `acquire()`. The mounts come from a sibling of the
+  run-data dir, `.run-data/<org slug>/<thread slug>.user-tool/`. Its
+  `outputs/` folder is `/workspace/outputs`, not the output folder of the
+  thread.
 
 **Short-lived, one for each thread (D187).** No member has a sandbox of
 their own. A container serves the steps of one thread: the build, the smoke
@@ -1342,6 +1343,10 @@ into a fresh run-data dir (§6.4).
 (`maf_coding_engine.md` §7.6). It gets `run_command`, the file tools over the
 run-data dir, and the `build` profile. It must write one package in the MAF
 skill format, so the existing `SkillsProvider` can load it.
+
+(SBX-4b, §12.4 decision 3) The session runs its commands with
+`--network none`. The step engine opens the `build` hosts for the install of
+each round only.
 
 (D187) The session runs on the one coding harness of CA-14 (D139), with the
 profile `tool_builder`. The model is a setting (§6.9). The five files become
@@ -1699,7 +1704,8 @@ approver reads them on the approval card (§8.1).
 | `gap_id` | `uuid` | Null |
 | `repair_of` | `uuid` | (D187) Null. The failed run that this repair answers (§6.7) |
 | `signal` | `text` | (D187) Null. `'exit_code'`, `'schema'` or `'door_5xx'`, the signal of a failed run (§6.7) |
-| `member_email`, `thread_id`, `run_id` | `text` | The member, the chat thread, the agent run |
+| `member_email`, `run_id` | `text` | The member and the agent run |
+| `thread_id` | `text` | Null. The chat thread. It references `chat_session (id)` with ON DELETE SET NULL, so a Delete of the chat keeps the row (§12.4 decision 10) |
 | `phase` | `text` | `'build'`, `'smoke'` or `'run'` |
 | `backend` | `text` | `'docker-runc'`, `'docker-runsc'`, `'remote-runsc'` (D187) or `'e2b'` |
 | `outcome` | `text` | `'succeeded'`, `'failed'`, `'timeout'`, `'refused'` or `'cancelled'` |
@@ -3017,13 +3023,20 @@ SBX-4b1 adds one way in, as `run_compute` does for `compute` (main).
 
 **2. The mounts.** `mount_list` (`sandbox_broker.py:1122`, main) gets a
 `tools` branch. It mounts no working dir of an agent and no tenant dir.
-`projects_mounts` mounts the run-data dir of the same thread read-write. So
-the `tools` branch mounts its own subfolder, `<run-data>/user-tool/`.
+
+`projects_mounts` mounts the run-data dir of the same thread read-write
+(`sandbox_broker.py:1115`, main). A folder inside that dir is still inside
+that mount. So the `tools` branch mounts a sibling dir outside it:
+`.run-data/<org slug>/<thread slug>.user-tool/`, called `<tool-data>` below.
 
 | Host source | Container target | Mode |
 |---|---|---|
-| `<run-data>/user-tool/` | `/workspace/.run` | Read-write |
-| `<run-data>/user-tool/outputs/` | `/workspace/outputs` | Read-write |
+| `<tool-data>/` | `/workspace/.run` | Read-write |
+| `<tool-data>/outputs/` | `/workspace/outputs` | Read-write |
+
+- `RunBinding` gains `tool_data_rel`, beside `run_data_rel`
+  (`agent_paths.run_data_rel`, main). A thread slug ends in 8 hex digits,
+  so `<thread slug>.user-tool` is never the slug of another thread.
 
 - The package lives in `/workspace/.run/pkg/`. The lock installs into
   `/workspace/.run/site/`. The smoke input is `/workspace/.run/input.json`.
@@ -3032,8 +3045,11 @@ the `tools` branch mounts its own subfolder, `<run-data>/user-tool/`.
   real run.
 - Each build starts with an empty `pkg/`.
 - Each round deletes `site/`, `outputs/` and `input.json` first.
-- The host deletes the run-data dir at the end of the run, as for
-  `projects` (`maf_coding_engine.md` §16.3).
+- The run end deletes `<tool-data>` too. `_note_run_data` (main) records
+  the rel of `<tool-data>` for the thread. `end_run` (main) removes it with
+  `_remove_run_data`, as it removes the run-data dir (`maf_coding_engine.md`
+  §16.3). The startup sweep `remove_all_run_data` removes the whole
+  `.run-data` dir, so it covers `<tool-data>` with no change.
 
 **3. The grants of a round.** The build card is the approval of the member.
 The build session runs its commands with `--network none`. Each round of the
@@ -3329,12 +3345,15 @@ Each item names its test. The builder sees each test fail first.
 SBX-4b1, part (a), the door refusal counter:
 
 1. The door counts a refusal for each of the four codes of decision 9. It
-   counts none for an admitted call or a 422.
+   counts none for an admitted call or a 422. The line `sandbox.door.call`
+   of a refusal holds no token and no token hash.
    `test_sandbox_door_identity.py::test_the_door_counts_each_scope_refusal`.
 2. The count exists before the client reads the status of the refusal.
    `test_sandbox_door_identity.py::test_the_refusal_count_lands_before_the_answer`.
-3. The store digest changes in a commit that names the review. The branch-0
-   digest of `test_tenant_request_binding.py` does not change.
+3. The store digest changes in a commit that names the review:
+   `tests/unit/test_sandbox_door_identity.py::test_the_digest_of_the_capability_store_is_pinned`.
+   The branch-0 digest does not change:
+   `tests/unit/test_tenant_request_binding.py::test_branch_zero_digest_is_pinned`.
 
 SBX-4b1, part (b), `user_tool_runs`:
 
@@ -3396,7 +3415,9 @@ SBX-4b1, the step engine:
     `test_sandbox_no_secrets.py::test_the_tools_container_holds_no_secret`
     (SBX-F4, first part, with a `sandbox_docker` half).
 23. The `tools` container mounts the two dirs of decision 2 and nothing
-    else. No mount of it overlaps a mount of `projects_mounts`.
+    else. No source of it lies inside a source of `projects_mounts` for the
+    same thread, and no source of `projects_mounts` lies inside one of it.
+    `end_run` removes `<tool-data>`.
     `test_sandbox_broker_tools.py::test_the_tools_mounts_do_not_overlap_projects`.
 24. The install runs with the two PyPI hosts only. The smoke command runs
     with the door name only. The step revokes on a pass and on a failure.
