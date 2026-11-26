@@ -10,7 +10,8 @@ import { describe, expect, it } from "vitest";
 
 import type { ViewDef } from "./manifest";
 import { NOT_DECLARED_SENTENCE, READ_ONLY_SENTENCE, type DeclaredAction, type ObjectRow } from "./realDoor";
-import { MAX_FILTERS, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { CALENDAR_START_SENTENCE, MAX_FILTERS, TREE_RULE_SENTENCE, VIEW_LIMIT, mapView, type ViewMapContext } from "./viewBlocks";
+import { MAX_TREE_NODES } from "./treeModel";
 
 const visit = {
   name: "visit", label: "Visit", rules: [],
@@ -18,6 +19,17 @@ const visit = {
     { key: "title", type: "text", label: "Title", required: true, many: false, options: null, to: null, hot: false },
     { key: "status", type: "select", label: "Status", required: false, many: false, options: ["open", "done"], to: null, hot: false },
     { key: "notes", type: "longText", label: "Notes", required: false, many: false, options: null, to: null, hot: false },
+  ],
+} as unknown as ObjectRow;
+
+/** The visit object with the date fields that a calendar needs. */
+const dated = {
+  ...visit,
+  fields: [
+    ...(visit.fields as unknown as object[]),
+    { key: "visit_at", type: "datetime", label: "Visit at", required: false, many: false, options: null, to: null, hot: true },
+    { key: "visit_end", type: "datetime", label: "Visit end", required: false, many: false, options: null, to: null, hot: false },
+    { key: "visit_day", type: "date", label: "Visit day", required: false, many: false, options: null, to: null, hot: true },
   ],
 } as unknown as ObjectRow;
 
@@ -136,9 +148,101 @@ describe("mapView: form and detail", () => {
   });
 });
 
+describe("mapView: calendar", () => {
+  const cctx = (over: Partial<ViewMapContext> = {}) => ctx({ objects: [dated], ...over });
+  const cal = (v: Partial<ViewDef> = {}) =>
+    view({ id: "c", block: "calendar", object: "visit", start: "visit_at", ...v });
+
+  it("maps to the calendar model with the start, the end, the list and the link base", () => {
+    const m = mapView(cal({ end: "visit_end", title: "Field visits" }), cctx({ recordBase: (o) => `?ro=${o}&rec=` }));
+    expect(m).toEqual({
+      kind: "calendar", object: "visit", start: "visit_at", startType: "datetime", end: "visit_end", titleField: "title",
+      source: { action: "object:visit.list", args: { limit: VIEW_LIMIT } }, openBase: "?ro=visit&rec=", title: "Field visits",
+    });
+  });
+
+  it("takes a date field as the start, and gives no link when the frame has no record page", () => {
+    const m = mapView(cal({ start: "visit_day" }), cctx());
+    expect(m).toMatchObject({ kind: "calendar", start: "visit_day", startType: "date", end: null, openBase: null });
+  });
+
+  it("keeps the own filter of the view in the source, before the window", () => {
+    const filter = [{ field: "status", op: "eq", value: "open" }];
+    const m = mapView(cal({ source: { action: "list_visits", args: { filter } } }), cctx());
+    expect(m).toMatchObject({ source: { args: { limit: VIEW_LIMIT, filter } } });
+  });
+
+  describe("the me token (STU-AF3b)", () => {
+    const personField = { key: "owner", type: "person", label: "Owner", required: false, many: false, options: null, to: null, hot: true };
+    const withPerson = { ...dated, fields: [...dated.fields, personField] } as unknown as ObjectRow;
+    const meView = (filter: unknown[], extra: Record<string, unknown> = {}) =>
+      cal({ source: { action: "list_visits", args: { filter, ...extra } } as ViewDef["source"] });
+    const mineF = [{ field: "owner", op: "eq", value: "me" }];
+
+    it("waits for the session email and shows the loading model", () => {
+      expect(mapView(meView(mineF), cctx({ objects: [withPerson], email: null }))).toEqual({ kind: "loading" });
+    });
+    it("carries the lower-cased email in the source filter", () => {
+      const m = mapView(meView(mineF), cctx({ objects: [withPerson], email: "Ann@X.io" }));
+      expect(m).toMatchObject({ kind: "calendar", source: { args: { filter: [{ field: "owner", op: "eq", value: "ann@x.io" }] } } });
+    });
+    it("a view with no source args reads as before", () => {
+      expect(mapView(cal(), cctx({ objects: [withPerson], email: null }))).toMatchObject({
+        kind: "calendar", source: { args: { limit: VIEW_LIMIT } },
+      });
+    });
+    it("a me string on a field that is not a person stays a literal", () => {
+      const lit = [{ field: "status", op: "eq", value: "me" }];
+      const m = mapView(meView(lit), cctx({ objects: [withPerson], email: null }));
+      expect(m).toMatchObject({ kind: "calendar", source: { args: { filter: lit } } });
+    });
+    it("never takes the sort of the view", () => {
+      const m = mapView(meView([], { sort: { field: "status", dir: "desc" } }), cctx({ objects: [withPerson], email: "a@b.c" }));
+      expect(m).toMatchObject({ kind: "calendar" });
+      expect((m as { source: { args: Record<string, unknown> } }).source.args).not.toHaveProperty("sort");
+    });
+    it("a missing start field still gives its sentence while the email is unknown", () => {
+      expect(mapView(meView(mineF, {}), cctx({ objects: [withPerson], email: null }))).toEqual({ kind: "loading" });
+      const bad = cal({ start: null, source: { action: "list_visits", args: { filter: mineF } } as ViewDef["source"] });
+      expect(mapView(bad, cctx({ objects: [withPerson], email: null }))).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+    });
+  });
+
+  it("gives a plain sentence when the view has no start field", () => {
+    expect(mapView(cal({ start: null }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+    expect(mapView(cal({ start: "no_such" }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+    expect(CALENDAR_START_SENTENCE).toBe("This calendar needs a start field that is a date or datetime.");
+  });
+
+  it("gives that sentence when the start is a text field", () => {
+    expect(mapView(cal({ start: "title" }), cctx())).toEqual({ kind: "problem", reason: CALENDAR_START_SENTENCE });
+  });
+
+  it("ignores an end that is not a date or datetime", () => {
+    expect(mapView(cal({ end: "title" }), cctx())).toMatchObject({ kind: "calendar", end: null });
+  });
+
+  it("refuses a source that names an undeclared action", () => {
+    const m = mapView(cal({ source: { action: "no-such-action" } }), cctx());
+    expect(m).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("reads for a viewer, and a viewer without a list gets the not-declared sentence", () => {
+    expect(mapView(cal(), cctx({ actions: READS, owner: false }))).toMatchObject({ kind: "calendar" });
+    expect(mapView(cal(), cctx({ actions: [] }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("names the record by card.title, else the first text field, else the id", () => {
+    expect(mapView(cal({ card: { title: "status" } }), cctx())).toMatchObject({ titleField: "status" });
+    expect(mapView(cal({ card: { title: "no_such" } }), cctx())).toMatchObject({ titleField: "title" });
+    const noText = { ...dated, fields: (dated.fields as unknown as { type: string }[]).filter((f) => f.type !== "text") } as unknown as ObjectRow;
+    expect(mapView(cal(), ctx({ objects: [noText] }))).toMatchObject({ titleField: "id" });
+  });
+});
+
 describe("mapView: kinds that are not built, and the door guard", () => {
   it("gives null for a kind that is not built, so StudioPage shows the not-built card", () => {
-    for (const block of ["calendar", "timeline", "mindMap", "processFlow", "checklist", "map", "markdown"] as const) {
+    for (const block of ["timeline", "mindMap", "processFlow", "checklist", "map", "markdown"] as const) {
       expect(mapView(view({ id: "x", block, object: "visit" }), ctx())).toBeNull();
     }
   });
@@ -158,6 +262,76 @@ describe("mapView: kinds that are not built, and the door guard", () => {
   it("refuses a list when the manifest declares no list action", () => {
     const m = mapView(view({ id: "v", block: "table", object: "visit" }), ctx({ actions: [] }));
     expect(m).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+});
+
+describe("mapView: tree (D18-2b)", () => {
+  const field = (key: string, type: string, extra: Record<string, unknown> = {}) =>
+    ({ key, type, label: key, required: false, many: false, options: null, to: null, hot: false, ...extra });
+  const part = {
+    name: "part", label: "Part",
+    fields: [field("code", "text"), field("name", "text"), field("parent", "relation", { to: "part" }), field("notes", "longText"),
+      field("qty", "number"), field("unit", "text")],
+    rules: [{ kind: "hierarchy", name: "tree", field: "parent" }],
+  } as unknown as ObjectRow;
+  const TREE_ACTIONS: DeclaredAction[] = [
+    { id: "tree_parts", uses: "object:part.tree" },
+    { id: "update_part", uses: "object:part.update" },
+  ];
+  const tctx = (over: Partial<ViewMapContext> = {}): ViewMapContext => ({
+    actions: TREE_ACTIONS, objects: [part], owner: true, ...over,
+  });
+  const tv = (over: Partial<ViewDef> = {}) => view({ id: "bom", block: "tree", object: "part", ...over });
+
+  it("maps to a tree on the tree read, with the cap of one read", () => {
+    const m = mapView(tv({ title: "Bill of materials" }), tctx());
+    expect(m).toEqual({
+      kind: "tree", title: "Bill of materials", object: "part", field: "parent", labelField: "code",
+      metaFields: [expect.objectContaining({ key: "name" }), expect.objectContaining({ key: "qty" })],
+      source: { action: "object:part.tree", args: { limit: MAX_TREE_NODES } },
+      canMove: true, update: "object:part.update",
+    });
+  });
+
+  it("is a plain problem sentence when the object has no hierarchy rule", () => {
+    const flat = { ...part, rules: [] } as unknown as ObjectRow;
+    expect(mapView(tv(), tctx({ objects: [flat] }))).toEqual({ kind: "problem", reason: TREE_RULE_SENTENCE });
+    expect(TREE_RULE_SENTENCE).toBe("This tree needs an object with a hierarchy rule.");
+  });
+
+  it("takes the label and the meta from the fields of the view, in its order", () => {
+    const m = mapView(tv({ fields: ["name", "code", "unit", "qty", "notes"] }), tctx());
+    expect(m).toMatchObject({ labelField: "name" });
+    const keys = (m as unknown as { metaFields: { key: string }[] }).metaFields.map((f) => f.key);
+    // Two meta fields at most. A long text and the parent field never show.
+    expect(keys).toEqual(["code", "unit"]);
+  });
+
+  it("falls back to the id when the view lists no text field", () => {
+    const m = mapView(tv({ fields: ["qty", "parent"] }), tctx());
+    expect(m).toMatchObject({ kind: "tree", labelField: null });
+  });
+
+  it("moves only when the app declares the update and the member may write", () => {
+    expect(mapView(tv(), tctx())).toMatchObject({ canMove: true, update: "object:part.update" });
+    expect(mapView(tv(), tctx({ actions: [TREE_ACTIONS[0]] }))).toMatchObject({ canMove: false, update: null });
+    // A viewer holds the reads only, and the tree read stays.
+    const viewer = mapView(tv(), tctx({ actions: [TREE_ACTIONS[0]], owner: false }));
+    expect(viewer).toMatchObject({ kind: "tree", canMove: false, update: null });
+    // An owner flag false hides the move even when the update is declared.
+    expect(mapView(tv(), tctx({ owner: false }))).toMatchObject({ canMove: false, update: null });
+  });
+
+  it("follows the table path for a viewer without the read", () => {
+    expect(mapView(tv(), tctx({ actions: [], owner: false }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+    expect(mapView(tv(), tctx({ actions: [TREE_ACTIONS[1]] }))).toEqual({ kind: "problem", reason: NOT_DECLARED_SENTENCE });
+  });
+
+  it("ignores a filter of the view, and does not wait for the email", () => {
+    const filter = [{ field: "owner", op: "eq", value: "me" }];
+    const m = mapView(tv({ source: { args: { filter } } }), tctx({ email: null }));
+    expect(m).toMatchObject({ kind: "tree", source: { action: "object:part.tree", args: { limit: MAX_TREE_NODES } } });
+    expect(JSON.stringify(m)).not.toContain("filter");
   });
 });
 

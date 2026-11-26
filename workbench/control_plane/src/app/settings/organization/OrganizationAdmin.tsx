@@ -40,6 +40,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
@@ -81,6 +82,7 @@ import {
   interpretSeatAction,
 } from "@/app/settings/billing/lib/manage";
 import SeatsTab from "./SeatsTab";
+import { orgTabFromSearch } from "./lib/orgTab";
 import type {
   AccessRequest,
   Member,
@@ -137,12 +139,16 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
+  // WS-CO CO-11: the member's own row on a chat, the pin today.
+  chat_member_rows: "personal chat setting",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
   // WS-CRM CRM-M1: a Change history row that only the member reads.
   crm_private_changes: "private CRM change record",
+  // Task 1570 (D175.5): a CRM saved view that only the member reads.
+  crm_private_views: "private CRM saved view",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.
@@ -244,6 +250,15 @@ export default function OrganizationAdmin() {
    */
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState("members");
+  // PAR-1: a link may name the tab (`?tab=seats`). The tab is read after the first
+  // paint, so the server and the client draw the same first tab, and it is read again
+  // each time the query changes: the chat moves a page that is already open with
+  // `router.push`, which keeps this component mounted.
+  const search = useSearchParams()?.toString() ?? "";
+  useEffect(() => {
+    const named = orgTabFromSearch(search);
+    if (named) setTab(named);
+  }, [search]);
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
   // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
@@ -1413,8 +1428,8 @@ function InviteDialog({
               <Icon name="UserPlus" size={15} /> Invite a member
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Sign-in is Microsoft SSO — this provisions their access, it does
-              not send an email.
+              They get an email with a button that opens the sign-in page. They
+              sign in with the same address you enter here.
             </p>
           </div>
           <button

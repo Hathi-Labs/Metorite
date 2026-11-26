@@ -119,6 +119,8 @@ export interface TaskMenuContext {
   epicTypeId?: string | null;
   /** SP-6. This task already wears an epic type. */
   isEpic?: boolean;
+  /** Start a focus session on this task (CC-4). The board offers it on an open task. */
+  canFocus?: boolean;
 }
 
 /**
@@ -240,6 +242,7 @@ export interface TaskMenuActions {
    * does not send: the member picks a connection and writes the instruction.
    */
   askAgent?(task: TaskRow): void;
+  focus?(task: TaskRow): void;
   /**
    * SP-6. Set the task's type to the project's epic type. The surface owns
    * the write. It refuses a subtask first, with the reason in words.
@@ -353,7 +356,7 @@ export const isArchived = (ctx: TaskMenuContext): boolean =>
  * The acts that only Projects offers (`taskMenuVocabulary.ts` keeps the shared
  * ones). They sit after every shared act. Fence: `taskMenuVocabulary.test.ts`.
  */
-export const PROJECTS_ONLY_ACTS = ["askAgent", "makeEpic"] as const;
+export const PROJECTS_ONLY_ACTS = ["askAgent", "makeEpic", "focus"] as const;
 
 export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
@@ -508,6 +511,16 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     group: 1,
     when: (ctx) => Boolean(ctx.canAskAgent),
     run: (actions, ctx) => actions.askAgent?.(ctx.task),
+  },
+  // CC-4: start focus from the board. One session at a time; the start moves
+  // a to-do company task to In progress, with an Undo (`focusStart.ts`).
+  {
+    id: "task.focus",
+    label: () => "Start focus",
+    icon: "Play",
+    group: 1,
+    when: (ctx) => Boolean(ctx.canFocus),
+    run: (actions, ctx) => actions.focus?.(ctx.task),
   },
   {
     id: "task.makeEpic",

@@ -1,0 +1,3 @@
+<!-- SYNTHETIC: written by hand from brief section 5.4, not recorded on TallyPrime. -->
+<!DOCTYPE ENVELOPE [<!ENTITY x SYSTEM "file:///etc/passwd">]>
+<ENVELOPE><NAME>&x;</NAME></ENVELOPE>

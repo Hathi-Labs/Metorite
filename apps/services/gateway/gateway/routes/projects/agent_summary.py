@@ -58,6 +58,29 @@ overview reads the whole organization, and most of its agents hold no task.
 * The route reads the tenant from the session only (R5), and it writes
   nothing.
 
+    GET /projects/agents/overview?shape=map[&project_id=...][&show_quiet=true]
+
+**The map read (WS-MCP SW-102, ``agent_coordination.md`` §3.12.2).** The
+people, the session nodes and the open runs that the caller may see, for the
+Map view and the Agents view of a project. It is a shape of the overview, not
+a second route.
+
+* **One rule of what the caller sees.** The map reads :data:`_SEEN_RUNS_SQL`,
+  so it shows no run that the overview does not count (§3.12.4 rule 1).
+* **A session node** keys on the person, the connection and the name, or on
+  the session key when the run has no name. Its id is an opaque hash. The
+  session key, an address and a model never leave the server.
+* **Quiet runs fold.** A run with no event for 2 hours counts in its session
+  and is listed only with ``show_quiet=true``. A run that waits never folds.
+  An ended run is not on the map. At most :data:`MAP_RUNS_MAX` runs, and
+  ``truncated`` says that more exist.
+* **A project.** ``project_id`` keeps the runs on the tasks of the project and
+  of each project under it, through :data:`_SUBTREE_SQL`. A project that the
+  caller cannot see answers the same 404 as the flag off.
+* **Dark.** ``AGENTS_VIEW_ORGS`` is checked first, then
+  :func:`agent_map_allowed`, the one reader of ``AGENT_MAP_ORGS``. Off, the
+  map answers 404 and the plain overview does not change.
+
     GET /projects/agents/{agent_key}/runs
 
 **The drill-down of one agent (WS-AGA AGA-9, ``agents_view.md`` §4).** At
@@ -87,12 +110,14 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import uuid
 from datetime import datetime
 from typing import Any
 
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_common import active_runs, get_settings
 from fastapi import Depends, HTTPException
+from gateway.routes.projects.agent_runs import AGENT_HOST_KINDS, CHILD_COLUMNS
 from gateway.routes.projects.authority import led_projects
 from gateway.routes.projects.core import (
     _tenant_session,
@@ -108,22 +133,28 @@ from gateway.routes.projects.filters import (
     AGENT_FOCUS_ME,
     AGENT_RUN_OPEN_STATUSES,
     AGENT_RUN_STATE_SQL,
+    BOUND_ORG_SQL,
     WORKING_STATES,
     agent_focus_clause,
     agent_runs_enabled,
     connection_gone_sql,
+    run_life_at_sql,
 )
 from sqlalchemy import text
 
 #: ``scope`` is the CTE of the visible tasks. Each count is the number of
 #: those tasks that ``filters.agent_focus_clause`` keeps, so a count is the
 #: ``total`` of the list under the same focus (WS-55 EA-13e, task #986).
-_SUMMARY_SQL = """
-WITH RECURSIVE sub AS (
+#: The project ``:pid`` and each project under it, as the CTE ``sub``. ONE
+#: text: the summary below and the map of SW-102 with a ``project_id`` read it.
+_SUBTREE_SQL = """sub AS (
     SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)
     UNION ALL
     SELECT p.id FROM pm_projects p JOIN sub s ON p.parent_project_id = s.id
-), scope AS (
+)"""
+
+_SUMMARY_SQL = """
+WITH RECURSIVE """ + _SUBTREE_SQL + """, scope AS (
     SELECT t.id
       FROM pm_tasks t
      WHERE {visible}
@@ -191,6 +222,22 @@ def agents_view_allowed(organization_id: str | None) -> bool:
     return "*" in listed or org in listed
 
 
+def agent_map_allowed(organization_id: str | None) -> bool:
+    """True when ``AGENT_MAP_ORGS`` holds the org, or holds ``*``. Default OFF.
+
+    The one reader of the flag of the map (SW-102, ``agent_coordination.md``
+    §5.12). ``shape=map`` needs this flag AND :func:`agents_view_allowed`.
+    The org comes from the session, never from request input (R5). It reads
+    ``get_settings()`` on each call, so a flag reload applies a change.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "agent_map_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
 #: The label of an agent that Metorite ships to each organization (§4).
 SHARED_LABEL = "shared by Metorite"
 
@@ -217,10 +264,24 @@ _BUSY = ", ".join(f"'{s}'" for s in ("queued", *WORKING_STATES))
 #: them for each outside agent, and the drill-down (AGA-9) lists the runs of
 #: one. ``{visible}`` is ``task_visibility_clause`` and ``{reach}`` is the D12
 #: arm of :func:`_reach_sql`. ``{only}`` is empty for the overview, and
-#: :data:`_ONE_AGENT` for the drill-down. The org predicate is defence in
-#: depth beside FORCE RLS, which the session binds.
+#: :data:`_ONE_AGENT` for the drill-down. The map (SW-102) sets it to
+#: :data:`_IN_SUBTREE` for a ``project_id``. The org predicate is defence in
+#: depth beside FORCE RLS, which the session binds. ``session_key`` stays
+#: inside SQL: no reader of ``seen`` puts it in an answer. SW-106: the
+#: machine, its kind and the model (``agent_host``, ``agent_host_kind`` and
+#: ``agent_model``) are display data. ``box_checked`` is True when the
+#: connection of the run is a box token (``credential = 'box'``), the one
+#: proof of a machine (``agent_coordination.md`` §3.12.3). No ``WHERE`` arm
+#: reads any of them. Fence: ``test_agent_label_fence.py``.
 _SEEN_RUNS_SQL = """
     SELECT r.id, r.client_via, r.status, r.created_at, r.task_id,
+           r.member_email, r.connection_id, r.agent_label, r.session_key,
+           r.agent_host, r.agent_host_kind, r.agent_model,
+           EXISTS (SELECT 1 FROM agent_connection bc WHERE bc.id = r.connection_id
+                      AND bc.organization_id = r.organization_id
+                      AND bc.credential = 'box') AS box_checked,
+           r.dispatched_by_run_id,
+           """ + run_life_at_sql("r") + """ AS life_at,
            {state} AS state,
            COALESCE(r.started_at, r.created_at) AS run_at,
            COALESCE(r.ended_at, r.last_activity_at) AS ended_at,
@@ -459,14 +520,37 @@ def _not_found() -> HTTPException:
 
 @router.get("/agents/overview")
 async def agents_overview(
+    shape: str | None = None,
+    project_id: str | None = None,
+    show_quiet: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Every agent that the caller may see, its state and its last run (AGA-7).
 
     Off for the org (``AGENTS_VIEW_ORGS``), it answers 404. The org and the
     caller are the session's, never a value from the request (R5).
+
+    ``shape=map`` is the map read of SW-102 (:func:`_agent_map`). It needs
+    ``AGENT_MAP_ORGS`` too, and off it answers the same 404. ``project_id``
+    and ``show_quiet`` act on the map only. Any other ``shape`` is 404.
+
+    The three query values are raw strings with no FastAPI check, so a bad
+    value never answers 422 before the flags. The flags come first, then
+    :func:`parse_map_query`. Each miss is the one 404 body, which echoes no
+    input.
     """
-    if not agents_view_allowed(getattr(user, "organization_id", None)):
+    org = getattr(user, "organization_id", None)
+    if not agents_view_allowed(org):
+        raise _not_found()
+    if shape == "map":
+        if not agent_map_allowed(org):
+            raise _not_found()
+        parsed = parse_map_query(project_id, show_quiet)
+        if parsed is None:
+            raise _not_found()
+        pid, quiet = parsed
+        return await _agent_map(user, project_id=pid, show_quiet=quiet)
+    if shape not in (None, ""):
         raise _not_found()
     me = actor(user).strip().lower()
     async with _tenant_session() as db:
@@ -533,6 +617,378 @@ async def agents_overview(
 def _viewer(admin: bool, led: list[str]) -> str:
     """The viewer level of §4: ``admin``, ``lead`` or ``member``."""
     return "admin" if admin else ("lead" if led else "member")
+
+
+# ── WS-MCP SW-102: the map read (agent_coordination.md §3.12) ───────────────
+
+#: The most runs that one map lists, and the most session nodes (§3.12.2).
+#: The read fetches one more of each, so the next one sets ``truncated``.
+MAP_RUNS_MAX = 300
+MAP_SESSIONS_MAX = 300
+
+#: A run with no event for this long folds into its session (§3.12.2). The
+#: clock is :func:`filters.run_life_at_sql`, the one run clock.
+MAP_QUIET_AFTER_S = 2 * 60 * 60
+
+#: The name of a session with no ``agent_label`` (§3.12.2).
+UNNAMED_SESSION = "Unnamed session"
+
+#: The top keys of a map answer, one session node and one listed run.
+MAP_KEYS: tuple[str, ...] = (
+    "people", "sessions", "runs", "lines", "children", "count", "truncated", "viewer",
+)
+MAP_SESSION_KEYS: tuple[str, ...] = (
+    "id", "person", "name", "client", "state", "last_at", "run_count", "quiet_count",
+    "quiet_last_at", "host", "host_kind", "host_source", "model",
+)
+MAP_RUN_KEYS: tuple[str, ...] = (
+    "run_id", "session_id", "task_id", "task_number", "title", "state", "quiet", "age",
+    "last_at",
+)
+#: SW-107. One line of who dispatched whom: from the dispatcher's session
+#: node to the session node of the run that it dispatched.
+MAP_LINE_KEYS: tuple[str, ...] = ("from", "to")
+#: SW-110. One child run (SW-39) of a listed run: the sub-agent, its state,
+#: its OWN model and its age. ``run_id`` is the parent run, the same id as in
+#: ``runs``, and ``session_id`` is the node of that run. No machine, session
+#: key, connection or address of the child is in it (§3.12.4 rules 4 and 5).
+MAP_CHILD_KEYS: tuple[str, ...] = (
+    "child_id", "run_id", "session_id", "name", "state", "model", "age", "last_at",
+)
+
+#: SW-110. The most child runs that one map lists. The read fetches one more,
+#: so the next one sets ``truncated``.
+MAP_CHILDREN_MAX = 200
+
+#: SW-110. The name of a child run with no ``agent_label``.
+UNNAMED_CHILD = "Sub-agent"
+
+#: SW-110. The state of an open child run on the map, in the words of the run
+#: states (``filters.AGENT_RUN_STATE_SQL``). A child has no lease, no wait and
+#: no question of its own, so an open child is working. An ended child is not
+#: on the map.
+MAP_CHILD_STATE = "working"
+
+#: The ``{only}`` of the map with a ``project_id``: the runs on the tasks of
+#: the project and of each project under it (the CTE ``sub`` of
+#: :data:`_SUBTREE_SQL`). ``seen`` keeps its visibility text as it is.
+_IN_SUBTREE = "\n       AND t.project_id IN (SELECT id FROM sub)"
+
+#: The opaque id of a session node (§3.12.2). The node key is the person,
+#: the connection and the name, or the session key when the run has no name.
+#: The id is the first 24 hex characters of a sha256 of that key and the org.
+#: So it holds no session key, and nobody can read the key back from it.
+_NODE_SQL = (
+    "left(encode(sha256(convert_to(concat_ws('|', CAST(:vis_org AS text),"
+    " COALESCE(CAST(seen.connection_id AS text), ''), lower(seen.member_email),"
+    " CASE WHEN seen.agent_label IS NOT NULL THEN 'l:' || seen.agent_label"
+    " ELSE 'k:' || COALESCE(seen.session_key, '') END), 'UTF8')), 'hex'), 24)"
+)
+
+#: The open runs of ``seen``, each with its node and its fold. A run that
+#: waits on a person (``awaiting``) or on an agent (``waiting``) never folds.
+#: An ended run is not on the map. ``{head}`` is ``WITH``, or for a
+#: ``project_id`` it is ``WITH RECURSIVE`` and the subtree.
+_MAP_CTE = "{head}seen AS (" + _SEEN_RUNS_SQL + """), live AS (
+    SELECT seen.id, seen.client_via, seen.task_id, seen.state, seen.run_at,
+           seen.life_at, seen.agent_label, lower(seen.member_email) AS person,
+           seen.agent_host, seen.agent_host_kind, seen.agent_model, seen.box_checked,
+           seen.dispatched_by_run_id,
+           """ + _NODE_SQL + """ AS node_id,
+           (seen.life_at < now() - interval '{quiet_s} seconds'
+            AND seen.state NOT IN ('awaiting', 'waiting')) AS quiet
+      FROM seen
+     WHERE seen.status IN ({open})
+)"""
+
+#: One row for each session node. The order is rule 9 of §3.12.7: a session
+#: that waits on a person, then a working one, then a quiet one. SW-106: the
+#: machine, its kind and the model come from the NEWEST open run of the node
+#: that ``seen`` gives the caller, all four from the one run. The read names
+#: no address (``last_seen_addr``) and no chat table (§3.12.4 rules 4 and 5).
+#: ``total_runs`` counts every open run of every node, before the cap.
+_MAP_SESSIONS_SQL = _MAP_CTE + """
+SELECT node_id,
+       (array_agg(person ORDER BY life_at DESC, id DESC))[1] AS person,
+       (array_agg(agent_label ORDER BY life_at DESC, id DESC))[1] AS agent_label,
+       (array_agg(client_via ORDER BY life_at DESC, id DESC))[1] AS client_via,
+       (array_agg(agent_host ORDER BY life_at DESC, id DESC))[1] AS agent_host,
+       (array_agg(agent_host_kind ORDER BY life_at DESC, id DESC))[1] AS agent_host_kind,
+       (array_agg(agent_model ORDER BY life_at DESC, id DESC))[1] AS agent_model,
+       (array_agg(box_checked ORDER BY life_at DESC, id DESC))[1] AS box_checked,
+       count(*) AS run_count,
+       count(*) FILTER (WHERE quiet) AS quiet_count,
+       max(life_at) AS last_at,
+       max(life_at) FILTER (WHERE quiet) AS quiet_last_at,
+       bool_or(state = 'awaiting') AS awaiting,
+       bool_or(state = 'waiting') AS waiting,
+       bool_and(quiet) AS all_quiet,
+       sum(count(*)) OVER () AS total_runs
+  FROM live
+ GROUP BY node_id
+ ORDER BY CASE WHEN bool_or(state = 'awaiting') THEN 0
+               WHEN bool_and(quiet) THEN 2 ELSE 1 END,
+          max(life_at) DESC NULLS LAST, node_id
+ LIMIT :cap
+"""
+
+#: The runs that the map lists, newest event first. ``{fold}`` drops the
+#: quiet runs unless the caller asks for them (``show_quiet``).
+_MAP_RUNS_SQL = _MAP_CTE + """
+SELECT live.id, live.node_id, live.task_id, live.state, live.run_at,
+       live.life_at, live.quiet, t.task_number, t.title AS task_title
+  FROM live
+  JOIN pm_tasks t ON t.id = live.task_id
+ WHERE {fold}
+ ORDER BY live.life_at DESC NULLS LAST, live.id DESC
+ LIMIT :cap
+"""
+
+
+#: SW-107 (§3.12.3, §3.12.4 rule 1). The lines of who dispatched whom. A
+#: line joins the dispatcher's session node to the run's session node, so a
+#: line outlives the dispatcher's run while its session has a node. The
+#: dispatcher's run must be in ``seen`` too, so a run that the viewer cannot
+#: see gives no line and no node. ``:nodes`` holds the listed session nodes.
+#: It reads ONE step, never the whole chain: two concurrent claims can make
+#: a loop (``agent_runs.set_run_dispatcher``), and one step always ends.
+_MAP_LINES_SQL = _MAP_CTE + """, node_of AS (
+    SELECT seen.id, """ + _NODE_SQL + """ AS node_id FROM seen
+)
+SELECT DISTINCT d.node_id AS from_id, live.node_id AS to_id
+  FROM live
+  JOIN node_of d ON d.id = live.dispatched_by_run_id
+ WHERE d.node_id <> live.node_id
+   AND d.node_id = ANY(CAST(:nodes AS text[]))
+   AND live.node_id = ANY(CAST(:nodes AS text[]))
+ ORDER BY 1, 2
+ LIMIT :cap
+"""
+
+
+#: SW-110 (§3.12.4 rule 1). The child runs of SW-39 under the listed runs.
+#: A child is reachable ONLY through ``live``, the open runs of ``seen``. So a
+#: child shows only under a parent run that the viewer may see, in the scope
+#: of ``project_id``. ``:parents`` holds the ids of the runs that the map
+#: lists, so a child of a folded quiet run is not listed either. The child
+#: names its own subject, ``kind = 'child'``, and the org of the bound session
+#: (``filters.BOUND_ORG_SQL``) beside FORCE RLS. The column list is the one of
+#: ``agent_runs.CHILD_COLUMNS``. No reader puts the machine of a child in the
+#: answer. An ended child is not on the map.
+_MAP_CHILDREN_SQL = _MAP_CTE + """
+SELECT """ + CHILD_COLUMNS + """, live.node_id,
+       """ + run_life_at_sql("c") + """ AS life_at,
+       COALESCE(c.started_at, c.created_at) AS run_at
+  FROM live
+  JOIN pm_agent_runs c ON c.kind = 'child' AND c.parent_run_id = live.id
+   AND c.organization_id = """ + BOUND_ORG_SQL + """
+ WHERE c.status IN ({open})
+   AND CAST(live.id AS text) = ANY(CAST(:parents AS text[]))
+ ORDER BY c.created_at DESC, c.id DESC
+ LIMIT :cap
+"""
+
+
+#: The longest ``project_id`` of the map, in characters. A longer value is
+#: 404 before the parse, as :data:`AGENT_KEY_MAX` does for an agent key.
+MAP_PROJECT_ID_MAX = 64
+
+#: The values of ``show_quiet``, in lower case. Any other value is 404.
+_QUIET_VALUES = {"true": True, "1": True, "false": False, "0": False}
+
+
+def parse_map_query(project_id: Any, show_quiet: Any) -> tuple[str | None, bool] | None:
+    """``(project_id, show_quiet)`` of a map read, or ``None`` for a bad value.
+
+    *project_id* is absent, or a UUID after a length cap. *show_quiet* is
+    absent, or one of ``true``, ``false``, ``1`` and ``0`` in any case. The
+    check reads nothing, and it echoes nothing.
+    """
+    quiet = False
+    if show_quiet is not None:
+        if not isinstance(show_quiet, str):
+            return None
+        found = _QUIET_VALUES.get(show_quiet.strip().lower())
+        if found is None:
+            return None
+        quiet = found
+    pid: str | None = None
+    if project_id is not None:
+        if not isinstance(project_id, str) or len(project_id) > MAP_PROJECT_ID_MAX:
+            return None
+        try:
+            pid = str(uuid.UUID(project_id))
+        except ValueError:
+            return None
+    return pid, quiet
+
+
+def _map_sql(template: str, *, vis: Any, admin: bool, scoped: bool, fold: str = "true") -> str:
+    """One map statement over the ONE ``seen`` text (§3.12.4 rule 1)."""
+    return template.format(
+        head="WITH RECURSIVE " + _SUBTREE_SQL + ", " if scoped else "WITH ",
+        state=AGENT_RUN_STATE_SQL, gone=connection_gone_sql("r"),
+        visible=task_visibility_clause(vis), reach=_reach_sql(admin),
+        only=_IN_SUBTREE if scoped else "", open=_OPEN,
+        quiet_s=MAP_QUIET_AFTER_S, fold=fold,
+    )
+
+
+def _age_s(start: Any) -> int | None:
+    """The seconds since *start*, the start of a run."""
+    if not isinstance(start, datetime):
+        return None
+    now = datetime.now(start.tzinfo) if start.tzinfo else datetime.now()
+    return max(0, int((now - start).total_seconds()))
+
+
+def _session_state(row: Any) -> str:
+    """The chip of a session node: ``waiting_on_person``, ``waiting`` (on an
+    agent), ``working`` or ``quiet``."""
+    if row.awaiting:
+        return "waiting_on_person"
+    if row.all_quiet:
+        return "quiet"
+    return "waiting" if row.waiting else "working"
+
+
+def _place_of(row: Any) -> dict[str, str | None]:
+    """The machine, its kind, its source and the model of a session node
+    (SW-106, §3.12.3). Each text is one :func:`_line`. The kind is one of
+    :data:`AGENT_HOST_KINDS`, or ``None``. The source is ``checked`` when a
+    box token proves the machine (``box_checked``), ``reported`` when the
+    agent named it, and ``None`` when the run has no machine and no kind."""
+    host = _line(row.agent_host) or None
+    kind = row.agent_host_kind if row.agent_host_kind in AGENT_HOST_KINDS else None
+    source = None
+    if host is not None or kind is not None:
+        source = "checked" if row.box_checked is True else "reported"
+    return {"host": host, "host_kind": kind, "host_source": source,
+            "model": _line(row.agent_model) or None}
+
+
+def _empty_map(viewer: str) -> dict[str, Any]:
+    return {"people": [], "sessions": [], "runs": [], "lines": [], "children": [],
+            "count": 0, "truncated": False, "viewer": viewer}
+
+
+async def _agent_map(
+    user: UserContext, *, project_id: str | None, show_quiet: bool,
+) -> dict[str, Any]:
+    """The map read of SW-102 (``agent_coordination.md`` §3.12.2).
+
+    People, session nodes and the open runs that the caller may see, through
+    the ONE ``seen`` text. ``lines`` joins the session nodes of who
+    dispatched whom (SW-107), when the caller sees both runs. No value of the
+    answer holds a session key or an address (§3.12.4 rule 5). SW-106: a session
+    node holds the machine, its kind and the model of its newest visible run
+    (:func:`_place_of`). The read lists no chat agent, so no built-in or org
+    agent has a model here (rule 4). *project_id* is a checked UUID
+    (:func:`parse_map_query`). A project that the caller cannot see answers
+    the one 404 of :func:`_not_found`.
+
+    SW-110: ``children`` lists the open child runs (SW-39) of the listed
+    runs, each with its own name, state and model (:data:`MAP_CHILD_KEYS`).
+    A child is reachable only through a listed run of ``live``, so a parent
+    that the caller cannot see leaves no child. ``count`` counts no child.
+
+    ``truncated`` is True when the runs, the session nodes, the lines or the
+    children pass their cap. For the runs it counts the LISTED runs only. When more than
+    :data:`MAP_RUNS_MAX` runs are quiet and ``show_quiet`` is off,
+    ``truncated`` is False while ``count`` is over the cap.
+    """
+    me = actor(user).strip().lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        if project_id is not None:
+            try:
+                await load_visible_project(db, vis, project_id)
+            except HTTPException:
+                # The same body as the flag off, so the 404 names no input.
+                raise _not_found() from None
+        admin = bool(vis.unrestricted)
+        led = sorted(await led_projects(db, user)) if not admin else []
+        viewer = _viewer(admin, led)
+        if not agent_runs_enabled():
+            # The overview lists no outside agent while the runs flag is off.
+            return _empty_map(viewer)
+        scoped = project_id is not None
+        params: dict[str, Any] = {**vis.params, "me": me, "led": led}
+        if scoped:
+            params["pid"] = project_id
+        sessions = list((await db.execute(
+            text(_map_sql(_MAP_SESSIONS_SQL, vis=vis, admin=admin, scoped=scoped)),
+            {**params, "cap": MAP_SESSIONS_MAX + 1},
+        )).fetchall())
+        runs = list((await db.execute(
+            text(_map_sql(_MAP_RUNS_SQL, vis=vis, admin=admin, scoped=scoped,
+                          fold="true" if show_quiet else "NOT live.quiet")),
+            {**params, "cap": MAP_RUNS_MAX + 1},
+        )).fetchall())
+        kept = sessions[:MAP_SESSIONS_MAX]
+        nodes = {str(s.node_id) for s in kept}
+        # SW-107: one step from each listed node, and both ends listed.
+        lines = list((await db.execute(
+            text(_map_sql(_MAP_LINES_SQL, vis=vis, admin=admin, scoped=scoped)),
+            {**params, "nodes": sorted(nodes), "cap": MAP_RUNS_MAX + 1},
+        )).fetchall()) if nodes else []
+        listed = [r for r in runs[:MAP_RUNS_MAX] if str(r.node_id) in nodes]
+        # SW-110: the children of the LISTED runs only, through ``live``.
+        parents = sorted({str(r.id) for r in listed})
+        children = list((await db.execute(
+            text(_map_sql(_MAP_CHILDREN_SQL, vis=vis, admin=admin, scoped=scoped)),
+            {**params, "parents": parents, "cap": MAP_CHILDREN_MAX + 1},
+        )).fetchall()) if parents else []
+
+    people: dict[str, int] = {}
+    for s in kept:
+        people[str(s.person)] = people.get(str(s.person), 0) + 1
+    return {
+        "people": [{"person": p, "sessions": n} for p, n in people.items()],
+        "sessions": [{
+            "id": str(s.node_id),
+            "person": str(s.person),
+            "name": _line(s.agent_label, UNNAMED_SESSION),
+            # The one label seam, as on the run pill and the overview.
+            "client": _line(agent_oauth.client_label(s.client_via), "Agent"),
+            "state": _session_state(s),
+            "last_at": _when(s.last_at),
+            "run_count": int(s.run_count or 0),
+            "quiet_count": int(s.quiet_count or 0),
+            "quiet_last_at": _when(s.quiet_last_at),
+            **_place_of(s),
+        } for s in kept],
+        "runs": [{
+            "run_id": str(r.id),
+            "session_id": str(r.node_id),
+            "task_id": str(r.task_id),
+            "task_number": r.task_number,
+            "title": _line(r.task_title, "Untitled task"),
+            "state": str(r.state),
+            "quiet": bool(r.quiet),
+            "age": _age_s(r.run_at),
+            "last_at": _when(r.life_at),
+        } for r in listed],
+        # SW-107: who dispatched whom, from session node to session node.
+        "lines": [{"from": str(x.from_id), "to": str(x.to_id)}
+                  for x in lines[:MAP_RUNS_MAX]],
+        # SW-110: the sub-agents of the listed runs. ``count`` counts parent
+        # runs only. The model is the child's own, or None.
+        "children": [{
+            "child_id": str(c.id),
+            "run_id": str(c.parent_run_id),
+            "session_id": str(c.node_id),
+            "name": _line(c.agent_label, UNNAMED_CHILD),
+            "state": MAP_CHILD_STATE,
+            "model": _line(c.agent_model) or None,
+            "age": _age_s(c.run_at),
+            "last_at": _when(c.life_at),
+        } for c in children[:MAP_CHILDREN_MAX]],
+        "count": int(sessions[0].total_runs or 0) if sessions else 0,
+        "truncated": (len(runs) > MAP_RUNS_MAX or len(sessions) > MAP_SESSIONS_MAX
+                      or len(lines) > MAP_RUNS_MAX or len(children) > MAP_CHILDREN_MAX),
+        "viewer": viewer,
+    }
 
 
 # ── WS-AGA AGA-9: the drill-down of one agent ───────────────────────────────

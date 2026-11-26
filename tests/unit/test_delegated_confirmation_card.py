@@ -200,7 +200,8 @@ def test_a_rejected_card_posts_nothing(monkeypatch) -> None:
     resolved = [e for e in record.events if _custom("confirmation_resolved")(e)]
     assert [e["value"]["answer"] for e in resolved] == ["REJECT"]
     assert [c for c in seen["calls"] if c["method"] != "GET"] == []
-    assert any("Cancelled" in r for r in _tool_results(seen["models"][PA])), \
+    # HRD-7: a REJECT answers with the decline of the one table of card outcomes.
+    assert any(r.startswith("Declined:") for r in _tool_results(seen["models"][PA])), \
         _tool_results(seen["models"][PA])
 
 
@@ -213,5 +214,6 @@ def test_a_parent_that_shows_no_cards_passes_that_on(monkeypatch) -> None:
     assert record.cards == []
     assert not [e for e in record.events if _custom("confirmation_requested")(e)]
     assert [c for c in seen["calls"] if c["method"] != "GET"] == []
-    assert any("Cancelled" in r for r in _tool_results(seen["models"][PA])), \
+    # HRD-7: no card could show, in the words of the one table of card outcomes.
+    assert any(r.startswith("Not shown:") for r in _tool_results(seen["models"][PA])), \
         _tool_results(seen["models"][PA])

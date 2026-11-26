@@ -468,14 +468,19 @@ async def test_the_quota_bounds_the_count_of_files(
 async def test_the_cli_kills_and_reaps_its_process_on_a_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cancelled run or stream leaves no docker CLI process (review P1-b)."""
+    """A cancelled run or stream leaves no docker CLI process (review P1-b).
+
+    The cancel waits for the spawn, under the hang guard, never a fixed
+    sleep: a busy box takes more than 0.5 s to start a process, and a cancel
+    before the spawn proves nothing (SBX-15 review P3).
+    """
     cli = sb.DockerCLI()
     monkeypatch.setattr(cli, "_binary", lambda: sys.executable)
     spawned: list[asyncio.subprocess.Process] = []
     original = cli._spawn
 
-    async def spy(args: Any) -> asyncio.subprocess.Process:
-        proc = await original(args)
+    async def spy(args: Any, *rest: Any) -> asyncio.subprocess.Process:
+        proc = await original(args, *rest)
         spawned.append(proc)
         return proc
 
@@ -486,8 +491,9 @@ async def test_the_cli_kills_and_reaps_its_process_on_a_cancel(
         lambda: cli.stream(sleeper, timeout=120, head=10, tail=10),
     ]
     for call in calls:
+        before = len(spawned)
         task = asyncio.create_task(call())
-        await asyncio.sleep(0.5)
+        await until(lambda b=before: len(spawned) > b, "the docker CLI must have started")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
