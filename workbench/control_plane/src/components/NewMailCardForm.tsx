@@ -291,6 +291,8 @@ export default function NewMailCardForm({
   // Task 3978: Discard asks first when the form names an earlier draft of this
   // chat, and the card can carry the answer. Else it is the Discard of before.
   const [asking, setAsking] = useState(false);
+  // After Back, the Discard button takes the focus again.
+  const [cameBack, setCameBack] = useState(false);
   const discard = () => {
     const step = declineStep(armed, form.earlier, onDiscardEarlier);
     if (step === "ask") setAsking(true);
@@ -435,7 +437,10 @@ export default function NewMailCardForm({
           effect={form.earlierEffect}
           onKeep={onDiscard}
           onDelete={onDiscardEarlier}
-          onBack={() => setAsking(false)}
+          onBack={() => {
+            setAsking(false);
+            setCameBack(true);
+          }}
           disabled={disabled}
         />
       ) : (
@@ -467,6 +472,7 @@ export default function NewMailCardForm({
           onClick={discard}
           disabled={disabled}
           aria-disabled={!armed || undefined}
+          autoFocus={cameBack}
           data-reply-discard=""
         >
           Discard

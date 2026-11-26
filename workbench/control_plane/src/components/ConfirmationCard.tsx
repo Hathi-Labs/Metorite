@@ -370,6 +370,8 @@ export default function ConfirmationCard({
   // Task 3978: Reject of a plain card that names a draft of the chat asks
   // "Keep the earlier draft, or delete it?" in place of its buttons.
   const [asking, setAsking] = useState(false);
+  // Task 3978: after Back, the Reject button takes the focus again.
+  const [cameBack, setCameBack] = useState(false);
   const asksEarlier = !!(earlier && onDiscardEarlier);
   // The Reject of the plain card: the question first, when the card asks
   // (`declineStep`), else the decline of before. The forms get `rejectCard`.
@@ -705,7 +707,10 @@ export default function ConfirmationCard({
           effect={earlier.effect}
           onKeep={rejectCard}
           onDelete={onDiscardEarlier}
-          onBack={() => setAsking(false)}
+          onBack={() => {
+            setAsking(false);
+            setCameBack(true);
+          }}
           disabled={disabled}
         />
       )}
@@ -729,6 +734,7 @@ export default function ConfirmationCard({
           onClick={() => armed && onReject()}
           disabled={disabled}
           aria-disabled={!armed || undefined}
+          autoFocus={cameBack}
         >
           Reject
         </Button>

@@ -128,7 +128,8 @@ the org, because only its record knows the chat's draft. The new-mail card also 
 `edit_draft` says that the draft is still in Drafts.
 
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
-each trash and before each new-mail card, so a reload applies at once. A flip stays
+each trash, before each new-mail card, in each `draft_reply` and in each `edit_draft`, so a
+reload applies at once. A flip stays
 OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat

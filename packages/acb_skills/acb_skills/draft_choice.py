@@ -187,6 +187,19 @@ def delete_effect(provider: str) -> str:
     return ""
 
 
+def deleted_line(provider: str) -> str:
+    """What became of a draft whose trash the provider confirmed, and that
+    left Drafts (task 3978). A Gmail draft is gone for good. An Outlook draft
+    is in Deleted Items. For any other provider the line claims only what the
+    chat read: the draft left Drafts."""
+    kind = str(provider or "").lower()
+    if "gmail" in kind or "google" in kind:
+        return "The draft was deleted from Gmail for good."
+    if "microsoft" in kind or "outlook" in kind:
+        return "The draft was moved to Deleted Items in Outlook."
+    return "The draft left Drafts."
+
+
 #: The outcomes of one trash write (:func:`settle`).
 CONFIRMED = "confirmed"          # the provider accepted the trash
 NOT_CONFIRMED = "not_confirmed"  # Metorite marked it, the provider did not say yes

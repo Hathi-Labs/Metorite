@@ -3672,6 +3672,67 @@ async def trash_chat_draft(
     return True
 
 
+#: Task 3978: the stored copy of one draft, for the live check of the chat.
+_STORED_DRAFT_SQL = (
+    "SELECT account_id, body_text, folder FROM email_messages"
+    " WHERE id = CAST(:id AS uuid)")
+
+
+async def _live_is_stored_text(db: Any, sess: Any, draft_id: str) -> bool:
+    """True while the provider's live body of *draft_id* is still the text
+    of Metorite's stored copy, and the copy is a draft (task 3978).
+
+    The chat checks the stored copy against the digest that it saved. That
+    is not enough: an edit in Outlook can leave Metorite's text in the row,
+    and Gmail can lag a sync. So the live body must match too, through the
+    same check as the Discard of a reply card (:func:`_live_is_chat_text`).
+    *sess* is the provider session of the member's own draft. A failed read,
+    a slow read and a refused sign-in each answer False."""
+    if not sess.authed:
+        return False
+    row = (await db.execute(text(_STORED_DRAFT_SQL), {"id": draft_id})).fetchone()
+    if row is None or str(row.folder or "").lower() not in ("drafts", "draft"):
+        return False
+    sig = await _account_signature(db, str(row.account_id))
+    return await _live_is_chat_text(
+        sess.provider, sess.provider_message_id, {_fold_draft(sig, row.body_text or "")}, sig)
+
+
+@router.delete("/chat-drafts/{draft_id}")
+async def trash_chat_draft_live(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> Any:
+    """Trash ONE draft that the chat saved, after a live check (task 3978).
+
+    ``email_app_master_plan.md`` §18.13.1: the member pressed "Delete it" on a
+    card. The email assistant checked the stored copy against the record of
+    the chat. This route then reads the live body at the provider. It trashes
+    the draft only while the live body is still the stored text. Else it
+    answers 409 and changes nothing: a draft that the member edited at the
+    mailbox stays. A passed check runs the trash of ``DELETE
+    /email/messages/{id}?report=true``, and answers its report. An older
+    gateway has no such route, so the chat never trashes with no check.
+
+    The owner proof is ``provider_session`` by message: its loader takes the
+    draft only from a mailbox of the session's member (D-EM-4)."""
+    owner = user.email or "anonymous"
+    if _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    async with (_tenant_session() as db,
+                provider_session(db, owner, message_id=draft_id,
+                                 require_auth=False) as sess):
+        live = await _live_is_stored_text(db, sess, draft_id)
+    if not live:
+        raise HTTPException(
+            status_code=409,
+            detail=("The draft at the mailbox is not the text that Metorite holds, or "
+                    "Metorite could not read it there. Nothing was deleted."))
+    from gateway.routes.email.transport.messages import delete_message
+
+    return await delete_message(draft_id, user, report=True)
+
+
 class DraftUpsertRequest(BaseModel):
     account_id: str
     # Local id of an existing draft to UPDATE in place (omit to create a new one).

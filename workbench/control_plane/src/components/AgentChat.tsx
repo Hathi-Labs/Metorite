@@ -84,6 +84,7 @@ import {
   liveCards,
   closedEdits,
   heldKeys,
+  answerReceiptLabel,
   receiptLabel,
   settleAnswer,
   type FormEdit,
@@ -2442,6 +2443,8 @@ export default function AgentChat({
       type: "answering",
       key: card.key,
       label: receiptLabel(card),
+      // Task 3978: "Delete it" says that the member asked for the delete.
+      ...(answer === DELETE_EARLIER_ANSWER ? { label: answerReceiptLabel(card, answer) } : {}),
       intent: rejecting ? "rejected" : "approved",
       afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
       ...(rejecting ? { undo: true } : {}),

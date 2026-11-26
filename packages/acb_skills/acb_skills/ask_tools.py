@@ -1751,6 +1751,31 @@ def clean_earlier(src: Any) -> dict:
             **({"earlier_effect": effect} if effect in DELETE_EFFECTS else {})}
 
 
+#: Task 3978: the text of a card that the member declined and then answered
+#: "Delete it". Its lead is the lead of :data:`CARD_DECLINED`, so each chat
+#: card still reads the act of the card as declined. What happened says only
+#: what is true for each case: nothing was sent or saved. The act sentence
+#: then says what became of the draft. It is not a row of
+#: :data:`CARD_OUTCOMES`: the outcome stays "declined".
+#: ``src/lib/cardOutcomes.ts`` holds the same words (``DECLINED_DRAFT``).
+DECLINED_DRAFT = CardOutcome(
+    CARD_OUTCOMES[CARD_DECLINED].lead,
+    "the member said no on the card, so nothing was sent or saved. The card "
+    "is closed, and no decision is open.",
+    "Tell the member what became of the draft, as the line before this step "
+    "says. Do not say that the draft did not change. Show the card again "
+    "only if the member asks for it.")
+
+
+def card_declined_draft_text(act: str) -> str:
+    """The text of :data:`DECLINED_DRAFT` with *act*: one plain sentence for
+    the member that says what became of the draft. The chat draws the head
+    and *act* as the member's line (``memberLineOf``)."""
+    act = " ".join(str(act or "").split())
+    o = DECLINED_DRAFT
+    return f"{o.lead}: {o.happened} {act} {o.next}" if act else f"{o.lead}: {o.happened} {o.next}"
+
+
 def earlier_draft_choice(member: str) -> str:
     """"delete" when *member* answered the last card of this frame with
     :data:`DELETE_EARLIER_ANSWER`, on a card that names an earlier draft.

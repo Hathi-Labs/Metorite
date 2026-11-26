@@ -66,6 +66,10 @@ TTL_S = 7 * 24 * 3600
 MARKER_TTL_S = 600
 #: The most drafts that one record keeps. The oldest goes first.
 MAX_DRAFTS = 20
+#: Task 3978: the most reply drafts of ``draft_reply`` that one record keeps,
+#: apart from :data:`MAX_DRAFTS`. So reply drafts never push out a draft of a
+#: new mail, and the one-draft rule of task 3814 keeps its targets.
+MAX_REPLY_DRAFTS = 20
 #: The longest wait for one Redis call.
 REDIS_TIMEOUT_S = 2.0
 #: The line of a card whose save replaces a draft of this chat.
@@ -258,6 +262,16 @@ def _record_of(raw: Any) -> _Record:
     return _Record(out, marker if isinstance(marker, dict) else {})
 
 
+def _kept(drafts: list[ChatDraft]) -> list[ChatDraft]:
+    """The newest :data:`MAX_DRAFTS` drafts of a new mail and the newest
+    :data:`MAX_REPLY_DRAFTS` reply drafts, each cap apart, in record order."""
+    mail = [d for d in drafts if not d.reply]
+    reply = [d for d in drafts if d.reply]
+    keep = {id(d) for d in mail[max(0, len(mail) - MAX_DRAFTS):]
+            + reply[max(0, len(reply) - MAX_REPLY_DRAFTS):]}
+    return [d for d in drafts if id(d) in keep]
+
+
 def _parts(org: str, thread: str, account_id: str, member: str) -> bool:
     return all(str(v or "").strip() for v in (org, thread, account_id, member))
 
@@ -280,7 +294,7 @@ async def _write(org: str, thread: str, account_id: str, member: str, rec: _Reco
         "drafts": [{"id": d.draft_id, "to": list(d.to), "subject": d.subject,
                     "digest": d.digest, **({"files": True} if d.files else {}),
                     **({"reply": True} if d.reply else {})}
-                   for d in rec.drafts[-MAX_DRAFTS:]],
+                   for d in _kept(rec.drafts)],
         **({"marker": rec.marker} if rec.marker else {}),
     })
     with organization_scope(org):

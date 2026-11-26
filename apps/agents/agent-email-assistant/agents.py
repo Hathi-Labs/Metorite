@@ -2992,16 +2992,29 @@ async def _pick_drafts(plan: _TrashPlan) -> set[str] | str:
     return set(answer)
 
 
-async def _trash_one(mid: str, rule: Any) -> str:
+#: Task 3978: the outcome of a live-checked trash of a chat draft that the
+#: gateway refused (409), because the live draft at the mailbox is not the
+#: stored text, or could not be read. ``draft_choice.settle`` counts it as a
+#: draft that did not move.
+_LIVE_REFUSED = "live_refused"
+
+
+async def _trash_one(mid: str, rule: Any, *, live: bool = False) -> str:
     """Trash one message through ``DELETE /email/messages/{id}?report=true``,
     which discards a Gmail draft and re-keys an Outlook one. The answer is
     one outcome of ``draft_choice``: the provider accepted, did not confirm,
-    the gateway refused, or no answer came back."""
+    the gateway refused, or no answer came back.
+
+    *live* (task 3978): a draft that the chat saved goes through
+    ``DELETE /email/chat-drafts/{id}``. The gateway reads the live draft at
+    the provider first, and a 409 there is :data:`_LIVE_REFUSED`. An older
+    gateway has no such route, so nothing goes."""
+    path, params = ((f"/email/chat-drafts/{mid}", {}) if live
+                    else (f"/email/messages/{mid}", {"report": "true"}))
     try:
-        resp = await _request("DELETE", f"/email/messages/{mid}",
-                              params={"report": "true"})
-    except GatewayError:
-        return rule.FAILED
+        resp = await _request("DELETE", path, params=params)
+    except GatewayError as exc:
+        return _LIVE_REFUSED if live and exc.status == 409 else rule.FAILED
     except httpx.HTTPError:
         return rule.LOST
     try:
@@ -3019,8 +3032,19 @@ async def _trash_and_report(
     """Trash each picked message, one call each, so each has its own outcome.
     Then read Drafts again, with the anchors of the first read only, and count
     a draft only when the provider accepted it and it left Drafts."""
+    tally, _done = await _trash_tally(plan, drafts, others)
+    head, data, tail = plan.rule.report(tally, _card_text)
+    return _framed_drafts(head, data, tail)
+
+
+async def _trash_tally(
+    plan: _TrashPlan, drafts: list[dict[str, Any]], others: list[dict[str, Any]],
+    *, live: bool = False,
+) -> tuple[Any, dict[str, str]]:
+    """``(tally, outcome of each draft by id)`` of :func:`_trash_and_report`.
+    *live* sends each draft through the live check (task 3978)."""
     rule = plan.rule
-    done = [(m, await _trash_one(str(m["id"]), rule), True) for m in drafts]
+    done = [(m, await _trash_one(str(m["id"]), rule, live=live), True) for m in drafts]
     done += [(m, await _trash_one(str(m["id"]), rule), False) for m in others]
     tally = rule.Tally(cut=False, already=plan.already, unknown_ids=plan.unknown_ids)
     try:
@@ -3030,8 +3054,7 @@ async def _trash_and_report(
     still = None if tally.remaining is None else {str(m["id"]) for m in tally.remaining}
     for row, outcome, is_draft in done:
         rule.settle(tally, row, outcome, draft=is_draft, still=still)
-    head, data, tail = rule.report(tally, _card_text)
-    return _framed_drafts(head, data, tail)
+    return tally, {str(m["id"]): outcome for m, outcome, is_draft in done if is_draft}
 
 
 def _framed_drafts(head: list[str], data: list[str], tail: list[str]) -> str:
@@ -8164,14 +8187,16 @@ class _Earlier:
     its row, its line on the card, its mailbox, and what "Delete it" does at
     the mailbox's provider ("" when that is not known)."""
 
-    __slots__ = ("account_id", "effect", "line", "row", "rule")
+    __slots__ = ("account_id", "effect", "line", "provider", "row", "rule")
 
     def __init__(self, rule: Any, row: dict[str, Any], account_id: str,
-                 effect: str = "") -> None:
+                 effect: str = "", provider: str = "") -> None:
         self.rule = rule
         self.row = row
         self.account_id = account_id
         self.effect = effect
+        #: The provider of the mailbox, or "" when the chat could not read it.
+        self.provider = provider
         label, facts = rule.describe(row)
         self.line = _card_text(f"{label} · {facts}", 300)
 
@@ -8189,7 +8214,8 @@ async def _earlier_of(rule: Any, row: dict[str, Any], account_id: str) -> _Earli
     except Exception as exc:  # the class only: the card names no effect
         _log.warning("email.earlier_provider_unread", error=type(exc).__name__)
         box = {}
-    return _Earlier(rule, row, account_id, rule.delete_effect(str(box.get("provider") or "")))
+    provider = str(box.get("provider") or "")
+    return _Earlier(rule, row, account_id, rule.delete_effect(provider), provider)
 
 
 async def _earlier_draft(plan: _ChatPlan | None, account_id: str) -> _Earlier | None:
@@ -8249,42 +8275,82 @@ def _with_earlier(form: dict[str, Any], earlier: _Earlier | None) -> dict[str, A
 
 async def _after_discard(out: Any, earlier: _Earlier | None) -> Any:
     """The answer of a card that sent and saved nothing, with what became of
-    the earlier draft. Only the member's own "Delete it" trashes it, and only
-    while it is still the chat's own text. Each other way keeps it, and the
-    answer names it. The trash counts only what the provider confirmed
-    (``draft_choice.report``). A state that the chat could not check (the flag
-    went off, the draft or its record could not be read, or it left Drafts)
-    claims no place: the chat deleted nothing, and the member looks in Drafts."""
+    the earlier draft.
+
+    Only the member's own "Delete it" trashes it, and only while it is still
+    the chat's own text: the stored copy (``target_state``), then the live
+    draft at the mailbox (``DELETE /email/chat-drafts/{id}``). Each other way
+    keeps it, and the answer says where it is. "The member did not ask to
+    delete it" goes only with the member's own no. A timeout, a close, no card
+    and another member's answer get the plain line.
+
+    After "Delete it", the answer is ``ask_tools.card_declined_draft_text``:
+    the lead stays "Declined", and the member's line says that nothing was
+    sent or saved, then what became of the draft. A trash counts only when
+    the provider confirmed it and the draft left Drafts. A state that the
+    chat could not check claims no folder."""
     if earlier is None or not isinstance(out, str):
         return out
     from acb_skills import ask_tools
 
-    did = str(earlier.row["id"])
     if ask_tools.earlier_draft_choice(_current_user_email()) != "delete":
-        return out + _earlier_stays(earlier, "The member did not ask to delete it")
+        if ask_tools.last_card_outcome() == ask_tools.CARD_DECLINED:
+            return out + _earlier_stays(earlier, "The member did not ask to delete it")
+        return out + _earlier_stays(earlier)
+    act, detail = await _delete_earlier(earlier)
+    return ask_tools.card_declined_draft_text(act) + (f"\n{detail}" if detail else "")
+
+
+#: Task 3978: what the member reads when "Delete it" deleted nothing.
+_NOT_DELETED_CHANGED = ("The draft was not deleted, because it changed after this chat "
+                        "saved it. It is still in Drafts.")
+_NOT_DELETED_UNCHECKED = ("The draft was not deleted, because this chat could not check "
+                          "it. Look in Drafts for it.")
+_NOT_DELETED_LIVE = ("The draft was not deleted, because it changed at the mailbox, or "
+                     "Metorite could not read it there. Look in Drafts for it.")
+_NOT_CONFIRMED_DELETE = ("This chat could not confirm that the draft was deleted. Look in "
+                         "Drafts for it.")
+
+
+async def _delete_earlier(earlier: _Earlier) -> tuple[str, str]:
+    """``(act, detail)`` of "Delete it": one sentence for the member, then the
+    words for the model, with the draft_id and the report of the trash."""
+    did = str(earlier.row["id"])
     revise = _chat_draft_rule()
     if revise is None:
-        return out + _earlier_unchecked(earlier)
+        return _NOT_DELETED_UNCHECKED, _earlier_unchecked(earlier).strip()
     try:
         state = await revise.target_state(
             did, thread=_run_thread(), account_id=earlier.account_id,
             member=_current_user_email(), read=_read_chat_draft)
     except Exception as exc:  # the class only: the decline answer stays
         _log.warning("email.earlier_state_unread", error=type(exc).__name__)
-        return out + _earlier_unchecked(earlier)
+        return _NOT_DELETED_UNCHECKED, _earlier_unchecked(earlier).strip()
     if state in (revise.EDITED, revise.FILES):
         # ``_state`` read the draft in Drafts for both.
-        return out + _earlier_stays(
-            earlier, "It changed after this chat saved it, so the chat did not delete it")
+        return _NOT_DELETED_CHANGED, _earlier_stays(
+            earlier, "It changed after this chat saved it, so the chat did not delete it").strip()
     if state != revise.OK:
-        return out + _earlier_unchecked(earlier)
+        return _NOT_DELETED_UNCHECKED, _earlier_unchecked(earlier).strip()
     plan = _TrashPlan(earlier.rule, [did], {did: earlier.row}, {})
-    return f"{out}\n" + await _trash_and_report(plan, [earlier.row], [])
+    tally, outcomes = await _trash_tally(plan, [earlier.row], [], live=True)
+    if outcomes.get(did) == _LIVE_REFUSED:
+        return _NOT_DELETED_LIVE, (
+            f"The live draft at the mailbox is not the text that this chat saved, or "
+            f"Metorite could not read it there, so nothing was deleted (draft_id {did}). "
+            "Do not say that it was deleted.")
+    head, data, tail = earlier.rule.report(tally, _card_text)
+    report = _framed_drafts(head, data, tail)
+    if any(str(m.get("id")) == did for m in tally.drafts):
+        return earlier.rule.deleted_line(earlier.provider), report
+    return _NOT_CONFIRMED_DELETE, report
 
 
-def _earlier_stays(earlier: _Earlier, why: str) -> str:
-    """The line of an earlier draft that stays in Drafts."""
-    return (f" {why}. The draft that this chat saved stays in Drafts (draft_id "
+def _earlier_stays(earlier: _Earlier, why: str = "") -> str:
+    """The line of an earlier draft that stays in Drafts, with *why* first
+    when the member said no."""
+    lead = f" {why}." if why else ""
+    return (f"{lead} The draft that this chat saved stays in Drafts (draft_id "
             f"{earlier.row['id']}): {earlier.line}. Tell the member that it is still "
             "in Drafts.")
 

@@ -37,6 +37,15 @@ Each rule names the mutation that turns it red (R7):
     ``card_answer_agrees`` -> ``test_a_late_delete_answer_reads_as_a_reject``.
 13. **A reply draft is never the draft of a new mail.** Mutation: drop the
     ``reply`` check of ``plan_save`` -> ``test_a_reply_draft_is_never_a_new_mail_target``.
+14. **The delete reads the live draft at the mailbox** (fix round 2, A).
+    Mutation: trash through ``DELETE /email/messages`` -> ``test_a_live_edit_is_never_deleted``
+    and ``test_the_live_check_route``.
+15. **After "Delete it" the head is true** (fix round 2, B and C). Mutation: keep
+    the decline text of before -> ``test_delete_trashes_the_chat_draft_and_names_what_stays``.
+16. **Reply entries have their own cap** (fix round 2, D). Mutation: one cap
+    of 20 -> ``test_reply_entries_never_push_out_a_new_mail_draft``.
+17. **Only the member's own no says "did not ask to delete"** (fix round 2, E).
+    Mutation: say it on each end -> ``test_keep_and_no_answer_keep_the_draft``.
 """
 from __future__ import annotations
 
@@ -246,6 +255,7 @@ class Mailbox:
         self.unconfirmed = False
         self.provider = "gmail"
         self.read_fault: int | None = None
+        self.live_refuse = False
 
     async def request(self, method: str, path: str, **kw: Any) -> _Resp:
         if method == "GET" and path == "/email/accounts":
@@ -267,7 +277,11 @@ class Mailbox:
             return _Resp(dict(self.rows[path.rsplit("/", 1)[1]]))
         if method == "DELETE":
             mid = path.rsplit("/", 1)[1]
-            assert kw.get("params") == {"report": "true"}, "the tool asks for the outcome"
+            # Task 3978, fix round 2 (A): a draft of the chat goes through the
+            # route that reads the live draft at the mailbox first.
+            assert path == f"/email/chat-drafts/{mid}", "the live-checked route"
+            if self.live_refuse:
+                raise agents.GatewayError("Email DELETE failed (409)", 409)
             self.deletes.append(mid)
             self.rows[mid]["folder"] = "trash"
             return _Resp({"id": mid, "discarded": False,
@@ -304,7 +318,15 @@ def _choice(monkeypatch: pytest.MonkeyPatch, choice: str) -> None:
 
 
 _PLAN = agents._ChatPlan(CHAT_DRAFT, to=["salil@client.test"])
-_DECLINED = "Declined: nothing was done. The email was not sent."
+#: The REAL decline text of a new-mail card (fix round 2, B).
+_DECLINED = at.card_outcome_text(at.CARD_DECLINED, "The email was not sent.")
+#: The head of the answer after "Delete it": the lead stays "Declined".
+_DRAFT_HEAD = f"Declined: {at.DECLINED_DRAFT.happened}"
+
+
+def _head_and_act(out: str) -> str:
+    """The head and the act sentence of an answer: what the member reads."""
+    return out[: out.index(at.DECLINED_DRAFT.next)].strip()
 
 
 @pytest.mark.asyncio
@@ -333,15 +355,20 @@ async def test_a_draft_with_a_queued_send_asks_nothing(box):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("choice", ["", "keep"])
-async def test_keep_and_no_answer_keep_the_draft(box, monkeypatch, choice):
+@pytest.mark.parametrize("outcome,said_no", [
+    (at.CARD_DECLINED, True), (at.CARD_TIMED_OUT, False), (at.CLOSED_BY_YOUR_MESSAGE, False),
+    (at.CARD_NOT_SHOWN, False), (at.CARD_OTHER_MEMBER, False)])
+async def test_keep_and_no_answer_keep_the_draft(box, monkeypatch, outcome, said_no):
+    """Fix round 2 (E): only the member's own no says that the member did not
+    ask to delete it. Each other end gets the plain line."""
     earlier = await agents._earlier_draft(_PLAN, BOX)
-    _choice(monkeypatch, choice)
+    _choice(monkeypatch, "")
+    monkeypatch.setattr(at, "last_card_outcome", lambda: outcome)
     out = await agents._after_discard(_DECLINED, earlier)
     assert box.deletes == []
     assert out.startswith(_DECLINED)
     assert f"stays in Drafts (draft_id {CHAT_DRAFT})" in out
-    assert "deleted" not in out.replace("did not ask to delete", "")
+    assert ("The member did not ask to delete it" in out) is said_no
 
 
 @pytest.mark.asyncio
@@ -351,7 +378,11 @@ async def test_delete_trashes_the_chat_draft_and_names_what_stays(box, monkeypat
     out = await agents._after_discard(_DECLINED, earlier)
     assert box.deletes == [CHAT_DRAFT], "only the chat's own draft"
     assert box.rows[MEMBER_DRAFT]["folder"] == "drafts"
-    assert out.startswith(_DECLINED + "\nTrashed 1 message(s): 1 draft(s).")
+    # Fix round 2 (B, C): the head says nothing was sent or saved, and the act
+    # says the true effect at Gmail. It never says that the draft did not change.
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} The draft was deleted from Gmail for good."
+    assert "did not change" not in _head_and_act(out)
+    assert "\nTrashed 1 message(s): 1 draft(s)." in out
     # The member's draft of the same email stays, and the answer names it.
     assert "1 matching draft(s) are still in Drafts" in out
     assert MEMBER_DRAFT in out.split("are still in Drafts:")[1]
@@ -363,6 +394,7 @@ async def test_an_unconfirmed_trash_never_reads_deleted(box, monkeypatch):
     _choice(monkeypatch, "delete")
     box.unconfirmed = True
     out = await agents._after_discard(_DECLINED, earlier)
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} {agents._NOT_CONFIRMED_DELETE}"
     assert "Trashed 0 message(s): the mailbox did not confirm a trash." in out
     assert "Do not say that they were deleted." in out
 
@@ -375,6 +407,7 @@ async def test_a_changed_draft_stays(box, monkeypatch, state):
     _choice(monkeypatch, "delete")
     out = await agents._after_discard(_DECLINED, earlier)
     assert box.deletes == []
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} {agents._NOT_DELETED_CHANGED}"
     assert "It changed after this chat saved it" in out
     assert f"stays in Drafts (draft_id {CHAT_DRAFT})" in out
 
@@ -396,11 +429,52 @@ async def test_an_unchecked_draft_claims_no_place(box, monkeypatch, rule):
     _choice(monkeypatch, "delete")
     out = await agents._after_discard(_DECLINED, earlier)
     assert box.deletes == []
-    assert out.startswith(_DECLINED), "the decline answer stays, never a tool error"
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} {agents._NOT_DELETED_UNCHECKED}", (
+        "a decline answer, never a tool error, and no claim that it did not change")
     assert "This chat deleted nothing" in out and f"draft_id {CHAT_DRAFT}" in out
     assert "look in Drafts" in out
     assert "stays in Drafts" not in out and "left Drafts" not in out
     assert "It changed" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_live_edit_is_never_deleted(box, monkeypatch):
+    """Fix round 2 (A): the stored copy is the chat's text, but the member
+    edited the draft at the mailbox. The gateway's live check refuses, so
+    nothing goes, and the answer says so."""
+    earlier = await agents._earlier_draft(_PLAN, BOX)
+    _choice(monkeypatch, "delete")
+    box.live_refuse = True
+    out = await agents._after_discard(_DECLINED, earlier)
+    assert box.deletes == [] and box.rows[CHAT_DRAFT]["folder"] == "drafts"
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} {agents._NOT_DELETED_LIVE}"
+    assert "Do not say that it was deleted." in out and "Trashed" not in out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,line", [
+    ("microsoft", "The draft was moved to Deleted Items in Outlook."),
+    ("imap", "The draft left Drafts.")])
+async def test_the_delete_line_names_the_provider(box, monkeypatch, provider, line):
+    """Fix round 2 (C): Outlook keeps it in Deleted Items, and an unknown
+    provider claims only what the chat read."""
+    box.provider = provider
+    earlier = await agents._earlier_draft(_PLAN, BOX)
+    _choice(monkeypatch, "delete")
+    out = await agents._after_discard(_DECLINED, earlier)
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} {line}"
+    assert "for good" not in _head_and_act(out) or provider == "gmail"
+
+
+def test_the_client_holds_the_draft_decline_words() -> None:
+    """Fix round 2 (B): ``memberLineOf`` gives the member line of the draft
+    decline, so it holds the same words as the server."""
+    src = (ROOT / "workbench" / "control_plane" / "src" / "lib" / "cardOutcomes.ts").read_text(
+        encoding="utf-8")
+    o = at.DECLINED_DRAFT
+    assert (f'export const DECLINED_DRAFT: CardOutcomeText = {{ lead: "{o.lead}", '
+            f'happened: "{o.happened}", next: "{o.next}" }};') in src
+    assert o.lead == at.CARD_OUTCOMES[at.CARD_DECLINED].lead, "the outcome stays declined"
 
 
 @pytest.mark.asyncio
@@ -506,6 +580,7 @@ def test_edit_card_of_a_reply_draft_asks_and_deletes(record, box) -> None:
     assert card["earlier"].startswith("To salil@client.test: Proposal")
     assert box.deletes == [CHAT_DRAFT]
     assert "Trashed 1 message(s): 1 draft(s)." in out
+    assert _head_and_act(out) == f"{_DRAFT_HEAD} The draft was deleted from Gmail for good."
     # The member's own draft of the same email stays, and the answer names it.
     assert MEMBER_DRAFT in out.split("are still in Drafts:")[1]
 
@@ -640,3 +715,95 @@ def test_a_late_delete_answer_reads_as_a_reject() -> None:
     assert card_answer_display("", None, q, at.DELETE_EARLIER_ANSWER, "r1")["decision"] == "reject"
     # Any other text after REJECT is no reject.
     assert not card_answer_agrees(compose_card_answer(q, 'REJECT {"earlier":"x"}'), display)
+
+
+# ── 6. Fix round 2 ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reply_entries_never_push_out_a_new_mail_draft(record) -> None:
+    """Fix round 2 (D): reply drafts have their own cap, so a long run of
+    replies never pushes the draft of a new mail out of the record."""
+    await cr.note_draft(thread="t-3978", account_id=BOX, member=ME, draft_id="new-mail",
+                        to=["salil@client.test"], subject="Proposal", digest="d")
+    for n in range(cr.MAX_REPLY_DRAFTS + 5):
+        await cr.note_draft(thread="t-3978", account_id=BOX, member=ME, draft_id=f"reply-{n}",
+                            to=[], subject="Re: x", digest="d", reply=True)
+    did = await cr.plan_save(act=cr.NEW_MAIL, thread="t-3978", account_id=BOX, member=ME,
+                             to=["salil@client.test"], subject="Proposal")
+    assert did == "new-mail"
+    (raw,) = record.data.values()
+    assert raw.count('"reply": true') == cr.MAX_REPLY_DRAFTS
+    assert "reply-0" not in raw and f"reply-{cr.MAX_REPLY_DRAFTS + 4}" in raw
+
+
+class _Live:
+    def __init__(self, live: Any) -> None:
+        self.live = live
+
+    async def get_message_body(self, _pmid: str) -> Any:
+        from types import SimpleNamespace
+
+        if isinstance(self.live, Exception):
+            raise self.live
+        return SimpleNamespace(body_text=self.live, body_html="")
+
+
+@pytest.mark.parametrize("live,authed,folder,ok", [
+    ("Dear Salil,", True, "drafts", True),
+    ("Dear Salil, I changed this in Outlook.", True, "drafts", False),
+    (TimeoutError(), True, "drafts", False),
+    ("Dear Salil,", False, "drafts", False),
+    ("Dear Salil,", True, "trash", False),
+], ids=["same", "edited-at-the-mailbox", "read-fails", "no-sign-in", "not-a-draft"])
+def test_the_live_check_route(monkeypatch, live, authed, folder, ok) -> None:
+    """Fix round 2 (A): ``DELETE /email/chat-drafts/{id}`` trashes only while
+    the live body at the provider is the stored text. The member comes from
+    the session. A refusal is 409, and nothing is trashed."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+    from gateway.routes.email.automation import drafting as dr
+    from gateway.routes.email.transport import messages
+
+    owners: list[str] = []
+    row = SimpleNamespace(account_id=BOX, body_text="Dear Salil,", folder=folder)
+
+    class _Db:
+        async def execute(self, *_a: Any, **_k: Any) -> Any:
+            return SimpleNamespace(fetchone=lambda: row)
+
+    @asynccontextmanager
+    async def tenant() -> Any:
+        yield _Db()
+
+    @asynccontextmanager
+    async def session(_db: Any, owner: str, *, message_id: str, require_auth: bool) -> Any:
+        assert message_id == CHAT_DRAFT and require_auth is False
+        owners.append(owner)
+        yield SimpleNamespace(authed=authed, provider=_Live(live), provider_message_id="p1")
+
+    async def signature(*_a: Any) -> str:
+        return ""
+
+    trashed: list[str] = []
+
+    async def delete(mid: str, _user: Any, report: bool = False) -> Any:
+        assert report is True
+        trashed.append(mid)
+        return {"id": mid, "provider": "confirmed"}
+
+    monkeypatch.setattr(dr, "_tenant_session", tenant)
+    monkeypatch.setattr(dr, "provider_session", session)
+    monkeypatch.setattr(dr, "_account_signature", signature)
+    monkeypatch.setattr(messages, "delete_message", delete)
+    user = SimpleNamespace(email=ME)
+    if ok:
+        assert asyncio.run(dr.trash_chat_draft_live(CHAT_DRAFT, user))["provider"] == "confirmed"
+        assert trashed == [CHAT_DRAFT]
+    else:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(dr.trash_chat_draft_live(CHAT_DRAFT, user))
+        assert exc.value.status_code == 409 and trashed == []
+    assert owners == [ME], "the member of the session, never a request field"

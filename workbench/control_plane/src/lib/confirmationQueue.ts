@@ -34,7 +34,7 @@ import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/
 import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
-import { earlierFromEvent, isNewMail, isNewMailEdits, replyFromEvent, startTicks, type EarlierDraft, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, earlierFromEvent, isNewMail, isNewMailEdits, replyFromEvent, startTicks, type EarlierDraft, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, type TaskEditForm } from "@/lib/taskEditCard";
 
@@ -446,6 +446,21 @@ export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
 export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">): string {
   const text = card.detail || card.title;
   return card.fenced ? unfenced(text) : text;
+}
+
+/** Task 3978: what the receipt adds when the member answered "Delete it". */
+export const EARLIER_DELETE_RECEIPT = "You asked to delete the draft. The reply says what became of it.";
+
+/**
+ * Task 3978 (§18.13.1): the words of the receipt of one answer. "Delete it" is
+ * a decline, and the receipt says that the member asked for the delete. Only
+ * the reply knows whether the draft went, so the receipt claims no delete.
+ * Each other answer keeps `receiptLabel`.
+ */
+export function answerReceiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">, answer: unknown): string {
+  const label = receiptLabel(card);
+  if (answer !== DELETE_EARLIER_ANSWER) return label;
+  return `${label.replace(/\.?\s*$/, ".")} ${EARLIER_DELETE_RECEIPT}`;
 }
 
 export function receiptText(r: ConfirmationReceipt): string {

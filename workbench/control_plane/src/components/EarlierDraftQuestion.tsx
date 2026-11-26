@@ -19,7 +19,9 @@
  * The hint names what Keep does, then what Delete does at the mailbox's
  * provider, from the server (`EARLIER_EFFECTS`). With no known provider it
  * promises nothing about the delete. Keep takes the focus when the question
- * opens, because the button that the member pressed is gone.
+ * opens, because the button that the member pressed is gone. Back (or
+ * Escape) shows the buttons again, and the card gives the focus back to its
+ * Discard or Reject button (`autoFocus` after a Back).
  *
  * Fence: `src/components/newMailCardEarlier.test.ts`.
  */
@@ -57,6 +59,13 @@ export default function EarlierDraftQuestion({
       aria-label={EARLIER_QUESTION}
       className="space-y-1.5 rounded-md border border-border px-2.5 py-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3"
       data-earlier-question=""
+      // Escape is Back: the member leaves the question with no answer.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onBack();
+        }
+      }}
     >
       <p className="text-xs font-medium text-foreground">{EARLIER_QUESTION}</p>
       <p className="break-words text-[11px] text-muted-foreground" data-earlier-draft="">

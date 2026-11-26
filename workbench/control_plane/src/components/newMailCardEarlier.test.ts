@@ -14,7 +14,11 @@
  * 4. The hint states the effect that the server chose, and no fixed promise.
  * 5. The queue gives the delete answer to the card that asks, and to no other.
  * 6. The delete answer is a decline, and a late one draws as "Rejected".
+ * 7. Fix round 2: after "Delete it" the member line and the receipt are true,
+ *    and Back (or Escape) gives the focus back to the button that asked.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -22,7 +26,8 @@ import { describe, expect, it, vi } from "vitest";
 import EarlierDraftQuestion, { declineStep } from "@/components/EarlierDraftQuestion";
 import { earlierProps, type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import { cardAnswerHeadline, markerAgrees, parseCardAnswerEnvelope } from "@/lib/cardAnswer";
-import { cardFromEvent, earlierOf, type PendingConfirmation } from "@/lib/confirmationQueue";
+import { CARD_OUTCOME_TEXTS, DECLINED_DRAFT, DECLINED_DRAFT_MEMBER_LINE, cardOutcomeOf, memberLineOf } from "@/lib/cardOutcomes";
+import { EARLIER_DELETE_RECEIPT, answerReceiptLabel, cardFromEvent, earlierOf, type PendingConfirmation } from "@/lib/confirmationQueue";
 import { DELETE_EARLIER_ANSWER, EARLIER_EFFECTS, EARLIER_HINT, EARLIER_QUESTION, earlierHint, replyFromEvent } from "@/lib/replyCard";
 
 const PEOPLE = { to: ["salil@client.test"], cc: [] };
@@ -171,5 +176,51 @@ describe("the delete answer", () => {
     expect(markerAgrees(envelope, { kind: "confirmation", question: "Save these changes", decision: "reject" })).toBe(true);
     // Any other text after REJECT is no decline.
     expect(parseCardAnswerEnvelope(envelope.replace("delete", "x"))?.decision).toBeUndefined();
+  });
+});
+
+describe("fix round 2: the words after Delete it", () => {
+  // The REAL texts of the server (`ask_tools.card_declined_draft_text`): the
+  // head, one act sentence for the member, the next step, then the report.
+  const after = (act: string) =>
+    `${DECLINED_DRAFT.lead}: ${DECLINED_DRAFT.happened} ${act} ${DECLINED_DRAFT.next}\nTrashed 1 message(s): 1 draft(s).\nTell the member these counts.`;
+
+  it("the member line says nothing was sent or saved, then what became of the draft", () => {
+    // Mutation: drop the DECLINED_DRAFT row from memberLineOf → red ("nothing was changed").
+    const text = after("The draft was deleted from Gmail for good.");
+    expect(cardOutcomeOf(text)).toBe("declined");
+    expect(memberLineOf(text)).toBe(`${DECLINED_DRAFT_MEMBER_LINE} The draft was deleted from Gmail for good.`);
+    expect(memberLineOf(text)).not.toMatch(/nothing was changed|did not change|Trashed/);
+    // A plain decline keeps its line of before.
+    const plain = `Declined: ${CARD_OUTCOME_TEXTS.declined.happened} The draft did not change. ${CARD_OUTCOME_TEXTS.declined.next}`;
+    expect(memberLineOf(plain)).toBe("You said no, so nothing was changed. The draft did not change.");
+  });
+
+  it("the receipt says the member asked for the delete, and claims no delete", () => {
+    const card = { title: PLAIN.title, detail: PLAIN.detail };
+    // Mutation: the label of before for Delete it → red.
+    expect(answerReceiptLabel(card, DELETE_EARLIER_ANSWER)).toBe(`Work · Nothing is sent. ${EARLIER_DELETE_RECEIPT}`);
+    expect(answerReceiptLabel(card, "REJECT")).toBe("Work · Nothing is sent.");
+    expect(EARLIER_DELETE_RECEIPT).not.toMatch(/was deleted/);
+  });
+
+  it("Escape is Back, and Back gives the focus to the button that asked", () => {
+    const back = vi.fn();
+    const tree = EarlierDraftQuestion({ line: LINE, onKeep: () => {}, onDelete: () => {}, onBack: back });
+    const group = elements(tree).find((e) => (e.props as Record<string, unknown>)["data-earlier-question"] !== undefined)!;
+    const stop = vi.fn();
+    // Mutation: no Escape → red.
+    (group.props as { onKeyDown: (e: unknown) => void }).onKeyDown({ key: "Escape", stopPropagation: stop });
+    expect(back).toHaveBeenCalledTimes(1);
+    (group.props as { onKeyDown: (e: unknown) => void }).onKeyDown({ key: "Enter", stopPropagation: stop });
+    expect(back).toHaveBeenCalledTimes(1);
+    // The cards have no DOM in this suite, so the wiring is read from the source.
+    // Mutation: drop the focus return → red.
+    const read = (rel: string) => fs.readFileSync(path.join(__dirname, rel), "utf8");
+    for (const file of ["ConfirmationCard.tsx", "NewMailCardForm.tsx"]) {
+      const src = read(file);
+      expect(src).toContain("autoFocus={cameBack}");
+      expect(src).toContain("setCameBack(true);");
+    }
   });
 });
