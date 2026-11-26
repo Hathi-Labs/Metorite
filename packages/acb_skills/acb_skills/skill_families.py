@@ -1054,6 +1054,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-9 (chat_parity.md section 6.4, rung 8, task 3950): the Custom Apps of
+    # the App Workshop. Six tools call the /apps routes as the member
+    # (custom_app_tools.py). It has no surface and is NOT in FOLLOWS: only the
+    # owner's pack list turns it on. Fence: test_custom_app_tools.py.
+    "studio-apps": {
+        "label": "AI Studio Custom Apps",
+        "summary": (
+            "Read the Custom Apps of the App Workshop, change their files and stored data, "
+            "rename, copy or pin one, publish it, roll it back, or share it."
+        ),
+        "description": (
+            "A tool pack: the acts of the Custom Apps of the App Workshop, for the main "
+            "assistant to load when a turn asks to read, change, publish or share a "
+            "Custom App. A publish, a roll back, each share act, a file delete, a "
+            "restore and a delete of a stored value show one card. A run loads a pack "
+            "only where tool packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "custom_app_read",
+            "custom_app_save",
+            "custom_app_files",
+            "custom_app_publish",
+            "custom_app_share",
+            "custom_app_data",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # WS-STU J2d (TOF-4b): the share of a skill with the org is one tool, in a
     # small pack of the same owner. It has no surface, so a plain Studio turn
     # holds no new tool. It is not in FOLLOWS: only the owner's pack list turns it
@@ -1169,6 +1199,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "people_me",
             "people_work",
             "reach_preview",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # P-1c (chat_parity.md section 6.4, task 3923, owner answer aa02d28f of
+    # 2026-11-23): the one act on a connected calendar. Sync now, and the switch
+    # that shows the member's tasks in it. Each act shows one card first. The
+    # owner is org-admin, which never runs as an agent (option a, the owner's
+    # answer on task 3923 is open). It is NOT in FOLLOWS: only the owner's pack
+    # list turns it on (tool_packs.packs_on). Fence:
+    # test_calendar_connections_pack.py.
+    "calendar-connections": {
+        "label": "Calendar connections",
+        "summary": (
+            "Sync a connected Google or Outlook calendar now, or show or hide your tasks in it."
+        ),
+        "description": (
+            "A tool pack: one act on a connected calendar, for the main assistant to load "
+            "when a turn asks to sync Google Calendar or Outlook now, or to show or hide "
+            "the member's tasks in it. Each act asks on one card first, and the route "
+            "acts as the member. To connect, reconnect or disconnect a calendar, the "
+            "member uses Calendar settings. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "my_tasks_calendar_connection",
         ),
         "owner": "org-admin",
         "core": False,

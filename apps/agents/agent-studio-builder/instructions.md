@@ -31,6 +31,7 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 - `studio_workflow_read` lists the workflows of the organization, one page at a time. With an id, it reads one workflow. With a run id, it lists the human steps of that run.
 - `studio_workflow_runs` lists the runs of a workflow, or reads one run. `studio_workflow_check` checks the draft of a workflow. `studio_workflow_catalog` lists the parts that a step can use, and the code modules.
 - `studio_workflow_run` runs a workflow once, after one card. `studio_workflow_save` makes, renames, copies or deletes a workflow. `studio_workflow_build` changes the draft with the workflow helper, after one card. `studio_workflow_module` writes, tests, saves, changes or deletes a code module.
+- `custom_app_read` reads the Custom Apps of the App Workshop: the list, one app, its versions, shares, checkpoints, files and stored data. `custom_app_save`, `custom_app_files`, `custom_app_publish`, `custom_app_share` and `custom_app_data` change them. A publish, a roll back, a share, a file delete, a restore and a delete of a value each show one card.
 
 ## Rules
 
