@@ -178,7 +178,8 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
     assert getattr(agent, "_permission_handler", None) is None
     tools = (agent.default_options or {}).get("tools")
     assert tools, "built with no tools"
-    assert len(tools) == len(_M._TOOLS) == 11 + len(_T.CRM_TOOLS)
+    # 13 own tools: 11 before, and the two set-up writes of CRM-M2e (task 3951).
+    assert len(tools) == len(_M._TOOLS) == 13 + len(_T.CRM_TOOLS)
 
 
 def test_the_advertised_description_does_not_still_say_read_only() -> None:
@@ -207,6 +208,7 @@ def test_register_agent_tools_maps_names() -> None:
         "create_lead", "update_deal_status", "log_activity", "convert_lead",
         "crm_create_pipeline",
         "crm_update_record", "crm_update_task",
+        "crm_edit_status", "crm_edit_lost_reason",
     } | set(_T.CRM_TOOL_NAMES)
     assert all(reg[n] is getattr(_T, n) for n in _T.CRM_TOOL_NAMES)
     assert reg["search_crm"] is _M.search_crm
@@ -267,6 +269,10 @@ _INVOCATIONS: dict[str, Any] = {
     # CRM-M2b: the record edit and the task change.
     "crm_update_record": lambda: _M.crm_update_record("deals", _ID, {"amount": 5}),
     "crm_update_task": lambda: _M.crm_update_task(_ID, completed=True),
+    # CRM-M2e (task 3951): a stage and a lost reason of the CRM set-up.
+    "crm_edit_status": lambda: _M.crm_edit_status("deal", "change", "Negotiation",
+                                                  new_name="Talks"),
+    "crm_edit_lost_reason": lambda: _M.crm_edit_lost_reason("add", "Budget cut"),
     # CRM-C7: the shared read tools, one call each.
     "crm_list_records": lambda: _T.crm_list_records("deals", q="acme"),
     "crm_get_record": lambda: _T.crm_get_record("deals", _ID),
@@ -412,7 +418,8 @@ def test_every_tool_declares_its_risk_and_the_write_half_declares_it_destructive
     """
     annotations = pytest.importorskip("acb_skills.tool_annotations")
     writers = {"create_lead", "update_deal_status", "log_activity", "convert_lead",
-               "crm_create_pipeline", "crm_update_record", "crm_update_task"}
+               "crm_create_pipeline", "crm_update_record", "crm_update_task",
+               "crm_edit_status", "crm_edit_lost_reason"}
     seen: set[str] = set()
     for fn in _M._TOOLS:
         hints = annotations.TOOL_ANNOTATIONS.get(fn.__name__)
