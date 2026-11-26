@@ -495,6 +495,24 @@ callback address that waits too long expires. The per-box token of task 1819
 (MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
 the box-token steps.
 
+### 5.3 The sign-in alarm
+
+A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When
+`metorite` shows "Needs authentication" or is missing, it writes one NOTE
+line to `~/lanes/merge-queue.log`. A repeat sends nothing. A "back" NOTE
+marks the recovery. A failed check (timeout, odd text) changes nothing.
+
+- Install: `bash scripts/home_server/mcp_signin_alarm.sh install`. This
+  enables nothing. Enable with `... enable` (OWNER-GATE `deploy`).
+- Settings: `~/.config/metorite/alarm.env`. `METORITE_ALARM_CHANNEL` is
+  `note` (default) or `gh`. The `gh` channel opens one issue, and it closes
+  the issue on recovery. It needs `METORITE_ALARM_GH_USER`, the login to
+  mention. Without it, nothing is sent. `METORITE_ALARM_HOST` names the box.
+- Logs: `journalctl --user -u metorite-signin-alarm.service`. State is in
+  `~/.local/state/metorite/signin_alarm.json`.
+- `aroh-dev-1` and the PC's WSL install it the same way. Use `--cwd` for a
+  checkout that is not `~/Metorite`.
+
 ---
 
 ## 6. CI and CD on the box
