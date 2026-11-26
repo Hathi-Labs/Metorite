@@ -13,7 +13,7 @@
  * its words are those of the board lanes (`AGENT_LANES`), and its card edge is
  * `agentCardLook`. Every name is untrusted text: a view draws it as text.
  */
-import { agentMarkFill, agentStateChip, agentStateVisual } from "@/lib/statusAccent";
+import { AGENT_DONE_KEY, agentMarkFill, agentStateChip, agentStateVisual } from "@/lib/statusAccent";
 
 import { type AgentEdge, agentCardLook } from "./agentCardLook";
 import {
@@ -21,6 +21,7 @@ import {
   type MapChild,
   type MapRun,
   type MapSession,
+  type MapTaskWords,
   childrenOf,
   dispatchGraph,
   sortSessions,
@@ -40,11 +41,15 @@ const VOCABULARY: Record<LensState, string> = {
   working: "working",
   waiting: "waiting",
   idle: "stale",
-  done: "completed",
+  done: AGENT_DONE_KEY,
 };
 
+/** A completed run reads and draws as Done here. */
+const vocabularyKey = (key: string): string => (key === "completed" ? AGENT_DONE_KEY : key);
+
 function vocabularyWord(key: string): string {
-  return AGENT_LANES.find((lane) => lane.key === key)?.label ?? AGENT_ENDED_WORDS[key] ?? key;
+  const ended = key === AGENT_DONE_KEY ? "completed" : key;
+  return AGENT_LANES.find((lane) => lane.key === ended)?.label ?? AGENT_ENDED_WORDS[ended] ?? ended;
 }
 
 export function lensWord(state: LensState): string {
@@ -80,7 +85,7 @@ export function lensRun(
   if (askedOf !== null && !run.quiet && run.state === "awaiting") {
     return { word: askedOf, chip: agentStateChip("waiting") };
   }
-  const key = run.quiet ? "stale" : run.state;
+  const key = vocabularyKey(run.quiet ? "stale" : run.state);
   return { word: vocabularyWord(key), chip: agentStateChip(key) };
 }
 
@@ -171,6 +176,8 @@ export interface LensSession {
   subs: SubCounts;
   /** AMR-4: the sub-agent names, so the find box reaches them. */
   subNames: string[];
+  /** AMR-4: the tasks that the summary names. The map of SW-102 sends none: its runs hold them. */
+  tasks: MapTaskWords[];
   wait: LensWait | null;
   /** "Waiting for Ben": a run of ANOTHER member waits for that member's answer. */
   askedOf: string | null;
@@ -295,6 +302,7 @@ export function buildLensModel(
       runs,
       children,
       ...subsOf(s, children),
+      tasks: s.tasks ?? [],
       // The awaiting state is the fact that names the wait of another member.
       wait: others ? { on: "member", until: null } : state === "waiting" ? waitOf(runs) : null,
       askedOf: others
@@ -389,6 +397,9 @@ export interface LensFilters {
 /** Idle starts folded (`agent_coordination.md` §3.12.2). Done starts folded too. */
 export const DEFAULT_STATES: readonly LensState[] = ["you", "failed", "working", "waiting"];
 
+/** A task as the find box reads it: its title and its number. */
+const taskText = (number: number | null, title: string): string[] => [title, number === null ? "" : `#${number}`];
+
 export function findText(s: LensSession, personName: string): string {
   return [
     s.name,
@@ -398,7 +409,8 @@ export function findText(s: LensSession, personName: string): string {
     s.host ?? "",
     s.model ?? "",
     ...s.subNames,
-    ...s.runs.flatMap((r) => [r.title, r.task_number === null ? "" : `#${r.task_number}`]),
+    ...s.runs.flatMap((r) => taskText(r.task_number, r.title)),
+    ...s.tasks.flatMap((t) => taskText(t.number, t.title)),
   ]
     .join(" ")
     .toLowerCase();

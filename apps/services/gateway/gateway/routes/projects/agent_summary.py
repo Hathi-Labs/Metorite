@@ -89,8 +89,10 @@ more reads of the same map, for the Agents view of a large fleet. They act
 only for an org that ``AGENT_LENSES_ORGS`` holds. For any other org the two
 values are not read, and the answer is the map of SW-102.
 
-* ``detail=summary``. Each session node with ONE lead run and a count of its
-  sub-agents (:data:`MAP_SUBAGENT_KEYS`). ``children`` is empty. A session
+* ``detail=summary``. Each session node with ONE lead run, a count of its
+  sub-agents (:data:`MAP_SUBAGENT_KEYS`) and the number and the title of at
+  most :data:`MAP_SUMMARY_TASKS_MAX` of its tasks (:data:`MAP_TASK_KEYS`), so
+  the find box reaches each of them. ``children`` is empty. A session
   with no open run whose newest ended run failed or completed in the last
   :data:`MAP_ENDED_WINDOW_S` seconds reads ``failed`` or ``done``.
 * ``session=<node id>``. The runs and the sub-agents of that one node. A node
@@ -855,6 +857,13 @@ MAP_SUB_NAMES_SCAN = 200
 #: The keys of the sub-agent count of a summary session.
 MAP_SUBAGENT_KEYS: tuple[str, ...] = ("total", "working", "failed", "done", "names")
 
+#: The most tasks that one summary session names. The first is the task of
+#: the lead run.
+MAP_SUMMARY_TASKS_MAX = 20
+
+#: The keys of one task of a summary session. The title is untrusted text.
+MAP_TASK_KEYS: tuple[str, ...] = ("number", "title")
+
 #: The only value of ``detail``.
 MAP_DETAIL_SUMMARY = "summary"
 
@@ -940,14 +949,30 @@ _CUR_RUN_ORDER = """cur.is_open DESC, (cur.state = 'awaiting') DESC,
           CASE WHEN cur.is_open THEN cur.life_at ELSE cur.ended_at END DESC NULLS LAST,
           cur.id DESC"""
 
-#: ONE lead run for each listed node, so no session loses its title, its wait
-#: or its question.
-_MAP_LEAD_RUNS_SQL = _MAP_CUR_CTE + """
-SELECT DISTINCT ON (cur.node_id) """ + _CUR_RUN_COLUMNS + """
-  FROM cur
-  JOIN pm_tasks t ON t.id = cur.task_id
- WHERE cur.node_id = ANY(CAST(:nodes AS text[]))
- ORDER BY cur.node_id, """ + _CUR_RUN_ORDER + """
+#: The first run of each task of each listed node, in the order of
+#: :data:`_CUR_RUN_ORDER`, at most ``:cap`` tasks for a node. The first row of
+#: a node is its ONE lead run, so no session loses its title, its wait or its
+#: question. Each row names its task, so the find box reaches the other tasks
+#: of the session. The rows come from ``cur``, so from the ONE ``seen`` text.
+_MAP_TASK_RUNS_SQL = _MAP_CUR_CTE + """, ranked AS (
+    SELECT """ + _CUR_RUN_COLUMNS + """,
+           row_number() OVER (PARTITION BY cur.node_id
+                              ORDER BY """ + _CUR_RUN_ORDER + """) AS pos,
+           row_number() OVER (PARTITION BY cur.node_id, cur.task_id
+                              ORDER BY """ + _CUR_RUN_ORDER + """) AS of_task
+      FROM cur
+      JOIN pm_tasks t ON t.id = cur.task_id
+     WHERE cur.node_id = ANY(CAST(:nodes AS text[]))
+), per_task AS (
+    SELECT ranked.*,
+           row_number() OVER (PARTITION BY node_id ORDER BY pos) AS task_rank
+      FROM ranked
+     WHERE of_task = 1
+)
+SELECT *
+  FROM per_task
+ WHERE task_rank <= :cap
+ ORDER BY node_id, task_rank
 """
 
 #: The runs of one node (``session=``), with the quiet ones.
@@ -1171,6 +1196,12 @@ def _run_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _task_words(row: Any) -> dict[str, Any]:
+    """The number and the title of one task of a summary session
+    (:data:`MAP_TASK_KEYS`)."""
+    return {"number": row.task_number, "title": _line(row.task_title, "Untitled task")}
+
+
 def _child_row(row: Any, state: str) -> dict[str, Any]:
     """One sub-agent of an answer (:data:`MAP_CHILD_KEYS`)."""
     return {
@@ -1236,8 +1267,10 @@ async def _map_scope(
 async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> dict[str, Any]:
     """``detail=summary`` (AMR-4, ``agent_coordination.md`` §3.12.9).
 
-    The session nodes, ONE lead run of each, the lines and a count of the
-    sub-agents of each. No sub-agent row leaves: ``session=`` reads those.
+    The session nodes, ONE lead run of each, the lines, a count of the
+    sub-agents of each and the words of its tasks (the number and the title, at
+    most :data:`MAP_SUMMARY_TASKS_MAX`). No sub-agent row leaves: ``session=``
+    reads those.
     ``count`` counts the open runs, as the map does. The reach is that of the
     map: every read goes through the ONE ``seen`` text.
     """
@@ -1258,7 +1291,9 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
         sessions = await read(_MAP_SUMMARY_SQL, cap=MAP_SUMMARY_SESSIONS_MAX + 1)
         kept = sessions[:MAP_SUMMARY_SESSIONS_MAX]
         nodes = sorted(str(s.node_id) for s in kept)
-        runs = await read(_MAP_LEAD_RUNS_SQL, nodes=nodes) if nodes else []
+        ranked = await read(
+            _MAP_TASK_RUNS_SQL, nodes=nodes, cap=MAP_SUMMARY_TASKS_MAX,
+        ) if nodes else []
         lines = await read(
             _MAP_SUMMARY_LINES_SQL, nodes=nodes, cap=MAP_SUMMARY_SESSIONS_MAX + 1,
         ) if nodes else []
@@ -1266,11 +1301,17 @@ async def _agent_map_summary(user: UserContext, *, project_id: str | None) -> di
 
     counts = {str(c.node_id): c for c in counted}
     order = {str(s.node_id): i for i, s in enumerate(kept)}
+    # The first row of a node is its lead run. Each row names one task.
+    runs = [r for r in ranked if r.task_rank == 1]
+    tasks: dict[str, list[dict[str, Any]]] = {}
+    for r in ranked:
+        tasks.setdefault(str(r.node_id), []).append(_task_words(r))
     return {
         "people": _people_of(kept),
         "sessions": [{
             **_session_row(s, _summary_state(s)),
             "subagents": _subagent_counts(counts.get(str(s.node_id))),
+            "tasks": tasks.get(str(s.node_id), []),
         } for s in kept],
         "runs": [_run_row(r) for r in sorted(runs, key=lambda r: order[str(r.node_id)])],
         "lines": [{"from": str(x.from_id), "to": str(x.to_id)}

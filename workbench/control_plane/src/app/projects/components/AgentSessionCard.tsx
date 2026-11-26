@@ -4,7 +4,9 @@
  * The Agents view · the card of one session (WS-MCP AMR-1).
  *
  * AMR-4: a session with sub-agents says how many, on its second line, in the
- * place of the machine. In the graph that count is a button that opens them.
+ * place of the machine. The count takes a short form, so the task or the
+ * question keeps most of the line. The accessible name holds the full words. In
+ * the graph that count is a button that opens them.
  *
  * It is the board's task card with the agent edge of `agentCardLook`
  * (`data-agent-edge`, drawn by `globals.css`): the spectrum travels while the
@@ -20,6 +22,7 @@ import {
   type LensCounts,
   type LensSession,
   type LensState,
+  type SubCounts,
   countWords,
   lensChip,
   lensEdge,
@@ -75,7 +78,28 @@ export function SubCount({ session }: { session: Pick<LensSession, "subs"> }) {
   );
 }
 
-const CHIP = "max-w-[80%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
+/**
+ * The short form of the sub-agent count on a card: the total, the working ones,
+ * then the failed ones as a number beside the failed icon. A reader hears
+ * `subWords` in its place.
+ */
+export function SubShort({ subs, icon = "GitFork" }: { subs: SubCounts; icon?: string }) {
+  return (
+    <span aria-hidden className="inline-flex items-center gap-0.5 tabular-nums">
+      <Icon name={icon} size={11} />
+      <span>{[subs.total, subs.working > 0 ? `${subs.working} working` : ""].filter(Boolean).join(" · ")}</span>
+      {subs.failed > 0 ? (
+        <span className="ml-0.5 inline-flex items-center gap-0.5 text-destructive" data-agent-sub-failed="">
+          <Icon name={lensIcon("failed")} size={11} />
+          {subs.failed}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+const CHIP =
+  "max-w-[55%] shrink-0 overflow-hidden whitespace-nowrap rounded bg-secondary px-1 text-[11px] font-normal text-muted-foreground";
 
 /** The raised face of a card inside an agent edge. */
 export const CARD_FACE =
@@ -140,12 +164,18 @@ export function SessionCard({
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{sessionLine(session, nowMs)}</span>
               {toggle ? (
                 // Holds the room of the button, which sits above the card.
-                <span aria-hidden className={`${CHIP} invisible pl-6`}>
-                  <SubCount session={session} />
+                <span aria-hidden className={`${CHIP} invisible`}>
+                  <SubShort subs={session.subs} />
                 </span>
               ) : subs ? (
-                <span className={CHIP} data-agent-sub-count="">
-                  <SubCount session={session} />
+                <span
+                  role="img"
+                  aria-label={subWords(session.subs)}
+                  title={subWords(session.subs)}
+                  className={CHIP}
+                  data-agent-sub-count=""
+                >
+                  <SubShort subs={session.subs} />
                 </span>
               ) : session.host ? (
                 <span className="max-w-[40%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground">
@@ -163,12 +193,13 @@ export function SessionCard({
           selected={subsOpen}
           aria-expanded={subsOpen}
           aria-label={`${subsOpen ? "Hide" : "Show"} ${subWords(session.subs)} of ${session.name}`}
+          title={subWords(session.subs)}
           data-agent-sub-toggle={session.id}
           onClick={toggle}
-          layout={`!absolute bottom-2 right-2.5 z-10 flex ${CHIP} items-center gap-0.5`}
+          layout={`!absolute bottom-2 right-2.5 z-10 flex ${CHIP} items-center`}
         >
-          <Icon name={subsOpen ? "ChevronDown" : "ChevronRight"} size={12} aria-hidden />
-          <SubCount session={session} />
+          {/* The open rows turn the icon, so the button takes no room of its own. */}
+          <SubShort subs={session.subs} icon={subsOpen ? "ChevronDown" : "GitFork"} />
         </Button>
       ) : null}
     </div>

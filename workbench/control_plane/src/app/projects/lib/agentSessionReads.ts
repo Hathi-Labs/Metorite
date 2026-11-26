@@ -40,13 +40,38 @@ export function keepReady(old: SessionRead | undefined, next: SessionRead): Sess
   return next.kind === "error" && old?.kind === "ready" ? old : next;
 }
 
+/**
+ * The reads of ONE project scope. The runs of a session differ by scope, so a
+ * read of one project never draws in another.
+ */
+export interface ReadCache {
+  /** The project in scope, or "" for the whole organization. */
+  scope: string;
+  reads: ReadonlyMap<string, SessionRead>;
+}
+
+const NO_READS: ReadonlyMap<string, SessionRead> = new Map();
+
+/** The reads that a scope may draw. A cache of another scope gives none. */
+export function readsOf(cache: ReadCache, scope: string): ReadonlyMap<string, SessionRead> {
+  return cache.scope === scope ? cache.reads : NO_READS;
+}
+
+/** One answer into the cache. The first answer of a new scope drops the old one. */
+export function putRead(cache: ReadCache, scope: string, id: string, next: SessionRead): ReadCache {
+  const held = readsOf(cache, scope);
+  return { scope, reads: new Map(held).set(id, keepReady(held.get(id), next)) };
+}
+
 export function useSessionReads(
+  /** The project in scope, or "". A change of it drops every read. */
+  scope: string,
   ids: readonly string[],
   /** A new value reads again: the map of the last re-read. */
   stamp: unknown,
   read: ReadSession,
 ): { reads: ReadonlyMap<string, SessionRead>; retry: () => void } {
-  const [reads, setReads] = useState<ReadonlyMap<string, SessionRead>>(() => new Map());
+  const [cache, setCache] = useState<ReadCache>(() => ({ scope, reads: NO_READS }));
   const [again, setAgain] = useState(0);
   const readRef = useRef(read);
   useEffect(() => {
@@ -58,7 +83,7 @@ export function useSessionReads(
     let live = true;
     for (const id of key.split(",")) {
       const put = (next: SessionRead) => {
-        if (live) setReads((held) => new Map(held).set(id, keepReady(held.get(id), next)));
+        if (live) setCache((held) => putRead(held, scope, id, next));
       };
       readRef
         .current(id)
@@ -68,10 +93,10 @@ export function useSessionReads(
     return () => {
       live = false;
     };
-  }, [key, stamp, again]);
+  }, [scope, key, stamp, again]);
   const retry = useCallback(() => {
-    setReads((held) => new Map([...held].filter(([, r]) => r.kind === "ready")));
+    setCache((held) => ({ ...held, reads: new Map([...held.reads].filter(([, r]) => r.kind === "ready")) }));
     setAgain((n) => n + 1);
   }, []);
-  return { reads, retry };
+  return { reads: readsOf(cache, scope), retry };
 }

@@ -535,6 +535,9 @@ export interface AgentStateVisual {
   icon: string;
 }
 
+/** The key of the Done state of the Agents view in `AGENT_STATES` and `AGENT_MARKS`. */
+export const AGENT_DONE_KEY = "lens_done";
+
 export const AGENT_STATES: Record<string, AgentStateVisual> = {
   awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
   answered: { hue: "blue", icon: "CircleCheck" },
@@ -545,8 +548,10 @@ export const AGENT_STATES: Record<string, AgentStateVisual> = {
   stale: { hue: "gray", muted: true, icon: "CirclePause" },
   stopping: { hue: "gray", muted: true, icon: "CircleStop" },
   failed: { hue: "red", icon: "CircleAlert" },
-  // AMR-4: a session whose last run completed, in the Agents view.
-  completed: { hue: "green", icon: "CircleCheck" },
+  // AMR-4: a session whose last run completed, drawn by the Agents view only.
+  // ⚠️ The key is not a state of the server. A `completed` run keeps the gray
+  // chip on every surface outside `AGENT_LENSES_ORGS`.
+  [AGENT_DONE_KEY]: { hue: "green", icon: "CircleCheck" },
 };
 
 /**
@@ -561,7 +566,7 @@ export const AGENT_MARKS: Record<string, string> = {
   working: "bg-primary",
   waiting: "bg-primary/40",
   stale: "bg-muted-foreground/35",
-  completed: "bg-success/50",
+  [AGENT_DONE_KEY]: "bg-success/50",
 };
 
 /** The fill of the mark of a state. An unknown state reads as idle. */

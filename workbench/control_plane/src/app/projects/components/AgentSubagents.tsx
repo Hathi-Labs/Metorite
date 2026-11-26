@@ -38,7 +38,7 @@ export function subLines(rows: readonly SubRow[], doneOpen: boolean): Line[] {
   });
 }
 
-/** The row heights, in rem. The window sums them, so each line draws at its height. */
+/** The row heights, in rem. The window sums them at the applied root size. */
 const HEIGHT_REM = { head: 1.75, row: 2.5 } as const;
 
 function SubLineView({ line, nowMs, onOpenDone }: { line: Line; nowMs: number; onOpenDone: () => void }) {
@@ -74,7 +74,7 @@ function SubLineView({ line, nowMs, onOpenDone }: { line: Line; nowMs: number; o
 }
 
 function Rows({ lines, nowMs, onOpenDone }: { lines: Line[]; nowMs: number; onOpenDone: () => void }) {
-  const heights = useMemo(() => lines.map((l) => HEIGHT_REM[l.kind] * 16), [lines]);
+  const heights = useMemo(() => lines.map((l) => HEIGHT_REM[l.kind]), [lines]);
   const { attach, start, end, before, after } = useWindowedList(heights);
   if (lines.length <= WINDOW_ABOVE) {
     return (
@@ -85,11 +85,9 @@ function Rows({ lines, nowMs, onOpenDone }: { lines: Line[]; nowMs: number; onOp
       </ul>
     );
   }
-  // The sums are px at 16 px a rem. A smaller density only draws a few more rows.
-  const rem = (px: number) => `${px / 16}rem`;
   return (
     <div ref={attach} className="max-h-96 overflow-y-auto" data-agent-sub-window="">
-      <ul style={{ paddingTop: rem(before), paddingBottom: rem(after) }}>
+      <ul style={{ paddingTop: `${before}rem`, paddingBottom: `${after}rem` }}>
         {lines.slice(start, end).map((line) => (
           <SubLineView key={line.kind === "row" ? line.row.id : line.state} line={line} nowMs={nowMs} onOpenDone={onOpenDone} />
         ))}

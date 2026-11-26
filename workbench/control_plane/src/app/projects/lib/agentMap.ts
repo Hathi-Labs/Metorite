@@ -41,6 +41,12 @@ export interface MapSubagents {
   names: string[];
 }
 
+/** One task of a session of the summary read, so find reaches it. The title is untrusted text. */
+export interface MapTaskWords {
+  number: number | null;
+  title: string;
+}
+
 export interface MapPerson {
   person: string;
   sessions: number;
@@ -67,6 +73,8 @@ export interface MapSession {
   model: string | null;
   /** AMR-4: present on the summary read. The map of SW-102 sends `children` instead. */
   subagents?: MapSubagents;
+  /** AMR-4: the tasks of its listed runs, on the summary read, capped by the gateway. */
+  tasks?: MapTaskWords[];
 }
 
 export interface MapRun {
@@ -287,6 +295,16 @@ function subagentsOf(value: unknown): MapSubagents | undefined {
   };
 }
 
+/** The tasks of a summary row. A row with no title is dropped. */
+function taskWordsOf(value: unknown[]): MapTaskWords[] {
+  return value.flatMap((item) => {
+    const row = record(item);
+    const title = row ? text(row.title) : "";
+    if (!row || !title) return [];
+    return [{ number: typeof row.number === "number" && Number.isFinite(row.number) ? row.number : null, title }];
+  });
+}
+
 /** One of the words of `WAITING_ON_LABELS`, else `null`. An older gateway sends none. */
 function waitingOn(value: unknown): AgentWaitingOn | null {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(WAITING_ON_LABELS, value)
@@ -344,6 +362,7 @@ export function parseAgentMap(raw: unknown): AgentMap | null {
       quiet_last_at: text(row.quiet_last_at) || null,
       ...placeFields(row),
       ...(record(row.subagents) ? { subagents: subagentsOf(row.subagents) } : {}),
+      ...(Array.isArray(row.tasks) ? { tasks: taskWordsOf(row.tasks) } : {}),
     });
   }
 

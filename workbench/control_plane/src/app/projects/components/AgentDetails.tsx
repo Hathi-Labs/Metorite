@@ -96,8 +96,9 @@ export interface DetailsProps {
   onRetryRead?: () => void;
 }
 
-/** The height of one session row, in rem. A long list sums it. */
+/** The height of one session row and of one task row, in rem. A long list sums it. */
 const SESSION_ROW_REM = 2.75;
+const TASK_ROW_REM = 2.5;
 
 function Fact({ term, children }: { term: string; children: React.ReactNode }) {
   return (
@@ -118,12 +119,12 @@ function SessionList({
   onSelect: DetailsProps["onSelect"];
 }) {
   const long = sessions.length > WINDOW_ABOVE;
-  const { attach, start, end, before, after } = useWindowedList(long ? sessions.map(() => SESSION_ROW_REM * 16) : []);
+  const { attach, start, end, before, after } = useWindowedList(long ? sessions.map(() => SESSION_ROW_REM) : []);
   const drawn = long ? sessions.slice(start, end) : sessions;
   const list = (
     <ul
       className={`divide-y divide-border ${long ? "" : "overflow-hidden rounded-lg border border-border"}`}
-      style={long ? { paddingTop: `${before / 16}rem`, paddingBottom: `${after / 16}rem` } : undefined}
+      style={long ? { paddingTop: `${before}rem`, paddingBottom: `${after}rem` } : undefined}
     >
       {drawn.map((s) => {
         const open = () => onSelect({ kind: "session", id: s.id });
@@ -158,6 +159,70 @@ function SessionList({
   if (!long) return list;
   return (
     <div ref={attach} className="max-h-96 overflow-y-auto rounded-lg border border-border">
+      {list}
+    </div>
+  );
+}
+
+/**
+ * The tasks of one session. A session read gives up to 300 runs, so a long list
+ * draws only the rows on screen.
+ */
+function TaskRows({
+  runs,
+  pickedId,
+  askedOf,
+  onPick,
+  onOpenTask,
+}: {
+  runs: LensSession["runs"];
+  pickedId: string | null;
+  askedOf: string | null;
+  onPick: (runId: string) => void;
+  onOpenTask: (taskId: string) => void;
+}) {
+  const long = runs.length > WINDOW_ABOVE;
+  const { attach, start, end, before, after } = useWindowedList(long ? runs.map(() => TASK_ROW_REM) : []);
+  const list = (
+    <ul
+      className={`divide-y divide-border ${long ? "" : "overflow-hidden rounded-lg border border-border"}`}
+      style={long ? { paddingTop: `${before}rem`, paddingBottom: `${after}rem` } : undefined}
+    >
+      {(long ? runs.slice(start, end) : runs).map((r) => (
+        <li
+          key={r.run_id}
+          style={{ height: `${TASK_ROW_REM}rem` }}
+          className="flex min-w-0 items-center gap-2 px-2.5"
+          data-agent-task-row=""
+        >
+          <Button
+            variant="text"
+            size="none"
+            selected={pickedId === r.run_id}
+            onClick={() => onPick(r.run_id)}
+            layout="flex min-w-0 flex-1 justify-start text-left"
+          >
+            <span className="truncate text-sm">
+              {r.task_number === null ? "" : `#${r.task_number} `}
+              {r.title}
+            </span>
+          </Button>
+          <span className={`${STATE_PILL} ${lensRun(r, askedOf).chip}`}>{lensRun(r, askedOf).word}</span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="ArrowUpRight"
+            aria-label={`${OPEN_TASK_LABEL}: ${r.title}`}
+            title={OPEN_TASK_LABEL}
+            onClick={() => onOpenTask(r.task_id)}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+  if (!long) return list;
+  return (
+    <div ref={attach} className="max-h-96 overflow-y-auto rounded-lg border border-border" data-agent-task-window="">
       {list}
     </div>
   );
@@ -259,37 +324,13 @@ function SessionDetails({ session, ...props }: DetailsProps & { session: LensSes
       {runs.length > 0 ? (
         <section aria-label="Tasks" className="flex flex-col gap-1">
           <h4 className="text-[11px] font-medium text-muted-foreground">{runs.length === 1 ? "Task" : "Tasks"}</h4>
-          <ul
-            className={`divide-y divide-border rounded-lg border border-border ${runs.length > WINDOW_ABOVE ? "max-h-96 overflow-y-auto" : "overflow-hidden"}`}
-          >
-            {runs.map((r) => (
-              <li key={r.run_id} className="flex min-w-0 items-center gap-2 px-2.5 py-1.5">
-                <Button
-                  variant="text"
-                  size="none"
-                  selected={run?.run_id === r.run_id}
-                  onClick={() => setPicked(r.run_id)}
-                  layout="flex min-w-0 flex-1 justify-start text-left"
-                >
-                  <span className="truncate text-sm">
-                    {r.task_number === null ? "" : `#${r.task_number} `}
-                    {r.title}
-                  </span>
-                </Button>
-                <span className={`${STATE_PILL} ${lensRun(r, session.askedOf).chip}`}>
-                  {lensRun(r, session.askedOf).word}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  icon="ArrowUpRight"
-                  aria-label={`${OPEN_TASK_LABEL}: ${r.title}`}
-                  title={OPEN_TASK_LABEL}
-                  onClick={() => onOpenTask(r.task_id)}
-                />
-              </li>
-            ))}
-          </ul>
+          <TaskRows
+            runs={runs}
+            pickedId={run?.run_id ?? null}
+            askedOf={session.askedOf}
+            onPick={setPicked}
+            onOpenTask={onOpenTask}
+          />
         </section>
       ) : null}
       {run ? <TaskRunPanel taskId={run.task_id} personLabels={personLabels} /> : null}

@@ -899,19 +899,20 @@ The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler p
 
 The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
 
-- **Aggregate first.** No canvas draws more than 40 session cards. Past that it groups, and each group says what it holds.
-- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed` in `statusAccent.ts`.
+- **Aggregate first.** A canvas draws at most 40 session cards, plus the orchestrator card. Past that it groups, and each group says what it holds.
+- **Six states.** Needs you, Failed, Working, Waiting, Idle and Done. Idle and Done start off. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
 - **The overview.** A scope with more than 40 sessions draws one tile for each orchestrator, under its person, on the Graph and the Board. The tile that wants the most attention comes first. A tile holds its counts, one square for each session (the most urgent first, at most 96) and a bar of its subagents. The sessions with no orchestrator make one "No orchestrator" tile for each person.
 - **Quiet orchestrators.** A tile with only idle and done sessions folds into one row for its person. A find opens that row.
 - **Levels.** A tile, or a square, opens the graph of that orchestrator. A breadcrumb leads back: All agents, then a person, then an orchestrator.
-- **The bound.** One orchestrator draws its card and at most 12 session cards, ranked needs you, failed, working and waiting. The rest fold into one node for each state. The node shows its squares and opens 12 more. The canvas never passes 40 session cards. The selected session always draws.
-- **Subagents are a count.** A card says "7 subagents · 2 working · 1 failed". One session at a time opens its subagents in the graph, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
+- **The bound.** One orchestrator draws its card and at most 12 session cards, ranked needs you, failed, working and waiting. The rest fold into one node for each state. The node shows its squares and opens 12 more. A node that fills the canvas then walks on to its next cards, so a member reaches every session by clicking. The canvas never passes 40 session cards, plus the orchestrator card. The selected session always draws.
+- **Subagents are a count.** A card shows the short form, an icon with "7 · 2 working" and the failed count beside its icon. So the task or the question keeps most of the line. The accessible name and the tip say "7 subagents · 2 working · 1 failed". A List row and the details say it in full. One session at a time opens its subagents in the graph, as at most 8 rows and then "+N more". The details list each one by state, with the done ones folded. A stopped or released subagent reads Idle.
 - **Ways to the work.** "Question 1 of N" walks the questions that wait on the member, the oldest first. Each step opens the orchestrator, centres the card and opens the details. Find reaches the names of the subagents.
 - **Zoom.** Under 60 % zoom, a card shows its name only.
 - **The phone.** The first screen shows four counts: needs you, failed, working and waiting. It shows one question card, with a step back and a step forward. Then it shows the people with their squares. A person shows orchestrators as rows. An orchestrator shows its sessions by state, 10 cards and then "Show more". Idle and Done are rows that open. The answer keeps the one path of `QuestionsView`.
-- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). No library.
+- **Long lists.** A list of more than 50 rows draws only the rows on screen (`lib/windowedList.ts`). This holds for the List, the session and task lists of the details, the subagent list and the cards of a phone level. The row heights are rem, and the sums use the applied root font size, so each density works. No library.
+- **The toolbar.** It stays one row at 1280 pixels and wider. In a narrow column it first hides the words of the chips and of the lens switch. The icon and the count stay, and each control keeps its word as its accessible name. It never scrolls the page sideways.
 - **Two more reads.** Both are query values of the map read, and both act only for an org that `AGENT_LENSES_ORGS` holds. For any other org the gateway does not read them. A bad value answers the one 404 of the map.
-- **`detail=summary`.** It lists at most 1000 session nodes, each with ONE lead run. That is the run that asks, then the run that waits, then the newest open run. With no open run, it is the newest ended run. `children` is empty. Each session holds `subagents`: `total`, `working`, `failed`, `done` and at most 40 distinct `names`.
+- **`detail=summary`.** It lists at most 1000 session nodes, each with ONE lead run. That is the run that asks, then the run that waits, then the newest open run. With no open run, it is the newest ended run. `children` is empty. Each session holds `subagents`: `total`, `working`, `failed`, `done` and at most 40 distinct `names`. Each session holds `tasks`: the `number` and the `title` of at most 20 tasks of its runs, the lead task first. The title is one line of untrusted text. The find box reads them.
 - **Failed and Done on the summary.** A node with no open run reads `failed` or `done` when its newest ended run is `failed` or `completed`. That run ended in the last 24 hours (`MAP_ENDED_WINDOW_S`). A newest run that stopped, or ended in another way, lists no node. A node with an open run keeps the state rule of the map.
 - **The counted subagents.** They are the children of the open runs and of the runs that ended in the window, for the listed nodes.
 - **`session=<node id>`.** It gives the runs of one node, at most 300, with the quiet ones. It gives its children too, at most 200, open and ended. Each child has its state. A node that the caller may not see gives the empty map, as an unknown id does. The view reads it only when a session opens, and again with each new map.
@@ -2299,10 +2300,10 @@ They keep their own gates.
 
 - **Metorite task.** 4023. Epic 321.
 - **Scope.** §3.12.9. It holds the overview tiles, the bound, the subagent counts, the question pager, the phone levels, the windowed lists and the two reads.
-- **Done when.** A fleet of 500 sessions and 2000 subagents draws no more than 40 session cards on a canvas. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
-- **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts` and `components/AgentScale.test.ts`.
+- **Done when.** A fleet of 500 sessions and 2000 subagents draws at most 40 session cards on a canvas, plus the orchestrator card. R8: the summary holds no child row, and one session reads its own rows only, under the reach of the map. With the flag off, the map answers as before. The first overview draws under 1 second after the map answers.
+- **Fence.** `tests/unit/test_agent_map_r8.py`, `tests/unit/test_agent_label_fence.py`, `lib/agentScale.test.ts`, `components/AgentScale.test.ts` and `components/AgentRepairs.test.ts`.
 - **Risk.** STANDARD UI, with a change to a shared read. **Gate.** AGENT-SAFE, dark. D145 owner preview before the flip. **Depends on.** AMR-1 to AMR-3, SW-39.
-- **Built and dark, 2026-11-26.**
+- **Built and dark, 2026-11-26.** The repairs after the verifier and the review are in, 2026-11-26.
 
 #### SW-39 · Child runs
 

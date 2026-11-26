@@ -126,11 +126,11 @@ export function GraphCard({ data }: { data: NodeData }) {
     const n = node.sessions.length;
     return (
       <BucketRow
-        word={bucketWord({ state: node.state, sessions: node.sessions }, lensWord(node.state), node.shown)}
+        word={bucketWord(node, lensWord(node.state), node.shown)}
         sessions={node.sessions}
         nowMs={nowMs}
         max={namesOnly ? 0 : n > 24 ? 12 : 16}
-        onOpen={() => data.onBucket(node.state, n)}
+        onOpen={() => data.onBucket(node.state, node.rest)}
         onPick={data.onPickSession}
       />
     );

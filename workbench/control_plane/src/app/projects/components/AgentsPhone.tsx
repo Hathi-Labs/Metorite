@@ -34,7 +34,8 @@ import {
   matchesFind,
   membersOf,
 } from "../lib/agentLenses";
-import { PHONE_MORE, PHONE_PAGE, allSessionsOf, attention, rankSessions, subTotals } from "../lib/agentScale";
+import { PHONE_MORE, PHONE_PAGE, WINDOW_ABOVE, allSessionsOf, attention, rankSessions, subTotals } from "../lib/agentScale";
+import { useWindowedList } from "../lib/windowedList";
 import { NO_MATCH_COPY, NO_ORCHESTRATOR } from "./AgentBoardList";
 import { TileCounts } from "./AgentOverview";
 import { SessionCard, pressKeys } from "./AgentSessionCard";
@@ -67,8 +68,66 @@ export interface AgentsPhoneProps {
   /** An answer landed. The view reads the map again. */
   onAnswered?: () => void;
   initialPath?: PhoneStep[];
+  /** How many cards each list shows at the start, by its key. A test gives it. */
+  initialPages?: Record<string, number>;
   find?: string;
   onFind?: (find: string) => void;
+}
+
+/** The height of one card of a long list with the gap below it, in rem. */
+const CARD_ROW_REM = 4.5;
+
+/**
+ * The cards of one list, then "Show more". Past `WINDOW_ABOVE` cards it draws
+ * only the cards on screen. The page of the phone view scrolls, not the list.
+ */
+function SessionPage({
+  sessions,
+  shown,
+  nowMs,
+  onOpenSession,
+  onMore,
+}: {
+  sessions: readonly LensSession[];
+  shown: number;
+  nowMs: number;
+  onOpenSession: (session: LensSession) => void;
+  onMore: () => void;
+}) {
+  const cards = sessions.slice(0, shown);
+  const rest = sessions.length - cards.length;
+  const long = cards.length > WINDOW_ABOVE;
+  const { attach, start, end, before, after } = useWindowedList(long ? cards.map(() => CARD_ROW_REM) : [], {
+    inPage: true,
+  });
+  return (
+    <div className="flex flex-col gap-2">
+      <ul
+        ref={long ? attach : undefined}
+        className={long ? "" : "flex flex-col gap-2"}
+        style={long ? { paddingTop: `${before}rem`, paddingBottom: `${after}rem` } : undefined}
+        data-agent-phone-window={long ? "" : undefined}
+      >
+        {(long ? cards.slice(start, end) : cards).map((s) => (
+          <li key={s.id} className={long ? "" : "h-16"} style={long ? { height: `${CARD_ROW_REM}rem` } : undefined}>
+            <div className="h-16">
+              <SessionCard session={s} nowMs={nowMs} onOpen={() => onOpenSession(s)} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      {rest > 0 ? (
+        <Button
+          variant="secondary"
+          layout="flex h-10 w-full items-center justify-center rounded-lg"
+          data-agent-phone-more=""
+          onClick={onMore}
+        >
+          Show {Math.min(PHONE_MORE, rest)} more{rest > PHONE_MORE ? ` of ${rest}` : ""}
+        </Button>
+      ) : null}
+    </div>
+  );
 }
 
 /** A row that opens a level: its head, then its squares. */
@@ -103,7 +162,7 @@ export function AgentsPhone(props: AgentsPhoneProps) {
   const { model, nowMs, nameOf, onOpenSession, find = "" } = props;
   const [path, setPath] = useState<PhoneStep[]>(props.initialPath ?? []);
   /** How many cards a list shows, by its key. */
-  const [pages, setPages] = useState<Record<string, number>>({});
+  const [pages, setPages] = useState<Record<string, number>>(props.initialPages ?? {});
   const step = path.at(-1) ?? null;
   const go = (next: PhoneStep) => setPath((p) => [...p, next]);
   const back = () => setPath((p) => p.slice(0, -1));
@@ -114,27 +173,15 @@ export function AgentsPhone(props: AgentsPhoneProps) {
   /** Ten cards, then "Show more". */
   const paged = (sessions: readonly LensSession[], key: string) => {
     const shown = pages[key] ?? PHONE_PAGE;
-    const rest = sessions.length - shown;
     return (
-      <ul className="flex flex-col gap-2">
-        {sessions.slice(0, shown).map((s) => (
-          <li key={s.id} className="h-16">
-            <SessionCard session={s} nowMs={nowMs} onOpen={() => onOpenSession(s)} />
-          </li>
-        ))}
-        {rest > 0 ? (
-          <li>
-            <Button
-              variant="secondary"
-              layout="flex h-10 w-full items-center justify-center rounded-lg"
-              data-agent-phone-more=""
-              onClick={() => setPages((p) => ({ ...p, [key]: shown + PHONE_MORE }))}
-            >
-              Show {Math.min(PHONE_MORE, rest)} more{rest > PHONE_MORE ? ` of ${rest}` : ""}
-            </Button>
-          </li>
-        ) : null}
-      </ul>
+      <SessionPage
+        key={key}
+        sessions={sessions}
+        shown={shown}
+        nowMs={nowMs}
+        onOpenSession={onOpenSession}
+        onMore={() => setPages((p) => ({ ...p, [key]: shown + PHONE_MORE }))}
+      />
     );
   };
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_MARKS, agentStateVisual } from "@/lib/statusAccent";
+import { AGENT_DONE_KEY, AGENT_MARKS, agentStateVisual } from "@/lib/statusAccent";
 
 import { layoutGraph, layoutOrchestrator, ORCH_X, SUB_SHIFT } from "./agentGraph";
 import {
@@ -46,7 +46,7 @@ describe("the states of Failed and Done", () => {
   it("takes the words, the icons and the marks from the one vocabulary", () => {
     expect(lensWord("failed")).toBe("Failed");
     expect(lensWord("done")).toBe("Done");
-    expect(agentStateVisual("completed")).toMatchObject({ hue: "green", icon: "CircleCheck" });
+    expect(agentStateVisual(AGENT_DONE_KEY)).toMatchObject({ hue: "green", icon: "CircleCheck" });
     for (const state of LENS_STATES) expect(Object.values(AGENT_MARKS)).toContain(lensMark(state));
   });
   it("reads a failed and a done session of the summary", () => {

@@ -70,10 +70,18 @@ import { AgentsPhone } from "./AgentsPhone";
 
 export type Lens = "board" | "graph" | "list";
 const LENSES: readonly ModeOption<Lens>[] = [
-  { id: "board", icon: "Kanban", label: "Board" },
-  { id: "graph", icon: "Network", label: "Graph" },
-  { id: "list", icon: "ListTree", label: "List" },
+  { id: "board", icon: "Kanban", label: "Board", title: "Board" },
+  { id: "graph", icon: "Network", label: "Graph", title: "Graph" },
+  { id: "list", icon: "ListTree", label: "List", title: "List" },
 ];
+/**
+ * The toolbar is one row in a narrow column too: it hides the words of the
+ * chips first, then the words of the lens switch. The width is that of the
+ * toolbar, not of the window, because the dock takes its room. A hidden word
+ * stays the name of its control.
+ */
+const CHIP_WORD = "@max-[66rem]:sr-only";
+const LENS_WORD = "@max-[54rem]:sr-only";
 export const LENS_SWITCH_LABEL = "Lens";
 export const FIND_LABEL = "Find a session, task or subagent";
 /** The performance mark and measure of the first drawn overview (AMR-4). */
@@ -307,7 +315,7 @@ export function AgentLenses({
     (id) => (readSession ? readSession(id) : agentMapApi.read({ session: id, projectId })),
     [readSession, projectId],
   );
-  const { reads, retry } = useSessionReads(wantedSessions(subsShown, selected), map, reader);
+  const { reads, retry } = useSessionReads(projectId ?? "", wantedSessions(subsShown, selected), map, reader);
   const subsRead = subsShown ? reads.get(subsShown) : undefined;
   const openSubs: OpenSubs | null = useMemo(
     () =>
@@ -425,53 +433,61 @@ export function AgentLenses({
   return (
     <div data-agent-lenses={lens} className="flex h-full min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center gap-1 border-b border-border px-2 py-2">
-          {LENS_STATES.map((state) => (
-            <Button
-              key={state}
-              variant="ghost"
-              size="sm"
-              selected={states.has(state)}
-              data-agent-chip={state}
-              onClick={() =>
-                setStates((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(state)) next.delete(state);
-                  else next.add(state);
-                  return next;
-                })
-              }
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Icon name={lensIcon(state)} size={14} className={state === "you" ? "text-warning" : undefined} aria-hidden />
-                {lensWord(state)}
-                <b className="font-semibold tabular-nums">{counts[state]}</b>
-              </span>
-            </Button>
-          ))}
-          <SelectButton
-            label="Person"
-            widthClass="w-28"
-            value={person}
-            defaultValue=""
-            onChange={(who) => openLevel(who, null)}
-            options={[
-              { value: "", label: EVERYONE },
-              ...model.people.map((p) => ({ value: p.person, label: nameOf(p.person) })),
-            ]}
-          />
-          <div className="min-w-28 max-w-52 flex-1 basis-28">
-            <Input
-              inputSize="sm"
-              icon="Search"
-              value={find}
-              onChange={(e) => setFind(e.target.value)}
-              placeholder="Find"
-              aria-label={FIND_LABEL}
-            />
-          </div>
-          <div className="ml-auto">
-            <ModeSwitch modes={LENSES} mode={lens} onPick={setLens} label={LENS_SWITCH_LABEL} />
+        <div className="@container shrink-0 border-b border-border">
+          <div role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center gap-1 px-2 py-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1 @max-[54rem]:gap-0 @max-[44rem]:[&>button]:px-1.5">
+              {LENS_STATES.map((state) => (
+                <Button
+                  key={state}
+                  variant="ghost"
+                  size="sm"
+                  selected={states.has(state)}
+                  data-agent-chip={state}
+                  title={`${lensWord(state)}: ${counts[state]}`}
+                  onClick={() =>
+                    setStates((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(state)) next.delete(state);
+                      else next.add(state);
+                      return next;
+                    })
+                  }
+                >
+                  <span className="inline-flex items-center gap-1.5 @max-[54rem]:gap-1">
+                    <Icon name={lensIcon(state)} size={14} className={state === "you" ? "text-warning" : undefined} aria-hidden />
+                    <span className={CHIP_WORD}>{lensWord(state)}</span>
+                    <b className="font-semibold tabular-nums">{counts[state]}</b>
+                  </span>
+                </Button>
+              ))}
+            </div>
+            {/* One block: in a column too narrow for one row, it takes the second row whole. */}
+            <div className="flex min-w-[min(17rem,100%)] flex-1 flex-wrap items-center gap-1">
+              <SelectButton
+                label="Person"
+                widthClass="w-28 @max-[44rem]:w-26"
+                value={person}
+                defaultValue=""
+                onChange={(who) => openLevel(who, null)}
+                options={[
+                  { value: "", label: EVERYONE },
+                  ...model.people.map((p) => ({ value: p.person, label: nameOf(p.person) })),
+                ]}
+              />
+              <div className="min-w-16 max-w-52 flex-1 basis-16">
+                <Input
+                  inputSize="sm"
+                  icon="Search"
+                  value={find}
+                  onChange={(e) => setFind(e.target.value)}
+                  placeholder="Find"
+                  aria-label={FIND_LABEL}
+                />
+              </div>
+              <div className="ml-auto">
+                <ModeSwitch modes={LENSES} mode={lens} onPick={setLens} label={LENS_SWITCH_LABEL} labelClass={LENS_WORD} />
+              </div>
+            </div>
           </div>
         </div>
         {showCrumbs ? (

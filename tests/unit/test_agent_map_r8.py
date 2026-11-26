@@ -1450,6 +1450,9 @@ class TestTheMapThroughTheEdge:
 # * **S5** ``_agent_map_session`` reads with the reach of an admin -> the
 #   hidden node test.
 # * **S6** ``_MAP_SUMMARY_LINES_SQL`` reads open runs only -> the ended lane test.
+# * **S7** ``_MAP_TASK_RUNS_SQL`` joins ``pm_agent_runs`` and not ``cur`` -> the
+#   member task words test.
+# * **S8** the task words come from the lead run only -> the task words test.
 
 SUMMARY = MAP + "&detail=summary"
 
@@ -1470,9 +1473,9 @@ def lenses(w, monkeypatch):
     made: list[str] = []
 
     def add(label: str, status: str, *, creator: str = OTHER_A, ago: str = "1 hour",
-            title: str | None = None) -> str:
-        task = b.task(p, p.org_a, creator, w.plain, title=title) if title else b.task(
-            p, p.org_a, creator, w.plain)
+            title: str | None = None, on: Any = None) -> str:
+        task = on or (b.task(p, p.org_a, creator, w.plain, title=title) if title else b.task(
+            p, p.org_a, creator, w.plain))
         rid = b.run(p, p.org_a, task, OTHER_A, status, via=VIA,
                     created=f"now() - interval '{ago}' - interval '1 minute'")
         _label(p, rid, label=label, key=_session_key(), conn=w.conn)
@@ -1482,6 +1485,7 @@ def lenses(w, monkeypatch):
         return rid
 
     w.add = add
+    w.task = lambda creator, title: b.task(p, p.org_a, creator, w.plain, title=title)
     yield w
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs WHERE parent_run_id = ANY(CAST(:r AS uuid[]))"),
@@ -1537,7 +1541,7 @@ class TestTheScaleFlag:
                 status, body, _ = await _get(w, user, MAP + extra)
                 assert status == 200, extra
                 assert _ageless(body) == _ageless(plain), extra
-                assert all("subagents" not in s for s in body["sessions"])
+                assert all("subagents" not in s and "tasks" not in s for s in body["sessions"])
 
     async def test_the_flag_is_per_org(self, w, monkeypatch):
         monkeypatch.setattr(_settings(), "agent_lenses_orgs", w.p.org_a)
@@ -1580,7 +1584,7 @@ class TestTheSummary:
         assert _named(body)["finisher"] == "done"
         assert body["count"] == full["count"]
         for s in body["sessions"]:
-            assert set(s) == set(full["sessions"][0]) | {"subagents"}
+            assert set(s) == set(full["sessions"][0]) | {"subagents", "tasks"}
         # No session key and no connection in the answer.
         assert not [k for k in lenses.keys if k in raw] and lenses.conn not in raw
 
@@ -1660,6 +1664,59 @@ class TestTheSummary:
         node = _node(body, "amr-two")
         assert node["state"] == "waiting_on_person" and node["run_count"] == 2
         assert [r["run_id"] for r in body["runs"] if r["session_id"] == node["id"]] == [ask]
+
+    async def test_each_session_names_the_tasks_of_its_runs(self, lenses):
+        """S8. The find box reaches every task of a session, not the lead one only."""
+        from gateway.routes.projects import agent_summary as m
+
+        asked = lenses.task(OTHER_A, "amr-words-asked")
+        lenses.add("amr-words", "completed", ago="3 hours", on=asked)
+        lenses.add("amr-words", "awaiting", ago="5 hours", on=asked)
+        lenses.add("amr-words", "in_progress", ago="0 seconds",
+                   title="amr-words-open\nsecond   line")
+        lenses.add("amr-words", "failed", ago="2 hours", title="amr-words-ended")
+        lenses.add("amr-words", "failed", ago="30 hours", title="amr-words-old")
+        _, body, raw = await _get(lenses, lenses.admin_a, SUMMARY)
+        node = _node(body, "amr-words")
+        lead = next(r for r in body["runs"] if r["session_id"] == node["id"])
+        words = node["tasks"]
+        assert all(set(t) == set(m.MAP_TASK_KEYS) for t in words)
+        # The lead task first, then open before ended, each task once, one line each.
+        assert [t["title"] for t in words] == [
+            "amr-words-asked", "amr-words-open second line", "amr-words-ended"]
+        assert (words[0]["title"], words[0]["number"]) == (lead["title"], lead["task_number"])
+        assert all(isinstance(t["number"], int) for t in words)
+        assert "amr-words-old" not in raw
+        assert [r["session_id"] for r in body["runs"]].count(node["id"]) == 1
+
+    async def test_the_task_words_have_a_cap(self, lenses, monkeypatch):
+        from gateway.routes.projects import agent_summary as m
+
+        assert m.MAP_SUMMARY_TASKS_MAX == 20
+        monkeypatch.setattr(m, "MAP_SUMMARY_TASKS_MAX", 2)
+        lenses.add("amr-many", "awaiting", ago="5 hours", title="amr-many-lead")
+        for n in range(3):
+            lenses.add("amr-many", "completed", ago=f"{n + 1} hours", title=f"amr-many-{n}")
+        _, body, raw = await _get(lenses, lenses.admin_a, SUMMARY)
+        assert [t["title"] for t in _node(body, "amr-many")["tasks"]] == [
+            "amr-many-lead", "amr-many-0"]
+        assert "amr-many-2" not in raw
+        assert all(len(s["tasks"]) <= 2 for s in body["sessions"])
+
+    async def test_the_task_words_follow_the_reach_of_the_map(self, lenses):
+        """S7. Another member and another org get no title of a task they may not see."""
+        lenses.add("amr-part", "in_progress", ago="0 seconds", creator=MEMBER_A,
+                   title="amr-part-mine")
+        lenses.add("amr-part", "failed", creator=OTHER_A, title="amr-part-theirs")
+        _, admin, _ = await _get(lenses, lenses.admin_a, SUMMARY)
+        assert {t["title"] for t in _node(admin, "amr-part")["tasks"]} == {
+            "amr-part-mine", "amr-part-theirs"}
+        _, member, raw = await _get(lenses, lenses.member_a, SUMMARY)
+        assert [t["title"] for t in _node(member, "amr-part")["tasks"]] == ["amr-part-mine"]
+        assert "amr-part-theirs" not in raw
+        for user in (lenses.lead_a, lenses.loner_a, lenses.admin_b):
+            _, _, other = await _get(lenses, user, SUMMARY)
+            assert "amr-part-mine" not in other and "amr-part-theirs" not in other
 
     async def test_a_done_lane_stays_under_its_orchestrator(self, lenses):
         """S6."""

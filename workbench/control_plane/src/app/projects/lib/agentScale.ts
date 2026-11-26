@@ -190,7 +190,11 @@ const EXTRA_MAX = CARDS_MAX - SESSION_CARDS_MAX;
  * Open one bucket: `BUCKET_STEP` more cards of its state. The canvas never
  * passes `CARDS_MAX`, so another open bucket gives way first. A bucket that
  * fills the room alone then moves on to its next cards, and starts again at
- * its end. `rest` is how many sessions of the state sit outside the first cards.
+ * its end.
+ *
+ * ⚠️ `rest` is `Bucket.rest`: how many sessions of the state sit outside the
+ * first cards, drawn or folded. It is never the folded count, which shrinks as
+ * the window grows and so wraps the window before its end.
  */
 export function openBucket(windows: BucketWindows, state: LensState, rest: number): BucketWindows {
   const now = windows[state] ?? { skip: 0, count: 0 };
@@ -212,6 +216,8 @@ export interface Bucket {
   state: LensState;
   /** The sessions of this state that draw no card, the most urgent first. */
   sessions: LensSession[];
+  /** The sessions of this state outside the first cards. The window walks them. */
+  rest: number;
 }
 
 export interface Bounded {
@@ -239,33 +245,44 @@ export function boundSessions(sessions: readonly LensSession[], options: BoundOp
   const { states, find, nameOf, windows = {}, pin } = options;
   const q = find.trim();
   const ranked = rankSessions(q ? sessions.filter((s) => matchesFind(s, q, nameOf(s.person))) : sessions);
-  const first = ranked.filter((s) => q || states.has(s.state)).slice(0, SESSION_CARDS_MAX);
-  const taken = new Set(first.map((s) => s.id));
-  for (const state of LENS_STATES) {
-    const window = windows[state];
-    if (!window) continue;
-    const rest = ranked.filter((s) => s.state === state && !first.includes(s));
-    const skip = window.skip < rest.length ? window.skip : 0;
-    for (const s of rest.slice(skip, skip + window.count)) taken.add(s.id);
-  }
+  let first = ranked.filter((s) => q || states.has(s.state)).slice(0, SESSION_CARDS_MAX);
+  /** The sessions of a state outside the first cards, in their order. */
+  const outside = (state: LensState): LensSession[] => {
+    const held = new Set(first.map((s) => s.id));
+    return ranked.filter((s) => s.state === state && !held.has(s.id));
+  };
+  /** The first cards, then the window of each open bucket. */
+  const take = (): Set<string> => {
+    const taken = new Set(first.map((s) => s.id));
+    for (const state of LENS_STATES) {
+      const window = windows[state];
+      if (!window) continue;
+      const rest = outside(state);
+      const skip = window.skip < rest.length ? window.skip : 0;
+      for (const s of rest.slice(skip, skip + window.count)) taken.add(s.id);
+    }
+    return taken;
+  };
+  let taken = take();
   const pinned = pin ? sessions.find((s) => s.id === pin) : undefined;
   if (pinned && !taken.has(pinned.id)) {
-    // The selected card takes the place of the least urgent first card.
-    if (first.length >= SESSION_CARDS_MAX) taken.delete(first[first.length - 1].id);
-    taken.add(pinned.id);
+    // The selected card takes the place of the least urgent first card. That
+    // card joins its bucket again, so a click on the bucket still reaches it.
+    if (first.length >= SESSION_CARDS_MAX) first = first.slice(0, -1);
+    taken = take().add(pinned.id);
   }
   const all = pinned && !ranked.includes(pinned) ? rankSessions([...ranked, pinned]) : ranked;
   return {
     shown: all.filter((s) => taken.has(s.id)),
     buckets: LENS_STATES.flatMap((state) => {
       const folded = all.filter((s) => s.state === state && !taken.has(s.id));
-      return folded.length > 0 ? [{ state, sessions: folded }] : [];
+      return folded.length > 0 ? [{ state, sessions: folded, rest: outside(state).length }] : [];
     }),
   };
 }
 
 /** "28 more working", "6 idle": the words of a bucket. */
-export function bucketWord(bucket: Bucket, word: string, shownOfState: number): string {
+export function bucketWord(bucket: Pick<Bucket, "sessions">, word: string, shownOfState: number): string {
   const n = bucket.sessions.length;
   return shownOfState > 0 ? `${n} more ${word.toLowerCase()}` : `${n} ${word.toLowerCase()}`;
 }

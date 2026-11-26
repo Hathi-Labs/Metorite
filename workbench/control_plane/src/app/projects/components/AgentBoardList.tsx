@@ -129,7 +129,7 @@ type ListRow =
   | { kind: "line"; key: string; session: LensSession; indent: boolean }
   | { kind: "fold"; key: string; groupKey: string; word: string };
 
-/** The row heights, in rem. The window sums them, so each row draws at its height. */
+/** The row heights, in rem. The window sums them at the applied root size. */
 const ROW_REM = { head: 2.25, line: 2.75, fold: 1.75 } as const;
 
 export function AgentListLens(props: LensViewProps) {
@@ -145,7 +145,7 @@ export function AgentListLens(props: LensViewProps) {
         : []),
     ]),
   );
-  const { attach, start, end, before, after } = useWindowedList(rows.map((r) => ROW_REM[r.kind] * 16));
+  const { attach, start, end, before, after } = useWindowedList(rows.map((r) => ROW_REM[r.kind]));
   if (people.length === 0) return <Empty />;
   const draw = (row: ListRow) => {
     const style = { height: `${ROW_REM[row.kind]}rem` };
@@ -200,10 +200,9 @@ export function AgentListLens(props: LensViewProps) {
     );
   };
   const long = rows.length > WINDOW_ABOVE;
-  const rem = (px: number) => `${px / 16}rem`;
   return (
     <div ref={attach} data-agent-list="" className="min-h-0 flex-1 overflow-auto px-4 py-3">
-      <ul style={long ? { paddingTop: rem(before), paddingBottom: rem(after) } : undefined}>
+      <ul style={long ? { paddingTop: `${before}rem`, paddingBottom: `${after}rem` } : undefined}>
         {(long ? rows.slice(start, end) : rows).map(draw)}
       </ul>
     </div>
@@ -259,7 +258,7 @@ export function BoundedBoard(props: BoundedBoardProps) {
           word={bucketWord(bucket, lensWord(bucket.state), shown.filter((s) => s.state === bucket.state).length)}
           sessions={bucket.sessions}
           nowMs={nowMs}
-          onOpen={() => onBucket(bucket.state, bucket.sessions.length)}
+          onOpen={() => onBucket(bucket.state, bucket.rest)}
           onPick={onOpenSession}
         />
       ))}

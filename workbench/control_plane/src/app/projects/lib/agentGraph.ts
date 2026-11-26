@@ -41,7 +41,8 @@ export type GraphNode = { id: string; x: number; y: number; w: number; h: number
   | { kind: "session"; session: LensSession }
   | { kind: "fold"; groupKey: string; folded: LensSession[] }
   | { kind: "block"; block: BlockKey; sessions: LensSession[] }
-  | { kind: "bucket"; state: LensState; sessions: LensSession[]; shown: number }
+  /** `rest`: the sessions of the state outside the first cards (`Bucket.rest`). */
+  | { kind: "bucket"; state: LensState; sessions: LensSession[]; shown: number; rest: number }
   | { kind: "sub"; sessionId: string; row: SubRow }
   | { kind: "submore"; sessionId: string; count: number }
   /** The open session's rows are loading, or did not load. */
@@ -234,6 +235,7 @@ export function layoutOrchestrator(person: string, group: LensGroup, options: Or
       kind: "bucket",
       state: bucket.state,
       sessions: bucket.sessions,
+      rest: bucket.rest,
       shown: shown.filter((s) => s.state === bucket.state).length,
       x: ORCH_X.session * u,
       y,
