@@ -1233,6 +1233,40 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # Task 3963 (chat_parity.md section 6.4, P-4d): six reads of the Notes app,
+    # the notes read tools. Each calls GET routes as the member. Each route checks
+    # the owner of a meeting or reads the rows of the member only. Thirteen
+    # reads wait for task 3966. The pack follows the example of "people": owned by
+    # org-admin, which never runs as an agent, and NOT in FOLLOWS. A run loads it
+    # where the owner lists it in the pack list of the box, or where the list is
+    # "*" (tool_packs.packs_on). Fence: test_notes_read_tools.py.
+    "notes": {
+        "label": "Meeting notes",
+        "summary": (
+            "Read your meetings, one meeting with its transcript, "
+            "the Note Taker settings, the templates, your glossary and your copilot "
+            "instructions."
+        ),
+        "description": (
+            "A tool pack: six reads of the Notes app, for the main assistant to "
+            "load when a turn asks about your meetings or the Note Taker settings. "
+            "Each tool calls the routes as the member. No tool writes, joins a "
+            "meeting or starts a bot. A run loads a pack only where tool packs are "
+            "on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "notes_meetings",
+            "notes_meeting",
+            "notes_settings",
+            "notes_templates",
+            "notes_glossary",
+            "notes_copilot_instructions",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

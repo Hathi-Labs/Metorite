@@ -385,6 +385,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                      "show my tasks in google calendar",
                                      "stop sending my tasks to outlook",
                                      "send my tasks to google calendar"),
+    # -- notes: six reads of the Notes app (task 3963) --
+    "notes_meetings": ("list my meetings", "search my meetings for the budget review"),
+    "notes_meeting": ("show the meeting transcript of the sales sync",
+                      "show the meeting summary of the sales sync"),
+    "notes_settings": ("show my note taker settings",),
+    "notes_templates": ("list the meeting templates",),
+    "notes_glossary": ("show my notes glossary",),
+    "notes_copilot_instructions": ("show my copilot instructions",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
