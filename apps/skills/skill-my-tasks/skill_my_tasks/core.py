@@ -1304,6 +1304,12 @@ NO_ASSIGNEE = (
     "This tool keeps no assignee, so nothing changed. Make the task without "
     "assignee_name, then assign it with the Projects task tools."
 )
+#: Task 3973. No mail tool gives the model this id, and the route matches it in
+#: the whole mailbox. So a value could only link the task to another mail.
+NO_REPLY_ID = (
+    "This tool takes no reply_to_message_id, so nothing changed. Call it once "
+    "more without that value."
+)
 #: The card line of the AI path: who the task belongs to after the write.
 _MAIL_AI_OWNER_LINE = (
     "owner: the task stays yours. This tool keeps no assignee. A WAITING task "
@@ -1354,13 +1360,21 @@ async def _mail_card(title: str, detail: str, rows: list[tuple[str, str]],
 #: The subject that the reply path stores on the task's origin. The card shows
 #: the same text, so one cap serves both.
 MAIL_REPLY_SUBJECT_MAX = 120
-#: Task 3973. The cap of a thread id and of a reply id. An IMAP thread id is the
-#: Message-ID of a mail, and one header line holds at most 998 characters (RFC
-#: 5322). Gmail and Outlook ids are shorter, and the column is `text`. A longer
-#: id is refused, never cut.
-MAIL_ID_MAX = 998
-#: The cap of the sender and of the subject of the source mail on the card.
+#: Task 3973. The cap of a thread id. An IMAP thread id is the Message-ID of a
+#: mail, and one header line holds at most 998 characters (RFC 5322). Gmail and
+#: Outlook ids are shorter, and the column is `text`. A longer id is refused,
+#: never cut.
+MAIL_THREAD_ID_MAX = 998
+#: The answer for a thread id that the card cannot show byte for byte.
+MAIL_BAD_THREAD = (
+    "thread_id holds no text, extra space or a character that a card cannot show. "
+    "Pass the exact id from the mail tools. Nothing changed."
+)
+#: The cap of the sender name and of the subject of the source mail on the card.
 MAIL_SOURCE_MAX = 120
+#: The cap of the sender address: the longest legal address (RFC 5321), so a
+#: legal domain is never cut off.
+MAIL_ADDRESS_MAX = 254
 #: The answer when the read of the source mail fails. No card shows.
 MAIL_NO_SOURCE = (
     "I could not read that mail, so no card showed. Check account_id and "
@@ -1368,17 +1382,18 @@ MAIL_NO_SOURCE = (
 )
 
 
-def _card_id(value: str) -> str:
-    """A mail id as the card shows it and as the write sends it: one line, with
-    no guillemet and no invisible character. It is never cut."""
+def _card_text(value: str) -> str:
+    """*value* as a card can show it: one line, with no guillemet and no
+    invisible character. It is never cut."""
     return _stranger_text(_same_text(value), len(value))
 
 
 async def _source_row(mail: dict[str, str]) -> tuple[str, str] | None:
-    """The card row of the source mail (D169, task 3973): the sender and the
-    subject that the gateway gives for *mail*, the ids that the write sends.
-    None when the read fails. The two values go to the card only and into no
-    answer, so this read marks no chat."""
+    """The card row of the source mail (D169, task 3973): the sender name, the
+    sender address and the subject that the gateway gives for *mail*, the ids
+    that the write sends. A name that equals the address shows once. None when
+    the read fails. The values go to the card only and into no answer, so this
+    read marks no chat."""
     from acb_common.card_body import one_line
 
     try:
@@ -1388,17 +1403,26 @@ async def _source_row(mail: dict[str, str]) -> tuple[str, str] | None:
     got = [p.get(k) for k in ("from_name", "subject")] if isinstance(p, dict) else [None]
     if not all(isinstance(v, str) for v in got):
         return None
-    sender, subject = (_mail_text(_same_text(v), MAIL_SOURCE_MAX) for v in got)
-    return ("source", one_line(f"source mail: from {_data(sender or '(unknown)')}, "
-                               f"subject: {_data(subject or '(none)')}"))
+    name, subject = (_card_text(v) for v in got)
+    raw = p.get("from_email")
+    address = _card_text(raw) if isinstance(raw, str) else ""
+    # "(no address)" has no fence, so a sender cannot write it as a value.
+    shown = _data(_mail_text(address, MAIL_ADDRESS_MAX)) if address else "(no address)"
+    who = shown if address and name.casefold() == address.casefold() else (
+        f"{_data(_mail_text(name, MAIL_SOURCE_MAX) or '(unknown)')}, address {shown}")
+    return ("source", one_line(
+        f"source mail: from {who}, "
+        f"subject: {_data(_mail_text(subject, MAIL_SOURCE_MAX) or '(none)')}"))
 
 
 def _reply_row(thread_id: str, subject: str) -> tuple[str, str]:
     """The card row of the reply path: the thread that gets the label, and the
-    subject that the task's origin keeps (D169: the card shows the change)."""
+    subject that the task's origin keeps (D169: the card shows the change). The
+    tool does not read that subject from the mail, so the row says who gave it."""
     from acb_common.card_body import one_line
 
-    return ("thread", one_line(f"thread: {_data(thread_id)}, subject: {_data(subject or '(none)')}"))
+    return ("thread", one_line(f"thread: {_data(thread_id)}, "
+                               f"subject from the assistant: {_data(subject or '(none)')}"))
 
 
 async def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1440,30 +1464,26 @@ async def _made(p: dict[str, Any], asked: dict[str, Any] | None = None) -> str:
 
 async def _capture_reply(
     ids: dict[str, str], draft: dict[str, Any], thread_id: str, reply_subject: str,
-    reply_to_message_id: str,
 ) -> str:
     """The reply path of ``my_tasks_capture_from_mail``: one card, then one
-    write. Each id is cleaned once, and the card and the write take that value
-    (task 3973)."""
-    tid, reply_id = _card_id(thread_id), _card_id(reply_to_message_id)
-    if not tid:
-        return "thread_id holds no text. Pass the thread id from the mail tools. Nothing changed."
-    if max(len(tid), len(reply_id)) > MAIL_ID_MAX:
-        return (f"thread_id and reply_to_message_id hold at most {MAIL_ID_MAX} "
-                "characters each. Nothing changed.")
+    write. A thread id that the card cannot show as it came is refused, so the
+    card, the write and the stored id hold the same bytes (task 3973)."""
+    if not thread_id.isprintable() or _card_text(thread_id) != thread_id:
+        return MAIL_BAD_THREAD
+    if len(thread_id) > MAIL_THREAD_ID_MAX:
+        return (f"thread_id holds at most {MAIL_THREAD_ID_MAX} characters. "
+                "Nothing changed.")
     # One line, cut with "…" (`_stranger_text`), and no guillemet, so the card
     # and the write carry the same subject.
     subject = _mail_text(_same_text(reply_subject), MAIL_REPLY_SUBJECT_MAX)
-    # The route can link the task to the mail of this id, so the card shows it.
-    reply_row = [("reply to", f"reply to mail id: {_data(reply_id)}")] if reply_id else []
     stop = await _mail_card("Make a task from your reply?", _data(draft["title"]),
-                            [*_card_rows(draft, reply=True), _reply_row(tid, subject),
-                             *reply_row, ("label", MAIL_LABEL_LINE)])
+                            [*_card_rows(draft, reply=True), _reply_row(thread_id, subject),
+                             ("label", MAIL_LABEL_LINE)])
     if stop:
         return stop
     p = await _post(_CAPTURE_REPLY_CREATE, {
-        **ids, "thread_id": tid, "subject": subject,
-        "reply_to_message_id": reply_id or None, "draft": draft})
+        **ids, "thread_id": thread_id, "subject": subject,
+        "reply_to_message_id": None, "draft": draft})
     return await _made(p, draft)
 
 
@@ -1508,7 +1528,7 @@ async def my_tasks_capture_from_mail(
         time_estimate_mins: The estimate in minutes, 0 for none (NEXT or CALENDAR only).
         steps: The steps of the task, one a line (NEXT or CALENDAR only).
         reply_subject: The subject of the reply (a reply only).
-        reply_to_message_id: The provider id of the mail that the reply answers.
+        reply_to_message_id: Leave it empty. This tool refuses a value.
     """
     refusal = _uuid_refusal(account_id, "account_id")
     if refusal:
@@ -1522,6 +1542,8 @@ async def my_tasks_capture_from_mail(
             return refusal
     if assignee_name.strip():
         return NO_ASSIGNEE
+    if reply_to_message_id.strip():
+        return NO_REPLY_ID
     ids = {"account_id": account_id.strip()}
     if email_id.strip() and not title.strip():
         given = [name for name, value in (
@@ -1562,7 +1584,7 @@ async def my_tasks_capture_from_mail(
             return stop
         p = await _post(_CAPTURE_EMAIL_CREATE, {**mail, "draft": draft})
         return await _made(p, draft)
-    return await _capture_reply(ids, draft, thread_id, reply_subject, reply_to_message_id)
+    return await _capture_reply(ids, draft, thread_id, reply_subject)
 
 
 @_annotate_risk(idempotent=True, open_world=False)
