@@ -287,6 +287,10 @@ MANIFEST: tuple[Route, ...] = (
     # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
     # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
     Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
+    # LBB-2: the open PRs to land of an agent session. The MCP `my_work`
+    # reads it. A person's chat holds no PR of an agent label, so the chat
+    # `my_work` never reads it, and the route answers no row for a person.
+    Route("GET", "/projects/agent-work/landing", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -1534,6 +1538,17 @@ _AGENT_OVERVIEW_REASON = (
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
+    # LBB-2 (engineering_practice.md §7b.2): the label of an agent session. A
+    # person's chat has no session label and holds no PR of a lane.
+    ("GET", "/projects/agent-work/landing"): {
+        "agent_label": "The label of an outside agent session (LBB-2). The MCP `my_work` sends it. A chat has no session label.",
+    },
+    # LBB-2: the landing mark of a pull request. A lane sends it over the MCP
+    # `add_task_reference` after a hand-over to a merger. The chat hands
+    # nothing to a merger.
+    ("POST", "/projects/tasks/{task_id}/refs"): {
+        "landing": "The landing mark of a PR that a lane handed to a merger (LBB-2). Only the MCP `add_task_reference` sends it.",
+    },
     # SP-12: `get_plan` and the MCP tool plan from today. A first working day
     # is a web planner override, and the chat has no use for it.
     ("GET", "/projects/plan/analysis"): {

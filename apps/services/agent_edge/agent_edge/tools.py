@@ -5594,9 +5594,23 @@ REASON_CHECK_DUE = "check_due"
 #: apps: no assignee, and no open run holds it. Its rows come after every
 #: assigned row, so the assigned rows keep their order.
 REASON_OWN_APP_FREE = "own_app_free"
+#: LBB-2 (``engineering_practice.md`` §7b.2). An open pull request of this
+#: member and label that is older than 24 hours and that no merger queued.
+#: Its rows come after the waiting runs and before ``held_by_you``. The
+#: gateway answers none while both flags of the claim gate are off.
+REASON_LAND = "land_your_pr"
 MY_WORK_REASONS: tuple[str, ...] = (
-    *WAITING_REASONS.values(), REASON_HELD, REASON_CHECK_DUE, REASON_ASSIGNED,
-    REASON_OWN_APP_FREE)
+    *WAITING_REASONS.values(), REASON_LAND, REASON_HELD, REASON_CHECK_DUE,
+    REASON_ASSIGNED, REASON_OWN_APP_FREE)
+#: LBB-2. The route of the PRs to land (``claim_gate.agent_work_landing``).
+LANDING_ROUTE = "/projects/agent-work/landing"
+#: The most ``land_your_pr`` rows (the route's own cap).
+LANDING_MAX = 5
+#: The seconds that the read of the PRs to land may take. Over it,
+#: ``my_work`` answers with no ``land_your_pr`` row.
+LANDING_BUDGET_S = 2.0
+#: The keys that a ``land_your_pr`` row adds, and only that row.
+LANDING_ROW_KEYS: tuple[str, ...] = ("pr_number", "pr_url", "age_hours")
 #: SW-45. The route of the free tasks of the own apps. It answers no rows while
 #: ``AGENT_CLAIM_SCOPE_MODES`` is off for the org, and the edge reads no flag.
 OWN_APP_FREE_ROUTE = "/projects/my/own-app-free"
@@ -5631,13 +5645,36 @@ MY_WORK_ROW_KEYS: tuple[str, ...] = (
 _WORK_RUN_KEYS: tuple[str, ...] = (
     "agent_host", "agent_model", "agent_host_kind", "dispatched_by_run_id")
 
+#: SW-7b (``agent_coordination.md`` §3.7 item 2). The most characters of
+#: ``agent_label``. The gateway cleans the value and caps it at the same
+#: number (``agent_runs.AGENT_LABEL_MAX``), and a pin test compares the two.
+AGENT_LABEL_MAX = 40
+
+#: SW-7b. The optional display name of this session, on a claim and a start.
+#: LBB-2: and on ``my_work``, which lists the PRs to land of this label.
+#: It holds no control character. The guidance lives here only, because the
+#: server instructions are at their budget (task 1803).
+_LABEL_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 1, "maxLength": AGENT_LABEL_MAX,
+    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
+    "description": (
+        "A short name for this session, such as backend-worker-3. People see"
+        " it beside the client name on the task card and in the run panel. It"
+        " is display data only. It changes no access, no hold and no session."
+        " Send the same name on each claim, each start and each my_work. A new"
+        " name replaces the old one.")}
+
 _MY_WORK_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
         "limit": {"type": "integer", "minimum": 1, "maximum": MY_WORK_LIMIT_MAX,
                   "default": MY_WORK_LIMIT_DEFAULT,
                   "description": "The most rows to return."},
+        # LBB-2: the label of this session, as claim_task takes it. The PRs
+        # to land are the PRs of this label.
+        "agent_label": _LABEL_INPUT,
     },
+    "required": [],
     "additionalProperties": False,
 }
 _MY_WORK_ROW_SCHEMA = _optional(_object({
@@ -5666,6 +5703,10 @@ _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, CHECK_KEY, _CHECK_ROW_SCHEM
 _MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, APP_PROJECT_KEY, _object({
     "id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL,
 }))
+# LBB-2: the PR of a `land_your_pr` row. Only on those rows.
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, "pr_number", _NULLABLE_INTEGER)
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, "pr_url", _NULLABLE_STRING)
+_MY_WORK_ROW_SCHEMA = _optional(_MY_WORK_ROW_SCHEMA, "age_hours", _NULLABLE_INTEGER)
 _MY_WORK_OUTPUT: dict[str, Any] = _optional(_object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
 }), PROTOCOL_KEY, _PROTOCOL_SCHEMA)
@@ -5729,6 +5770,38 @@ async def _own_app_free(ctx: Context) -> list[dict[str, Any]]:
         return []
     return [r for r in rows[:OWN_APP_FREE_MAX]
             if isinstance(r, dict) and _id(r.get("id")) is not None]
+
+
+async def _landing(ctx: Context, label: str | None) -> list[dict[str, Any]]:
+    """LBB-2: the task rows of the PRs to land, oldest PR first.
+
+    The gateway reads the flags, so the edge reads none. A failed read, an
+    old gateway (404) and an answer of the wrong shape give no row, and a
+    read that hangs ends at :data:`LANDING_BUDGET_S`. The rows are an aid, so
+    they never turn ``my_work`` into "busy"."""
+    query = [("agent_label", label)] if label is not None else []
+    try:
+        async with asyncio.timeout(LANDING_BUDGET_S):
+            found = await _get(ctx, LANDING_ROUTE, TEXT_TASK_NOT_FOUND, query=query,
+                               timeout_s=LANDING_BUDGET_S)
+    except (ToolError, GatewayUnauthorized, TimeoutError):
+        return []
+    rows = found.get("rows") if isinstance(found, dict) else None
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows[:LANDING_MAX]
+            if isinstance(r, dict) and _id(r.get("id")) is not None]
+
+
+def _landing_keys(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    """LBB-2: the ``pr_number``, ``pr_url`` and ``age_hours`` of a
+    ``land_your_pr`` row. A number only as a whole number, and the URL only
+    in the shape of a GitHub pull request URL, else null."""
+    landing = row.get("landing") if isinstance(row, Mapping) else None
+    landing = landing if isinstance(landing, Mapping) else {}
+    return {"pr_number": _land_int(landing.get("pr_number")),
+            "pr_url": land_url(landing.get("pr_url")),
+            "age_hours": _land_int(landing.get("age_hours"))}
 
 
 def _app_project(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -5923,6 +5996,43 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
     }
 
 
+@dataclass
+class _WorkList:
+    """The rows of ``my_work`` in their order, and what each row needs.
+    A task that an earlier row lists keeps that row."""
+
+    listed: list[tuple[str, str, str | None, bool]] = field(default_factory=list)
+    links: dict[str, Any] = field(default_factory=dict)
+    runs: dict[str, Mapping[str, Any]] = field(default_factory=dict)
+    seen: set[str] = field(default_factory=set)
+
+    def add_runs(self, group: list[tuple[Mapping[str, Any], str]],
+                 session: str | None) -> None:
+        """One row for each run of *group*, with the run's link."""
+        for run, reason in group:
+            task_id = _id(run.get("task_id"))
+            if task_id is None or task_id in self.seen:
+                continue
+            self.seen.add(task_id)
+            self.links[task_id] = run.get("external_link")
+            self.runs[task_id] = run
+            self.listed.append((task_id, reason, _id(run.get("id")),
+                                _yours(run, session)))
+
+    def add_landing(self, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """LBB-2: one ``land_your_pr`` row for each task row of *rows*.
+        Return the gateway row of each one by task id."""
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            task_id = _id(row.get("id"))
+            if task_id is None or task_id in self.seen:
+                continue
+            self.seen.add(task_id)
+            found[task_id] = row
+            self.listed.append((task_id, REASON_LAND, None, False))
+        return found
+
+
 async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     """The next work of this client, in one call (§12.4).
 
@@ -5970,20 +6080,14 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         ("page", "1"), ("page_size", str(MY_WORK_TASK_PAGE))])
     assigned = _rows_of(body)
 
-    listed: list[tuple[str, str, str | None, bool]] = []
-    links: dict[str, Any] = {}
-    runs: dict[str, Mapping[str, Any]] = {}
-    seen: set[str] = set()
-    for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
-                        *((r, REASON_HELD) for r in holding)]:
-        task_id = _id(run.get("task_id"))
-        if task_id is None or task_id in seen:
-            continue
-        seen.add(task_id)
-        links[task_id] = run.get("external_link")
-        runs[task_id] = run
-        listed.append((task_id, reason, _id(run.get("id")),
-                       _yours(run, ctx.session)))
+    work = _WorkList()
+    listed, links, runs, seen = work.listed, work.links, work.runs, work.seen
+    work.add_runs([(r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting], ctx.session)
+    # LBB-2: the PRs to land come after the waiting runs and before the quiet
+    # runs. The gateway answers none while both flags are off for the org.
+    land_rows = work.add_landing(
+        await _landing(ctx, _str_or_none(args.get("agent_label"))))
+    work.add_runs([(r, REASON_HELD) for r in holding], ctx.session)
 
     # SW-68a: the plan ranks the WHOLE assigned list of this tool, before any
     # row is hidden. Then this tool hides the rows that it never offers. So a
@@ -6017,7 +6121,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 
-    rows = {**free_rows, **{str(r.get("id")): r for r in assigned}}
+    rows = {**free_rows, **land_rows, **{str(r.get("id")): r for r in assigned}}
     missing = [task_id for task_id, _, _, _ in listed if task_id not in rows]
     rows.update(await _tasks_by_id(ctx, missing))
     shown = [rows[t] for t, _, _, _ in listed if t in rows]
@@ -6033,6 +6137,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if isinstance(task_row, dict) and CHECK_KEY in task_row:
             item[CHECK_KEY] = check_of(task_row.get(CHECK_KEY), evidence=False)
         _add_app_project(item, free_rows)
+        if item["reason"] == REASON_LAND:
+            item.update(_landing_keys(land_rows.get(item["task_id"])))
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
     refs = await _guidance_refs(
@@ -6060,7 +6166,10 @@ MY_WORK = Tool(
         " connection that wait: reason run_queued (a member queued work for"
         " you), run_answered (a member answered a question, and the answer is"
         " yours only when yours is true) or run_stopping"
-        " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
+        " (a member asked you to stop). Then, when the organization turned on"
+        " the land rule, your open pull requests older than 24 hours"
+        " (land_your_pr), with pr_number, pr_url and age_hours: land each one"
+        " before new work.[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
         " (assigned).[[CHECK_DUE]] When the organization has plan order on, a task under an"
         " epic is ranked by the plan: a ready slice before a held one, then the least slack. Its plan field then says"
@@ -6080,11 +6189,13 @@ MY_WORK = Tool(
     input_schema=_MY_WORK_INPUT,
     output_schema=_MY_WORK_OUTPUT,
     route=LIST_TASKS_ROUTE,
-    params={},
+    params={"agent_label": "agent_label"},
     not_found=TEXT_PROJECT_NOT_FOUND,
     run=_my_work,
     routes=(LIST_TASKS_ROUTE, ME_ROUTE, MY_RUNS_ROUTE, TASK_ROUTE, STATUSES_ROUTE,
-            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE, OWN_APP_FREE_ROUTE),
+            GUIDANCE_REFS_ROUTE, PLAN_ORDER_ROUTE, OWN_APP_FREE_ROUTE, LANDING_ROUTE),
+    # LBB-2: `agent_label` fills the query of the landing read.
+    param_routes=(LANDING_ROUTE,),
     edge_inputs=frozenset({"limit"}),
 )
 
@@ -6312,6 +6423,12 @@ _ADD_REF_INPUT: dict[str, Any] = {
                                " a branch or a document, with http or https."},
         "title": {"type": "string", "minLength": 1, "maxLength": 300,
                   "description": "A short title for the link."},
+        # LBB-2 (engineering_practice.md §7b.2): the landing mark of a PR.
+        "landing": {"type": "string", "enum": ["queued", "parked", "gone"],
+                    "description": "For a pull request only. queued: you handed it to"
+                                   " a merger. parked: it waits on purpose. gone: it"
+                                   " is merged or closed. Send it again on the same"
+                                   " link to change the mark."},
     },
     "required": ["task_id", "url"],
     "additionalProperties": False,
@@ -6332,6 +6449,9 @@ async def _add_task_reference(ctx: Context, args: dict[str, Any]) -> dict[str, A
     payload: dict[str, Any] = {"url": str(args["url"])}
     if "title" in args:
         payload["title"] = str(args["title"])
+    # LBB-2: the landing mark goes in the body only, one of three codes.
+    if args.get("landing") in ("queued", "parked", "gone"):
+        payload["landing"] = str(args["landing"])
     status, row = await _write(
         ctx, "POST", REFS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": str(args["task_id"])}, json_body=payload,
@@ -6349,14 +6469,16 @@ ADD_TASK_REFERENCE = Tool(
         "Attach one link to a task this member can see: a pull request, an"
         " issue, a commit, a branch or a document. The same link twice keeps"
         " one row, and created is false the second time. Metorite reads no"
-        " outside site for this call. Returns the reference with its kind,"
+        " outside site for this call. For a pull request, landing marks it"
+        " queued, parked or gone: an open PR older than 48 hours with no mark"
+        " can block your next claim. Returns the reference with its kind,"
         " provider, short label and title." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ADD_REF_INPUT,
     output_schema=_ADD_REF_OUTPUT,
     route=REFS_ROUTE,
-    params={"task_id": "task_id", "url": "url", "title": "title"},
+    params={"task_id": "task_id", "url": "url", "title": "title", "landing": "landing"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_add_task_reference,
     routes=(),
@@ -8230,24 +8352,6 @@ _LINK_INPUT: dict[str, Any] = {
     "type": "string", "minLength": 9, "maxLength": 2048, "pattern": r"^https://\S+$",
     "description": "An https link to your session or its log."}
 
-#: SW-7b (``agent_coordination.md`` §3.7 item 2). The most characters of
-#: ``agent_label``. The gateway cleans the value and caps it at the same
-#: number (``agent_runs.AGENT_LABEL_MAX``), and a pin test compares the two.
-AGENT_LABEL_MAX = 40
-
-#: SW-7b. The optional display name of this session, on a claim and a start.
-#: It holds no control character. The guidance lives here only, because the
-#: server instructions are at their budget (task 1803).
-_LABEL_INPUT: dict[str, Any] = {
-    "type": "string", "minLength": 1, "maxLength": AGENT_LABEL_MAX,
-    "pattern": r"^[^\x00-\x1f\x7f-\x9f]+$",
-    "description": (
-        "A short name for this session, such as backend-worker-3. People see"
-        " it beside the client name on the task card and in the run panel. It"
-        " is display data only. It changes no access, no hold and no session."
-        " Send the same name on each claim and each start. A new name replaces"
-        " the old one.")}
-
 #: SW-104 (``agent_coordination.md`` §3.12.3). The most characters of
 #: ``host`` and ``model``. The gateway cleans each value and caps it at the
 #: same number (``agent_runs.AGENT_PLACE_MAX``), and a pin test compares them.
@@ -8357,13 +8461,82 @@ def outside_apps_refusal(detail: Mapping[str, Any]) -> str:
             " or take a task from my_work.")
 
 
-#: The coded refusals of the claim: the 422 codes and the 403 of SW-45.
+#: LBB-2 (``engineering_practice.md`` §7b.2). The code of the 422 of the
+#: claim gate (``claim_gate.LAND_YOUR_PR``), apart from :data:`CLAIM_TEXTS`,
+#: which mirrors the codes of ``tasks.CLAIM_REFUSALS``.
+#: ``test_claim_gate_edge.py`` pins it equal.
+CLAIM_LAND_YOUR_PR = "land_your_pr"
+#: The most PRs that a refusal of the claim gate names (``claim_gate.PRS_MAX``).
+LAND_PRS_MAX = 5
+#: The only shape of a PR URL that leaves (``claim_gate.PR_URL_RE``).
+_LAND_URL_RE = re.compile(r"^https://github\.com/[^/]+/[^/]+/pull/[0-9]+$")
+#: The largest PR number, age or task number that the edge names.
+_LAND_INT_MAX = 10**10
+
+
+def _land_int(value: Any) -> int | None:
+    """A whole number of the gateway, 0 or more and below a bound, or None."""
+    found = _int_or_none(value)
+    return found if found is not None and 0 <= found < _LAND_INT_MAX else None
+
+
+def land_url(value: Any) -> str | None:
+    """A PR URL of the gateway, only in the shape of :data:`_LAND_URL_RE`."""
+    return value if isinstance(value, str) and _LAND_URL_RE.fullmatch(value) else None
+
+
+def _land_entry_text(entry: Mapping[str, Any]) -> str | None:
+    """The edge's own words for one PR of the refusal, or None for an entry
+    of the wrong shape. Each value is a number, an id or a fixed code."""
+    task_id = _id(entry.get("task_id"))
+    hours = _land_int(entry.get("age_hours"))
+    nxt = entry.get("next")
+    if task_id is None or hours is None or nxt not in ("answer", "land"):
+        return None
+    number = _land_int(entry.get("pr_number"))
+    task_number = _land_int(entry.get("task_number"))
+    pr = f"PR {number}" if number is not None else "a pull request"
+    task = f"task {task_number}" if task_number is not None else f"task {task_id}"
+    url = land_url(entry.get("url"))
+    head = (f"{pr[0].upper()}{pr[1:]} of {task} (task_id {task_id}) is {hours} hours old"
+            + (f": {url}." if url is not None else "."))
+    if nxt == "answer":
+        step = f"A person answered on {task}. Read the answer and act on it."
+    else:
+        step = (f"Merge main into {pr}, verify it, and queue it. Then call"
+                f" add_task_reference on {task} with landing queued.")
+    gone = (f"If {pr} is merged or closed, call add_task_reference on {task}"
+            " with landing gone.")
+    return f"{head} {step} {gone}"
+
+
+def land_your_pr_refusal(detail: Mapping[str, Any]) -> str:
+    """The edge's own words for the 422 ``land_your_pr`` of the claim gate.
+
+    It names up to :data:`LAND_PRS_MAX` PRs, oldest first, each with its age
+    in hours, its task and one next step. It builds the text from numbers,
+    ids, fixed codes and a URL of one shape, never from text that a person
+    wrote, and the gateway's message never reaches the agent."""
+    prs = detail.get("prs")
+    lines = [text for entry in (prs if isinstance(prs, list) else [])[:LAND_PRS_MAX]
+             if isinstance(entry, Mapping) and (text := _land_entry_text(entry))]
+    head = ("You have open pull requests to land before you claim new work."
+            " Land them first, or claim the task of one of them.")
+    if not lines:
+        return f"{head} Call my_work to see them."
+    return " ".join([head, *lines])
+
+
+#: The coded refusals of the claim: the 422 codes, the 403 of SW-45 and the
+#: 422 of the claim gate (LBB-2).
 _CLAIM_CODED: Mapping[str, str | Callable[[Mapping[str, Any]], str]] = {
-    **CLAIM_TEXTS, CLAIM_OUTSIDE_APPS: outside_apps_refusal}
+    **CLAIM_TEXTS, CLAIM_OUTSIDE_APPS: outside_apps_refusal,
+    CLAIM_LAND_YOUR_PR: land_your_pr_refusal}
 #: SW-45 (review P2). The 403 of the two second doors, ``set_assignees`` and
-#: the start of a run. The text is the claim's text.
+#: the start of a run. The text is the claim's text. LBB-2: and the 422 of
+#: the claim gate, so the three doors say the same.
 _OUTSIDE_CODED: Mapping[str, str | Callable[[Mapping[str, Any]], str]] = {
-    CLAIM_OUTSIDE_APPS: outside_apps_refusal}
+    CLAIM_OUTSIDE_APPS: outside_apps_refusal, CLAIM_LAND_YOUR_PR: land_your_pr_refusal}
 
 
 def outside_apps_note(written: Any) -> str | None:
@@ -10152,7 +10325,7 @@ async def _start_answer(ctx: Context, task_id: str, key: str,
     status, body = await _write(
         ctx, "POST", TASK_RUNS_ROUTE, TEXT_TASK_NOT_FOUND,
         path_params={"task_id": task_id}, json_body=payload,
-        texts={409: TEXT_KEY_USED}, coded=_OUTSIDE_CODED, coded_statuses=(403,))
+        texts={409: TEXT_KEY_USED}, coded=_OUTSIDE_CODED, coded_statuses=(403, 422))
     return status == 201, _run_body(body), body
 
 

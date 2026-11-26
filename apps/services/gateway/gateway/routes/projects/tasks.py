@@ -54,6 +54,7 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_gate import check_claim_gate
 from gateway.routes.projects.claim_scope import (
     apply_warning,
     check_claim_scope,
@@ -2743,11 +2744,17 @@ async def set_assignees(
         # write, and `refuse` has no second door. Another assignee in
         # `current` is not a pass: only the session member is.
         me = actor(user).strip().lower()
+        self_add = agent_call and me in wanted and not holds_task(user, current)
         scope_note = (
             await check_claim_scope(db, user, task, current, vis)
-            if agent_call and me in wanted and not holds_task(user, current)
+            if self_add
             else None
         )
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate, right after
+        # the scope check and before any write. The PUT carries no label, so
+        # a self-add is checked against the PRs bound to no label.
+        if self_add:
+            await check_claim_gate(db, user, task_id, vis, None)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
@@ -2832,11 +2839,15 @@ async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
     return written
 
 
-def _refuse_claim(code: str, message: str) -> NoReturn:
+def _refuse_claim(code: str, message: str,
+                  prs: list[dict[str, Any]] | None = None) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
-    refusal after a write rolls that write back."""
-    raise HTTPException(status_code=422,
-                        detail={"error": code, "message": message})
+    refusal after a write rolls that write back. LBB-2: the claim gate
+    (``claim_gate.check_claim_gate``) adds *prs*, the PRs to land first."""
+    detail: dict[str, Any] = {"error": code, "message": message}
+    if prs is not None:
+        detail["prs"] = prs
+    raise HTTPException(status_code=422, detail=detail)
 
 
 class ClaimIn(BaseModel):
@@ -2985,6 +2996,10 @@ async def claim_task(
         # (AGENT_CLAIM_SCOPE_MODES).
         # Before any write, so a refusal writes nothing.
         scope_note = await check_claim_scope(db, user, seen, current, vis)
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate. An agent
+        # with an old open PR that no merger queued lands it first. Before
+        # any write, and before the run opens, so a refusal writes nothing.
+        await check_claim_gate(db, user, task_id, vis, label)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,
