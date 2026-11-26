@@ -2,7 +2,10 @@
 
 > **Dated 2026-11-11, price (D204.9).** Seat tiers are final. The flat ₹500 seat ends when PLN-0 merges. Until then the code sells the flat seat. Read each line that says the flat seat as the seat of D152 after PLN-0. Lines: 792 and 1236.
 
+> **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
+> **Built 2026-11-22, task 3869 (not merged):** the mirror reads each generic module in full once in 7 days, and discovery queues one full read of a module whose stored pick-list values left the current options (§18.7, CRM-Q6a). It is dark behind `CRM_MODULE_REREAD_ORGS`, empty by default. No migration.
+> **Built 2026-11-22, CRM-Q30c (task 3868), not merged:** the read tools say how old the Zoho mirror of a module is. `GET /crm/sync/mirror-age` gives the age of each module, and the note of the read tools adds one line when the module of the call is held, not available in Zoho, or read 2 hours ago or more. It is dark behind `CRM_MIRROR_AGE_ORGS`, empty by default. No migration. See §18.11.2.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
 > **Status:** ✅ **APPROVED 2026-10-11 — verified against code and production** at
@@ -78,10 +81,9 @@
 > **Built later:** CRM-Q26, labels on CRM notes on the decide tier, dark
 > (2026-10-16, migration 278). See §18.11.
 >
-> **Built later, not merged:** CRM-Q25e, large reads (2026-11-13, branch
-> `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live when
-> it merges. The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`.
-> See §18.11.
+> **Built later, merged (`5a760b10b`):** CRM-Q25e, large reads (2026-11-13,
+> branch `mt-51634ef0-crm-large-reads`, no migration). Parts 1 to 4 are live.
+> The long read of part 5 is dark behind `CRM_LONG_READ_ORGS`. See §18.11.
 >
 > **Built later, merged (#1111, `d72f92184`):** Batch I, from the branch
 > `crm-batch-i` (2026-10-16, a fix round on 2026-10-17). CRM-Q24, a short read and the
@@ -1434,6 +1436,7 @@ has the tenant column and FORCE RLS (R5), and an R8 test on a real database.
 | **CRM-Q29** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-answer-check`, with two fix rounds), merged as #1116, dark. Fix round 3 merged as #1120. Fix rounds 4 to 7 merged as #1133. Fix round 8 built 2026-10-20 on `crm-check-explain`, PR open, not merged. The CRM assistant never misquotes a number. One number check, shared with CRM-Q28. §18.11 | P0 |
 | **CRM-Q30** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. A founder question set for CRM insights: an eval of the assistant over CRM data. §18.11 | P1 |
 | **CRM-Q30b** | 🔨 built 2026-10-17 in the batch branch `crm-batch-i2` (from `crm-founder-evals`), not merged. The read tools say when Zoho holds more records than the connected Zoho user can read. §18.11 | P1 |
+| **CRM-Q30c** | 🔨 built 2026-11-22 (task 3868), not merged, dark behind `CRM_MIRROR_AGE_ORGS`. The read tools say how old the Zoho mirror of a module is: held, not available in Zoho, or read 2 hours ago or more. §18.11 | P1 |
 | **CRM-Q31** | The CRM catalogue for the AI: the purpose of each module, its key fields by meaning, and its links. Code first, then the decide tier. Q31-1 to Q31-3 merged as #1122, dark. Q31-4 is absorbed into CRM-Q32 (§18.14). §18.13 | P0 |
 | **CRM-Q32** | Open questions: the CRM asks the admin each question that Jev could not answer with confidence. Each answer is a fixed fact in the plan, and every app reads it through `org facts`. Ten slices (Q32-1 to Q32-9b). Q32-1 to Q32-6 merged as #1130, dark (2026-10-18). Q32-8, Q32-9a and Q32-9b are specified 2026-10-18, not built. §18.14 | P0 |
 | **CRM-Q33** | 🔨 built 2026-10-18 on `crm-q33-answer-first`, not merged, dark behind `CRM_ANSWER_FIRST_ORGS`. Answer first, clarify over time: the figure on the best assumption with a note, one question after it, business rules (migration 283), a WhatsApp answer by number, and the evidence of GST. §18.15 | P0 |
@@ -1634,6 +1637,59 @@ each of these on a real database:
 - A module that hides `Modified_Time` is read again in full once in each
   `RECONCILE_EVERY`. The door skips an unchanged record, so that read writes
   nothing.
+- **The weekly full read (task 3869, built 2026-11-22, dark behind
+  `CRM_MODULE_REREAD_ORGS`, default empty).** Zoho can change a status, or
+  rename a pick-list value, and keep `Modified_Time`. An incremental read
+  never lists such a record, so the mirror kept the old value for ever (task
+  3729, causes 3 and 4). For a listed org, `engine._module_reread` is still
+  the one rule of a full read of a generic module, and `_weekly_reread`
+  widens it. A module that a cursor reads (not by offset) is read in full
+  when its last full read (`last_reconciled_at`, which the first import and
+  each full read set) is 7 days old or more (`MODULE_REREAD_EVERY`). The
+  read uses the full-read path of the changed pass, so `MODULES_RESERVE` and
+  the run budget stop it page by page. The next run goes on from its cursor
+  with the mark `reread`. A read in progress goes on as the read that it is,
+  so no second full read starts. A held key is never read in full, also in
+  an "on its own" run. An offset-paged module keeps its 24 h rule.
+- **A weekly read that fails (task 3869, review F1 and F5).** An error that is
+  not fatal keeps the place of the read: the next try goes on at the page
+  that failed, with the mark `reread`, after `UNAVAILABLE_RETRY`. The state
+  counts the failures in a row (`reread_failures`), and a page that lands
+  begins the count again. A tie that is too wide counts too. At
+  `REREAD_MAX_FAILURES` (3) the read ends: the progress goes,
+  `last_reconciled_at` becomes now, so the module is not due for 7 days, and
+  it leaves the label list. One log line, `crm.sync.module_reread_ended`.
+  The read of changes goes on from its cursor. A weekly read in progress
+  stops when the flag goes off or the key is held, and the read of changes
+  goes on from the cursor. A stopped read of an offset-paged module keeps
+  its rule. Every other read keeps the failure rule of before.
+- **Known limits of the weekly read (review F3 and F4).** The first flip
+  of the flag makes each generic module due at once. The reserve and the
+  budget pace the reads, but the full read of an early module can delay
+  the reads of changes of the later modules for a run or more. The final
+  sync of the switch (CRM-Z10b) reads a module whose weekly read is due in
+  full, and a stopped weekly read starts again from page 1 there. So the
+  switch can wait for a full read.
+- **The pick-list drift check (task 3869, same flag).** After discovery
+  stores the profile, `engine._check_label_drift` takes the field rows that
+  it read now. For each select field of a mirrored generic module, one
+  statement (`_LABEL_DRIFT_SQL`) reads the DISTINCT stored values that no
+  current option label lists, at most `LABEL_DRIFT_CAP` (50), in a tenant
+  session under a LOCAL `statement_timeout` of 5 s. A v2 record carries the
+  label of a value, so the label is the test. A missing value queues ONE
+  full read: the module joins the label list of task 1096
+  (`LABEL_REREAD_KEY` in the rules cursor row), and `_weekly_reread` reads
+  it at once. The last page of any full read takes the module off the list.
+  The rules row keeps a hash of each missing value (`LABEL_DRIFT_KEY`, no
+  Zoho text). Only a value with no stored hash queues a read, so a value
+  that a full read cannot repair costs no second read. The check skips a
+  module that is held, that is still in its first import, or that has a
+  read in progress. After a refused discovery the check does nothing, and a
+  module whose fields Zoho refused is not checked. A failed statement, or
+  any other error of the check, queues nothing and never fails the run.
+  Fences: `tests/unit/test_crm_module_reread.py` (hermetic) and
+  `tests/unit/test_crm_label_drift_r8.py` (R8, `_LABEL_DRIFT_SQL` on
+  Postgres). The R8 file ran on a real database (3 passed, 2026-11-23).
 - After its first import, a module reads its changed list at most once an hour
   (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
   import it reads on each run, within the reserve.
@@ -3894,6 +3950,7 @@ each value. Embeddings help the model find text. They never make a number.
 | CRM-Q29 | The CRM assistant never misquotes a number | AGENT-SAFE | M | CRM-Q25 |
 | CRM-Q30 | A founder question set for CRM insights | AGENT-SAFE | M | CRM-Q25, CRM-Q27 |
 | CRM-Q30b | The read tools say when Zoho holds more than the connected user can read | AGENT-SAFE | S | CRM-Q24, CRM-Q30 |
+| CRM-Q30c | The read tools say how old the Zoho mirror of a module is (task 3868) | AGENT-SAFE. Dark behind `CRM_MIRROR_AGE_ORGS` | S | CRM-Q30b |
 
 CRM-Q25b, CRM-Q27 and CRM-Q28 have their done-when lists after CRM-Q26
 (2026-10-16). To build each ticket is AGENT-SAFE. For CRM-Q26, a mode other than
@@ -5467,6 +5524,91 @@ bars. The mutation that takes the line out of the tools fails Q31 only.
 **Not changed.** The Sync health card keeps its own copy of the rule of
 the two counts (`syncHealth.ts`). A later slice can make the card read
 `zoho_count` and `readable` from this route.
+
+**CRM-Q30c · The read tools say how old the mirror is (task 3868,
+2026-11-22).**
+
+**Why.** Task 3729 found that the CRM chat answered billing questions from
+the Zoho mirror, and did not know how old the mirror of the module was. A
+member could not tell a held or stale module from a fresh one.
+
+**The facts (code check of 2026-11-22).**
+
+- The sync reads each core entity on each run, every 10 minutes. A generic
+  module reads its changes at most once an hour (`MODULE_READ_EVERY`). A
+  module that hides `Modified_Time` reads only at its full re-read, once in
+  24 hours.
+- The end of each read writes `checked_at`, the start of its run, into the
+  changed cursor (`engine._changed_pass`). A page that is not the last page
+  writes a state with no `checked_at`. So a read in progress has no stamp.
+- `_mark_unavailable` writes `checked_at` too, as the time of the refused
+  ask. That stamp is not a read.
+- The sync holds a large first import (`crm_sync/holds.py`,
+  `crm_settings.sync_holds`). It skips a held generic module before any
+  write, so that module has no cursor row.
+
+Done when:
+
+1. One function in `routes/crm/sync.py`, `mirror_ages(db, org)`, gives each
+   core entity that is not an activity and each generic module: the count
+   key, the Zoho API name, `checked_at`, `held` and `unavailable`. It reads
+   the cursors through `runs.read_cursors` and the holds through
+   `holds.read`, and it writes no SQL of its own. `_cursor_key` is the one
+   key rule, and `_short_by_keys` uses it too.
+2. `checked_at` is None for an unavailable module and for a module with no
+   finished read on record. A held key with no cursor row is in the list.
+3. `GET /crm/sync/mirror-age` serves that list to each member that the CRM
+   access rule admits. It holds times and marks only. An org off
+   `CRM_MIRROR_AGE_ORGS` gets an empty list, and no session opens. A Native
+   org gets an empty list. The tenant comes from the session.
+4. `_short_note` adds the age line of each key of the call, after the
+   short-read lines. A call with no key (`crm_list_modules`) adds none.
+   `mirror_age_on` asks `flags.mirror_age_allowed` with the org of the run
+   first, so a dark org sends no request.
+5. The lines: "Invoices were last read from Zoho 3 hours ago.", "Invoices
+   are held, so they may be old.", "Invoices are not available in Zoho now,
+   so they may be old." and "Invoices have no finished read from Zoho on
+   record, so they may be old or partial." Unavailable wins over held, and
+   held wins over the age. Under 2 hours the module is fresh and adds
+   nothing. Hours count up to 48 hours, then days.
+6. A failed read adds no line. No tool argument and no docstring changes, so
+   the pinned contract of `test_tool_schema_diet.py` does not change.
+7. Unit tests cover the flag, the route states and the line of each state,
+   with a mutation for each.
+
+Files: `routes/crm/sync.py`, `routes/crm/flags.py`,
+`packages/acb_skills/acb_skills/crm_tools.py`,
+`packages/acb_common/acb_common/settings.py`, the CRM manifest,
+`env_guard.PLATFORM_ENV_NAMES`, `.env.example`,
+`docs/flag_reload.md`, `tests/unit/test_crm_mirror_age.py`,
+`tests/unit/test_crm_mirror_age_note.py`, `tests/unit/test_flag_reload.py`
+and this section. Gate: AGENT-SAFE. Size: S. Waits for: CRM-Q30b. No
+migration. The flag is `CRM_MIRROR_AGE_ORGS`, empty by default, and a name
+in it spends nothing, so its flip is `enforcement-flip`.
+
+Verify with:
+
+- `uv run pytest tests/unit/test_crm_mirror_age.py tests/unit/test_crm_mirror_age_note.py tests/unit/test_crm_short_read_note.py tests/unit/test_crm_agent.py tests/unit/test_tool_schema_diet.py tests/unit/test_crm_ui_actions.py -q`
+- `uv run pytest tests/unit/test_flag_reload.py -q`
+- ⚠️ On 2026-11-22, `main` serves `GET /crm/fields-search` (CRM-Q34-6) with
+  no row in the CRM manifest. So 3 tests of `test_crm_ui_actions.py` fail on
+  `main` too. The row of `/crm/sync/mirror-age` passes. The file is a
+  `process` fence, so it warns in build.
+
+**Built as (2026-11-22, task 3868, not merged).** Dark, no migration.
+
+- The route needs `require_crm_mirror`, and it asks `mirror_age_allowed`
+  before the session opens.
+- A read in progress after the first import also has no stamp, so it gets
+  the line of no finished read. The line says "old or partial", which is
+  true for a first import and for a read in progress.
+- No R8 test covers the route yet. The unit test proves the shape that the
+  route builds from the rows of the two readers.
+
+**Not changed.** The tools that read one record (`crm_get_record`,
+`crm_get_module_record`) call no `_short_note`, so they add no age line. An
+overlaid slot answers from its module, but the key of the note is the slot.
+So a held module that plays a slot adds no line.
 
 #### 18.11.3 Verification
 
@@ -8548,6 +8690,11 @@ Status: built 2026-11-18 on `crm-q34-11-mt-37c6f980` (task 3728), no flag.
   reads each raw value back through the route. It also proves a month
   sum against an independent SQL sum, the gate, org B, and a number field
   as before.
+
+**SEM-6 · The scripted replay of the refusal shapes.** Status: built 2026-11-17
+(task 3723), no flag, no model. `evals/semantic/` sends the shapes of
+CRM-Q34-1 to CRM-Q34-3 to the real routes on a synthetic org, and asks 20 fixed
+questions. Its fence is `tests/unit/test_semantic_eval_scripted.py`.
 
 #### 18.17.2 Rung 1
 

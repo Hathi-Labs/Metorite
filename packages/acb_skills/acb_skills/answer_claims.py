@@ -263,6 +263,8 @@ ACTED_HEADS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     "send_draft": ("Draft sent",),
     "schedule_send": ("Scheduled",),
     "create_task": ("Created:",),
+    # P-1b (task 3922): the task from a mail (``skill_my_tasks.core._made``).
+    "my_tasks_capture_from_mail": ("Made one task from the mail:",),
     "update_task": ("Updated:",),
     "complete": ("Done:",),
     "set_reminder": ("Reminder set",),

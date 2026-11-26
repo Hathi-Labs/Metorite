@@ -814,6 +814,20 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # tables hold no address and stay.
     _PersonRows("failure_event_rows", "failure_events",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-1a (agent_sandbox.md §7.4): the tool gaps of the member in THIS
+    # organization. The need of a row is text about the member's work, so it
+    # goes with the member. The clause names the bound org beside RLS. It runs
+    # before `private_chat_sessions`, whose cascade would take only the rows of
+    # her private chats. So the count is each row of the member.
+    _PersonRows("tool_gaps", "tool_gaps",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-2 (agent_sandbox.md §12.2): the run capabilities of the member in
+    # THIS organization. A row holds her address and a token hash. The table
+    # is RLS-exempt, so the clause must name the bound org. The door already
+    # refuses a capability whose member has no seat (step 10). The delete
+    # removes the address at once, and does not wait for the daily sweep.
+    _PersonRows("sandbox_capabilities", "sandbox_capabilities",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
     # option would have crossed: a `people`/`org` room they created has OTHER
@@ -836,9 +850,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # changes of a private saved view or of an own business rule. They hold
     # the text of a private view or an own rule, which only the member
     # reads, so they go with the member. This purge deletes the own rules
-    # (`crm_member_rules` above). It does not delete the saved views
-    # (`crm_views`). An Undo row has the same readers as the row it undoes
-    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # (`crm_member_rules` above) and the private saved views
+    # (`crm_private_views` below). An Undo row has the same readers as the
+    # row it undoes (`change_log.log_change`), so the `ON DELETE CASCADE` key of
     # `undoes_id` takes only rows that this clause counts too, and no org
     # row goes with them. The clause names
     # the bound org beside RLS, as `reminders` does. The org's rows that the
@@ -850,6 +864,18 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # `private_to`.
     _PersonRows("crm_private_changes", "crm_change_log",
                 f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
+    # Task 1570 (D175.5, the owner's decision of 2026-11-04): the member's
+    # private CRM saved views of THIS organization. Only the owner reads a
+    # private view, so a purged member leaves none behind. The Change history
+    # rows that only the member reads went with `crm_private_changes` above.
+    # A shared view stays with the address. It is not counted as kept, as the
+    # org's rows of `crm_change_log` are not. The clause names the bound org
+    # beside RLS, as `studio_private_views` does, so the same address in
+    # another org keeps its views. No table hangs off `crm_views`, so the
+    # count is each row that goes.
+    _PersonRows("crm_private_views", "crm_views",
+                "NOT shared AND lower(owner_email) = :email"
+                f" AND organization_id = {_BOUND_ORG}"),
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),

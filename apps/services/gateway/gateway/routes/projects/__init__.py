@@ -56,6 +56,7 @@ from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
 from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import checks as _checks  # noqa: F401
+from gateway.routes.projects import claim_scope as _claim_scope  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
 from gateway.routes.projects import cycles as _cycles  # noqa: F401
 from gateway.routes.projects import decisions as _decisions  # noqa: F401
@@ -78,6 +79,7 @@ from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
 from gateway.routes.projects import refs as _refs  # noqa: F401
 from gateway.routes.projects import reminders as _reminders  # noqa: F401
+from gateway.routes.projects import sequences as _sequences  # noqa: F401
 from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401

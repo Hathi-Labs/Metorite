@@ -37,6 +37,7 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
+import { foldFailedTurns, isFailedTurn } from "@/lib/chatRunFailed";
 import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { phaseWordOf, stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
@@ -105,6 +106,12 @@ const HITL_CONTROL_EVENTS = new Set([
   // A card the server closed (`lib/confirmationQueue.ts`). It drives the
   // queue, and is no data to draw.
   "confirmation_resolved",
+  // A refused approve (task 3827). It turns a receipt line into "Not done",
+  // and is no data to draw.
+  "confirmation_not_done",
+  // WT-6a: the Undo of an approved archive card (`lib/archiveUndo.ts`). It
+  // drives the receipt line, and is no data to draw or to keep.
+  "confirmation_undo",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
@@ -603,6 +610,8 @@ export function useAgentChat({
         const active = activeContextSlice(prior);
         const history = active
           .filter((m, idx) => m.role !== "system" || (idx === 0 && isCompactionCheckpoint(m)))
+          // A saved failure row holds no words (AO-3b).
+          .filter((m) => !isFailedTurn(m))
           .map((m) => ({ role: m.role, content: m.content }));
 
         // A steer that started a new run has its response already: follow
@@ -1805,7 +1814,7 @@ export function useAgentChat({
         // Map remote format to ChatMessage.  Drop stale __ERROR__ system
         // messages persisted by older builds — transient errors must never
         // resurface via polling.
-        const remoteMsgs: ChatMessage[] = remote
+        const remoteMsgs: ChatMessage[] = foldFailedTurns(remote
           .filter((r) => !(r.role === "system" && (r.content ?? "").startsWith("__ERROR__")))
           .map((r) => ({
           id: r.id,
@@ -1841,7 +1850,7 @@ export function useAgentChat({
           authorKind: r.authorKind ?? undefined,
           redacted: r.redacted || undefined,
           redactedCaps: r.redactedCaps,
-        }));
+        })));
 
         // Content-aware merge.  Handles two recovery cases:
         //   (a) New messages appended on the server (count grew).

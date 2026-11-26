@@ -1218,12 +1218,6 @@ def _first_write(rows: list[dict]) -> dict | None:
     return min(writes, key=_history_time) if writes else None
 
 
-def _last_write(rows: list[dict]) -> dict | None:
-    """The newest row that writes bytes at a path, or ``None``."""
-    writes = [r for r in rows if r.get("action") != "delete"]
-    return max(writes, key=_history_time) if writes else None
-
-
 def _is_batch_row(row: dict) -> bool:
     """True for a row that a batch run wrote (the H-227 decision, PR #616).
 
@@ -1237,7 +1231,10 @@ def _is_batch_row(row: dict) -> bool:
     ``<agent>:<run id>``, with the row's own agent and run id. No new chat can
     take an id with a colon (``chat.refuse_run_shaped_id``), so no chat can
     forge that form. ``acb_memory.blob_store._RUN_ROW`` is the same rule in
-    SQL, and the purge never deletes such a row.
+    SQL. A batch row at a path that the chat began goes with the purge. A
+    new batch run cannot add such a row. ``write_artifact._take_batch_name``
+    skips each name that ``_path_has_history`` finds written. So this touches
+    legacy rows only.
     """
     session, run = str(row.get("session_id") or ""), str(row.get("run_id") or "")
     if not run:
@@ -1349,7 +1346,7 @@ class ThreadPurgeFailed(RuntimeError):
 
 async def purge_thread_files(
     session_id: str, organization_id: str | None, *, best_effort: bool = False,
-    member: str | None = None,
+    member: str | None = None, db: Any = None,
 ) -> None:
     """Delete the files of a chat that its owner deletes (H-227, PR #616 review).
 
@@ -1369,11 +1366,15 @@ async def purge_thread_files(
     * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/`` on disk, with
       the safe opener, and their rows in the blob store and its history;
     * each loose file that this chat began (:func:`_first_writer`), on disk
-      and in the store, so its ownership cannot move to another session.
-      ⚠️ Not when another session wrote its newest bytes (fix round 3). That
-      file and its other rows stay, and only this chat's rows go;
+      and in the store, with every row at its path, so its ownership cannot
+      move to another session. ⚠️ Also when another session wrote its newest
+      bytes (H-242 step 2, the decision of 2026-11-22). Such bytes can still
+      hold this chat's text, as a ``save_note`` append of main did. To keep the
+      file would hand that text to the next writer, so it goes;
     * every other history row of this chat under ``inputs/`` and ``outputs/``.
-      A row of a run with no chat stays (``blob_store._RUN_ROW``);
+      A batch row at a path that the chat began goes too (``blob_store._RUN_ROW``,
+      legacy rows only, because ``write_artifact._take_batch_name`` never takes
+      a name that has history);
     * the zips of ``package_artifacts`` in the chat's own working dir, also a
       personal or a team one (2026-10-11). A zip is never in the blob store,
       so ``session_paths`` cannot find it. It lies at
@@ -1382,13 +1383,17 @@ async def purge_thread_files(
       The delete route passes the member who deletes. A new chat has no row
       yet, so it has no such dir.
 
+    *db* is the open tenant session of ``chat.open_new_session`` (H-242 step
+    3). The reads and the deletes of the store then run in its transaction,
+    beside its lock and its new row, and take no second connection.
+
     The organization is the caller's, from the authenticated identity. A
     failure is logged as ``workspace.thread_purge_failed``.
     """
     if not session_id or not organization_id:
         return
     try:
-        await _purge_thread_files(session_id, organization_id, member=member)
+        await _purge_thread_files(session_id, organization_id, member=member, db=db)
     except Exception as exc:
         _log.warning(
             "workspace.thread_purge_failed", session_id=session_id[:12],
@@ -1424,6 +1429,7 @@ def _tenant_dirs(organization_id: str) -> list[Path]:
 
 async def _purge_thread_files(
     session_id: str, organization_id: str, *, member: str | None = None,
+    db: Any = None,
 ) -> None:
     """Read first, then change (fix round 2 of PR #616). Every read that can
     fail runs before the first removal, so a failure changes nothing. The
@@ -1445,7 +1451,7 @@ async def _purge_thread_files(
     # 1. The reads. `session_paths` raises on a database error.
     began: list[tuple[str, str]] = []
     for agent, path in await session_paths(
-        session_id, instance=key, organization_id=organization_id,
+        session_id, instance=key, organization_id=organization_id, db=db,
     ):
         if not is_loose_rel(path):
             continue
@@ -1453,6 +1459,7 @@ async def _purge_thread_files(
         for instance in (key, ""):
             rows += await file_history(
                 agent, path, 1000, instance=instance, organization_id=organization_id,
+                db=db,
             )
         if not rows:
             # The chat wrote at this path, so its history cannot be empty: the
@@ -1460,12 +1467,9 @@ async def _purge_thread_files(
             raise ThreadPurgeFailed(f"no history read for {path[:120]}")
         if _first_writer(rows) != session_id:
             continue
-        newest = _last_write(rows)
-        if newest is not None and newest.get("session_id") != session_id:
-            # Fix round 3: another session wrote the bytes that lie there now
-            # (main let any session change a loose file). They are not this
-            # chat's to delete. Only this chat's rows go, in step 3.
-            continue
+        # H-242 step 2: a file that this chat began goes, also when another
+        # session wrote its newest bytes. Those bytes can hold this chat's
+        # text, and a kept file would make that session the owner.
         began.append((agent, path))
     dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
     # The chat's own working dir, for its zips (a read, so it comes first).
@@ -1489,7 +1493,7 @@ async def _purge_thread_files(
     gone = await purge_files(
         instance=key, organization_id=organization_id,
         prefixes=tuple(f"{head}/{slug}/" for head in THREAD_HEADS) if slug else (),
-        paths=tuple(began), session_id=session_id,
+        paths=tuple(began), session_id=session_id, db=db,
     )
     _log.info(
         "workspace.thread_purged", session_id=session_id[:12],
@@ -1623,7 +1627,8 @@ async def _apply_write_rules(
     becomes its author, and the marker goes to the blob store too. The marker
     holds an opaque member id (``agent_paths.skill_author_id``), never the
     address (WS-43v). A sandboxed run loads, and runs the scripts of, only its
-    own member's skills.
+    own member's skills. A name that no member owns but that is taken answers
+    409, and a store that cannot check the name answers 503 (H-245 review).
     """
     from acb_skills.agent_paths import (
         SKILL_AUTHOR_MARKER,
@@ -1647,17 +1652,30 @@ async def _apply_write_rules(
         raise HTTPException(status_code=404, detail="File not found")
     if not claim or own is None:
         return
-    from acb_skills.agent_paths import SkillOwnedElsewhere
+    from acb_skills.agent_paths import SkillClaimRefusal, SkillOwnedElsewhere, tenant_instance
 
     try:
-        claimed = await asyncio.to_thread(claim_skill, workspace.resolve(), rel, user.email)
+        # ``own`` is set only in this tenant's own dir, told from its path, so
+        # the store key is ``o:<org>`` from the session, never the dir's
+        # ``.cc-instance`` marker (H-245 review, P3).
+        claimed = await asyncio.to_thread(
+            claim_skill, workspace.resolve(), rel, user.email,
+            organization_id=user.organization_id,
+            instance=tenant_instance(user.organization_id),
+        )
     except SkillNameRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    except SkillOwnedElsewhere:
-        # Another member claimed the folder between the check and the claim.
-        raise HTTPException(
-            status_code=403, detail="That skill belongs to another member.",
-        ) from None
+    except SkillOwnedElsewhere as exc:
+        # H-245 review, P2: each reason has its own status and text.
+        # FOREIGN (403): another member's folder, or their claim won a race.
+        # IN_USE (409): no member owns the folder, but the name is taken, so
+        # another name works.
+        # STORE_UNREAD (503): the store did not answer. A retry can pass.
+        status = {
+            SkillClaimRefusal.IN_USE: 409,
+            SkillClaimRefusal.STORE_UNREAD: 503,
+        }.get(exc.reason, 403)
+        raise HTTPException(status_code=status, detail=exc.member_text) from None
     except ValueError:
         # No member id: no member, or no usable session secret. A skill folder
         # with no author would go to the next member who writes into it, with
@@ -1857,6 +1875,10 @@ async def get_workspace_tree(
         return WorkspaceTree(session_id=session_id, root="", files=[])
 
     files = await loop.run_in_executor(None, _walk_tree, workspace)
+    # H-245 step 4: a path form that GET refuses in every dir
+    # (``_odd_name_form``, such as an ``agent-data/Skills/`` head) is not
+    # listed either, so the tree never names a file that GET answers 404 for.
+    files = [f for f in files if not _odd_name_form(f.path)]
     # WS-43d (§16.3) and H-227: another thread's output and upload folders
     # are not listed, and a loose file only for the session that wrote it.
     own = _own_thread_slug(workspace, session_id, _user.organization_id)

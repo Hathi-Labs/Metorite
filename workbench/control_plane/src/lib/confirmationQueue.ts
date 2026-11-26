@@ -30,6 +30,8 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/archiveUndo";
+import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
 import { sharesTo, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
 import { isNewMail, isNewMailEdits, replyFromEvent, startTicks, type NewMailEdits, type ReplyForm } from "@/lib/replyCard";
@@ -40,6 +42,10 @@ import { isTaskCardEdits, isUnchanged, taskEditFromEvent, type TaskCardEdits, ty
  *  (`CONFIRMATION_RESOLVED` in `ask_tools.py`), and
  *  `tests/unit/test_chat_hardening.py` checks the two agree. */
 export const CONFIRMATION_RESOLVED = "confirmation_resolved";
+
+/** The event of an approved card that did nothing (task 3827). The server owns
+ *  the name (`CONFIRMATION_NOT_DONE` in `ask_tools.py`). */
+export const CONFIRMATION_NOT_DONE = "confirmation_not_done";
 
 /**
  * One checkbox of a card with rows (WS-46 P13 one-card). The tool offers the
@@ -364,7 +370,7 @@ export interface ConfirmationReceipt {
   key: string;
   /** The card's summary, or its title. */
   label: string;
-  kind: "applying" | "approved" | "rejected" | "refused" | "closed";
+  kind: "applying" | "approved" | "rejected" | "refused" | "closed" | "notDone";
   /** What the member answered. "applying" becomes this once the server took it. */
   intent: "approved" | "rejected";
   /** Why a refused answer did not land. */
@@ -374,6 +380,9 @@ export interface ConfirmationReceipt {
   /** A held Reject (`lib/rejectHold.ts`): the POST has not gone, and the line
    *  offers Undo. `released` clears it once the POST goes. */
   undo?: boolean;
+  /** WT-6a: the archive that this approved card made, and where its Undo is
+   *  (`lib/archiveUndo.ts`). Only the server's `confirmation_undo` sets it. */
+  archive?: ArchiveUndo & { state: ArchiveUndoState };
 }
 
 export interface ConfirmationQueueState {
@@ -418,6 +427,9 @@ export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" 
 }
 
 export function receiptText(r: ConfirmationReceipt): string {
+  // WT-6a: an archive line says what its Undo did.
+  const undone = r.archive ? archiveUndoText(r.archive.state, r.label) : null;
+  if (undone) return undone;
   switch (r.kind) {
     case "applying":
       // A held Reject already reads as done, and offers Undo (#916).
@@ -431,6 +443,9 @@ export function receiptText(r: ConfirmationReceipt): string {
       return `Not applied · ${r.label}${r.reason ? `. ${r.reason}` : ""}`;
     case "closed":
       return `Closed · ${r.label}. The assistant has moved on. Its reply says what happened.`;
+    case "notDone":
+      // Task 3827: the card was approved, and the tool refused the write.
+      return `Not done · ${r.label}. ${CARD_OUTCOME_MEMBER_LINES["changed since"]}`;
   }
 }
 
@@ -485,7 +500,15 @@ export type ConfirmationAction =
     }
   /** The hold ended and the REJECT POST goes: the line stops offering Undo. */
   | { type: "released"; key: string }
+  /** WT-6a: the server's `confirmation_undo` for an approved archive card. */
+  | { type: "undoOffered"; requestId: string; undo: ArchiveUndo }
+  /** WT-6a: where the Undo of an archive line is now. */
+  | { type: "undoState"; key: string; state: ArchiveUndoState }
   | { type: "answered"; key: string }
+  /** Task 3827: the tool refused the approved card because the object changed
+   *  after it. `confirmation_not_done` carries the card's `request_id`, so the
+   *  line of that card alone reads "Not done". No receipt of that key: no change. */
+  | { type: "notDone"; requestId: string }
   /** The POST got a 4xx. The card stays gone until a replay shows it again.
    *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
   | { type: "dropped"; key: string; reason?: string }
@@ -728,6 +751,23 @@ export function confirmationReducer(
         ...state,
         receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, undo: undefined })),
       };
+    case "undoOffered":
+      // Only a line of THIS chat that the member approved, and only once. A
+      // request id that no line here holds (another chat) attaches nothing.
+      // A "Not done" line (task 3827) wrote nothing, so it offers no Undo.
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent !== "approved" || r.kind === "refused" || r.kind === "notDone" || r.archive
+            ? r
+            : { ...r, archive: { ...action.undo, state: "ready" } }),
+      };
+    case "undoState":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          r.archive ? { ...r, archive: { ...r.archive, state: action.state } } : r),
+      };
     case "answered":
       // The server took the answer. Its `confirmation_resolved` follows, and
       // this keeps a replay that arrives first from reopening the card.
@@ -735,9 +775,19 @@ export function confirmationReducer(
         ...state,
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
-        receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent, undo: undefined })),
+        // A "Not done" line stays: the stream can beat this POST's answer.
+        receipts: settleReceipt(state.receipts, action.key, (r) =>
+          (r.kind === "notDone" ? r : { ...r, kind: r.intent, undo: undefined })),
         // The member answered it, so a `reopened` ask never shows it again.
         ...(state.reopenable?.has(action.key) ? { reopenable: withRemoved(state.reopenable, action.key) } : {}),
+      };
+    case "notDone":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) =>
+          r.intent === "approved" && (r.kind === "applying" || r.kind === "approved")
+            ? { ...r, kind: "notDone", undo: undefined }
+            : r),
       };
     case "dropped":
       return {

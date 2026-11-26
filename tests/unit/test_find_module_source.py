@@ -263,9 +263,13 @@ class TestTheNames:
         assert "module" not in names._row("crm", record, "exact")
 
     def test_the_closed_list_and_its_422_do_not_change(self):
-        assert names.KINDS == ("person", "contact", "lead", "company", "sender")
-        assert names.KINDS_RULE == "The kinds are person, contact, lead, company and sender."
-        assert cst.NAMES_KINDS == "The kinds are person, contact, lead, company and sender."
+        # The seven kinds of FIND-6b (task 3665). FIND-11 adds none of its own.
+        assert names.KINDS == ("alias", "person", "member", "contact", "lead", "company",
+                               "sender")
+        assert sources.MODULE_KIND not in names.KINDS
+        assert names.KINDS_RULE == ("The kinds are alias, person, member, contact, lead, "
+                                    "company and sender.")
+        assert cst.NAMES_KINDS == names.KINDS_RULE
 
 
 
@@ -283,4 +287,7 @@ class TestNoGrowthOfAnyToolText:
         assert "module_record" not in text
 
     def test_the_kinds_line_of_the_tool_is_the_one_of_before(self):
-        assert cst.NAMES_KINDS == "The kinds are person, contact, lead, company and sender."
+        # The kinds line of FIND-6b (task 3665). FIND-11 adds no kind to it.
+        assert cst.NAMES_KINDS == ("The kinds are alias, person, member, contact, lead, "
+                                   "company and sender.")
+        assert "module_record" not in cst.NAMES_KINDS
