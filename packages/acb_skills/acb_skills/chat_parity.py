@@ -262,6 +262,14 @@ COVERED: dict[str, str | tuple[str, str]] = {
     # P-1a (task 3112): the two proposals of the task page. Each tool writes nothing.
     "POST /api/tasks/items/{}/enrich": "my_tasks_enrich",
     "POST /api/tasks/items/{}/suggest-title": "my_tasks_suggest_title",
+    # P-1b (task 3922): the Add to Tasks popup of a mail, and the task from a reply
+    # that the member sent. The draft reads, and the write shows one card.
+    "POST /api/tasks/capture/from-email": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-email/create": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-email/enhance": "my_tasks_draft_from_mail",
+    "POST /api/tasks/capture/from-email/preview": "my_tasks_draft_from_mail",
+    "POST /api/tasks/capture/from-reply/create": "my_tasks_capture_from_mail",
+    "POST /api/tasks/capture/from-reply/detect": "my_tasks_draft_from_mail",
     # ── Calendar ──
     "GET /api/projects/my/calendar/estimate-stats": "my_tasks_estimate_stats",
     # CAL-1a (task 1675): the `calendar-day` pack puts these planner tools in the main
@@ -996,13 +1004,6 @@ DEBT: dict[str, str] = {
     # ── Tasks ──
     # The owner decides: retire the /tasks button, or build a tool with a card.
     "POST /api/tasks/ai/backfill-context": "P-1",
-    # P-1b (task 3922): the six capture rows of mail. HIGH, with the owner's Approve.
-    "POST /api/tasks/capture/from-email": "P-1",
-    "POST /api/tasks/capture/from-email/create": "P-1",
-    "POST /api/tasks/capture/from-email/enhance": "P-1",
-    "POST /api/tasks/capture/from-email/preview": "P-1",
-    "POST /api/tasks/capture/from-reply/create": "P-1",
-    "POST /api/tasks/capture/from-reply/detect": "P-1",
     # ── Calendar ──
     # CE-10c (task 66): the Connected calendars section of Calendar settings. P-1a (task 3112)
     # paid the list read, and P-1c (task 3923) paid Sync now and the switch.
@@ -1289,7 +1290,7 @@ P0_CEILING: dict[str, int] = {
 #: Lower the number in the change that pays the debt.
 DEBT_CEILING: dict[str, int] = {
     "projects": 7,  # F3: UI_PLANNED, and UI_ACTIONS rows whose tool is PLANNED. SW-43c (task 1802) built the chat tools of agentRunsApi.withdrawAnswer and agentRunsApi.replaceAnswer (9 to 7).
-    "tasks": 7,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7).
+    "tasks": 1,  # P-1a (task 3112) paid enrich and suggest-title (9 to 7). P-1b (task 3922) paid the six capture rows of mail (7 to 1).
     "calendar": 2,  # CE-10c (task 66) added the list read, Sync now and Disconnect of the calendar connections, paid by P-1 (1 to 4). The switch of CE-10c follow-up (task 66) added the PATCH, paid by P-1 (5). P-1a (task 3112) paid the list read (5 to 4). P-1c (task 3923) paid Sync now and the switch (4 to 2). Disconnect waits for the owner's decision on C-04. Paid by task 3923. The day-state read is task 1680.
     "email": 5,  # SG-1 (task 2177, 2026-11-07) added the signature image upload, paid by SG-6 (task 2182). Paid by task 3111. P-2c (task 3919) exempted drafts/save, reply-card/bcc and reply-card/discard as the chat's own cards, and paid rules/patterns/review (14 to 10). P-2a (task 3111) paid the search, the facets, the folders, the older-mail read and the org counts (10 to 5).
     "crm": 60,  # CRM-M2a: the manifest decides. The count is UI actions with no built tool. Field Studio GET /fields reaches crm_list_fields, so it left the debt (73 to 72). Task 3951 (CRM-M2e) paid the add, change and order reset of a stage and the add and change of a lost reason with crm_edit_status and crm_edit_lost_reason (72 to 67). The two DELETE rows and the PUT of the order stay debt: the agent sends no DELETE and no PUT (apps/AGENTS.md). Task 3954 (P-3) paid the suggestions of the field map (list, preview, approve, undo, dismiss) and the AI analysis (status, re-run) with five CRM agent tools (67 to 60).

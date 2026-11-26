@@ -45,6 +45,11 @@ P-5b-1 (task 3114) added the dark pack ``people`` of four tools, with no
 surface and another owner. :func:`_allowed` leaves it out, as it leaves out
 ``org-admin``, so no row of the golden file changed.
 
+P-1b (task 3922) added the pack ``mail-tasks`` of two tools. It follows
+``projects``, so :func:`_allowed` holds it. Each row whose loader offer held
+the Projects packs gained ``mail-tasks`` in ``offered``, in BOTH columns. No
+other field of a row changed.
+
 P-1c (task 3923) added the dark pack ``calendar-connections`` of one tool,
 with no surface and the owner ``org-admin``. :func:`_allowed` leaves it out
 for the same reason, so no row of the golden file changed.

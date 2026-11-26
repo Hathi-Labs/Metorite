@@ -418,6 +418,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                            "list my calendar connections"),
     "my_tasks_suggest_title": ("improve the title of this task", "suggest a title for this task"),
     "my_tasks_enrich": ("fill in the details of this task", "enrich this task"),
+    # P-1b (task 3922): a task from a mail, or from a reply that the member sent.
+    "my_tasks_draft_from_mail": ("make a task from this email", "draft a task from my reply"),
+    "my_tasks_capture_from_mail": ("turn this email into a task",
+                                   "add this email to my tasks"),
 }
 
 #: Known gaps, kept out of the table on purpose. A bare "calendar" or "project"
