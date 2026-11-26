@@ -123,6 +123,30 @@ def _finish(mins: int, start: date | None) -> dict[str, Any]:
     return {"mins": mins, "working_days": days, "date": when}
 
 
+def _finish_with_gaps(finish: dict[str, Any], slices: int, guessed: int) -> dict[str, Any]:
+    """The finish, said as it is when slices have no estimate (task 2473).
+
+    A slice with no estimate counts for the review wait only, so a plan of
+    slices with none adds up to a short, false date. With none estimated, the
+    finish is unknown: no length, no date, and the count. With some, the date
+    stays and says how many slices it guessed. A plan with every estimate is
+    unchanged, key for key.
+    """
+    if not guessed:
+        return finish
+    if guessed >= slices:
+        return {
+            "mins": None, "working_days": None, "date": None, "unknown": True,
+            "guessed": guessed,
+            "words": f"The finish is unknown: {_plain(guessed, 'have no estimate')}, "
+                     "so no length can be added up.",
+        }
+    return {
+        **finish, "guessed": guessed,
+        "words": f"{_plain(guessed, 'have no estimate')}, so this finish guesses their length.",
+    }
+
+
 def _plain(count: int, noun_phrase: str) -> str:
     if count == 1:
         return f"1 task {noun_phrase.replace('have', 'has', 1)}"
@@ -414,7 +438,8 @@ def analyze_plan(
         return result
     result.slack, result.critical_path, length = _critical(g, order)
     result.next_slice = _next_slice(g, result.ready, result.slack)
-    result.finish = _finish(length, start)
+    result.finish = _finish_with_gaps(_finish(length, start), len(g.slices),
+                                      result.missing["no_estimate"])
     return result
 
 

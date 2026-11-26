@@ -276,6 +276,7 @@ class OpsStub:
             ("DELETE", f"/projects/my/areas/{_ID}", lambda i, _q, _b: self.remove_area(i)),
             ("GET", "/projects/assignees", lambda _i, q, _b: self.assignees(q)),
             ("GET", "/projects/people/names", lambda _i, q, _b: self.people_names(q)),
+            ("GET", "/projects/people/reach", lambda _i, q, _b: self.people_reach(q)),
             ("POST", "/projects/tasks", lambda _i, _q, b: self.create_task(b)),
             ("POST", "/projects/tasks/bulk", lambda _i, _q, b: self.bulk(b)),
             ("POST", "/projects/nodes", lambda _i, _q, b: self.create_node(b)),
@@ -576,6 +577,10 @@ class OpsStub:
         return rows
 
     def list_tasks(self, q: dict[str, str]) -> dict[str, Any]:
+        # H-254: the subtask count reads `parent_task_id` + `include_descendants` once.
+        # The dataset has no subtasks (its `/relations` answers none), so answer none.
+        if q.get("include_descendants") == "true":
+            return {"rows": [], "total": 0}
         rows = self._matching(q)
         size = max(1, min(50, int(q.get("page_size") or 25)))
         page = max(1, int(q.get("page") or 1))
@@ -802,6 +807,11 @@ class OpsStub:
     def people_names(self, q: dict[str, str]) -> dict[str, Any]:
         wanted = {e.strip().lower() for e in (q.get("emails") or "").split(",") if e.strip()}
         return {"names": {m.email: m.name for m in self.dataset.members if m.email in wanted}}
+
+    def people_reach(self, q: dict[str, str]) -> dict[str, Any]:
+        """Task 3636: every member of the dataset is active with a login, so none
+        of the asked addresses is listed as one that cannot open a task."""
+        return {"not_reachable": []}
 
     # ── tasks: writes ───────────────────────────────────────────────────────
 

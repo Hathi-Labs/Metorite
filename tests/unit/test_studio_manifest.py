@@ -291,7 +291,8 @@ def test_bad_uses_grammar():
 
 
 @pytest.mark.parametrize(
-    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000"]
+    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000",
+             "mcp:github.get_issue"]
 )
 def test_other_uses_forms_are_valid(uses):
     d = copy.deepcopy(EXAMPLE)
@@ -1295,7 +1296,7 @@ def test_the_example_names_a_registry_connection():
 
 @pytest.mark.parametrize("names", [
     [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
-    ["mcp:" + "a" * 50], ["a" * 48],
+    ["mcp:" + "a" * 50], ["a" * 48], ["api:zoho_books"],
 ])
 def test_a_connection_of_the_grammar_passes(names):
     assert validate_manifest(_with_connections(names)) == []
@@ -1304,6 +1305,8 @@ def test_a_connection_of_the_grammar_passes(names):
 @pytest.mark.parametrize("name", [
     "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
     "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+    # API-5: an API connection is api:<template id>, one name only.
+    "api:", "api:Zoho", "api:zoho-books", "api:zoho:books", "API:zoho_books",
 ])
 def test_a_bad_connection_name_is_refused_with_its_path(name):
     e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
@@ -1623,6 +1626,55 @@ def test_every_first_party_template_still_validates():
     assert files
     for f in files:
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+# --- record, the tabs of the record page (STU-AF5b) ---
+
+
+def _rec_doc(rec) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["record"] = rec
+    return d
+
+
+def test_record_is_optional_and_the_example_stays_valid():
+    assert all("record" not in o for o in EXAMPLE["objects"])
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).objects[0].record is None
+
+
+def test_valid_record_tabs_keep_their_order():
+    d = _rec_doc({"tabs": ["files", "details"]})
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).objects[0].record.tabs == ["files", "details"]
+
+
+def test_record_tabs_cap_is_six():
+    from acb_common.studio_manifest import MAX_RECORD_TABS
+
+    assert MAX_RECORD_TABS == 6
+    assert _at(_rec_doc({"tabs": ["details", "related", "files"]}), "$.objects[0].record.tabs") == []
+    assert _at(_rec_doc({"tabs": ["details"] * 6}), "$.objects[0].record.tabs[1]")  # duplicates only
+    seven = _at(_rec_doc({"tabs": ["details"] * 7}), "$.objects[0].record.tabs")
+    assert len(seven) == 1 and "at most 6" in seven[0].message
+
+
+def test_empty_record_tabs_are_refused():
+    assert _at(_rec_doc({"tabs": []}), "$.objects[0].record.tabs")
+
+
+def test_duplicate_record_tab_is_refused():
+    one(_rec_doc({"tabs": ["details", "files", "details"]}), "$.objects[0].record.tabs[2]",
+        contains="used twice")
+
+
+def test_unknown_record_tab_is_refused():
+    assert _at(_rec_doc({"tabs": ["activity"]}), "$.objects[0].record.tabs[0]")
+
+
+def test_record_refuses_a_colour_key_and_an_unknown_key():
+    one(_rec_doc({"tabs": ["details"], "color": "red"}), "$.objects[0].record.color", contains="style")
+    assert _at(_rec_doc({"tabs": ["details"], "lists": 4}), "$.objects[0].record.lists")
 
 
 # ── Page presets (STU-LY-0, specs/studio_layouts.md section 6) ──────────────────────────────

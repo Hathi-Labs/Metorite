@@ -72,7 +72,7 @@ STUDIO_VERSION = 1
 
 BLOCKS: tuple[str, ...] = (
     "table", "form", "detail", "board", "chart", "stat", "calendar",
-    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+    "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
 )  # fmt: skip
 
 #: The five record verbs of an object. ``studio_tools.complete_record_actions``
@@ -161,25 +161,37 @@ _DATA_KEYS = frozenset({"set", "where", "when", "args"})
 _NAME = NAME_PATTERN
 _DASHED = r"[a-z][a-z0-9_-]{0,47}"
 _OPS = "|".join(OBJECT_OPS)
+
+#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
+#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
+#: so ``test_package_host_resolve.py`` holds the two equal.
+MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
+#: STU-B1b-1. The name of one MCP tool in ``mcp:<server>.<tool>``. MCP lets a
+#: tool name hold letters of both cases, digits, ``_`` and ``-``. This grammar
+#: refuses a dot (the dot ends the server key), a colon, a slash, a space and
+#: each character outside ASCII. A name is at most 64 characters, the cap of a
+#: model tool name. A tool whose name this refuses gives no catalog row.
+MCP_TOOL_NAME = r"[A-Za-z0-9_][A-Za-z0-9_-]{0,63}"
+
 # `fullmatch` everywhere: Python `$` also matches before a final newline.
 _USES_RE = re.compile(
     rf"(?:object:(?P<obj>{_NAME})\.(?P<op>{_OPS})"
     rf"|integration:(?P<integ>{_NAME}(?:\.{_NAME})?)"
     rf"|workflow:(?P<wf>{UUID_PATTERN})"
     rf"|logic:(?P<logic>{_NAME})"
+    rf"|mcp:(?P<mcp_server>{MCP_SERVER_NAME})\.(?P<mcp_tool>{MCP_TOOL_NAME})"
     rf"|(?P<app>{APP_ID_PATTERN})\.(?P<appop>{OP_PATTERN}))"
 )
 
 #: STU-I1a. The most connections that one package names.
 MAX_CONNECTIONS = 32
-#: STU-I1a. The name of one MCP server of the registry. It equals ``NAME_RE``
-#: of ``gateway/connections/mcp.py``. This package cannot import the gateway,
-#: so ``test_package_host_resolve.py`` holds the two equal.
-MCP_SERVER_NAME = r"[a-z0-9][a-z0-9-]{0,48}[a-z0-9]"
 #: STU-I1a. The grammar of one name of ``connections``: an MCP server of the
 #: registry (``mcp:<server>``), or a provider id such as ``zoho``. I1 checks
 #: the grammar only. IN-11 adds the check that the connector list holds it.
-CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|{_NAME}")
+#: API-5 adds an API connection of a template (``api:<template>``), such as
+#: ``api:zoho_books`` (``api_connections.md`` §2.2). The connector list holds
+#: that id, and each id of the list matches this grammar.
+CONNECTION_NAME_RE = re.compile(rf"mcp:{MCP_SERVER_NAME}|api:{_NAME}|{_NAME}")
 #: STU-I9a. The two whose-account values of a connection need.
 CONNECTION_AS = ("org", "member")
 #: STU-I9a. The most scopes, and the longest scope, of one connection need.
@@ -219,19 +231,23 @@ class UsesRef:
     """The parts of one ``uses`` value of the A2 grammar (STU-B2a).
 
     ``source`` is ``object``, ``manifest`` (an ``<app>.<op>`` door op),
-    ``integration``, ``workflow`` or ``logic`` (STU-B4a), the source names of
-    the B1 catalog. ``logic`` is a first-party logic module: ``logic`` holds
-    its name.
+    ``integration``, ``workflow``, ``logic`` (STU-B4a) or ``mcp``
+    (STU-B1b-1), the source names of the B1 catalog. ``logic`` is a
+    first-party logic module: ``logic`` holds its name. ``mcp`` is one tool of
+    an MCP server of the org: ``server`` holds the registry key of the server,
+    and ``tool`` holds the tool name.
     ``object`` and ``op`` are set for an ``object:`` value. ``app`` and
     ``op`` are set for a door op (STU-B2b-2b): ``op`` then holds the door op
     name of that app. An integration and a workflow set none of them.
     """
 
-    source: Literal["object", "manifest", "integration", "workflow", "logic"]
+    source: Literal["object", "manifest", "integration", "workflow", "logic", "mcp"]
     object: str | None = None
     op: str | None = None
     app: str | None = None
     logic: str | None = None
+    server: str | None = None
+    tool: str | None = None
 
 
 def parse_uses(uses: object) -> UsesRef | None:
@@ -249,6 +265,8 @@ def parse_uses(uses: object) -> UsesRef | None:
         return UsesRef(source="workflow")
     if m.group("logic"):
         return UsesRef(source="logic", logic=m.group("logic"))
+    if m.group("mcp_server"):
+        return UsesRef(source="mcp", server=m.group("mcp_server"), tool=m.group("mcp_tool"))
     return UsesRef(source="manifest", app=m.group("app"), op=m.group("appop"))
 
 
@@ -299,6 +317,24 @@ class FieldDef(_Strict):
     #: C13. A lines relation: the field of the object `to` that names this one.
     #: `studio_fields.lines_problem` holds the rule of the object it names.
     lines: str | None = None
+    #: C15a. The parts of an `autonumber`: the text before the number, the pad
+    #: width and `never` or `day`. `studio_fields._check_extras` holds the rules.
+    prefix: str | None = None
+    pad: int | None = None
+    reset: str | None = None
+
+
+#: The cap of the tabs of a record page (STU-AF5b, §5.5). `lib/studio/manifest.ts` holds the same
+#: number as `MAX_RECORD_TABS`, and `recordCaps.test.ts` checks it against the schema file.
+MAX_RECORD_TABS = 6
+
+
+class RecordDef(_Strict):
+    #: The tab ids, in order. `_check_record` refuses a duplicate. Without `record`, rule 3 of
+    #: §5.5 gives the default tabs.
+    tabs: list[Literal["details", "lines", "related", "files"]] = Field(
+        min_length=1, max_length=MAX_RECORD_TABS
+    )
 
 
 class ObjectDef(_Strict):
@@ -312,6 +348,8 @@ class ObjectDef(_Strict):
     #: C8a. The grant of each role on this object. None means an open object. The
     #: one parser is `studio_access.parse_access`, and `_check_access` calls it.
     access: list[dict[str, Any]] | None = None
+    #: The tabs of the record page of this object (STU-AF5b). None means the defaults.
+    record: RecordDef | None = None
 
 
 class ActionDef(_Strict):
@@ -336,7 +374,7 @@ class ViewDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
     block: Literal[
         "table", "form", "detail", "board", "chart", "stat", "calendar",
-        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown",
+        "timeline", "mindMap", "processFlow", "checklist", "map", "markdown", "tree",
     ]  # fmt: skip
     title: str | None = None
     source: Source | None = None
@@ -838,7 +876,8 @@ def _check_uses(
         return _err(
             path,
             "Not an action id. Use object:<name>.<op>, <app>.<op>, "
-            f"integration:<action>, workflow:<uuid> or logic:<name>.{_got(a.uses)}",
+            "integration:<action>, workflow:<uuid>, logic:<name> "
+            f"or mcp:<server>.<tool>.{_got(a.uses)}",
         )
     if m.group("obj"):
         if m.group("obj") not in objects:
@@ -1064,6 +1103,8 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
                 # never into a form of the app. The narrow rule, because a
                 # field such as `token_number` holds member data.
                 out.append(_err(f"{base}[{fi}].key", SECRET_FIELD + _got(f.key)))
+        if o.record is not None:
+            _dupes(list(o.record.tabs), f"$.objects[{oi}].record.tabs", "record tab", out)
         _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
     _check_lines(m, out)
     _check_access(m, out)

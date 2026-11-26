@@ -26,7 +26,8 @@ from orchestrator import executor as ex
 STREAM_LAPS = (
     "start", "access", "early_start", "load", "authorizer", "build", "packs",
     "crm_mirror", "inject", "crm_facts", "mcp", "workspace", "bind",
-    "early_reads", "email_context", "constraints", "briefing", "rehydrate", "skills",
+    "early_reads", "email_context", "constraints", "focus", "briefing", "rehydrate",
+    "skills",
     "tier_wait", "model_prep", "session_load", "compose",
 )
 

@@ -166,6 +166,17 @@ def _image(value: Any, box: tuple[int, int]) -> tuple[str, int, int] | None:
     return src, max(1, round(width * scale)), max(1, round(height * scale))
 
 
+def hosted_image_src(value: Any) -> str | None:
+    """The address of an image that the renderer draws, or ``None``.
+
+    The same shape check as :func:`_image`: a hosted address of SG-1, and a
+    ``width`` and a ``height`` from 1 to 480. The SG-3a writer
+    (``signature_settings.py``) stores an image only when this passes, and it
+    adds the host and the tenant, because the renderer stays pure."""
+    image = _image(value, _PHOTO_BOX)
+    return image[0] if image else None
+
+
 def _links(value: Any) -> list[tuple[str, str]]:
     """Up to four ``(label, https url)`` pairs. A link with no https address
     goes. A link with no label shows its address."""

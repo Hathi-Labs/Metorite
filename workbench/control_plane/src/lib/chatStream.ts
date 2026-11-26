@@ -226,6 +226,8 @@ export function withCustomEvent(m: ChatMessage, name: string, value: unknown): C
   // HRD-6: the line of a slow step is live only. It is never kept on the
   // message, so no save posts it as a custom event.
   if (name === PROGRESS_EVENT) return m;
+  // CS-3a: the phase of the run is live only too.
+  if (name === RUN_PHASE_EVENT) return m;
   const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
 }
@@ -236,6 +238,14 @@ export function withCustomEvent(m: ChatMessage, name: string, value: unknown): C
  * the running step. The replay ignores it, and no save keeps it.
  */
 export const PROGRESS_EVENT = "progress";
+
+/**
+ * CS-3a (`chat_failure_modes.md` §6 row CS-3): the CUSTOM event of the
+ * server's phase of a run (`acb_skills.run_phase`). The BFF route forwards
+ * it (CS-3b, task 3462), and no loop keeps one on the message. The hook
+ * turns it into fixed words (`phaseWordOf`).
+ */
+export const RUN_PHASE_EVENT = "run_phase";
 
 /** The longest line the chat draws. The server sends one line. */
 const NOTICE_MAX = 300;
@@ -288,6 +298,14 @@ export interface StreamFold {
    *  as `content` at run end if no further answer text followed the last tool
    *  call.  -1 = nothing to un-fold. */
   foldedAnswerIdx: number;
+}
+
+/** CSY-10: the `mcp` stamp of a `tool_start`, or undefined when it is not two strings. */
+function mcpOfEvent(raw: unknown): ToolEvent["mcp"] {
+  const r = raw as { server?: unknown; label?: unknown } | null | undefined;
+  return r && typeof r.server === "string" && typeof r.label === "string"
+    ? { server: r.server, label: r.label }
+    : undefined;
 }
 
 /**
@@ -404,6 +422,8 @@ export function applyStreamEvent(
         // and fall back to the reasoning fold.
         ...(hasSegments ? { segmentCutoff: m.segments!.length } : {}),
         ...(isDelegate ? { subAgentActive: true } : {}),
+        // CSY-10: the connected server of an MCP tool, so its row reads "<label>: <tool>".
+        ...(mcpOfEvent(evt.mcp) ? { mcp: mcpOfEvent(evt.mcp) } : {}),
       };
       return {
         ...m,

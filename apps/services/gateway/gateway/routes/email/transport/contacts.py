@@ -26,7 +26,13 @@ from acb_auth import UserContext, get_current_user
 from acb_common import name_match
 from fastapi import Depends, HTTPException, Query
 from gateway.routes.email.account_ref import resolve_account_filter
-from gateway.routes.email.core import _account_scope, _log, _tenant_session, router
+from gateway.routes.email.core import (
+    _account_scope,
+    _log,
+    _owned_accounts_sql,
+    _tenant_session,
+    router,
+)
 from gateway.routes.email.mailbox_access import (
     mailbox_ids_sql,
     mailbox_predicate,
@@ -868,6 +874,12 @@ async def suggest_contacts(
             if len(out) < min(FUZZY_BELOW, limit) and len(needle) >= 3:
                 out += await _fuzzy_org_contacts(
                     db, params, {s.email for s in out})
+            if len(out) < min(FUZZY_BELOW, limit) and len(needle) >= 3:
+                # CT-1: the people of the member's own mail, by the one
+                # name matcher. A near hit keeps its true source.
+                out += await mail_people(
+                    db, params["uid"], needle, {s.email for s in out},
+                    account_id=account_id, dom_re=dom_re)
             return out[:limit]
     except Exception as exc:  # noqa: BLE001 — typeahead is best-effort
         _log.warning("email.contact_suggest_failed", error=str(exc)[:160])
@@ -879,3 +891,181 @@ def _source(row: Any) -> str:
     the weakest, so a fault never makes a stranger look like a colleague."""
     src = getattr(row, "source", None)
     return src if src in ("org", "sent", "seen") else "seen"
+
+
+# ── Near senders (HRD-18b) ────────────────────────────────────────────────────
+
+#: The newest mails whose senders the near lookup reads.
+NEAR_MAIL_SCAN = 5000
+
+
+def _sender_rows_sql(account_id: str | None, params: dict[str, Any]) -> str:
+    """The senders of the mailboxes that ``:uid`` may read, newest first.
+
+    The mailboxes are the ones of the search: All inboxes, or the one
+    mailbox that *account_id* names (``_owned_accounts_sql``, EM-T8g-1). The
+    senders come from the newest :data:`NEAR_MAIL_SCAN` mails of them and
+    from the sender rollup. The member's own mailbox addresses leave the
+    list. The mailbox of another member never gives a row.
+    """
+    accounts = _owned_accounts_sql(account_id, params, pooled_only=True, level="read")
+    return f"""
+        WITH accts AS ({accounts}),
+        recent AS (
+            SELECT em.from_address AS f, em.received_at AS at
+              FROM email_messages em
+             WHERE em.account_id IN (SELECT id FROM accts)
+             ORDER BY em.received_at DESC NULLS LAST
+             LIMIT :scan
+        ),
+        cands (email, name, at) AS (
+            SELECT LOWER(f->>'email'), NULLIF(TRIM(f->>'name'), ''), at FROM recent
+            UNION ALL
+            SELECT LOWER(es.email), NULLIF(TRIM(es.name), ''), es.updated_at
+              FROM email_senders es
+             WHERE es.account_id IN (SELECT id FROM accts)
+        )
+        SELECT c.email, MAX(c.name) AS name
+          FROM cands c
+         WHERE c.email IS NOT NULL AND POSITION('@' IN c.email) > 1
+           AND c.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
+                                WHERE id IN (SELECT id FROM accts))
+         GROUP BY c.email
+         ORDER BY MAX(c.at) DESC NULLS LAST, c.email
+         LIMIT :cap
+    """
+
+
+async def sender_rows(db: Any, uid: str, account_id: str | None = None) -> list[tuple[str, str]]:
+    """``(name, address)`` of each sender that the member may read, in the
+    session *db* (HRD-18b). The name is ``""`` when no mail gave one."""
+    params: dict[str, Any] = {
+        "uid": uid, "scan": NEAR_MAIL_SCAN, "cap": name_match.NEAR_VOCABULARY,
+    }
+    rows = (await db.execute(text(_sender_rows_sql(account_id, params)), params)).fetchall()
+    return [(str(r.name or ""), str(r.email)) for r in rows]
+
+
+def sender_names(rows: list[tuple[str, str]]) -> list[str]:
+    """The names that a near lookup scores for each sender: the name it signs
+    with, then its address. "sharat@neuropeek.com" gives the words "sharat",
+    "neuropeek" and "com", so a near domain finds its sender."""
+    return [value for name, address in rows for value in (name, address) if value]
+
+
+async def near_senders(
+    user: UserContext, words: list[str], k: int,
+) -> dict[str, list[name_match.NearName]]:
+    """The senders near each of *words*, for the company search (HRD-18b).
+
+    No route: ``retrieval/sources.py`` calls it for a member who holds
+    ``feature:email``. The member comes from the session, and the mailboxes
+    from the read level of the search (``find_engine.md`` §6). The names are
+    scored with ``acb_common.name_match``, off the event loop.
+    """
+    async with _tenant_session() as db:
+        rows = await sender_rows(db, user.email or "anonymous")
+    return await asyncio.to_thread(
+        name_match.near_lookup, words, sender_names(rows), k,
+        deadline=name_match.scoring_deadline())
+
+
+# ── People of the member's mail (task 3602, CT-1) ────────────────────────────
+
+#: The newest sent mails whose recipients the mail pass reads. A 2,000-mail
+#: sent folder fits, and the read costs about 130 ms on a 37,000-mail mailbox.
+MAIL_PEOPLE_SCAN = 3000
+
+
+def _sent_rows_sql(account_id: str | None, params: dict[str, Any]) -> str:
+    """The people that ``:uid`` wrote to, newest sent mails first.
+
+    The mailboxes are the ones that ``:uid`` may read
+    (:func:`_owned_accounts_sql`, level ``read``), so the mailbox of another
+    member never gives a row. The member's own addresses leave the list."""
+    accounts = _owned_accounts_sql(account_id, params, level="read")
+    return f"""
+        WITH accts AS ({accounts}),
+        recent AS (
+            SELECT COALESCE(em.to_addresses, '[]'::jsonb)
+                   || COALESCE(em.cc_addresses, '[]'::jsonb) AS rcpt,
+                   em.received_at AS at
+              FROM email_messages em
+             WHERE em.account_id IN (SELECT id FROM accts)
+               AND LOWER(COALESCE(em.folder, '')) = 'sent'
+             ORDER BY em.received_at DESC NULLS LAST
+             LIMIT :scan
+        ),
+        cands (email, name, at) AS (
+            SELECT LOWER(r->>'email'), NULLIF(TRIM(r->>'name'), ''), recent.at
+              FROM recent CROSS JOIN LATERAL jsonb_array_elements(recent.rcpt) AS r
+        )
+        SELECT c.email, MAX(c.name) AS name
+          FROM cands c
+         WHERE c.email IS NOT NULL AND POSITION('@' IN c.email) > 1
+           AND c.email <> LOWER(:uid)
+           AND c.email NOT IN (SELECT LOWER(email_address) FROM email_accounts
+                                WHERE id IN (SELECT id FROM accts))
+         GROUP BY c.email
+         ORDER BY MAX(c.at) DESC NULLS LAST, c.email
+         LIMIT :cap
+    """
+
+
+def _closest_mail(needle: str, sent: list[tuple[str, str]],
+                  seen: list[tuple[str, str]], have: set[str],
+                  dom_re: str) -> list[ContactSuggestion]:
+    """The people of the mail that the ONE name matcher calls near *needle*.
+
+    Each person scores by the whole phrase against the whole name, and
+    against the local part of the address. Nearest first. A person that the
+    member wrote to is ``sent``, and any other sender is ``seen``. Pure, so
+    it runs in a thread."""
+    sent_set = {e.strip().lower() for _n, e in sent}
+    names: dict[str, list[str]] = {}
+    for rows in (sent, seen):
+        for name, email in rows:
+            names.setdefault(email.strip().lower(), []).append(name)
+    best: dict[str, tuple[float, str, str]] = {}
+    for email, found in names.items():
+        if email in have:
+            continue
+        if dom_re and not re.search(dom_re, email.split("@", 1)[-1]):
+            continue
+        score = max([name_match.name_score(needle, n) for n in found]
+                    + [name_match.name_score(needle, email.split("@", 1)[0])])
+        if score >= name_match.NEAR_SCORE:
+            shown = max(found, key=lambda n: (name_match.name_score(needle, n), n))
+            best[email] = (score, shown, "sent" if email in sent_set else "seen")
+    ranked = sorted(best.items(), key=lambda kv: (-kv[1][0], kv[1][2] != "sent", kv[0]))
+    return [ContactSuggestion(email=email, name=name, source=source, match="closest")
+            for email, (_score, name, source) in ranked[:FUZZY_LIMIT]]
+
+
+async def mail_people(
+    db: Any, uid: str, needle: str, have: set[str] | None = None, *,
+    account_id: str | None = None, dom_re: str = "",
+) -> list[ContactSuggestion]:
+    """The people near *needle* in the mail of the member *uid* (CT-1).
+
+    The one reader of the mail tier. :func:`suggest_contacts` and the
+    ``resolve-person`` route both call it. It reads the recipients of the
+    newest :data:`MAIL_PEOPLE_SCAN` sent mails, and the known senders
+    (:func:`sender_rows`), in the mailboxes that *uid* may read. It scores
+    them off the event loop. Each hit is ``closest``, and ``org`` never
+    appears. Best-effort: a fault logs and answers [], like the typeahead."""
+    needle = (needle or "").strip().lower()
+    if len(needle) < 3:
+        return []
+    try:
+        async with db.begin_nested():
+            params: dict[str, Any] = {
+                "uid": uid, "scan": MAIL_PEOPLE_SCAN, "cap": name_match.NEAR_VOCABULARY}
+            sent = [(str(r.name or ""), str(r.email)) for r in (await db.execute(
+                text(_sent_rows_sql(account_id, params)), params)).fetchall()]
+            seen = await sender_rows(db, uid, account_id)
+    except Exception as exc:
+        _log.warning("email.contact_mail_people_failed", error=str(exc)[:160])
+        return []
+    return await asyncio.to_thread(
+        _closest_mail, needle, sent, seen, have or set(), dom_re)
