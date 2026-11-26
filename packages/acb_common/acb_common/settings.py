@@ -1354,6 +1354,19 @@ class Settings(BaseSettings):
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""
+    # SW-45 (agent_coordination.md §3.10.1): the scope of an agent claim, for
+    # each organization. `org=mode` pairs with a comma between them, for
+    # example `<org id>=warn`. `*` names each organization, and an exact id
+    # wins over `*`. A mode is `off`, `warn` or `refuse`. Empty, an unknown
+    # mode and an unknown organization read as `off`, the default. Off, an
+    # agent claims any task that it sees, and `my_work` has no `own_app_free`
+    # rows. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one
+    # reader is `acb_auth.agent_oauth.claim_scope_mode`. The policy store does
+    # not read it (`agent_policies.FLAGS_NOT_YET`) until SW-46 wires the key
+    # `claim_scope_mode`. 🔴 A change on a box is gate `enforcement-flip`.
+    # Fences: tests/unit/test_agent_claim_scope_r8.py and
+    # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
+    agent_claim_scope_modes: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
@@ -1424,6 +1437,19 @@ class Settings(BaseSettings):
     # a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_waiting_seam_r8.py.
     waiting_orgs: str = ""
+
+    # ── The app roots of the app-owner map (WS-MCP SW-44) ───────────────────
+    #
+    # `org_id=root_project_id` pairs with a comma between pairs. A root is the
+    # project whose direct children are the apps of the org, for example
+    # "Metorite Application". An org may name more than one root. Empty means
+    # off, the default: the Needs attention kind `no_lead` ("App project with
+    # no lead") lists nothing. A pair with no `=`, or a root that is not a
+    # UUID, names nothing. The one reader is
+    # `gateway.routes.projects.needs_attention.app_roots_of`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_needs_attention_r8.py.
+    app_owner_root_orgs: str = ""
 
     # ── Agents: the member view in Projects (WS-AGA AGA-6) ──────────────────
     #
@@ -1602,6 +1628,20 @@ class Settings(BaseSettings):
     # what the chat can do and spends model tokens.
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
+
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
 
     # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
     #
@@ -2566,6 +2606,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
@@ -3073,6 +3120,14 @@ class Settings(BaseSettings):
     # (`docs/flag_reload.md`). `acb_auth.agent_oauth.image_upload_allowed` is
     # the one reader. 🔴 A change on a box is gate `enforcement-flip`.
     mcp_image_upload_orgs: str = ""
+    # SW-27c1 (agent_coordination.md SW-27, task 3938): the organizations where
+    # an outside agent may mark a number of a project sequence `used` or
+    # `released` (`mark_number`). The same shape as `agent_access_orgs`: ids
+    # with a comma between them, or `*`. Empty, the default, keeps it dark:
+    # the edge hides the tool, and the mark route answers 404 for a signed
+    # agent. `acb_auth.agent_oauth.sequence_marks_allowed` is the one reader.
+    # 🔴 A change on a box is gate `enforcement-flip`.
+    sequence_marks_orgs: str = ""
     # PB-2 (D186, `orchestration_playbook.md` §5, §7): the organizations where
     # the edge lists the playbook prompts (`set_up_agent_team`, `plan_slices`,
     # `write_brief`, `review_my_fleet`, `run_retro`). The same shape as

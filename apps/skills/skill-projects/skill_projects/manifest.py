@@ -284,6 +284,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     # SW-68a: the plan order of the member's tasks. The MCP `my_work` reads it.
     Route("GET", "/projects/plan/order", "my_work", "A"),
+    # SW-45: the free tasks of the member's own apps. The MCP `my_work` reads
+    # it. The chat `my_work` does not read it yet, so its tool is PLANNED.
+    Route("GET", "/projects/my/own-app-free", "own_app_free", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
     Route(
         "POST",
@@ -541,6 +544,14 @@ MANIFEST: tuple[Route, ...] = (
         "SW-27b (task 3893): the MCP door only. An outside agent reserves a number "
         "through reserve_number. The chat has no need to reserve a number.",
     ),
+    Route(
+        "POST",
+        "/projects/reservations/{reservation_id}/mark",
+        "",
+        "X",
+        "SW-27c1 (task 3938): the MCP door only. The agent of the run marks its "
+        "number through mark_number. A person's release comes with SW-27c3.",
+    ),
     # ── agent_runs.py — agent runs on a task (WS-55 EA-12a, EA12-9) ──────
     # The routes serve an OUTSIDE agent over MCP (external_agent_access.md
     # §12.1). The in-product chat gets them in EA-12e.
@@ -653,6 +664,9 @@ PLANNED: dict[str, str] = {
     "assignable_members": "Metorite task 2216, chat parity for the assignable member list",
     # MCP-G19a: the route is built. The chat tool waits on Metorite task 2223.
     "board_stats": "Metorite task 2223, chat parity for the board count",
+    # SW-45 (task 1878): the route is built, and the MCP `my_work` reads it.
+    # The chat `my_work` does not show the group yet (agent_coordination.md SW-45).
+    "own_app_free": "WS-MCP SW-45 follow-up, chat parity for the own_app_free group of my_work",
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).

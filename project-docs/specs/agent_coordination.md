@@ -6,7 +6,7 @@
 
 **SW-34b (the read-only door `/mcp/readonly`) is built, 2026-11-07.**
 
-**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is built, 2026-11-25. SW-27c1, SW-27c3 and SW-27d are open.**
+**SW-27a (the project sequences: migration 477 and the reserve route) is merged, 2026-11-22 (`14972af16`). SW-27b (the MCP tool `reserve_number`, task 3893) is merged, 2026-11-24 (`eca634ead`). SW-27c2 (a merge marks the numbers used, task 3894) is merged, 2026-11-25 (`c61dc98d6`). SW-27c1 (`mark_number`, task 3938) is built and dark, 2026-11-25. SW-27c3 and SW-27d are open.**
 
 **SW-23 (a task carries a Check) is built and dark, 2026-11-11.**
 
@@ -28,7 +28,9 @@
 
 **P10 (§3.11, §5.11, D186) was planned on 2026-11-06. The backend of SW-94 (the policy store) is built and dark, 2026-11-08. Its Settings tab is not built. No other P10 slice is built.** The know-how for other organizations is in `orchestration_playbook.md`.
 
-**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
+**SW-45 (own apps in `my_work` and the claim scope, task 1878) is built and dark behind `AGENT_CLAIM_SCOPE_MODES`, 2026-11-26, branch `sw45-own-apps`. It is not merged yet.**
+
+**P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
 **1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
 
@@ -324,6 +326,11 @@ SW-18 names the project lead as a last-resort reviewer.
   3. A warning leaves a line in the timeline, so the lead sees the claim.
   4. The mode `refuse` can follow after one week of data (Q6).
 - **A task assigned to the member always passes.** Someone chose that member.
+- **Three more passes hold for the session member only** (task 1878, 2026-11-26). Each one applies to `claim_task`, `start_agent_run` and an agent's self-add:
+  1. The member queued an open run on the task for this connection. Only the member start writes a run with `started_by` equal to the member. A run that an agent opened does not count. That covers `claim_task`, `start_agent_run` and `ask_on_task`.
+  2. The task is in the member's own personal project, the root or an Area below it.
+  3. The member created the task.
+- **In mode `refuse`, a hold outside the member's apps answers 403 `outside_apps`.** That covers `claim_task`, `ask_on_task` and an agent's own `start_agent_run`.
 - **The hard gate for a seam is GitHub.** CODEOWNERS on the seam paths makes the seam owner review the change (ONB-7, task 1872, which has no spec yet). The board only routes and warns.
 
 #### 3.10.2 Approvals to the right person (SW-46, SW-48)
@@ -1402,7 +1409,13 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
     5. One MCP tool, `mark_number`, takes `state` `used` or `released`.
     6. Needs attention shows a reserved number whose task is done or cancelled (`filters.task_closed_sql`). It has no flag, and the owner previews it before the merge.
   - **SW-27c2** (task 3894): a merge marks the numbers used. `github_sync.apply_pull_request` is the one write path of the webhook, the poll and the lazy read. It calls `mark_reservations_used` in the transaction of the write, for the tasks whose reference moved INTO `merged`. It runs apart from `github_merge.on_merged`, because that rule skips a task that is already done or that a person runs. **Done when:** a merge marks the task's reserved numbers used, with `used_at`. A close with no merge marks nothing. A number reserved after the merge stays reserved. A released number stays released, and another task's number does not move. A second delivery does not change `used_at`. A task that is already done is still marked. No migration, no flag and no UI. **Scope: an org on the GitHub App.** The token path of TR-1 (`refs.refresh_from_github`) writes the state with its own UPDATE and marks no number. It serves an org with a token row, and every org while `GITHUB_APP_ENABLED` is off. Merge-to-Done (§12) has the same limit. SW-27c3 must not show such a number as a false alarm. The table now has two writers: the reserve route and `github_sync.mark_reservations_used`. The comment of migration 477 names only the first. Fence: `test_sequence_merge_r8.py` (U1 to U6 and U3b, five named mutations) and `test_github_merge_r8.py`. STANDARD, built with Opus, because the seam is shared (`github_integration.md` §12.1).
-  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The MCP tool `mark_number`, and the own-run rule at reserve time. It starts after SW-27c2.
+  - **SW-27c1** (task 3938): decisions 1, 2 and 5. The route `POST /projects/reservations/{reservation_id}/mark` takes `state` `used` or `released`. The MCP tool `mark_number` calls it, and the pair is in `MCP_WRITE_ROUTES`.
+    - Only a signed agent marks, and only the numbers that its own run reserved (`checks.own_run`: the same member, client, connection and session). A person gets 403. A person's release is SW-27c3.
+    - The reserve route checks decision 1 too. A named run must be the caller's own, so a person names no run. This tightens SW-27a.
+    - The same mark twice changes nothing. A number that is already used or released cannot change (409). A released number is burned.
+    - **Dark.** The flag `sequence_marks_orgs` is empty by default. Its one reader is `agent_oauth.sequence_marks_allowed`. Off, the edge hides the tool, and the route answers 404 for a signed agent (`docs/flag_reload.md`).
+    - **Done when:** the own run marks used, and a second mark changes nothing. A released number cannot become used. Another connection, or a number with no run, gets "not yours". A person gets 403. The flag off hides the tool and the route. A number outside the pins, or one that does not exist, is not found. The reserve refuses a run that is not the caller's.
+    - Fence: `test_mcp_edge_reserve_r8.py` (r6, r6b, m1 to m6, four named mutations), `test_project_sequences_r8.py` and `test_mcp_edge_coverage.py`. STANDARD, built with Opus, because it edits `MCP_ROUTES`.
   - **SW-27c3** (task 3939): decisions 2, 4 and 6. The Needs attention kind, and a person's release. Seams: `routes/projects/needs_attention.py`, `needsAttention.ts`, the chat tool `needs_attention`, and `external_agent_access.md` §12.7. SW-26 also plans a kind. It starts after SW-27c1.
   - **SW-27d** (task 3895): the seed of this repo's `migration`, `decision` and `handoff` sequences. A write to a live org, so the owner runs it.
   - `/next-ticket` and `/handoff` call it in SW-19 and SW-19b, not here.
@@ -1537,6 +1550,7 @@ They keep their own gates.
 - **Done when.** No task sits directly in "Metorite Application". Each app and seam project has a lead. A test app project with open tasks and no lead shows the row.
 - **Fence.** `test_needs_attention_r8.py` holds the kind. The board moves are advisory, because no test reads production data (R7).
 - **Risk.** HIGH (a grant write). **Gate.** AGENT-SAFE for the code. OWNER-GATE for the lead writes on production (CLAUDE.md §3a rule 3).
+- **Built (item 4, the code part), 2026-11-07.** The Needs attention kind `no_lead` ("App projects with no lead") is in `needs_attention.py`. It lists a direct child of an app root with open tasks and no lead of its own. Only a caller who passes `authority.may_write_grant` gets the row. Its one act is Open project. `authority.no_lead_sql` holds the lead test. The flag `APP_OWNER_ROOT_ORGS` holds `org_id=root_project_id` pairs, and it is empty by default, so the kind is dark. A SIGHUP reload applies a change. Items 1 to 3 (the board moves and the lead writes) and the flag value stay with the owner.
 
 #### SW-45 · Own apps in `my_work` and `claim_task`
 
@@ -1544,11 +1558,13 @@ They keep their own gates.
 - **Scope.**
   1. Read "own apps" as §3.10.1 says, through `authority.py`. No migration.
   2. `my_work` gains the group `own_app_free` (§3.10.1). Each row carries `app_project`. Assigned rows keep their order.
-  3. In mode `warn`, `claim_task` of an unassigned task outside the member's apps works. It returns a `warning` that names the lead. It writes one timeline line. In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes.
+  3. In mode `warn`, `claim_task` of an unassigned task outside the member's apps works. It returns a `warning` that names the lead. It writes one timeline line. In mode `refuse` it answers 403 `outside_apps`. A task assigned to the member always passes. Three more passes hold for the session member (§3.10.1). The member queued a run, or the task is in the member's personal project, or the member created it.
   4. The flag `AGENT_CLAIM_SCOPE_MODES`, a map from organization to `off`, `warn` or `refuse`, default `off` (`docs/flag_reload.md`).
 - **Done when.** R8: a member with one own app gets that app's free tasks in `own_app_free`. A claim outside it warns in `warn`, gets 403 in `refuse`, and passes in `off`. An assigned task passes in all modes.
 - **Fence.** `test_agent_claim_scope_r8.py` (new). `test_app_ownership_seam.py` (new) fails when a module other than `authority.py` names `pm_projects.lead` or `lead =`. Its allowlist holds the public walk SQL symbol of `authority.py`. An edge test for the warning text.
 - **Risk.** HIGH (a refusal on a write). **Gate.** AGENT-SAFE dark. The flip to `refuse` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-44. Q6.
+- **Status.** BUILT 2026-11-11, dark (task 1878). `AGENT_CLAIM_SCOPE_MODES` is empty by default, so each org reads `off`. Its one reader is `agent_oauth.claim_scope_mode`, and a SIGHUP reload of the gateway applies a change. `authority.own_apps` and `authority.app_owner` read the own apps. `pm_project_grants` holds no access level, so a grant gives a view and never makes an app the member's own. `GET /projects/my/own-app-free` (`routes/projects/claim_scope.py`) gives the free rows. It skips a task with an open blocker and a task of a filed project. The one check, `claim_scope.check_claim_scope`, reads each agent hold of a task that does not hold the session member. Another member, a colleague with a grant or an `agent:<name>` key on the task is not a pass (review, 2026-11-17). Mode `refuse` covers three routes: `claim_task`, an agent `set_assignees` that adds its own member, and an agent `start_agent_run`. The MCP edge gives the claim's refusal text and `warning` on all three. A pinned connection reads no app name and no lead above its pins. The chat `my_work` does not show the group yet.
+- **Fix round, 2026-11-26 (task 1878).** `check_claim_scope` takes the task row. It passes three more cases for the session member only. The first is a run that the member queued on the task for this connection (`claim_scope.queued_by_member`). A run of a colleague, a run that an agent opened and a run that has ended do not count. The second is a task in the member's own personal tree (`authority.in_own_personal_tree`). The third is a task that the member created (`authority.made_by_member`). In mode `refuse`, `ask_on_task` and an agent's own start outside the member's apps answer 403. The policy key `claim_scope_mode` does not read `AGENT_CLAIM_SCOPE_MODES` (`agent_policies.FLAGS_NOT_YET`), so the flag has one reader. The branch is not merged.
 
 #### SW-46 · The lead answers, and a preview goes to the lead first
 
@@ -2411,7 +2427,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
 | SW-43c | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_answer_tools.py tests/unit/test_agent_answer_chat_r8.py tests/unit/test_chat_parity.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/lib/chatPlacement.test.ts` |
 | SW-44 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py` |
-| SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py` (new) `tests/unit/test_agent_label_fence.py` |
+| SW-45 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_claim_scope_r8.py tests/unit/test_agent_claim_scope_edge.py tests/unit/test_app_ownership_seam.py`. SW-7b adds `tests/unit/test_agent_label_fence.py`, which does not exist yet |
 | SW-46 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_agent_approver_r8.py` (new) `tests/unit/test_mcp_edge_prompts.py tests/unit/test_tenant_coverage.py` |
 | SW-47 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py tests/unit/test_needs_attention_r8.py` |
 | SW-48 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_exclusive.py` |

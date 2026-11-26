@@ -68,6 +68,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -1174,12 +1175,28 @@ _SHIM = (
 
 
 def _io_uring_open_to_all() -> bool:
-    """False when the kernel refuses io_uring to everyone (sysctl 1 or 2)."""
+    """False when the kernel refuses io_uring to everyone.
+
+    Task 997. The sysctl (Linux 6.6) says so on a kernel that has it. A WSL
+    kernel has no sysctl and still answers EPERM, so the sysctl alone said "open"
+    and the control failed there. The probe asks the kernel itself.
+    """
     try:
         with open("/proc/sys/kernel/io_uring_disabled", encoding="ascii") as fh:
             return fh.read().strip() == "0"
     except OSError:
-        return True  # the sysctl came with Linux 6.6. Before it, io_uring is open.
+        pass  # the sysctl came with Linux 6.6. Ask the kernel itself.
+    if sys.platform != "linux" or os.uname().machine != "x86_64":
+        return True
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    params = ctypes.create_string_buffer(120)  # struct io_uring_params, all zero
+    fd = libc.syscall(425, 1, params)  # io_uring_setup(1 entry), x86-64 number 425
+    if fd >= 0:
+        os.close(fd)
+        return True
+    return ctypes.get_errno() != errno.EPERM
 
 
 @pytest.fixture

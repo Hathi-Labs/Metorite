@@ -37,6 +37,14 @@ seconds (``handled.handled_run``). The answer gains ``handled``, what the
 apps closed for the member today, and ``handled_ok``, the claim flag. Neither
 is a card or a group, and neither counts against ``limit``.
 
+**Why am I seeing this** (MD-9, LOOP-4b, ``proactive_loop.md`` §7.2 W1 to
+W5). For an org in ``MY_DAY_LEARN_ORGS``, ``feed_answer`` adds ``why_seen`` to
+each card of its answer, after the order and the cut. It is a list of
+sentences that code writes (``feed_why.explain``). A failed state read or a
+failed learned read gives no key, and an org off the list keeps its bytes.
+``feed_cards`` adds no key, so the reach loop and the briefs see none. Fence:
+``tests/unit/test_feed_why.py`` and ``test_my_day_state.py``.
+
 **The read cache** (MD-5a, §8.4) wraps the run: ``shell_feed`` asks
 ``cache.serve``, and only a miss calls ``feed_answer``. ``feed_answer`` hands
 back the answer with its time edges, so the cache knows when the clock changes
@@ -98,7 +106,7 @@ from zoneinfo import ZoneInfo
 from acb_auth import UserContext, get_current_user
 from acb_common.priority import task_cell
 from fastapi import Depends, HTTPException, Request, Response
-from gateway.routes.shell import cache, feed_rank, handled, needs, state
+from gateway.routes.shell import cache, feed_rank, feed_why, handled, needs, state
 from gateway.routes.shell.needs import (
     PER_APP,
     Found,
@@ -1910,6 +1918,13 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
     joined, closed, now, tz = fr.joined, fr.closed, fr.now, fr.tz
     assert closed is not None  # read=True runs the Handled reads
     cards = feed_rank.order(fr.cards, size)
+    # LOOP-4b (W1, W2): only the cards of this answer take `why_seen`, each in
+    # a new dict, so no card of `fr.cards` changes. Only when the org learns
+    # and both reads were sound. So an org off the list keeps its bytes (P5).
+    taught = joined.taught
+    if joined.ok and taught is not None and taught.ok:
+        cards = [{**c, "why_seen": feed_why.explain(c, taught, joined.acted, now)}
+                 for c in cards]
     counts = {g: sum(1 for c in cards if c["group"] == g) for g in feed_rank.GROUPS}
     body = {
         "cards": cards,
