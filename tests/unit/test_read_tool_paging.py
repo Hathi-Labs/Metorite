@@ -308,6 +308,9 @@ ALLOWED: dict[str, str] = {
         "No person is lost: the note of an edited card names at most ten people and says 'and N more'. The write already took every person (EAC-1b).",
     "apps/skills/skill-projects/skill_projects/writes.py::_note_item::flat[:_NOTE_ITEM_MAX - 1]":
         "The member's words, cut as one string. It is not a list of rows (EAC-1b).",
+    "packages/acb_skills/acb_skills/chat_thread_tools.py::edit_chat::' '.join(str(name or '').split())[:TITLE_MAX]":
+        "One string, not rows: the new name of a chat, cut to 120 characters as the dock "
+        "cuts it (SESSION_TITLE_MAX). No row is behind the cut (PAR-11).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -338,8 +341,9 @@ ALLOWED: dict[str, str] = {
 #: says 'and N more' (89). SEM-8 added one: the member's words, cut as one string (91).
 #: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
-#: and cuts one text of the member to 120 characters (94).
-ALLOWED_CEILING = 94
+#: and cuts one text of the member to 120 characters (94). PAR-11 part a added
+#: one: the new name of a chat, cut as the dock cuts it (95).
+ALLOWED_CEILING = 95
 
 
 def _stringy(node: ast.AST) -> bool:

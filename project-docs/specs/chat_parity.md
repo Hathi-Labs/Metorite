@@ -285,6 +285,39 @@ a `TOOL_PACKS` line. Fence: `tests/unit/test_custom_app_tools.py`.
 - A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
   line is the switch.
 
+**PAR-11 part a (task 4012, rung 8) is BUILT, 2026-11-26, dark.** The chat
+reads and changes the member's own chat list. Three tools join the new pack
+`chat-threads` of the owner `org-admin` (`acb_skills/chat_thread_tools.py`).
+`list_chats` reads the chat list or the topics. `edit_chat` renames, archives,
+restores or moves a chat, or makes a private topic. `delete_chat` deletes one
+chat.
+
+Each tool sends the route of the chat list as the verified member of the run,
+through the one sender of `chat_pin_tools`. So each route keeps its gates. A
+delete ALWAYS shows one card. The other writes show one card only in a chat
+that must ask first. A write reads the chat before its card, reads it again
+after the approve, and sends nothing when the chat changed.
+
+The chat ceiling goes from 28 to 19. Six rows are COVERED: the list, the
+rename and archive, the delete, the topic read, the topic create and the move.
+Three rows are EXEMPT of the kind `chat`, because no member click sends them.
+They are the pending asks, the follow-up chips and the model list of the
+picker. Fence: `tests/unit/test_chat_thread_tools.py`.
+
+**PAR-11 part a, the facts for the owner.**
+
+- **Decide: the vote row waits for a ruling on its kind.** The thumbs up or
+  down of an answer (`POST /api/feedback`) is a click of the member, so no kind
+  of §2 fits it. A turn of the chat cannot tell which saved answer the member
+  means. The cards of P-2c are a precedent for a `chat` row.
+- **The chat is narrower than the dock, on purpose.** A shared room and a
+  WhatsApp run get plain words and no request, because each person in a room
+  sees the answer. The chat does not delete the chat that it runs in. A
+  rename sends the title alone, and the model cannot send a preview or a
+  count.
+- A box with `TOOL_PACKS=*` turns the pack on. So the owner's `TOOL_PACKS`
+  line is the switch.
+
 **P-1a (task 3112) is BUILT, 2026-11-22, with no flag.** The chat lists the
 connected calendars, and proposes a clearer title or the missing fields of a
 task. It pays three debt rows: tasks 9 to 7, calendar 5 to 4. §6.4 holds the
@@ -471,9 +504,9 @@ Section 6 sets the order of the waves. Each wave moves its rows from
 `WAVES` lists the board tasks that build it, and a wave with no task fails.
 `P0_CEILING` keeps the debt of each app at P-0. A ceiling above its baseline
 names the task that pays it in its comment, as "Paid by task N", and N is a
-task of the wave of that app. Four ceilings are above P-0 now (calendar,
-chat, settings, studio), and each one names its
-task. The CRM wave P-3 had no task,
+task of the wave of that app. Three ceilings are above P-0 now (calendar,
+settings, studio), and each one names its
+task. PAR-11 part a (task 4012) took the chat below its baseline. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
 **A new UI action needs a chat tool, or a row in the parity table.**
@@ -547,9 +580,9 @@ took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
 60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
-calendar to 2. PAR-9 took apps to 2.
+calendar to 2. PAR-9 took apps to 2. PAR-11 part a took chat to 19.
 
-The total of `DEBT_CEILING` is 263. The "Today" column above does not show
+The total of `DEBT_CEILING` is 254. The "Today" column above does not show
 all of these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -896,6 +929,10 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
 - **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
+- **Rung 8, PAR-11 part a (task 4012).** It pays six chat rows with the dark
+  pack `chat-threads`, and makes three rows chat exemptions. The vote row
+  waits for the owner's ruling on its kind. The demo needs the owner to add
+  `chat-threads` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -1065,6 +1102,8 @@ he approves the merge.
     Custom Apps tools of PAR-9.
     Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
     the act of P-1c.
+    Add `chat-threads` before the demo of rung 8 (task 3908). It holds the
+    three chat list tools of PAR-11 part a.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller

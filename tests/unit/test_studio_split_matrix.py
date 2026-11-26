@@ -54,6 +54,10 @@ P-1c (task 3923) added the dark pack ``calendar-connections`` of one tool,
 with no surface and the owner ``org-admin``. :func:`_allowed` leaves it out
 for the same reason, so no row of the golden file changed.
 
+PAR-11 part a (task 4012) added the dark pack ``chat-threads`` of three tools,
+with no surface and the owner ``org-admin``. :func:`_allowed` leaves it out
+for the same reason, so no row of the golden file changed.
+
 The sticky state of a chat from before the split has its own tests at the end.
 
 The test is pure: no database, no Redis and no model. Run this file as a
@@ -227,9 +231,12 @@ def _allowed(workflows: bool) -> frozenset[str]:
     surface, owner ``org-admin``) is out for the same reason. The dark
     ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
     reason. ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
-    ``org-admin``) is out for the same reason."""
+    ``org-admin``) is out for the same reason. The dark ``chat-threads`` (PAR-11
+    part a, task 4012, three tools, no surface, owner ``org-admin``) is out for the
+    same reason."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
-                                          "people", "studio-apps", "calendar-connections"}
+                                          "people", "studio-apps", "calendar-connections",
+                                          "chat-threads"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

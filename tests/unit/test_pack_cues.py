@@ -96,6 +96,10 @@ WHEN = {
     "calendar-connections": (
         "Load to sync a connected Google or Outlook calendar now, or to show or hide "
         "your tasks in it."),
+    # PAR-11 part a (task 4012): the dark chat-threads pack of the same owner.
+    "chat-threads": (
+        "Load to list, rename, archive, restore, delete or move a chat of your chat list, "
+        "or to make a topic."),
 }
 
 
