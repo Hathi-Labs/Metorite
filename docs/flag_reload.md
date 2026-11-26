@@ -110,8 +110,9 @@ of each run, so a reload applies to the next run. A flip stays OWNER-GATE
 `CHAT_DRAFT_CHOICE_ORGS` turns on the draft choice of the chat (`email_app_master_plan.md`
 §18.13, tasks 3977 and 3978). For each listed org, a trash of a draft in the chat reads
 Drafts first. Each matching draft is a row on the card, and the member picks. The answer
-counts only what left Drafts, and names each matching draft that stays. `*` lists every
-org, and the default is empty. Empty means the card and the answer of before.
+counts only a trash that the mail provider confirmed, and names each matching draft that
+stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
+before.
 
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
 each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).

@@ -15,9 +15,10 @@ that shares the thread of a named draft, or its To set, or its subject
 Drafts folder, so a draft that the member made counts too.
 
 The card never ticks a draft for the member when the pick is not clear: each
-draft row starts unticked (:func:`draft_row`). The answer
-(:func:`result_text`) counts only what left Drafts, from a read after the act,
-and names each matching draft that stays.
+draft row starts unticked (:func:`draft_row`). The answer (:func:`report`)
+counts a message as trashed only when the mailbox provider accepted the trash,
+and a draft only when it also left Drafts in a read after the act. It names
+each message that it counts, and each matching draft that stays.
 
 Spec: ``email_app_master_plan.md`` §18.13.
 Fence: ``tests/unit/test_email_draft_choice.py``.
@@ -25,6 +26,7 @@ Fence: ``tests/unit/test_email_draft_choice.py``.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from acb_skills.card_revise import subject_key
@@ -163,51 +165,181 @@ def provider_line(providers: Iterable[str]) -> str:
     return " ".join(lines)
 
 
+#: The outcomes of one trash write (:func:`settle`).
+CONFIRMED = "confirmed"          # the provider accepted the trash
+NOT_CONFIRMED = "not_confirmed"  # Metorite marked it, the provider did not say yes
+FAILED = "failed"                # the gateway refused, so nothing moved
+LOST = "lost"                    # the answer did not come back
+
+
+def message_label(message: Mapping[str, Any]) -> str:
+    """"From sender: subject" of a named message that is no draft."""
+    sender = " ".join(str(message.get("from") or message.get("from_email") or "").split())
+    subject = " ".join(str(message.get("subject") or "").split()) or "(no subject)"
+    return f"From {sender or '(unknown sender)'}: {subject}"
+
+
+def unique(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """*pairs* of ``(label, hint)``, where a repeat gets "copy 2", "copy 3".
+    So no two rows, and no two lines of a card, read the same."""
+    seen: dict[tuple[str, str], int] = {}
+    out = []
+    for label, hint in pairs:
+        n = seen.get((label, hint), 0) + 1
+        seen[(label, hint)] = n
+        if n > 1:
+            hint = f"{hint} · copy {n}" if hint else f"copy {n}"
+        out.append((label, hint))
+    return out
+
+
+def first_named(
+    named: list[Mapping[str, Any]], matches: list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The named drafts first, in the order of the call, then each other
+    match. The row of the Drafts read wins over the row of the first read,
+    and a named draft that the Drafts page did not hold stays in."""
+    by_id = {_id(m): m for m in matches}
+    out = [dict(by_id.get(_id(m)) or m) for m in named]
+    ids = {_id(m) for m in out}
+    out += [dict(m) for m in matches if _id(m) not in ids]
+    return out
+
+
+def _draft_line(draft: Mapping[str, Any], clean: Any) -> str:
+    label, facts = describe(draft)
+    return f"- draft id={_id(draft)} | {clean(label, 200)} | {clean(facts, 300)}"
+
+
+def _mail_line(message: Mapping[str, Any], clean: Any) -> str:
+    return f"- message id={_id(message)} | {clean(message_label(message), 200)}"
+
+
 def listing(drafts: Iterable[Mapping[str, Any]], clean: Any) -> list[str]:
     """One line for each draft, with its id, for the answer."""
-    lines = []
-    for draft in drafts:
-        label, facts = describe(draft)
-        lines.append(f"- draft id={_id(draft)} | {clean(label, 200)} | {clean(facts, 300)}")
-    return lines
+    return [_draft_line(d, clean) for d in drafts]
 
 
-def result_text(
-    *, drafts_moved: int, others_moved: int, drafts_failed: int,
-    remaining: list[str] | None, cut: bool,
-) -> str:
-    """The answer of a trash that checked Drafts.
+@dataclass
+class Tally:
+    """What one trash did, for :func:`report`. Each list holds message rows.
 
-    The first line counts what went, and ``Nothing changed.`` starts it when
-    nothing went (the chat card reads both heads). *remaining* is the listing
-    of each matching draft still in Drafts, or None when the read after the act
-    failed. *cut* says that the Drafts list was longer than one page."""
-    total = drafts_moved + others_moved
-    if total:
-        parts = [f"{drafts_moved} draft(s)"]
-        if others_moved:
-            parts.append(f"{others_moved} other message(s)")
-        head = f"Trashed {total} message(s): {' and '.join(parts)}."
+    ``remaining`` is each matching draft still in Drafts, or None when the
+    read after the act failed. ``cut`` says that a Drafts page was full."""
+
+    drafts: list[dict[str, Any]] = field(default_factory=list)
+    others: list[dict[str, Any]] = field(default_factory=list)
+    drafts_unconfirmed: list[dict[str, Any]] = field(default_factory=list)
+    others_unconfirmed: list[dict[str, Any]] = field(default_factory=list)
+    drafts_failed: list[dict[str, Any]] = field(default_factory=list)
+    others_failed: list[dict[str, Any]] = field(default_factory=list)
+    lost: list[dict[str, Any]] = field(default_factory=list)
+    remaining: list[dict[str, Any]] | None = field(default_factory=list)
+    cut: bool = False
+    already: list[dict[str, Any]] = field(default_factory=list)
+    unknown_ids: int = 0
+
+
+def settle(
+    tally: Tally, row: dict[str, Any], outcome: str, *, draft: bool,
+    still: set[str] | None,
+) -> None:
+    """Put one written row in its list of *tally*. *still* is the ids still in
+    Drafts after the act, or None when that read failed. A draft counts as
+    trashed only when the provider accepted it AND it left Drafts."""
+    in_drafts = still is not None and _id(row) in still
+    if draft and in_drafts and outcome != LOST:
+        tally.drafts_failed.append(row)
+    elif outcome == CONFIRMED:
+        (tally.drafts if draft else tally.others).append(row)
+    elif outcome == NOT_CONFIRMED:
+        (tally.drafts_unconfirmed if draft else tally.others_unconfirmed).append(row)
+    elif outcome == LOST and not in_drafts:
+        tally.lost.append(row)
     else:
-        head = "Nothing changed. No message was moved to Trash."
-    lines = [head]
-    if drafts_failed:
-        lines.append(
-            f"{drafts_failed} draft(s) did not move. Do not say that they were deleted.")
-    if remaining is None:
-        lines.append(
+        (tally.drafts_failed if draft else tally.others_failed).append(row)
+
+
+def _head(t: Tally) -> str:
+    total = len(t.drafts) + len(t.others)
+    if total:
+        parts = [f"{len(t.drafts)} draft(s)"] if t.drafts else []
+        if t.others:
+            parts.append(f"{len(t.others)} other message(s)")
+        return f"Trashed {total} message(s): {' and '.join(parts)}."
+    if t.drafts_unconfirmed or t.others_unconfirmed or t.lost:
+        return "Trashed 0 message(s): the mailbox did not confirm a trash."
+    return "Nothing changed. No message was moved to Trash."
+
+
+def _notes(t: Tally) -> list[str]:
+    notes = []
+    if t.drafts_unconfirmed:
+        notes.append(
+            f"The mailbox provider did not confirm the trash of {len(t.drafts_unconfirmed)} "
+            "draft(s). Metorite shows them in Trash, but the next sync can bring them back "
+            "to Drafts. Do not say that they were deleted.")
+    if t.others_unconfirmed:
+        notes.append(
+            f"The mailbox provider did not confirm the trash of {len(t.others_unconfirmed)} "
+            "other message(s). The next sync can bring them back to their folder.")
+    if t.drafts_failed:
+        notes.append(
+            f"{len(t.drafts_failed)} draft(s) did not move. Do not say that they were deleted.")
+    if t.others_failed:
+        notes.append(
+            f"{len(t.others_failed)} other message(s) did not move to Trash. They stay where "
+            "they were.")
+    if t.lost:
+        notes.append(
+            f"Metorite got no answer for {len(t.lost)} message(s). They can be in Trash or "
+            "not. Do not say that they were deleted.")
+    if t.already:
+        notes.append(f"{len(t.already)} message(s) that you named were already in Trash.")
+    if t.unknown_ids:
+        notes.append(
+            f"{t.unknown_ids} id(s) name no message of yours. Nothing happened to them.")
+    if t.remaining is None:
+        notes.append(
             "Metorite could not read Drafts after the act. Do not say that no draft is left.")
-    elif remaining:
-        lines.append(f"{len(remaining)} matching draft(s) are still in Drafts:")
-        lines += remaining[:MAX_DRAFTS]
-        if len(remaining) > MAX_DRAFTS:
-            lines.append(f"+{len(remaining) - MAX_DRAFTS} more")
-    elif not cut:
-        lines.append("No matching draft is left in Drafts, as Metorite last synced it.")
-    if cut:
-        lines.append(
+    elif not t.remaining and not t.cut:
+        notes.append("No matching draft is left in Drafts, as Metorite last synced it.")
+    if t.cut:
+        notes.append(
             "The Drafts list is longer than one page, so more matching drafts can exist.")
-    lines.append(
-        "Tell the member these counts, and name each draft that stays. "
-        "Say 'deleted' only for the drafts that this answer counts as trashed.")
-    return "\n".join(lines)
+    return notes
+
+
+def _section(title: str, lines: list[str]) -> list[str]:
+    if not lines:
+        return []
+    out = [title, *lines[:MAX_DRAFTS]]
+    if len(lines) > MAX_DRAFTS:
+        out.append(f"+{len(lines) - MAX_DRAFTS} more")
+    return out
+
+
+def report(t: Tally, clean: Any) -> tuple[list[str], list[str], list[str]]:
+    """``(head, data, tail)`` of the answer of a trash that checked Drafts.
+
+    *head* counts only what the provider accepted, and ``Nothing changed.``
+    starts it when no write ran (the chat card reads both heads). *data* names
+    each message with its id, and the caller frames it as untrusted text.
+    *tail* tells the model how to speak."""
+    remaining = t.remaining or []
+    staying = {_id(d) for d in remaining}
+    data = _section("Trashed:", [_draft_line(d, clean) for d in t.drafts]
+                    + [_mail_line(m, clean) for m in t.others])
+    data += _section("Not confirmed by the mailbox provider:",
+                     [_draft_line(d, clean) for d in t.drafts_unconfirmed]
+                     + [_mail_line(m, clean) for m in t.others_unconfirmed])
+    data += _section("Did not move:",
+                     [_draft_line(d, clean) for d in t.drafts_failed if _id(d) not in staying]
+                     + [_mail_line(m, clean) for m in t.others_failed])
+    data += _section("No answer came back:", [
+        (_draft_line(m, clean) if is_draft(m) else _mail_line(m, clean)) for m in t.lost])
+    data += _section(f"{len(remaining)} matching draft(s) are still in Drafts:",
+                     [_draft_line(d, clean) for d in remaining])
+    tail = ["Tell the member these counts, and name each draft that stays. "
+            "Say 'deleted' only for the messages under 'Trashed'."]
+    return [_head(t), *_notes(t)], data, tail

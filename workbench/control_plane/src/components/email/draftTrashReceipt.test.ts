@@ -31,6 +31,16 @@ describe("the receipt of a draft trash", () => {
     expect(draw("trash: affected 3 message(s).", ["m1", "m2", "m3"])).toContain("3 emails");
   });
 
+  it("never says Trashed when the mailbox did not confirm a trash", () => {
+    // Review round 1: the provider did not confirm, so the head counts 0.
+    const html = draw(
+      "Trashed 0 message(s): the mailbox did not confirm a trash.\nThe mailbox provider did not confirm",
+      ["m1"],
+    );
+    expect(html).not.toContain("Trashed 1 email");
+    expect(html).toContain("the mailbox did not confirm a trash");
+  });
+
   it("draws no trashed receipt when nothing went", () => {
     const html = draw("Nothing changed. No message was moved to Trash.", ["m1"]);
     expect(html).toContain('data-email-card="no-action"');

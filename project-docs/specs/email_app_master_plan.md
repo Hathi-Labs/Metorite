@@ -21704,7 +21704,8 @@ text part and the HTML part of the mail.
 
 ### 18.13 The chat asks which draft (2026-11-26, task 3977)
 
-**Status:** BUILT on branch `mt-3977-draft-trash`, not merged. No migration.
+**Status:** BUILT on branch `mt-3977-draft-trash`, review round 1 repaired, not merged. No
+migration.
 
 **Dark.** `CHAT_DRAFT_CHOICE_ORGS` lists the organization ids, or `*`. Empty is off, the
 default. Off, the card and the answer of a trash are the ones of before. The one reader is
@@ -21714,31 +21715,55 @@ default. Off, the card and the answer of a trash are the ones of before. The one
 and the member made a second one with two files. The member asked to delete the draft in
 Drafts. The chat trashed its own draft only, and answered "The draft is deleted".
 
-**The rules.** They apply to `manage_inbox(action="trash")` with 20 ids or fewer, when one id
-is a draft, or is already in Trash.
+**The rules.** They apply to `manage_inbox(action="trash")` with 20 ids or fewer.
 
-1. The tool reads the Drafts folder of each mailbox of those messages.
-2. A draft matches when it shares the thread, the To set or the subject of a named one
-   (`draft_choice.matching`). A "Re:" head and the case do not count.
-3. One matching draft that the call names keeps one Approve card, with the words of a draft.
-4. Any other case draws one row for each matching draft. Each draft row starts **unticked**,
+1. The tool reads the named ids in ONE call of `POST /email/messages/summaries`. That read
+   fetches no body. It drops an id that is no UUID or no message of the member. So a bad id
+   never stops a good one. A repeated id, in any form of the same UUID, is one message.
+2. An anchor is a named draft, or a named message in Trash that its own mailbox sent. A mail
+   from another sender is never an anchor. With no anchor, the trash of before runs.
+3. The tool reads the Drafts folder of each mailbox of the anchors. A draft matches when it
+   shares the thread, the To set or the subject of an anchor (`draft_choice.matching`). A
+   "Re:" head and the case do not count. The named drafts come first, before the cut of
+   20 rows.
+4. One matching draft that the call names keeps one Approve card, with the words of a draft.
+5. Any other case draws one row for each matching draft. Each draft row starts **unticked**,
    and the member picks. A named message that is no draft stays ticked.
-5. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
-   drafts only, and it names the other matching drafts.
-6. A draft moves through `DELETE /email/messages/{id}`. That route discards a Gmail draft and
-   keeps the new id of an Outlook draft. The card says which of the two happens.
-7. The tool reads Drafts again after the act. The answer counts only what left Drafts, and
-   names each matching draft that stays. It says "none left" only for a whole page.
-8. The chat receipt takes its count from the head of the answer, and not from the call.
+6. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
+   drafts and the other named mail, and it names the other matching drafts.
+7. Each card names each other message by its sender and subject. It names the mailbox of
+   each message, and each id that names no message. No two rows or lines read the same. A
+   named message already in Trash is listed, and nothing happens to it.
+8. Each message moves through `DELETE /email/messages/{id}?report=true`, one call each. That
+   route discards a Gmail draft and keeps the new id of an Outlook draft. The card says which
+   of the two happens.
+9. The tool reads Drafts again after the act, with the first anchors only. The answer counts
+   a message only when the provider confirmed the trash. A draft counts only when it also
+   left Drafts. The answer names each message that it counts, and each matching draft that
+   stays. It says "none left" only for a whole page.
+10. The answer names each message that the provider did not confirm, that did not move, or
+    whose answer did not come back. A failed read after the act keeps the report of the act.
+11. The chat receipt takes its count from the head of the answer, and not from the call. A
+    head of "Trashed 0 message(s)" draws no trash receipt.
+
+**The report of the trash route.** `DELETE /email/messages/{id}` answers 204, as before.
+With `?report=true` it answers 200 and `{id, provider, reason, discarded}`. `provider` is
+`confirmed` only when the provider accepted the trash. It is `not_confirmed` when no provider
+loads, when it does not authenticate, or when its trash raises. `reason` is one fixed word.
+
+A failure after the provider accepted (the new id, or the saved tokens) keeps `confirmed`.
+The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a STORE that
+is not OK. So an IMAP draft reads `not_confirmed`.
 
 **Known limits.**
 
 - The check reads the Metorite mirror. A draft that the sync did not bring yet does not show.
-- `DELETE` answers 204 when the mailbox refuses the trash. The row then reads as Trash until
-  the next sync brings the draft back. The answer says "as Metorite last synced it" only when
-  it claims that none is left.
+- A trash that the provider did not confirm still reads as Trash in the mirror until the next
+  sync. The answer says so, and it does not count it.
 - A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
 - `bulk_manage_inbox` does not run this check.
+- The IMAP trash copies to Trash with the Trash folder open, so the copy can take the wrong
+  message. That is a defect of before, outside this slice.
 
 **Fences.** `tests/unit/test_email_draft_choice.py` and
 `src/components/email/draftTrashReceipt.test.ts`.
