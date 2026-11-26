@@ -7,7 +7,10 @@ URL-safe characters. Three controls look for that shape:
 - the structlog processor ``redact_box_tokens`` and the stdlib filter
   ``BoxTokenRedactFilter`` in ``acb_common/_log.py``,
 - ``scripts/box_connect.sh``, which reads the token from a hidden prompt or
-  stdin and never prints it.
+  stdin and never prints it,
+- ``scripts/metorite_box_headers.sh``, the ``headersHelper`` of the entry
+  (task 1819, EA-19g). It prints the header from a 0600 ``box.env`` and
+  refuses every other file without a word of the token.
 
 Hermetic. The script runs with a temp ``HOME``, a temp ``CLAUDE_CONFIG_DIR``
 and a fake ``claude`` on the path that records its argv. Each sample token is
@@ -40,6 +43,15 @@ Mutations that turn this file red (R7):
    ``test_a_url_with_a_control_character_is_refused``.
 10. ``claude mcp remove`` before the JSON check of the entry:
     ``test_an_invalid_entry_stops_before_any_remove``.
+11. A header helper with no mode check (the ``[ "$mode" = "600" ]`` line
+    removed): ``test_the_helper_refuses_a_loose_mode``.
+12. A helper that names the token in a refusal: the ``*_helper_refuses_*``
+    cases.
+13. An entry with a static ``Authorization`` header next to the helper:
+    ``test_the_entry_names_the_helper_and_holds_no_header`` and
+    ``test_a_static_header_in_the_entry_stops_the_verify``.
+14. A helper path inside the checkout:
+    ``test_the_helper_lives_outside_the_checkout_and_survives_its_removal``.
 """
 from __future__ import annotations
 
@@ -66,6 +78,7 @@ from acb_common import _log
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "scripts" / "box_connect.sh"
+_HELPER = _ROOT / "scripts" / "metorite_box_headers.sh"
 _GITLEAKS_TOML = _ROOT / ".gitleaks.toml"
 _GITLEAKS = shutil.which("gitleaks") or (
     str(Path.home() / ".local/bin/gitleaks")
@@ -325,10 +338,13 @@ if args[:2] == ["mcp", "add-json"]:
     if mode == "fail-add":
         print("boom", file=sys.stderr); sys.exit(1)
     name, body = args[-2], args[-1]
+    entry = json.loads(body)
+    if mode == "static-header":
+        entry["headers"] = {"Authorization": "Bearer ${METORITE_BOX_TOKEN}"}
     d = load(); servers = d.setdefault("mcpServers", {})
     if name in servers:
         print(f"MCP server {name} already exists in user config"); sys.exit(1)
-    servers[name] = json.loads(body); save(d)
+    servers[name] = entry; save(d)
     print(f"Added http MCP server {name} to user config"); sys.exit(0)
 if args[:2] == ["mcp", "remove"]:
     d = load()
@@ -372,7 +388,11 @@ if args[:2] == ["mcp", "list"]:
         print(f"metorite: {url} (HTTP) - ✘ Failed to connect — Server rejected the configured "
               "Authorization header (HTTP 401). OAuth fallback is disabled when headers.Authorization is set")
     elif mode == "echo":
-        print(f"metorite: {url} (HTTP) - ✘ Failed to connect — debug {tok}")
+        # Like a client that prints the header that the helper gave it.
+        with open(os.path.join(os.environ["HOME"], ".config", "metorite", "box.env"),
+                  encoding="utf-8") as fh:
+            minted = fh.read().strip().split("=", 1)[1]
+        print(f"metorite: {url} (HTTP) - ✘ Failed to connect — debug {minted}")
     else:
         print(f"metorite: {url} (HTTP) - ✔ Connected")
     sys.exit(0)
@@ -432,6 +452,14 @@ class Box:
     def env_file(self) -> Path:
         return self.home / ".config" / "metorite" / "box.env"
 
+    @property
+    def helper(self) -> Path:
+        return self.home / ".local" / "bin" / "metorite-box-headers"
+
+    @property
+    def helper_cmd(self) -> str:
+        return f"{self.helper} {self.env_file}"
+
     def config(self) -> dict:
         p = self.cfg / ".claude.json"
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
@@ -467,7 +495,8 @@ def test_success_never_prints_the_token(box: Box) -> None:
     assert run.returncode == 0, out
     _assert_no_token(out, tok)
     assert "'metorite' is connected" in out
-    assert "set -a; . ~/.config/metorite/box.env; set +a" in out
+    assert "a lane does not load box.env" in out
+    assert "set -a" not in out
 
 
 def test_xtrace_never_prints_the_token(box: Box) -> None:
@@ -477,13 +506,16 @@ def test_xtrace_never_prints_the_token(box: Box) -> None:
     _assert_no_token(run.stdout + run.stderr, tok)
 
 
-def test_the_token_is_read_from_stdin_and_reaches_the_verify_env(box: Box) -> None:
+def test_the_token_is_read_from_stdin_and_stays_out_of_the_verify_env(box: Box) -> None:
     tok = _token()
-    assert box.run(tok + "\r\n").returncode == 0  # a CRLF paste reads the same
+    # A CRLF paste reads the same. The caller's own METORITE_BOX_TOKEN does
+    # not reach `claude`: the verify proves that a lane needs no env var.
+    run = box.run(tok + "\r\n", METORITE_BOX_TOKEN=_token())
+    assert run.returncode == 0, run.stdout + run.stderr
     assert box.env_file.read_text(encoding="utf-8") == f"METORITE_BOX_TOKEN={tok}\n"
     lists = [c for c in box.calls() if c["argv"][:2] == ["mcp", "list"]]
     assert len(lists) == 1
-    assert lists[0]["env_token_sha"] == _sha(tok)
+    assert all(c["env_token_sha"] is None for c in box.calls())
 
 
 def test_box_env_is_0600_under_a_loose_umask(box: Box) -> None:
@@ -495,7 +527,7 @@ def test_box_env_is_0600_under_a_loose_umask(box: Box) -> None:
     assert leftovers == []
 
 
-def test_the_entry_holds_the_variable_and_argv_holds_no_token(box: Box) -> None:
+def test_the_entry_names_the_helper_and_holds_no_header(box: Box) -> None:
     tok = _token()
     assert box.run(tok + "\n").returncode == 0
     for call in box.calls():
@@ -504,9 +536,12 @@ def test_the_entry_holds_the_variable_and_argv_holds_no_token(box: Box) -> None:
     assert adds == [["mcp", "add-json", "-s", "user", "metorite", adds[0][-1]]]
     assert json.loads(adds[0][-1]) == {
         "type": "http", "url": "https://mcp.metorite.com/mcp",
-        "headers": {"Authorization": "Bearer ${METORITE_BOX_TOKEN}"},
+        "headersHelper": box.helper_cmd,
     }
-    assert tok not in (box.cfg / ".claude.json").read_text(encoding="utf-8")
+    stored = (box.cfg / ".claude.json").read_text(encoding="utf-8")
+    _assert_no_token(stored, tok)
+    assert "Authorization" not in stored
+    assert "headers" not in json.loads(stored)["mcpServers"]["metorite"]
 
 
 @pytest.mark.parametrize("bad", [
@@ -594,7 +629,8 @@ def test_replace_swaps_the_existing_entry(box: Box) -> None:
     assert "no-authorization-header(oauth)" in out
     verbs = [c["argv"][:2] for c in box.calls()]
     assert verbs == [["mcp", "remove"], ["mcp", "add-json"], ["mcp", "get"], ["mcp", "list"]]
-    assert box.entries()["metorite"]["headers"] == {"Authorization": "Bearer ${METORITE_BOX_TOKEN}"}
+    assert box.entries()["metorite"]["headersHelper"] == box.helper_cmd
+    assert "headers" not in box.entries()["metorite"]
 
 
 def test_no_verify_skips_the_list(box: Box) -> None:
@@ -832,6 +868,172 @@ def test_the_hidden_prompt_does_not_echo_the_token(box: Box) -> None:
 
 def test_the_repo_scripts_hold_no_token_literal() -> None:
     pattern = re.compile(_PREFIX + r"[A-Za-z0-9_-]{43}")
-    for path in [_SCRIPT, _ROOT / "docs" / "box_connect.md", _GITLEAKS_TOML,
+    for path in [_SCRIPT, _HELPER, _ROOT / "docs" / "box_connect.md", _GITLEAKS_TOML,
                  _ROOT / "packages/acb_common/acb_common/_log.py"]:
         assert not pattern.search(path.read_text(encoding="utf-8")), path
+
+
+# ── 4. The header helper: scripts/metorite_box_headers.sh (EA-19g) ─────────
+
+def _helper(box_env: Path | None, home: Path, *, helper: Path = _HELPER,
+            **extra: str) -> subprocess.CompletedProcess:
+    args = [str(helper)] + ([str(box_env)] if box_env is not None else [])
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "LANG": "C.UTF-8", **extra}
+    return subprocess.run(args, env=env, capture_output=True, text=True,
+                          encoding="utf-8", timeout=30, check=False)
+
+
+def _token_file(folder: Path, line: str, mode: int = 0o600) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "box.env"
+    path.write_text(line, encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def _assert_refused(run: subprocess.CompletedProcess, tok: str | None, reason: str) -> None:
+    assert run.returncode != 0, run.stdout
+    assert run.stdout == ""
+    assert reason in run.stderr, run.stderr
+    assert len(run.stderr.splitlines()) == 1, run.stderr
+    if tok:
+        _assert_no_token(run.stderr, tok)
+
+
+def test_the_helper_prints_the_header_for_a_good_file(tmp_path: Path) -> None:
+    tok = _token()
+    path = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n")
+    run = _helper(path, tmp_path)
+    assert run.returncode == 0, run.stderr
+    assert run.stderr == ""
+    assert json.loads(run.stdout) == {"Authorization": f"Bearer {tok}"}
+    assert run.stdout.count("{") == 1  # exactly one JSON object
+
+
+def test_the_helper_reads_the_default_path_under_home(tmp_path: Path) -> None:
+    tok = _token()
+    _token_file(tmp_path / ".config" / "metorite", f"METORITE_BOX_TOKEN={tok}\r\n")
+    run = _helper(None, tmp_path)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == {"Authorization": f"Bearer {tok}"}
+
+
+def test_the_helper_takes_no_path_from_the_environment(tmp_path: Path) -> None:
+    """A project settings file can set an env var. No env var moves the path."""
+    other = _token_file(tmp_path / "other", f"METORITE_BOX_TOKEN={_token()}\n")
+    run = _helper(None, tmp_path, METORITE_BOX_ENV=str(other))
+    _assert_refused(run, None, "is missing")
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o700, 0o400])
+def test_the_helper_refuses_a_loose_mode(tmp_path: Path, mode: int) -> None:
+    tok = _token()
+    path = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n", mode)
+    _assert_refused(_helper(path, tmp_path), tok, "must have mode 0600")
+
+
+def test_the_helper_refuses_a_missing_file(tmp_path: Path) -> None:
+    _assert_refused(_helper(tmp_path / "nope" / "box.env", tmp_path), None, "is missing")
+
+
+def test_the_helper_refuses_a_symlink_and_a_folder(tmp_path: Path) -> None:
+    tok = _token()
+    real = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n")
+    link = tmp_path / "link.env"
+    link.symlink_to(real)
+    _assert_refused(_helper(link, tmp_path), tok, "is a symlink")
+    folder = tmp_path / "folder.env"
+    folder.mkdir()
+    _assert_refused(_helper(folder, tmp_path), None, "not a regular file")
+
+
+@pytest.mark.parametrize("bad", [
+    lambda: _token()[:-1],                 # 42 characters
+    lambda: _token() + "x",                # 44 characters
+    lambda: _token()[:-1] + '"',           # a quote would break the JSON
+    lambda: "mbx_" + _token()[4:],         # the wrong prefix
+    lambda: " " + _token(),                # a leading space
+])
+def test_the_helper_refuses_a_bad_shape_without_a_word_of_it(tmp_path: Path, bad) -> None:
+    tok = bad()
+    path = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n")
+    _assert_refused(_helper(path, tmp_path), tok, "does not have the shape")
+
+
+def test_the_helper_refuses_a_file_with_no_token_line(tmp_path: Path) -> None:
+    tok = _token()
+    path = _token_file(tmp_path / "cfg", f"OTHER={tok}\n")
+    _assert_refused(_helper(path, tmp_path), tok, "holds no METORITE_BOX_TOKEN line")
+
+
+def test_the_helper_never_runs_the_file(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    path = _token_file(tmp_path / "cfg", f"touch {marker}\nMETORITE_BOX_TOKEN=$(touch {marker})\n")
+    _assert_refused(_helper(path, tmp_path), None, "does not have the shape")
+    assert not marker.exists()
+
+
+def test_the_helper_xtrace_never_prints_the_token(tmp_path: Path) -> None:
+    tok = _token()
+    path = _token_file(tmp_path / "cfg", f"METORITE_BOX_TOKEN={tok}\n")
+    run = subprocess.run(["bash", "-x", str(_HELPER), str(path)],
+                         env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+                         capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+    assert run.returncode == 0
+    _assert_no_token(run.stderr, tok)
+
+
+def test_the_token_shape_has_one_definition() -> None:
+    helper = _HELPER.read_text(encoding="utf-8")
+    script = _SCRIPT.read_text(encoding="utf-8")
+    assert helper.count("TOKEN_RE='^mbt_[A-Za-z0-9_-]{43}$'") == 1
+    assert "TOKEN_RE='" not in script
+    assert '. "$helper_src"' in script
+
+
+def test_the_helper_lives_outside_the_checkout_and_survives_its_removal(box: Box, tmp_path: Path) -> None:
+    """A worktree removal must not break the lanes."""
+    checkout = tmp_path / "worktree"
+    (checkout / "scripts").mkdir(parents=True)
+    for src in (_SCRIPT, _HELPER):
+        shutil.copy2(src, checkout / "scripts" / src.name)
+    tok = _token()
+    run = subprocess.run(
+        ["bash", str(checkout / "scripts" / "box_connect.sh"), "--home", str(box.home),
+         "--config-dir", str(box.cfg)],
+        input=tok + "\n", env=box.env(), cwd=box.home, capture_output=True, text=True,
+        encoding="utf-8", timeout=60, check=False)
+    assert run.returncode == 0, run.stdout + run.stderr
+    command = box.entries()["metorite"]["headersHelper"]
+    helper_path = Path(command.split()[0])
+    assert helper_path == box.helper
+    assert _ROOT not in helper_path.parents and checkout not in helper_path.parents
+    assert stat.S_IMODE(helper_path.stat().st_mode) == 0o700
+    assert helper_path.read_bytes() == _HELPER.read_bytes()
+    shutil.rmtree(checkout)
+    again = subprocess.run(command, shell=True, env={"PATH": "/usr/bin:/bin"},
+                           capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+    assert again.returncode == 0, again.stderr
+    assert json.loads(again.stdout) == {"Authorization": f"Bearer {tok}"}
+
+
+def test_a_static_header_in_the_entry_stops_the_verify(box: Box) -> None:
+    tok = _token()
+    run = box.run(tok + "\n", mode="static-header")
+    out = run.stdout + run.stderr
+    assert run.returncode == 7, out
+    assert "holds a static header" in out
+    _assert_no_token(out, tok)
+    assert [c["argv"][:2] for c in box.calls()][-1] == ["mcp", "get"]  # no list
+
+
+def test_a_home_that_needs_quoting_is_refused(tmp_path: Path) -> None:
+    b = Box(tmp_path)
+    odd = tmp_path / "a b;c"
+    odd.mkdir()
+    run = subprocess.run(
+        ["bash", str(_SCRIPT), "--home", str(odd), "--config-dir", str(b.cfg)],
+        input=_token() + "\n", env=b.env(), cwd=tmp_path, capture_output=True, text=True,
+        encoding="utf-8", timeout=60, check=False)
+    assert run.returncode == 2, run.stdout + run.stderr
+    assert b.calls() == []

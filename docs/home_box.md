@@ -493,7 +493,10 @@ When `claude mcp list` shows `metorite` as "Needs authentication":
 The login needs a terminal. A login with no terminal opens no listener. A
 callback address that waits too long expires. The per-box token of task 1819
 (MCP-G17) replaces this procedure when it ships. `docs/box_connect.md` holds
-the box-token steps.
+the box-token steps. A lane does not load `~/.config/metorite/box.env`. The
+user entry gets its header from the helper `~/.local/bin/metorite-box-headers`,
+so `box.sh start` needs no change. The OWNER STEP about the project entry of
+`.mcp.json` (`docs/box_connect.md` §4) still applies.
 
 ---
 

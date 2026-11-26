@@ -18,7 +18,12 @@ temp ``HOME`` and a temp ``CLAUDE_CONFIG_DIR``. The real home, the live
 - A wrong token: "Failed to connect", with "OAuth fallback is disabled".
 - ``claude mcp get`` and ``.claude.json`` hold ``${G17_BOX_TOKEN}``, never
   the value.
-- ``scripts/box_connect.sh`` against the same server, end to end.
+- ``scripts/box_connect.sh`` against the same server, end to end. The entry
+  it writes has a ``headersHelper`` and no ``headers`` (task 1819, EA-19g).
+  ``claude`` runs with no ``METORITE_BOX_TOKEN`` in its environment, like a
+  lane that a long-lived ``claude daemon`` starts. The server still sees the
+  bearer, because Claude Code runs the helper when it connects.
+- A revoked token through the helper fails loud and starts no OAuth.
 - A project ``.mcp.json`` that names the same server with no header, and
   approved in the settings, wins over the user entry. ``claude mcp get``
   then names the Project scope, and the script stops with exit 7. With the
@@ -28,7 +33,9 @@ The file skips when ``claude`` is not on the path. The sample tokens are made
 at run time, so no token literal is in the repo (``.gitleaks.toml``).
 
 Mutations that turn this file red (R7): a ``box_connect.sh`` that writes the
-literal token into the MCP entry (the ``.claude.json`` checks), a Claude
+literal token into the MCP entry (the ``.claude.json`` checks), an entry
+that keeps the ``${METORITE_BOX_TOKEN}`` header in place of the helper (the
+end-to-end case: no env var, so no bearer), a Claude
 Code that falls back to OAuth on a 401 (the OAuth path checks), and a verify
 step that ignores the scope of ``claude mcp get`` (the project case). The mutation
 list of the secret rules is in ``test_box_token_secret_rules.py``.
@@ -276,6 +283,8 @@ def _run_script(home: Path, token: str, *args: str) -> subprocess.CompletedProce
 
 def test_box_connect_script_end_to_end_with_the_real_client(home: Path) -> None:
     good = _sample_token()
+    helper = home / ".local" / "bin" / "metorite-box-headers"
+    env_file = home / ".config" / "metorite" / "box.env"
     with _Server(good) as server:
         run = _run_script(home, good, "--url", server.url)
         out = run.stdout + run.stderr
@@ -286,14 +295,24 @@ def test_box_connect_script_end_to_end_with_the_real_client(home: Path) -> None:
         assert inits and all(r["auth"] == f"Bearer {good}" for r in inits)
         assert _oauth_requests(server) == []
 
+        # A lane: a fresh `claude` with no token in its environment.
+        server.requests.clear()
+        listed = _claude(home, "mcp", "list")
+        assert "Connected" in _line(listed.stdout, "metorite"), listed.stdout + listed.stderr
+        inits = [r for r in server.requests if r["method"] == "initialize"]
+        assert inits and all(r["auth"] == f"Bearer {good}" for r in inits)
+        assert good not in listed.stdout + listed.stderr
+
     stored = (home / "cfg" / ".claude.json").read_text(encoding="utf-8")
     assert good not in stored
+    assert "Authorization" not in stored
     servers = json.loads(stored)["mcpServers"]
     assert servers["metorite"] == {
         "type": "http", "url": server.url,
-        "headers": {"Authorization": "Bearer ${METORITE_BOX_TOKEN}"},
+        "headersHelper": f"{helper} {env_file}",
     }
-    env_file = home / ".config" / "metorite" / "box.env"
+    assert _ROOT not in helper.parents
+    assert (helper.stat().st_mode & 0o777) == 0o700
     assert env_file.read_text(encoding="utf-8") == f"METORITE_BOX_TOKEN={good}\n"
     assert (env_file.stat().st_mode & 0o777) == 0o600
 
@@ -307,6 +326,7 @@ def test_box_connect_script_reports_a_revoked_token(home: Path) -> None:
         assert run.returncode == 7, out
         assert revoked not in out
         assert "OAuth fallback is disabled" in out
+        assert "headersHelper" in out  # the client names the helper as the source
         assert "rejected the token" in out
         assert _oauth_requests(server) == []
 
@@ -344,7 +364,8 @@ def test_an_approved_project_entry_wins_and_the_script_stops(home: Path, tmp_pat
         settings.write_text("{}", encoding="utf-8")
         got = _claude(home, "mcp", "get", "metorite", cwd=proj, METORITE_BOX_TOKEN=good)
         assert _scope(got.stdout).startswith("Scope: User config"), got.stdout + got.stderr
-        assert "Authorization: Bearer ${METORITE_BOX_TOKEN}" in got.stdout
+        assert "Authorization" not in got.stdout
+        assert good not in got.stdout + got.stderr
 
         run = _run_script(home, good, "--url", server.url, "--project", str(proj), "--replace")
         out = run.stdout + run.stderr

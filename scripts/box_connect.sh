@@ -11,12 +11,16 @@
 #   2. It checks the shape `^mbt_[A-Za-z0-9_-]{43}$` before it writes a file.
 #   3. It writes ~/.config/metorite/box.env (mode 0600, umask 077, temp file
 #      and mv -T) with the one line METORITE_BOX_TOKEN=<token>.
-#   4. It writes the user-scope MCP entry `metorite` with the header
-#      `Bearer ${METORITE_BOX_TOKEN}`. Claude Code expands the variable when it
-#      connects, so the token never goes into .claude.json.
-#   5. From the project folder, it runs `claude mcp get metorite` and then
-#      `claude mcp list` (timeout 60 s each). The effective entry must be the
-#      user entry with the box token header.
+#   4. It installs the header helper scripts/metorite_box_headers.sh as
+#      ~/.local/bin/metorite-box-headers (mode 0700), outside the checkout.
+#   5. It writes the user-scope MCP entry `metorite` with `headersHelper` set
+#      to that helper and the path of box.env, and with no `headers`. Claude
+#      Code runs the helper when it connects, so the token never goes into
+#      .claude.json, and a lane does not load box.env (task 1819, EA-19g).
+#   6. From the project folder, it runs `claude mcp get metorite` and then
+#      `claude mcp list` (timeout 60 s each), with no METORITE_BOX_TOKEN in
+#      their environment. The effective entry must be the user entry, and
+#      .claude.json must hold the helper and no Authorization header.
 #
 #   box_connect.sh [--url URL] [--project DIR] [--home DIR] [--config-dir DIR] [--replace] [--no-verify]
 #
@@ -32,8 +36,8 @@
 # Exit codes: 0 connected (or written with --no-verify), 2 usage, 3 the token
 # has the wrong shape or is empty, 4 `claude` is not installed, 5 a `metorite`
 # entry exists and --replace is not set, 6 a write failed, 7 the effective
-# `metorite` entry is not the user entry with the box token header, or it is
-# not connected.
+# `metorite` entry is not the user entry with the header helper, or it is not
+# connected.
 #
 # ⚠️ A project entry wins over the user entry. In a checkout of this repo,
 # `.mcp.json` names `metorite` with no header. When the settings of the user
@@ -42,10 +46,10 @@
 #
 # ⚠️ It never prints the token or a part of it, on success and on every error
 # path. It turns xtrace off first, so `bash -x box_connect.sh` shows no token.
-# The token goes to builtins only (`read`, `printf`, `[[ =~ ]]`). The only
-# children that see it are `claude mcp get` and `claude mcp list`, through
-# their environment. Their output goes through a mask for `mbt_` tokens
-# before it reaches the terminal.
+# The token goes to builtins only (`read`, `printf`, `[[ =~ ]]`). No child
+# gets it in argv or in its environment. The output of `claude mcp get` and
+# `claude mcp list` goes through a mask for `mbt_` tokens before it reaches
+# the terminal.
 #
 # Runbook: docs/box_connect.md.
 # Fence: tests/unit/test_box_token_secret_rules.py and
@@ -54,13 +58,14 @@
 set -Eeuo pipefail
 umask 077
 export LC_ALL=C
+# No child gets a token through the environment, not even the caller's.
+unset -v METORITE_BOX_TOKEN
 
 NAME="metorite"
 URL="https://mcp.metorite.com/mcp"
 PROJECT=""
 REPLACE=0
 VERIFY=1
-TOKEN_RE='^mbt_[A-Za-z0-9_-]{43}$'
 # Printable ASCII only: no space, no control character, no DEL.
 PRINTABLE_RE='^[!-~]+$'
 box_token=""
@@ -82,8 +87,17 @@ die() { printf 'box-connect: ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 mask() { sed -E 's/mbt_[A-Za-z0-9_-]{43}/mbt_[redacted]/g'; }
 
 usage() {
-  sed -n '21,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '/^#   box_connect.sh \[/,/^#   --no-verify/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
+
+# The token shape has one definition, in the header helper (TOKEN_RE).
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+helper_src="$script_dir/metorite_box_headers.sh"
+[ -f "$helper_src" ] || die "$helper_src is missing. Run the script from a full checkout." 4
+TOKEN_RE=""
+# shellcheck source=/dev/null  # it only sets TOKEN_RE, then returns.
+. "$helper_src"
+[ -n "$TOKEN_RE" ] || die "$helper_src does not define TOKEN_RE." 4
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -109,9 +123,20 @@ fi
 command -v claude >/dev/null 2>&1 || die "claude is not on the PATH. Install Claude Code first." 4
 command -v python3 >/dev/null 2>&1 || die "python3 is not on the PATH. The script reads the Claude config with it." 4
 
+# The helper and the token file live under HOME. Claude Code runs the
+# headersHelper string in a shell, so both paths must need no quoting.
+helper_dir="$HOME/.local/bin"
+helper_path="$helper_dir/metorite-box-headers"
+env_dir="$HOME/.config/metorite"
+env_file="$env_dir/box.env"
+if ! [[ "$HOME" =~ ^/[A-Za-z0-9_./-]*$ ]] || [[ "$HOME" == *..* ]]; then
+  die "HOME must be an absolute path of letters, digits, '_', '.', '-' and '/' only. The header helper command cannot hold it safely." 2
+fi
+helper_cmd="$helper_path $env_file"
+
 # The entry is proved to be valid JSON before anything is written or removed.
-# shellcheck disable=SC2016  # the ${...} must reach Claude Code unexpanded.
-entry_json='{"type":"http","url":"'"$URL"'","headers":{"Authorization":"Bearer ${METORITE_BOX_TOKEN}"}}'
+# It holds the helper command, and no header and no secret.
+entry_json='{"type":"http","url":"'"$URL"'","headersHelper":"'"$helper_cmd"'"}'
 if ! python3 -I -c 'import json,sys; json.loads(sys.argv[1])' "$entry_json" >/dev/null 2>&1; then
   die "the MCP entry for this --url is not valid JSON. Nothing was written." 2
 fi
@@ -162,9 +187,9 @@ claude_json="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
 # "<scope> <type> <url> <header kind>", where the scope is user or local.
 # It never prints a header value: an old entry can hold a literal token. It
 # masks a token in the address and drops each character that is not printable.
-existing="$(python3 -I - "$claude_json" "$NAME" "$verify_dir" "$verify_dir_physical" <<'PY'
+existing="$(python3 -I - "$claude_json" "$NAME" "$helper_cmd" "$verify_dir" "$verify_dir_physical" <<'PY'
 import json, re, sys
-path, name, dirs = sys.argv[1], sys.argv[2], sys.argv[3:]
+path, name, helper_cmd, dirs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 try:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
@@ -178,12 +203,17 @@ if not isinstance(data, dict):
 def describe(scope, entry):
     headers = entry.get("headers") if isinstance(entry.get("headers"), dict) else {}
     auth = str(headers.get("Authorization") or "")
-    if not auth:
-        kind = "no-authorization-header(oauth)"
-    elif auth == "Bearer ${METORITE_BOX_TOKEN}":
+    helper = entry.get("headersHelper")
+    if auth == "Bearer ${METORITE_BOX_TOKEN}":
         kind = "box-token-env-header"
-    else:
+    elif auth:
         kind = "another-authorization-header(value-not-shown)"
+    elif helper == helper_cmd:
+        kind = "box-token-headers-helper"
+    elif helper:
+        kind = "another-headers-helper(command-not-shown)"
+    else:
+        kind = "no-authorization-header(oauth)"
     url = str(entry.get("url") or entry.get("command") or "?")
     url = re.sub(r"mbt_[A-Za-z0-9_-]{43}", "mbt_[redacted]", url)
     url = "".join(c for c in url if "!" <= c <= "~")[:200] or "?"
@@ -229,8 +259,6 @@ if [ -n "$old_user$old_local" ]; then
 fi
 
 # ── 4. Write box.env: 0600, temp file in the same folder, then mv -T. ───────
-env_dir="$HOME/.config/metorite"
-env_file="$env_dir/box.env"
 mkdir -p -- "$env_dir" || die "could not make $env_dir." 6
 chmod 700 -- "$env_dir" || die "could not set the mode of $env_dir." 6
 tmp_env="$(mktemp "$env_dir/.box.env.XXXXXX")" || die "could not make a temp file in $env_dir." 6
@@ -245,7 +273,19 @@ mv -fT -- "$tmp_env" "$env_file" 2>/dev/null \
 tmp_env=""
 say "wrote $env_file (mode 0600)."
 
-# ── 5. Write the MCP entry, with the ${...} form only. ──────────────────────
+# ── 4b. Install the header helper outside the checkout: 0700, then mv -T. ───
+# A worktree removal must not break the lanes, so the entry never names a
+# path inside a checkout.
+mkdir -p -- "$helper_dir" || die "could not make $helper_dir." 6
+tmp_env="$(mktemp "$helper_dir/.metorite-box-headers.XXXXXX")" || die "could not make a temp file in $helper_dir." 6
+cat -- "$helper_src" >"$tmp_env" || die "could not copy the header helper." 6
+chmod 700 -- "$tmp_env" || die "could not set the mode of the header helper." 6
+mv -fT -- "$tmp_env" "$helper_path" 2>/dev/null \
+  || die "could not move the header helper to $helper_path. Is it a folder?" 6
+tmp_env=""
+say "installed the header helper $helper_path (mode 0700)."
+
+# ── 5. Write the MCP entry, with the header helper and no header. ───────────
 restore_hint() {
   if [ -n "$old_user" ]; then
     say "the old user-scope entry was: $old_user"
@@ -266,25 +306,19 @@ if ! claude mcp add-json -s user "$NAME" "$entry_json" >/dev/null 2>&1; then
   restore_hint
   die "claude mcp add-json -s user $NAME failed. box.env is written. Run the script again with --replace." 6
 fi
-say "wrote the user-scope '$NAME' entry: $URL with the header 'Bearer \${METORITE_BOX_TOKEN}'."
-
-say "each lane shell must load the token before it starts claude:"
-# The path is a variable, so test_root_units_root_owned.py does not read this
-# printed hint as a script that sources an env file.
-# shellcheck disable=SC2088  # the hint shows a ~ path on purpose.
-hint_path='~/.config/metorite/box.env'
-say "    set -a; . ${hint_path}; set +a"
+say "wrote the user-scope '$NAME' entry: $URL with the header helper $helper_path."
+say "a lane does not load box.env. Claude Code runs the helper when it connects."
 
 # ── 6. Verify, from the folder where the lanes start claude. ────────────────
 if [ "$VERIFY" -ne 1 ]; then
-  say "--no-verify is set. Run 'claude mcp get $NAME' in $verify_dir, in a shell that loaded box.env."
+  say "--no-verify is set. Run 'claude mcp get $NAME' and 'claude mcp list' in $verify_dir."
   exit 0
 fi
 
 # 6a. Which entry wins in that folder? `claude mcp get` names its scope.
 say "running 'claude mcp get $NAME' in $verify_dir (up to 60 s)..."
 get_rc=0
-get_out="$(cd -- "$verify_dir" && METORITE_BOX_TOKEN="$box_token" timeout 60 claude mcp get "$NAME" 2>&1 | mask)" || get_rc=$?
+get_out="$(cd -- "$verify_dir" && env -u METORITE_BOX_TOKEN timeout 60 claude mcp get "$NAME" 2>&1 | mask)" || get_rc=$?
 scope_line="$(printf '%s\n' "$get_out" | grep -m 1 -E '^[[:space:]]*Scope:' || true)"
 scope_line="${scope_line#"${scope_line%%[![:space:]]*}"}"
 case "$scope_line" in
@@ -301,16 +335,39 @@ case "$scope_line" in
     die "'claude mcp get $NAME' (exit $get_rc) did not name the scope of the entry in $verify_dir. The script cannot prove that the user entry wins." 7
     ;;
 esac
-# shellcheck disable=SC2016  # the literal ${...} is what the entry must show.
-if ! printf '%s\n' "$get_out" | grep -qF 'Authorization: Bearer ${METORITE_BOX_TOKEN}'; then
-  die "the user-scope '$NAME' entry in $verify_dir does not show the header 'Bearer \${METORITE_BOX_TOKEN}'. Run this script again with --replace." 7
+# `claude mcp get` does not print a headersHelper (Claude Code 2.1.332), so
+# the script reads the user entry from .claude.json. It must name this helper
+# and hold no headers. It never prints a header value.
+entry_rc=0
+python3 -I - "$claude_json" "$NAME" "$helper_cmd" <<'PY' || entry_rc=$?
+import json, sys
+path, name, helper_cmd = sys.argv[1:4]
+try:
+    with open(path, encoding="utf-8") as fh:
+        entry = (json.load(fh).get("mcpServers") or {}).get(name)
+except (OSError, ValueError, AttributeError):
+    sys.exit(2)
+if not isinstance(entry, dict) or entry.get("headersHelper") != helper_cmd:
+    sys.exit(3)
+if entry.get("headers"):
+    sys.exit(4)
+PY
+case "$entry_rc" in
+  0) ;;
+  4) die "the user-scope '$NAME' entry holds a static header next to the header helper. Run this script again with --replace." 7 ;;
+  *) die "the user-scope '$NAME' entry in $claude_json does not name the header helper $helper_cmd. Run this script again with --replace." 7 ;;
+esac
+# The helper must read the token file now. Its stdout holds the token, so it
+# goes to /dev/null. Its stderr never holds the token.
+if ! "$helper_path" "$env_file" >/dev/null; then
+  die "the header helper $helper_path refused $env_file. See the line above." 7
 fi
-say "in $verify_dir the effective '$NAME' entry is the user entry with the box token header."
+say "in $verify_dir the effective '$NAME' entry is the user entry with the header helper."
 
 # 6b. Does it connect?
 say "running 'claude mcp list' in $verify_dir (up to 60 s)..."
 list_rc=0
-list_out="$(cd -- "$verify_dir" && METORITE_BOX_TOKEN="$box_token" timeout 60 claude mcp list 2>&1 | mask)" || list_rc=$?
+list_out="$(cd -- "$verify_dir" && env -u METORITE_BOX_TOKEN timeout 60 claude mcp list 2>&1 | mask)" || list_rc=$?
 printf '%s\n' "$list_out"
 line="$(printf '%s\n' "$list_out" | grep -E "^${NAME}:" | head -n 1 || true)"
 if [ "$list_rc" -eq 0 ] && [[ "$line" == *Connected* ]] && [[ "$line" != *Failed* ]]; then
