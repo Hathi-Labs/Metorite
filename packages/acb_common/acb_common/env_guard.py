@@ -448,6 +448,12 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # MCP-G17g: the sign-in alarm of a dev machine (scripts/home_server). It
+    # reads its channel, its files and the login to mention. A tenant must
+    # never save these.
+    "METORITE_ALARM_CHANNEL", "METORITE_ALARM_CREDS", "METORITE_ALARM_GH_REPO",
+    "METORITE_ALARM_GH_USER", "METORITE_ALARM_HOST", "METORITE_ALARM_LOG",
+    "METORITE_ALARM_STATE",
     # SBX-13: the sandbox door client reads the run capability from this name
     # (sandbox/metorite_door.py). The broker sets it in the tool container. A
     # tenant must never save it.
