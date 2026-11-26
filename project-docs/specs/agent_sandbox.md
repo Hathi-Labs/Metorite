@@ -1997,6 +1997,781 @@ uv run pytest tests/unit/test_tool_gap_detection.py tests/unit/test_tool_compose
 A run with any skipped test in the six files fails the slice. R8 needs the
 database.
 
+### 12.2 SBX-2 — the run capability and the read-only door
+
+**Board.** Metorite task 3801. Risk tier HIGH: it adds an identity path to
+`get_current_user`, an RLS-exempt table and a migration. The anchors below
+were read on 2026-11-26 at `main` `20f974917`. Re-verify each anchor at
+dispatch.
+
+**Depends on.** SBX-Q6, which D130 answers. SBX-2 uses no code of SBX-1. It
+writes no `tool_gaps` row and no `user_tool_runs` row. The §12 row names
+SBX-1 for the phase order of D187 only, and Metorite holds that order. The
+orchestrator confirmed on 2026-11-26 that Metorite orders SBX-2 now.
+
+**Scope.**
+
+- The table `sandbox_capabilities` (§7.5) and one module that mints,
+  revokes, sweeps and looks up a capability.
+- The door identity step: a sibling of branch 0 in `get_current_user`.
+- `SANDBOX_ROUTES`: GET reads of CRM and Projects only.
+- The flag `SANDBOX_DOOR_ORGS`, the call cap, the page cap, the size cap and
+  the log lines `sandbox.capability` and `sandbox.door.call`.
+
+Only tests mint a capability. No container starts, and no tool code runs.
+
+**Not in SBX-2.**
+
+- No write. Each method other than GET gets 403. SBX-3 holds a write for a
+  card, and builds `POST /sandbox/v1/batch`.
+- No mint by the broker. SBX-4 mints a capability for each step.
+- No Email, Calendar or API connection read. SBX-2b, SBX-2c and SBX-2d
+  below take them.
+- No `user_tool_runs` row. The counts go in the door log line, and SBX-4
+  copies them into the row.
+- No `meta.via` stamp. SBX-3 owns it (decision 12).
+- No change to branch 0, to `MCP_ROUTES`, to the edge or to the app door.
+
+#### The decisions
+
+**1. The door calls the existing routes.** The code sends `GET /crm/leads`,
+as the browser and the MCP edge do. §5.2 says that the door calls the same
+handlers as the browser. A copy of each read under `/sandbox/v1/` is a
+second route for each handler, and so a second seam. So SBX-2 adds no
+route. `/sandbox/v1/` keeps one reserved path, `POST /sandbox/v1/batch`, for
+SBX-3. This replaces the first sentence of §5.2 for reads.
+
+**2. `SANDBOX_ROUTES` comes from the app manifests.** AD-3 and D136 say that
+an allowlist comes from the manifests, never from a hand list.
+
+- `Route` (`acb_common/app_manifests/base.py:172`) gets one new field,
+  `sandbox: bool = False`. `__post_init__` (`:213`) refuses `sandbox=True`
+  on a row that is not class A, or not GET.
+- `SANDBOX_ROUTES` is the set of `(method, path)` of each row with
+  `sandbox=True` in `CRM` (`crm.py:86`) and `PROJECTS_DOOR` (`projects.py`).
+  `SANDBOX_APPS` names these two apps, and no other app.
+- **The default is off.** A new row, and each row that this slice does not
+  name, stays off the door. A row joins only by an edit to its own line.
+- The class alone is not enough. Some class A GET rows write, call a model
+  or return a file (the lists below). So each row is a choice.
+- §5.2 said "it starts from `MCP_ROUTES`". SBX-2 does not do that.
+  `MCP_ROUTES` holds pairs of the `/agent-access` surface of outside agents,
+  and the write pairs live beside them in `MCP_WRITE_ROUTES`. A pair joins
+  `SANDBOX_ROUTES` only through its manifest row.
+
+**The CRM rows that SBX-2 opens (30).** Each reads the local tables. It
+writes nothing, calls no model and returns JSON.
+
+| Family | Rows |
+|---|---|
+| Records | `GET /crm/<kind>` and `GET /crm/<kind>/{record_id}` for `leads`, `deals`, `contacts` and `organizations` (8 rows) |
+| Modules | `GET /crm/modules`, `GET /crm/modules/{module}/records`, `GET /crm/modules/{module}/records/{record_id}` and its `/timeline` |
+| Reports | `GET /crm/reports/pipeline`, `/funnel`, `/win-loss` and `/owners` |
+| Pipeline | `GET /crm/pipeline`, `GET /crm/pipelines` and `GET /crm/aggregate/stage-dwell` |
+| Shape | `GET /crm/fields/{entity}`, `GET /crm/fields-search`, `GET /crm/catalogue`, `GET /crm/statuses/{kind}`, `GET /crm/lost-reasons` and `GET /crm/mode` |
+| Other | `GET /crm/owners`, `GET /crm/activities/{activity_id}`, `GET /crm/change-history`, `GET /crm/deals/{deal_id}/contacts` and `GET /crm/views` |
+
+**The CRM class A GET rows that stay off, and why.**
+
+| Rows | Why |
+|---|---|
+| `GET /crm/aggregate` (`aggregate.py:1884`), `GET /crm/terms/resolve` (`terms.py:122`), `GET /crm/mapping/plans` (`mapping_plans.py:1240`) | Each one can write a row (`aggregate.py:1742`, `terms.py:165`, `mapping_plans.py:1245`) |
+| `GET /crm/notes/search` (`note_search.py:163`) | It embeds the query through the Router (`note_search.py:182`). That is a model call, and it costs money |
+| `GET /crm/questions` and `GET /crm/questions/ask` | Each writes the evidence cache (`questions.py:1586`) |
+| `GET /crm/export/<kind>.csv` (4 rows) | A file download. The record rows give the same data |
+| `GET /crm/<kind>/{record_id}/timeline` (4 rows) | Each also returns the subject and the snippet of the member's own mail (`activities.py:397`). Mail waits for SBX-2b |
+| `GET /crm/connection`, `GET /crm/sync/status`, `GET /crm/sync/health`, `GET /crm/cutover/status` | Connection and sync state. A tool needs none of it |
+| The 15 admin rows: `field-rules`, `conversion-mapping`, `analysis/status`, `cutover/preview`, `mapping/plans/{version}`, `pipelines/preview`, `source-profile`, `questions/{question_id}/sum-check`, `settings`, `settings/counts`, `mapping/suggestions`, and the four above that are admin too | The setup of the CRM, for an admin in CRM settings (§19.9) |
+| `GET /crm/questions/mine`, `GET /crm/rules`, `GET /crm/digests`, `GET /crm/verified-queries/{key}`, `GET /crm/sync/short-reads`, `GET /crm/sync/mirror-age` | The questions, the rules and the digests of the CRM assistant, and sync counts. They are not record data. A later slice may open one with a reason |
+| `POST /crm/mapping/preview`, `POST /crm/verified-queries/match` | Class A, but not GET. SBX-2 opens GET only |
+
+**The Projects rows that SBX-2 opens (38).** Each one reads through the
+visibility seam of Projects, writes nothing, calls no model and returns
+JSON. 17 of them are in `MCP_ROUTES` today, so outside agents already read
+them. Each path below starts with `/projects`.
+
+| Family | Rows |
+|---|---|
+| In `MCP_ROUTES` (17) | `/tree`, `/nodes/{project_id}`, `/nodes/{project_id}/updates`, `/tasks`, `/tasks/stats`, `/tasks/{task_id}`, `/tasks/{task_id}/timeline`, `/tasks/{task_id}/attachments`, `/tasks/{task_id}/relations`, `/assignable-members`, `/nodes/{project_id}/statuses`, `/nodes/{project_id}/types`, `/nodes/{project_id}/fields`, `/nodes/{project_id}/tags`, `/plan/order`, `/plan/analysis`, `/search` |
+| Summaries and views (5) | `/summary`, `/nodes/{project_id}/summary`, `/nodes/{project_id}/views`, `/calendar`, `/intake` |
+| The member's own (6) | `/my/project`, `/my/contexts`, `/my/areas`, `/my/reminders`, `/my/today`, `/notifications` |
+| Analytics (4) | `/analytics/stuck`, `/throughput`, `/finished` and `/load` |
+| Reports (5) | `/reports`, `/reports/templates`, `/reports/subjects`, `/reports/{report_id}` and `/reports/{report_id}/render` |
+| Recurrence (1) | `/tasks/{task_id}/recurrence` |
+
+- `/tasks/{task_id}/attachments` returns metadata only (`attachments.py:404`).
+  The bytes route `GET /projects/attachments/{attachment_id}/{filename}` is
+  class X, so it stays off.
+- The analytics and report rows filter their own answer by the reader's
+  permissions. That is the route's own check, and the door keeps it.
+
+**The Projects class A GET rows that stay off (38), and why.**
+
+| Rows | Why |
+|---|---|
+| `/tasks/{task_id}/refs` (`refs.py:498`) | Its default `refresh=true` calls GitHub and can write a task, its activities and its runs (`refs.py:404`) |
+| `/nodes/{project_id}/grants`, `/audience`, `/authorities` | Grant data (§19.11, D-PM-40) |
+| `/nodes/{project_id}/status-set` | It names projects with no visibility check (`admin.py:908`) |
+| `/assigned-to-me`, `/my/inbox`, `/my/tasks/{task_id}`, `/my/tasks/{task_id}/lanes`, `/my/calendar`, `/my/led` | These read by assignment or lead, with no call of the visibility seam (`MY_TASKS_FROM`, `personal.py:1284`). No door reads them today. A later slice opens one after a review |
+| `/assignees` (`assignees.py:184`) | It gives the skills and `away_today` of each person to every member (`assignees.py:228`, `:270`) |
+| `/decisions`, `/people/names`, `/people/reach`, `/tasks/{task_id}/candidates`, `/candidates`, `/reports/{report_id}/recipients`, `/tasks/{task_id}/watchers`, `/nodes/{project_id}/watchers`, `/templates` | Each one names other people, their absences or their skills, or an item of a hidden project |
+| `/analytics/capacity`, `/analytics/outlook`, `/analytics/conflicts`, `/analytics/rebalance`, `/analytics/dataset` | Each gives HR data (absences, hours, load of people) to a reader who holds `admin:members:read`. A later slice may open one, with its own review |
+| `/nodes/{project_id}/cycles`, `/cycles/{cycle_id}`, `/nodes/{project_id}/vocabulary/reach` | Each counts items that the member cannot see. No door reads them today |
+| `/tasks/{task_id}/agent-runs`, `/agent-runs`, `/agent-runs/{run_id}`, `/{project_id}/agent-summary`, `/agents/overview`, `/agents/{agent_key}/runs`, `/needs-attention`, `/agent-questions` | The surface of agent runs and questions. `/agent-runs/{run_id}` can write `read_at` (`agent_runs.py:3138`) |
+| `/export/tasks.csv` | A file download |
+| `POST /projects/reports/preview` | Class A, but not GET |
+
+**3. The trigger and the order of the checks.**
+
+- **The header.** `X-Sandbox-Capability: msbx_<token>`. The token is
+  `secrets.token_urlsafe(32)`, 43 characters, so the value matches
+  `^msbx_[A-Za-z0-9_-]{43}$`. The header is not `Authorization`, because
+  branch 1 reads that header. A separate name keeps the trigger a test of a
+  header name, as branch 0's `X-Agent-` prefix is.
+- **The trigger.** Any header whose name starts with `x-sandbox-`, in any
+  case. A second header cannot hide the first, as `_is_agent_request`
+  (`deps.py:410`) does it.
+- **The place.** The sibling runs FIRST in `get_current_user`
+  (`deps.py:1145`), before branch 0 at `:1176`. The sibling decides each
+  request that triggers it. It NEVER falls through to branch 0, 1a, 1b or 2.
+- **One credential only.** The sibling refuses with 401 a request that
+  also carries `Authorization` (any value, a valid internal bearer too),
+  `X-User-Email`, `X-User-Role`, `X-Actor-Via`, any `X-Agent-` header, a
+  second `X-Sandbox-Capability`, or another `X-Sandbox-` header. So
+  `X-User-Email` never reaches branch 1a.
+
+The steps, in the order that the code runs them:
+
+1. `SANDBOX_DOOR_ORGS` is not empty. Else 401, with no database read and no
+   Redis call.
+2. The header shape and the one-credential rule. Else 401.
+3. The lookup (decision 6) finds a live row: not revoked, and before
+   `expires_at`. Else 401. A database outage answers the one 503 of
+   `_identity_unavailable` (`deps.py:261`), with `Retry-After: 2`. Any other
+   failed read is a 401, as step 4 of branch 0 says.
+4. `SANDBOX_DOOR_ORGS` names the row's organization, or it is `*`. Else 401.
+5. The method is GET. Else 403 `sandbox_read_only`.
+6. The pair of the method and `_matched_template(request)` (`deps.py:1426`)
+   is in `SANDBOX_ROUTES`. A class X row of `SANDBOX_APPS` gets 403
+   `sandbox_route_excluded`. Any other pair gets 404 `sandbox_route_unknown`.
+7. The row's `read_scopes` hold the read scope of the pair's app (decision
+   7). Else 403 `sandbox_scope`.
+8. The query parses, with no repeated key, through `agent_signing.query_pairs`.
+   Else 422 `sandbox_bad_query`. Then the page cap. A value of `limit`,
+   `page_size` or `per_lane` passes only when it matches `^[0-9]{1,3}$` and
+   is 100 or less. Any other value of these keys gets 422 `sandbox_page_cap`.
+9. The call cap (decision 9). Else 429. A Redis outage gives 503.
+10. `_with_resolved_access` (`deps.py:244`) resolves the member of the ROW.
+    The resolved organization must equal the row's, and the access must be
+    active. Else `clear_tenant()` and 401, or the 503 of an outage, as step
+    7 of branch 0 does.
+11. The sibling returns the member's `UserContext` with a new field
+    `sandbox: SandboxScope | None` (`acb_auth/roles.py:81`). It holds the
+    run, the thread, the phase, the app id, the version and the read scopes.
+    It never holds the token or its hash. `agent` stays `None`, because a
+    capability has no pins and no personal switch.
+
+No step before step 10 binds a tenant. So a refused request leaves no tenant
+bound.
+
+**Each refusal raises.** The sibling raises an `HTTPException` for each
+refusal. It never returns the anonymous context. Branch 0 returns that
+context, but `require_authenticated` (`deps.py:1481`) lets an anonymous
+context through on a template of its `public` list. So a request with a
+capability never reaches a public route. A WebSocket route gets no
+`Request`, so the sibling does not run there. Such a request is then
+anonymous, and that route's own check refuses it.
+
+The sibling does not call `_bind_session_member`, because no row of
+`SANDBOX_ROUTES` calls a model (decision 2).
+
+**The log level.** A refusal before step 3 logs at info, because anybody on
+the network can cause it. A refusal after step 3 logs at warning, as
+`_UNSIGNED_REFUSALS` (`deps.py:436`) splits branch 0.
+
+**The digest.** The two new functions that see the request,
+`_is_sandbox_request` and `_sandbox_user`, join `_BRANCH_ZERO`
+(`tests/unit/test_tenant_request_binding.py:238`). The helpers that do not
+see the request join `_BRANCH_ZERO_HELPERS`. So the scan, the tripwire and
+the ONE digest pin (`_BRANCH_ZERO_DIGESTS`, `:1210`) cover the sibling.
+
+- Why not a second pin: the scan already refuses a request handed to a
+  function outside `_BRANCH_ZERO`. A second pin for the same boundary would
+  be a second fence that drifts.
+- The scan's header list gains `x-sandbox-capability`. It also gains the
+  four header names that the sibling reads only to refuse: `authorization`,
+  `x-user-email`, `x-user-role` and `x-actor-via`. The sibling reads the
+  `x-agent-` prefix through the header names, as branch 0 does.
+- `_TRIGGER_PREFIX` (`test_tenant_request_binding.py:360`) becomes a tuple:
+  `("x-agent-", "x-sandbox-")`.
+- The ContextVar of decision 9 stays. The scan allows only
+  `request.scope.get` on the scope, so the sibling cannot write the scope.
+- The pin changes in one commit. That commit carries the diff-reviewer
+  review and the independent verification of `external_agent_access.md`
+  §10.1.
+- `acb_auth/sandbox_capabilities.py` is outside that digest, as
+  `agent_tokens.read_live_connection` is. SBX-F6 pins its own digest in
+  `tests/unit/test_sandbox_door_identity.py`.
+
+**4. The flag: `SANDBOX_DOOR_ORGS`.**
+
+- A `Settings` field `sandbox_door_orgs: str = ""`, beside
+  `compute_run_orgs` (`settings.py:2568`). A comma list of organization ids,
+  or `*`. The default is empty, so the door is off.
+- Its one reader parses it as `api_connections_flag.py:22` does: split on
+  commas, trim, lower case.
+- The name ends in `_ORGS`, so a SIGHUP reloads it
+  (`gateway/flag_reload.py:60`). A flip ends no chat run.
+- **The org is not known before the lookup.** An empty flag refuses every
+  request at step 1, with no read. A flag with a value lets the lookup run,
+  and step 4 checks the row's organization.
+- **Why not the `tools:` entry.** `tools` is not in `MAF_CODING_TARGETS`
+  (`sandbox_broker.py:125`). `parse_maf_coding_scope` raises `ValueError`
+  on an unknown target, and the check then turns every target off (§0c
+  item 4). Also, the gateway does not read `MAF_CODING_SCOPE`. SBX-4 adds
+  `tools`, and `tools:<org>` stays the feature flag of a run (§6.2).
+  `SANDBOX_DOOR_ORGS` is the hot kill switch of the door.
+- `*` follows §0c: allowed only while self-serve signup is off. The code
+  holds the rule. `door_orgs()` reads `*` as empty while
+  `SELF_SERVE_SIGNUP_ENABLED` is on, as `compute_enabled` does
+  (`sandbox_broker.py:805`).
+- SBX-2 flips nothing. The production value joins the SBX-9 checklist, and
+  each flip there is an owner act (SBX-G1).
+- **A note for the SBX-9 checklist.** The Caddy block of the public host
+  strips each `X-Sandbox-` header, so the door answers on the private
+  network only. That is a `deploy/` change, and an owner act.
+- The builder adds one paragraph to `docs/flag_reload.md`, under "The flags
+  that reload", in alphabetical order:
+
+```text
+`SANDBOX_DOOR_ORGS` opens the sandbox door (`agent_sandbox.md` §12.2,
+SBX-2). Empty, each request with a capability gets 401 before any read. `*`
+lists every org, and it is allowed only while self-serve signup is off. Its
+one reader is `acb_auth.sandbox_capabilities.door_orgs`. A reload applies a
+change. The flip stays OWNER-GATE (`enforcement-flip`).
+```
+
+**5. A new exempt table, not a new `kind` of `agent_token`.**
+
+- `agent_token` has `connection_id NOT NULL` with a foreign key to
+  `agent_connection`, and a CHECK of three kinds
+  (`248_agent_access_tokens.sql:151`, `:169`, `:177`). A capability has no
+  connection. It has a run, a thread, a phase and two scope sets.
+- A new kind would relax a NOT NULL and a CHECK on a live auth table. It
+  would also give its columns a second meaning. §7.2 calls that a defect.
+- So SBX-2 adds `sandbox_capabilities`. It costs one exempt entry.
+  `test_tenant_coverage.py:89` raises the cap from 19 to 20. A new test there
+  pins the entry and its reason.
+
+The reason in `gen_tenant_migration.EXEMPT` (`scripts/gen_tenant_migration.py:70`):
+
+```text
+"sandbox_capabilities": "looked up by token hash before the tenant is known; returns organization_id so the door can bind it"
+```
+
+The columns are those of §7.5, with these rules:
+
+| Column | Rule |
+|---|---|
+| `token_sha256` | Primary key. `CHECK (token_sha256 ~ '^[0-9a-f]{64}$')` |
+| `organization_id` | Not null. Foreign key to `organization (id)`, `ON DELETE CASCADE` |
+| `member_email`, `run_id`, `thread_id` | Not null |
+| `app_id`, `version` | Null |
+| `phase` | Not null. `CHECK (phase IN ('build', 'smoke', 'run'))` |
+| `read_scopes`, `write_scopes` | Not null, default `'{}'`. `CHECK (phase <> 'smoke' OR cardinality(write_scopes) = 0)` |
+| `created_at` | Not null, default `now()`. New beside §7.5, for the next rule |
+| `expires_at` | Not null. `CHECK (expires_at <= created_at + interval '15 minutes')` |
+| `revoked_at` | Null |
+
+- Two indexes: `(organization_id, run_id)` for the revoke of a step, and
+  `(expires_at)` for the sweep.
+- **Grants.** No RLS policy, because the table is exempt. The file revokes
+  every privilege from `PUBLIC` and from `anon`, `authenticated` and
+  `service_role`, in the loop of `222_chat_session_exists.sql:96`. It grants
+  `SELECT, INSERT, UPDATE, DELETE` to `acb_app` in a guarded block. The
+  default privileges give the same, and the explicit grant makes the
+  intent readable.
+- **The number (R1).** Take the next free number at build time. `main`
+  holds 498, and the production ledger holds up to 501. So take a number
+  above both, and run `bash scripts/premerge.sh` before the merge.
+- **Expand only (R6).** A new table with `CREATE TABLE IF NOT EXISTS`. It
+  changes no table that exists, and old code names nothing new.
+
+**6. The capability API.** One module,
+`packages/acb_auth/acb_auth/sandbox_capabilities.py`. `acb_auth` holds it,
+because `deps.py` imports it and `acb_auth` cannot import the gateway.
+
+```python
+TOKEN_PREFIX = "msbx_"
+MAX_TTL_S = 900
+PHASES = ("build", "smoke", "run")
+
+async def mint(*, org: str, member: str, run_id: str, thread_id: str,
+               phase: str, read_scopes: Iterable[str],
+               write_scopes: Iterable[str] = (), app_id: str | None = None,
+               version: int | None = None, ttl_s: int = MAX_TTL_S) -> Minted
+async def revoke(token_sha256: str) -> bool
+async def revoke_step(*, org: str, run_id: str, phase: str) -> int
+async def sweep() -> int
+async def lookup(raw: str) -> Capability | None
+def door_orgs() -> frozenset[str]
+```
+
+- **`mint`** writes one row and returns `Minted(token, expires_at)`. The raw
+  token leaves the module once, in that value.
+- **One clock.** `mint` computes `expires_at` in the INSERT as `now() +
+  make_interval(secs => :ttl_s)`, and reads it back with `RETURNING`. The app
+  clock never sets `expires_at` or `created_at`. So the CHECK of decision 5
+  holds at `ttl_s=900` when the two clocks differ.
+- `mint` raises `ValueError` for each of these:
+  - `ttl_s` below 1 or above 900. The ceiling is 15 minutes (§5.1).
+  - A phase outside `PHASES`.
+  - A read scope outside `SANDBOX_READ_SCOPES` (decision 7).
+  - Any write scope. In SBX-2 `write_scopes` is always empty. SBX-3 opens it
+    for `build` and `run`, never for `smoke`.
+  - An `org` that is not a UUID, or an empty `member`, `run_id` or
+    `thread_id`.
+- **R5e.** `org` and `member` come from the run binding, never from tool
+  input or a request: `executor._current_run_org()` (`executor.py:514`) and
+  the run's member. The ONE caller is the broker step of SBX-4. Until SBX-4,
+  only tests call `mint`. SBX-F1 scans the source and fails when a module
+  outside `tests/` calls `mint`. SBX-4 names its one caller in that scan.
+- **`revoke`** sets `revoked_at` on one live row. **`revoke_step`** sets it
+  on each live row of one run and phase. The end of a step calls it.
+- **`sweep`** deletes each row 1 day after `expires_at` (§7.5). SBX-2 has no
+  caller of it, because only tests mint. SBX-4 schedules it with the first
+  real mint.
+- **`lookup`** copies `agent_tokens.lookup_token` (`agent_tokens.py:1942`).
+  It rejects a value with the wrong shape before any read. It hashes the
+  whole header value, the prefix `msbx_` included, with
+  `agent_tokens.hash_token` (`:206`). `mint` hashes the same string. One point read by the key
+  `token_sha256`, in an UNBOUND session (`agent_tokens._session`, `:699`), with
+  `expires_at > now() AND revoked_at IS NULL` in the WHERE. It binds no
+  tenant.
+- **One capability for each step.** SBX-4 needs this, because the build,
+  the smoke test and the run each have their own phase and scopes. The
+  broker passes the environment only at `docker run`
+  (`sandbox_broker.py:1292`), and `exec()` takes no environment (`:3488`).
+  So SBX-4 must deliver a fresh token for each step. Two ways exist: `docker
+  exec -e`, or a file in the run-data dir. That choice is SBX-4's work. The
+  API already allows any number of rows for one run.
+
+**7. The scopes.** The read scopes use the `<app>:read` words of
+`agent_oauth.py:79` and `App.read_scope` of the manifests.
+
+- `SANDBOX_READ_SCOPES` is the read scope of each app in `SANDBOX_APPS`:
+  `crm:read` and `projects:read`.
+- Each pair of `SANDBOX_ROUTES` comes from exactly one app. So it needs
+  exactly one scope: `read_scope` of that app.
+- Step 7 checks it with `agent_oauth.scope_holds` (`agent_oauth.py:120`),
+  the one cover rule.
+- A capability for a tool holds the scopes of its `tool.json` (SBX-4). In
+  SBX-2 a test passes them to `mint`.
+
+**8. The answers.** Each refusal has a fixed code. A route's own answer
+passes unchanged.
+
+| Case | Status | Code |
+|---|---|---|
+| The flag is empty | 401 | none |
+| No live row: unknown, expired or revoked | 401 | none |
+| The flag does not name the row's org | 401 | none |
+| A bad header shape, or a second credential | 401 | none |
+| A method other than GET | 403 | `sandbox_read_only` |
+| A class X row of `SANDBOX_APPS` | 403 | `sandbox_route_excluded` |
+| Any other pair off the list, or no matched route | 404 | `sandbox_route_unknown` |
+| The row lacks the app's read scope | 403 | `sandbox_scope` |
+| A repeated query key, or a query that does not parse | 422 | `sandbox_bad_query` |
+| A page larger than 100 | 422 | `sandbox_page_cap` |
+| More than 600 calls in the step | 429 with `Retry-After` | `sandbox_call_cap` |
+| An answer larger than 4 MB | 422 | `sandbox_response_too_large` |
+| The member is no longer active, or in another org | 401 | none |
+| The route refuses the member | The route's own 403 or 404 | The route's own |
+| A database or Redis outage | 503 with `Retry-After: 2` | none |
+
+The 401 cases are alike on purpose, so a stranger learns nothing. §5.2 said
+429 past each limit. SBX-2 keeps 429 for the call count only. The page and
+the size get 422, because the same request fails again. A retry after a
+wait would not help.
+
+**9. The limits.**
+
+- **Calls: 600 for each capability**, so for each step. A counter in
+  `tenant_redis`, in `organization_scope` of the ROW's organization, under
+  the namespace `sandbox_door_calls` and the key of the token hash. Its TTL
+  is the time to `expires_at` plus 60 s. It copies `_claim_door_read`
+  (`deps.py:694`). A refused call before step 9 does not count.
+- **Redis down: fail closed.** The door answers 503, as `_claim_door_read`
+  does (`deps.py:715`). The door is reachable from the network of the box,
+  so an open count is not safe.
+- **The page: 100 rows.** The MCP door clamps its pages in the edge
+  (`agent_edge/tools.py:1439`, `LIST_LIMIT_MAX = 100`). The sandbox door has
+  no edge. So step 8 refuses a query value above 100 for the keys `limit`,
+  `page_size` and `per_lane`. The CRM lists already cap `page_size` at 100
+  (`routes/crm/core.py:159`). `GET /projects/tasks` takes `page_size` up to
+  500 with `compact` (`tasks.py:586`), and the door refuses each value above
+  100 there too.
+- **What the page cap does not hold.** A route that takes no size key uses
+  its own size. `GET /crm/owners` returns up to 500 rows. The 4 MB cap of the
+  answer is the backstop for each such route.
+- **The answer: 4 MB.** A pure ASGI middleware, `SandboxDoorLimits` in
+  `apps/services/gateway/gateway/sandbox_door.py`, acts only on a request
+  that the sibling admitted. It reads a ContextVar that the sibling sets at
+  step 11. It buffers the answer up to 4,194,304 bytes. A larger answer
+  becomes the 422 of decision 8, and no byte of it leaves. The builder proves
+  with a test that the ContextVar reaches the middleware.
+- **The log line.** The sibling writes `sandbox.door.call` for each refusal.
+  The middleware writes it for each admitted call, after the answer
+  (decision 13).
+
+**10. Connector reads.** The owner decided on 2026-11-26, in chat:
+
+```text
+"sandbox code acts as the member through the one Metorite door; the gateway calls Zoho, Outlook and other connectors with the stored credential; no provider token or platform secret enters the sandbox; reads run, writes wait for the member's card."
+```
+
+- **CRM and Zoho, measured.** Each CRM row of SBX-2 reads the local tables.
+  `GET /crm/leads` reads `crm_leads` (`routes/crm/core.py:1714`).
+  `GET /crm/modules/{module}/records` reads `crm_module_records`
+  (`modules.py:683`). No class A GET calls Zoho at request time. Only the
+  sync engine and the connection test call `fresh_zoho_credential`
+  (`connection.py:659`). So in Mirror mode a tool reads the mirror, as old as
+  its last sync. The tool gets no live Zoho read, and no Zoho credential.
+- **Deferred by name.** Each is a slice of its own. The dispatcher makes
+  each task and writes its number.
+
+| Slice | Scope | It needs |
+|---|---|---|
+| **SBX-2b** (task 3991) | Email reads through the door, and the CRM timelines that hold mail | `email.py` of MCP-P2a (`external_agent_access.md` §19.10). It is not built. Then `sandbox=True` on the Email rows of class A |
+| **SBX-2c** (task 3992) | Calendar reads through the door | A Calendar manifest. §19.1 of `external_agent_access.md` says that Calendar joins only with its own manifest (MCP-P4, MCP-P5). A decision on its classes comes first |
+| **SBX-2d** (task 3993) | `POST /connections/api/{name}/read` (`routes/api_connections.py:539`), dark behind `API_CONNECTIONS_ORGS` | A rule for a class A POST on the door: a body cap, and no write. It also needs a manifest row for the route. The route needs `integrations:use:api-<name>` and `integrations:manage` today (`api_connections.py:194`) |
+
+**11. SBX-F2 is deny by default.** No route reaches the door unless its
+manifest row says `sandbox=True`. So a new gateway route needs no entry in
+an exclusion list. The coverage fences of each app already force a row with
+a class for each route: `tests/unit/test_crm_ui_actions.py` and
+`tests/unit/test_projects_door_coverage.py`. An exhaustive exclusion list
+would make each lane that adds a route edit a sandbox file. That list would
+also open a forgotten route by default. This replaces the last clause of the
+SBX-F2 row of §11 ("neither on the list nor in its exclusion list").
+
+**12. The stamp `X-Actor-Via`.** The stamp of §5.2, `sandbox:<slug>@v<n>`,
+holds `@`. `ACTOR_VIA_PATTERN` (`agent_oauth.py:983`,
+`^[a-z0-9][a-z0-9:_.-]{0,63}$`) refuses `@`. So `capture_actor_via`
+(`routes/projects/core.py:88`) would store an empty stamp.
+
+- SBX-2 reads only, so no route records a stamp.
+- SBX-2 refuses a request that carries its own `X-Actor-Via`, with 401
+  (decision 3).
+- **SBX-3 owns the fix.** The recommendation: change the stamp to
+  `sandbox:<slug>:v<n>`, which the pattern accepts. Do not widen the
+  pattern, because the MCP stamps and the timeline share it. SBX-3 also takes
+  the stamp from `UserContext.sandbox`, never from a header. The same change
+  applies to §8.4.
+
+**13. The log lines.** Through `acb_common.get_logger`, as §9.1 says.
+
+- `sandbox.capability`: org, run, thread, phase, event (`minted`, `revoked`,
+  `revoked_step` or `swept`), `expires_at` and the count of read scopes.
+- `sandbox.door.call`: org, run, phase, method, route template, status, the
+  refusal code or `allowed`, `call_n` (the counter after the call) and the
+  answer bytes. A refusal before step 3 has no org and no run.
+- No line holds the token, its hash, a header value, a query value or an
+  answer body. SBX-4 copies `call_n` and the bytes into `user_tool_runs`.
+- SBX-2 writes no audit row for a read. §8.4 names the acts that write one.
+
+#### Files (re-verify at dispatch)
+
+- New: `packages/acb_auth/acb_auth/sandbox_capabilities.py` (decision 6).
+- Changed: `packages/acb_auth/acb_auth/deps.py`. `_is_sandbox_request` and
+  `_sandbox_user` beside `_is_agent_request` (`:410`) and `_agent_user`
+  (`:952`). One line in `get_current_user` (`:1145`), before `:1176`.
+- Changed: `packages/acb_auth/acb_auth/roles.py`. `SandboxScope`, and the
+  field `sandbox` on `UserContext` (`:81`), default `None`.
+- Changed: `packages/acb_common/acb_common/app_manifests/base.py`. The field
+  `Route.sandbox` (`:172`) and its rule in `__post_init__` (`:213`).
+- Changed: `app_manifests/crm.py` and `app_manifests/projects.py`.
+  `sandbox=True` on each row of decision 2.
+- Changed: `app_manifests/__init__.py`. `SANDBOX_APPS`, `SANDBOX_ROUTES`
+  and `SANDBOX_READ_SCOPES`.
+- Changed: `packages/acb_common/acb_common/settings.py`. `sandbox_door_orgs`.
+- New: `apps/services/gateway/gateway/sandbox_door.py`, the middleware.
+  Changed: `gateway/main.py`, which installs it.
+- Changed: `scripts/gen_tenant_migration.py` `EXEMPT` (`:70`), and the
+  regenerated files under `infra/postgres/generated/`.
+- New: the migration `infra/postgres/<n>_sandbox_capabilities.sql` (decision
+  5).
+- Changed: `docs/flag_reload.md`, one paragraph (decision 4).
+- Changed tests: `tests/unit/test_tenant_request_binding.py` (the lists, the
+  header set and the digest), `tests/unit/test_tenant_coverage.py` (the cap
+  and the new test).
+- New tests: the four fence files below.
+
+#### Done when
+
+1. With `SANDBOX_DOOR_ORGS` empty, a request with a well-formed capability
+   gets 401. A spy on the session factory and on `tenant_redis` records no
+   call.
+2. R8, on a real database as the NOBYPASSRLS app role: a test mints a
+   capability for member M of org A with `crm:read` and `projects:read`.
+   `GET /crm/leads` and `GET /projects/tasks` answer 200 with M's rows. No
+   row of org B is in either answer, and org B has rows of both kinds.
+3. The same capability gets 401 after `revoke` and after `revoke_step`. A
+   test moves `created_at` and `expires_at` of the row back by 15 minutes
+   and 1 second with an UPDATE. Then the capability gets 401. `mint` with
+   `ttl_s=901` raises `ValueError`.
+4. A POST with a live capability gets 403 `sandbox_read_only`. A class X
+   pair (`GET /crm/export/all.zip`) gets 403 `sandbox_route_excluded`. A
+   class A row off the list (`GET /crm/aggregate`) gets 404
+   `sandbox_route_unknown`. A capability that the flag refuses gets 401 on a
+   template of the `public` list of `require_authenticated` too, and that
+   route does not run. Each answer leaves no tenant bound.
+5. A capability with `projects:read` only gets 403 `sandbox_scope` on
+   `GET /crm/leads`.
+6. The member and the org come only from the row. A request that adds
+   `X-User-Email` of another member, a valid internal bearer, an
+   `X-Agent-` header or its own `X-Actor-Via` gets 401. A spy on branch 1a
+   records no call.
+7. A member whose seat is no longer active gets 401, and no tenant stays
+   bound.
+8. `mint(phase="smoke", write_scopes=("crm:write",))` raises `ValueError`.
+   A direct INSERT of such a row fails on the CHECK. In SBX-2, `mint` with
+   any write scope raises `ValueError`.
+9. The 601st call of one capability gets 429 with `Retry-After`. With Redis
+   down, a call gets 503.
+10. A query `page_size=101`, `page_size=0100` or `page_size=1e2` gets 422
+    `sandbox_page_cap`. A query with
+    `page_size` twice gets 422 `sandbox_bad_query`. An answer of 4 MB plus 1
+    byte gets 422 `sandbox_response_too_large`, and none of its bytes leave.
+11. SBX-F2 passes: each pair of `SANDBOX_ROUTES` is a GET row of class A of
+    CRM or Projects that the live router serves. No pair is class B, C or
+    X, under `/agent-access` or a download, or one of the rows that decision
+    2 keeps off. `SANDBOX_ROUTES` holds exactly the 68 rows of decision 2:
+    30 of CRM and 38 of Projects.
+12. The digest pin of `test_tenant_request_binding.py` changed in a commit
+    that names the diff-reviewer review and the independent verification.
+13. The lines `sandbox.capability` and `sandbox.door.call` hold no token,
+    no hash and no answer text. A test captures each line and searches it
+    for the raw token and its hash.
+14. `test_tenant_coverage.py` passes with the cap at 20, and its new test
+    pins the entry of `sandbox_capabilities` and its reason.
+15. With `SANDBOX_DOOR_ORGS` set to org B only, a live capability of org A
+    gets 401. With `*` and `SELF_SERVE_SIGNUP_ENABLED=true`, a request gets
+    401, and a spy on the session factory records no read. A request with
+    another `X-Sandbox-` header, or with two `X-Sandbox-Capability` headers,
+    gets 401.
+
+#### Verification commands
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_sandbox_capability.py tests/unit/test_sandbox_routes_coverage.py tests/unit/test_sandbox_door_identity.py tests/unit/test_sandbox_door_log_lines.py tests/unit/test_tenant_request_binding.py tests/unit/test_tenant_coverage.py tests/unit/test_crm_ui_actions.py tests/unit/test_projects_door_coverage.py tests/unit/test_flag_doc_sorted.py -q -rs
+uv run ruff check packages/acb_auth packages/acb_common apps/services/gateway/gateway/sandbox_door.py
+uv run mypy packages/acb_auth/acb_auth/sandbox_capabilities.py packages/acb_auth/acb_auth/deps.py apps/services/gateway/gateway/sandbox_door.py
+```
+
+A run with any skipped test fails the slice. R8 needs the database.
+
+#### Fences
+
+| # | Test file | What it holds in SBX-2 |
+|---|---|---|
+| SBX-F1 | `tests/unit/test_sandbox_capability.py` | Done when 1, 3, 8 and 9, the R8 half of done when 2, and the source scan of the callers of `mint` |
+| SBX-F2 | `tests/unit/test_sandbox_routes_coverage.py` | Done when 11, and the rule of `Route.sandbox` in `__post_init__` |
+| SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | Done when 4 to 7, 10 and 15, and the digest of `sandbox_capabilities.py` |
+| SBX-F29 | `tests/unit/test_sandbox_door_log_lines.py` | Done when 13. It is a new file, because SBX-1 makes `test_sandbox_log_lines.py` |
+| — | `tests/unit/test_tenant_request_binding.py` | Done when 12: the scan, the tripwire and the one digest |
+| — | `tests/unit/test_tenant_coverage.py` | Done when 14 |
+
+The builder sees each new fence fail first. They are on auth and tenancy, so they
+also get mutation testing (`engineering_practice.md` §4).
+
+### 12.3 SBX-13 — the door client `metorite_door`
+
+**Board.** Metorite task 3428. Risk tier STANDARD: one module in the image,
+and no gateway change. It depends on SBX-2.
+
+**Scope.** One module that a tool imports to read Metorite as the member,
+through the door of §12.2. It goes in the sandbox image, read-only. It uses
+`requests` only.
+
+**Not in SBX-13.**
+
+- No write, and no held write. SBX-3 builds the hold, and a later slice
+  adds the write calls to the client.
+- No hosted name. `sandbox-api.metorite.com` waits for SBX-10.
+- No egress proxy and no network change. The real path waits for SBX-4 and
+  the proxy (see "The end-to-end proof").
+
+#### The decisions
+
+**1. Where the module lives.** `apps/services/orchestrator/sandbox/metorite_door.py`,
+beside `data_engine.py`.
+
+- The image copies it to the site-packages of the image's Python:
+  `/usr/local/lib/python3.12/site-packages/metorite_door.py`, root-owned,
+  mode 0444. Use one `COPY --chmod=0444` line, after the `pip install` RUN
+  of `Dockerfile.coding-sandbox:86-88`.
+- Why not `/opt/sandbox`: no line puts `/opt/sandbox` on `sys.path`, and the
+  image has no `PYTHONPATH`. `data_engine.py` runs with `python3 -I`
+  (`sandbox/data_engine.py:2734`), and `-I` leaves the script's directory
+  off `sys.path`. Site-packages stays on `sys.path` under `-I`.
+- Why not a `.pth` file: a `.pth` runs at each start of Python, and it adds
+  a second way to find code. A plain module in site-packages needs neither.
+- **Not in `SANDBOX_MODULES`.** That map (`acb_common/studio_runtime.py:41`)
+  must equal the pip list of `requirements.in`
+  (`tests/unit/test_coding_sandbox_packages.py:114`), and `metorite_door` is
+  not a pip package. So the old row of SBX-13 ("the image test (WS43-F25)
+  lists the module") changes. SBX-F22 pins the `COPY` line, as
+  `tests/unit/test_data_engine.py:1565` pins the line of `data_engine.py`.
+  Its Docker half imports the module under `-I`.
+
+**2. The door name.**
+
+- `DOOR_URL = "http://metorite-api.sandbox"`, port 80. The proxy of WS-43g
+  allows ports 80 and 443 only. The name is a constant of the module. The
+  client takes no host from input or from the environment.
+- HTTP, not HTTPS, on this hop. The hop is the org's own internal network
+  on the box, and the proxy forwards the name to the gateway. With HTTPS,
+  the image would need a certificate for a private name.
+- The hosted name `https://sandbox-api.metorite.com` is SBX-10's work. SBX-10
+  adds it as a second constant, picked by the backend, never by input.
+
+**3. The environment.** SBX-F22 says that the client reads no env value
+except `METORITE_API_TOKEN`. The precise rule:
+
+- The module's own code reads `os.environ` for `METORITE_API_TOKEN` only.
+  A missing value raises `DoorError("no_capability")` before any call.
+- WS-43g sets `HTTP_PROXY` and `HTTPS_PROXY` in the container, with the
+  grant token in the URL (`maf_coding_engine.md` §7.3). The client never
+  reads them itself. It leaves `requests.Session.trust_env` at its default,
+  `True`, so `requests` reads the proxy settings inside the library.
+- The client never sets `trust_env = False`, and never passes `proxies=`.
+  It never prints or logs an env value.
+- SBX-F22 scans the module's source. It fails on a read of `os.environ`,
+  `os.getenv` or `os.environb` with a key other than `METORITE_API_TOKEN`.
+  It also fails on `trust_env`, `proxies=`, or a URL that does not start
+  with `DOOR_URL`. A read of the proxy settings inside `requests` does not
+  count.
+
+**4. The calls.**
+
+```python
+class Door:
+    def __init__(self, timeout_s: float = 30.0) -> None
+    def get(self, path: str, params: dict | None = None) -> dict | list
+    def pages(self, path: str, params: dict | None = None,
+              page_size: int = 100, max_pages: int = 50) -> Iterator[dict]
+```
+
+- `get` sends one GET to `DOOR_URL + path`, with the header
+  `X-Sandbox-Capability`. It sends no other auth header. `path` must start
+  with `/` and hold no scheme, no host and no `..`.
+- `get` sends `allow_redirects=False`. A 3xx answer raises `DoorError` with
+  the code `redirect`.
+- **The paging contract.** `pages` reads a list route page by page. It
+  sends `page` and `page_size` for a CRM list, and `limit` and `offset` for a
+  route that takes them. A table in the module maps each paged route of
+  `SANDBOX_ROUTES` to three keys: its size key, its page or offset key, and
+  the key of the answer that holds the rows. The builder reads them from the
+  route. `page_size` is at most 100, the door cap.
+- SBX-F22 fails when a path of that table is not in `SANDBOX_ROUTES`. The
+  test imports `acb_common.app_manifests.SANDBOX_ROUTES`, and a skip is not
+  allowed. So whichever of SBX-2 and SBX-13 merges second adds this check.
+- It stops on an empty page, on a page shorter than `page_size`, or after
+  `max_pages`. It yields each row. It never asks for a page above the door
+  cap.
+
+**5. The errors.** Each failed call raises `DoorError`, with `status`,
+`code` and `retry_after`. Each `code` comes from the answer, or the client
+sets a fixed one.
+
+| Answer | `DoorError.code` | What the client does |
+|---|---|---|
+| 401 | `not_allowed` | Raises at once. The capability is dead, or the door is off |
+| 403 | The door code, such as `sandbox_read_only` or `sandbox_scope`, or `forbidden` for a route's own 403 | Raises at once |
+| 404 | `sandbox_route_unknown`, or `not_found` for a route's own 404 | Raises at once |
+| 3xx | `redirect` | Raises at once. It never follows a redirect |
+| 422 | `sandbox_bad_query`, `sandbox_page_cap`, `sandbox_response_too_large` or `bad_input` | Raises at once |
+| 429 | `sandbox_call_cap` | Raises with `retry_after`. It never sleeps and retries, because the cap holds for the whole step |
+| 503 | `unavailable` | Retries once after `Retry-After`, then raises. It waits 5 s at most, whatever `Retry-After` says |
+
+The text of `DoorError` holds the status, the code and the path. It never
+holds the token or the body of the answer.
+
+**6. Held writes are out.** A write method is not in the client. SBX-3 adds
+the hold, and a later slice adds the write calls with the held answer of
+§5.3.
+
+#### The end-to-end proof
+
+Before WS-43g exists, the broker runs each container with `--network none`.
+So no tool can reach a real door yet.
+
+- **SBX-13's own `sandbox_docker` test** builds a test-only Docker network
+  outside the broker. On it, a stub door container answers to the alias
+  `metorite-api.sandbox` and binds port 80. The stub checks the header and
+  serves two pages.
+  The tool container joins the same network, imports `metorite_door`, and
+  reads both pages with the capability. The broker is not in the test.
+- **The real proof moves to SBX-4, with WS-43g.** A tool in a broker
+  container reads two pages through the proxy and the real door. This is
+  the "two pages through the door" of the old done-when.
+- **The forward is not in WS-43g's scope today.** The scope of WS-43g
+  (`maf_coding_engine.md` §11, WS-43g, and §7.3) has no forward of
+  `metorite-api.sandbox` to the gateway, and no `run` profile. Its done-when
+  8 even drops each packet from a sandbox to the host. CA-4 (task 1032) is
+  WS-43g. This spec gives the forward and the `run` profile to the slice
+  that builds WS-43g. Its lane must add them to its scope. The forward
+  passes only a request that carries `X-Sandbox-Capability`.
+
+#### Files (re-verify at dispatch)
+
+- New: `apps/services/orchestrator/sandbox/metorite_door.py`.
+- Changed: `apps/services/orchestrator/Dockerfile.coding-sandbox`, one
+  `COPY --chmod=0444` line after `:86-88`.
+- New: `tests/unit/test_sandbox_door_client.py` (SBX-F22), with a
+  `sandbox_docker` half.
+
+#### Done when
+
+This list replaces the done-when cell of the SBX-13 row in the §12 table.
+The proof with the real door moves to SBX-4.
+
+1. SBX-F22 passes: the source scan of decision 3, and no host but
+   `DOOR_URL`.
+2. A unit test with a fake transport reads 250 rows in three pages of 100,
+   100 and 50. No request asks for more than 100 rows.
+3. A unit test maps 3xx, 401, 403, 404, 422, 429 and 503 to the
+   `DoorError` codes of decision 5. The client does not retry a 429. It
+   retries a 503 once, and waits 5 s at most.
+4. With `METORITE_API_TOKEN` unset, the first call raises `no_capability`,
+   and the fake transport records no request.
+5. The `sandbox_docker` test of "The end-to-end proof" reads two pages from
+   the stub door.
+6. The Dockerfile holds the one `COPY --chmod=0444` line. In the image, as
+   uid 1000, `python3 -I -c "import metorite_door"` exits 0, and the file is
+   mode 0444 and owned by root.
+
+#### Verification commands
+
+```bash
+timeout 900 uv run pytest tests/unit/test_sandbox_door_client.py -q -rs
+timeout 900 uv run pytest tests/unit/test_sandbox_door_client.py -q -rs -m sandbox_docker
+uv run ruff check apps/services/orchestrator/sandbox/metorite_door.py
+uv run mypy apps/services/orchestrator/sandbox/metorite_door.py
+```
+
+A skip fails the slice. The `sandbox_docker` half runs on
+`.github/workflows/sandbox-docker.yml`, as §11 says.
+
+#### Fences
+
+| # | Test file | What it holds |
+|---|---|---|
+| SBX-F22 | `tests/unit/test_sandbox_door_client.py` | Done when 1 to 6. Its `sandbox_docker` half holds 5 and 6 |
+
 ---
 
 ## 13. Owner gates

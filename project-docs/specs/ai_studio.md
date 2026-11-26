@@ -1839,6 +1839,8 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 
 **The limits for each version (proposed).** Dynamic Apps sets 64 MB of heap, a 30 s run, a 1 MiB request and a 4 MiB response. It also sets 4 MiB of source, 2,000 files and 256 dependencies. The numbers below stay inside the ceilings that the spec already holds. They stay proposals until L6 measures them.
 
+**Status (L6a, task 2417).** The limits and the codes are data only, in `studio_limits.py`, `limits.ts` and `codeErrors.ts`, with a golden file. Only the source size has a refusal test today. The other limits wait on L1, L7, SBX-9 and B5.
+
 | Limit | Screen (kind `browser`) | Server code (kinds `sandbox` and `packages`) | Ceiling today |
 |---|---|---|---|
 | Source of one version | 256 KiB in at most 100 files | 256 KiB in at most 100 files | `app_versions.files` holds 262,144 bytes (`agent_sandbox.md` §7.2) |
