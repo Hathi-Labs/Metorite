@@ -345,6 +345,17 @@ def test_a_function_that_one_side_lacks_gives_no_evidence_there(repo):
     assert "tests/t.py::test_g" in res.stderr and "tests/t.py::test_a" not in res.stderr
 
 
+def test_a_rerun_with_no_time_tells_the_operator(repo):
+    """Review of PR 2407 at e349723573, P3: rerun_fail's notes went to stdout, which the
+    callers capture as the id list. They go to stderr, so the operator sees them.
+    A re-run cap under 15 s skips the re-run and says so."""
+    _both_sides_change_shared(repo)
+    res = _run(repo, PREMERGE_AFFECTED_CMD=_FAILS, PREMERGE_RERUN_CMD="true", PREMERGE_RERUN_TIMEOUT="1")
+    assert res.returncode == 1, res.stdout
+    assert "No time is left for a re-run" in res.stderr
+    assert "  tests/t.py::test_a" in res.stderr
+
+
 def test_a_collection_error_red_on_both_sides_does_not_block(repo):
     """Review of 2026-11-15, finding 1: an id with no `::` is a whole file. The file alone decides."""
     _both_sides_change_shared(repo)
