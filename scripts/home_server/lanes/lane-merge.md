@@ -147,6 +147,8 @@ d. **The gate**, in the pull request's worktree. When the lane left none, make
    - Exit 1: the merge with today's `main` fails a fence or conflicts. Comment
      the output on the task, release it, and go on. Do not resolve
      conflicts yourself.
+   - Exit 75: the release freeze (`scripts/release_freeze.sh`). Do not merge.
+     Run the gate again after the release run of the slot starts.
 e. **Merge.** Right before the merge, run `git fetch origin main`. When `main`
    moved since step d, run `premerge.sh` again. Then run
    `gh pr merge <n> --squash`. Never pass `--admin` or `--auto`.

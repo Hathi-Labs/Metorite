@@ -148,6 +148,14 @@ function humanDuration(seconds: number): string {
   return `${seconds}s`;
 }
 
+/**
+ * Vertical distance between nodes that the editor places. A card is at most
+ * 152 px tall at default and comfortable density, so 180 leaves a gap of 28 px
+ * or more. A saved workflow can hold a pitch of 160 px, and the card fits that
+ * too. Fence: `e2e/workflow-card-height.spec.ts`.
+ */
+const NODE_PITCH = 180;
+
 /** Single-line clip for card text — the card clamps, this stops giant strings. */
 function clip(value: unknown, max = 160): string {
   const s = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -483,7 +491,7 @@ function EditorInner({ id }: { id: string }) {
       }
       if (!where) {
         const maxY = nodes.reduce((acc, n) => Math.max(acc, n.position.y), 0);
-        where = { x: 140, y: maxY + 160 };
+        where = { x: 140, y: maxY + NODE_PITCH };
       }
       const first = where;
 
@@ -492,7 +500,7 @@ function EditorInner({ id }: { id: string }) {
         ...chain.map((d, i) => ({
           id: ids[i],
           type: "ccNode",
-          position: { x: first.x, y: first.y + i * 160 },
+          position: { x: first.x, y: first.y + i * NODE_PITCH },
           data: {
             label: d.label,
             nodeType: d.nodeType,
