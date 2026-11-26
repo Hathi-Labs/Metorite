@@ -75,7 +75,8 @@ def studio_tool_names() -> frozenset[str]:
 
     ``owner_tool_names`` reads a ``config.json``, and this owner has none. The
     set holds the 23 tools of ``studio``, the two of ``studio-workflows``, the
-    two of ``studio-repair`` and the one of ``studio-share``, so an unknown tool
+    two of ``studio-repair``, the one of ``studio-share`` and the six of
+    ``studio-apps`` (PAR-9), so an unknown tool
     of the family never maps to email."""
     from acb_skills.skill_families import SKILL_FAMILIES
 

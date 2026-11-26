@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -59,12 +60,24 @@ async def one_tick(
     return out
 
 
-async def run_forever(reader: TallyReader, store: CopyStore, settings: Any) -> None:
+async def run_forever(
+    reader: TallyReader,
+    store: CopyStore,
+    settings: Any,
+    allowed: Callable[[], bool] | None = None,
+) -> None:
     """The loop that ``serve`` starts. It never raises: a failed round is
-    logged, and the next round tries again."""
+    logged, and the next round tries again.
+
+    ``allowed`` (TLY-4, §3.8.13 point 6): when it says no, the round copies
+    nothing. In link mode the copy runs only while a confirmed link exists,
+    so a Disconnect that deleted the copy is not undone at the next round."""
     full_day: dict[str, date] = {}
     while True:
         try:
+            if allowed is not None and not allowed():
+                await asyncio.sleep(max(60, int(settings.copy_interval_min) * 60))
+                continue
             result = await one_tick(reader, store, settings, full_day=full_day)
             if result:
                 log.info("local copy round: %s", result)
