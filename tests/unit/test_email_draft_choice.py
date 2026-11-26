@@ -562,6 +562,22 @@ async def test_the_plain_card_names_each_mail_and_counts_right(box, monkeypatch,
     assert out.startswith("Trashed 3 message(s): 1 draft(s) and 2 other message(s).")
 
 
+@pytest.mark.asyncio
+async def test_the_plain_card_counts_each_staying_draft_that_it_cuts(box, monkeypatch):
+    """With no rows card, a long list of staying drafts says how many it cut."""
+    monkeypatch.setattr("acb_skills.ask_tools.rows_card_channel_open", lambda: False)
+    for n in range(draft_choice.MAX_DRAFTS + 2):
+        mid = f"77777777-7777-4777-8777-{n:012d}"
+        box.rows[mid] = _draft(mid)
+    card = _card(monkeypatch, True)
+    await agents.manage_inbox("trash", [CHAT_DRAFT])
+    context = card.shown[0]["context"]
+    staying = context.split("These matching drafts stay in Drafts:")[1]
+    # The pair's other draft and 22 more stay: 23, of which the card lists 20.
+    assert staying.count("\n- ") == draft_choice.MAX_DRAFTS
+    assert "+3 more" in staying
+
+
 def test_the_title_of_one_other_message():
     assert agents._trash_title(1, 1) == "Move 1 draft and 1 other message to Trash?"
     assert agents._trash_title(0, 2) == "Move 2 messages to Trash?"
