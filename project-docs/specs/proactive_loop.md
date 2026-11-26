@@ -8,6 +8,10 @@ project "Personalization & Memory System".
 hold in the code. It ships dark behind `MY_DAY_LEARN_ORGS`, default empty.
 `my_day_feed.md` records it under MD-9.
 
+**LOOP-4b is BUILT, 2026-11-26** (task 4006, no migration). The pins W1 to W5
+of §7.2 hold in the code. "Why am I seeing this" is dark behind the same flag,
+`MY_DAY_LEARN_ORGS`. The flip waits for the owner preview (D218).
+
 **LOOP-19 is BUILT, 2026-11-22** (task 3572, migration 496). A search of the
 sent mail takes a recipient and a file name. **LOOP-7 is BUILT** (task 3447,
 `finding_contract.py`). **LOOP-9 is BUILT, dark** (task 3449, §7.6), and its
@@ -816,7 +820,8 @@ the change is `apply_state` and `join` in `state.py`. `state.py` imports
 `feed_decide` inside the function, because `feed_decide` imports `feed`.
 
 **The pins of LOOP-4b ("Why am I seeing this", 2026-11-26, task 4006).** An
-audit on the same day checked each pin against the code.
+audit on the same day checked each pin against the code. LOOP-4b is built, and
+`routes/shell/feed_why.py` and `lib/shell/FeedCard.tsx` hold it.
 
 - **W1, the field.** The feed read adds `why_seen` to each card of its answer,
   only for an org in `MY_DAY_LEARN_ORGS`. It is a list of sentences, in the
@@ -1182,7 +1187,7 @@ rung. Each LOOP row names its board task, under task 3439.
 | **LOOP-2** (task 3442) | 1 | The brief in the app for HathiLabs: `BRIEF_ENABLED`, `BRIEF_ORGS` (the org id), `BRIEF_IN_APP`, and `NEXT_PUBLIC_BRIEF_CARD` in a release. The slice first reads `JOB_QUEUE` and `UNATTENDED_LEDGER` on the box | `core_brief.md` §10 rows 2 and 5 | LOOP-Q4 | `GET /brief/today` answers the owner's run. The `brief_runs` row reads `delivered`. My Day shows the card. The task holds the box, the flags and the log line | STANDARD · AGENT-SAFE after the owner preview, under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-3** (task 3443) | 1 | `CORE_EVENTS_ORGS` for HathiLabs. It gives a week of event evidence before rung 4 adds emit sites | `ai_studio.md` E12 | LOOP-Q4 | One person edit logs one `people.person.updated` event. The reload line is in the task | LOW · AGENT-SAFE under the `enforcement-flip` grant to 2026-11-30. After that date, OWNER-GATE |
 | **LOOP-4a** (task 3444) | 2 | MD-9, part 1, the server half: the flag `MY_DAY_LEARN_ORGS`, `affinity` from the one count read, and the `mutes` key on the feed. Dark | `my_day_feed.md` MD-9, §6.6, §7. The pins of §7.2 | None | The pins P1 to P6 of §7.2. Five cards of a kind shown and three "Not useful" give the affinity −12. A needs card never leaves the feed. A mute changes the feed and not the bell. One module reads the counts | STANDARD · AGENT-SAFE. The flip is `enforcement-flip` |
-| **LOOP-4b** (task 4006) | 2 | "Why am I seeing this": the card field, the sentences, the menu item and the box | `my_day_feed.md` MD-9. The pins of §7.2 | LOOP-4a | The pins W1 to W5 and their done-when | STANDARD · AGENT-SAFE, dark |
+| **LOOP-4b** (task 4006), BUILT 2026-11-26, dark | 2 | "Why am I seeing this": the card field, the sentences, the menu item and the box | `my_day_feed.md` MD-9. The pins of §7.2 | LOOP-4a | The pins W1 to W5 and their done-when | STANDARD · AGENT-SAFE, dark |
 | **LOOP-4c** (task 4008) | 2 | The sentence of "Why am I seeing this" for a lowered kind | This spec §7.2 W5, §7.3 | LOOP-4b, LOOP-5 | The sentence is true under L3 and L4 | STANDARD · AGENT-SAFE, dark |
 | **LOOP-5** (task 3445) | 2 | The class that the learner lowers for one member (§7.3, pins L1 to L10): the step down in `classes.py`, a `lowered` argument of `plan.interrupt_candidates`, `Learned.lowered`, `Applied.lowered` and `loop.Snapshot.lowered`, and the set in `loop.member_pass` and `routes.reach_preview` | `proactive_reach.md` §4.2, §5.1. This spec §7.3 | LOOP-4a | The pins L1 to L10. A member with 3 "Not useful" on a kind in 30 days gets the kind one class lower, and `GET /reach/preview` shows no interrupt of it. Another member of the org keeps the class. No path raises a class. With the flag off, reach plans as before. `TestTheLearnerLowers` in `tests/unit/test_reach_plan.py` holds five cases. The step never raises a class, and it moves one place. The kinds of L3 never move. Both branches of L4 apply the step. `pair` does not change. Two members with the same cards get different plans. An R8 case in `tests/unit/test_my_day_state_r8.py` lowers the kind for one member only | STANDARD · AGENT-SAFE, dark behind `MY_DAY_LEARN_ORGS`. The flip is `enforcement-flip` |
 | **MM-1** | 3 | The act record (task 2878), with the acts of §5.3 | `personalization.md` §19.4 | None | The fences of §19.10, and each new act has its seam | HIGH · AGENT-SAFE, dark |

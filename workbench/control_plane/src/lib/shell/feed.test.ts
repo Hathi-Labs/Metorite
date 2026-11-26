@@ -112,6 +112,8 @@ import {
   type FeedActDeps,
   FeedCard,
   OVERLAY_MIN_WAIT_MS,
+  WHY_LABEL,
+  WhyBox,
   expireFeedActs,
   carryFeedNeeds,
   cardMenuItems,
@@ -121,6 +123,7 @@ import {
   runFeedAct,
   watchOverlayEnds,
 } from "./FeedCard";
+import { MENU_CHOICES } from "./feedState";
 import { fetchNeeds, needsKey, runAct } from "./needs";
 import { ACT_HOLD_MS, acquireReader, actsSnapshot, pruneActs, removeRow } from "./needsActs";
 import { BELL_POLL_MS, joinNeedsPoll } from "./ShellBell";
@@ -1202,7 +1205,7 @@ describe("9. the life of a card (MD-2b)", () => {
     );
     const src = code(read_("./FeedCard.tsx"));
     expect(src).toContain('import { ContextMenu, type CtxItem } from "@/components/ContextMenu";');
-    expect(src).toMatch(/<ContextMenu x=\{menuAt\.x\} y=\{menuAt\.y\} autoFocus items=\{cardMenuItems\(onMenu\)\}/);
+    expect(src).toMatch(/<ContextMenu x=\{menuAt\.x\} y=\{menuAt\.y\} autoFocus items=\{cardMenuItems\(onMenu, onWhy\)\}/);
     // No second menu: no hand-rolled role="menu" in the card.
     expect(src).not.toMatch(/role="menu"/);
   });
@@ -1660,6 +1663,127 @@ describe("a feed row on a phone (task 1898)", () => {
     const tabs = code(read_("../../components/Tabs.tsx"));
     expect(tabs).toMatch(/role="tablist"/);
     expect(tabs).toMatch(/overflow-x-auto/);
+  });
+});
+
+// ── Why am I seeing this (MD-9, LOOP-4b, proactive_loop.md §7.2 W4) ─────────
+
+/**
+ * `e2e/my-day-feed.spec.ts` opens and hides the box in a browser. These hold
+ * the read, the visit, the menu item and the box.
+ *
+ * Mutations, run by hand (2026-11-26), each fails its test:
+ *   - drop `...readWhy(c.why_seen)` in `readCard`: "reads the sentences";
+ *   - keep every sentence in `holdGroup`: "drops the group sentence";
+ *   - put the item before "Dismiss" in `cardMenuItems`: "is last";
+ *   - drop `onWhy` from the `PhoneRowMenu` call: "passes it".
+ */
+describe("why am I seeing this (LOOP-4b)", () => {
+  const STATE = { state: "seen", updated: false, still_open: false, visits: 1, state_fp: "a41f09c2" };
+  const LINES = ["It is in Needs you, because it asks you to act.", "It is 2 days late.", "Its priority is Urgent."];
+  const asked = (group = "needs_you", why: unknown = LINES) =>
+    card("tasks:w1", group, { ...STATE, why_seen: why });
+  const names = (items: ReturnType<typeof cardMenuItems>) => items.map((i) => (i.kind === "sep" ? "-" : i.label));
+  const noop = () => {};
+
+  it("reads the sentences, strings only, and leaves the key out of an empty list", () => {
+    expect(asked().why_seen).toEqual(LINES);
+    expect(asked("needs_you", [LINES[0], 7, null, { text: "x" }, "", LINES[1]]).why_seen).toEqual([LINES[0], LINES[1]]);
+    for (const none of [[], [7], "It is in Now.", null, {}]) {
+      expect("why_seen" in asked("needs_you", none)).toBe(false);
+    }
+    // An org off the list sends no key.
+    expect("why_seen" in readFeedAnswer(ANSWER).cards[0]).toBe(false);
+  });
+
+  it("drops the group sentence from a card that the visit holds in another group", () => {
+    const visit = startVisit([asked("needs_you")]);
+    const moved = asked("now", ["It is in Now, because a time on it is close.", ...LINES.slice(1)]);
+    const [held] = visitCards(visit, [moved]).cards;
+    expect(held.group).toBe("needs_you");
+    expect(held.why_seen).toEqual(LINES.slice(1));
+    // The answer's own card stays whole.
+    expect(moved.why_seen).toHaveLength(3);
+    // The same group keeps every sentence.
+    expect(visitCards(visit, [asked("needs_you")]).cards[0].why_seen).toEqual(LINES);
+  });
+
+  it("drops an empty list, and adds no key to a card with none", () => {
+    const visit = startVisit([asked("needs_you")]);
+    const [one] = visitCards(visit, [asked("later", ["It is in Later, because you saw it 3 times in one day."])]).cards;
+    expect(one.group).toBe("needs_you");
+    expect("why_seen" in one).toBe(false);
+    const [none] = visitCards(visit, [card("tasks:w1", "later", STATE)]).cards;
+    expect("why_seen" in none).toBe(false);
+  });
+
+  it("holds the rule in the column, which draws the cards of the visit", () => {
+    const first = { cards: [asked("needs_you")], groups: [] };
+    const next = { cards: [asked("now")], groups: [] };
+    const none = { shown: FEED_SHOWN, marked: new Set<string>(), hidden: new Set<string>() };
+    const view = columnView(next, columnView(first, null, none).visit, none);
+    expect(view.groups.flatMap((g) => g.cards)[0].why_seen).toEqual(LINES.slice(1));
+  });
+
+  it("is last in the card menu, after a separator, and only with onWhy", () => {
+    expect(names(cardMenuItems(noop))).not.toContain(WHY_LABEL);
+    const items = cardMenuItems(noop, noop);
+    expect(names(items)).toEqual([...names(cardMenuItems(noop)), "-", "Why am I seeing this"]);
+    const last = items[items.length - 1];
+    expect(last.kind === "item" && last.icon).toBeTruthy();
+    // It is no row of the menu acts: those write state.
+    expect(MENU_CHOICES.map((c) => c.label)).not.toContain(WHY_LABEL);
+  });
+
+  it("calls onWhy only, with no menu act and no request", () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+    const acted: unknown[] = [];
+    let opened = 0;
+    const items = cardMenuItems((c) => acted.push(c), () => (opened += 1));
+    const last = items[items.length - 1];
+    if (last.kind === "item") last.onSelect();
+    expect([opened, acted.length, fetched.mock.calls.length]).toEqual([1, 0, 0]);
+  });
+
+  it("is last in the phone menu too", () => {
+    const c = asked();
+    const items = phoneMenuItems(c, c.acts, noop, noop, noop, undefined, noop);
+    expect(names(items).slice(-3)).toEqual(["Not useful", "-", WHY_LABEL]);
+    expect(names(phoneMenuItems(c, c.acts, noop, noop, noop))).not.toContain(WHY_LABEL);
+    // A card with no menu of its own has no item.
+    expect(names(phoneMenuItems(c, c.acts, noop, noop, undefined, undefined, noop))).not.toContain(WHY_LABEL);
+  });
+
+  it("draws one sentence on each line, and a Hide button", () => {
+    const html = renderToStaticMarkup(createElement(WhyBox, { lines: LINES, onHide: noop }));
+    expect(html).toMatch(/<div role="region" aria-label="Why am I seeing this" data-feed-why-box=""/);
+    expect([...html.matchAll(/<li[^>]*>([^<]*)<\/li>/g)].map((m) => m[1])).toEqual(LINES);
+    expect(html).toMatch(/<button[^>]*>(<[^>]+>)*Hide(<[^>]+>)*<\/button>/);
+  });
+
+  it("draws no box until the member asks, in either layout", () => {
+    for (const layout of ["card", "row"] as const) {
+      const html = renderToStaticMarkup(
+        createElement(FeedCard, { card: asked(), nowMs: null, onAct: noop, onMenu: noop, layout }),
+      );
+      expect(html).not.toContain("data-feed-why-box");
+      expect(html).not.toContain(LINES[0]);
+    }
+  });
+
+  it("passes it to PhoneRowMenu and to both menus, and focuses the opener on Hide", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect([...src.matchAll(/items=\{cardMenuItems\(onMenu, onWhy\)\}/g)]).toHaveLength(2);
+    expect(src).toMatch(/onWhy=\{onWhy\}/);
+    expect(src).toContain("phoneMenuItems(card, acts, onAct, go, onMenu, expandHere, onWhy)");
+    // A card with no sentence passes nothing, so its menu has no item.
+    expect(src).toMatch(/const onWhy = whyLines\.length > 0 \? \(\) => setWhyOpen\(true\) : undefined;/);
+    expect(src).toMatch(/setWhyOpen\(false\);\s*opener\.current\?\.focus\(\);/);
+    // The row's box takes a line of its own, at the end of the section.
+    expect(src).toMatch(/<WhyBox lines=\{whyLines\} onHide=\{hideWhy\} className="basis-full" \/> : null\}\s*<\/section>/);
+    // The card's box follows its why line.
+    expect(src).toMatch(/<span>\{card\.why\}<\/span>\s*<\/p>\s*\) : null\}\s*(\{\s*\}\s*)?\{whyOpen && whyLines\.length > 0 \? <WhyBox/);
   });
 });
 

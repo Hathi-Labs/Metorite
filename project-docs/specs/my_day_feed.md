@@ -74,8 +74,12 @@ OFF. PK-2 (email) and PK-3 (reminders) are not built.
 feed reads the kind mutes (§6.6) and the affinity of each kind (§7). It is
 dark behind `MY_DAY_LEARN_ORGS`, default empty, so the answer keeps its
 bytes. The reach loop and the briefs read the same feed, so a mute reaches
-them too. `proactive_loop.md` §7.2 holds the pins. The rest of MD-9 is not
-built.
+them too. `proactive_loop.md` §7.2 holds the pins.
+
+**MD-9, "Why am I seeing this", is BUILT, 2026-11-26** (LOOP-4b, task 4006,
+no migration). Each card of a listed org holds `why_seen`, and the card menu
+shows it in a box. It is dark behind the same flag. The rest of MD-9 is not
+built. That includes the judged group and weight in words.
 
 The rest of this file is not built. The open AGENT-SAFE tickets are MD-4,
 MD-6b, MD-6c (the build only), MD-7, MD-8, MD-9 and MD-12.
@@ -4162,8 +4166,10 @@ that the learner lowers. This spec stays the owner of the feed parts.
 before the order, and a needs card goes to Later at worst. The join adds the
 affinity of the main kind. `feed_decide._habits` is the one count read.
 
-"Why am I seeing this" is LOOP-4b (task 4006). `proactive_loop.md` §7.2 holds
-its pins W1 to W5. LOOP-4b is not built.
+**LOOP-4b is BUILT, 2026-11-26, dark** (task 4006). It is "Why am I seeing
+this", and `proactive_loop.md` §7.2 holds its pins W1 to W5. The words about
+the judged group and weight above are not built, because the judged path
+changes no live card (pin W5).
 
 The affinity of a needs card never goes below 0 in the score, so the
 per-app cut cannot drop it. The reach loop, the briefs and the chat brief read
