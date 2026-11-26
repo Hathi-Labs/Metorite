@@ -102,7 +102,7 @@ The owner set three conditions on the same day:
 2. **Make it revertable.** If we do not like it, we go back.
 3. **Staging first.** Production does not change until the owner says so.
 
-A merge reaches production every night at 21:30 UTC (WS-38). So condition 3
+A merge reaches production at the next release slot, three times a day (WS-38, D194). So condition 3
 cannot hold by "do not merge". It holds by a **gate**:
 
 - The new look lives beside the current one. Its tokens and classes apply

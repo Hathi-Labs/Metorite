@@ -82,11 +82,14 @@ from typing import Any
 
 import pytest
 
+from tests.unit import _r8_lists as r8_lists
+
 pytest.importorskip("sqlalchemy")
 
 from acb_common import studio_fields as sf
 from acb_common import studio_rules as sr
 from acb_common.db import get_engine, tenant_session
+from acb_common.studio_access import Viewer
 from acb_common.studio_rules import (
     ConstraintError,
     ConstraintViolation,
@@ -109,6 +112,9 @@ pytestmark = _DB_GATE
 _ROOT = Path(__file__).resolve().parents[2]
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc7b.test"
+#: C8a. The store takes a viewer. No object of this suite declares `access`,
+#: so each object is open and any member reads and writes it.
+_VIEWER = Viewer(ANA)
 BOB = f"bob.{TAG}@stuc7b.test"
 
 _ACCOUNT: list[dict[str, Any]] = [
@@ -221,7 +227,7 @@ async def _objects(org: str, pkg: str, rules: list[dict[str, Any]] | None = None
 
 async def _put(org: str, obj: store.StudioObject, *writes: Write, actor: str = ANA) -> list[Any]:
     async with tenant_session(org) as db:
-        return await store.apply_writes(db, actor, package_id=obj.package_id, writes=list(writes))
+        return await store.apply_writes(db, actor, package_id=obj.package_id, writes=list(writes), viewer=_VIEWER)
 
 
 async def _refused(org: str, obj: store.StudioObject, *writes: Write) -> BatchError:
@@ -331,10 +337,8 @@ def test_the_migration_is_expand_only_and_names_the_hot_types() -> None:
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """Its own removal from CI must fail here. The list names the pytest
     ARGUMENT, so a mention in a comment does not count."""
-    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
-    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
-    assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_rollup_r8\.py(?: \\)?$", block.group(1), re.M)
+    must_run = r8_lists.must_run()
+    assert "tests/unit/test_studio_rollup_r8.py" in must_run
 
 
 def test_r8_a_hot_relation_filters_by_id_and_takes_no_sort(world) -> None:
@@ -347,13 +351,13 @@ def test_r8_a_hot_relation_filters_by_id_and_takes_no_sort(world) -> None:
         async with tenant_session(world.a) as db:
             two = await store.query_records(
                 db, package_id=ent.package_id, object_id=ent.id,
-                filter=[{"field": "account", "op": "eq", "value": p1.id}])
+                filter=[{"field": "account", "op": "eq", "value": p1.id}], viewer=_VIEWER)
             other = await store.query_records(
                 db, package_id=ent.package_id, object_id=ent.id,
-                filter=[{"field": "account", "op": "ne", "value": {"id": p1.id}}])
+                filter=[{"field": "account", "op": "ne", "value": {"id": p1.id}}], viewer=_VIEWER)
             with pytest.raises(store.QueryError) as refused:
                 await store.query_records(db, package_id=ent.package_id, object_id=ent.id,
-                                          sort={"field": "account"})
+                                          sort={"field": "account"}, viewer=_VIEWER)
         return two.total or 0, other.total or 0, refused.value.code
 
     assert _go(world, go) == (2, 1, "query_op_not_allowed")
@@ -388,7 +392,7 @@ def test_r8_a_relation_filter_agrees_on_a_hot_field_and_on_a_cold_twin(world) ->
                 async with tenant_session(world.a) as db:
                     page = await store.query_records(
                         db, package_id=obj.package_id, object_id=obj.id,
-                        filter=[{"field": key, "op": op, "value": value}], limit=100)
+                        filter=[{"field": key, "op": op, "value": value}], limit=100, viewer=_VIEWER)
                 got = {by_id[r.id] for r in page.records}
                 if got != want:
                     wrong.append(f"{key} {op}: got {sorted(got)}, want {sorted(want)}")
@@ -510,7 +514,7 @@ def test_r8_an_update_that_changes_nothing_a_rule_reads_recomputes_no_parent(wor
             event.listen(eng, "before_cursor_execute", _on)
             try:
                 await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
-                    Write("update", ent.id, e.id, {"kind": "pending"})])
+                    Write("update", ent.id, e.id, {"kind": "pending"})], viewer=_VIEWER)
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
         return sum("sum(s.v_num)" in s for s in seen)
@@ -528,7 +532,7 @@ def test_r8_a_derived_write_rebuilds_the_hot_rows_and_names_the_actor(world) -> 
         async with tenant_session(world.a) as db:
             page = await store.query_records(
                 db, package_id=acc.package_id, object_id=acc.id,
-                filter=[{"field": "entries", "op": "gte", "value": 2}])
+                filter=[{"field": "entries", "op": "gte", "value": 2}], viewer=_VIEWER)
         assert [r.id for r in page.records] == [p.id]
         after = _row(world, p.id)
         assert after[0] == BOB and before[0] == ANA and after[1] == before[1] and after[2] > before[2]
@@ -545,14 +549,14 @@ def test_r8_a_single_delete_names_its_member_on_the_parent(world) -> None:
     async def go() -> tuple[str, Any, Any]:
         acc, ent = await _objects(world.a, world.pkg_a, [BAL])
         async with tenant_session(world.a) as db:
-            p = await store.create_record(db, BOB, acc.id, {"name": "x"}, package_id=acc.package_id)
+            p = await store.create_record(db, BOB, acc.id, {"name": "x"}, package_id=acc.package_id, viewer=_VIEWER)
             assert p is not None
         e = (await _put(world.a, ent, _entry(ent, p, days=4), actor=BOB))[0]
         before = _row(world, p.id)
         async with tenant_session(world.a) as db:
             with pytest.raises(store.ObjectStoreError):
-                await store.delete_record(db, " ", ent.id, e.id, package_id=ent.package_id)
-            assert await store.delete_record(db, ANA, ent.id, e.id, package_id=ent.package_id)
+                await store.delete_record(db, " ", ent.id, e.id, package_id=ent.package_id, viewer=_VIEWER)
+            assert await store.delete_record(db, ANA, ent.id, e.id, package_id=ent.package_id, viewer=_VIEWER)
         return p.id, before, _row(world, p.id)
 
     rid, before, after = _go(world, go)
@@ -593,7 +597,7 @@ def test_r8_fifty_children_of_one_parent_run_one_aggregate(world) -> None:
             event.listen(eng, "before_cursor_execute", _on)
             try:
                 await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
-                    _entry(ent, p, days=1) for _ in range(50)])
+                    _entry(ent, p, days=1) for _ in range(50)], viewer=_VIEWER)
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
         return sum("sum(s.v_num)" in s for s in seen), int(_data(world, p.id)["balance"])
@@ -758,13 +762,13 @@ def test_r8_a_refused_recompute_rolls_back_its_savepoint_and_keeps_the_callers_w
         p = await _acct(world.a, acc)
         async with tenant_session(world.a) as db:
             await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
-                _entry(ent, p, days=2, amount=_inr(10))])
+                _entry(ent, p, days=2, amount=_inr(10))], viewer=_VIEWER)
             with pytest.raises(BatchError) as refused:
                 await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
                     _entry(ent, p, days=5, amount=_inr(10)),
-                    _entry(ent, p, days=7, amount={"minor": 1, "currency": "USD"})])
+                    _entry(ent, p, days=7, amount={"minor": 1, "currency": "USD"})], viewer=_VIEWER)
             await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
-                _entry(ent, p, days=1, amount=_inr(10))])
+                _entry(ent, p, days=1, amount=_inr(10))], viewer=_VIEWER)
         return _rows(world, ent), _data(world, p.id), refused.value.cause.code
 
     rows, parent, code = _go(world, go)
@@ -841,7 +845,7 @@ def test_r8_the_parents_of_a_batch_lock_in_ascending_record_id(world) -> None:
             event.listen(eng, "before_cursor_execute", _on)
             try:
                 await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
-                    _entry(ent, rid, days=1) for rid in reversed(ids)])
+                    _entry(ent, rid, days=1) for rid in reversed(ids)], viewer=_VIEWER)
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
         return ids, [r for r in locks if r in ids]
@@ -932,7 +936,7 @@ def test_r8_two_writers_that_each_take_7_from_10_get_one_success_and_a_sum_of_3(
 
         async def take(db: Any) -> Any:
             return await store.apply_writes(db, ANA, package_id=ent.package_id,
-                                            writes=[_entry(ent, p, days=-7)])
+                                            writes=[_entry(ent, p, days=-7)], viewer=_VIEWER)
 
         return p, await _two_writers(world.a, take, take), ent
 
@@ -955,7 +959,7 @@ def test_r8_two_batches_that_name_the_objects_in_opposite_order_never_deadlock(
 
         async def batch(writes: list[Write]) -> Any:
             async with tenant_session(world.a) as db:
-                return await store.apply_writes(db, ANA, package_id=acc.package_id, writes=writes)
+                return await store.apply_writes(db, ANA, package_id=acc.package_id, writes=writes, viewer=_VIEWER)
 
         results = list(await asyncio.wait_for(asyncio.gather(
             batch([child, rename]), batch([rename, child]), return_exceptions=True), timeout=10))
@@ -1124,7 +1128,7 @@ def test_r8_a_rollup_queues_no_key_check(world) -> None:
             event.listen(eng, "before_cursor_execute", _on)
             try:
                 await store.apply_writes(db, ANA, package_id=acc.package_id, writes=[
-                    Write("create", acc.id, data={"name": "x"})])
+                    Write("create", acc.id, data={"name": "x"})], viewer=_VIEWER)
             finally:
                 event.remove(eng, "before_cursor_execute", _on)
         return sum("count(*)" in s or "sum(" in s for s in seen)

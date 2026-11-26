@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_common.assistant_profile import LANGUAGE_RULE_LINE
 
 agent_framework = pytest.importorskip("agent_framework", reason="agent_framework not installed")
 
@@ -112,6 +113,7 @@ def test_flag_on_the_model_reads_turns_and_memory_in_the_system_message(monkeypa
     head, _, now_line = system.rpartition("\n")
     assert head == (
         f"{_INSTRUCTIONS}\n{CACHE_BREAK}\n## Memory from past conversations\n{_MEMORY}"
+        f"\n{LANGUAGE_RULE_LINE}"
     )
     assert now_line.startswith("Now: "), now_line
     assert "(Asia/Kolkata)" in now_line, now_line

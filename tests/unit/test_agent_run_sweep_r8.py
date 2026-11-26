@@ -1054,3 +1054,73 @@ class TestTheTenancy:
         assert result.orgs == 2 and result.nudged == 2 and result.failed == 0
         assert str(_strands(w, run_a)[0].organization_id) == w.a
         assert str(_strands(w, run_b)[0].organization_id) == w.b
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task 1045b: a linked event is life for the sweep (agent_coordination.md)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# R7, the mutations. Each one turns the test below red:
+#
+# * 1045b-W1. ``F`` ``strand_fits_sql``: compare with ``last_activity_at``
+#   again. ``needs_agent`` still lists the run after the event.
+# * 1045b-W2. ``S`` ``_CLEAR_SQL``: compare with ``last_activity_at`` again.
+#   The tick clears nothing.
+# * 1045b-W3. ``F`` ``lease_held_sql``: read ``last_activity_at`` again. The
+#   run is still stranded after the event.
+
+LINKED_SHA = "f" * 40
+
+
+async def _linked_event(w: Any, org: str | None = None) -> int:
+    async with (tenant_engine_scope(w.p.app_url.render_as_string(hide_password=False)),
+                sweep.tenant_session(org or w.a) as db):
+        return await agent_runs.signal_linked_runs(
+            db, org or w.a, match="head_sha", key=LINKED_SHA, event="ci_passed")
+
+
+def _link(w: Any, task: str, org: str | None = None) -> None:
+    with w.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO pm_task_refs (organization_id, task_id, kind, provider, ref, url,"
+            " via, created_by, head_sha) VALUES (CAST(:o AS uuid), CAST(:t AS uuid),"
+            " 'pull_request', 'github', 'acme/widgets#31',"
+            " 'https://github.com/acme/widgets/pull/31', 'ui', :m, :sha)"),
+            {"o": org or w.a, "t": task, "m": ALICE, "sha": LINKED_SHA})
+
+
+@_DB_GATE
+class TestLinkedEvents:
+
+    async def test_1045b_a_linked_event_renews_the_lease_and_ends_the_strand(self, w):
+        """1045b done-when 3. A quiet run gets its first miss. A check event
+        on its linked pull request renews the lease: the strand stops fitting
+        at once, the stranded clause stops matching, and the next tick clears
+        the strand as ``new_activity`` and sends no bell."""
+        task = _fresh(w)
+        rid = _insert_run(w, task)
+        _link(w, task)
+        try:
+            first = await _sweep_org(w)
+            assert first.nudged == 1
+            [listed] = await _needs(w, w.alice)
+            assert listed["needs_agent"] == "stranded"
+            before = _run_row(w, rid)
+            assert await _linked_event(w) == 1
+            after = _run_row(w, rid)
+            assert after.last_activity_at == before.last_activity_at
+            assert after.last_signal_at is not None
+            # The derived rule stops at once, before any tick.
+            assert await _needs(w, w.alice) == []
+            assert await _stranded_rows(w) == []
+            cleared = await _sweep_org(w)
+            assert (cleared.cleared, cleared.nudged, cleared.recovered) == (1, 0, 0)
+            [old] = _strands(w, rid)
+            assert old.cleared_reason == "new_activity"
+            assert len(_nudges(w, task)) == 1
+            # The event of org B finds no run of org A.
+            assert await _linked_event(w, w.b) == 0
+        finally:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_task_refs WHERE task_id = CAST(:t AS uuid)"),
+                          {"t": task})

@@ -10,7 +10,9 @@ double-fire one tick. Missed ticks while the gateway was down fire once
 (the most recent one), not as a catch-up storm.
 
 The same loop also resumes runs parked at a long ``wait`` node whose deadline
-has passed (``scan_due_waits``) — one timekeeper for the app, not two.
+has passed (``scan_due_waits``) — one timekeeper for the app, not two. The org
+loop of that scan also starts the runs of a Studio timer that a record passed
+(``scan_due_timers``, STU-E9a). It adds no loop.
 
 Lifecycle: ``start_workflow_scheduler`` / ``stop_workflow_scheduler`` from
 the gateway lifespan (main.py).
@@ -20,10 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import time
 from datetime import UTC, datetime
 from typing import Any
+
+from acb_common.studio_query import QueryError
 
 # H4 / H-328 part (b): the cron loop — `_scan_once` / `scan_due_waits` run in a
 # supervised background task with no request and no member session, so there
@@ -35,7 +40,11 @@ from typing import Any
 # that one org with `_tenant_session(org)` for each step. A step never holds a
 # session across a commit, because a commit drops the bound tenant. The org of
 # a run or a workflow comes from the row, never from the ambient context.
-from gateway.routes.workflows import park, unattended
+# STU-E9a: the timer scan (`scan_due_timers`) runs in that same org loop, only
+# for an org that `STUDIO_ORGS` holds too. It binds no tenant and never calls
+# `triggers.dispatch_event`. It calls `start_run` with the org of the workflow
+# row. Fence: `tests/unit/test_workflows_start_run_org_fence.py`.
+from gateway.routes.workflows import human_step, park, unattended
 from gateway.routes.workflows.core import (
     _log,
     _tenant_session,
@@ -44,6 +53,7 @@ from gateway.routes.workflows.core import (
 )
 from gateway.routes.workflows.service import (
     _MEMBER_BLIND_REASON,
+    DuplicateDelivery,
     RunRejected,
     _member_blind_write_nodes,
     _organization_ids,
@@ -52,9 +62,55 @@ from gateway.routes.workflows.service import (
     resume_run,
     start_run,
 )
+from gateway.routes.workflows.triggers import BREACH_EVENT_TYPE, BREACH_OP, TIMER_ARM_KEY
 from sqlalchemy import text
 
 SCAN_INTERVAL_SECS = 30.0
+
+#: STU-E9a. The timer triggers that one pass reads for one org, and the
+#: breaches that it reads for each trigger, oldest due first. Both bound a
+#: backlog storm. A breach that a pass does not reach waits for the next one.
+TIMER_TRIGGERS_PER_PASS = 50
+TIMER_BREACHES_PER_TRIGGER = 20
+#: The ``started_by`` of the run of a breach.
+TIMER_STARTED_BY = "scheduler:timer"
+#: The first trigger id after which a pass reads, for each org. A pass that
+#: reads a full page moves it, so the next pass reads the next triggers.
+_timer_cursor: dict[str, str] = {}
+_NO_TRIGGER = "00000000-0000-0000-0000-000000000000"
+
+#: The timer triggers of the workflows of one org, by id. A disabled trigger
+#: and a workflow that is not published are read too, so the scan can disarm
+#: them (:func:`_timer_rows`).
+_TIMER_TRIGGERS_SQL = """SELECT t.id AS trigger_id, t.config, t.last_fired_at, t.enabled,
+       w.id AS workflow_id, w.name, w.owner_email, w.latest_version, w.variables,
+       w.status, w.organization_id
+  FROM workflow_triggers t
+  JOIN workflows w ON w.id = t.workflow_id
+ WHERE t.kind = 'event'
+   AND t.config -> 'filter' ->> 'op' = :op
+   AND w.organization_id = CAST(:org AS uuid)
+   AND t.id > CAST(:after AS uuid)
+ ORDER BY t.id
+ LIMIT :n"""
+
+#: Arm a LIVE timer trigger, or arm it again when its print changed. The DB
+#: clock is the arm time, and a record due at or before it never breaches.
+#: The compare-and-set on the old arm time keeps two workers from both moving
+#: it. Only :func:`_timer_breaches` runs it, after every check passed.
+_ARM_TIMER_SQL = """UPDATE workflow_triggers
+   SET last_fired_at = now(),
+       config = jsonb_set(config, '{timer_arm}', CAST(:print AS jsonb))
+ WHERE id = CAST(:id AS uuid)
+   AND last_fired_at IS NOT DISTINCT FROM CAST(:old AS timestamptz)"""
+
+#: Disarm a trigger that is not live for a reason that a read proves: it is
+#: disabled, its workflow is not published, its timer is gone or no longer
+#: fits, or a task node blocks it. When it is live again, the scan arms it at
+#: that time, so the records that fell due in between start no run.
+_DISARM_TIMER_SQL = """UPDATE workflow_triggers
+   SET last_fired_at = NULL, config = config - 'timer_arm'
+ WHERE id = CAST(:id AS uuid) AND last_fired_at IS NOT NULL"""
 
 _scheduler_task: asyncio.Task | None = None
 
@@ -297,6 +353,310 @@ async def _scan_org(org: str, now: datetime) -> int:
     return fired
 
 
+def _timer_of_config(config: dict[str, Any]) -> tuple[str, str, str] | None:
+    """``(package_id, object, rule)`` of a timer trigger, or None (STU-E9a).
+
+    The save path checks the shape (``crud._validate_event_filter``). This
+    check runs again on each read, so a row that raw SQL wrote fails closed.
+    """
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    if str(config.get("source") or "").strip() != RECORD_EVENT_SOURCE:
+        return None
+    flt = config.get("filter")
+    if not isinstance(flt, dict) or flt.get("op") != BREACH_OP:
+        return None
+    parts = tuple(flt.get(k) for k in ("package_id", "object", "timer"))
+    if not all(isinstance(p, str) and p.strip() for p in parts):
+        return None
+    package_id, object_name, rule = parts
+    return str(package_id), str(object_name), str(rule)
+
+
+def _timer_key_prefix(rule: str) -> str:
+    """The start of the delivery key of a breach: ``timer:<rule>:``. The key is
+    ``timer:<rule>:<record id>:<due ISO>``, and ``objects_store`` builds the
+    same text in SQL to leave out a breach whose run exists."""
+    return f"timer:{rule}:"
+
+
+async def _timer_triggers(org: str) -> list[Any]:
+    """One page of the timer triggers of *org*, after the cursor of the org. A
+    full page moves the cursor, and a short page starts the next pass at the
+    first trigger again. One short session."""
+    after = _timer_cursor.get(org, _NO_TRIGGER)
+    async with _tenant_session(org) as db:
+        rows = (
+            await db.execute(
+                text(_TIMER_TRIGGERS_SQL),
+                {"op": BREACH_OP, "org": org, "after": after, "n": TIMER_TRIGGERS_PER_PASS},
+            )
+        ).fetchall()
+    if len(rows) >= TIMER_TRIGGERS_PER_PASS:
+        _timer_cursor[org] = str(rows[-1].trigger_id)
+    else:
+        _timer_cursor.pop(org, None)
+    return list(rows)
+
+
+#: STU-E9a. A refusal of one trigger logs at most once in this many seconds.
+#: A refused trigger is read again on each pass, every 30 seconds.
+TIMER_WARN_EVERY_S = 600.0
+_timer_warned: dict[tuple[str, str], float] = {}
+
+
+def _warn_timer(row: Any, event: str, workflow_id: str) -> None:
+    """Log *event* for the trigger of *row*, at most once in
+    :data:`TIMER_WARN_EVERY_S` seconds. The line names the workflow only."""
+    key, now = (str(row.trigger_id), event), time.monotonic()
+    last = _timer_warned.get(key)
+    if last is not None and now - last < TIMER_WARN_EVERY_S:
+        return
+    _timer_warned[key] = now
+    _log.warning(event, workflow_id=workflow_id)
+
+
+async def _disarm(db: Any, row: Any, workflow_id: str, why: str) -> None:
+    """Clear the arm of one trigger that a read proved not live, and log once."""
+    if row.last_fired_at is not None:
+        await db.execute(text(_DISARM_TIMER_SQL), {"id": str(row.trigger_id)})
+        _log.info("workflows.timer_disarmed", workflow_id=workflow_id, reason=why)
+
+
+async def _timer_breaches(
+    org: str, row: Any, timer_ref: tuple[str, str, str], studio_state: dict[str, bool | None],
+) -> tuple[dict[str, Any], Any, list[Any]] | None:
+    """The version, the timer and the breaches of one LIVE, armed trigger, or
+    None. ONE ``_tenant_session(org)``, and no second one inside it.
+
+    The checks run in this order, and a trigger is armed only after each one
+    passed, so no late fix starts runs for records that were already overdue:
+
+    * The author of the workflow must OWN the package and hold
+      ``feature:studio`` (``studio.access.member_owns_package``). The scan
+      reads past the row rules, and only the owner passes them.
+      *studio_state* is asked before, outside any session
+      (``studio.access.members_studio_state``). A true no disarms the trigger.
+      A fault of either read keeps the arm, so a fault drops no breach.
+    * A workflow with a node of ``_member_blind_write_nodes`` starts nothing.
+    * The timer must be there and fit (``objects_store.timer_of``).
+
+    A true no of the owner, a task node and a missing timer disarm the
+    trigger. Then the print of the timer (``objects_store.timer_print``, its
+    due field only) must equal the print of the arm. An unarmed trigger, or
+    one whose due field changed, is armed at the DB clock, and this pass
+    starts nothing for it. A new pause value only stops breaches, so it never
+    arms again. A read past the deadline logs one line and starts nothing.
+    Each refusal logs at most once in :data:`TIMER_WARN_EVERY_S` seconds,
+    names the workflow and holds no record content.
+    """
+    from gateway.studio import objects_store
+    from gateway.studio.access import member_owns_package
+
+    package_id, object_name, rule = timer_ref
+    workflow_id = str(row.workflow_id)
+    owner = str(row.owner_email or "").strip().lower()
+    async with _tenant_session(org) as db:
+        owned = await member_owns_package(
+            db, member=owner, package_id=package_id,
+            studio_held=studio_state.get(owner, False),
+        )
+        if owned is None:
+            _warn_timer(row, "workflows.timer_owner_check_failed", workflow_id)
+            return None
+        if not owned:
+            _warn_timer(row, "workflows.timer_refused_package_owner", workflow_id)
+            await _disarm(db, row, workflow_id, "not_owner")
+            return None
+        serialized = await load_version_serialized(db, workflow_id, int(row.latest_version))
+        if serialized is None:
+            return None
+        if _member_blind_write_nodes(serialized):
+            _warn_timer(row, "workflows.timer_refused_task_node", workflow_id)
+            await _disarm(db, row, workflow_id, "task_node")
+            return None
+        timer = await objects_store.timer_of(
+            db, package_id=package_id, object_name=object_name, rule_name=rule,
+        )
+        if timer is None:
+            _warn_timer(row, "workflows.timer_not_found", workflow_id)
+            await _disarm(db, row, workflow_id, "timer_not_found")
+            return None
+        stamp = objects_store.timer_print(timer.rule)
+        config = parse_jsonb(row.config, {}) or {}
+        if row.last_fired_at is None or config.get(TIMER_ARM_KEY) != stamp:
+            await db.execute(text(_ARM_TIMER_SQL), {
+                "id": str(row.trigger_id), "old": row.last_fired_at,
+                "print": json.dumps(stamp, sort_keys=True)})
+            _log.info("workflows.timer_armed", workflow_id=workflow_id)
+            return None
+        try:
+            due = await objects_store.due_timer_records(
+                db, timer, armed_at=row.last_fired_at, workflow_id=workflow_id,
+                key_prefix=_timer_key_prefix(rule), limit=TIMER_BREACHES_PER_TRIGGER,
+            )
+        except QueryError:
+            _log.warning("workflows.timer_read_timeout", workflow_id=workflow_id)
+            return None
+    return serialized, timer, due
+
+
+async def _scan_studio_timers(org: str) -> int:
+    """The timer step of the org loop of :func:`scan_due_waits` (STU-E9a).
+
+    Only that loop calls this, after its list check. It runs
+    :func:`scan_due_timers` only when ``STUDIO_ORGS`` holds the org too. A
+    failure logs one line and never stops the other steps or the other orgs.
+    """
+    try:
+        # A lazy import: the Studio routes import the workflows package.
+        from gateway.routes.studio import flags as studio_flags
+
+        if not studio_flags.studio_allowed(org):
+            return 0
+        return await scan_due_timers(org)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # one org must not hide the others
+        _log.warning(
+            "workflows.timer_org_failed",
+            organization_id=org,
+            error=type(exc).__name__,
+        )
+        return 0
+
+
+async def _timer_rows(org: str) -> list[tuple[Any, tuple[str, str, str]]]:
+    """The timer triggers of one page of *org* that may be live, each with its
+    ``(package_id, object, rule)``. A row of another org and a trigger that is
+    not a timer are left out. A disabled trigger, and a trigger of a workflow
+    that is not published, are disarmed (in a short session of their own) and
+    left out. No trigger is armed here: :func:`_timer_breaches` arms it, after
+    each check passed."""
+    rows: list[tuple[Any, tuple[str, str, str]]] = []
+    for row in await _timer_triggers(org):
+        if str(row.organization_id).lower() != org.lower():
+            continue  # the row names another org: never run it under this one
+        timer_ref = _timer_of_config(parse_jsonb(row.config, {}) or {})
+        if timer_ref is None:
+            continue
+        if not (row.enabled and row.status == "published" and row.latest_version is not None):
+            if row.last_fired_at is not None:
+                async with _tenant_session(org) as db:
+                    await _disarm(db, row, str(row.workflow_id), "not_live")
+            continue
+        rows.append((row, timer_ref))
+    return rows
+
+
+async def scan_due_timers(org: str) -> int:
+    """Start one run for each record of ONE org that passed a Studio timer
+    (STU-E9a). Returns the number of runs started.
+
+    Only the org loop of :func:`scan_due_waits` calls this, through
+    :func:`_scan_studio_timers`, after ``unattended.org_allowed(org)`` and
+    ``routes/studio/flags.studio_allowed``. So the org comes from the loop's
+    own enumeration, never from a request, a payload or the ambient tenant.
+    This scan binds no tenant, and it never calls ``triggers.dispatch_event``:
+    only a member request binds the tenant of an event (H-328 part (c)). It
+    calls ``start_run`` itself, as ``_scan_org`` does.
+
+    * A timer trigger is an ``event`` trigger with source ``studio`` and a
+      filter of ``package_id``, ``object``, ``op = breach`` and ``timer``.
+    * The scan ARMS a trigger only when it is live: enabled, published, its
+      author owns the package, no task node, and its timer is there. The arm
+      time is the DB clock, and ``config.timer_arm`` keeps the print of the
+      timer (its due field). A new print arms it again. A record due at or
+      before the arm time never breaches, so a late rule, a late grant, a
+      removed task node or a changed field starts no catch-up storm. A trigger
+      that a read proves not live is disarmed (``_DISARM_TIMER_SQL``).
+    * A record breaches when its hot due value is after the arm time, at most
+      ``objects_store.TIMER_LOOKBACK_DAYS`` days old and at or before the DB
+      clock, and its pause field holds no pause value. A record that leaves a
+      pause breaches at the first scan after.
+    * The delivery key ``timer:<rule>:<record id>:<due ISO>`` holds one run for
+      each workflow, breach and due value (migration 420). A second scan gets
+      :class:`DuplicateDelivery`, and a new due value starts one new run.
+    * A pass reads at most ``TIMER_TRIGGERS_PER_PASS`` triggers and
+      ``TIMER_BREACHES_PER_TRIGGER`` breaches of each one, oldest due first.
+    * Each step holds one session, and no session is open at ``start_run``.
+
+    The payload holds ids and names, never a field value. Each member who
+    reads the runs of the workflow reads it, past the row rules and ``hide``,
+    so the due value stays out of it. Only the delivery key holds the due
+    time, and no route answers with a delivery key.
+    """
+    from gateway.studio.access import members_studio_state
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    armed = await _timer_rows(org)
+    if not armed:
+        return 0
+    # The access of each DISTINCT author, outside any session: the resolver
+    # opens a session of its own (the STU-E3 pool fix).
+    studio_state = await members_studio_state((r.owner_email for r, _ in armed), org)
+    started = 0
+    for row, timer_ref in armed:
+        workflow_id = str(row.workflow_id)
+        try:
+            found = await _timer_breaches(org, row, timer_ref, studio_state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one trigger must not hide the others
+            _log.warning(
+                "workflows.timer_trigger_failed", workflow_id=workflow_id,
+                error=type(exc).__name__,
+            )
+            continue
+        if found is None:
+            continue
+        serialized, timer, due = found
+        rule = timer_ref[2]
+        for item in due:
+            try:
+                await start_run(
+                    workflow_id=workflow_id,
+                    workflow_name=row.name,
+                    version=int(row.latest_version),
+                    serialized=serialized,
+                    trigger_kind="event",
+                    trigger_payload={
+                        "source": RECORD_EVENT_SOURCE,
+                        "event_type": BREACH_EVENT_TYPE,
+                        "package_id": timer.package_id,
+                        "object": timer.object_name,
+                        "record_id": item.record_id,
+                        "rule": rule,
+                    },
+                    variables=parse_jsonb(row.variables, {}),
+                    started_by=TIMER_STARTED_BY,
+                    organization_id=str(row.organization_id),
+                    delivery_key=f"{_timer_key_prefix(rule)}{item.record_id}:{item.due_at}",
+                )
+                started += 1
+            except DuplicateDelivery:
+                continue  # another scan started this breach first
+            except RunRejected as exc:
+                # A run cap holds. The breach stays due, and a later pass
+                # starts it. The rest of this trigger waits too.
+                _log.warning(
+                    "workflows.timer_run_rejected", workflow_id=workflow_id,
+                    error=str(exc)[:160],
+                )
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # one trigger must not hide the others
+                _log.warning(
+                    "workflows.timer_start_failed", workflow_id=workflow_id,
+                    error=type(exc).__name__,
+                )
+                break
+    if started:
+        _log.info("workflows.timer_runs_started", organization_id=org, runs=started)
+    return started
+
+
 async def scan_due_waits(now: float | None = None) -> int:
     """Resume runs parked at a long ``wait`` node whose deadline has passed.
 
@@ -318,6 +678,11 @@ async def scan_due_waits(now: float | None = None) -> int:
     AUTO-7b: the same org loop settles the parked gates of the org with
     :func:`scan_decided_pauses`, after the list check. There is no second loop
     over the orgs and no second scheduler.
+
+    STU-E9a: the same loop starts the runs of the Studio timers of the org with
+    :func:`_scan_studio_timers`, which runs :func:`scan_due_timers` only when
+    ``STUDIO_ORGS`` holds the org too. A run that a timer starts is not counted
+    in the answer, which counts resumes.
     """
     now = now if now is not None else time.time()
     resumed = 0
@@ -334,6 +699,17 @@ async def scan_due_waits(now: float | None = None) -> int:
                 organization_id=org,
                 error=type(exc).__name__,
             )
+        try:
+            resumed += await scan_done_tasks(org)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one org must not hide the others
+            _log.warning(
+                "workflows.task_org_failed",
+                organization_id=org,
+                error=type(exc).__name__,
+            )
+        await _scan_studio_timers(org)
         try:
             async with _tenant_session(org) as db:
                 rows = (
@@ -404,6 +780,9 @@ async def scan_decided_pauses(org: str) -> int:
     * ``yes`` from the decider: ``resume_run`` as the decider. Its
       compare-and-set lets exactly one caller start the run. The run keeps
       its stored kind, so it stays marked, and a second gate parks again.
+      It passes ``decided=True``, so the resumed run carries the decision.
+      A ``studio_write`` node right after the gate then runs ONE write,
+      after it reads the same decision row again (STU-B2c-2d).
     * any other answer: the pause ``rejected`` and the run ``cancelled``,
       with the error ``decision declined``.
     * no answer, and the DB clock passed ``expires_at``: the same end, with
@@ -436,6 +815,9 @@ async def scan_decided_pauses(org: str) -> int:
                     resumed_by=str(decision.answered_by).strip().lower(),
                     organization_id=str(row.organization_id),
                     pause_id=str(row.id),
+                    # STU-B2c-2d: the one caller that carries the decision, so
+                    # a Studio write node right after this gate may run once.
+                    decided=True,
                 )
                 if result.get("ok"):
                     settled += 1
@@ -472,6 +854,97 @@ async def scan_decided_pauses(org: str) -> int:
                 phase="end",
                 run_id=run_id,
                 status="cancelled",
+                reason=reason,
+                organization_id=org,
+            )
+    return settled
+
+
+async def scan_done_tasks(org: str) -> int:
+    """Settle the human steps of ONE org from their task rows (STU-E4).
+
+    Only the org loop of :func:`scan_due_waits` calls this, after its list
+    check. So the org comes from the loop's own enumeration, never from a
+    request, a payload or the ambient tenant. Each step opens its own
+    ``_tenant_session(org)``, and the task is read in that session only.
+
+    The task id comes from the stored pause row. ``human_step.read_task``
+    reads the task only when its origin names THIS run and THIS node. The
+    status stage of that row alone decides:
+
+    * done: ``resume_run`` with ``task_done=True``. Its compare-and-set lets
+      exactly one caller start the run, so a second scan resumes nothing.
+    * cancelled, or the task is gone: the pause ``rejected`` and the run
+      ``failed`` with a plain message, with the same compare-and-set. That
+      covers a cancelled lane, an archived or merged task, a deleted task,
+      a TRASH of the assignee that stood for 60 seconds, and an assignee who
+      is no longer an active member. A done task wins over an archive, and a
+      standing trash wins over a done lane.
+    * any other stage: the run stays paused.
+
+    Returns the number of settled steps.
+    """
+    async with _tenant_session(org) as db:
+        rows = (await db.execute(text(human_step.PENDING_SQL), {"org": org})).fetchall()
+    settled = 0
+    for row in rows:
+        if str(getattr(row, "organization_id", "")).lower() != org.lower():
+            continue  # the row names another org: never settle it under this one
+        snapshot = parse_jsonb(row.snapshot, {}) or {}
+        task_id = human_step.task_id_of(snapshot)
+        if task_id is None:
+            continue
+        run_id = str(row.run_id)
+        try:
+            async with _tenant_session(org) as db:
+                task = await human_step.read_task(
+                    db, task_id, run_id, str(row.node_id),
+                    str(snapshot.get("assignee") or ""), org,
+                )
+            outcome = human_step.task_outcome(task)
+            if outcome == human_step.WAIT:
+                continue
+            if outcome == human_step.RESUME:
+                result = await resume_run(
+                    run_id,
+                    resumed_by="scheduler:task",
+                    organization_id=str(row.organization_id),
+                    pause_id=str(row.id),
+                    task_done=True,
+                )
+                if result.get("ok"):
+                    settled += 1
+                continue
+            try:
+                async with _tenant_session(org) as db:
+                    ended = await human_step.end_step(
+                        db, pause_id=str(row.id), run_id=run_id, outcome=outcome,
+                    )
+            except park.ParkLost:
+                ended = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one bad run must not stall the rest
+            _log.warning(
+                "workflows.task_settle_failed",
+                run_id=run_id,
+                error=type(exc).__name__,
+            )
+            continue
+        if ended:
+            settled += 1
+            reason = (
+                human_step.CANCELLED_ERROR
+                if outcome == human_step.CANCELLED
+                else human_step.GONE_ERROR
+            )
+            _log.info("workflows.human_step_ended", run_id=run_id, reason=reason)
+            publish_workflow_activity(
+                str(row.workflow_id),
+                str(row.workflow_name or ""),
+                phase="end",
+                run_id=run_id,
+                status="failed",
                 reason=reason,
                 organization_id=org,
             )

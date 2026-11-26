@@ -12,6 +12,10 @@ seam, and the first two detached kinds: `brief.plan` and `brief.run`
 AUTO-2 (Metorite #814) adds the ledger of unattended runs in section 9. It is
 BUILT and dark, and its switch `UNATTENDED_LEDGER` is OFF.
 
+AUTO-8a (task 1392) adds the detached kind `auto.turn` in section 10, the
+capped headless turn. It is BUILT and dark. It registers only with
+`JOB_QUEUE` on, and no code enqueues it.
+
 The first producer is the brief. The seed hook of section 5c enqueues
 `brief.plan`, and `brief.plan` enqueues `brief.run`. The switch `JOB_QUEUE`
 is OFF. The rest of BR-1b moves the reminder loop, send-later and the
@@ -264,6 +268,13 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   own delete, on the same session. A hook that raises fails the try, and the
   whole prune rolls back. BR-2a-1 added the retention of the brief runs
   here, with its 90 day cut-off (`core_brief.md` §3.4, `brief/run.py`).
+  WS-STU I8b-1a added the asks of a connection, with a 30 day cut-off
+  (`connections/attention.py`). Task 3435 added the waiting chat cards
+  (`orchestrator/pending_ask.py`, `chat_run_continuity.md` §4.12.4 item 1).
+  An expired card loses its stored call, and the card goes 7 days after it
+  expires. These two hooks run in a savepoint and never raise. WS-TOF TOF-2e
+  added the failure rows (`failures/sync.py`, `tool_failure_log.md` §5.4),
+  in a savepoint too.
 
 ## 5c. Seed hooks: a job every 15 minutes (BR-2a-1, built)
 
@@ -303,6 +314,20 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   `graph_sweep:<day>`. It runs only for an org that `GRAPH_SWEEP_ORGS`
   names. The job writes the structural edges of `knowledge_graph.md` §4.1,
   with no model.
+- **The fifth consumer (AO-2, built dark).** `provider_alerts.seed` seeds
+  the detached kind `provider_alerts.check` once in each bucket, with the
+  dedupe key `provider_alerts:<bucket>`. It runs only for an org that
+  `PROVIDER_ALERT_ORGS` names. The job reads the AI vendor alerts of the
+  Console and tells the admins of that org (`customer_console.md` §6A.17b).
+  Its effect is `send`, and it gets one try.
+
+- **The sixth consumer (WS-TOF TOF-2e, built dark).**
+  `failures/sync.seed` seeds the detached kind `failure.sync` once in each
+  bucket, with the dedupe key `failure_sync:<bucket>`. It runs only in the
+  org that `TOOL_FAILURE_ORG_ID` names, and only with `TOOL_FAILURE_TASKS`
+  on. The job makes or moves one task for each fingerprint of the failure
+  store. `tool_failure_log.md` §7 holds the rules. The module also adds a
+  prune hook (section 5b) for the failure rows of each org.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
@@ -547,3 +572,60 @@ function does nothing. Reach behaves as before. The one reader is
 - A UI, a retry of a send, a new queue, and a change to `reach_outbox`.
 - The workflows scheduler (after H4), My Day and the BR-2a brief wiring.
 - A production deploy and the flip of `UNATTENDED_LEDGER`.
+
+## 10. The headless turn (AUTO-8a)
+
+One job of kind `auto.turn` runs one capped turn of the assistant for one
+goal, with no person present. `proactive_agent.md` §4.4 holds the design.
+
+| Part | Path |
+|---|---|
+| The handler | `apps/services/gateway/gateway/jobs/headless_turn.py` |
+| The goal and the cap rule | `packages/acb_common/acb_common/goal_store.py` |
+| The switch | `HEADLESS_TURN_ORGS`, default empty. The one reader is `headless_turn.headless_allowed` |
+| The fences | `tests/unit/test_headless_turn.py`, and `tests/unit/test_headless_turn_r8.py` (R8) |
+
+- **The kind.** `auto.turn` uses the detached mode, and it is not
+  idempotent. So the worker gives each job one try. `register_jobs` registers it only when `JOB_QUEUE`
+  is on. No production code enqueues it.
+- **The payload** is `{goal_id, candidate}`, with no other key. Another key
+  gives up with `BadPayload`. The member comes from the goal row, never from
+  the payload.
+- **The ledger.** The turn runs inside `unattended.once`, and the slot is
+  the job id. At the cap the ledger row ends `ok`, because `cap_reached`
+  lives on the goal row.
+- **The time limit.** A turn has 120 seconds, and 180 seconds at most. The
+  clock starts in `run()`, before `unattended.recover`. That bound and a
+  settle margin of 60 seconds stay at or below `HANDLER_TIMEOUT`. The meter
+  and the record of a round each get a share of the margin, and the share
+  grows with the time left before the deadline (`_share`).
+  `test_the_caps_are_bounded` fences the order.
+- **The mark of a call (AUTO-8b-2a).** Before each call, the turn writes a
+  mark on the goal (`goal_records.job_id`). The record of the round clears
+  the mark in the same write. A mark that stays means a lost round: the next
+  turn of that goal charges the rest of the budget, blocks with `cap_reached`
+  and makes no call. A mark that cannot be written makes no call, and the job
+  gives up with `MarkFailed`.
+- **The meter (AUTO-8b-2d).** The default meter reads the spend of the run
+  of a round at the Console door `POST /registry/usage/run`. A door error
+  before the first call makes no call: the job gives up with
+  `CostReadFailed`, and `headless_turn.cost_read_failed` logs at error. A
+  meter that does not answer in time gives up with `NoCostReader`. A door
+  error after a call charges the rest of the budget. A round that the time
+  cap cut, or whose call raised, reads no meter and charges the rest too,
+  because the Console can write the row of that call after a read.
+
+| Event | Level | When |
+|---|---|---|
+| `headless_turn.skipped` | info | The job made no model call: the switch is off, the goal takes no round, the member left, or no candidate exists. The line names the reason |
+| `headless_turn.ended` | info | A turn ended, with its outcome and its count of rounds |
+| `headless_turn.cap_reached` | info | A round moved the goal to its cap. One line for each goal |
+| `headless_turn.no_cost_reader` | error | The meter did not answer in time, or answered no number, before the first call. So the turn made no model call |
+| `headless_turn.cost_read_failed` | error | The Console spend door failed before the first call: no proven member, no wiring, no answer, a refusal or a bad answer. The line names the code and `status_class` (`4xx`, `5xx` or `none`), never the body. The turn made no model call, and the job gives up with `CostReadFailed` |
+| `headless_turn.round_cut` | warning | The time cap cut the call of a round (`TimeCap`), or the call raised. The round read no meter and counts as the rest of the budget |
+| `headless_turn.cost_unknown` | error | The meter failed or timed out (`MeterTimeout`) after a call, so the round counts as the rest of the budget |
+| `headless_turn.round_unrecorded` | warning | The turn did not record a round, because the goal changed twice or is not active now |
+| `headless_turn.round_unrecorded` | error | The record of a round timed out (`RecordTimeout`). The cost of that round does not reach the goal, and the job gives up with `TurnFailed`. The mark stays on the goal, so the next turn blocks |
+| `headless_turn.lost_round` | error | A goal holds a mark from a turn that died. The turn charges the rest of the budget and blocks the goal. The job can give up with `LostRound` |
+| `headless_turn.mark_failed` | error | The mark could not be written, so the turn made no model call. The job gives up with `MarkFailed` |
+| `headless_turn.meter_failed` | error | The meter failed after an earlier call in the same turn. The job gives up with `MeterFailed` |

@@ -208,20 +208,39 @@ def _agent_tool(fn: Any) -> Any:
 # is the builder of the pack (``acb_skills.tool_packs.owner_tools``). Fence:
 # ``tests/unit/test_calendar_day_pack.py``.
 _CALENDAR_DAY_NAMES: tuple[str, ...] = (
+    "my_tasks_add_day_rule",
+    "my_tasks_close_my_day",
     "my_tasks_day_digest",
+    "my_tasks_delete_day_rule",
+    "my_tasks_edit_day_rule",
+    "my_tasks_enrich",
+    "my_tasks_get_calendar_settings",
+    "my_tasks_list_calendar_connections",
+    "my_tasks_list_day_rules",
+    "my_tasks_list_events",
     "my_tasks_list_schedule",
     "my_tasks_plan_day",
     "my_tasks_replan_day",
     "my_tasks_rollover",
     "my_tasks_schedule",
     "my_tasks_set_one_thing",
+    "my_tasks_start_my_day",
+    "my_tasks_suggest_title",
     "my_tasks_unschedule",
+    "my_tasks_update_calendar_settings",
+)
+#: P-1b (task 3922): the two tools of the ``mail-tasks`` pack, built the same way.
+#: Fence: ``tests/unit/test_my_tasks_p1b_tools.py``.
+_MAIL_TASKS_NAMES: tuple[str, ...] = (
+    "my_tasks_capture_from_mail",
+    "my_tasks_draft_from_mail",
 )
 _CALENDAR_DAY_TOOLS: list[Any] = []
 try:
     import skill_my_tasks
 
-    _CALENDAR_DAY_TOOLS = [getattr(skill_my_tasks, name) for name in _CALENDAR_DAY_NAMES]
+    _CALENDAR_DAY_TOOLS = [getattr(skill_my_tasks, name)
+                           for name in (*_CALENDAR_DAY_NAMES, *_MAIL_TASKS_NAMES)]
 except ImportError:
     # skill-my-tasks is not installed: the pack is then empty, not broken.
     pass

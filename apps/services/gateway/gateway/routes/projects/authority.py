@@ -83,6 +83,10 @@ PROJECT_DELETE_REFUSED = (
     "Only the person who created this project, the project lead or a Projects "
     "admin can delete it."
 )
+#: The 403 of a project update delete (WS-39 LP-1a). The chat holds no copy.
+UPDATE_DELETE_REFUSED = (
+    "Only the author of this update or a Projects admin can delete it."
+)
 #: The 403 of a grant write.
 GRANT_WRITE_REFUSED = (
     "Only the project lead or a Projects admin can change who can see this project."
@@ -131,13 +135,25 @@ CONVERT_REFUSED = (
 
 #: Each project that the member leads, and each project below one. ``UNION``
 #: and not ``UNION ALL``, so a cycle in the tree ends the walk.
-_LED_SUBTREE_SQL = (
+LED_SUBTREE_SQL = (
     "WITH RECURSIVE led AS ("
     "  SELECT id FROM pm_projects WHERE lower(lead) = :me"
     "  UNION"
     "  SELECT p.id FROM pm_projects p JOIN led ON p.parent_project_id = led.id"
     ") SELECT id FROM led"
 )
+
+
+def no_lead_sql(alias: str = "p") -> str:
+    """True for a project row that has no lead of its own (WS-MCP SW-44).
+
+    The walk above reads ``lower(lead) = :me``, so a NULL, empty or blank
+    ``lead`` names nobody and gives no authority. This predicate reads the
+    column the same way. It looks at the row only, and not at an ancestor.
+    The Needs attention kind ``no_lead`` reads it (``needs_attention.py``),
+    so no other module spells the lead test (§3.10 rule 1).
+    """
+    return f"btrim(coalesce({alias}.lead, '')) = ''"
 
 
 def _me(user: Any) -> str:
@@ -162,7 +178,7 @@ async def led_projects(db: Any, user: Any) -> frozenset[str]:
     me = _me(user)
     if not me:
         return frozenset()
-    rows = (await db.execute(text(_LED_SUBTREE_SQL), {"me": me})).fetchall()
+    rows = (await db.execute(text(LED_SUBTREE_SQL), {"me": me})).fetchall()
     return frozenset(str(r.id) for r in rows)
 
 
@@ -172,6 +188,129 @@ async def _leads(db: Any, user: Any, project_id: Any, led: frozenset[str] | None
     if led is None:
         led = await led_projects(db, user)
     return str(project_id) in led
+
+
+# ── Own apps (WS-MCP SW-45, agent_coordination.md §3.10.1) ──────────────────
+#
+# A member's own apps are the projects where the member may write a grant
+# WITHOUT a role: the lead arm of :func:`may_write_grant`, so a lead of the
+# project or of an ancestor. ``can_manage_settings`` is a role, and a role
+# does not count. ``pm_project_grants`` holds no access level (checked at
+# SW-45 dispatch, 2026-11-11): a row there gives a view, not a write, so it
+# does not make an app the member's own. This module is the one reader of
+# ``pm_projects.lead`` (``tests/unit/test_app_ownership_seam.py``).
+
+#: The deepest walk of the two SQL texts below. A cycle in the tree ends there.
+APP_WALK_MAX_DEPTH = 64
+
+#: Each project of :data:`LED_SUBTREE_SQL`, with ``app_id``: the nearest
+#: project at or above it that the member leads. A nested lead resets
+#: ``app_id``, so the shallowest row of an id holds its nearest app. The lead
+#: compare is ``lower(btrim(lead))``, as in :data:`APP_LEADS_SQL`, so a lead
+#: that is stored with a space gives the same answer in both.
+OWN_APPS_SQL = (
+    "WITH RECURSIVE own AS ("
+    "  SELECT id, id AS app_id, 0 AS depth FROM pm_projects WHERE lower(btrim(lead)) = :me"
+    "  UNION ALL"
+    "  SELECT p.id,"
+    "         CASE WHEN lower(btrim(coalesce(p.lead, ''))) = :me THEN p.id ELSE own.app_id END,"
+    "         own.depth + 1"
+    "    FROM pm_projects p JOIN own ON p.parent_project_id = own.id"
+    "   WHERE own.depth < :max_depth"
+    ") SELECT DISTINCT ON (id) id, app_id FROM own ORDER BY id, depth"
+)
+
+#: The leads of one project and of each ancestor, nearest first. A blank
+#: lead is no lead.
+APP_LEADS_SQL = (
+    "WITH RECURSIVE up AS ("
+    "  SELECT id, parent_project_id, lead, 0 AS depth FROM pm_projects"
+    "   WHERE id = CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id, p.lead, up.depth + 1"
+    "    FROM pm_projects p JOIN up ON p.id = up.parent_project_id"
+    "   WHERE up.depth < :max_depth"
+    ") SELECT id, lower(btrim(lead)) AS lead FROM up"
+    "   WHERE nullif(btrim(lead), '') IS NOT NULL ORDER BY depth"
+)
+
+
+async def own_apps(db: Any, user: Any) -> dict[str, str]:
+    """Each project in the member's own apps, with the id of its nearest app.
+
+    The keys are the subtree of :func:`led_projects`. The value is the
+    nearest project at or above the key that the member leads, which is the
+    ``app_project`` of a ``my_work`` row. Empty for a caller with no email.
+    """
+    me = _me(user)
+    if not me:
+        return {}
+    rows = (await db.execute(
+        text(OWN_APPS_SQL), {"me": me, "max_depth": APP_WALK_MAX_DEPTH},
+    )).fetchall()
+    return {str(r.id): str(r.app_id) for r in rows}
+
+
+async def app_owner(db: Any, user: Any, project_id: Any,
+                    vis: Any = None) -> tuple[str | None, bool]:
+    """``(lead, own)`` for the app of *project_id*. (SW-45.)
+
+    *lead* is the lead of the nearest project at or above *project_id* that
+    has one, in lower case. It is the first addressee of a routing note
+    (§3.10.1). It is ``None`` when no project on the path has a lead, or when
+    *vis* is given and that project is outside it. A connection that is
+    pinned to a child project does not read the lead of a parent outside its
+    pins (review P2). *own* is True when *user* leads the project or an
+    ancestor, the rule of :func:`may_write_grant` without its role arm. *own*
+    reads the whole path, because it is a fact about the member.
+    """
+    if not project_id:
+        return None, False
+    rows = (await db.execute(
+        text(APP_LEADS_SQL),
+        {"pid": str(project_id), "max_depth": APP_WALK_MAX_DEPTH},
+    )).fetchall()
+    leads = [str(r.lead) for r in rows]
+    me = _me(user)
+    own = bool(me) and me in leads
+    if not rows:
+        return None, own
+    lead: str | None = leads[0]
+    if vis is not None and not await project_visible(db, vis, rows[0].id):
+        lead = None
+    return lead, own
+
+
+async def project_visible(db: Any, vis: Any, project_id: Any) -> bool:
+    """True when *vis* can see the project *project_id*. (SW-45.)"""
+    found = (await db.execute(
+        text("SELECT 1 FROM pm_projects WHERE id = CAST(:vis_pid AS uuid)"
+             f" AND {vis.project_clause('id')}"),
+        {"vis_pid": str(project_id), **vis.params},
+    )).fetchone()
+    return found is not None
+
+
+def made_by_member(row: Any, user: Any) -> bool:
+    """True when *user* created *row*, a task or a project row. (SW-45.)
+
+    The compare of the delete rule (D-OP-12): ``created_by`` and the session
+    email, trimmed and in lower case. A caller with no email made nothing.
+    """
+    return _made_by(row, _me(user))
+
+
+async def in_own_personal_tree(db: Any, user: Any, project_id: Any) -> bool:
+    """True when *project_id* is in the personal tree of *user*. (SW-45.)
+
+    The root of the tree and each Area below it count. The answer is
+    :func:`personal_tree_owner`, the one walk of a personal tree, so a team
+    node below the tree is not in it.
+    """
+    me = _me(user)
+    if not me or not project_id:
+        return False
+    return await personal_tree_owner(db, {"id": str(project_id)}) == me
 
 
 async def may_delete_task(
@@ -333,6 +472,24 @@ async def assert_may_delete_task(db: Any, user: Any, task: Any) -> None:
     """403 with :data:`TASK_DELETE_REFUSED`, or return."""
     if not await may_delete_task(db, user, task):
         raise HTTPException(status_code=403, detail=TASK_DELETE_REFUSED)
+
+
+def may_delete_update(user: Any, update: Any) -> bool:
+    """May *user* delete *update*, a row of ``pm_project_updates``? (LP-1a.)
+
+    The author, or a member who may manage Projects settings
+    (``core.can_manage_settings``), as for a task. A lead who did not write
+    the update may not delete it: an update is the author's own statement.
+    No query, so a list can ask it for each row.
+    """
+    me = _me(user)
+    return can_manage_settings(user) or (bool(me) and _same_person(_field(update, "author"), me))
+
+
+def assert_may_delete_update(user: Any, update: Any) -> None:
+    """403 with :data:`UPDATE_DELETE_REFUSED`, or return."""
+    if not may_delete_update(user, update):
+        raise HTTPException(status_code=403, detail=UPDATE_DELETE_REFUSED)
 
 
 async def assert_may_delete_project(db: Any, user: Any, project: Any) -> None:

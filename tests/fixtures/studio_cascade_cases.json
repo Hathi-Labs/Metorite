@@ -1,0 +1,659 @@
+{
+  "base": {
+    "studio": 1,
+    "id": "field-visits",
+    "name": "Field visits",
+    "purpose": "Plan and close site visits.",
+    "objects": [
+      {
+        "name": "visit",
+        "label": "Visit",
+        "fields": [
+          {
+            "key": "title",
+            "type": "text",
+            "label": "Title"
+          },
+          {
+            "key": "status",
+            "type": "select",
+            "options": [
+              "planned",
+              "done"
+            ]
+          }
+        ],
+        "rules": [
+          {
+            "name": "visit_flow",
+            "kind": "state_machine",
+            "field": "status",
+            "initial": "planned",
+            "moves": [
+              {
+                "from": "planned",
+                "to": "done"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "site",
+        "fields": [
+          {
+            "key": "city",
+            "type": "text"
+          },
+          {
+            "key": "zip",
+            "type": "text"
+          }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "id": "visit_list",
+        "uses": "object:visit.list"
+      },
+      {
+        "id": "visit_get",
+        "uses": "object:visit.get"
+      },
+      {
+        "id": "visit_create",
+        "uses": "object:visit.create"
+      },
+      {
+        "id": "visit_update",
+        "uses": "object:visit.update"
+      },
+      {
+        "id": "visit_delete",
+        "uses": "object:visit.delete"
+      },
+      {
+        "id": "site_list",
+        "uses": "object:site.list"
+      },
+      {
+        "id": "site_get",
+        "uses": "object:site.get"
+      },
+      {
+        "id": "site_create",
+        "uses": "object:site.create"
+      },
+      {
+        "id": "site_update",
+        "uses": "object:site.update"
+      },
+      {
+        "id": "site_delete",
+        "uses": "object:site.delete"
+      }
+    ],
+    "views": [
+      {
+        "id": "visit-table",
+        "block": "table",
+        "title": "Visits",
+        "source": {
+          "object": "visit"
+        },
+        "columns": [
+          "title",
+          "status"
+        ]
+      },
+      {
+        "id": "site-table",
+        "block": "table",
+        "source": {
+          "object": "site"
+        }
+      }
+    ],
+    "pages": [
+      {
+        "id": "home",
+        "cols": 2,
+        "cells": [
+          {
+            "view": "visit-table"
+          }
+        ]
+      },
+      {
+        "id": "sites",
+        "cols": 2,
+        "cells": [
+          {
+            "view": "site-table"
+          }
+        ]
+      }
+    ],
+    "skill": {
+      "description": "Answers about visits",
+      "actions": [
+        "visit_list",
+        "object:visit.create",
+        "site_get"
+      ],
+      "examples": [
+        {
+          "prompt": "p",
+          "action": "object:visit.update"
+        },
+        {
+          "prompt": "q",
+          "action": "site_get"
+        }
+      ],
+      "cards": [
+        "visit-table",
+        "site-table"
+      ]
+    },
+    "shell": {
+      "jobs": [
+        {
+          "verb": "open",
+          "view": "visit-table"
+        },
+        {
+          "verb": "open sites",
+          "view": "site-table"
+        }
+      ],
+      "needs": [
+        {
+          "object": "visit"
+        },
+        {
+          "object": "site"
+        }
+      ],
+      "search": [
+        "visit",
+        "site"
+      ]
+    },
+    "workflows": [
+      {
+        "id": "w1",
+        "trigger": {
+          "record": "visit"
+        }
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "delete the visit object",
+      "output": {
+        "studio": 1,
+        "id": "field-visits",
+        "name": "Field visits",
+        "purpose": "Plan and close site visits.",
+        "objects": [
+          {
+            "name": "site",
+            "fields": [
+              {
+                "key": "city",
+                "type": "text"
+              },
+              {
+                "key": "zip",
+                "type": "text"
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "id": "site_list",
+            "uses": "object:site.list"
+          },
+          {
+            "id": "site_get",
+            "uses": "object:site.get"
+          },
+          {
+            "id": "site_create",
+            "uses": "object:site.create"
+          },
+          {
+            "id": "site_update",
+            "uses": "object:site.update"
+          },
+          {
+            "id": "site_delete",
+            "uses": "object:site.delete"
+          }
+        ],
+        "views": [
+          {
+            "id": "site-table",
+            "block": "table",
+            "source": {
+              "object": "site"
+            }
+          }
+        ],
+        "pages": [
+          {
+            "id": "sites",
+            "cols": 2,
+            "cells": [
+              {
+                "view": "site-table"
+              }
+            ]
+          }
+        ],
+        "skill": {
+          "description": "Answers about visits",
+          "actions": [
+            "site_get"
+          ],
+          "examples": [
+            {
+              "prompt": "p"
+            },
+            {
+              "prompt": "q",
+              "action": "site_get"
+            }
+          ],
+          "cards": [
+            "site-table"
+          ]
+        },
+        "shell": {
+          "jobs": [
+            {
+              "verb": "open sites",
+              "view": "site-table"
+            }
+          ],
+          "needs": [
+            {
+              "object": "site"
+            }
+          ],
+          "search": [
+            "site"
+          ]
+        },
+        "workflows": [
+          {
+            "id": "w1",
+            "trigger": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete the visit-table view",
+      "output": {
+        "studio": 1,
+        "id": "field-visits",
+        "name": "Field visits",
+        "purpose": "Plan and close site visits.",
+        "objects": [
+          {
+            "name": "visit",
+            "label": "Visit",
+            "fields": [
+              {
+                "key": "title",
+                "type": "text",
+                "label": "Title"
+              },
+              {
+                "key": "status",
+                "type": "select",
+                "options": [
+                  "planned",
+                  "done"
+                ]
+              }
+            ],
+            "rules": [
+              {
+                "name": "visit_flow",
+                "kind": "state_machine",
+                "field": "status",
+                "initial": "planned",
+                "moves": [
+                  {
+                    "from": "planned",
+                    "to": "done"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "site",
+            "fields": [
+              {
+                "key": "city",
+                "type": "text"
+              },
+              {
+                "key": "zip",
+                "type": "text"
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "id": "visit_list",
+            "uses": "object:visit.list"
+          },
+          {
+            "id": "visit_get",
+            "uses": "object:visit.get"
+          },
+          {
+            "id": "visit_create",
+            "uses": "object:visit.create"
+          },
+          {
+            "id": "visit_update",
+            "uses": "object:visit.update"
+          },
+          {
+            "id": "visit_delete",
+            "uses": "object:visit.delete"
+          },
+          {
+            "id": "site_list",
+            "uses": "object:site.list"
+          },
+          {
+            "id": "site_get",
+            "uses": "object:site.get"
+          },
+          {
+            "id": "site_create",
+            "uses": "object:site.create"
+          },
+          {
+            "id": "site_update",
+            "uses": "object:site.update"
+          },
+          {
+            "id": "site_delete",
+            "uses": "object:site.delete"
+          }
+        ],
+        "views": [
+          {
+            "id": "site-table",
+            "block": "table",
+            "source": {
+              "object": "site"
+            }
+          }
+        ],
+        "pages": [
+          {
+            "id": "sites",
+            "cols": 2,
+            "cells": [
+              {
+                "view": "site-table"
+              }
+            ]
+          }
+        ],
+        "skill": {
+          "description": "Answers about visits",
+          "actions": [
+            "visit_list",
+            "object:visit.create",
+            "site_get"
+          ],
+          "examples": [
+            {
+              "prompt": "p",
+              "action": "object:visit.update"
+            },
+            {
+              "prompt": "q",
+              "action": "site_get"
+            }
+          ],
+          "cards": [
+            "site-table"
+          ]
+        },
+        "shell": {
+          "jobs": [
+            {
+              "verb": "open sites",
+              "view": "site-table"
+            }
+          ],
+          "needs": [
+            {
+              "object": "visit"
+            },
+            {
+              "object": "site"
+            }
+          ],
+          "search": [
+            "visit",
+            "site"
+          ]
+        },
+        "workflows": [
+          {
+            "id": "w1",
+            "trigger": {
+              "record": "visit"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "delete the zip field",
+      "output": {
+        "studio": 1,
+        "id": "field-visits",
+        "name": "Field visits",
+        "purpose": "Plan and close site visits.",
+        "objects": [
+          {
+            "name": "visit",
+            "label": "Visit",
+            "fields": [
+              {
+                "key": "title",
+                "type": "text",
+                "label": "Title"
+              },
+              {
+                "key": "status",
+                "type": "select",
+                "options": [
+                  "planned",
+                  "done"
+                ]
+              }
+            ],
+            "rules": [
+              {
+                "name": "visit_flow",
+                "kind": "state_machine",
+                "field": "status",
+                "initial": "planned",
+                "moves": [
+                  {
+                    "from": "planned",
+                    "to": "done"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "site",
+            "fields": [
+              {
+                "key": "city",
+                "type": "text"
+              }
+            ]
+          }
+        ],
+        "actions": [
+          {
+            "id": "visit_list",
+            "uses": "object:visit.list"
+          },
+          {
+            "id": "visit_get",
+            "uses": "object:visit.get"
+          },
+          {
+            "id": "visit_create",
+            "uses": "object:visit.create"
+          },
+          {
+            "id": "visit_update",
+            "uses": "object:visit.update"
+          },
+          {
+            "id": "visit_delete",
+            "uses": "object:visit.delete"
+          },
+          {
+            "id": "site_list",
+            "uses": "object:site.list"
+          },
+          {
+            "id": "site_get",
+            "uses": "object:site.get"
+          },
+          {
+            "id": "site_create",
+            "uses": "object:site.create"
+          },
+          {
+            "id": "site_update",
+            "uses": "object:site.update"
+          },
+          {
+            "id": "site_delete",
+            "uses": "object:site.delete"
+          }
+        ],
+        "views": [
+          {
+            "id": "visit-table",
+            "block": "table",
+            "title": "Visits",
+            "source": {
+              "object": "visit"
+            },
+            "columns": [
+              "title",
+              "status"
+            ]
+          },
+          {
+            "id": "site-table",
+            "block": "table",
+            "source": {
+              "object": "site"
+            }
+          }
+        ],
+        "pages": [
+          {
+            "id": "home",
+            "cols": 2,
+            "cells": [
+              {
+                "view": "visit-table"
+              }
+            ]
+          },
+          {
+            "id": "sites",
+            "cols": 2,
+            "cells": [
+              {
+                "view": "site-table"
+              }
+            ]
+          }
+        ],
+        "skill": {
+          "description": "Answers about visits",
+          "actions": [
+            "visit_list",
+            "object:visit.create",
+            "site_get"
+          ],
+          "examples": [
+            {
+              "prompt": "p",
+              "action": "object:visit.update"
+            },
+            {
+              "prompt": "q",
+              "action": "site_get"
+            }
+          ],
+          "cards": [
+            "visit-table",
+            "site-table"
+          ]
+        },
+        "shell": {
+          "jobs": [
+            {
+              "verb": "open",
+              "view": "visit-table"
+            },
+            {
+              "verb": "open sites",
+              "view": "site-table"
+            }
+          ],
+          "needs": [
+            {
+              "object": "visit"
+            },
+            {
+              "object": "site"
+            }
+          ],
+          "search": [
+            "visit",
+            "site"
+          ]
+        },
+        "workflows": [
+          {
+            "id": "w1",
+            "trigger": {
+              "record": "visit"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

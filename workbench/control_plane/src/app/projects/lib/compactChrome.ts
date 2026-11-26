@@ -12,7 +12,7 @@
 
 import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
-import { AGENT_STRIP, type AgentFocus, type AgentSummary } from "./agentRuns";
+import { AGENT_STRIP, type AgentFocus, type AgentSummary, HOLD_FILTERS, type HoldFocus } from "./agentRuns";
 import { type Filters } from "./grouping";
 import { hasMoreTasks } from "./paging";
 
@@ -57,13 +57,19 @@ export interface ActiveChip {
   clear:
     | { kind: "filters"; patch: Partial<Filters> }
     | { kind: "waitingOnMe" }
-    | { kind: "agentWork" };
+    | { kind: "epic" }
+    | { kind: "agentWork" }
+    | { kind: "holdFocus" };
 }
 
 export interface ChipInput {
   filters: Filters;
   waitingOnMe: boolean;
   agentWork: boolean;
+  /** SP-2a — the epic the board is narrowed to, when one is chosen. */
+  epic?: { id: string; label: string };
+  /** SW-5: "Held by an agent" or "Free", or none. */
+  holdFocus?: HoldFocus | null;
   me: string;
   /** Turns an address into the name a member reads. */
   labelOf?: (address: string) => string;
@@ -77,6 +83,8 @@ export function activeChips({
   filters,
   waitingOnMe,
   agentWork,
+  epic,
+  holdFocus = null,
   me,
   labelOf = (address) => address,
 }: ChipInput): ActiveChip[] {
@@ -112,8 +120,15 @@ export function activeChips({
   if (waitingOnMe) {
     chips.push({ key: "waiting", label: "Waiting on me", clear: { kind: "waitingOnMe" } });
   }
+  if (epic) {
+    chips.push({ key: "epic", label: epic.label, clear: { kind: "epic" } });
+  }
   if (agentWork) {
     chips.push({ key: "agent", label: "Agent work", clear: { kind: "agentWork" } });
+  }
+  if (holdFocus) {
+    const found = HOLD_FILTERS.find((item) => item.focus === holdFocus);
+    chips.push({ key: "hold", label: found?.label ?? holdFocus, clear: { kind: "holdFocus" } });
   }
   if (filters.archived) {
     chips.push({ key: "archived", label: "Archived", clear: { kind: "filters", patch: { archived: false } } });

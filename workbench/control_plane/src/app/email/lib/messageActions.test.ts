@@ -28,6 +28,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({
   updateEmail: vi.fn(),
   updateEmailLabels: vi.fn(),
+  listEmails: vi.fn(),
 }));
 vi.mock("./api", async (importOriginal) => {
   const real = await importOriginal<typeof import("./api")>();
@@ -301,6 +302,82 @@ describe("email-patch-per-message", () => {
     finish({ id: older.id });
     await write;
     expect(s().messagePatches).toEqual({});
+  });
+
+
+  // EM-RU2. Mutation caught: a refresh that landed before the PATCH did put
+  // the opened mail back to unread, until the next refresh.
+  describe("a list read while a write is pending", () => {
+    const unread = { ...older, isRead: false } as Email;
+    const server = () => ({ emails: [{ ...unread }], total: 1, hybrid: false });
+    const open = () => {
+      let finish: (v: unknown) => void = () => {};
+      let fail: (e: Error) => void = () => {};
+      api.updateEmail.mockImplementationOnce(
+        () => new Promise((ok, no) => { finish = ok; fail = no; }),
+      );
+      const write = s().updateEmail(unread.id, { isRead: true });
+      return { write, finish, fail };
+    };
+    const rowRead = () => s().emails.find((e) => e.id === unread.id)?.isRead;
+
+    beforeEach(() => {
+      api.listEmails.mockReset().mockImplementation(async () => server());
+      useEmailStore.setState({
+        emails: [unread], selectedAccountId: "box-a", accounts: [], emailsPage: 1,
+        emailsLoading: false, viewAll: false, selectedIds: new Set<string>(),
+      } as never);
+    });
+
+    it("keeps the row read after a softRefresh", async () => {
+      const w = open();
+      expect(rowRead()).toBe(true);
+      await s().softRefresh();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+    });
+
+    it("keeps the row read after fetchEmails and after a second refresh", async () => {
+      const w = open();
+      await s().fetchEmails();
+      expect(rowRead()).toBe(true);
+      await s().softRefresh();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+    });
+
+    it("keeps a patched row read when load-more brings it again", async () => {
+      useEmailStore.setState({ emailsTotal: 2 });
+      const w = open();
+      api.listEmails.mockImplementationOnce(async () => ({
+        emails: [{ ...unread, id: "other" }], total: 2, hybrid: false,
+      }));
+      await s().loadMoreEmails();
+      expect(rowRead()).toBe(true);
+      w.finish({ id: unread.id });
+      await w.write;
+    });
+
+    it("reverts the row when the write fails", async () => {
+      const w = open();
+      await s().softRefresh();
+      w.fail(new Error("Gateway error 502"));
+      await w.write;
+      expect(rowRead()).toBe(false);
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+    });
+
+    it("shows the server value once the write is confirmed", async () => {
+      const w = open();
+      w.finish({ id: unread.id });
+      await w.write;
+      expect(s().messagePatches[unread.id]).toBeUndefined();
+      await s().softRefresh();
+      expect(rowRead()).toBe(false);
+    });
   });
 
   it("does not change the count of the list for a move of a thread message", async () => {

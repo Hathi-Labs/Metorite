@@ -1,10 +1,14 @@
-# The daily release starts here at 21:30 UTC, 03:00 IST (CIV-13, D178).
-# Persistent=true: when the box was down at 21:30, the timer fires at the
-# next start. The script then refuses outside 21:00 to 01:00 UTC.
+# The release slots start here (CIV-13 D178, CIV-21 D194). Three slots a
+# day: 05:30, 13:30 and 21:30 UTC (11:00, 19:00 and 03:00 IST).
+# Persistent=true: when the box was down at a slot, the timer fires at the
+# next start. The script then refuses outside the window of each slot.
+# The unit keeps its name "nightly" from the time of one slot.
 [Unit]
-Description=Metorite nightly release at 21:30 UTC (CIV-13)
+Description=Metorite release slots at 05:30, 13:30 and 21:30 UTC (CIV-21)
 
 [Timer]
+OnCalendar=*-*-* 05:30:00 UTC
+OnCalendar=*-*-* 13:30:00 UTC
 OnCalendar=*-*-* 21:30:00 UTC
 Persistent=true
 

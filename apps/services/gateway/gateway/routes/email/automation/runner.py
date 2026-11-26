@@ -73,8 +73,31 @@ from gateway.routes.email.core import (
     router,
 )
 from gateway.routes.email.mailbox_access import mailbox_predicate
+from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL
 from pydantic import BaseModel
 from sqlalchemy import text
+
+
+def is_mail_gone_skip(status: str | None, action_errors: Any) -> bool:
+    """True for a SKIPPED run whose mail was moved or deleted before the rule ran.
+
+    The server decides, so the UI never guesses it. Every error of the run must
+    be the "message is gone" detail. A suppressed or no-match skip carries no
+    such error, and a mixed run is a real failure.
+    """
+    if status != "SKIPPED":
+        return False
+    if isinstance(action_errors, str):
+        try:
+            action_errors = json.loads(action_errors or "[]")
+        except ValueError:
+            return False
+    if not isinstance(action_errors, list) or not action_errors:
+        return False
+    return all(
+        isinstance(e, dict) and e.get("error") == MESSAGE_GONE_DETAIL
+        for e in action_errors
+    )
 
 
 async def _account_self_email(db: Any, account_id: str) -> str:
@@ -329,6 +352,8 @@ async def rules_history(
                      r.action_errors if isinstance(r.action_errors, list)
                      else json.loads(r.action_errors or "[]")
                  ) if getattr(r, "action_errors", None) is not None else [],
+                 "mail_gone": is_mail_gone_skip(
+                     r.status, getattr(r, "action_errors", None)),
                  "created_at": r.created_at.isoformat() if r.created_at else None,
                  "received_at": r.received_at.isoformat()
                  if getattr(r, "received_at", None) else None,
@@ -417,6 +442,7 @@ async def message_timeline(
                 "actions": actions,
                 "action_errors": errors,
                 "match_source": r.match_source,
+                "mail_gone": is_mail_gone_skip(r.status, r.action_errors),
                 "reason": r.reason,
             })
         # Oldest-first overall: the received anchor may post-date an execution row
@@ -437,6 +463,25 @@ async def message_timeline(
 # a bulk repair is exactly the kind of outward-facing surprise the user cannot
 # undo. If a reply was genuinely wanted, it can be drafted from the message.
 # NOTIFY_ME too: a WhatsApp message about a mail of weeks ago is noise (RE-5).
+GONE_RUN_REASON = "The mail was moved or deleted before the rule ran."
+
+
+def run_status(
+    actions_taken: list[Any], action_errors: list[dict[str, str]],
+) -> tuple[str, str | None]:
+    """The status of a rule run, and a reason when the run has its own.
+
+    No action taken and every error "message gone": SKIPPED. The mail left
+    before the rule ran, so the rule did not fail. No action taken with any
+    other error: FAILED. Anything else, including partial success: APPLIED.
+    """
+    if action_errors and not actions_taken:
+        if all(e.get("error") == MESSAGE_GONE_DETAIL for e in action_errors):
+            return "SKIPPED", GONE_RUN_REASON
+        return "FAILED", None
+    return "APPLIED", None
+
+
 _RETRY_SKIPPED_ACTIONS = frozenset({"REPLY", "DRAFT_EMAIL", "FORWARD",
                                     "SEND_EMAIL", "CALL_WEBHOOK", "NOTIFY_ME"})
 
@@ -528,17 +573,19 @@ async def retry_failed_executions(
                 account_id=account_id, errors_out=errors,
                 rule_id=str(r.rule_id),
             )
-            status = "FAILED" if (errors and not taken) else "APPLIED"
+            status, gone_reason = run_status(taken, errors)
             if status == "APPLIED":
                 repaired += 1
-            else:
+            elif status == "FAILED":
                 still_failing += 1
+            # A SKIPPED row (mail gone) is neither repaired nor failing.
             await db.execute(text(
                 "UPDATE email_executed_rules SET status = :st, "
-                "actions_taken = :acts, action_errors = CAST(:aerr AS JSONB) "
+                "actions_taken = :acts, action_errors = CAST(:aerr AS JSONB), "
+                "reason = COALESCE(:reason, reason) "
                 "WHERE id = :eid"
             ), {"eid": str(r.id), "st": status, "acts": json.dumps(taken),
-                "aerr": json.dumps(errors)})
+                "aerr": json.dumps(errors), "reason": gone_reason})
 
         await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.retry_failed_done", account_id=account_id,
@@ -1299,6 +1346,7 @@ async def _apply_and_log_match(
                        "status is the classification.")})
         return
     action_errors: list[dict[str, str]] = []
+    gone_reason: str | None = None
     pmid = r.provider_message_id
     # 🔴 WS-17 EM-G11c2 (§12.3.13.7, G5): a rule with `automated=false`
     # proposes and never applies on its own. It logs a PENDING row, with
@@ -1332,7 +1380,7 @@ async def _apply_and_log_match(
         # assistant and let a rule that never touched the mailbox teach a
         # permanent sender pattern. Partial success stays APPLIED — the errors
         # ride along in action_errors.
-        status = "FAILED" if (action_errors and not actions_taken) else "APPLIED"
+        status, gone_reason = run_status(actions_taken, action_errors)
         # inbox-zero parity: when the AI (not a static/learned-pattern rule)
         # picks a rule, cache the sender→rule as a learned FROM pattern so future
         # mail from that sender short-circuits the LLM. Consistency-gated like
@@ -1404,7 +1452,8 @@ async def _apply_and_log_match(
         # they differ, the row was re-keyed mid-run and the log should say so.
         "mid": str(r.id), "pmid": pmid, "tid": r.thread_id,
         "subj": r.subject or "", "frm": frm.get("email", ""), "status": status,
-        "acts": json.dumps(actions_taken), "reason": match["reason"],
+        "acts": json.dumps(actions_taken),
+        "reason": gone_reason or match["reason"],
         "msrc": match.get("source"), "aerr": json.dumps(action_errors)})
 
 

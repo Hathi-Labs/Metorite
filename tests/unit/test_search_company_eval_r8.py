@@ -24,7 +24,14 @@ pytest.importorskip("sqlalchemy")
 from sqlalchemy import text
 
 from evals.search_company import run, score, seed
-from evals.search_company.questions import SOURCES, load_fixture, resolve
+from evals.search_company.questions import (
+    SOURCES,
+    gold_id,
+    load_fixture,
+    load_misses,
+    resolve,
+    resolve_misses,
+)
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_email_keep_separate import _assert_non_priv
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -65,8 +72,12 @@ async def test_baseline_every_source_answers_its_ten_questions(seeded, app_engin
     assert summary.failing == ()
     assert summary.recall == 1.0, f"missed: {summary.missed}"
     assert summary.by_source == {s: (10, 10) for s in SOURCES}
-    # Only the two sources without questions are empty. Whatsapp and artifacts hold no data.
-    assert set(summary.empty) == {"artifacts", "whatsapp"}
+    # Only the sources without questions are empty: the registry's sources
+    # that hold no seed data (whatsapp and artifacts today). The set comes
+    # from the registry, so a source that joins or leaves it (STU-C5a and its
+    # revert, 2026-11-14) does not turn this test red.
+    assert set(summary.empty) == set(run.registry_names()) - set(SOURCES)
+    assert {"artifacts", "whatsapp"} <= set(summary.empty)
     assert score.verdict(summary) == score.EXIT_PASS
 
 
@@ -115,3 +126,51 @@ async def test_a_member_of_another_org_finds_none_of_the_gold(seeded, app_engine
     summary = score.summarize(await _run(p, p.org_b, questions), run.registry_names())
     assert summary.recall == 0.0
     assert summary.merged == 0.0
+
+
+# ── WS-FIND FIND-1: the misses set ──────────────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def seeded_misses(promoted):  # noqa: F811
+    """The 20 misses, in org B. The gold ids hold the org, so they never meet the 50 questions."""
+    fixture = load_misses()
+    with promoted.admin_engine.begin() as c:
+        for sql, rows in seed.statements(promoted.org_b, fixture):
+            c.execute(text(sql), rows)
+    yield {"ns": promoted, "fixture": fixture}
+
+
+async def _run_misses(p, fixture) -> score.MissesSummary:
+    questions = resolve_misses(fixture, p.org_b)
+    meta = {q.id: (q.kind, q.rung) for q in questions}
+    url = p.app_url.render_as_string(hide_password=False)
+    async with tenant_engine_scope(url):
+        with run.switches(p.org_b):
+            async with run.inprocess_asker(run.member_of(p.org_b)) as ask:
+                outcomes = await run.run_set(ask, questions)
+    return score.summarize_misses(outcomes, meta)
+
+
+async def test_the_misses_score_does_not_drop(seeded_misses, app_engine) -> None:  # noqa: F811
+    """A slice may raise the score. A drop below MISSES_BASELINE fails here."""
+    _assert_non_priv(app_engine)
+    summary = await _run_misses(seeded_misses["ns"], seeded_misses["fixture"])
+    assert summary.n == 20 and summary.errors == 0
+    assert summary.found >= score.MISSES_BASELINE, f"found: {summary.found_ids}"
+
+
+async def test_the_misses_seed_answers_an_exact_question(seeded_misses, app_engine) -> None:  # noqa: F811
+    """The control: the seed works, so a low misses score is the search and not a dead seed."""
+    p = seeded_misses["ns"]
+    fixture = seeded_misses["fixture"]
+    wanted = {"Corrigan Textiles": "ld-van", "Hexapod 3D printer order": "dl-hexa",
+              "Payment slip": "em-rel", "Kavitha": "ct-kav"}
+    url = p.app_url.render_as_string(hide_password=False)
+    async with tenant_engine_scope(url):
+        with run.switches(p.org_b):
+            async with run.inprocess_asker(run.member_of(p.org_b)) as ask:
+                for words, key in wanted.items():
+                    ids = {str(h["id"]) for h in (await ask(words))["hits"]}
+                    assert gold_id(p.org_b, key) in ids, words
+    assert {r.key for r in fixture.records} >= set(wanted.values())

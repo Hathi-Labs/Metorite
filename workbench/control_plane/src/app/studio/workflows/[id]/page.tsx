@@ -46,6 +46,7 @@ import NodeInspector from "@/app/workflows/components/NodeInspector";
 import NodePalette, { type PaletteDrop } from "@/app/workflows/components/NodePalette";
 import RunConsole from "@/app/workflows/components/RunConsole";
 import TriggerPanel from "@/app/workflows/components/TriggerPanel";
+import { cleanTriggers } from "@/app/workflows/lib/eventTriggers";
 import WorkflowEdge from "@/app/workflows/components/WorkflowEdge";
 import WorkflowNode, { type CCNodeData } from "@/app/workflows/components/WorkflowNode";
 import {
@@ -60,6 +61,9 @@ import {
   updateWorkflow,
   validateWorkflow,
 } from "@/app/workflows/lib/api";
+import { readOnlyNote } from "@/app/workflows/lib/humanStep";
+import { writerRole } from "@/app/workflows/lib/studioWrite";
+import { newWorkflowGraph, normalizeTriggerId } from "@/app/workflows/lib/triggerId";
 import type {
   Catalog,
   GraphIssue,
@@ -84,9 +88,11 @@ const TRIGGER_KIND_HINTS = [
 
 /** Edit-model graph → React Flow state (used on load and on copilot apply). */
 function flowFromGraph(
-  graph: WorkflowGraph,
+  stored: WorkflowGraph,
   catalog: Catalog | null,
 ): { nodes: Node[]; edges: Edge[] } {
+  // Task 3382: an old draft names its trigger node `trigger`, a reserved root.
+  const graph = normalizeTriggerId(stored);
   const graphNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const graphEdges = Array.isArray(graph?.edges) ? graph.edges : [];
   return {
@@ -256,6 +262,31 @@ function describeNode(
     };
   }
 
+  // WFC-4a-2a: a Studio write names its action. The owner approves each record.
+  if (type === "studio_write") {
+    const action = String(config.action ?? "").trim();
+    return {
+      summary: action ? "Adds a record after the owner approves it." : "No action picked yet.",
+      detail: action,
+      badges: ["needs approval"],
+    };
+  }
+
+  // WFC-4a-1: a human step names its person, and the two types with no form
+  // say why they cannot be set here.
+  if (type === "human_step") {
+    const title = clip(config.title);
+    const who = String(config.assignee ?? "").trim();
+    return {
+      summary: title || "No title yet.",
+      detail: who || "No person picked yet.",
+      badges: ["waits for a person"],
+    };
+  }
+
+  const note = readOnlyNote(type);
+  if (note) return { summary: note, detail: "", badges: [] };
+
   return none;
 }
 
@@ -265,7 +296,7 @@ function EditorInner({ id }: { id: string }) {
   const { screenToFlowPosition } = useReactFlow();
   // Publishing arms live triggers, so it needs its own authority (spec Q3).
   // Drafting, validating, and Test runs stay open to the workflows feature.
-  const { access } = useAccess();
+  const { access, loading: accessLoading } = useAccess();
   const canPublish = hasCapability(access, "workflows:publish");
 
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
@@ -288,6 +319,9 @@ function EditorInner({ id }: { id: string }) {
   const [running, setRunning] = useState(false);
   const [consoleCollapsed, setConsoleCollapsed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // The message of a refused save, shown in full inside the Trigger panel. The
+  // top bar truncates `notice`, and a 403 for a Studio trigger needs its words.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"palette" | "copilot">("palette");
   const [undoGraph, setUndoGraph] = useState<WorkflowGraph | null>(null);
   /** Edge armed by its "+": the next block picked is spliced into it. */
@@ -316,20 +350,8 @@ function EditorInner({ id }: { id: string }) {
           ? g.nodes
           : [];
         if (graphNodes.length === 0) {
-          // Every workflow starts from its trigger (RFC §5.2).
-          setNodes([
-            {
-              id: "trigger",
-              type: "ccNode",
-              position: { x: 120, y: 60 },
-              data: {
-                label: "Trigger",
-                nodeType: "trigger",
-                config: { kind: "manual" },
-                ...describeNode("trigger", { kind: "manual" }, cat),
-              } satisfies CCNodeData & { config: Record<string, unknown> },
-            },
-          ]);
+          // Every workflow starts from its trigger (RFC §5.2), with a free id.
+          setNodes(flowFromGraph(newWorkflowGraph(), cat).nodes);
           setDirty(true);
         } else {
           const flow = flowFromGraph(g, cat);
@@ -371,17 +393,20 @@ function EditorInner({ id }: { id: string }) {
   const save = useCallback(async (): Promise<boolean> => {
     setSaving(true);
     setNotice(null);
+    setSaveError(null);
     try {
       const wf = await updateWorkflow(id, {
         name: name.trim() || "Untitled workflow",
         graph: toGraph(),
-        triggers,
+        triggers: cleanTriggers(triggers),
       });
-      setDetail(wf);
+      // The save answer holds no versions or hook fields: keep what the page already has.
+      setDetail((d) => (d ? { ...d, ...wf } : wf));
       setDirty(false);
       return true;
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e));
+      setSaveError(String(e instanceof Error ? e.message : e));
       return false;
     } finally {
       setSaving(false);
@@ -420,7 +445,12 @@ function EditorInner({ id }: { id: string }) {
    */
   const addNode = useCallback(
     (drop: PaletteDrop, position?: { x: number; y: number }) => {
-      const nid = `${drop.nodeType}_${counter.current++}${Date.now().toString(36).slice(-3)}`;
+      // A drop may carry a chain (WFC-4a-2a: a Human approval, then the Studio
+      // write). Each block is added, and each is joined to the next by ONE edge.
+      const chain = [drop, ...(drop.then ?? [])];
+      const ids = chain.map(
+        (d) => `${d.nodeType}_${counter.current++}${Date.now().toString(36).slice(-3)}`,
+      );
       const splice = insertEdgeId
         ? (edges.find((e) => e.id === insertEdgeId) ?? null)
         : null;
@@ -438,35 +468,45 @@ function EditorInner({ id }: { id: string }) {
         const maxY = nodes.reduce((acc, n) => Math.max(acc, n.position.y), 0);
         where = { x: 140, y: maxY + 160 };
       }
+      const first = where;
 
       setNodes((ns) => [
         ...ns,
-        {
-          id: nid,
+        ...chain.map((d, i) => ({
+          id: ids[i],
           type: "ccNode",
-          position: where,
+          position: { x: first.x, y: first.y + i * 160 },
           data: {
-            label: drop.label,
-            nodeType: drop.nodeType,
-            config: drop.config,
-            ...describeNode(drop.nodeType, drop.config, catalog),
+            label: d.label,
+            nodeType: d.nodeType,
+            config: d.config,
+            ...describeNode(d.nodeType, d.config, catalog),
           },
-        },
+        })),
       ]);
+      const inner = ids.slice(1).map((nid, i) => ({
+        id: `e_${ids[i]}_out_${nid}`,
+        source: ids[i],
+        target: nid,
+      }));
+      const last = ids[ids.length - 1];
       if (splice) {
         setEdges((es) => [
           ...es.filter((e) => e.id !== splice.id),
           {
-            id: `e_${splice.source}_${splice.sourceHandle ?? "out"}_${nid}`,
+            id: `e_${splice.source}_${splice.sourceHandle ?? "out"}_${ids[0]}`,
             source: splice.source,
-            target: nid,
+            target: ids[0],
             sourceHandle: (splice.sourceHandle as string) ?? undefined,
           },
-          { id: `e_${nid}_out_${splice.target}`, source: nid, target: splice.target },
+          ...inner,
+          { id: `e_${last}_out_${splice.target}`, source: last, target: splice.target },
         ]);
         setInsertEdgeId(null);
+      } else if (inner.length > 0) {
+        setEdges((es) => [...es, ...inner]);
       }
-      setSelectedId(nid);
+      setSelectedId(last);
       setDirty(true);
     },
     [catalog, edges, nodes, insertEdgeId],
@@ -499,6 +539,23 @@ function EditorInner({ id }: { id: string }) {
     } as WorkflowGraphNode;
   }, [nodes, selectedId]);
 
+  // WFC-4a-2a: a Studio write runs as the owner of the workflow, so only the
+  // owner sees its palette item and its form. While access loads, nobody does.
+  const studioRole = writerRole(detail?.owner_email, access?.email, accessLoading);
+  const studioWrite = useMemo(
+    () => ({
+      role: studioRole,
+      ownerEmail: detail?.owner_email ?? "",
+      nodes: nodes.map((n) => ({ id: n.id, type: (n.data as CCNodeData).nodeType })),
+      edges: edges.map((e) => ({
+        source: e.source,
+        target: e.target,
+        sourceHandle: (e.sourceHandle as string | null | undefined) ?? null,
+      })),
+    }),
+    [studioRole, detail?.owner_email, nodes, edges],
+  );
+
   const upstreamIds = useMemo(() => {
     if (!selectedId) return [];
     const parents = new Map<string, string[]>();
@@ -513,9 +570,12 @@ function EditorInner({ id }: { id: string }) {
       seen.add(cur);
       stack.push(...(parents.get(cur) ?? []));
     }
-    seen.delete("trigger");
+    // The trigger node's data is the `{{trigger.*}}` root, whatever its id.
+    for (const n of nodes) {
+      if ((n.data as CCNodeData).nodeType === "trigger") seen.delete(n.id);
+    }
     return [...seen];
-  }, [edges, selectedId]);
+  }, [edges, nodes, selectedId]);
 
   /**
    * The trigger card reads from the Triggers panel, not from its own config —
@@ -1168,7 +1228,9 @@ function EditorInner({ id }: { id: string }) {
           hookUrl={detail.hook_url}
           hookPath={detail.hook_path}
           published={published}
+          error={saveError}
           onChange={(next) => {
+            setSaveError(null);
             setTriggers(next);
             setDirty(true);
           }}
@@ -1231,7 +1293,11 @@ function EditorInner({ id }: { id: string }) {
           )}
           <div className="flex-1 min-h-0 flex">
             {leftTab === "palette" ? (
-              <NodePalette catalog={catalog} onAdd={(drop) => addNode(drop)} />
+              <NodePalette
+                catalog={catalog}
+                onAdd={(drop) => addNode(drop)}
+                studioWriteOffered={studioRole === "owner"}
+              />
             ) : (
               <CopilotPanel
                 workflowId={id}
@@ -1312,6 +1378,7 @@ function EditorInner({ id }: { id: string }) {
           onConfig={patchSelected}
           onLabel={relabelSelected}
           onDelete={deleteSelected}
+          studioWrite={studioWrite}
         />
       </div>
 

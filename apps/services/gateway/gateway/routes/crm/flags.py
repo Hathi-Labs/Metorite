@@ -21,11 +21,26 @@ gateway reads them.
   studio of a Native CRM (WS-53 CRM-C4a). The grammar is the one of
   ``CRM_ORGS``. An empty list allows no organization, so each studio route
   answers 404. :func:`require_field_studio` is their dependency.
+* ``CRM_PIPELINES_ORGS`` — the organization ids whose admins may create a
+  deal pipeline (WS-CRM CRM-M3a, ``crm_conversational.md`` §8 CRM-M3). The
+  grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
+  ``POST /crm/pipelines`` and its preview answer 404, ``GET /crm/mode``
+  leaves out ``pipeline_create``, and the chat run drops
+  ``crm_create_pipeline``. :func:`pipelines_allowed` is the one check, and
+  :func:`require_crm_pipelines` is the dependency. A name in the list spends
+  nothing, so its flip is gate ``enforcement-flip``.
 * ``CRM_FILL_RANK_ORGS`` — the organization ids that get the fill rank and
   the source labels of the mirror (WS-53 CRM-Q17a-1, ``crm_platform.md``
   §18.9.3). The grammar is the one of ``CRM_ORGS``. An empty list allows no
   organization: the sync does no fill work, and the routes serve no fill
   numbers and no labels. :func:`fill_rank_allowed` is the one check.
+* ``CRM_MODULE_FIND_ORGS`` — the organization ids whose module list and
+  module total take ``q`` across the record name, each lookup name and each
+  text value (WS-53 CRM-Q34-7, ``crm_platform.md`` §18.17). The grammar is
+  the one of ``CRM_ORGS``. An empty list allows no organization: ``q`` on a
+  module total is the 422 of CRM-Q34-2, and the module list matches the
+  record name only, as before. :func:`module_find_allowed` is the one check.
+  A name in the list spends nothing, so its flip is gate ``enforcement-flip``.
 * ``CRM_NOTE_SEARCH_ORGS`` — the organization ids that get search of note
   text by meaning (WS-53 CRM-Q27, ``crm_platform.md`` §18.11.2). The grammar
   is the one of ``CRM_ORGS``. An empty list allows no organization: the sync
@@ -55,6 +70,13 @@ gateway reads them.
   404 ``rules_off``. :func:`answer_first_allowed` is the one check, and it
   needs :func:`questions_allowed` too. A name in the list spends nothing, so
   its flip is gate ``enforcement-flip``.
+* ``CRM_LONG_READ_ORGS`` — the organization ids whose CRM totals may take a
+  long read of up to 180 s (WS-53 CRM-Q25e part 5, ``crm_platform.md``
+  §18.11). The grammar is the one of ``CRM_ORGS``. An empty list allows no
+  organization: a total past 10 s answers 503 ``aggregate_timeout`` as
+  before, and the chat tool makes no second call. :func:`long_read_allowed`
+  is the one check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``.
 * ``CRM_DIGEST_ORGS`` — the organization ids that get the weekly CRM digest
   on the powerful tier (WS-53 CRM-Q28, ``crm_platform.md`` §18.11.2). The
   grammar is the one of ``CRM_ORGS``. An empty list allows no organization:
@@ -69,6 +91,41 @@ gateway reads them.
   :func:`cutover_allowed` is the one check, and it needs
   :func:`crm_mirror_allowed` too. 🔴 A name in the list on a production box
   is the owner's production run (CRM-Z10-run).
+* ``CRM_MODULE_FIND_ORGS`` — the organization ids whose chat may find a
+  field by its words, in one module or in each mirrored module (WS-53
+  CRM-Q34-6, task 3699). The grammar is the one of ``CRM_ORGS``. An empty
+  list allows no organization: ``GET /crm/fields-search`` answers 404
+  ``module_find_off`` and sends no SQL, and ``crm_list_fields`` ignores its
+  ``query`` and answers as before. :func:`module_find_allowed` is the one
+  check. A name in the list spends nothing, so its flip is gate
+  ``enforcement-flip``. Fence: ``tests/unit/test_crm_fields_search.py``.
+* ``CRM_MODULE_REREAD_ORGS`` — the organization ids whose Zoho mirror reads
+  each generic module again in full once in 7 days, and queues one full read
+  of a module whose stored pick-list values left the current options (WS-53
+  task 3869, ``crm_platform.md`` §18.7). The grammar is the one of
+  ``CRM_ORGS``. An empty list allows no organization: a generic module that
+  a cursor reads takes its changes only, as before, and discovery runs no
+  drift check. :func:`module_reread_allowed` is the one check. A full read
+  spends Zoho API credits inside the budget of the sync run, so its flip is
+  gate ``enforcement-flip``. Fence: ``tests/unit/test_crm_module_reread.py``.
+* ``CRM_MIRROR_AGE_ORGS`` — the organization ids whose CRM read tools say
+  how old the Zoho mirror of a module is (WS-53 CRM-Q30c, task 3868,
+  ``crm_platform.md`` §18.11.2). The grammar is the one of ``CRM_ORGS``. An
+  empty list allows no organization: ``GET /crm/sync/mirror-age`` answers an
+  empty list and sends no SQL, and the tools send no request for it.
+  :func:`mirror_age_allowed` is the one check, and the tools ask it through
+  ``crm_tools.mirror_age_on``. A name in the list spends nothing, so its
+  flip is gate ``enforcement-flip``. Fences:
+  ``tests/unit/test_crm_mirror_age.py`` and
+  ``tests/unit/test_crm_mirror_age_note.py``.
+* ``SEMANTIC_MODEL_ORGS`` — the organization ids whose CRM plan takes the
+  semantic kinds ``measure``, ``join`` and ``query`` (WS-SEM SEM-7, task
+  3737, ``semantic_model.md`` §3.4). The grammar is the one of ``CRM_ORGS``.
+  An empty list allows no organization: the plan keeps an item of these
+  kinds as an unknown kind, no check runs on it, and ``org_facts`` serves
+  none. :func:`semantic_model_allowed` is the one check. A name in the list
+  spends nothing, so its flip is gate ``enforcement-flip``. Fence:
+  ``tests/unit/test_crm_plan_kinds_semantic.py``.
 
 :func:`require_crm_enabled` is the router dependency in ``core.py``. It runs
 BEFORE ``require_feature_router("crm")``, so an organization outside the list
@@ -177,6 +234,26 @@ def field_studio_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_pipelines_orgs() -> frozenset[str]:
+    """The organization ids that may create a pipeline (CRM-M3a). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_pipelines_orgs or ""))
+
+
+def pipelines_allowed(organization_id: str | None) -> bool:
+    """True when an admin of this org may create a deal pipeline.
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_PIPELINES_ORGS``, or ``*`` there (CRM-M3a). It reads the
+    settings and nothing else, so the orchestrator may ask it for the org of
+    a run before it builds the tools.
+    """
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_pipelines_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 def crm_fill_rank_orgs() -> frozenset[str]:
     """The organization ids that get the fill rank. Empty means none."""
     return _parse_orgs(str(get_settings().crm_fill_rank_orgs or ""))
@@ -272,6 +349,27 @@ def answer_first_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_long_read_orgs() -> frozenset[str]:
+    """The organization ids whose totals may take a long read (CRM-Q25e
+    part 5). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_long_read_orgs or ""))
+
+
+def long_read_allowed(organization_id: str | None) -> bool:
+    """True when a total of this org may run a long read of up to 180 s
+    (CRM-Q25e part 5, task 2985 HRD-6, ``crm_platform.md`` §18.11).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND
+    a place on ``CRM_LONG_READ_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_long_read_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 def crm_digest_orgs() -> frozenset[str]:
     """The organization ids that get the weekly digest. Empty means none."""
     return _parse_orgs(str(get_settings().crm_digest_orgs or ""))
@@ -309,6 +407,89 @@ def cutover_allowed(organization_id: str | None) -> bool:
     return ALL_ORGS in orgs or org in orgs
 
 
+def crm_module_find_orgs() -> frozenset[str]:
+    """The organization ids that may find a field by its words (CRM-Q34-6).
+    Empty means none."""
+    return _parse_orgs(str(get_settings().crm_module_find_orgs or ""))
+
+
+def module_find_allowed(organization_id: str | None) -> bool:
+    """True when the field search may serve this org (CRM-Q34-6, task 3699).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_MODULE_FIND_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_module_find_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_module_reread_orgs() -> frozenset[str]:
+    """The organization ids whose mirror reads each generic module in full
+    once in 7 days (task 3869). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_module_reread_orgs or ""))
+
+
+def module_reread_allowed(organization_id: str | None) -> bool:
+    """True when the weekly full read and the pick-list drift check of the
+    generic modules may run for this org (task 3869).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_MODULE_REREAD_ORGS``, or ``*`` there. The sync runs only
+    for an org that the mirror allows, so the mirror list holds too. It reads
+    the settings and nothing else, and no module reads it at import, so a
+    SIGHUP reload applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_module_reread_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def crm_mirror_age_orgs() -> frozenset[str]:
+    """The organization ids whose read tools say how old the mirror is
+    (CRM-Q30c). Empty means none."""
+    return _parse_orgs(str(get_settings().crm_mirror_age_orgs or ""))
+
+
+def mirror_age_allowed(organization_id: str | None) -> bool:
+    """True when the age of the mirror may serve this org (CRM-Q30c, task 3868).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``CRM_MIRROR_AGE_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = crm_mirror_age_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
+def semantic_model_orgs() -> frozenset[str]:
+    """The organization ids whose plan takes the semantic kinds (SEM-7).
+    Empty means none."""
+    return _parse_orgs(str(get_settings().semantic_model_orgs or ""))
+
+
+def semantic_model_allowed(organization_id: str | None) -> bool:
+    """True when the plan of this org checks and serves the kinds
+    ``measure``, ``join`` and ``query`` (SEM-7, task 3737).
+
+    It needs the CRM switch with the CRM list (:func:`crm_org_allowed`) AND a
+    place on ``SEMANTIC_MODEL_ORGS``, or ``*`` there. It reads the settings
+    and nothing else, and no module reads it at import, so a SIGHUP reload
+    applies a flip (``docs/flag_reload.md``)."""
+    if not crm_org_allowed(organization_id):
+        return False
+    org = str(organization_id).strip().lower()
+    orgs = semantic_model_orgs()
+    return ALL_ORGS in orgs or org in orgs
+
+
 async def require_crm_enabled(
     user: Annotated[UserContext, Depends(get_current_user)],
 ) -> None:
@@ -328,6 +509,18 @@ async def require_field_studio(
     It reads ``user.organization_id`` and nothing else from the request.
     """
     if not field_studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_crm_pipelines(
+    user: Annotated[UserContext, Depends(get_current_user)],
+) -> None:
+    """404 unless the caller's organization may create a pipeline (CRM-M3a).
+
+    It runs before the admin floor, so a dark org gets 404 and never 403. It
+    reads ``user.organization_id`` and nothing else from the request.
+    """
+    if not pipelines_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail="Not Found")
 
 

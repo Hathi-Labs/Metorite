@@ -25,9 +25,31 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 
 _log = structlog.get_logger(__name__)
+
+
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a row with no org and the bind is on.
+
+    Task 2221 slice 2. This process binds no tenant: the jobs open the
+    unbound ``get_session``, and no run or session names an org. A failure
+    row holds error text from a tenant's data, and a count row counts a
+    tenant's records. So with no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips each of these rows, and it never lands under
+    the operator org. With the bind off, the row stays as before. The
+    structlog line keeps each run visible.
+
+    Two rows hold no tenant data, and they call ``record`` directly: the
+    Zoho ``run_ok`` (an empty payload) and ``scheduler_started`` (the job ids
+    and the cron triggers). ``acb_audit`` keeps the operator org for a real
+    system event (Option-A), so these two stay there. Do not add tenant data
+    to them. Fences: ``tests/unit/test_audit_tick_writers_org.py`` and
+    ``tests/unit/test_audit_tick_writers_org_r8.py`` (R8).
+    """
+    if not refuse_tenantless(event):
+        record(event)
 
 
 async def _run_zoho() -> None:
@@ -36,10 +58,11 @@ async def _run_zoho() -> None:
     _log.info("scheduler.zoho_sync.start")
     try:
         await zoho_sync.main()
+        # A pure system row: no tenant data, so it keeps Option-A (task 2221).
         record(AuditEvent(actor="job:scheduler", action="run_ok", target="job:zoho_sync", payload={}))
     except Exception as exc:
         _log.exception("scheduler.zoho_sync.failed")
-        record(
+        _audit(
             AuditEvent(
                 actor="job:scheduler",
                 action="run_failed",
@@ -57,7 +80,7 @@ async def _run_reconciler() -> None:
         # reconciler.run is sync — push to executor so we do not block the loop.
         loop = asyncio.get_running_loop()
         counts: dict[str, Any] = await loop.run_in_executor(None, reconciler.run)
-        record(
+        _audit(
             AuditEvent(
                 actor="job:scheduler",
                 action="run_ok",
@@ -67,7 +90,7 @@ async def _run_reconciler() -> None:
         )
     except Exception as exc:
         _log.exception("scheduler.reconciler.failed")
-        record(
+        _audit(
             AuditEvent(
                 actor="job:scheduler",
                 action="run_failed",
@@ -92,6 +115,8 @@ def build_scheduler(*, tz: str = "Asia/Kolkata") -> AsyncIOScheduler:
 async def _serve() -> None:
     sched = build_scheduler()
     sched.start()
+    # A pure system row: the job ids and the cron triggers only, so it keeps
+    # Option-A (task 2221). Do not add tenant data here.
     record(
         AuditEvent(
             actor="job:scheduler",

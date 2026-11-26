@@ -1,6 +1,7 @@
 """CAL-1a (task 1675): the ``calendar-day`` tool pack of the main chat.
 
-The pack holds the eight day planner tools of ``skill_my_tasks``. The Projects
+The pack holds the twenty day planner, calendar settings, day rule, day flow,
+event read and P-1a tools of ``skill_my_tasks``. The Projects
 assistant builds them in ``_agent_tools()`` only. Each case names, in its
 docstring, the mutation that turns it red (R7).
 
@@ -27,16 +28,30 @@ EIGHT = (
     "my_tasks_replan_day", "my_tasks_rollover", "my_tasks_schedule",
     "my_tasks_set_one_thing", "my_tasks_unschedule",
 )
+#: CAL-2 (task 1676): the two calendar settings tools.
+SETTINGS = ("my_tasks_get_calendar_settings", "my_tasks_update_calendar_settings")
+#: CAL-4 (task 1678): the two day flows.
+FLOWS = ("my_tasks_start_my_day", "my_tasks_close_my_day")
+#: CAL-3 (task 1677): the four day rule tools. The pack held sixteen with CAL-4.
+DAY_RULES = ("my_tasks_list_day_rules", "my_tasks_add_day_rule",
+             "my_tasks_edit_day_rule", "my_tasks_delete_day_rule")
+#: CE-15 (task 3463): the read of the synced events. The pack held seventeen.
+EVENTS = ("my_tasks_list_events",)
+#: P-1a (task 3112): the connected calendars and the two task proposals. The pack
+#: holds twenty.
+P1A = ("my_tasks_list_calendar_connections", "my_tasks_suggest_title", "my_tasks_enrich")
+TWENTY = tuple(sorted((*EIGHT, *SETTINGS, *DAY_RULES, *FLOWS, *EVENTS, *P1A)))
 
 
-def test_the_family_is_the_eight_planner_tools() -> None:
-    """Mutation: drop a tool, add the ninth (estimate_stats), or name one that
-    skill_my_tasks lacks -> red."""
+def test_the_family_is_the_twenty_planner_settings_day_rule_flow_event_and_p1a_tools() -> None:
+    """Mutation: drop a tool (the event read or a P-1a read too), add the
+    twenty-first (estimate_stats), or name one that skill_my_tasks lacks -> red."""
     fam = sf.SKILL_FAMILIES[SLUG]
-    assert tuple(fam["tools"]) == EIGHT == tuple(sorted(EIGHT))
+    assert tuple(fam["tools"]) == TWENTY == tuple(sorted(TWENTY))
+    assert len(TWENTY) == 20
     assert fam["owner"] == PA and sf.is_pack(SLUG) and not fam["core"]
-    assert set(EIGHT) <= set(skill_my_tasks.__all__)
-    assert len(EIGHT) <= tp.MAX_PACK_TOOLS
+    assert set(TWENTY) <= set(skill_my_tasks.__all__)
+    assert len(TWENTY) <= tp.MAX_PACK_TOOLS
 
 
 def test_the_specialist_keeps_its_own_tool_list() -> None:
@@ -46,11 +61,11 @@ def test_the_specialist_keeps_its_own_tool_list() -> None:
     mod = ti._pack_owner_module(PA)
     own = {tool_name(t) for t in mod._own_tools()}
     assert own == set(skill_projects.__all__)
-    assert not own & set(EIGHT)
-    assert set(EIGHT) <= {tool_name(t) for t in mod._agent_tools()}
+    assert not own & set(TWENTY)
+    assert set(TWENTY) <= {tool_name(t) for t in mod._agent_tools()}
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != SLUG and fam.get("owner") == PA:
-            assert not set(fam["tools"]) & set(EIGHT), slug
+            assert not set(fam["tools"]) & set(TWENTY), slug
 
 
 def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
@@ -58,7 +73,7 @@ def test_the_pack_builds_the_same_functions_with_their_risk() -> None:
     with the risk of each. Mutation: copy the bodies, or drop the wrapper -> red."""
     mod = ti._pack_owner_module(PA)
     built = ti._owner_pack_tools(SLUG, PA, mod)
-    assert tuple(tool_name(t) for t in built) == EIGHT
+    assert tuple(tool_name(t) for t in built) == TWENTY
     for tool in built:
         name = tool_name(tool)
         assert type(tool).__name__ == "_StrictTool", name
@@ -96,8 +111,15 @@ def test_the_rules_carry_each_planner_rule() -> None:
     assert "deep_work" in flat and "energy windows" in flat
     assert "apply=False" in flat and "show the member the block list" in flat
     assert "apply=True only after the member agrees" in flat
-    for name in EIGHT:
+    for name in TWENTY:
         assert name in flat, name
+    # CE-15: one short line names the event read. The planner reads no event,
+    # so the line tells the model to check each proposed block before apply
+    # (review round 2, P2-1). Mutation: say that the read plans around
+    # meetings, or drop the check before apply -> red.
+    assert ("my_tasks_list_events reads the member's calendar events. The planner "
+            "does not see them, so check each proposed block against them before "
+            "apply=True.") in flat
     assert "No Projects agent exists to hand a task to." in rules
     assert "Never name a tool to the member." in rules
 
@@ -123,14 +145,16 @@ def test_the_cap_drops_the_pack_before_email() -> None:
 
 
 def test_the_day_planner_pack_does_not_count_as_a_way_to_reach_the_owner() -> None:
-    """The 8 tools of this pack fit beside the bulk and core packs (102 + 8 = 110),
-    but they edit no task. So the pack must not stand in for a Projects work pack
-    in the reach test of ``plan_loader``, and the core pack steps aside as before.
-    Mutation: lower ``REACH_MIN_TOOLS`` to 8 or less -> the core pack stays, the
-    specialist leaves, and no work pack can load -> red."""
+    """The tools of this pack edit no task, so the pack must not stand in for a
+    Projects work pack in the reach test of ``plan_loader``, and the core pack
+    steps aside as before. Since CAL-3 (task 1677) the pack holds 14 tools (16 since CAL-4, 17 since CE-15, 20 since P-1a), more
+    than the 11 of ``projects-reports``, so the COUNT alone cannot keep it out.
+    ``REACH_NOT_WORK`` names it. Mutation: empty ``REACH_NOT_WORK`` -> the core
+    pack stays, the specialist leaves, and no work pack can load -> red."""
     from tests.unit.test_projects_packs import _BASE, _SPECIALIST, _sticky_turn
 
-    assert len(EIGHT) < tp.REACH_MIN_TOOLS
+    assert SLUG in tp.REACH_NOT_WORK
+    assert len(TWENTY) >= tp.REACH_MIN_TOOLS, "non-vacuity: the count would let it in"
     turn = _sticky_turn("archive tasks that are done", "projects",
                         tp.Sticky("projects-bulk", (19, 0), 19))
     choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)

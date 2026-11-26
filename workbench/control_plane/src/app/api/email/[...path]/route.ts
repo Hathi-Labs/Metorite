@@ -99,14 +99,21 @@ export async function POST(
   if (refused) return refused;
   const upstream = buildUpstreamUrl(path, req);
   try {
-    const body = await req.json().catch(() => ({}));
+    // A signature image upload (WS-17 SG-1, `POST /email/signature/images`)
+    // is multipart. It must pass through byte for byte with its boundary, as
+    // the People proxy does: rebuilding it as JSON would drop the file.
+    const reqType = req.headers.get("content-type") ?? "";
+    const isMultipart = reqType.startsWith("multipart/form-data");
+    const body = isMultipart
+      ? Buffer.from(await req.arrayBuffer())
+      : JSON.stringify(await req.json().catch(() => ({})));
     const res = await gatewayFetch(upstream, {
       method: "POST",
       headers: {
         ...(await gatewayHeaders()),
-        "Content-Type": "application/json",
+        "Content-Type": isMultipart ? reqType : "application/json",
       },
-      body: JSON.stringify(body),
+      body,
       signal: AbortSignal.timeout(postTimeoutMs(path)),
     });
     const resBody = await res.json().catch(() => ({}));

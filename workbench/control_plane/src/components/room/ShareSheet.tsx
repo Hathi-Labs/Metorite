@@ -19,6 +19,7 @@
  * mysterious failure three turns later.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -56,6 +57,8 @@ export function ShareSheet({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // A bar tap closes the sheet (MOB-9).
+  useCloseOnBarTap(onClose);
 
   useEffect(() => {
     inputRef.current?.focus();

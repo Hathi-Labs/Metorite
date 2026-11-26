@@ -2,9 +2,11 @@
 
 **Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
 
-**Status:** 🟡 **SPEC, ACCEPTED. AP-1a BUILT, dark, not merged** (task 1616, branch `pro-ap1`). AP-1a is the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). AP-BUG-2 is built (task 1896, the admin gate of `/actions`). The other slices are not built, except the parts that §2 names.
+**Status:** 🟡 **SPEC, ACCEPTED. AP-1a MERGED, dark** (task 1616, `bf0ece44b`, PR 1797): the read seam of §7.3 with four kinds, behind `WAITING_ORGS` (empty by default). **AP-8a BUILT, dark, not merged** (task 1858, branch `pro-ap8`, migration 359): the person ask of §7.1 and §7.2, behind `WAITING_ORGS` and `DECISIONS_ORGS`. AP-8b is NO-GO until the spec answers §8 B4 to B6. AP-BUG-2 is built (task 1896, the admin gate of `/actions`). The other slices are not built, except the parts that §2 names.
 
 On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. The owner answered AP-Q10, so AP-16 is open to build after AP-15.
+
+On 2026-11-08 the owner answered AP-Q11: "Needs attention" folds into "For you", as one "Needs you" (§5.8). AP-17 and AP-18 are not built. AP-BUG-3 is merged (task 2241, `c922445a9`).
 
 **Verified against code on 2026-11-06 at `97da742ae`.** Each path in §2 and §9 was read on that commit. The open branch `l6s-waiting-list` (task 1750) was read at its head on the same day.
 
@@ -100,7 +102,7 @@ Each fact was read on `97da742ae`.
 4. **A person cannot mark "waiting on X" and keep the task.** Delegate replaces every assignee (`lens.ts:941-944`, `tasks.py:2221-2227`). The overlay route takes `waiting_on` alone (`personal.py:175-189`), but the read side names the current assignees minus me (D77, `personal.py:1180-1208`).
 5. **The nudge** writes one bell row of kind `nudge` (`personal.py:3147-3276`). It has no rate limit, because nothing reads `last_nudged_at` before a send.
 6. **BUILT (task 1857, AP-BUG-1).** Before the fix, the Projects bell drew every `nudge` as "{A} has gone quiet on {task}. Resume or release it." (`notifications.ts:79,97`). That text belongs to the stranded-run nudge of `agent_run_sweep.py:100-102`. So a person's nudge read wrong. `describe()` now tells the two apart by the actor. The sweep stamps an `mcp:` or `agent:` client. A person stamps their address. No producer changed.
-7. **`pm_decisions` has no ask route on purpose** (`decisions.py:16-19`). An HTTP ask lets a member, or an agent with a member's connection, put a card on another member's bell. AP-8 adds a route, and §7.2 holds its guards.
+7. **`pm_decisions` has no ask route on purpose** (`decisions.py:16-19`). An HTTP ask lets a member, or an agent with a member's connection, put a card on another member's bell. AP-8a adds the route, and §7.2 holds its guards.
 8. **The no-score fence.** `tests/unit/test_decisions.py:180-200` refuses an index that names `decider`, `answered_by` or `asked_by`. It refuses `group by`, `count(`, `rank` and `score` in the service too.
 9. **The sidebar has a count already.** The My Day row shows the feed total and the AI runs that wait (`Sidebar.tsx:1322-1381`). Since GL-12, "Needs you" is folded into that row (`navigation_shell.md:288-294`). `NavPane.badge` exists and no pane sets it (`nav.ts:89`).
 10. **Roles.** `is_admin` is `admin:members:read` (`routes/admin/me.py:243`). The seeded `manager` role holds it too. The read-all right is `data:org:read`. A task in a personal space stays hidden from it (D-OP-15, `one_projects_app.md:395`).
@@ -138,8 +140,11 @@ A wait ends in one of five ways: **answered**, **declined** ("Not me"), **withdr
 | `decision` | `pm_decisions`, source `align` or `auto` | The alignment check, or an unattended run | The named decider | The options | Built, dark |
 | `person_ask` | `pm_decisions`, source `person` | A member | Another member | Reply, a choice, or Not me | **New, AP-8** |
 | `waiting_for` | `pm_task_personal.waiting_on` | The member | A person, private | Nudge, or Got it | Built, private |
+| `stalled` | `pm_agent_run_strands`, an open recovery record (`filters.open_recovery_sql`) | An agent that went quiet | The run's member | Resume, or Close the run | Built in Needs attention. **AP-17** |
+| `dangling` | `pm_agent_runs`, an open run of a closed task (`filters.task_closed_sql`) | An agent still open on a closed task | The run's member | Close the run | Built in Needs attention. **AP-17** |
+| `blocked` | `links`, an open block by a parked task (`filters.open_block_sql`) | A task blocked by parked work | The assignees of the blocked task. **Never counted** | Open the blocker | Built in Needs attention. **AP-17** |
 
-The first seven kinds fill "For you". `person_ask` (as the waiter) and `waiting_for` fill "On others".
+The first seven kinds fill "For you". `person_ask` (as the waiter) and `waiting_for` fill "On others". AP-Q11 adds `stalled`, `dangling` and `blocked` to "For you" (§5.8).
 
 ### 3.3 Two verbs for a person: Ask and Hand off
 
@@ -193,7 +198,7 @@ Today the Projects filter "Waiting on me" also matches the assignees (§2.2 item
 | V3 | No list shows a wait of another org | AP-1 R8 test, two orgs |
 | V4 | An ask goes only to a member who can open the task. Else it is refused, with the next step | AP-8 R8 test, extends `test_a_decider_who_cannot_open_the_task_gets_no_row_and_no_bell` |
 | V5 | Only the addressee answers. The lens never answers | `pm_decisions_answered_by_decider`, and an AP-12 test |
-| V6 | No count, group or rank by person, in the seam or the lens | `test_decisions.py:180-200`, extended to `routes/shell/waiting.py` |
+| V6 | No count, group or rank by person, in the seam or the lens | `test_decisions.py:181-203`, extended to `routes/shell/waiting.py` |
 | V7 | A task in a personal space never shows on the Team lens | AP-12 R8 test |
 | V8 | The text of an ask shows fenced as data, never as markup or an instruction | AP-4 test, the WAIT-2 rule |
 | V9 | A wait on a task always has a person who can open the task in its addressees. The ladder of §4.5 ends at the `data:org:read` holders | AP-15 R8 test: the member left the org, and the task has no assignee, no watcher and no lead |
@@ -379,6 +384,7 @@ Task card (side panel)                     Board card
 
 - The filter "Waiting on me" adds person asks addressed to the caller (AP-9).
 - The panel "Waiting on people" adds a section "Asks with no answer" for the scope (AP-9). It lists, oldest first, with no count for each person.
+- **AP-Q11 (§5.8).** One control, "Needs you", takes the place of the filter "Waiting on me", the agent strip chip "Waiting on you" and the view "Needs attention" (AP-18).
 
 ### 5.6 The chat
 
@@ -401,6 +407,49 @@ The ask shows a card, because it reaches another person (D124). It never sends f
 ### 5.7 The phone (390 px)
 
 The row stacks: who and age on line 1, the ask on line 2, the acts as full-width buttons on line 3. The tabs become a segmented control. The Team lens filter becomes a sheet.
+
+### 5.8 One "Needs you": Needs attention folds into "For you" (AP-Q11)
+
+The owner, 2026-11-08, in chat:
+
+```text
+"does it not make sense to combine 'attention needed' and 'waiting on you' into the same field?
+So, just so that, again, any task that needs attention, even agents that need your attention,
+basically need your attention."
+```
+
+Then, on the recommendation below: "go ahead with your recomendation". This is AP-Q11 (§13).
+
+**The problem.** One idea had four names. "Waiting on you" is the agent strip chip, and "Waiting on me" is the Projects filter. "Needs attention" is a Projects view (SW-11a), and "Needs you" is the My Day card. Each lists work that cannot move until a person acts.
+
+**The answer.**
+
+1. **One set, three groups.** "For you" holds every row that needs the caller. The page, My Day "Needs you", the sidebar count and the Projects control read it from the one seam (§7.3). No third list.
+
+   | Group | Kinds | Counted | Why it is there |
+   |---|---|---|---|
+   | **Now** | The first seven kinds of §3.2 | Yes, when the caller is an addressee (V1) | A person or an agent is stopped on you now |
+   | **Clean-up** | `stalled`, `dangling` | Yes, for the run's member | Your agent went quiet, or stays open on a closed task |
+   | **Blocked** | `blocked` | **No** | Your task waits on parked work. Others may need to move it |
+
+2. **The order.** Now, then Clean-up, then Blocked. Inside a group: overdue first, then oldest first (§5.2).
+3. **One act on each row.** Answer (the act of its kind), Resume, Close the run, or Open the blocker. Each row says why it is there.
+4. **A blocked row never counts.** The count means "only you can unblock these" (AP-Q2). A task blocked by parked work often waits on another person's call. So it lists at the bottom, with no count.
+5. **Yours by default.** In a project, a switch reads "Mine | Everyone". "Everyone" shows the rows of each task in the project that the reader can open. A reader of a task already sees each of these facts on the task. They are the agent pill, the "Waiting for Priya" chip and the Needs attention rows of today. "Everyone" shows no count for each person and no filter by person (V6). The filter by person stays the Team lens (AP-12, AP-Q3).
+
+**The surfaces.**
+
+- **Projects (AP-18).** One control, "Needs you", with the count. It takes the place of the filter "Waiting on me" and the agent strip chip "Waiting on you". It also takes the place of the view "Needs attention", its My tasks lens tab and its header badge. On a board or a list, it narrows the cards to the tasks of the rows. In its own view, it lists the rows in their groups.
+- **The page `/waiting` (AP-2).** "For you" draws the three groups. "Near you" (§4.5) stays under them, with no count.
+- **My Day (AP-3).** "Needs you" keeps the top 5 rows of the Now and Clean-up groups. AP-3 reads the seam, so it needs no change of its own.
+- **The sidebar count (AP-2).** The count of "For you", as AP-17 counts it.
+- **The chat (AP-10).** `my_waits` lists the three new kinds. Resume and Close the run already work in the chat, through the class A read `needs_attention` and the routes of `external_agent_access.md` §12.7.
+
+**What stays.**
+
+- `GET /projects/needs-attention` stays, with no change. The AP-17 providers read it with `mine=true`. Its rules stay in `filters.py`, one text each.
+- With `WAITING_ORGS` off, Projects keeps "Waiting on me" and "Needs attention" as today. A later slice removes them once the flag holds for every org (R6: never in place).
+- "Needs attention" sends no bell (§12.7, "no needs_attention storm"). The new kinds send no bell either. They change a list and a count.
 
 ---
 
@@ -493,7 +542,7 @@ One migration, the next free number at build time (R1). Expand only (R6).
 
 1. **Widen** `pm_decisions_source` to `('align', 'auto', 'person')`.
 2. **Add** `due_at TIMESTAMPTZ NULL`, `closed_at TIMESTAMPTZ NULL` and `closed_reason TEXT NULL`, with a CHECK on `closed_reason IN ('withdrawn', 'task_closed')`. The pair is whole or absent.
-3. **Change the guard trigger.** It lets `closed_at` and `closed_reason` be set once, while `answered_at IS NULL`. It refuses an answer when `closed_at IS NOT NULL`.
+3. **Change the guard trigger.** It lets `closed_at` and `closed_reason` be set once, while `answered_at IS NULL`. It refuses an answer when `closed_at IS NOT NULL`. `due_at` joins the fields that cannot change. One UPDATE does not both answer and close.
 4. **The options of a person ask.** With no choices, the service writes `[{reply}, {not_me}]`. With 2 or 3 choices, it adds `not_me`. That stays inside the CHECK of 2 to 4 options.
 5. **The expiry.** `due_at + 7 days`, or 14 days with no date. `MAX_LIFE` stays 30 days.
 6. **No index that names a person** (V6). The open list for one person is a filter on a small table. If the table grows, AP-8b asks the owner for an index on `(organization_id, subject_id)` only.
@@ -508,11 +557,15 @@ One migration, the next free number at build time (R1). Expand only (R6).
 2. An addressee who cannot open the task (`deliverable`).
 3. The caller as the addressee.
 4. A second open ask for the same task, caller and addressee.
-5. More than 30 asks from one caller in one day.
+5. More than 30 asks from one caller in one day. The guard reads the row at offset 29 with `OFFSET 29 LIMIT 1`. It writes no `count(`, and it stores or shows no number (ALN-Q5, V6). A withdrawn ask still weighs.
+
+Guard 1 refuses before any read. Guard 4 locks the task row with `SELECT ... FOR UPDATE`, so two concurrent asks end as one ask and one refusal. No partial unique index holds it, because that index names a person (V6).
+
+**The flags.** Each route of the person ask needs `WAITING_ORGS` AND `DECISIONS_ORGS`. With either flag off for the org, each route answers 404. No new flag exists.
 
 The author comes from the session, never from the body. The bell row goes through `notify`, the one bell writer, with the kind `decision`. Its text names the person: "Vijay waits on you".
 
-Three more routes: `POST /asks/{id}/withdraw` (the asker), `POST /asks/{id}/nudge` (the asker or the Team lens, once in 24 hours), and the answer, which stays `answer_decision`.
+Three more routes: `POST /asks/{id}/withdraw` (the asker), `POST /asks/{id}/nudge` (the asker or the Team lens, once in 24 hours), and the answer, which stays `answer_decision`. AP-8a builds the withdraw. AP-8b builds the nudge. The manifest lists the withdraw as class C with the planned tool `withdraw_ask`, which AP-10 builds. It is not class X (D-OP-9).
 
 **Why this route is safe now.** `decisions.py:16-19` refused an HTTP ask because a member's agent could put cards on bells. Guard 1 refuses every agent connection. A member can already @mention any reader of a task, and the mention reaches the bell. The ask adds one tracked state to that same act.
 
@@ -543,6 +596,7 @@ The rows come oldest first. Each source gives 15 rows at most.
 - `on_others`: `pm_decisions` of source `person` where `asked_by = :me`, and the caller's overlay rows with `waiting_on`.
 - `scope=team`: every open wait of the first five kinds, on a task inside `reader_scope`. `member` filters by the addressee. With no `data:org:read` and no lead role, the route answers 403.
 - My Day "Needs you" and the sidebar count read the same providers. No second list exists.
+- **AP-17 (AP-Q11, §5.8).** Three providers more in `for_you`: `stalled`, `dangling` and `blocked`. Each calls the read of `routes/projects/needs_attention.py` with `mine=true`, so the rules stay one text each in `filters.py`. Each row of the seam gets `group` (`now`, `cleanup` or `blocked`) and `counted`. `GET /shell/waiting/count` counts the `now` and `cleanup` rows where the caller is an addressee. A `blocked` row never counts.
 
 ### 7.4 What stays
 
@@ -560,7 +614,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | Slice | Task | What | Done when | Tier |
 |---|---|---|---|---|
 | **AP-0** | 1855 | This spec | It is on `main`, in `INDEX.md` and in `work_plan.md` §2.1 | LOW |
-| **AP-1a** | 1616 | The read seam of §7.3, with its count, for four kinds: `held_write` (admins only), `chat_ask`, `app_request` and `decision` | The 4 kinds come from one route, each with kind, title (as data), waiter, href, since and acts. Each act is a link. A failed source reads `failed`. R8 tests hold V1, V2, V3 and V6. **Built, dark, not merged** | HIGH (tenancy, identity) |
+| **AP-1a** | 1616 | The read seam of §7.3, with its count, for four kinds: `held_write` (admins only), `chat_ask`, `app_request` and `decision` | The 4 kinds come from one route, each with kind, title (as data), waiter, href, since and acts. Each act is a link. A failed source reads `failed`. R8 tests hold V1, V2, V3 and V6. **Merged, dark** (`bf0ece44b`, PR 1797) | HIGH (tenancy, identity) |
 | **AP-1b** | 1616 | The kinds `agent_question` and `archive_request` | The same shape. **Waits on an owner decision:** D-EA-14 point 1 or AP-Q2 (§2.2 item 2a) | HIGH (identity) |
 | **AP-1c** | 1616 | The kind `person_ask` | The same shape. Needs AP-8 | HIGH (identity) |
 | **AP-2** | 1617 | The page `/waiting` and the sidebar row. The PR 1741 section on `/approvals` moves here, and `/approvals` links to it | The row shows the count of "For you". The page lists both directions and answers in place. `nav.test.ts` holds the new live pane, and `launch_surface.md` §2 lists it. Captures at 1440 and 390, light and dark, compact, a changed accent | MEDIUM |
@@ -569,9 +623,10 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-5** | 1624 | Reach for waits (= BUD-7). An agent question and a person ask that is due today or overdue are interrupts. Other person asks are brief | The class table of `reach/classes.py` holds `waiting_on_you`. The 3-a-day budget holds | HIGH |
 | **AP-6** | 1625 | Answer in the chat: "approve the first two" answers at the source | Each answer goes through the source's own route. No new write path | STANDARD |
 | **AP-7** | 1626 | Later: an approver on each held write | Unchanged | — |
-| **AP-8** | 1858 | The person ask: the migration of §7.1, the routes of §7.2, the notify of the asker on an answer | R8 tests: guards 1 to 5, one answer, withdraw, nudge once in 24 h, the close with the task, V4 and V5. `test_decisions.py` still passes | HIGH (migration, identity) |
+| **AP-8a** | 1858 | The person ask: the migration of §7.1 (359), the ask route and the withdraw of §7.2, and the closed state on the answer and the reads | R8 tests (`test_person_asks_r8.py`): guards 1 to 5, one answer, two concurrent answers, withdraw, no answer after a withdraw, the trigger in SQL, each flag off, org isolation, V4 and V5. `test_decisions.py` still passes. **Built, dark, not merged** | HIGH (migration, identity) |
+| **AP-8b** | 1994 | The bell of the asker on an answer, the nudge route (once in 24 h), and the close with the task (`task_closed`) | R8 tests: the nudge once in 24 h, the close with the task, the bell of the asker. **NO-GO until the spec answers B4 to B6 below** | HIGH (identity) |
 | **AP-9** | 1859 | "Wait on someone" on the task card, the chip, the board chip, the filter "Waiting on me" and the panel section | The chip reads right for the addressee and for another reader. The filter lists a person ask. UI gate | MEDIUM |
-| **AP-10** | 1860 | The chat tools `ask_person`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
+| **AP-10** | 1860 | The chat tools `ask_person`, `withdraw_ask`, `my_waits` and `answer_wait` | Each tool calls the AP-8 or AP-1 route. `ask_person` raises a card. The new-chat-tool fence set passes | STANDARD |
 | **AP-11** | 1861 | "Wait for Priya's reply" in the comment box | One Send writes the comment and the ask. A reply from Priya in the thread answers it | STANDARD |
 | **AP-12** | 1862 | The Team lens of §4.3 | R8 tests hold V7 and V6. The lens has no answer control. A reader without the right gets 403 | HIGH (visibility) |
 | **AP-13** | 1863 | A hand-off to a member can also send an ask "Tell me when it is done" | The delegate form shows the choice and the line "Priya will see that you wait". The ask closes when the task closes | STANDARD |
@@ -579,7 +634,16 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-15** | 1875 | A wait that no person owns: the ladder, the circle, the open wait, the opening after 24 hours, and the Team lens filter "Open" (§4.5) | R8 tests hold V9, V10 and V2 for the circle. A typed archive request stays the member's. The group "Near you" draws no count. UI gate for the open row and "Near you" | HIGH (visibility). Needs AP-1 |
 | **AP-16** | 1876 | An agent names the person its question is for: the field `for` on `ask_on_task`, inside the circle only | An R8 test holds V11. The MCP schema, `agent_edge/tools.py` and the route take the field. The answer still reaches the run's session | HIGH (identity). Needs AP-15. AP-Q10 is answered |
 | **AP-BUG-1** | 1857 | The Projects bell draws a person's `nudge` as "has gone quiet … Resume or release it" | A person's nudge reads "{A} nudged you about {task}". A stranded-run nudge keeps its text. A vitest holds both. **BUILT** | LOW |
+| **AP-17** | 2302 | "Needs you", the server half (§5.8): the kinds `stalled`, `dangling` and `blocked`, the `group` and `counted` fields, and the count rule | R8 tests in `test_waiting_seam_r8.py`: each new kind comes with its group, V1 to V3 and V6 hold, a blocked row is listed and not counted, and a stalled row counts only for the run's member. The answer of `GET /projects/needs-attention` does not change | HIGH (visibility) |
+| **AP-18** | 2303 | "Needs you" in Projects (§5.8): one control in the place of "Waiting on me", the strip chip and "Needs attention", with "Mine \| Everyone" in a project | A vitest: the control replaces the old ones only with the flag on, and the groups keep their order. D145 preview and the UI gate. Needs AP-17 | MEDIUM |
+| **AP-BUG-3** | 2241 | ✅ MERGED (`c922445a9`). An answered agent question stayed in My Day: the answer never marked its bell row read | A run that leaves `awaiting` marks every recipient's `agent_question` row read (`agent_runs._close_question_bells`, in `_move_run` and `_take_over`). R8 tests in `test_mcp_edge_outside_decision.py` | STANDARD |
 | **AP-BUG-2** | 1896 | ✅ BUILT. `GET /actions/pending` gave the whole tenant queue to any member (§2.1) | A member gets 403 on the list, on approve and on reject. An admin gets the whole queue of the org. Two orgs do not cross. `/approvals` shows a member no queue and no error. R8 tests hold each | HIGH (visibility) |
+
+**AP-8b: the three open points.** Write each one before AP-8b starts.
+
+- **B4. The bell of the asker on an answer.** Option (a): a `comment` row, because the answer writes a comment. Option (b): a new kind `ask_answered`, named in each place that a bell kind must be.
+- **B5. Where the 24 h nudge state lives.** Option (a): `EXISTS` on `pm_notifications` of the kind `nudge` for the pair in the last 24 h. Option (b): a `nudged_at` column on `pm_decisions`. The bell text depends on AP-BUG-1 (PR 1812).
+- **B6. How an ask closes with its task.** Option (a): a sweep, as `agent_run_sweep` reads `closed_task_run_ids`. Option (b): a hook on each status write. `task_closed_sql` reads `alias.task_id`, and `pm_decisions` has `subject_id`.
 
 **Build order.**
 
@@ -589,6 +653,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 4. AP-3, AP-10 and AP-11.
 5. AP-15, then AP-12, AP-5 and AP-6.
 6. AP-13. Then AP-16, after AP-15 (AP-Q10 is answered). AP-14 waits (AP-Q7).
+7. AP-17 after AP-1a. AP-18 after AP-17. AP-17 can start now, because AP-1a is merged.
 
 **Task 1750 and PR 1741.** The PR fixes the bug that the owner hit on 2026-11-05. It merged as `c4c17132f`. AP-2 moves its section to `/waiting` (AP-Q8).
 
@@ -605,7 +670,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | Held writes | `apps/services/gateway/gateway/routes/actions.py:33`, `workbench/control_plane/src/app/approvals/page.tsx` |
 | App requests | `apps/services/gateway/gateway/routes/agent_requests.py`, `workbench/control_plane/src/app/integrations/components/WaitingRequests.tsx` |
 | Chat cards | `infra/postgres/237_chat_pending_ask.sql`, `orchestrator/pending_ask.py` |
-| The overlay wait and the nudge | `apps/services/gateway/gateway/routes/projects/personal.py` (`set_personal` `:1009`, `nudge_task` `:3147`), `infra/postgres/188_projects_personal_overlay_fields.sql` |
+| The overlay wait and the nudge | `apps/services/gateway/gateway/routes/projects/personal.py` (`set_personal` `:1009`, `nudge_task` `:3154`), `infra/postgres/188_projects_personal_overlay_fields.sql` |
 | The filter and the panel | `routes/projects/filters.py:1478`, `routes/projects/analytics_waiting.py`, `workbench/control_plane/src/app/projects/lib/waiting.ts` |
 | The bell | `routes/projects/notifications.py` (`NOTIFICATION_KINDS` `:75`, `notify`, `deliverable`), `workbench/control_plane/src/app/projects/lib/notifications.ts:79` |
 | The sidebar | `workbench/control_plane/src/lib/nav.ts`, `nav.test.ts`, `src/lib/shell/Sidebar.tsx` (`MyDayRow` `:1322`, `paneBadge` `:1053`) |
@@ -632,13 +697,15 @@ A run that SKIPS the R8 suites proves nothing (843 tests skip with no database).
 
 | Rule | Fence | State |
 |---|---|---|
-| V1 to V3, V6 | `tests/unit/test_waiting_seam_r8.py` (AP-1a) | Binds when AP-1a merges |
-| V4, V5, the guards of §7.2 | `tests/unit/test_person_asks_r8.py` (new, AP-8) and `tests/unit/test_decisions.py` | Advisory until AP-8 |
-| V6 in the new files | `test_decisions.py::test_the_table_keeps_no_score_for_any_person`, which scans `routes/shell/waiting.py` | Binds when AP-1a merges |
+| V1 to V3, V6 | `tests/unit/test_waiting_seam_r8.py` (AP-1a) | Binds now |
+| V4, V5, the guards of §7.2 | `tests/unit/test_person_asks_r8.py` (AP-8a) and `tests/unit/test_decisions.py` | Binds when AP-8a merges |
+| V6 in the new files | `test_decisions.py::test_the_table_keeps_no_score_for_any_person`, which scans `routes/shell/waiting.py` and `routes/projects/decisions.py` | Binds now |
 | V7 | `tests/unit/test_waiting_seam_r8.py` (AP-12 cases) | Advisory until AP-12 |
 | V8 | `src/app/waiting/lib/waitCard.test.ts` (new, AP-4) | Advisory until AP-4 |
 | V9, V10, the circle half of V1 | `tests/unit/test_waiting_seam_r8.py` (AP-15 cases) | Advisory until AP-15 |
 | V11 | `tests/unit/test_agent_ask_for_r8.py` (new, AP-16) | Advisory until AP-16 |
+| A blocked row never counts. Each AP-Q11 kind keeps V1 to V3 and V6 | `tests/unit/test_waiting_seam_r8.py` (AP-17 cases) | Advisory until AP-17 |
+| One "Needs you" control, and the old controls only with the flag off | A vitest beside the control (AP-18) | Advisory until AP-18 |
 | The live pane | `src/lib/nav.test.ts` `LIVE_SET` | Binds when AP-2 merges |
 | No app-local bell or palette | `src/lib/shell/seams.test.ts` | Binds now |
 
@@ -666,6 +733,8 @@ No palette, bell, assistant rail or ⌘K listener of its own.
 
 At 10:33 UTC the owner answered AP-Q10: "Yes, a person of the circle only". AP-Q9 keeps its working default.
 
+On 2026-11-08, in chat, the owner asked AP-Q11 and accepted its recommended answer: "go ahead with your recomendation" (task 2300).
+
 Each open question has a recommended answer. The build uses it as a working default only where the row says so.
 
 | # | Question | Options | Recommended | Working default? |
@@ -680,6 +749,7 @@ Each open question has a recommended answer. The build uses it as a working defa
 | **AP-Q8** | PR 1741 (task 1750)? | (a) Merge it now, and AP-2 moves its section. (b) Hold it for AP-2 | **(a).** It fixes the bug that the owner hit today | Yes |
 | **AP-Q9** | When does an owned wait with no answer open to its circle? | (a) After 24 hours. (b) Only when the member cannot act. (c) At once: the circle counts every wait | **(a).** The circle sees the wait at once in "Near you". The count and one bell come after a day, so the member gets the first chance | Yes |
 | **AP-Q10** | May an agent name the person its question is for? | (a) Yes, one person of the circle only (AP-16). (b) No. The question stays with the run's member | **(a).** The circle gets the bell of each question already, so the field reaches nobody new. It changes part of AP-Q4, so the owner decided. **ANSWERED 2026-11-06 10:33 UTC: "Yes, a person of the circle only" (a).** | No |
+| **AP-Q11** | Do "Needs attention" and "Waiting on you" become one? | (a) One "Needs you" in three groups (Now, Clean-up, Blocked), built on this seam. Yours by default, "Everyone" in a project, blocked rows not counted. (b) Keep two lists | **(a)** (§5.8). **ANSWERED 2026-11-08, in chat (a).** | No |
 
 ---
 
@@ -689,3 +759,6 @@ Each open question has a recommended answer. The build uses it as a working defa
 - 2026-11-06 — AP-BUG-2 (task 1896) built. The `/actions` router demands `ADMIN_PERMISSION`, and `/approvals` shows a member no queue and no error.
 - 2026-11-06 — The owner accepted AP-Q1 to AP-Q8 on task 1855. The owner then asked, in chat, that a wait on a task with no assignee reach the right people. Added §4.5 (the ladder, the circle and the open wait), V9 to V11, AP-15 (task 1875), AP-16 (task 1876), AP-Q9 and AP-Q10.
 - 2026-11-06 — AP-1a built on branch `pro-ap1` (task 1616), dark behind `WAITING_ORGS`. Four kinds: `held_write`, `chat_ask`, `app_request` and `decision`. §7.3 now says that the providers stay in `waiting.py` and holds the wire shape. §8 splits AP-1 into AP-1a, AP-1b and AP-1c. §5.2 shows no question text for `chat_ask`. §2.2 records that PR 1741 and EA-18a merged, and the conflict of D-EA-14 with AP-Q2.
+- 2026-11-07 — AP-8a built on branch `pro-ap8` (task 1858), dark behind `WAITING_ORGS` and `DECISIONS_ORGS`. Migration 359 widens the source CHECK and adds `due_at`, `closed_at` and `closed_reason`. §7.2 names both flags and the rule of guard 5. §8 splits AP-8 into AP-8a and AP-8b, and AP-8b holds B4 to B6. AP-1a merged as `bf0ece44b`.
+- 2026-11-08 — AP-BUG-3 (task 2241) merged as `c922445a9`. A run that leaves `awaiting` marks every recipient's question bell row read. 170 stale rows were repaired on production by hand.
+- 2026-11-08 — The owner answered AP-Q11 in chat (task 2300). Added §5.8, three kinds in §3.2, the AP-17 providers in §7.3, AP-17 (task 2302) and AP-18 (task 2303) in §8, and two fences in §11.

@@ -414,6 +414,7 @@ def _store(
     store = TenantFileStore(
         workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}",
         run_data=run_data, guard=_Guard(), member=member,
+        instance=tenant_instance(ORG_A),
     )
     return store, ws, run_data
 
@@ -600,6 +601,8 @@ async def test_a_skill_script_runs_in_the_sandbox_through_its_workspace_path(
 # ══════════════ fix round 1: shared code, host tools and the steer ══════════
 
 _X, _Y = "x-member@example.com", "y-member@example.com"
+#: The store key of the tenant dir that :func:`_store` builds.
+_TENANT = f"o:{ORG_A}"
 
 
 @pytest.mark.parametrize("bad", [
@@ -837,9 +840,9 @@ async def test_a_claim_of_another_members_folder_raises(sandbox) -> None:  # noq
 
     x_store, ws, _ = _store(sandbox, member=_X)
     await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
-    assert claim_skill(ws, "agent-data/skills/chart/x.py", _X) is None
+    assert claim_skill(ws, "agent-data/skills/chart/x.py", _X, instance=_TENANT) is None
     with pytest.raises(SkillOwnedElsewhere):
-        claim_skill(ws, "agent-data/skills/chart/x.py", _Y)
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y, instance=_TENANT)
 
 
 async def test_a_claim_that_loses_the_race_raises(sandbox, monkeypatch) -> None:  # noqa: F811
@@ -857,9 +860,9 @@ async def test_a_claim_that_loses_the_race_raises(sandbox, monkeypatch) -> None:
 
     monkeypatch.setattr(ap, "skill_owner", first_unclaimed)
     with pytest.raises(ap.SkillOwnedElsewhere):
-        ap.claim_skill(ws, "agent-data/skills/chart/evil.py", _Y)
+        ap.claim_skill(ws, "agent-data/skills/chart/evil.py", _Y, instance=_TENANT)
     calls["n"] = 0
-    assert ap.claim_skill(ws, "agent-data/skills/chart/more.py", _X) is None
+    assert ap.claim_skill(ws, "agent-data/skills/chart/more.py", _X, instance=_TENANT) is None
     # The file store turns the race into its refusal, and writes nothing.
     calls["n"] = 0
     monkeypatch.setattr(ap, "refused_write", lambda *a, **k: None)
@@ -959,7 +962,7 @@ async def test_a_skill_name_the_sandbox_cannot_mount_is_refused(sandbox, bad) ->
     x_store, ws, _ = _store(sandbox, member=_X)
     rel = f"agent-data/skills/{bad}/SKILL.md"
     with pytest.raises(SkillNameRefused):
-        claim_skill(ws, rel, _X)
+        claim_skill(ws, rel, _X, instance=_TENANT)
     with pytest.raises(ValueError, match="letters, digits"):
         await x_store.write(rel, _SKILL.format(name="bad"))
     assert not (ws / "agent-data" / "skills" / bad).exists()
@@ -975,7 +978,7 @@ async def test_an_owned_folder_with_an_old_name_still_changes(sandbox) -> None: 
     old = ws / "agent-data" / "skills" / "my notes"
     old.mkdir(parents=True)
     _marker(ws, "my notes").write_text(skill_author_id(_X))
-    assert claim_skill(ws, "agent-data/skills/my notes/a.md", _X) is None
+    assert claim_skill(ws, "agent-data/skills/my notes/a.md", _X, instance=_TENANT) is None
     await x_store.write("agent-data/skills/my notes/a.md", "still mine")
     await x_store.delete("agent-data/skills/my notes/a.md")
     assert not (old / "a.md").exists()
@@ -1020,15 +1023,341 @@ async def test_no_member_takes_a_folder_with_files_and_no_author(sandbox) -> Non
     bare = ws / "agent-data" / "skills" / "bare"
     bare.mkdir(parents=True)
     (bare / "SKILL.md").write_text("written by a writer that records no author")
-    with pytest.raises(SkillOwnedElsewhere):
-        claim_skill(ws, "agent-data/skills/bare/x.md", _X)
-    with pytest.raises(ValueError, match="another member"):
+    with pytest.raises(SkillOwnedElsewhere) as caught:
+        claim_skill(ws, "agent-data/skills/bare/x.md", _X, instance=_TENANT)
+    assert caught.value.reason.name == "IN_USE"
+    # No member owns it, so the text names no other member (H-245 review, P2).
+    with pytest.raises(ValueError, match=r"That skill name is in use\. Pick another name\."):
         await x_store.write("agent-data/skills/bare/x.md", "mine now")
     assert not (bare / ".metorite-author").exists()
     # An empty folder has nothing to give, so a member may take it.
     (ws / "agent-data" / "skills" / "empty").mkdir()
     await x_store.write("agent-data/skills/empty/SKILL.md", _SKILL.format(name="empty"))
     assert _marker(ws, "empty").read_text() == skill_author_id(_X)
+
+
+# ── H-245: the four P3 edges that the review of PR #635 left ────────────────
+#
+# Mutations, each run red once by hand on 2026-11-22:
+#
+# * ``TenantFileStore._skill_refusal`` hides only a FOREIGN folder again: the
+#   no-author store test;
+# * ``claim_skill`` drops its ask of the store: the store-row claim test;
+# * ``agent_paths._store_holds_skill`` (now ``_store_refusal``) answers
+#   ``False`` on a store error: the store-error claim test;
+# * ``get_workspace_tree`` drops the ``_odd_name_form`` filter: the tree test.
+#
+# The H-245 review (2026-11-22), each run red once by hand:
+#
+# * ``_skill_refusal`` applies the orphan rule in every dir (P1): the
+#   personal-dir store test;
+# * ``_store_refusal`` asks the store in every dir: the personal-dir store
+#   test (its write of a new skill while the store is down);
+# * ``claim_skill`` raises IN_USE or STORE_UNREAD as FOREIGN, or the route
+#   answers 403 for each reason (P2): the store-row, the store-error and the
+#   route-status tests;
+# * ``claim_skill`` raises the orphan refusal as FOREIGN (P2): the
+#   no-author claim test;
+# * the store reads its dir kind, or the claim its store key, from
+#   ``.cc-instance`` (P1, P3): the binding-not-marker test;
+# * the route passes no store key (P3): the route-status test.
+#
+# Task 618 review (2026-11-22), each run red once by hand:
+#
+# * ``TenantFileStore`` and ``_store_refusal`` bind a tenant dir (``o:``)
+#   only again (F1): both team-dir tests;
+# * the team-dir ask also asks for the older ``''`` rows: the team-dir claim
+#   test.
+
+
+async def test_the_store_hides_a_folder_with_files_and_no_author(sandbox) -> None:  # noqa: F811
+    """H-245 step 1. A rehydrate that fails part way can bring back X's files
+    with no marker. No covered run reads that folder, X's own run too, because
+    no member can take it (``claim_skill``)."""
+    thread = new_thread()
+    x_store, ws, _ = _store(sandbox, thread, member=_X)
+    y_store, _ws, _ = _store(sandbox, thread, member=_Y)
+    bare = ws / "agent-data" / "skills" / "bare"
+    (bare / "scripts").mkdir(parents=True)
+    (bare / "SKILL.md").write_text("X SKILL TEXT")
+    (bare / "scripts" / "plot.py").write_text("print('X CODE')")
+    for store in (x_store, y_store):
+        for call in (
+            store.read("agent-data/skills/bare/SKILL.md"),
+            store.read("agent-data/skills/bare/scripts/plot.py"),
+            store.list_children("agent-data/skills/bare"),
+            store.list_children("agent-data/skills/bare/scripts"),
+            store.create_directory("agent-data/skills/bare/more"),
+        ):
+            with pytest.raises(ValueError, match="no author"):
+                await call
+        assert await store.file_exists("agent-data/skills/bare/SKILL.md") is False
+        assert [e.name for e in await store.list_children("agent-data/skills")] == []
+        found = await store.search("agent-data", "X SKILL|X CODE", recursive=True)
+        assert found == [], found
+    # An empty folder holds nothing to give, so a member still makes a skill in it.
+    (ws / "agent-data" / "skills" / "fresh").mkdir()
+    await y_store.create_directory("agent-data/skills/fresh")
+    await y_store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
+    await y_store.create_directory("agent-data/skills/fresh/scripts")
+    assert [e.name for e in await y_store.list_children("agent-data/skills")] == ["fresh"]
+    assert await y_store.read("agent-data/skills/fresh/SKILL.md") == _SKILL.format(name="fresh")
+
+
+async def test_a_claim_is_refused_while_the_store_holds_the_folder(sandbox) -> None:  # noqa: F811
+    """H-245 step 2. The disk lost X's folder, and the store still holds its
+    files. Y cannot take the name, so a later rehydrate never puts X's files
+    in a folder that Y owns."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill, tenant_instance
+
+    y_store, ws, _ = _store(sandbox, member=_Y)
+    sandbox.stored.add("agent-data/skills/chart/SKILL.md")
+    with pytest.raises(SkillOwnedElsewhere) as caught:
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y, instance=_TENANT)
+    assert caught.value.reason.name == "IN_USE"
+    # The store holds the name, and no marker names a member, so the text
+    # says the name is in use and gives the next step (H-245 review, P2).
+    with pytest.raises(ValueError) as refused:
+        await y_store.write("agent-data/skills/chart/x.py", "mine now")
+    assert str(refused.value) == "Refused: That skill name is in use. Pick another name."
+    assert not _marker(ws, "chart").exists()
+    # The ask names the key that the run's mirror writes, and the older
+    # shared rows that a tenant dir also restores.
+    assert sandbox.store_asks[0] == (PA, "agent-data/skills/chart", (tenant_instance(ORG_A), ""))
+    # A name with no row is free. The R8 route test pins the real query.
+    await y_store.write("agent-data/skills/chart2/SKILL.md", _SKILL.format(name="chart2"))
+    assert _marker(ws, "chart2").read_text() == skill_author_id(_Y)
+
+
+async def test_a_claim_is_refused_when_the_store_cannot_answer(sandbox) -> None:  # noqa: F811
+    """H-245 step 2 fails closed: with no answer from the store, no name is free."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    y_store, ws, _ = _store(sandbox, member=_Y)
+    sandbox.store_error = RuntimeError("no database")
+    with pytest.raises(SkillOwnedElsewhere) as caught:
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y, instance=_TENANT)
+    assert caught.value.reason.name == "STORE_UNREAD"
+    with pytest.raises(ValueError, match="cannot check that skill name right now") as refused:
+        await y_store.write("agent-data/skills/chart/x.py", "mine now")
+    assert "another member" not in str(refused.value)
+    assert "Try again in a minute." in str(refused.value)
+    assert not _marker(ws, "chart").exists()
+    # An owned folder asks the store nothing, so its author still writes.
+    sandbox.store_error = None
+    await y_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    asks = len(sandbox.store_asks)
+    sandbox.store_error = RuntimeError("no database")
+    await y_store.write("agent-data/skills/chart/more.md", "still mine")
+    assert len(sandbox.store_asks) == asks
+
+
+async def test_the_store_takes_the_dir_kind_from_the_binding_not_the_marker(sandbox) -> None:  # noqa: F811
+    """H-245 review, P1 and P3. A container can rewrite ``.cc-instance``. The
+    store takes the dir kind and the store key from the broker's binding, so
+    a rewritten marker neither switches the orphan rule off nor changes the
+    key that the claim asks for."""
+    from acb_skills.agent_paths import tenant_instance
+
+    ws = _store(sandbox, member=_X)[1]
+    # The marker changes before the store is built and before each call.
+    (ws / ".cc-instance").write_text(f"u:{_X}", encoding="utf-8")
+    x_store = _store(sandbox, member=_X)[0]
+    assert (ws / ".cc-instance").read_text(encoding="utf-8") == f"u:{_X}"
+    bare = ws / "agent-data" / "skills" / "bare"
+    bare.mkdir(parents=True)
+    (bare / "SKILL.md").write_text("ORPHAN TEXT")
+    with pytest.raises(ValueError, match="no author"):
+        await x_store.read("agent-data/skills/bare/SKILL.md")
+    assert await x_store.file_exists("agent-data/skills/bare/SKILL.md") is False
+    await x_store.write("agent-data/skills/chart/SKILL.md", _SKILL.format(name="chart"))
+    assert sandbox.store_asks == [
+        (PA, "agent-data/skills/chart", (tenant_instance(ORG_A), "")),
+    ]
+
+
+@pytest.mark.parametrize("cls", ["WorkspaceFileStore", "TenantFileStore"])
+async def test_a_personal_dir_reads_its_own_skill_with_no_marker(cls, sandbox) -> None:  # noqa: F811
+    """H-245 review, P1. The Files routes save a skill in a personal dir with
+    no marker (``workspace._skill_top``). The orphan rule binds a shared dir
+    only, so the member's own run still reads, finds and lists that skill.
+    The store ask binds a shared dir only too, so a store outage never
+    blocks a new skill in a personal dir."""
+    from acb_skills import tenant_file_store as tfs
+    from acb_skills.agent_paths import ensure_state_dir, thread_slug
+
+    instance = f"u:{_X}"
+    ws = ensure_state_dir(PA, instance).resolve()
+    old = ws / "agent-data" / "skills" / "old"
+    (old / "scripts").mkdir(parents=True)
+    (old / "SKILL.md").write_text("X OWN SKILL")
+    (old / "scripts" / "plot.py").write_text("print('X OWN CODE')")
+    if cls == "WorkspaceFileStore":
+        store = tfs.WorkspaceFileStore(
+            workspace=ws, guard=_Guard(), member=_X, instance=instance,
+        )
+    else:
+        thread = new_thread()
+        (ws / "outputs" / thread_slug(thread)).mkdir(parents=True, exist_ok=True)
+        store = tfs.TenantFileStore(
+            workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}", run_data=ws,
+            guard=_Guard(), member=_X, instance=instance,
+        )
+    assert await store.read("agent-data/skills/old/SKILL.md") == "X OWN SKILL"
+    assert await store.read("agent-data/skills/old/scripts/plot.py") == "print('X OWN CODE')"
+    assert await store.file_exists("agent-data/skills/old/SKILL.md") is True
+    assert [e.name for e in await store.list_children("agent-data/skills")] == ["old"]
+    assert {e.name for e in await store.list_children("agent-data/skills/old")} == {
+        "SKILL.md", "scripts",
+    }
+    # A write into that unmarked folder claims it for its one member, so the
+    # folder then carries the member's marker (H-245 review round 3, P1).
+    assert not _marker(ws, "old").exists()
+    await store.write("agent-data/skills/old/scripts/plot.py", "print('X NEW CODE')")
+    assert _marker(ws, "old").read_text() == skill_author_id(_X)
+    assert await store.read("agent-data/skills/old/scripts/plot.py") == "print('X NEW CODE')"
+    # A new skill while the store is down: no ask, so no refusal.
+    sandbox.store_error = RuntimeError("no database")
+    await store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
+    assert _marker(ws, "fresh").read_text() == skill_author_id(_X)
+    assert sandbox.store_asks == []
+    # Another member's marker still binds in a personal dir: the claim of the
+    # file store writes markers in every dir.
+    y_store = tfs.WorkspaceFileStore(workspace=ws, guard=_Guard(), member=_Y, instance=instance)
+    with pytest.raises(ValueError, match="another member"):
+        await y_store.read("agent-data/skills/fresh/SKILL.md")
+
+
+_TEAM = "t:ops"
+
+
+def _team_store(member: str) -> tuple[TenantFileStore, Path]:
+    """The file store of a team dir (``t:<team>``), the dir of a repo agent
+    whose ``config.json`` says ``"instancing": "team"``."""
+    from acb_skills.agent_paths import ensure_state_dir, thread_slug
+
+    ws = ensure_state_dir(PA, _TEAM).resolve()
+    thread = new_thread()
+    (ws / "outputs" / thread_slug(thread)).mkdir(parents=True, exist_ok=True)
+    store = TenantFileStore(
+        workspace=ws, outputs_rel=f"outputs/{thread_slug(thread)}", run_data=ws,
+        guard=_Guard(), member=member, instance=_TEAM,
+    )
+    return store, ws
+
+
+async def test_a_team_dir_hides_a_folder_with_files_and_no_author(sandbox) -> None:  # noqa: F811
+    """Task 618 review, F1. A team dir holds the skills of more than one
+    member, so the orphan rule binds it as it binds a tenant dir."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    x_store, ws = _team_store(_X)
+    bare = ws / "agent-data" / "skills" / "bare"
+    bare.mkdir(parents=True)
+    (bare / "SKILL.md").write_text("ORPHAN TEXT")
+    with pytest.raises(ValueError, match="no author"):
+        await x_store.read("agent-data/skills/bare/SKILL.md")
+    assert await x_store.file_exists("agent-data/skills/bare/SKILL.md") is False
+    assert [e.name for e in await x_store.list_children("agent-data/skills")] == []
+    with pytest.raises(SkillOwnedElsewhere) as caught:
+        claim_skill(ws, "agent-data/skills/bare/x.md", _X, instance=_TEAM)
+    assert caught.value.reason.name == "IN_USE"
+    # The same write that claims an unmarked folder in a personal dir is
+    # refused here (H-245 review round 3, P1).
+    with pytest.raises(ValueError, match=r"That skill name is in use\. Pick another name\."):
+        await x_store.write("agent-data/skills/bare/x.md", "mine now")
+    assert not _marker(ws, "bare").exists()
+
+
+async def test_a_team_dir_claim_asks_the_store_with_the_team_key(sandbox) -> None:  # noqa: F811
+    """Task 618 review, F1. A team dir restores its own key only
+    (``executor._rehydrate_target``), so the claim asks for that key alone.
+    The store holds the name, so the claim is refused. With no answer from
+    the store, no name is free."""
+    from acb_skills.agent_paths import SkillOwnedElsewhere, claim_skill
+
+    y_store, ws = _team_store(_Y)
+    sandbox.stored.add("agent-data/skills/chart/SKILL.md")
+    with pytest.raises(SkillOwnedElsewhere) as caught:
+        claim_skill(ws, "agent-data/skills/chart/x.py", _Y, instance=_TEAM)
+    assert caught.value.reason.name == "IN_USE"
+    assert sandbox.store_asks == [(PA, "agent-data/skills/chart", (_TEAM,))]
+    with pytest.raises(ValueError, match="in use"):
+        await y_store.write("agent-data/skills/chart/x.py", "mine now")
+    assert not _marker(ws, "chart").exists()
+    sandbox.store_error = RuntimeError("no database")
+    with pytest.raises(ValueError, match="cannot check that skill name right now"):
+        await y_store.write("agent-data/skills/fresh/SKILL.md", _SKILL.format(name="fresh"))
+    assert not _marker(ws, "fresh").exists()
+
+
+@pytest.mark.parametrize(
+    ("reason", "status", "text"),
+    [
+        ("FOREIGN", 403, "That skill belongs to another member."),
+        ("IN_USE", 409, "That skill name is in use. Pick another name."),
+        ("STORE_UNREAD", 503, "This server cannot check that skill name right now, "
+                              "so nothing was saved. Try again in a minute."),
+    ],
+)
+async def test_the_route_answers_each_claim_refusal_with_its_own_status_and_text(
+    reason, status, text, sandbox, monkeypatch,  # noqa: F811
+) -> None:
+    """H-245 review, P2. Only a real marker of another member reads as
+    "another member". The route passes the store key from the session
+    (``o:<org>``), not from the dir's marker (P3)."""
+    import types
+
+    import acb_skills.agent_paths as ap
+    from fastapi import HTTPException
+    from gateway.routes import workspace as wsr
+
+    _x_store, ws, _ = _store(sandbox, member=_X)
+    seen: dict[str, Any] = {}
+
+    def refuse(*_a: Any, **k: Any) -> None:
+        seen.update(k)
+        raise ap.SkillOwnedElsewhere(reason=ap.SkillClaimRefusal[reason])
+
+    monkeypatch.setattr(ap, "refused_write", lambda *a, **k: None)
+    monkeypatch.setattr(ap, "claim_skill", refuse)
+    monkeypatch.setattr(wsr, "_own_thread_slug", lambda *a, **k: "slug")
+    user = types.SimpleNamespace(email=_Y, organization_id=ORG_A)
+    with pytest.raises(HTTPException) as caught:
+        await wsr._apply_write_rules(ws, "agent-data/skills/chart/x.py", user, "s", claim=True)
+    assert (caught.value.status_code, caught.value.detail) == (status, text)
+    assert "sign-in" not in caught.value.detail
+    assert seen["instance"] == ap.tenant_instance(ORG_A)
+
+
+@pytest.mark.parametrize("own", [None, "slug"])
+async def test_the_tree_leaves_out_a_path_that_get_refuses(own, short_tmp, monkeypatch) -> None:  # noqa: F811
+    """H-245 step 4. ``_odd_name_form`` refuses an ``agent-data/Skills/`` head
+    in every dir, so the tree must not list a path under it either."""
+    import types
+
+    from gateway.routes import workspace as wsr
+
+    ws = short_tmp / "ws"
+    (ws / "agent-data" / "Skills" / "chart").mkdir(parents=True)
+    (ws / "agent-data" / "Skills" / "chart" / "SKILL.md").write_text("ODD")
+    (ws / "agent-data" / "NOTES.md").write_text("ok")
+
+    class _Room:
+        can_read = can_send = True
+
+    async def _in_room(*_a: Any, **_k: Any) -> _Room:
+        return _Room()
+
+    monkeypatch.setattr(wsr, "_room_for", _in_room)
+    monkeypatch.setattr(wsr, "_get_workspace_path", lambda *a, **k: ws)
+    monkeypatch.setattr(wsr, "_own_thread_slug", lambda *a, **k: own)
+    user = types.SimpleNamespace(email=_X, organization_id=ORG_A)
+    tree = await wsr.get_workspace_tree("s1", user)
+    paths = {f.path for f in tree.files}
+    assert "agent-data/NOTES.md" in paths
+    assert wsr._odd_name_form("agent-data/Skills/chart/SKILL.md") is True
+    assert not any("Skills" in p for p in paths), paths
 
 
 def test_the_withheld_names_are_the_host_floor_tools_that_open_the_dir() -> None:
@@ -1202,9 +1531,13 @@ def test_a_covered_run_has_no_web_tool_and_the_host_sends_nothing(sandbox, monke
     # H-236 binds the covered run itself: its injection already leaves the
     # two tools out, so a call that names one finds no such tool. The
     # sandbox middleware still refuses it when a tool gets past injection.
+    # HRD-1c (task 3679): the stream run of the Projects assistant answers a
+    # name that it does not hold with the HRD-1 text, which starts "Not run".
+    # Its model never reads MAF's own "not found" text.
     refused = [
         r for body in model.bodies[1:] for r in _tool_results(body)
         if "has no network" in r or "off in this run" in r or "not found" in r
+        or r.startswith("Not run")
     ]
     assert len(set(refused)) == 2, refused
     assert sent == []
@@ -1263,9 +1596,9 @@ def test_ws43u_the_sandbox_rules_reach_the_model_only_with_run_command(
 
 
 def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkeypatch) -> None:  # noqa: F811
-    """Review P2: the steer drain runs at the file tools too, as PR #585 did
-    for an agent's own tools. The note rides the result of the file tool
-    into the next request."""
+    """Review P2: a steer during a turn of file tools only reaches the next
+    request. Since task 2494 it is a USER turn there, right after the file
+    tool's result, and the tool result keeps its own text."""
     from orchestrator import steer
 
     from tests.unit._native_maf_harness import text_turn, tool_turn
@@ -1281,4 +1614,7 @@ def test_a_steer_during_a_file_tools_only_turn_reaches_the_model(sandbox, monkey
         text_turn("done"),
     ], on_request=on_request)
     results = _tool_results(model.bodies[1])
-    assert results and "USE BAR CHARTS" in results[0], results
+    assert results and "USE BAR CHARTS" not in results[0], results
+    messages = model.bodies[1]["messages"]
+    assert messages[-1].get("role") == "user", messages[-1]
+    assert "USE BAR CHARTS" in str(messages[-1].get("content")), messages[-1]

@@ -120,6 +120,16 @@ async def test_a_held_chat_refuses_lead(tool: str, call: Any, monkeypatch) -> No
     _no_app(answer)
 
 
+async def test_a_held_chat_refuses_files_on_a_new_task(monkeypatch) -> None:
+    """IMG-2: a file on a task reaches everyone who can open it, and
+    ``attach_to_task`` is off in a held chat. Mutation: drop the refusal -> a card -> red."""
+    calls, cards = _setup(monkeypatch, held=True)
+    answer = await W.create_task(PID, "Fix", files=["shot.png"])
+    assert answer == eg.held_param_refusal("create_task", "files")
+    assert cards == [] and writes(calls) == []
+    _no_app(answer)
+
+
 async def test_an_open_chat_keeps_lead(monkeypatch) -> None:
     """Mutation: refuse in each chat -> red."""
     calls, cards = _setup(monkeypatch, held=False)

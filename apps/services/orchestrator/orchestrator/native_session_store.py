@@ -51,6 +51,11 @@ and takes no ambient tenant, so a worker thread could not resolve it.
    never fails the run.
 9. **No pickle.** ``AgentSession.from_dict`` restores through MAF's state type
    registry only.
+10. **The stale mark** (RESUME-4a-1). A continuation on the note path writes
+    :data:`STALE_DIGEST` over each session row of its thread before its model runs
+    (:func:`mark_stale`). The next load gives ``digest_drop`` with the reason
+    ``resume_stale``, and the run reads the text history. The mark makes no
+    row, and a run that is not a continuation never sends it.
 """
 from __future__ import annotations
 
@@ -58,6 +63,8 @@ import asyncio
 import functools
 import hashlib
 import json
+import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -111,10 +118,19 @@ _CHAT_EXISTS_SQL = (
 _PARTICIPANTS_SQL = (
     "SELECT subject FROM chat_session_participant WHERE session_id = :tid"
 )
+#: Task 2948: the third column is true for a row that the gateway saved as a mid-run
+#: steer (``custom_events`` holds ``{"name": "steered"}``, ``routes/agent.py``
+#: ``_save_steered_prompt``). The gateway writes it at the 202, before any run reads
+#: the steer. A run that took the steer at a model call stores it INSIDE its own session
+#: (``SessionHistoryProvider``, task 2494). The digests skip the row only then
+#: (:func:`rows_for_digest`).
 _ROWS_SQL = (
-    "SELECT role, content FROM chat_message WHERE session_id = :tid "
+    "SELECT role, content, "
+    "(role = 'user' AND COALESCE(custom_events @> CAST(:steer AS jsonb), false)) "
+    "FROM chat_message WHERE session_id = :tid "
     "AND role IN ('user', 'assistant') ORDER BY timestamp_ms ASC, id ASC"
 )
+_STEER_MARK = json.dumps([{"name": "steered"}])
 _STORED_SQL = (
     "SELECT session_json, transcript_digest, session_fingerprint "
     "FROM maf_agent_session WHERE organization_id = CAST(:org AS uuid) "
@@ -139,6 +155,26 @@ _UPSERT_SQL = """
     RETURNING 1
 """
 
+#: RESUME-4a-1 (``chat_run_continuity.md`` §4.12.7). The digest that a
+#: continuation writes over a stored session. The column takes only 64
+#: lower-case hex characters (``maf_agent_session_digest_is_sha256``,
+#: migration 228), so the mark needs no migration. A real digest equals the
+#: zero digest only through a SHA-256 preimage of zero. And :func:`_decide`
+#: reads this value as a drop before it compares, so the next load of the
+#: key gives ``digest_drop`` with the reason ``resume_stale``.
+STALE_DIGEST = "0" * 64
+
+#: The mark. ONE bound statement: an UPDATE only, so it never makes a row.
+#: It has no agent predicate: ``_ROWS_SQL`` reads the rows of EVERY agent in
+#: the thread, so the session of each agent in the thread is stale too.
+#: The organization predicate stands beside RLS (FORCE, migration 228). A
+#: row that is already stale matches nothing, so a second mark is a no-op.
+_MARK_STALE_SQL = (
+    "UPDATE maf_agent_session SET transcript_digest = :stale "
+    "WHERE organization_id = CAST(:org AS uuid) AND thread_id = :tid "
+    "AND transcript_digest <> :stale RETURNING 1"
+)
+
 Row = tuple[str, str]
 
 
@@ -149,10 +185,40 @@ class SessionHistoryProvider(InMemoryHistoryProvider):
     has no id when a stored message has the same role and content. A member
     who answers "yes" on two turns would lose the second answer. A run here
     sends only its own new turn, so a plain append is exact.
+
+    It also stores each steer turn of the run (task 2494), see
+    :meth:`after_run`.
     """
 
     def __init__(self) -> None:
         super().__init__(HISTORY_SOURCE_ID)
+
+    async def after_run(
+        self,
+        *,
+        agent: Any,
+        session: AgentSession,
+        context: Any,
+        state: dict[str, Any],
+    ) -> None:
+        """Store the run as MAF does, with each steer turn in its place.
+
+        A steer reaches the model as a user turn of one model request
+        (``steer.SteerTurns``). MAF stores the input and the response of the
+        run, and neither holds that turn. So the save asks
+        ``steer.with_steer_turns`` to put each one back right after its tool
+        result. The next turn then reads the member's words as their own turn.
+        A run with no steer stores exactly what MAF 1.19 stores.
+        """
+        from orchestrator.steer import with_steer_turns
+
+        messages: list[Message] = [*self._get_context_messages_to_store(context)]
+        if self.store_inputs:
+            messages.extend(context.input_messages)
+        if self.store_outputs and context.response and context.response.messages:
+            messages.extend(with_steer_turns(context, context.response.messages))
+        if messages:
+            await self.save_messages(context.session_id, messages, state=state)
 
     async def save_messages(
         self,
@@ -186,6 +252,10 @@ class LoadState:
     participants: list[str] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
     stored: StoredRow | None = None
+    #: Task 2948: the same rows less each steer row that ``stored`` holds
+    #: (:func:`rows_for_digest`). ``None`` means a reader that does not know the mark,
+    #: and the digests then read ``rows``.
+    digest_rows: list[Row] | None = None
 
 
 @dataclass
@@ -251,6 +321,75 @@ def covered_rows(rows: Sequence[Row]) -> list[Row]:
         if rows[index][0] == "user":
             return list(rows[: index + 1])
     return []
+
+
+def _steer_words(text: str) -> str:
+    """The member's words in one steer turn, or "" when *text* is no steer note.
+
+    ``steer.buffer_guidance`` writes ``[steer from <who>] <words>``. The newest turn
+    of a run that took two or more steers ends with ``steer.steers_frame`` on its own
+    line (task 3130). A steer can hold a new line, so only that frame line comes off.
+    """
+    from orchestrator.steer import steers_frame
+
+    head, sep, words = text.partition("] ")
+    if not sep or not head.startswith("[steer from "):
+        return ""
+    body, newline, last = words.rpartition("\n")
+    count = re.match(r"\[(\d+) ", last)
+    if newline and count and last == steers_frame(int(count.group(1))):
+        words = body
+    return words.strip()
+
+
+def _held_steer_words(stored: StoredRow | None) -> Counter[str]:
+    """The member's words of each steer turn that the stored session holds (task 2948).
+
+    A steer turn is a user message with ``steer.STEER_TURN_KEY``. Only a model call
+    that took the steer makes one (``steer.SteerTurns``). A plain user turn with the
+    same words holds no steer. A session of another shape holds none.
+    """
+    held: Counter[str] = Counter()
+    if stored is None:
+        return held
+    try:
+        from orchestrator.steer import STEER_TURN_KEY
+
+        bucket = (stored.session_json.get("state") or {}).get(HISTORY_SOURCE_ID) or {}
+        for message in bucket.get("messages") or []:
+            props = message.get("additional_properties") or {}
+            if message.get("role") != "user" or props.get(STEER_TURN_KEY) is not True:
+                continue
+            words = _steer_words("".join(
+                str(c.get("text") or "") for c in message.get("contents") or []
+                if isinstance(c, Mapping) and c.get("type") == "text"
+            ))
+            if words:
+                held[words] += 1
+    except Exception:  # an odd shape holds no steer, so each steer row counts
+        return Counter()
+    return held
+
+
+def rows_for_digest(raw: Sequence[Sequence[Any]], stored: StoredRow | None) -> list[Row]:
+    """The rows that the digests read: :func:`server_rows` less each HELD steer row.
+
+    *raw* holds ``(role, content, steered)``. ``steered`` is true for a row that the
+    gateway saved as a mid-run steer, before any run read it. Such a row drops out only
+    when the stored session holds that steer as a turn, one turn for each row. Any
+    other steer row counts. The digest then differs, and the load gives
+    ``digest_drop``, so the run reads the steer in the text history.
+    """
+    held = _held_steer_words(stored)
+    kept: list[tuple[Any, Any]] = []
+    for r in raw:
+        if len(r) > 2 and r[2]:
+            words = _canon(r[0], r[1])[1]
+            if held[words] > 0:
+                held[words] -= 1
+                continue
+        kept.append((r[0], r[1]))
+    return server_rows(kept)
 
 
 def transcript_digest(rows: Sequence[Row]) -> str:
@@ -370,9 +509,8 @@ def read_state(organization_id: str, thread_id: str, agent_name: str) -> LoadSta
         participants = [
             str(r[0]) for r in s.execute(text(_PARTICIPANTS_SQL), {"tid": thread_id})
         ]
-        rows = server_rows(
-            [(r[0], r[1]) for r in s.execute(text(_ROWS_SQL), {"tid": thread_id})]
-        )
+        raw = list(s.execute(text(_ROWS_SQL), {"tid": thread_id, "steer": _STEER_MARK}))
+        rows = server_rows([(r[0], r[1]) for r in raw])
         found = s.execute(
             text(_STORED_SQL),
             {"org": organization_id, "tid": thread_id, "agent": agent_name},
@@ -386,6 +524,7 @@ def read_state(organization_id: str, thread_id: str, agent_name: str) -> LoadSta
     return LoadState(
         chat_exists=True, session_user=str(chat[0] or ""),
         participants=participants, rows=rows, stored=stored,
+        digest_rows=rows_for_digest(raw, stored),
     )
 
 
@@ -410,6 +549,51 @@ def write_row(
             },
         ).first()
     return written is not None
+
+
+def mark_row_stale(organization_id: str, thread_id: str) -> bool:
+    """Write :data:`STALE_DIGEST` over each session row of the thread. True when a row changed.
+
+    ONE bound statement under ``tenant_session``. It makes no row. A thread
+    with no row, a row of another tenant and a row that is stale already change
+    nothing.
+    """
+    from acb_graph import tenant_session  # type: ignore[import-untyped, unused-ignore]
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        marked = s.execute(
+            text(_MARK_STALE_SQL),
+            {"org": organization_id, "tid": thread_id, "stale": STALE_DIGEST},
+        ).first()
+    return marked is not None
+
+
+async def mark_stale(*, organization_id: str, thread_id: str) -> str:
+    """Make the next load of each session of the thread a miss (RESUME-4a-1). Never raises.
+
+    A continuation on the note path neither loads nor saves a session
+    (``resume_note``), and its reply row has no user row before it. So the
+    covered rows of the next turn still end at the user row that the stored
+    session holds, and that load would be a ``hit`` with no reply of the
+    continuation in it. The mark drops that session, and the next turn reads
+    the text history, which holds the reply.
+
+    Returns ``marked``, ``unchanged`` (no row, or stale already) or
+    ``failed``. A fault logs its type only.
+    """
+    loop = asyncio.get_running_loop()
+    log = {"thread_id": thread_id[:40]}
+    try:
+        marked = await loop.run_in_executor(None, functools.partial(
+            mark_row_stale, organization_id, thread_id,
+        ))
+    except Exception as exc:
+        _log.warning("native_session.mark_stale_failed", **log, error=type(exc).__name__)
+        return "failed"
+    outcome = "marked" if marked else "unchanged"
+    _log.info("native_session.mark_stale", **log, outcome=outcome)
+    return outcome
 
 
 # ── The compaction ──────────────────────────────────────────────────────────
@@ -469,6 +653,7 @@ def _log_outcome(
 
 def _decide(
     state: LoadState, *, covered: Sequence[Row], fingerprint: str, browser_history: Any,
+    browser_covered: Sequence[Row] | None = None,
 ) -> tuple[str, str]:
     """(outcome, reason) of one load, before the restore."""
     stored = state.stored
@@ -476,9 +661,12 @@ def _decide(
         return NO_ROW, "absent"
     if stored.session_fingerprint != fingerprint:
         return FINGERPRINT_DROP, "room"
+    if stored.transcript_digest == STALE_DIGEST:
+        return DIGEST_DROP, "resume_stale"
     if stored.transcript_digest != transcript_digest(covered):
         return DIGEST_DROP, "transcript"
-    if not browser_agrees(browser_history, covered):
+    # The browser shows each steer as a user turn, so its check reads the rows WITH them.
+    if not browser_agrees(browser_history, covered if browser_covered is None else browser_covered):
         return DIGEST_DROP, "browser_dropped_turn"
     return HIT, ""
 
@@ -523,8 +711,13 @@ async def begin_turn(
                      reason="shared_room")
         return None
 
-    prior = rows_before_turn(state.rows, current_message)
+    # Task 2948: the digests skip each steer row that the stored session holds. The
+    # browser check does not.
+    prior = rows_before_turn(
+        state.digest_rows if state.digest_rows is not None else state.rows, current_message)
     covered = covered_rows(prior)
+    every_row = rows_before_turn(state.rows, current_message)
+    browser_covered = covered_rows(every_row)
     try:
         fingerprint = session_fingerprint(
             members=room_members(state.participants, state.session_user),
@@ -537,6 +730,7 @@ async def begin_turn(
         return None
     outcome, reason = _decide(
         state, covered=covered, fingerprint=fingerprint, browser_history=browser_history,
+        browser_covered=browser_covered,
     )
     session = AgentSession()
     extra: dict[str, Any] = {}
@@ -550,11 +744,14 @@ async def begin_turn(
             extra["error"] = str(exc)[:200]
             session = AgentSession()
     _log_outcome(outcome, agent_name=agent_name, thread_id=thread_id, reason=reason, **extra)
+    # A session that did not load starts fresh, so it holds no steer turn of an earlier
+    # run. The next load then counts each steer row, so the save digest counts them too.
+    saved_prior = prior if outcome == HIT else every_row
     return SessionTurn(
         organization_id=organization_id, thread_id=thread_id, agent_name=agent_name,
         outcome=outcome, session=session, history=SessionHistoryProvider(),
         fingerprint=fingerprint,
-        save_digest=transcript_digest([*prior, ("user", current_message.strip())]),
+        save_digest=transcript_digest([*saved_prior, ("user", current_message.strip())]),
     )
 
 
@@ -593,6 +790,38 @@ def _is_foreign_key_error(exc: BaseException) -> bool:
     from sqlalchemy.exc import IntegrityError
 
     return isinstance(exc, IntegrityError) and "foreign key" in str(exc).lower()
+
+
+def add_closing_line(turn: SessionTurn, line: str) -> bool:
+    """End the run's last answer in the session with *line* (task 3130).
+
+    The server sends the "Not done" line after the model's answer, so MAF's
+    response does not hold it. This puts it in the stored session too, as
+    the stored message holds it. The last message is the answer: the line
+    joins it as one more text part. A session with no answer gets a new
+    answer that holds only the line. True when the line went in. Never
+    raises, and a fault leaves the session as it was."""
+    if not line or not turn.usable:
+        return False
+    try:
+        from agent_framework import Content
+
+        state = turn.session.state.get(HISTORY_SOURCE_ID)
+        messages = state.get("messages") if isinstance(state, dict) else None
+        if not isinstance(messages, list):
+            return False
+        text = f"\n\n{line}"
+        last = messages[-1] if messages else None
+        role = getattr(getattr(last, "role", None), "value", getattr(last, "role", None))
+        if last is not None and str(role) == "assistant" and isinstance(
+                getattr(last, "contents", None), list):
+            last.contents.append(Content.from_text(text))
+        else:
+            messages.append(Message("assistant", [text]))
+        return True
+    except Exception as exc:
+        _log.warning("native_session.closing_line_failed", error=str(exc)[:200])
+        return False
 
 
 async def finish_turn(turn: SessionTurn, *, token_budget: int) -> str:
