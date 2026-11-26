@@ -1081,11 +1081,19 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 - An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
 - Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
 
-### 3.9 Who can use an integration (task 3985, PLAN)
+### 3.9 Who can use an integration (task 3985, ACC-1 BUILT)
 
-> **Status:** 📝 PLAN, owner ask of 2026-11-26, verified at `origin/main` `e8b692f04`. The owner approved teams the same day (ACC-Q2), and ACC-Q4 in §10 is open.
+> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
-This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it. No slice is built yet.
+This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
+
+**Five facts of ACC-1 that the design did not state:**
+
+1. **The write casts the service.** asyncpg cannot type a bare parameter of `jsonb_build_object` or of `jsonb - text`. So both statements bind `CAST(:svc AS text)`.
+2. **A stale rule.** A rule can outlive its MCP server. `GET` lists it with `listed: false`, and `PUT` with `everyone` clears it. Any other mode on it gets 422.
+3. **The API route.** Each API connection holds `grant = admin` today, so only a holder of `integrations:manage` reaches it. Such a member passes each rule. So a rule changes the API route only when a member grant exists. The R8 suite opens one to prove the route reads the narrowed access.
+4. **The admin floor.** Both routes also take the `/admin` floor `require_admin_user` (`admin:members:read`). The `admin` role holds all three rights.
+5. **The preview lists.** `granted` and `denied` stay the member's own grants and overrides. A rule shows on its row of `integrations`, with the source `integration-rule`.
 
 #### 3.9.1 What exists
 
@@ -1336,7 +1344,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 
 | Id | Rung | What | Gate | Done when |
 |---|---|---|---|---|
-| **ACC-1** (task 3987) | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
+| **ACC-1** (task 3987) 🔨 BUILT 2026-11-26, dark | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
 | **ACC-2** (task 3988) | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
 | **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
 | **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |

@@ -104,6 +104,9 @@ class _FakeDB:
         self.groups: dict[str, dict[str, Any]] = {}    # id → row
         self.members: dict[tuple[str, str], dict[str, Any]] = {}  # (gid, uid)
         self.overrides: dict[tuple[str, str], dict[str, Any]] = {}  # (uid, perm)
+        #: ``organization.settings -> 'integration_access'`` (ACC-1). None is
+        #: no rule. The group gates read it.
+        self.integration_access: Any = None
         self.committed = 0
 
     # helpers -----------------------------------------------------------
@@ -160,6 +163,10 @@ class _FakeDB:
 
         if "FROM organization LIMIT 1" in s:
             return _Rows([{"one": 1}])
+
+        # ACC-1: the rules that the group gates read (`_common`).
+        if "settings -> 'integration_access'" in s and "FROM organization WHERE id" in s:
+            return _Rows([{"rules": self.integration_access}])
 
         if "FROM app_user WHERE lower(email)" in s:
             row = next(
