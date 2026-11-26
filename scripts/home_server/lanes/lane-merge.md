@@ -152,8 +152,10 @@ d. **The gate**, in the pull request's worktree. When the lane left none, make
        the task, with each `check by hand` line that it names. Run
        `git pull --ff-only` in the worktree. Wait for pr-check on the new
        head. Then start again at step a.
-     - It prints something else, and exits 0: stop. Comment the output on the
-       task, and do not merge.
+     - It prints something else, or nothing, and exits 0: stop. Comment the
+       output on the task, and do not merge. Empty output means that the bot's
+       checkout is older than CIV-RN and ran a queue pass. Move
+       `~/lanes/merge-bot-src` forward to main first (docs/home_box.md §3.8).
      - Exit 1 with `number ... is taken`: run it again in the next loop. When
        it fails again, comment the reason on the task and release it.
      - Exit 1 for another reason: comment the reason on the task, release it,
