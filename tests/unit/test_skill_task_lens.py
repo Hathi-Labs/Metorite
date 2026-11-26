@@ -270,6 +270,11 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
      [("POST", "/tasks/capture/from-reply/detect")]),
     ("my_tasks_capture_from_mail", {"account_id": PID, "email_id": CID,
                                     "title": "Send the deck"}, []),
+    # P-1c (task 3923): the list read comes first. This recorder answers no
+    # connection, so no card shows and no write goes. The writes and the cards
+    # are fenced in test_my_tasks_p1c_tools.py.
+    ("my_tasks_calendar_connection", {"provider": "google", "action": "sync"},
+     [("GET", "/tasks/calendar/connections")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),
