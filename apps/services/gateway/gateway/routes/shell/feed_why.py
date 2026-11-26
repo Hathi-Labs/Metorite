@@ -46,15 +46,20 @@ LATER_SEEN = "It is in Later, because you saw it 3 times in one day."
 #: Rows 2b and 2c.
 TIME_PASSED = "Its start or due time has passed."
 TIME_SOON = "Its start or due time is 2 hours away or less."
+#: Rows 2d and 2e: the main kind is `block_overlap`. Its `urgent_at` is the
+#: start of the overlap, which can be long after the start of its own block.
+OVERLAP_STARTED = "An overlap on it has started."
+OVERLAP_SOON = "An overlap on it starts in 2 hours or less."
 #: Row 4.
 PROMISE = "It holds a promise that you made."
-#: Rows 5a to 5c.
-RANKS_HIGHER = ('In the last 30 days you acted on cards of this kind more than you marked '
-                'them "Not useful", so it ranks higher.')
-RANKS_LOWER = ('In the last 30 days you marked cards of this kind "Not useful" more than '
-               'you acted on them, so it ranks lower.')
-NOT_LOWERED = ('You marked cards of this kind "Not useful". This card needs you, so those '
-               'marks do not lower it.')
+#: Rows 5a to 5c. The affinity is the day value of P6, so each one names
+#: today's count. An Undo or a later act of the same day does not move it.
+RANKS_HIGHER = ("In today's count of the last 30 days, you acted on this kind more than you "
+                'marked it "Not useful", so it ranks higher.')
+RANKS_LOWER = ('In today\'s count of the last 30 days, you marked this kind "Not useful" more '
+               'than you acted on it, so it ranks lower.')
+NOT_LOWERED = ('In today\'s count, your "Not useful" marks on this kind outnumber your acts. '
+               'This card needs you, so they do not lower it.')
 
 
 def _kinds(card: Mapping[str, Any]) -> set[Any]:
@@ -75,8 +80,9 @@ def _group_line(card: Mapping[str, Any], taught: state.Learned) -> str | None:
 
 
 def _time_line(card: Mapping[str, Any], now: datetime) -> str | None:
-    """Rows 2a to 2c. One of them at most: the days late of an overdue card
-    first, else the state of ``urgent_at``."""
+    """Rows 2a to 2e. One of them at most: the days late of an overdue card
+    first, else the state of ``urgent_at``. The main kind says what that
+    instant is (rows 2d and 2e). A folded kind does not."""
     late = (card.get("facts") or {}).get("days_late")
     if ("overdue" in _kinds(card) and isinstance(late, int) and not isinstance(late, bool)
             and late >= 1):
@@ -84,9 +90,12 @@ def _time_line(card: Mapping[str, Any], now: datetime) -> str | None:
     urgent = _instant(card.get("urgent_at"))
     if urgent is None:
         return None
+    overlap = card.get("kind") == "block_overlap"
     if urgent <= now:
-        return TIME_PASSED
-    return TIME_SOON if urgent - now <= feed_rank.SOON else None
+        return OVERLAP_STARTED if overlap else TIME_PASSED
+    if urgent - now > feed_rank.SOON:
+        return None
+    return OVERLAP_SOON if overlap else TIME_SOON
 
 
 def _priority_line(card: Mapping[str, Any]) -> str | None:

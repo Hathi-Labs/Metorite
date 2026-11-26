@@ -1676,7 +1676,11 @@ describe("a feed row on a phone (task 1898)", () => {
  *   - drop `...readWhy(c.why_seen)` in `readCard`: "reads the sentences";
  *   - keep every sentence in `holdGroup`: "drops the group sentence";
  *   - put the item before "Dismiss" in `cardMenuItems`: "is last";
- *   - drop `onWhy` from the `PhoneRowMenu` call: "passes it".
+ *   - drop `onWhy` from the `PhoneRowMenu` call: "passes it";
+ *   - push the card whole in `carryCards`: "drops the sentences of a carried
+ *     card";
+ *   - drop the reset of `whyOpen` in `FeedCard`: "closes the box". The
+ *     browser case of the e2e file fails too.
  */
 describe("why am I seeing this (LOOP-4b)", () => {
   const STATE = { state: "seen", updated: false, still_open: false, visits: 1, state_fp: "a41f09c2" };
@@ -1723,6 +1727,28 @@ describe("why am I seeing this (LOOP-4b)", () => {
     const none = { shown: FEED_SHOWN, marked: new Set<string>(), hidden: new Set<string>() };
     const view = columnView(next, columnView(first, null, none).visit, none);
     expect(view.groups.flatMap((g) => g.cards)[0].why_seen).toEqual(LINES.slice(1));
+  });
+
+  it("drops the sentences of a carried card, and keeps those of a fresh one", () => {
+    const old = asked();
+    const ok = noteOk(new Map(), { cards: [old], sources: { tasks: "ok" } }, 0);
+    const failed = readFeedAnswer({ cards: [], sources: { tasks: "failed" } });
+    const [carried] = carryCards(ok, failed).cards;
+    expect(carried.signal_id).toBe("tasks:w1");
+    expect("why_seen" in carried).toBe(false);
+    // Only the sentences go.
+    expect({ ...carried, why_seen: LINES }).toEqual(old);
+    // The stored answer stays whole.
+    expect(ok.get("tasks")?.cards[0].why_seen).toEqual(LINES);
+    // A card that the new answer holds keeps its own sentences.
+    const fresh = card("tasks:w2", "needs_you", { ...STATE, why_seen: LINES });
+    const both = carryCards(ok, { ...failed, cards: [fresh] });
+    expect(both.cards.map((c) => c.why_seen)).toEqual([LINES, undefined]);
+  });
+
+  it("closes the box when the card loses its sentences, with no effect", () => {
+    const src = code(read_("./FeedCard.tsx"));
+    expect(src).toMatch(/if \(whyOpen && whyLines\.length === 0\) setWhyOpen\(false\);/);
   });
 
   it("is last in the card menu, after a separator, and only with onWhy", () => {

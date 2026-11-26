@@ -28,6 +28,9 @@ import { expect, test, type Page, type Request, type Route } from "@playwright/t
  *   7. "Why am I seeing this" (LOOP-4b) is last in the menu of a card with
  *      `why_seen`, and no other card has it. It opens one line for each
  *      sentence, writes nothing, and "Hide" gives the focus back to the "···".
+ *      A card that loses its sentences closes the box, and the box does not
+ *      come back with the sentences. Mutation, run by hand (2026-11-26): drop
+ *      the reset of `whyOpen` in `FeedCard`, and this case fails.
  */
 
 const SESSION = {
@@ -472,6 +475,54 @@ test.describe("My Day feed, the life of a card (MD-2b)", () => {
     await expect(more).toBeFocused();
     // The item writes nothing: no menu act went to the server.
     expect(store.posts.flatMap((p) => p.items).filter((i) => i.action !== "seen")).toEqual([]);
+  });
+
+  test("an open box closes when its card loses the sentences, and stays closed (LOOP-4b)", async ({ page }) => {
+    test.setTimeout(60_000);
+    await setup(page);
+    const why = ["It is in Needs you, because it asks you to act.", "It is 1 day late."];
+    let sent: string[] | undefined = why;
+    let reads = 0;
+    await page.route((url) => url.pathname === "/api/shell/feed", (route) => {
+      reads += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          cards: [{ ...CARDS[0], why_seen: sent }],
+          groups: [{ id: "needs_you", count: 1 }],
+          needs: NEEDS,
+          sources: { tasks: "ok", projects: "ok", email: "ok", approvals: "absent", calendar: "ok" },
+          capped: [],
+        }),
+      });
+    });
+    // Past the cache's fresh window, a return to the tab reads the feed again.
+    const readAgain = async () => {
+      const before = reads;
+      await page.waitForTimeout(5_500);
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect.poll(() => reads).toBeGreaterThan(before);
+    };
+    await page.goto("/");
+    const row = feedCard(page, "tasks:t1");
+    const box = row.locator("[data-feed-why-box]");
+    const more = row.getByRole("button", { name: "More for Send the quote" });
+    const last = page.getByRole("menu").getByRole("menuitem").last();
+    await more.click();
+    await page.getByRole("menuitem", { name: "Why am I seeing this" }).click();
+    await expect(box).toBeVisible();
+
+    sent = undefined;
+    await readAgain();
+    await expect(box).toHaveCount(0);
+
+    sent = why;
+    await readAgain();
+    // The card has its sentences again, so the menu offers the item. No box shows.
+    await more.click();
+    await expect(last).toHaveText("Why am I seeing this");
+    await expect(box).toHaveCount(0);
   });
 
   test("an older gateway gives no Handled group and no claim (MD-2c)", async ({ page }) => {

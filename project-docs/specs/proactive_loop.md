@@ -854,19 +854,25 @@ audit on the same day checked each pin against the code. LOOP-4b is built, and
 | 1e | Group `later`, a muted needs card (P3) | "It is in Later because you muted this kind. It needs you, so it stays in the feed." |
 | 1f | Group `later`, any other card | "It is in Later, because you saw it 3 times in one day." |
 | 2a | `overdue` is the main or a folded kind, and `days_late` is 1 or more | "It is 1 day late." or "It is N days late." |
-| 2b | Else `urgent_at` is now or past | "Its start or due time has passed." |
-| 2c | Else `urgent_at` is after now, and 2 hours away or less (`feed_rank.SOON`) | "Its start or due time is 2 hours away or less." |
+| 2b | Else the main kind is not `block_overlap`, and `urgent_at` is now or past | "Its start or due time has passed." |
+| 2c | Else the main kind is not `block_overlap`, and `urgent_at` is after now, and 2 hours away or less (`feed_rank.SOON`) | "Its start or due time is 2 hours away or less." |
+| 2d | Else the main kind is `block_overlap`, and `urgent_at` (the start of the overlap) is now or past | "An overlap on it has started." |
+| 2e | Else the main kind is `block_overlap`, and `urgent_at` is after now, and 2 hours away or less | "An overlap on it starts in 2 hours or less." |
 | 3 | `facts.priority` is a cell whose level is above 0 | "Its priority is <the label of the cell in `CELL_META`>." |
 | 4 | `promise_due` is the main or a folded kind | "It holds a promise that you made." |
-| 5a | The affinity of the main kind is above 0 | "In the last 30 days you acted on cards of this kind more than you marked them \"Not useful\", so it ranks higher." |
-| 5b | The affinity is below 0, and the card is no needs card | "In the last 30 days you marked cards of this kind \"Not useful\" more than you acted on them, so it ranks lower." |
-| 5c | The affinity is below 0, and the card is a needs card | "You marked cards of this kind \"Not useful\". This card needs you, so those marks do not lower it." |
+| 5a | The affinity of the main kind is above 0 | "In today's count of the last 30 days, you acted on this kind more than you marked it \"Not useful\", so it ranks higher." |
+| 5b | The affinity is below 0, and the card is no needs card | "In today's count of the last 30 days, you marked this kind \"Not useful\" more than you acted on it, so it ranks lower." |
+| 5c | The affinity is below 0, and the card is a needs card | "In today's count, your \"Not useful\" marks on this kind outnumber your acts. This card needs you, so they do not lower it." |
 | 6 | `visits` is 1 or more, and the id is not in `acted` | "You saw it 1 time today, so it ranks a little lower." or "N times" |
+
+The affinity is the day value of P6, so the sentences of rows 5a, 5b and 5c name today's count.
 
 - **W4, the read.** `lib/shell/feed.ts` reads `why_seen` into `FeedCard`
   (`readCard`). It keeps strings only, and it leaves the key out when the list
   is empty. `visitCards` keeps the group of the visit. When it changes the group
   of a card, it drops the first sentence of `why_seen`. It drops an empty list.
+  `carryCards` drops `why_seen` from a card that it carries from a failed
+  source, because a time or visit sentence can then be old.
 - **W4, the menu.** `cardMenuItems` and `phoneMenuItems` take an optional
   `onWhy`, and `PhoneRowMenu` and both `ContextMenu` sites pass it. The item
   "Why am I seeing this" is last, after a separator, with the icon `Info`. It is
@@ -874,9 +880,11 @@ audit on the same day checked each pin against the code. LOOP-4b is built, and
   calls no server.
 - **W4, the box.** The component `WhyBox` shows one sentence for each line, and
   a "Hide" `Button`. "Hide" returns the focus to the control that opened the
-  menu. In the card layout the box follows the why line. In the row layout the
-  why line sits in a truncated paragraph, so the box is a `basis-full` block at
-  the end of the section. It uses the tokens of the design system.
+  menu. When the card loses its sentences, the box closes. It opens again only
+  from the menu. In the card layout the box follows the why line. In the row
+  layout the why line sits in a truncated paragraph, so the box is a
+  `basis-full` block at the end of the section. It uses the tokens of the design
+  system.
 - **W5, not in this slice.** The score as a number. The judged group and weight
   of MD-9, because the judged path changes no live card. "Tell My Day why",
   "Stop showing <kind>" and the undo of a lowered class (L9). A menu item on a

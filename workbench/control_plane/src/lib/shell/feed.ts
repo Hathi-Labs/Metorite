@@ -657,13 +657,20 @@ export function carries(answer: Pick<FeedAnswer, "sources">, app: string): boole
   return answer.sources[app as FeedApp] === "failed";
 }
 
+/** The card with no `why_seen` key. The card itself does not change. */
+function withoutWhy(card: FeedCard): FeedCard {
+  const { why_seen, ...rest } = card;
+  return why_seen ? rest : card;
+}
+
 /**
  * The answer, with the cards of each source that failed (§6.1). They come
  * from the last raw answer in which that source read `ok`, and only for
  * `CARRY_MS` after it. After that they leave, and the caveat line stays. A
  * card that `next` holds, or that `forget` holds, never comes from the carry.
- * Calendar is a source too. The kept cards follow the new ones, and `groups`
- * counts them.
+ * A carried card drops `why_seen` (LOOP-4b, W4), because a time or visit
+ * sentence of an older answer can be false now. Calendar is a source too. The
+ * kept cards follow the new ones, and `groups` counts them.
  */
 export function carryCards(
   lastOkCards: ReadonlyMap<string, OkCards>,
@@ -674,7 +681,9 @@ export function carryCards(
   const kept: FeedCard[] = [];
   for (const [app, ok] of lastOkCards) {
     if (!carries(next, app) || next.fetchedAt - ok.at > CARRY_MS) continue;
-    for (const c of ok.cards) if (!have.has(c.signal_id) && !forget.has(c.signal_id)) kept.push(c);
+    for (const c of ok.cards) {
+      if (!have.has(c.signal_id) && !forget.has(c.signal_id)) kept.push(withoutWhy(c));
+    }
   }
   if (kept.length === 0) return next;
   const cards = [...next.cards, ...kept];

@@ -1106,6 +1106,9 @@ export function FeedCard({
   // opened the menu (`opener`).
   const [whyOpen, setWhyOpen] = useState(false);
   const whyLines = card.why_seen ?? [];
+  // A card that loses its sentences closes the box, so the box never comes
+  // back with no click. React renders again at once, with no effect.
+  if (whyOpen && whyLines.length === 0) setWhyOpen(false);
   const onWhy = whyLines.length > 0 ? () => setWhyOpen(true) : undefined;
   const hideWhy = () => {
     setWhyOpen(false);

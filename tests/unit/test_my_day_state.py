@@ -1362,10 +1362,10 @@ class TestTheLearnedPathFailsOpen:
 _ROW_1 = {"now": "It is in Now,", "needs_you": "It is in Needs you,",
           "ready": "It is in Ready for you,", "fyi": "It is in For your information,",
           "later": "It is in Later"}
-_LOWER = ('In the last 30 days you marked cards of this kind "Not useful" more than you '
-          'acted on them, so it ranks lower.')
-_NOT_LOWERED = ('You marked cards of this kind "Not useful". This card needs you, so those '
-                'marks do not lower it.')
+_LOWER = ('In today\'s count of the last 30 days, you marked this kind "Not useful" more '
+          'than you acted on it, so it ranks lower.')
+_NOT_LOWERED = ('In today\'s count, your "Not useful" marks on this kind outnumber your acts. '
+                'This card needs you, so they do not lower it.')
 
 
 def _keys(answer: dict) -> list[str]:

@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from gateway.routes.shell import feed, feed_why, state
+from gateway.routes.shell import feed, feed_rank, feed_why, state
 from gateway.routes.shell.needs import Signal, link
 
 #: Tuesday 13 October 2026, 13:30 UTC. The member's day starts at 07:00 UTC.
@@ -43,12 +43,14 @@ LATER_LINE = "It is in Later, because you saw it 3 times in one day."
 PASSED_LINE = "Its start or due time has passed."
 SOON_LINE = "Its start or due time is 2 hours away or less."
 PROMISE_LINE = "It holds a promise that you made."
-HIGHER_LINE = ('In the last 30 days you acted on cards of this kind more than you marked them '
-               '"Not useful", so it ranks higher.')
-LOWER_LINE = ('In the last 30 days you marked cards of this kind "Not useful" more than you '
-              'acted on them, so it ranks lower.')
-NOT_LOWERED_LINE = ('You marked cards of this kind "Not useful". This card needs you, so those '
-                    'marks do not lower it.')
+OVERLAP_STARTED_LINE = "An overlap on it has started."
+OVERLAP_SOON_LINE = "An overlap on it starts in 2 hours or less."
+HIGHER_LINE = ('In today\'s count of the last 30 days, you acted on this kind more than you marked '
+               'it "Not useful", so it ranks higher.')
+LOWER_LINE = ('In today\'s count of the last 30 days, you marked this kind "Not useful" more than '
+              'you acted on it, so it ranks lower.')
+NOT_LOWERED_LINE = ('In today\'s count, your "Not useful" marks on this kind outnumber your acts. '
+                    'This card needs you, so they do not lower it.')
 
 #: The first words of each sentence of rows 2a to 2c.
 TIME_ROWS = ("It is 1 day late.", PASSED_LINE, SOON_LINE)
@@ -180,7 +182,8 @@ class TestRow2bTheTimePassed:
         _card(urgent=NOW + timedelta(seconds=1)),
         _card(),
         _card("overdue", facts={"days_late": 2}, urgent=NOW - timedelta(days=2)),
-    ], ids=["to-come", "no-time", "days-late-says-it"])
+        _card("block_overlap", urgent=NOW),
+    ], ids=["to-come", "no-time", "days-late-says-it", "an-overlap-card"])
     def test_fail(self, card):
         assert PASSED_LINE not in _explain(card)
 
@@ -196,9 +199,50 @@ class TestRow2cTheTimeIsSoon:
         _card(urgent=NOW),
         _card(),
         _card("overdue", facts={"days_late": 1}, urgent=NOW + timedelta(hours=1)),
-    ], ids=["past-2-hours", "now", "no-time", "days-late-says-it"])
+        _card("block_overlap", urgent=NOW + timedelta(hours=1)),
+    ], ids=["past-2-hours", "now", "no-time", "days-late-says-it", "an-overlap-card"])
     def test_fail(self, card):
         assert SOON_LINE not in _explain(card)
+
+
+class TestRow2dTheOverlapStarted:
+    @pytest.mark.parametrize("at", [NOW, NOW - timedelta(hours=3)], ids=["now", "past"])
+    def test_pass(self, at):
+        got = _explain(_card("block_overlap", urgent=at))
+        assert OVERLAP_STARTED_LINE in got and PASSED_LINE not in got
+
+    @pytest.mark.parametrize("card", [
+        _card("block_overlap", urgent=NOW + timedelta(seconds=1)),
+        _card("block_overlap"),
+        _card("block_soon", urgent=NOW),
+        _card("overdue", folded=("block_overlap",), facts={"days_late": 0}, urgent=NOW),
+    ], ids=["to-come", "no-time", "another-kind", "a-folded-overlap"])
+    def test_fail(self, card):
+        assert OVERLAP_STARTED_LINE not in _explain(card)
+
+    def test_a_folded_overlap_keeps_the_sentence_of_the_main_kind(self):
+        card = _card("overdue", folded=("block_overlap",), facts={"days_late": 0},
+                     urgent=NOW - timedelta(minutes=5))
+        assert PASSED_LINE in _explain(card)
+
+
+class TestRow2eTheOverlapIsSoon:
+    @pytest.mark.parametrize("ahead", [timedelta(seconds=1), timedelta(hours=2)],
+                             ids=["1-second", "2-hours"])
+    def test_pass(self, ahead):
+        got = _explain(_card("block_overlap", urgent=NOW + ahead))
+        assert OVERLAP_SOON_LINE in got and SOON_LINE not in got
+
+    @pytest.mark.parametrize("card", [
+        _card("block_overlap", urgent=NOW + timedelta(hours=2, seconds=1)),
+        _card("block_overlap", urgent=NOW),
+        _card("block_overlap"),
+        _card("block_soon", urgent=NOW + timedelta(hours=1)),
+        _card("overdue", folded=("block_overlap",), facts={"days_late": 0},
+              urgent=NOW + timedelta(hours=1)),
+    ], ids=["past-2-hours", "now", "no-time", "another-kind", "a-folded-overlap"])
+    def test_fail(self, card):
+        assert OVERLAP_SOON_LINE not in _explain(card)
 
 
 # ── Rows 3 and 4: the priority and the promise ──────────────────────────────
@@ -347,7 +391,43 @@ def _joined(signal: Signal, rows: dict | None = None) -> dict:
     return out
 
 
+def _block(task_id: str, start: tuple[int, int], end: tuple[int, int]) -> dict:
+    def _at(clock: tuple[int, int]) -> str:
+        return datetime(TODAY.year, TODAY.month, TODAY.day, *clock, tzinfo=UTC).isoformat()
+
+    return {"id": task_id, "title": f"Block {task_id}", "disposition": "NEXT",
+            "scheduled_start": _at(start), "scheduled_end": _at(end)}
+
+
+def _overlap_answer(rows: list[dict], now: datetime) -> tuple[dict, list[str]]:
+    """The one overlap card of these blocks and its sentences, through the
+    provider, the fold, the state join and the order."""
+    signals = feed._overlaps(rows, {}, now, TZ)
+    cards = feed.build_cards(signals, now, TZ, TODAY)
+    ctx = state.Context(now, CTX.day)
+    (card,) = feed_rank.order(state.join(cards, {}, ctx, _taught()), 15)
+    return card, feed_why.explain(card, _taught(), frozenset(), now)
+
+
 class TestRealCards:
+    @pytest.mark.parametrize(("a", "b", "overlap_at"), [
+        # A started 4.5 hours ago. The overlap, the start of B, is to come.
+        (((9, 0), (18, 0)), ((15, 0), (16, 0)), "2026-10-13T15:00:00+00:00"),
+        (((13, 0), (15, 0)), ((14, 0), (15, 0)), "2026-10-13T14:00:00+00:00"),
+    ], ids=["a-long-block", "a-short-block"])
+    def test_an_overlap_that_comes_soon_says_nothing_about_the_start_of_the_card(
+            self, a, b, overlap_at):
+        card, got = _overlap_answer([_block("a", *a), _block("b", *b)], NOW)
+        assert (card["signal_id"], card["kind"], card["urgent_at"]) == (
+            "tasks:a", "block_overlap", overlap_at)
+        assert got == [NOW_LINE, OVERLAP_SOON_LINE]
+
+    def test_an_overlap_that_runs_says_that_it_started(self):
+        rows = [_block("a", (9, 0), (18, 0)), _block("b", (15, 0), (16, 0))]
+        card, got = _overlap_answer(rows, NOW + timedelta(hours=2))
+        assert card["urgent_at"] == "2026-10-13T15:00:00+00:00"
+        assert got == [NOW_LINE, OVERLAP_STARTED_LINE]
+
     def test_an_overlap_later_today_gives_row_1a(self):
         later = NOW + timedelta(hours=6)
         card = _joined(_signal("block_overlap", "tasks:o", {"overlap_day": TODAY.isoformat()},
