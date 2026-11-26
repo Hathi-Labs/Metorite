@@ -508,6 +508,9 @@ def test_the_bot_freezes_a_pr_whose_premerge_has_no_freeze_step(env):
     assert env.log == "", env.log  # no BACK, no DONE: the next pass tries again
     assert "pr merge" not in env.calls
     assert "release freeze" in r.stderr
+    # The next pass, outside the window, merges it.
+    env.run(PREMERGE_CMD="bash scripts/premerge.sh")
+    assert env.log == "DONE 5 abc123\n", env.log
 
 
 def test_the_bot_checks_the_freeze_again_right_before_the_merge(env):
@@ -761,10 +764,13 @@ def test_p2b_the_bot_refuses_to_clean_its_own_checkout(env):
     copy = work / "scripts" / "home_server" / "merge_bot.sh"
     copy.parent.mkdir(parents=True)
     shutil.copy(SCRIPT, copy)
+    # Task 3415: the bot runs the release freeze of its own checkout before the gate.
+    shutil.copy(FREEZE, work / "scripts" / FREEZE.name)
     keep = work / "keep.txt"
     keep.write_text("mine\n", encoding="utf-8")
     env_ = {
         **os.environ,
+        "PREMERGE_NOW": str(OUTSIDE_FREEZE),
         "PATH": f"{env.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "FIX": env.fix.as_posix(),
         "MERGE_QUEUE": (env.tmp / "queue.tsv").as_posix(),
