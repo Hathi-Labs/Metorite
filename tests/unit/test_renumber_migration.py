@@ -127,3 +127,17 @@ def test_a_longer_name_that_ends_like_the_old_one_is_not_rewritten(repo: Path) -
 def test_a_lane_with_a_shell_character_is_refused(repo: Path) -> None:
     out = _run(repo, "480", "--lane", "x; touch /tmp/p", "--task", "1", env={"RENUMBER_BOOK_CMD": ""})
     assert out.returncode == 2 and "letters, digits" in out.stderr
+
+
+def test_file_picks_one_of_two_files_with_the_same_number(repo: Path) -> None:
+    """CIV-RN: a branch that merged main can hold main's 480 and its own 480."""
+    (repo / "infra" / "postgres" / "480_main_took_it.sql").write_text("SELECT 2;\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main's 480")
+    assert "ambiguous" in _run(repo, "480", "481").stderr
+    out = _run(repo, "480", "481", "--file", f"infra/postgres/480{NAME}")
+    assert out.returncode == 0, out.stderr
+    assert (repo / "infra" / "postgres" / f"481{NAME}").exists()
+    assert (repo / "infra" / "postgres" / "480_main_took_it.sql").exists()
+    bad = _run(repo, "480", "482", "--file", "infra/postgres/100_first.sql")
+    assert bad.returncode == 2 and "not a tracked migration 480" in bad.stderr

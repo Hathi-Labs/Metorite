@@ -12,6 +12,9 @@ main's top. Run it through ``scripts/renumber_migration.sh``.
   comments, ``tests/fences.json``). It rewrites the whole file name only, so a
   bare number in prose is left alone. It lists those lines for you to check.
 * It runs ``tests/unit/test_migration_prefixes.py``, unless ``--no-test``.
+* ``--file <path>`` names the file to move, when the tree holds two files with the
+  old number (a branch that merged main, where main took the same number).
+  The merge bot uses it (CIV-RN, ``merge_bot.sh --renumber``).
 * With no new number it books one through the box ledger:
   ``scripts/renumber_migration.sh <old> --lane <lane> --task <task>``. It runs
   ``ssh metorite-home '~/lanes/reserve_migration.sh <lane> <task>'``.
@@ -77,9 +80,18 @@ def book_number(lane: str | None = None, task: str | None = None) -> int:
     return int(text[-1].strip())
 
 
-def renumber(repo: Path, folder: str, old: int, new: int | None, lane: str | None = None, task: str | None = None) -> tuple[Path, Path, list[str], list[str]]:
+def pick_file(repo: Path, folder: str, old: int, file: str) -> Path:
+    """The tracked file ``file``, which must sit in ``folder`` and carry the number ``old``."""
+    tracked = set(_git(repo, "ls-files", "-z", "--", folder).split("\0"))
+    m = re.match(r"^(\d+)_.*\.sql$", Path(file).name)
+    if file not in tracked or not m or int(m.group(1)) != old:
+        raise RenumberError(f"{file} is not a tracked migration {old} in {folder}")
+    return Path(file)
+
+
+def renumber(repo: Path, folder: str, old: int, new: int | None, lane: str | None = None, task: str | None = None, file: str | None = None) -> tuple[Path, Path, list[str], list[str]]:
     """Move the file and rewrite its references. Returns (old, new, changed, review)."""
-    src = find_migration(repo, folder, old)
+    src = pick_file(repo, folder, old, file) if file else find_migration(repo, folder, old)
     width = len(re.match(r"^(\d+)_", src.name).group(1))  # type: ignore[union-attr]
     if new is None:
         new = book_number(lane, task)
@@ -131,12 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lane", help="your lane, to book a number")
     ap.add_argument("--task", help="your task number, to book a number")
     ap.add_argument("--dir", default="infra/postgres", help="the migration folder")
+    ap.add_argument("--file", help="the file to move, when two files carry the old number")
     ap.add_argument("--repo", default=str(Path(__file__).resolve().parents[1]))
     ap.add_argument("--no-test", action="store_true", help="skip test_migration_prefixes.py")
     args = ap.parse_args(argv)
     repo = Path(args.repo)
     try:
-        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new, args.lane, args.task)
+        src, dst, changed, review = renumber(repo, args.dir, args.old, args.new, args.lane, args.task, args.file)
     except RenumberError as err:
         print(f"renumber_migration: {err}", file=sys.stderr)
         return 2

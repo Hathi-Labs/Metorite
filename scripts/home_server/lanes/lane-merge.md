@@ -46,7 +46,8 @@ the PC hands over with `bash scripts/hand_over.sh` (CIV-28c). Its line has
 
 The bot writes one result line to `~/lanes/merge-bot.log` for each hand-over:
 `DONE <pull request> <merge sha>` or `BACK <pull request> <reason>`. Before
-that line, it can write `RESOLVED <pull request> <rules>` (CIV-34a). **Only
+that line, it can write `RESOLVED <pull request> <rules>` (CIV-34a), or
+`RENUMBERED <pull request> <old>-><new>` (CIV-RN, step d). **Only
 the bot writes this log.** Do not append to it, and no lane appends to it. A
 manual merge does not go in it.
 
@@ -142,6 +143,14 @@ c. When the pull request is a draft and step b passed, run `gh pr ready <n>`.
 d. **The gate**, in the pull request's worktree. When the lane left none, make
    one with `bash scripts/worktree.sh new merge-<n>`. Then fetch and check out
    the branch there.
+   - First, set the migration number at merge (CIV-RN). Run
+     `bash scripts/home_server/merge_bot.sh --renumber <n> <head sha> --lane lane-merge --task <task>`.
+     - It prints `nothing to renumber`: go on to premerge.
+     - It prints a new head SHA: the bot pushed a renumber, and the log has a
+       `RENUMBERED` line. Do not merge in this loop. Comment the line on the
+       task. Wait for pr-check on the new head. Then start again at step a.
+     - Exit 1: comment the reason on the task, release it, and go on.
+     - Exit 75: a pass of the bot holds the lock. Run it again in the next loop.
    - Run `cd <worktree> && git fetch -q origin && timeout 900 bash scripts/premerge.sh`.
    - Exit 0: go on to e.
    - Exit 1: the merge with today's `main` fails a fence or conflicts. Comment

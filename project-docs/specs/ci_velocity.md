@@ -61,6 +61,10 @@ never a fix. On the parent and the revert tree, it makes the case vacuous, and
 a vacuous revert PR gets no `VERIFY: PASS` and no hand-over. The helper judges
 each file, so a module-level skip is no longer absent. CIV-5 and §8.8 hold it.
 
+**CIV-RN is BUILT on 2026-11-26** (task 4055, branch `devx-migration-at-merge`).
+HIGH tier. lane-merge sets the migration number at merge with
+`merge_bot.sh --renumber <pr> <sha>`. §8.10 holds the rule and the fence.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -1474,3 +1478,49 @@ on the new head. A conflicted PR never gets checks. So the bot looks for a
 conflict while a PR waits on checks. A lane that reads a `RESOLVED` line pulls
 its branch before its next commit. CIV-34b (a model-written proposal for a
 conflict that no rule fits) is open.
+
+### 8.10 CIV-RN as built: the merge gate sets the migration number (2026-11-26)
+
+A builder books a number with `reserve_migration.sh`. When `main` takes that
+number while the PR waits, premerge step 1 refuses the PR (R1). Before this
+slice, the PR went back to its lane for a renumber by hand.
+
+**The rule.** The builder keeps the number that it booked. lane-merge runs
+`bash scripts/home_server/merge_bot.sh --renumber <pr> <sha>` right before
+premerge (`lane-merge.md` step d). The sub-command does these steps:
+
+1. It refuses a PR that is not open, a fork, or a base that is not `main`.
+   It also refuses a protected head branch, and a head that is not `<sha>`.
+2. It checks out `<sha>` on the bot branch `merge-bot/pr-<n>`, in the bot
+   workdir, under the lock of the bot.
+3. It takes the `.sql` files under `infra/postgres/` that the PR adds. A file
+   with a number at or below main's highest gets a new number, lowest first.
+4. For each file, `scripts/renumber_migration.py --file <path>` books the next
+   number through `~/lanes/reserve_migration.sh <lane> <task> <pr>`. Then it
+   moves the file and rewrites each reference to its name.
+5. One commit holds all the moves:
+   `merge gate: renumber migration <old> to <new> above main's <top> (R1)`.
+6. `push_head` pushes it with no force. It is the one push of the bot
+   (CIV-34a). It pushes only when the head branch on GitHub is still `<sha>`.
+7. The log gets `RENUMBERED <pr> <old>-><new>[, ...]`. The sub-command prints
+   the new head SHA.
+
+The ledger books the number, so premerge step 0b names no other pull request.
+A PR with no low number prints `nothing to renumber`, and nothing changes.
+Each failure exits 1, resets the workdir to `<sha>` and pushes nothing. A
+refused push, a moved head, a failed booking and a dirty tree are failures. A number that the
+ledger booked before the failure stays booked, because only
+`reserve_migration.sh` writes the ledger. Exit 75 means that a pass of the bot
+holds the lock.
+
+The sub-command never merges. The new head needs its own pr-check. lane-merge
+waits for it, and then starts again at the first step of `lane-merge.md`. The
+bot pass is the same as before, because a migration PR is HIGH tier (D218,
+CIV-28b).
+
+**Fence:** `tests/unit/test_merge_bot_renumber.py`. It covers a low number that
+moves to the ledger's next number, with a rewritten reference, and the real
+premerge that then passes. It covers two PRs with the same number, which get
+two numbers. It covers a PR with no migration, and each refusal that leaves
+the PR as it was. The test of the push seam fails if a second `git push` appears in the
+bot. `tests/unit/test_renumber_migration.py` covers `--file`.
