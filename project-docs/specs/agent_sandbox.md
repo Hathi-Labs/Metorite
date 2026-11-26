@@ -10,6 +10,7 @@
   SBX-8, SBX-15a, SBX-18 and SBX-19 are built dark (2026-11-19), and SBX-15c
   too (merged 2026-11-26). SBX-1a is built dark (2026-11-26, task 3800,
   branch `mt-8f625471-sbx1-tool-gaps`), behind `user_tool_find_enabled`.
+  SBX-1b is built dark (2026-11-26, task 3984, branch `sbx1b-gap-view`).
   SBX-2 is built dark (2026-11-26, §12.2): only tests mint, and
   `SANDBOX_DOOR_ORGS` is empty. Its review and verification of
   `external_agent_access.md` §10.1 are owed. No other build slice is on
@@ -501,7 +502,7 @@ reading.
 
 | Needs | Status | Evidence |
 |---|---|---|
-| SBX-1 | SBX-1a built dark (2026-11-26, task 3800). SBX-1b (task 3984) not built | §12 rows SBX-1a and SBX-1b |
+| SBX-1 | SBX-1a built dark (2026-11-26, task 3800). SBX-1b built dark (2026-11-26, task 3984, branch `sbx1b-gap-view`), behind the 404 of the route | §12 rows SBX-1a and SBX-1b |
 | SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, 2026-11-26). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
 | SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
 | SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26 | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
@@ -1951,7 +1952,7 @@ the A2 model.
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
 | **SBX-1a** (task 3800) | (D187) (D225) `tool_gaps` (§7.4). The no-match path of `find_tools` with the library check and the compose check (§6.1), not a second tool. The gap log line of §9.1, and the route `GET /studio/tool-gaps` for an approver. No code runs anywhere. §12.1 holds the full slice and the eleven audit decisions. `user_tool_runs` moved to SBX-4 (decision 9) | SBX-0b | AGENT-SAFE. HIGH tier: a FORCE RLS table and the chat tool seam. Dark behind `user_tool_find_enabled`. 🔨 **BUILT dark** (2026-11-26, branch `mt-8f625471-sbx1-tool-gaps`): migration 504, the hook, the store, the library search and the route. The flip is the `enforcement-flip` of rung 6a |
-| **SBX-1b** (task 3984) | A read-only "Tool gaps" section on `/studio`, for a holder of `studio:publish`. It reads `GET /studio/tool-gaps` through the `/api/studio/[[...path]]` proxy. It shows the counts by outcome and by category, and the newest rows. Frontend only, with no new route | SBX-1a | AGENT-SAFE. STANDARD. Dark |
+| **SBX-1b** (task 3984) | A read-only "Tool gaps" section on `/studio`, for a holder of `studio:publish`. It reads `GET /studio/tool-gaps` through the `/api/studio/[[...path]]` proxy. It shows the counts by outcome and by category, and the newest rows. Frontend only, with no new route | SBX-1a | AGENT-SAFE. STANDARD. Dark. 🔨 **BUILT dark** (2026-11-26, branch `sbx1b-gap-view`): `app/studio/components/ToolGaps.tsx`. A 404 or a 403 draws nothing. The panel draws a skeleton or an error line only in a browser that saw a 200 before, so a dark org never sees it |
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3) moved here from SBX-1. The gap id in the answer of the no-match path | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
@@ -3035,3 +3036,6 @@ here, and each needs its own check before anyone acts on it.
   the no-match path. `gateway/studio/tool_gaps.py` writes and reads the rows,
   and `GET /studio/tool-gaps` serves an approver. The flag
   `user_tool_find_enabled` stays off.
+- 2026-11-26 — SBX-1b built dark (task 3984). The Studio page shows a read-only
+  Tool gaps section. It draws nothing while the route answers 404 or 403. A
+  failed first read in a browser that never saw a 200 draws nothing too.
