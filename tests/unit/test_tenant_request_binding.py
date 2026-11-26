@@ -272,14 +272,19 @@ _SCOPE_KEYS = frozenset({"route", "app", "path", "query_string", "acb.agent_sign
 #: ``If-Match`` that the digest of its call reads (MCP-P1b-2, AD-6, AD-17).
 #: ``If-Match`` is not signed. The digest binds it: another value is another
 #: digest, so the spend refuses it.
-#: SBX-2 adds the capability header of the sandbox sibling, and the four
-#: headers that the sibling reads only to refuse a second credential.
 _HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature", "x-actor-via",
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
     "x-agent-approval", "if-match",
+})
+#: SBX-2 (agent_sandbox.md §12.2): the sibling's own headers. The capability,
+#: and the names that it reads only to refuse a second credential. Only the
+#: functions of :data:`_SANDBOX_FUNCTIONS` may name them, so the scan still
+#: refuses such a read in ``_agent_user``.
+_SANDBOX_HEADERS = frozenset({
     "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
 })
+_SANDBOX_FUNCTIONS = frozenset({"_is_sandbox_request", "_sandbox_user"})
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
 #: for the signature. The runtime tripwire refuses the read on a GET.
@@ -517,6 +522,9 @@ class _InvertedScan:
             for child in ast.iter_child_nodes(parent)
         }
         self.protected = _protected(name)
+        #: The headers this function may name: the shared set, and the set of
+        #: the sandbox sibling for its own two functions only.
+        self.headers = _HEADERS | _SANDBOX_HEADERS if name in _SANDBOX_FUNCTIONS else _HEADERS
         self.problems: list[str] = []
 
     def flag(self, node, what: str) -> None:
@@ -538,7 +546,7 @@ class _InvertedScan:
                 self.occurrence(node)
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_one_header":
                 key = node.args[1] if len(node.args) > 1 else None
-                if key is None or (_fold(key) or "\0").lower() not in _HEADERS:
+                if key is None or (_fold(key) or "\0").lower() not in self.headers:
                     self.flag(node, "_one_header without an allowed literal header")
         if self.name == "_one_header":
             self.one_header_name()
@@ -804,10 +812,10 @@ class _InvertedScan:
                 return  # the trigger reads header NAMES (see `trigger_loop`)
             if isinstance(use, ast.Compare) and len(use.ops) == 1 and top in use.comparators \
                     and isinstance(use.ops[0], (ast.In, ast.NotIn)):
-                self.literal(use.left, _HEADERS, "header")
+                self.literal(use.left, self.headers, "header")
                 return
             if isinstance(use, ast.Subscript) and use.value is top:
-                self.literal(use.slice, _HEADERS, "header")
+                self.literal(use.slice, self.headers, "header")
                 return
         # EA-6a: `await request.body()`, no argument, in `_BODY_READER` only.
         if (key == ("body",) and self.name == _BODY_READER
@@ -843,7 +851,7 @@ class _InvertedScan:
             if (self.name == "_one_header" and isinstance(given, ast.Name)
                     and given.id in set(_params(self.fn)) - {"request"}):
                 return  # `one_header_name` and `run` check this parameter
-            self.literal(given, _HEADERS, "header")
+            self.literal(given, self.headers, "header")
         else:
             self.literal(given, _SCOPE_KEYS, "scope key")
 
@@ -1256,16 +1264,18 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # sibling of branch 0. `_is_sandbox_request` and `_sandbox_user` join the
     # scan, and `_refuse_sandbox`, `_read_capability`, `_sandbox_gate` and
     # `_claim_sandbox_call` join the helpers. `get_current_user` runs the
-    # sibling first. The scan and the tripwire allow `x-sandbox-capability`
-    # and the four headers that the sibling reads only to refuse, and the
+    # sibling first. The sibling has its own header set (`_SANDBOX_HEADERS`):
+    # `x-sandbox-capability` and the three headers that it reads only to
+    # refuse. The scan allows them in the two sibling functions only, and the
+    # tripwire only while the sibling runs (review note, 2026-11-26). The
     # trigger prefix becomes a tuple. The tripwire wraps the sibling too. The
     # pins before it were 3.12 ``acb6431c…aff7c0624`` and 3.13
     # ``caf1fed0…dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6``. CPython 3.12.12
     # and 3.13.2 gave the new pins. This pin needs the diff-reviewer review
     # and the independent verification of external_agent_access.md §10.1.
     # Both are OWED: the builder did neither, and the merge waits for both.
-    (3, 12): "0fb814d2cee264bd8a763abb6b5383db9e35e61166de7ba2284e229f1aa36735",
-    (3, 13): "de85489364ac9ccf0aa6eaf220f356d0c4a06c309d88f01055701e9f7df2a33c",
+    (3, 12): "01b17a9f6a3a6b89bc60773370aa7e90bf42217e574c9f94ccd229530cf06a71",
+    (3, 13): "46de0ff1199ee3c585a1db0423081ec454ac57944d166e6a3a5af28990246f7a",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1526,6 +1536,11 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B79 the body read with an argument": (
         "_agent_user", _A_AGENT, ["_b = await request.body(1)"], {}),
     "B80 the request stream": ("_agent_user", _A_AGENT, ["_b = request.stream()"], {}),
+    # ── SBX-2: the sibling's headers stay the sibling's ──
+    "B81 branch 0 tests for authorization": (
+        "_agent_user", _A_AGENT, ["_h = 'authorization' in request.headers"], {}),
+    "B82 branch 0 reads x-user-email": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('x-user-email')"], {}),
 }
 
 
@@ -1558,8 +1573,9 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    """79 until EA-6a, which added B76 to B80 for the body read."""
-    assert len(_BYPASSES) == 84
+    """79 until EA-6a, which added B76 to B80 for the body read. SBX-2 adds
+    B81 and B82: a header of the sandbox sibling read in branch 0."""
+    assert len(_BYPASSES) == 86
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────

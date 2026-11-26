@@ -59,8 +59,12 @@ ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
     "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
     "x-agent-session", "x-agent-approval", "if-match",
-    # SBX-2: the capability of the sandbox sibling, and the headers that the
-    # sibling reads only to refuse a second credential.
+})
+
+#: SBX-2: the capability of the sandbox sibling, and the headers that the
+#: sibling reads only to refuse a second credential. Allowed ONLY while the
+#: sibling runs (:data:`_IN_SANDBOX`), so a read of one in branch 0 trips.
+SANDBOX_HEADERS = frozenset({
     "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
 })
 
@@ -85,6 +89,10 @@ VIOLATIONS: list[str] = []
 
 _IN_MATCHES: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "branch_zero_tripwire_in_matches", default=False)
+
+#: True while the sandbox sibling (``deps._sandbox_user``) runs.
+_IN_SANDBOX: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "branch_zero_tripwire_in_sandbox", default=False)
 
 #: The classes this module makes, so a wrapped request is never wrapped twice.
 _WRAPPER_CLASSES: set[type] = set()
@@ -156,7 +164,8 @@ MONITOR = _Monitor()
 
 def _headers(real: Any, log: list[str]) -> Any:
     def _check(name: Any) -> None:
-        if type(name) is not str or name.lower() not in ALLOWED_HEADERS:
+        allowed = ALLOWED_HEADERS | SANDBOX_HEADERS if _IN_SANDBOX.get() else ALLOWED_HEADERS
+        if type(name) is not str or name.lower() not in allowed:
             _violate(f"the header {name!r} (type {type(name).__name__})")
         log.append(name.lower())
 
@@ -352,7 +361,11 @@ def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
         return is_sandbox(armed.wrap(request))
 
     async def _sandbox_branch(request: Any) -> Any:
-        return await sandbox_user(armed.wrap(request))
+        token = _IN_SANDBOX.set(True)
+        try:
+            return await sandbox_user(armed.wrap(request))
+        finally:
+            _IN_SANDBOX.reset(token)
 
     monkeypatch.setattr(deps, "_is_agent_request", _trigger)
     monkeypatch.setattr(deps, "_agent_user", _branch_zero)
