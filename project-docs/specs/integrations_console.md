@@ -1084,7 +1084,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 ### 3.9 Who can use an integration (task 3985, PLAN)
 
 > **Status:** 📝 PLAN, owner ask of 2026-11-26. Verified against code at `origin/main` `e8b692f04`.
-> No slice is built, and this text holds the fixes of the 2026-11-26 audit. The owner questions are in §10.
+> No slice is built, and this text holds the fixes of the 2026-11-26 audit. The owner approved teams on 2026-11-26 (ACC-Q2). ACC-Q4 in §10 is open.
 >
 > This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
@@ -1117,7 +1117,7 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 |---|---|
 | No rule (everyone) | Each member whose roles and overrides allow it. This is today, and it is the default |
 | Chosen people | A member on the list of email addresses |
-| Chosen teams (needs ACC-Q2) | A member of a listed `group:<slug>`, or on the list of addresses |
+| Chosen teams (ACC-Q2, approved) | A member of a listed `group:<slug>`, or on the list of addresses |
 | Admins only | A member who holds `integrations:manage`. It is a chosen rule with an empty list |
 
 The word `org` is not stored, because it is the same as no rule.
@@ -1154,12 +1154,12 @@ The route checks that one row changed, and it reads the rule back. A removal del
 - A failed read refuses `integrations:use:*` to each member who holds no `integrations:manage`. It changes no other permission.
 - `resolve_access`, `resolve_access_in_org` and the access preview of one member use the same function. The preview shows the source `integration-rule`, and it lists each ruled service.
 
-**Group writes.** A group member write needs only `admin:members:manage` today, and a chat tool calls the same route. So a team mode needs two more rules (`groups_sessions_authority.md` §1 and §5):
+**Group writes.** A group member write needs only `admin:members:manage` today, and a chat tool calls the same route. So the team mode has two more rules (`groups_sessions_authority.md` §1 and §5):
 
 1. A member write to a group that a rule names also needs `admin:access:manage`.
 2. Nobody can delete a group that a rule names.
 
-`org_group` rows scope and never authorize today. A team here decides who keeps a service. It never gives a permission. ACC-Q2 asks the owner to accept this.
+`org_group` rows scope and never authorize today. A team here decides who keeps a service. It never gives a permission. The owner accepted this on task 3985 (2026-11-26).
 
 #### 3.9.3 The sites that obey it
 
@@ -1189,7 +1189,7 @@ Each site below reads the resolved access, so the rule reaches it with no change
 
 - `GET /admin/integration-access` lists each service of the closed list with its rule. `PUT /admin/integration-access/{service}` takes `{"mode": "everyone"|"chosen"|"admins", "groups": [], "people": []}`.
 - Both need `integrations:manage` **and** `admin:access:manage`, because a rule is an access write.
-- A group must exist in the organization, and a person must be a member of it. An unknown service, group or address, and the word `org`, get 422. Until ACC-Q2, a non-empty `groups` gets 422.
+- A group must exist in the organization, and a person must be a member of it. An unknown service, group or address, and the word `org`, get 422.
 - Without either permission the answer is 403.
 - Each write calls `record_admin_change` with the service, the mode and the subjects, and then `invalidate()` for all members.
 - The flag `INTEGRATION_ACCESS_ORGS` is empty by default. For an organization off the flag, each route answers 404 and the console shows no control. The resolver applies a rule that exists, whatever the flag says. So a flag change never widens access.
@@ -1337,7 +1337,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 
 | Id | Rung | What | Gate | Done when |
 |---|---|---|---|---|
-| **ACC-1** (task 3987) | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, people, admins only. The team mode joins after ACC-Q2, with its two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
+| **ACC-1** (task 3987) | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
 | **ACC-2** (task 3988) | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
 | **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
 | **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
@@ -1346,7 +1346,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 
 - **ACC-a.** With no rule, the resolved access of each of the five roles is the same as today.
 - **ACC-b.** For a refused member, the run authorizer refuses `mcp-x`, and `_maf_servers` drops the server. No credential of a ruled `_REGISTRY` key reaches the run. The `api-y` route answers 404. `_may_use` answers False.
-- **ACC-c.** A listed person passes. A new member is refused. With the team mode, a listed group member passes, and a removal refuses at the next resolve with no restart.
+- **ACC-c.** A listed person passes. A new member is refused. A listed group member passes, and a removal refuses at the next resolve with no restart.
 - **ACC-d.** A holder of `integrations:manage` passes. A member with an exact allow override is refused. A guest on the list is refused.
 - **ACC-e.** A shared session with a refused participant denies, for an email, group or org subject. A delegated run also denies.
 - **ACC-f.** Organization B does not change. The first write on empty settings persists, and a second key keeps the first.
@@ -1359,7 +1359,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 - Each write records the audit line and clears the cache.
 - Each service name equals the output of `mcp_service` in both modules, and of `api-<template>`.
 - The preview shows the rule as the source.
-- With the team mode, the group-write gate holds.
+- The group-write gate of §3.9.2 holds.
 
 ---
 
@@ -1482,5 +1482,5 @@ The owner answers these on task 3985. The default is not open: the owner ask of 
 
 | Id | Question | Recommendation |
 |---|---|---|
-| **ACC-Q2** | May a team decide who keeps an integration? A change of that team's members then also needs the access right | Yes. A team only narrows, and it gives no permission |
+| **ACC-Q2** | May a team decide who keeps an integration? A change of that team's members then also needs the access right | ✅ **Yes** (owner, task 3985, 2026-11-26, answer to "Yes to all three"). A team only narrows, and it gives no permission |
 | **ACC-Q4** | Do the app connections (CRM Zoho, mailboxes, WhatsApp, Google) get a rule in a later slice? | Later, one app at a time. The assistant and agents come first |
