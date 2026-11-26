@@ -8,7 +8,10 @@
   work on 2026-11-15 (§0b): chains of existing actions first, code last.
   **D227** (2026-11-19, §0c) opens SBX-9 to the beta orgs, and rung 6a′ runs compute first.
   SBX-8, SBX-15a, SBX-18 and SBX-19 are built dark (2026-11-19), and SBX-15c
-  too (merged 2026-11-26). No other build slice is on `main` (read 2026-11-26).
+  too (merged 2026-11-26). SBX-2 is built dark (2026-11-26, §12.2): only tests
+  mint, and `SANDBOX_DOOR_ORGS` is empty. Its review and verification of
+  `external_agent_access.md` §10.1 are owed. No other build slice is on
+  `main` (read 2026-11-26).
   **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
   chat turn (SBX-20, SBX-21).
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
@@ -496,7 +499,7 @@ reading.
 | Needs | Status | Evidence |
 |---|---|---|
 | SBX-1 | Not built | `git grep tool_gaps` finds no code or SQL |
-| SBX-2 | Not built | `git grep SANDBOX_ROUTES` finds nothing |
+| SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, 2026-11-26). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
 | SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
 | SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26 | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
@@ -1887,7 +1890,7 @@ the A2 model.
 | **SBX-0d** (task 3786) | (D227) This amendment, 2026-11-19. Docs only: §0c, D227 in `work_plan.md` §3, and the SBX-9 and SBX-G1 rows. SBX-9 and SBX-G1 cover the beta orgs, and rung 6a′ adds the compute run | SBX-0b | AGENT-SAFE. Docs |
 | **SBX-0e** (task 3980) | (D233) This amendment, 2026-11-26. Docs only: §0d, D233 in `work_plan.md` §3, and the rows SBX-20 and SBX-21 | SBX-0d | AGENT-SAFE. Docs |
 | **SBX-1** (task 3800) | (D187) `tool_gaps` and `user_tool_runs` (§7.3, §7.4). `find_tool` with the library check and the compose check (§6.1). (D225) This is the no-match path of `find_tools`, not a second tool. The gap log line of §9.1, and the gap view for an approver. No code runs anywhere. §12.1 holds the full slice | SBX-0b | AGENT-SAFE. Dark |
-| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
+| **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
 | **SBX-4** (task 3803) | The `tools` target, `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend | SBX-2, SBX-13 (D187), WS-43g for the proxy | AGENT-SAFE. Dark |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
@@ -2185,8 +2188,9 @@ anonymous, and that route's own check refuses it.
 The sibling does not call `_bind_session_member`, because no row of
 `SANDBOX_ROUTES` calls a model (decision 2).
 
-**The log level.** A refusal before step 3 logs at info, because anybody on
-the network can cause it. A refusal after step 3 logs at warning, as
+**The log level.** A refusal before step 4 logs at info, because anybody on
+the network can cause it. That includes step 3: an unknown, expired or
+revoked token. A refusal at step 4 or later logs at warning, as
 `_UNSIGNED_REFUSALS` (`deps.py:436`) splits branch 0.
 
 **The digest.** The two new functions that see the request,
@@ -2198,10 +2202,13 @@ the ONE digest pin (`_BRANCH_ZERO_DIGESTS`, `:1210`) cover the sibling.
 - Why not a second pin: the scan already refuses a request handed to a
   function outside `_BRANCH_ZERO`. A second pin for the same boundary would
   be a second fence that drifts.
-- The scan's header list gains `x-sandbox-capability`. It also gains the
-  four header names that the sibling reads only to refuse: `authorization`,
-  `x-user-email`, `x-user-role` and `x-actor-via`. The sibling reads the
-  `x-agent-` prefix through the header names, as branch 0 does.
+- The sibling gets its own header set in the scan: `x-sandbox-capability`,
+  and the header names that it reads only to refuse: `authorization`,
+  `x-user-email` and `x-user-role` (`x-actor-via` is in the shared set
+  already). Only `_is_sandbox_request` and `_sandbox_user` may name them, so
+  the scan still refuses such a read in `_agent_user`. The tripwire allows
+  them only while the sibling runs. The sibling reads the `x-agent-` prefix
+  through the header names, as branch 0 does.
 - `_TRIGGER_PREFIX` (`test_tenant_request_binding.py:360`) becomes a tuple:
   `("x-agent-", "x-sandbox-")`.
 - The ContextVar of decision 9 stays. The scan allows only
@@ -2475,7 +2482,7 @@ holds `@`. `ACTOR_VIA_PATTERN` (`agent_oauth.py:983`,
   `revoked_step` or `swept`), `expires_at` and the count of read scopes.
 - `sandbox.door.call`: org, run, phase, method, route template, status, the
   refusal code or `allowed`, `call_n` (the counter after the call) and the
-  answer bytes. A refusal before step 3 has no org and no run.
+  answer bytes. A refusal before step 4 has no org and no run.
 - No line holds the token, its hash, a header value, a query value or an
   answer body. SBX-4 copies `call_n` and the bytes into `user_tool_runs`.
 - SBX-2 writes no audit row for a read. §8.4 names the acts that write one.
@@ -2590,7 +2597,8 @@ also get mutation testing (`engineering_practice.md` §4).
 ### 12.3 SBX-13 — the door client `metorite_door`
 
 **Board.** Metorite task 3428. Risk tier STANDARD: one module in the image,
-and no gateway change. It depends on SBX-2.
+and no gateway change. Its end-to-end proof needs SBX-2. It may merge
+before SBX-2.
 
 **Scope.** One module that a tool imports to read Metorite as the member,
 through the door of §12.2. It goes in the sandbox image, read-only. It uses
@@ -2677,8 +2685,10 @@ class Door:
   the key of the answer that holds the rows. The builder reads them from the
   route. `page_size` is at most 100, the door cap.
 - SBX-F22 fails when a path of that table is not in `SANDBOX_ROUTES`. The
-  test imports `acb_common.app_manifests.SANDBOX_ROUTES`, and a skip is not
-  allowed. So whichever of SBX-2 and SBX-13 merges second adds this check.
+  test imports `acb_common.app_manifests.SANDBOX_ROUTES` when it exists.
+  SBX-13 may merge first. Then SBX-2 adds the check that each path of
+  `PAGED_ROUTES` of `metorite_door` is in `SANDBOX_ROUTES`. When SBX-2 merges
+  first, the test of SBX-13 makes the check, and a skip is not allowed.
 - It stops on an empty page, on a page shorter than `page_size`, or after
   `max_pages`. It yields each row. It never asks for a page above the door
   cap.
@@ -2890,3 +2900,7 @@ here, and each needs its own check before anyone acts on it.
   of SBX-20 on task 3981 (answer `8c7fc3a3`). §0d, SBX-F27 and D233 record it.
 - 2026-11-26 — SBX-13 built (task 3428). The door client `metorite_door` is in
   the sandbox image, read only. Fence SBX-F22. The §0c row of SBX-13 says so.
+- 2026-11-26 — SBX-2 built dark (task 3801). Migration 503 adds
+  `sandbox_capabilities`. The sibling of branch 0 reads `X-Sandbox-Capability`,
+  and `SANDBOX_ROUTES` opens 68 GET rows. The flag `SANDBOX_DOOR_ORGS` stays
+  off. The member purge deletes her capabilities. SBX-F22 now reads the real set.

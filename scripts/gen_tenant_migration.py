@@ -118,6 +118,14 @@ EXEMPT: dict[str, str] = {
     "failure_fingerprints":    "counts of platform code faults, no organization id, no tenant text",
     "failure_daily":           "counts of platform code faults, no organization id, no tenant text",
     "failure_config":          "one row that names the internal org, which runs the failure jobs. It holds no customer data",
+    # WS-TO SBX-2 (agent_sandbox.md §7.5 and §12.2 decision 5, migration 503).
+    # The code of a user tool sends only an opaque capability, so the door of
+    # the gateway must find the row BEFORE it knows the tenant, as for
+    # agent_token. The row carries organization_id with a foreign key, and
+    # the lookup returns it, so the door binds that tenant before it reads
+    # anything else. It holds a SHA-256 of each token, never the token. The
+    # file revokes every privilege from PUBLIC and the Supabase roles.
+    "sandbox_capabilities":    "looked up by token hash before the tenant is known; returns organization_id so the door can bind it",
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",
