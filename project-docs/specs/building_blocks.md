@@ -93,7 +93,7 @@ An app ships one manifest. `package_host.md` §3.1 owns the envelope. Each secti
 | `contributes.fields`, `slots` | Fields and panels on another app's record | The package host | V `package_host/field_values.py` |
 | `consumes` (new point) | What it reads from Knowledge, with an audience and a staleness limit | Retrieval | P 2715 |
 | `setup` (new point) | Its setup items | Setup items | P 1341, D196 |
-| `nudges`, `insights` (new points) | Its signal rules, each with a reason and a batch key | Signals and delivery | P 2762, 2763 |
+| `nudges`, `insights` (new points) | Its signal rules, each with a reason and a batch key. `proactive_loop.md` §6 proposes the fields of a finding and of a kind | Signals and delivery | P 2762, 2763 |
 | `prompts`, `resources` (new points) | Its MCP prompts and `app://` addresses | Actions and the door | P 2719, 2776. See D205.9 |
 | `channels`, `surfaces` (new points) | The numbers and the public pages it claims | Channels, the public door | P 1511, 1507 |
 | `guides` | Its how-to pages | The guide corpus (V `app_manifests/guides/*.json`) | V in part |

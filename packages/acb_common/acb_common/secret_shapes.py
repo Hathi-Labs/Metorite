@@ -80,6 +80,8 @@ REDACTION_SHAPES: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?<![A-Za-z0-9_-])eyJ[\w-]{1,256}+\.[\w-]{1,2048}+\.[\w-]{1,1024}+"
     ),
+    # A Zoho OAuth token: "1000." and two parts of 32 hex characters (task 3896).
+    re.compile(_NOT_WORD + r"1000\.[0-9a-fA-F]{32}\.[0-9a-fA-F]{32}(?![0-9A-Za-z])"),
 )
 #: A bearer value of any length, for scrubbing (the strict shape needs 16 characters).
 REDACTION_BEARER: re.Pattern[str] = re.compile(r"(?i)\bbearer[ \t\r\n]{1,8}+\S{1,512}+")

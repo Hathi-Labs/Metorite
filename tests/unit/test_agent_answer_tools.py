@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -197,7 +198,7 @@ async def test_withdraw_declined_writes_nothing(monkeypatch) -> None:
     calls = _gateway(monkeypatch)
     asked = deny(monkeypatch)
     said = await _change(withdraw=True)
-    assert said == guarded.CANCELLED and len(asked) == 1
+    assert said == card_outcome_text(CARD_DECLINED) and len(asked) == 1
     assert writes(calls) == []
 
 

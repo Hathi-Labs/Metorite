@@ -1825,6 +1825,8 @@ The slices, with their Metorite tasks:
   another agent.
 - No summary in the chat list, in My Day or in any shared surface.
 - No new recall store and no vector store. MEM-2 stays the one search.
+- No note over a series of chats. `chat_organization.md` §16 plans it (task
+  3491), on the typed-words rule of D-PZ-37.
 - No change to the day's brief (CF-5, BR-2c). §15.4 reads beside it.
 - No outbound message. Reach stays the only sender (D103).
 
@@ -4205,6 +4207,10 @@ merge confirms the number (R1).
 changes no rule of them. The owner accepted the decisions D-PZ-47 to
 D-PZ-52 of §19.12 the same day.
 
+**An extension, proposed 2026-11-16 (task 3439).** `proactive_loop.md` §5 proposes
+five layers for this model, a source on each item, and more acts for MM-1. It
+changes no decision of this section until the owner accepts it.
+
 ### 19.1 The owner's ask
 
 The owner asked for three things on 2026-11-11:
@@ -4238,7 +4244,7 @@ Three stores hold parts of a writing style today, and they never meet.
 | Store | What it holds | How it learns | Reader |
 |---|---|---|---|
 | `email_voice_profiles` (migration 94) | One voice for each mailbox: tone, formality, length, greetings, sign-offs | The member presses Build. A job reads up to 150 sent mails | The email drafter only |
-| `email_learned_patterns` and `email_assistant_settings.learned_writing_style` (migrations 28, 38) | The changes from the AI draft to the sent mail, by sender, domain and topic | In silence, after each send (`drafting.py:772`). It also writes to Mem0, which D132 retires | The email drafter only |
+| `email_learned_patterns` and `email_assistant_settings.learned_writing_style` (migrations 28, 39) | The changes from the AI draft to the sent mail, by sender, domain and topic | In silence, after each send (`_learn_from_sent` in `drafting.py`). It also writes to Mem0, which D132 retires | The email drafter only |
 | `user_settings.assistant_profile.style` (migration 294) | How the assistant talks to the member | Only the member's typed words, or a yes on a card (D-PZ-2, D-PZ-37) | Each chat turn |
 
 **No store records how the member acts.** These are the gaps:

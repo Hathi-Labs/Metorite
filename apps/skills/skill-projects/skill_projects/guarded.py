@@ -32,6 +32,7 @@ who may write a grant (D-OP-11). What is deliberately NOT here: a bulk
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
 from dataclasses import dataclass
@@ -85,20 +86,23 @@ from skill_projects.reads import (
 from skill_projects.refusals import REFUSED
 from skill_projects.writes import (
     _REOPENING,
-    CANCELLED,
     CARD_CONTEXT_LIMIT,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
     REPORT_CHANGE_REFUSED,
+    _assignee_rows,
     _clears,
     _confirm,
     _date_arg,
     _field_of,
     _fields_block,
+    _held_chat,
+    _held_param_refusal,
     _int_or_none,
     _my_reminder,
     _node,
+    _not_confirmed,
     _one_named,
     _org_wide,
     _overlay_values,
@@ -110,6 +114,7 @@ from skill_projects.writes import (
     _resolve_assignee,
     _resolve_assignee_name,
     _same_chase,
+    _space_of,
     _split,
     _subtask_counts,
     _subtask_receipt,
@@ -117,9 +122,11 @@ from skill_projects.writes import (
     _subtasks_wanted,
     _task,
     _vocab,
+    _with_line,
     agent_assignee_refusal_as_text,
     ask_about_subtasks,
     shared_set_line,
+    shared_vocab_line,
     status_edit_refusal,
 )
 
@@ -257,10 +264,33 @@ def _short_ref(task: dict[str, Any]) -> str:
     return f"#{number} {data(title)}" if number is not None else data(title)
 
 
+async def _offer_undo(kind: str, row_id: str, version: Any) -> None:
+    """Offer Undo on the receipt of the archive card just approved (WT-6a).
+
+    Only while ``HELD_CLASS_C_ORGS`` holds the org, so the receipt line stays
+    dark with the flag. The Undo line reads that flag only, and not
+    ``HELD_CARD_WRITES_ORGS``. So it shows in a held chat and in an open chat
+    alike. ``ask_tools.publish_card_undo`` sends the row and its
+    version on the card's own channel. The browser then calls the unarchive
+    route under the member's session, with ``If-Match``. Nothing here writes,
+    and no fault of it changes the answer of the tool."""
+    try:
+        from acb_skills.ask_tools import publish_card_undo
+        from acb_skills.egress import held_class_c_on
+    except ImportError:  # pragma: no cover — platform package absent in isolation
+        return
+    if held_class_c_on():
+        await publish_card_undo(kind, row_id, None if version is None else str(version))
+
+
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+# WT-6a: ``card_write`` lets a held chat keep it while HELD_CARD_WRITES_ORGS
+# and HELD_CLASS_C_ORGS both hold the org (``egress.HELD_CLASS_C_TOOLS``). The
+# Undo line of its receipt is gated on HELD_CLASS_C_ORGS only (``_offer_undo``).
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False,
+           card_write=True)
 async def archive_project(project_id: str) -> str:
     """File a project and its whole subtree out of the default surfaces.
     ONE project per call. The card leads with how many projects the archive
@@ -294,8 +324,14 @@ async def archive_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/archive")) or {}
+    if result.get("updated_at"):
+        # The stamp that THIS archive wrote on the root row. A read after the
+        # archive could see a later archive by another member, and its Undo
+        # would then clear that one. No stamp (an older gateway) means no Undo.
+        with contextlib.suppress(Exception):
+            await _offer_undo("project", pid, result.get("updated_at"))
     return (
         f"Archived {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
         f"filed, {_plural(int(result.get('open_tasks') or 0), 'open task')} out of view."
@@ -338,7 +374,7 @@ async def unarchive_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/unarchive")) or {}
     return (
         f"Restored {data(node.get('name'))}: {_plural(int(result.get('projects') or 0), 'project')} "
@@ -380,7 +416,7 @@ async def delete_project(project_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/nodes/{pid}")) or {}
     gone = result.get("cascaded") or {}
     return (
@@ -465,7 +501,7 @@ async def convert_folder_to_project(project_id: str) -> str:
         detail=f"{name} · the projects inside it become subprojects",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/nodes/{pid}/convert", {"to": "project"})
     return (
         f"Converted {name} to a project. The {_plural(len(kids), 'project')} inside it "
@@ -632,16 +668,18 @@ async def delete_task(task_id: str, subtasks_to_delete: str = "none") -> str:
         # The task is the first row, so a yes always ticks it. A card where
         # the member cleared it is no yes to the delete.
         if not isinstance(answer, frozenset) or tid not in answer:
-            return CANCELLED
+            return _not_confirmed()
         if not answer <= {r["id"] for r in rows}:
             return FORGED_BATCH_ROWS
         chosen = frozenset(answer - {tid})
     elif not answer:
-        return CANCELLED
-    if len(chosen) > DELETE_QUERY_IDS:
-        # Only "all" gets here: a card with tick boxes holds under 100 rows,
-        # and a wider tree refuses any list above. A flag has no id list to
-        # overrun the URL.
+        return _not_confirmed()
+    if len(chosen) > DELETE_QUERY_IDS or (chosen and chosen == frozenset(offered)):
+        # "All" sends the flag, as the app does. A named list that holds a
+        # subtask of an archived project gets a 409 (ARC-2b), and "all" keeps
+        # that subtask. A flag has no id list to overrun the URL either: a card
+        # with tick boxes holds under 100 rows, and a wider tree refuses any
+        # list above.
         params: dict[str, Any] | None = {"delete_all_subtasks": "true"}
     else:
         params = {"delete_subtask_ids": sorted(chosen)} if chosen else None
@@ -815,7 +853,7 @@ async def move_project(
         return card
     title, detail, impact, rest = card
     if not await _confirm(title=title, detail=detail, context=_guard_card(impact, rest)):
-        return CANCELLED
+        return _not_confirmed()
     # The spread first, every row of it, as the tree drag writes it: the
     # node's own position means nothing until its siblings carry one.
     for sid, at in spread:
@@ -920,7 +958,9 @@ async def _status_name(task: dict[str, Any]) -> str:
     return "(unknown)"
 
 
-@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+# WT-6a: as ``archive_project``, behind HELD_CLASS_C_ORGS.
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False,
+           card_write=True)
 async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     """Shelve one task from every board, list, calendar and search. ONE
     task per call, from any status; archiving is a filing decision and
@@ -931,13 +971,23 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
     unarchive_task is the undo, and it restores one task."""
     if _many(task_id):
         return f"archive_task {ONE_ACT}"
+    # WT-6a: a held chat archives ONE task, with Undo, and never a subtree.
+    # The Undo restores one row, so a cascade there would have none.
+    if str(include_subtasks or "").strip():
+        refused = await _held_param_refusal("archive_task", "include_subtasks")
+        if refused:
+            return refused
     wanted = _subtasks_wanted(include_subtasks)
     tid, task = await _task(task_id)
     if task.get("archived_at"):
         return f"{_ref(task)} is already archived."
     count = await _subtask_counts(tid)
     if wanted is None and count.total:
-        return ask_about_subtasks(task, count.total, "archive", count.capped)
+        if not await _held_chat():
+            return ask_about_subtasks(task, count.total, "archive", count.capped)
+        # A held chat cannot answer yes, so it does not ask. The card says
+        # that the subtasks stay on the board.
+        wanted = False
     lane = await _status_name(task)
     if wanted and count.total:
         tail = f"{_subtasks_phrase(count.total, 'archive', count.capped)} archived with it"
@@ -950,10 +1000,25 @@ async def archive_task(task_id: str, include_subtasks: str = "") -> str:
         detail=f"{_ref(task)} · {impact}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params = {"include_subtasks": True} if wanted else None
     row = await post(f"/projects/tasks/{tid}/archive", params=params)
     merged = {**task, **(row if isinstance(row, dict) else {})}
+    # Undo restores ONE task, as the unarchive route does. An archive that
+    # filed subtasks too offers no Undo, because the receipt could not put
+    # each of them back under its own version. Only an open chat can file
+    # them: a held chat refuses include_subtasks above.
+    # ``was_archived`` true: another member archived the task after the read
+    # above, and this call wrote nothing. Its ``updated_at`` is THAT archive's
+    # version, so an Undo would clear the other member's archive. A reply with
+    # no ``was_archived`` (an older gateway) offers none either, as
+    # ``archive_project`` reads a reply with no stamp.
+    if (
+        isinstance(row, dict)
+        and row.get("was_archived") is False
+        and not row.get("subtask_ids")
+    ):
+        await _offer_undo("task", tid, row.get("updated_at"))
     return "\n".join(
         ["Archived:", *_task_line(merged), *_subtask_receipt(row, "subtasks_archived", "archive")]
     )
@@ -998,7 +1063,7 @@ async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = await post(f"/projects/tasks/{tid}/merge", {"sources": ids})
     merged = (row or {}).get("merged") or ids
     out = [f"Merged {len(merged)} into {_ref(target)}:", *_task_line({**target, **(row or {})})]
@@ -1216,6 +1281,12 @@ async def bulk_update(
     tasks = [(await _task(t))[1] for t in ids]
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {**_bulk_changes(body), **subtasks}
+    # Task 3634 and 3636: an address to ADD that the people directory does not
+    # know, or whose person cannot open the task (not active, no login), is named
+    # on the card as the create cards name it (H-162), so the member sees it
+    # before the Approve. One lookup. A change with no address to add reads
+    # nothing. One fence round a comma list, and each address once.
+    rest.update(await _assignee_rows(list(dict.fromkeys(body.get("assignees_add") or []))))
     # Whole titles when the card holds them, and the UI cuts a long one with
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
@@ -1231,7 +1302,7 @@ async def bulk_update(
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post("/projects/tasks/bulk", body)) or {}
     out = [f"Applied to {result.get('applied', 0)} of {result.get('requested', len(ids))} tasks."]
     door = ("subtasks_archived", "archive") if body.get("action") else ("subtasks_completed", "complete")
@@ -1309,7 +1380,7 @@ async def _bulk_personal(ids: list[str], personal: str) -> str:
         detail=impact,
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     applied, skipped, failed = 0, [], []
     for group_ids, group_values in groups:
         body = {"task_ids": group_ids, "action": "personal", "personal": group_values}
@@ -1390,7 +1461,7 @@ async def delete_comment(task_id: str, comment_id: str) -> str:
         detail=f"on {_ref(task)}",
         context=_guard_card(impact, {"task": _ref(task), "comment": data(row.get("body"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/comments/{aid}")
     return f"Deleted your comment on {_ref(task)}.\n  full_id: {tid}"
 
@@ -1431,7 +1502,7 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
         detail=impact,
         context=_guard_card(impact, {"task": _ref(task), **dict(lines)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/activities/{aid}/revert")) or {}
     reverted = ", ".join(result.get("reverted") or []) or "nothing"
     skipped = result.get("skipped") or []
@@ -1513,7 +1584,7 @@ async def delete_status(
             {"status": data(row.get("name")), "category": row.get("category"), "move to": where},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     params: dict[str, Any] = {}
     if target is not None:
         params["move_to"] = uuid_of(str(target.get("id")), "move_to")
@@ -1576,7 +1647,7 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         detail=f"{data(node.get('name'))} → {which} · {impact}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/nodes/{pid}/status-set", payload)) or {}
     moved = result.get("moved", moving)
     return (
@@ -1600,16 +1671,20 @@ async def delete_type(project_id: str, type_name: str) -> str:
     if row.get("is_system"):
         return f"{data(row.get('name'))} is a system type and cannot be deleted."
     kid = uuid_of(str(row.get("id")), "type_id")
+    # HRD-9a: the type is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
-        f"1 type deleted · every task in {data(node.get('name'))}'s tree that carries it becomes "
+        f"1 type deleted · every task in the tree of {space.words} that carries it becomes "
         "untyped (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this task type?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words}", shared_vocab_line("types", space),
+        ),
         context=_guard_card(impact, {"type": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/types/{kid}")) or {}
     return (
         f"Deleted type {data(row.get('name'))}; {_plural(int(result.get('tasks_untyped') or 0), 'task')} "
@@ -1630,18 +1705,23 @@ async def delete_field(project_id: str, field: str) -> str:
     if _org_wide(row):
         return _shared_entry_text(row, "delete")
     fid = uuid_of(str(row.get("id")), "field_id")
+    # HRD-9a: the field is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     impact = (
         f"1 field deleted · every value under key {data(row.get('field_key'))} in "
-        f"{data(node.get('name'))}'s tree is cleared (the receipt carries the count)"
+        f"the tree of {space.words} is cleared (the receipt carries the count)"
     )
     if not await _confirm(
         title="Delete this custom field and its values?",
-        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {space.words}",
+            shared_vocab_line("fields", space),
+        ),
         context=_guard_card(
             impact, {"field": data(row.get("name")), "type": row.get("field_type")}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/fields/{fid}")) or {}
     cleared = int(((result.get("cascaded") or {}).get("values_cleared")) or 0)
     return (
@@ -1665,12 +1745,17 @@ async def delete_tag(project_id: str, tag: str) -> str:
     hit = (await get(f"/projects/tags/{gid}/impact")) or {}
     tasks = int(hit.get("tasks") or 0)
     impact = f"1 tag deleted · {_plural(tasks, 'task')} untagged"
+    # HRD-9a: the tag is the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Delete this tag?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))} · {impact}",
+        detail=_with_line(
+            f"{data(row.get('name'))} in {space.words} · {impact}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(impact, {"tag": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/tags/{gid}")) or {}
     stripped = int(((result.get("cascaded") or {}).get("tasks_untagged")) or 0)
     return f"Deleted tag {data(row.get('name'))}; {_plural(stripped, 'task')} untagged.\n  tag_id: {gid}"
@@ -1701,14 +1786,19 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
         f"{_plural(worn, 'task')} retagged {data(source.get('name'))} → "
         f"{data(target.get('name'))} · 1 tag deleted"
     )
+    # HRD-9a: both tags are the space's, so the card names the space and N.
+    space = await _space_of(pid, node)
     if not await _confirm(
         title="Merge these tags?",
-        detail=f"{data(source.get('name'))} into {data(target.get('name'))} in {data(node.get('name'))}",
+        detail=_with_line(
+            f"{data(source.get('name'))} into {data(target.get('name'))} in {space.words}",
+            shared_vocab_line("tags", space),
+        ),
         context=_guard_card(
             impact, {"from": data(source.get("name")), "into": data(target.get("name"))}
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/tags/{sid}/merge", {"into_tag_id": tid})) or {}
     return (
         f"Merged {data(result.get('merged') or source.get('name'))} into "
@@ -1740,7 +1830,7 @@ async def delete_view(project_id: str, view_name: str) -> str:
         detail=f"{data(row.get('name'))} ({row.get('view_type')}) in {data(node.get('name'))}",
         context=_guard_card(impact, {"view": data(row.get("name")), "type": row.get("view_type")}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/views/{vid}")) or {}
     cascaded = result.get("cascaded") or {}
     return (
@@ -1771,7 +1861,7 @@ async def report_delete(report_id: str) -> str:
         detail=f"{data(row.get('name'))} · {scope}",
         context=_guard_card(impact, {"report": data(row.get("name")), "scope": scope}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/reports/{rid}")
     return f"Deleted report {data(row.get('name'))}.\n  report_id: {rid}"
 
@@ -1795,7 +1885,7 @@ async def delete_attachment(task_id: str, attachment_id: str) -> str:
         detail=f"{data(row.get('name'))} from {_ref(task)}",
         context=_guard_card(impact, {"file": data(row.get("name")), "task": _ref(task)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/tasks/{tid}/attachments/{aid}")
     return f"Detached {data(row.get('name'))} from {_ref(task)}.\n  full_id: {tid}"
 
@@ -1837,7 +1927,7 @@ async def rename_area(area: str, new_name: str) -> str:
         detail=f"{data(row.get('name'))} → {data(clean)}",
         context=_guard_card(impact, {"area": data(row.get("name")), "name": data(clean)}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await patch(f"/projects/my/areas/{aid}", {"name": clean})) or {}
     return f"Renamed the area to {data(result.get('name') or clean)}.\n  area_id: {aid}"
 
@@ -1865,7 +1955,7 @@ async def delete_area(area: str) -> str:
         detail=data(row.get("name")),
         context=_guard_card(impact, {"area": data(row.get("name"))}),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await delete(f"/projects/my/areas/{aid}")) or {}
     tasks = int(result.get("tasks") or 0)
     if result.get("outcome") == "archived":
@@ -1946,7 +2036,7 @@ async def nudge_task(task_id: str) -> str:
         detail=f"{who} about {_ref(task)}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     result = (await post(f"/projects/tasks/{tid}/nudge")) or {}
     if not result.get("notified"):
         skipped = ", ".join(data(x) for x in result.get("skipped") or []) or who
@@ -1993,7 +2083,7 @@ async def attach_to_task(task_id: str, file_name: str) -> str:
              "visible to": "everyone who can open the task"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (
         await post_file(
             f"/projects/tasks/{tid}/attachments", "file", name, content, task_files.mime_of(name)
@@ -2195,7 +2285,7 @@ async def grant_access(project_id: str, subject: str) -> str:
              "covers": "this project and every sub-project under it"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await post(f"/projects/nodes/{pid}/grants", {"subject": clean})) or {}
     return (
         f"{who} can now see {path} and every sub-project under it."
@@ -2252,7 +2342,7 @@ async def revoke_access(project_id: str, grant: str) -> str:
              "covers": "this project and every sub-project under it"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/nodes/{pid}/grants/{gid}")
     return (
         f"Removed the grant of {who} on {path}."
@@ -2342,7 +2432,7 @@ async def pin_authority(project_id: str, page_id: str) -> str:
              "covers": f"page {page} becomes the source of the rules of this project"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         row = (await post(f"/projects/nodes/{pid}/authorities", {"page_id": page})) or {}
     except GatewayRefusal as exc:
@@ -2392,7 +2482,7 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
             {"project": path, "covers": f"{name} stops being the authority page of this project"},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         await delete(f"/projects/nodes/{pid}/authorities/{pin}")
     except GatewayRefusal as exc:
@@ -2475,7 +2565,7 @@ async def delete_project_update(project_id: str, update_id: str) -> str:
             },
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await delete(f"/projects/nodes/{pid}/updates/{uid}")
     return (
         f"Deleted the update ({health}) of {name}.\n  project_id: {pid}\n"
@@ -2556,7 +2646,7 @@ async def answer_decision(decision_id: str, answer_key: str) -> str:
             {"question": data(row.get("question")), "answer": data(label), "task": title},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     try:
         await post(f"/projects/decisions/{did}/answer", {"answer_key": key})
     except GatewayRefusal as exc:
@@ -2873,7 +2963,7 @@ async def change_agent_answer(
     if isinstance(card, str):
         return card
     if not await _confirm(title=card.title, detail=card.detail, context=card.context):
-        return CANCELLED
+        return _not_confirmed()
     try:
         await _send_change(live, card.body, withdraw)
     except GatewayRefusal as exc:
@@ -2965,7 +3055,7 @@ async def add_report_recipient(report_id: str, recipient: str) -> str:
              "schedule": when, "people on the list now": len(held)},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     await post(f"/projects/reports/{rid}/recipients", {"recipient": email})
     return (
         f"{who} is now on the list of {data(report.get('name'))}. {DELIVERY_MAY_BE_OFF}"
@@ -3017,7 +3107,7 @@ async def remove_report_recipient(report_id: str, recipient: str) -> str:
              "people on the list now": len(held)},
         ),
     ):
-        return CANCELLED
+        return _not_confirmed()
     tail = _path_address(email)
     await delete(f"/projects/reports/{rid}/recipients/{tail}")
     return (
@@ -3078,7 +3168,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
         detail=f"{data(report.get('name'))} · {'every week' if enabled else 'off'}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     row = (await patch(f"/projects/reports/{rid}/schedule", {"enabled": enabled})) or {}
     if not enabled:
         return f"The schedule of {data(report.get('name'))} is off.\n  report_id: {rid}"
@@ -3119,7 +3209,7 @@ async def promote_reminder(reminder_id: str) -> str:
     if not await _confirm(
         title="Make this reminder a task?", detail=_reminder_named(row), context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     saved = (await post(f"{REMINDERS}/{rid}/promote")) or {}
     task_id = saved.get("promoted_task_id")
     if not task_id:
@@ -3262,7 +3352,7 @@ async def save_as_template(
         detail=f"{data(node.get('name'))} · {data(title)}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     body: dict[str, Any] = {"project_id": pid, "name": title}
     if about:
         body["description"] = about
@@ -3324,7 +3414,7 @@ async def create_project_from_template(
         detail=f"{data(template.get('name'))} · inside {data(node.get('name'))}",
         context=_guard_card(impact, rest),
     ):
-        return CANCELLED
+        return _not_confirmed()
     # One key for each approved card. A retry of this request makes no
     # second project: the gateway returns the first one (TPL-1a).
     body: dict[str, Any] = {

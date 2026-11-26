@@ -34,6 +34,7 @@ how a person sets the mode.
        The PR body has a VERIFY: PASS line only for a pure git revert (CIV-31c).
        The patch of the revert must be the reverse of the culprit's patch,
        and the failed tests must pass FLAKE_RUNS times on the revert tree.
+       CIV-31f: and the proof must not be vacuous (see the probe below).
        Another revert gets no VERIFY: PASS and no hand-over: a person acts.
        The revert commit has the author "Metorite auto-revert", with the
        user.email of this checkout (REVERT_AUTHOR). No global config changes.
@@ -52,7 +53,8 @@ Fail closed. Each doubt stops the revert and writes a PERSON line:
   - 3 reverts happened in the last hour (the rate brake).
   - The failed tests run 3 times on each of three trees: the tip of main
     (want fail), the culprit (want fail) and its parent (want pass). One
-    other answer stops the revert. That is a flake, or a fix landed.
+    other answer stops the revert. That is a flake, or a fix landed. CIV-31f:
+    on the tip and the culprit, the answer absent stops the revert too.
   - The revert does not apply cleanly, or the failed tests fail on it.
   - A step of `on` fails, or the merge bot sends the revert PR back.
   - Main moves on each of the MAIN_READS reads after the probes.
@@ -65,6 +67,7 @@ While the log holds a revert PR open, each pass reads the PR on GitHub first.
 A person can merge it (REVERTED) or close it (SKIP) by hand. That ends the
 watch. While it is open, the pass runs the failed tests on each new tip of
 main. When they pass, a fix landed: the pass closes the PR and writes SKIP.
+CIV-31f: the answer absent on a tip is never a fix. It writes a PERSON line.
 A failed close runs again on the next pass. A doubt writes one PERSON line,
 and then the watch belongs to a person. The merge bot merges a revert PR only
 when open/<pr>.json holds the tip of main now (merge_bot.sh revert_tested).
@@ -122,9 +125,16 @@ Commands, for a test or another setup:
       is a fail. Any other code means "cannot judge", and the pass stops.
       The default (CIV-31e) runs scripts/probe_present_tests.sh of this
       checkout by its absolute path. It leaves out a failed test that is not
-      in the probed tree, and when none is there, the probe passes. So the
-      parent of a culprit that ADDED the test passes, and so does the revert
-      tree. PROBE_PYTEST_CMD sets its pytest command.
+      in the probed tree, and it exits 0 when no other test fails. CIV-31f:
+      its stderr note then makes the answer "absent", not "pass", because
+      no test ran for that id. On the tip of main and on the culprit (want
+      fail), absent stops the revert, and on a new tip it is never a fix: a
+      PERSON line. On the parent and on the revert tree (want pass), absent
+      counts as a pass, and the case is vacuous. A vacuous case gets
+      vacuous=yes on the WOULD-REVERT line, the report and the PR body. It
+      gets no VERIFY: PASS line and no hand-over: a person acts. The parent
+      of a culprit that ADDED the test, or that moved or renamed it, is such
+      a case. PROBE_PYTEST_CMD sets the pytest command of the helper.
   AUTO_REVERT_TIMEOUT_S [1800]   the limit of one probe
   GH_CMD [gh]
   AUTO_REVERT_CLAUDE_CMD [claude]   the headless session that opens the task
@@ -165,6 +175,18 @@ STALE_LOCK_S = 15 * 3600
 PROBE_HELPER = ROOT / "scripts" / "probe_present_tests.sh"
 #: The same probe as the default of scripts/bisect_main.sh.
 DEFAULT_TEST_CMD = f'bash {shlex.quote(PROBE_HELPER.as_posix())} "$@"'
+#: CIV-31f: the two absent notes of PROBE_HELPER (ABSENT_NOTE and ALL_ABSENT_NOTE
+#: there), with the prefix of its note(). Each absent id follows
+#: PROBE_ABSENT_NOTE on its own line, after two spaces. The helper writes both
+#: notes to stderr, and probe() reads stdout and stderr.
+#: Fence: test_civ31f_the_absent_notes_are_one_contract.
+PROBE_ABSENT_NOTE = "probe_present_tests: these ids are absent from this tree, so they do not run:"
+PROBE_ALL_ABSENT = "probe_present_tests: ALL_ABSENT:"
+#: CIV-31f: the answer of a probe that exits 0 and left out at least one failed
+#: test, because it is not in the probed tree. No test ran for that id, so the
+#: answer is never a pass. A check that wants a fail calls it unknown. A check
+#: that wants a pass takes it, and marks the case vacuous (Case.vacuous).
+ABSENT = "absent"
 BRANCH_PREFIX = "auto-revert/"
 #: The merge bot refuses HIGH. A revert goes in as STANDARD.
 HANDOVER_TIER = "STANDARD"
@@ -598,19 +620,55 @@ def poll(cfg: Config) -> dict[str, Any] | None:
 
 
 def probe(cfg: Config, sha: str, ids: list[str]) -> str:
-    """Run the failed tests on `sha`. Return pass, fail, or unknown (why).
+    """Run the failed tests on `sha`. Return pass, fail, absent, or unknown (why).
 
-    The default probe passes a tree that holds none of the failed tests (CIV-31e).
+    CIV-31f: the default probe exits 0 when it left out a failed test that is
+    not in the tree (CIV-31e). No test ran for that id, so the answer is
+    ABSENT, never pass. Exit 1 stays fail, also when some ids were absent.
+    """
+    return probe_ids(cfg, sha, ids)[0]
+
+
+def probe_ids(cfg: Config, sha: str, ids: list[str]) -> tuple[str, list[str]]:
+    """probe(), and the failed tests that the probe left out (CIV-31f).
+
+    The list is empty unless the answer is ABSENT. It can be empty then too,
+    when the note names no id.
     """
     with worktree(cfg.repo, sha) as wt:
         try:
             res = run([bash(), "-c", cfg.test_cmd, "probe", *ids], cwd=wt, timeout=cfg.timeout_s)
         except subprocess.TimeoutExpired:
-            return f"unknown (the probe ran past {cfg.timeout_s} s)"
-    tail = (res.stdout + res.stderr).strip().splitlines()[-5:]
+            return f"unknown (the probe ran past {cfg.timeout_s} s)", []
+    text = f"{res.stdout}\n{res.stderr}"
+    tail = text.strip().splitlines()[-5:]
     for line in tail:
         say(f"  probe {sha[:12]}: {line}")
-    return {0: "pass", 1: "fail"}.get(res.returncode, f"unknown (exit {res.returncode})")
+    if res.returncode == 0:
+        left_out = absent_ids(text)
+        return ("pass", []) if left_out is None else (ABSENT, left_out)
+    return ("fail" if res.returncode == 1 else f"unknown (exit {res.returncode})"), []
+
+
+def absent_ids(text: str) -> list[str] | None:
+    """The ids after the absent note of PROBE_HELPER, or None when no note is there.
+
+    Either note means absent. A wrapper can send stderr to stdout, so the
+    caller gives both. Fence: test_civ31f_the_absent_notes_are_one_contract.
+    """
+    lines = text.splitlines()
+    if not any(PROBE_ABSENT_NOTE in ln or PROBE_ALL_ABSENT in ln for ln in lines):
+        return None
+    found: list[str] = []
+    reading = False
+    for ln in lines:
+        if PROBE_ABSENT_NOTE in ln:
+            reading = True
+        elif reading and ln.startswith("  ") and ln.strip():
+            found.append(ln[2:].rstrip("\r"))
+        else:
+            reading = False
+    return found
 
 
 def is_revert(message: str) -> bool:
@@ -1001,9 +1059,12 @@ def recheck_main(cfg: Config, ledger: Ledger, pr: str, data: dict[str, Any]) -> 
     run passes, a fix landed: the pass closes the PR and writes SKIP. A failed
     close runs again on each pass. A fail on the first run keeps the PR, and
     "tip" moves to the new tip, so the merge bot can merge the PR. Any other
-    answer (a flake, a test that a later commit deleted, a probe that cannot
-    start) writes one PERSON line. Then the watch belongs to a person: no more
-    probes and no more lines. "tip" stays, so the merge bot holds the PR.
+    answer writes one PERSON line: a flake, a probe that cannot start, or
+    ABSENT. CIV-31f: ABSENT means that a later commit moved, renamed or
+    deleted a failed test. The test can still fail under its new name, so
+    ABSENT is never a fix and never closes the PR. After the PERSON line, the
+    watch belongs to a person: no more probes and no more lines. "tip" stays,
+    so the merge bot holds the PR.
     """
     try:
         culprit, run_id, ids, last = data["culprit"], data["run"], data["ids"], data["tip"]
@@ -1045,8 +1106,10 @@ def recheck_main(cfg: Config, ledger: Ledger, pr: str, data: dict[str, Any]) -> 
     ledger.write(
         PERSON,
         f"{head} The failed tests give {', '.join(answers)} on the new tip {tip[:12]} of main. "
-        "A flake, a fix in part, or a test that a later commit deleted. The revert PR "
-        "stays open, and the merge bot holds it. A person merges it or closes it.",
+        "A flake, a fix in part, or a probe that cannot start. Or absent: a later commit "
+        "moved, renamed or deleted a failed test, so no test ran for it, and it can still "
+        "fail under a new name. The revert PR stays open, and the merge bot holds it. A "
+        "person merges it or closes it.",
     )
     data["person"] = tip
     write_open(cfg, pr, data)
@@ -1803,6 +1866,14 @@ class Case:
     pure: bool = False
     #: CIV-31c: the green runs of the failed tests on the revert tree.
     proof_runs: int = 0
+    #: CIV-31f: a check that wants a pass (the parent, a revert tree) got
+    #: ABSENT. Some failed tests are not in that tree, so no test ran for them.
+    #: Set once and never cleared. Such a case gets no VERIFY: PASS line and no
+    #: hand-over (verify_line).
+    vacuous: bool = False
+    #: CIV-31f: the failed tests that each such check left out, by tree
+    #: (VACUOUS_PARENT, VACUOUS_REVERT). The PR body names them.
+    absent: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def branch(self) -> str:
@@ -2101,6 +2172,9 @@ def rerun_for_flake(cfg: Config, case: Case, rep: Report) -> None:
     """The failed tests on three trees, FLAKE_RUNS times each (P3-a).
 
     Every run must give the wanted answer. One other answer stops the revert.
+    CIV-31f: on the tip and the culprit (want fail), ABSENT stops the revert as
+    unknown does. On the parent (want pass), ABSENT counts as a pass, and the
+    case is vacuous.
     """
     for name, sha, want in (
         ("the tip of main", case.tip, "fail"),
@@ -2110,20 +2184,60 @@ def rerun_for_flake(cfg: Config, case: Case, rep: Report) -> None:
         same(cfg, case, rep, name, sha, want)
 
 
+#: CIV-31f: the keys of Case.absent.
+VACUOUS_PARENT = "parent"
+VACUOUS_REVERT = "revert"
+
+
+def doubt(got: str) -> str:
+    """Why an answer that is not the wanted one stops the revert."""
+    if got == ABSENT:
+        return "A failed test is not in that tree, so no test ran for it, and the pass cannot judge it."
+    if got.startswith("unknown"):
+        return "The pass cannot judge it."
+    return "A flake, or a later commit fixed it."
+
+
+def outcome(got: str, where: str) -> str:
+    """'The failed tests <answer> on <where>', for a Stop reason."""
+    if got == ABSENT:
+        return f"The failed tests give {ABSENT} on {where}"
+    return f"The failed tests {got} on {where}"
+
+
+def mark_vacuous(case: Case, rep: Report, tree: str, where: str, left_out: list[str]) -> None:
+    """CIV-31f: a check that wants a pass got ABSENT. Take it, and mark the case.
+
+    No test ran for the ids in `left_out`, so the proof of the revert holds
+    nothing for them. The case gets no VERIFY: PASS line and no hand-over.
+    """
+    case.vacuous = True
+    first = tree not in case.absent
+    known = case.absent.setdefault(tree, [])
+    known += [i for i in left_out if i not in known]
+    if first:
+        rep.fact(
+            f"vacuous=yes: these failed tests are not in {where}, so no test ran for them "
+            f"there: {', '.join(left_out) or 'the probe named no id'}. The pass counts the run "
+            "as a pass, and the revert PR gets no verify line and no hand-over (CIV-31f)."
+        )
+
+
 def same(cfg: Config, case: Case, rep: Report, name: str, sha: str, want: str) -> None:
-    """Run the failed tests on `sha` FLAKE_RUNS times. Each run must give `want`."""
+    """Run the failed tests on `sha` FLAKE_RUNS times. Each run must give `want`.
+
+    CIV-31f: when `want` is pass, ABSENT counts as a pass and marks the case vacuous.
+    """
     for n in range(1, FLAKE_RUNS + 1):
-        got = probe(cfg, sha, case.ids)
+        got, left_out = probe_ids(cfg, sha, case.ids)
         rep.fact(f"Run {n} of {FLAKE_RUNS} on {name} {sha[:12]}: {got} (want {want}).")
+        if got == ABSENT and want == "pass":
+            mark_vacuous(case, rep, VACUOUS_PARENT, f"{name} {sha[:12]}", left_out)
+            continue
         if got != want:
-            why = (
-                "The pass cannot judge it."
-                if got.startswith("unknown")
-                else "A flake, or a later commit fixed it."
-            )
             raise Stop(
-                f"The failed tests {got} on {name} {sha[:12]} (run {n} of {FLAKE_RUNS}), "
-                f"and the pass wants {want}. {why}",
+                f"{outcome(got, f'{name} {sha[:12]}')} (run {n} of {FLAKE_RUNS}), "
+                f"and the pass wants {want}. {doubt(got)}",
                 culprit=case.culprit,
             )
 
@@ -2133,6 +2247,8 @@ def build_and_prove(cfg: Config, case: Case, rep: Report) -> None:
 
     CIV-31c: each run must pass. The count goes into the VERIFY: PASS line of
     the PR body, and so does the check that the revert is a pure git revert.
+    CIV-31f: ABSENT counts as a pass, and marks the case vacuous. A vacuous
+    case gets no VERIFY: PASS line.
     """
     case.proof_runs = 0
     case.revert_sha = make_revert(cfg, case.tip, case.culprit, revert_message(case))
@@ -2142,11 +2258,15 @@ def build_and_prove(cfg: Config, case: Case, rep: Report) -> None:
         f"{'yes' if case.pure else 'no'}."
     )
     for n in range(1, FLAKE_RUNS + 1):
-        got = probe(cfg, case.revert_sha, case.ids)
+        got, left_out = probe_ids(cfg, case.revert_sha, case.ids)
         rep.fact(
             f"Proof run {n} of {FLAKE_RUNS} on the revert tree {case.revert_sha[:12]}: "
             f"{got} (want pass)."
         )
+        if got == ABSENT:
+            where = f"the revert tree {case.revert_sha[:12]}"
+            mark_vacuous(case, rep, VACUOUS_REVERT, where, left_out)
+            continue
         if got != "pass":
             raise Stop(
                 f"The failed tests {got} on the revert tree (run {n} of {FLAKE_RUNS}). "
@@ -2195,7 +2315,9 @@ def fixed_on_new_tip(cfg: Config, case: Case, rep: Report) -> bool:
     """Run the failed tests on case.tip. True: they pass, so a fix landed.
 
     A first pass is enough to stop the revert. Else they must fail FLAKE_RUNS
-    times. One other answer stops the revert.
+    times. One other answer stops the revert. CIV-31f: ABSENT is never a fix.
+    A failed test that the new tip moved or deleted can still fail under its
+    new name, so ABSENT stops the revert as unknown does: a PERSON line.
     """
     tip = case.tip
     for n in range(1, FLAKE_RUNS + 1):
@@ -2204,49 +2326,115 @@ def fixed_on_new_tip(cfg: Config, case: Case, rep: Report) -> bool:
         if n == 1 and got == "pass":
             return True
         if got != "fail":
-            why = (
-                "The pass cannot judge it."
-                if got.startswith("unknown")
-                else "A flake, or a later commit fixed it."
-            )
             raise Stop(
-                f"The failed tests {got} on the new tip {tip[:12]} (run {n} of {FLAKE_RUNS}). {why}",
+                f"{outcome(got, f'the new tip {tip[:12]}')} (run {n} of {FLAKE_RUNS}). {doubt(got)}",
                 culprit=case.culprit,
             )
     return False
 
 
 def revert_message(case: Case) -> str:
+    # CIV-31f: the parent check runs first. When it ran no test, the message
+    # makes no claim that the failed tests pass.
+    proof = (
+        "The pass ran no test for some failed tests on the parent, because they are\n"
+        "not in that tree. A person verifies this revert (CIV-31f).\n\n"
+        if case.vacuous
+        else "The failed tests pass on this revert tree (CIV-31).\n\n"
+    )
     return (
         f'Revert "{case.subject}"\n\n'
         f"This reverts commit {case.culprit}.\n\n"
         f"The push batch run {case.run_id} of main is red. The bisect names this commit as the\n"
-        "first bad commit. The failed tests pass on this revert tree (CIV-31).\n\n"
+        f"first bad commit. {proof}"
         f"Failed tests:\n{case.tests()}\n"
         f"Auto-Revert: {case.culprit}\n"
     )
 
 
+def absent_list(case: Case) -> list[str]:
+    """CIV-31f: the failed tests that a check that wants a pass left out, once each."""
+    found: list[str] = []
+    for ids in case.absent.values():
+        found += [i for i in ids if i not in found]
+    return found
+
+
+def vacuous_text(case: Case) -> str:
+    """CIV-31f: the paragraph of the PR body for a vacuous case, or ""."""
+    if not case.vacuous:
+        return ""
+    names = absent_list(case)
+    listed = "".join(f"- `{i}`\n" for i in names) if names else "- (the probe named no id)\n"
+    return (
+        "Vacuous proof (vacuous=yes): the proof ran no test on the parent or on the revert "
+        "tree for these failed tests, because they are not in those trees:\n"
+        f"{listed}"
+        "So the checks do not prove that this revert fixes main. The bisect can name the "
+        "wrong commit, such as one that moved or renamed a test. A person verifies the "
+        "revert, then merges it or closes it.\n\n"
+    )
+
+
 def pr_body(case: Case) -> str:
+    c, p, r, tip = case.culprit[:12], case.parent[:12], case.revert_sha[:12], case.tip[:12]
+    # CIV-31f: a check that left out a failed test does not say "pass".
+    parent_line = (
+        f"- They fail on {c}. On its parent {p}, no test ran for the failed tests in the "
+        "list below, because they are not in that tree.\n"
+        if VACUOUS_PARENT in case.absent
+        else f"- They fail on {c}, and pass on its parent {p}.\n"
+    )
+    revert_line = (
+        f"- On this revert tree {r}, on {tip}, no test ran for the failed tests in the list "
+        "below, because they are not in that tree.\n\n"
+        if VACUOUS_REVERT in case.absent
+        else f"- They pass on this revert tree {r}, on {tip}, in {case.proof_runs} of "
+        f"{FLAKE_RUNS} runs.\n\n"
+    )
     return (
         f"Auto-revert (CIV-31). The push batch run {case.run_id} of main is red. The bisect names "
-        f"{case.culprit[:12]} (PR {('#' + case.pr) if case.pr else 'none'}) as the first bad commit.\n\n"
+        f"{c} (PR {('#' + case.pr) if case.pr else 'none'}) as the first bad commit.\n\n"
         f"Failed tests:\n{case.tests('- `{}`' + chr(10))}\n"
         f"Checks ({FLAKE_RUNS} runs of each, with one answer):\n"
         f"- The failed tests fail on the tip of main {(case.first_tip or case.tip)[:12]}.\n"
-        f"- They fail on {case.culprit[:12]}, and pass on its parent {case.parent[:12]}.\n"
+        + parent_line
         + (
-            f"- Main moved to {case.tip[:12]} during the checks, and they fail there too.\n"
+            f"- Main moved to {tip} during the checks, and they fail there too.\n"
             if case.first_tip
             else ""
         )
-        + f"- They pass on this revert tree {case.revert_sha[:12]}, on {case.tip[:12]}, "
-        f"in {case.proof_runs} of {FLAKE_RUNS} runs.\n\n"
-        f"Task of the reverted PR: {case.task_ref}. {reopen_note(case)}\n\n"
+        + revert_line
+        + vacuous_text(case)
+        + f"Task of the reverted PR: {case.task_ref}. {reopen_note(case)}\n\n"
         f"{verify_line(case)}\n"
         "Visual review: a revert. It adds no new UI.\n\n"
         f"Auto-Revert: {case.culprit}\n"
     )
+
+
+def unverified(case: Case) -> list[str]:
+    """Why the revert PR gets no VERIFY: PASS line. An empty list: it verifies itself.
+
+    No reason holds the text "VERIFY: PASS", because the merge bot and
+    lane_handover.sh read that prefix, and a test reads the text.
+    """
+    why: list[str] = []
+    if not case.pure:
+        why.append(
+            f"the revert tree {case.revert_sha[:12]} is not a pure git revert of "
+            f"{case.culprit[:12]}: its patch is not the reverse of the culprit's patch"
+        )
+    if case.vacuous:
+        why.append(
+            "the proof ran no test for a failed test on the parent or on the revert tree, "
+            "because that test is not in those trees (vacuous=yes)"
+        )
+    if case.proof_runs != FLAKE_RUNS:
+        why.append(
+            f"the failed tests passed in {case.proof_runs} of {FLAKE_RUNS} runs on the revert tree"
+        )
+    return why
 
 
 def verify_line(case: Case) -> str:
@@ -2254,18 +2442,17 @@ def verify_line(case: Case) -> str:
 
     Only a pure git revert with FLAKE_RUNS green proof runs verifies itself. Any
     other line must not start with "VERIFY: PASS", because the merge bot and
-    lane_handover.sh read that prefix. pr-check still gates the PR.
+    lane_handover.sh read that prefix. pr-check still gates the PR. CIV-31f: a
+    vacuous case does not verify itself either (Case.vacuous).
     """
-    if case.pure and case.proof_runs == FLAKE_RUNS:
+    why = unverified(case)
+    if not why:
         return (
             f"VERIFY: PASS (auto-revert: a pure git revert of {case.culprit[:12]}. The failed "
             f"tests pass in {case.proof_runs} of {FLAKE_RUNS} runs on the revert tree "
             f"{case.revert_sha[:12]}.)"
         )
-    return (
-        f"Not verified: the revert tree {case.revert_sha[:12]} is not a pure git revert of "
-        f"{case.culprit[:12]}, so a person verifies it."
-    )
+    return f"Not verified: {'. Also, '.join(why)}. So a person verifies it."
 
 
 def reopen_note(case: Case) -> str:
@@ -2311,6 +2498,7 @@ def decide(cfg: Config, ledger: Ledger, result: dict[str, Any], rep: Report) -> 
             WOULD_REVERT,
             f"run={case.run_id} culprit={case.culprit} pr={case.pr or 'none'} revert={case.revert_sha[:12]} "
             f"tests={len(case.ids)} pure={'yes' if case.pure else 'no'} "
+            f"vacuous={'yes' if case.vacuous else 'no'} "
             f"task_id={case.task_id or case.task_why} Task: {case.task_ref}.",
         )
         rep.block(
@@ -2369,12 +2557,14 @@ def open_revert(cfg: Config, ledger: Ledger, rep: Report, case: Case) -> str:
     write_open(cfg, revert_pr, {"culprit": c, "run": case.run_id, "ids": case.ids, "tip": case.tip})
     if not verify_line(case).startswith("VERIFY: PASS"):
         # CIV-31c: the PR has no VERIFY: PASS line, so the merge bot would send it back.
+        # CIV-31f: a vacuous case takes this path too, with vacuous=yes on the line.
         raise Stop(
-            f"Revert PR {revert_pr} is open, and it is not a pure git revert of {c[:12]}: its "
-            "patch is not the reverse of the culprit's patch. It has no VERIFY: PASS line, and "
-            "the pass did not hand it over. A person verifies it, then merges it or closes it.",
+            f"Revert PR {revert_pr} is open, and it is not verified: "
+            f"{'. Also, '.join(unverified(case))}. The pass did not hand it over. A person "
+            "verifies it, then merges it or closes it.",
             culprit=c,
             revert_pr=revert_pr,
+            **({"vacuous": "yes"} if case.vacuous else {}),
         )
 
     view = run([*cfg.gh, "pr", "view", revert_pr, "--json", "headRefOid,state"], cwd=cfg.repo)
