@@ -448,6 +448,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # SBX-13: the sandbox door client reads the run capability from this name
+    # (sandbox/metorite_door.py). The broker sets it in the tool container. A
+    # tenant must never save it.
+    "METORITE_API_TOKEN",
     # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
     # reads its mode, its files and the merge bot log. A tenant must never save these.
     "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",

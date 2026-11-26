@@ -58,6 +58,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Every pin stays. Fence: `test_coding_sandbox_image.py`. Building the image on the box is owner gate WS43-G2.
    - To add a Python package, open a reviewed PR that edits `sandbox/requirements.in`, the lock, `_SANDBOX_MODULES` and the table of §7.2. Fence: `test_coding_sandbox_packages.py`.
    - `sandbox/data_engine.py` is the only module that imports `duckdb`. Never set `allowed_directories` there. Fence: `test_data_engine.py`.
+   - `sandbox/metorite_door.py` is the door client of `agent_sandbox.md` §12.3 (SBX-13). The image copies it into site-packages with mode 0444. It reads only `METORITE_API_TOKEN`, sends GET to `DOOR_URL` only, and never sets `trust_env` or `proxies`. It is not a pip package, so it stays out of `_SANDBOX_MODULES`. Fence: `test_sandbox_door_client.py` (SBX-F22).
 13. **A native run's context rides a per-run MAF context provider**, behind `MAF_NATIVE_SESSIONS` (default off, spec `maf_coding_engine.md` §15.9).
    - Call `run` on `_agent_for_run(agent, provider)`, never on the agent with the input alone. Never append a run's provider to the agent object itself. `agent_with_providers` is the one per-run copy.
    - `native_session_store.py` is the one module that reads or writes `maf_agent_session`, through `tenant_session(organization_id)`. A session loads and saves ONLY in the actor's own thread.
