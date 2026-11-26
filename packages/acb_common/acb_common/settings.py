@@ -1368,6 +1368,19 @@ class Settings(BaseSettings):
     # The one reader is `acb_auth.agent_oauth.plan_order_allowed`. Fence:
     # tests/unit/test_my_work_plan_order_r8.py.
     my_work_plan_order_orgs: str = ""
+    # SW-45 (agent_coordination.md §3.10.1): the scope of an agent claim, for
+    # each organization. `org=mode` pairs with a comma between them, for
+    # example `<org id>=warn`. `*` names each organization, and an exact id
+    # wins over `*`. A mode is `off`, `warn` or `refuse`. Empty, an unknown
+    # mode and an unknown organization read as `off`, the default. Off, an
+    # agent claims any task that it sees, and `my_work` has no `own_app_free`
+    # rows. A SIGHUP reload applies a change (`docs/flag_reload.md`). The one
+    # reader is `acb_auth.agent_oauth.claim_scope_mode`. The policy store does
+    # not read it (`agent_policies.FLAGS_NOT_YET`) until SW-46 wires the key
+    # `claim_scope_mode`. 🔴 A change on a box is gate `enforcement-flip`.
+    # Fences: tests/unit/test_agent_claim_scope_r8.py and
+    # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
+    agent_claim_scope_modes: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids
@@ -1472,6 +1485,20 @@ class Settings(BaseSettings):
     # reload applies a change. A flip is OWNER-GATE (`enforcement-flip`).
     # Fence: tests/unit/test_agent_map_r8.py.
     agent_map_orgs: str = ""
+
+    # ── Agents: the lenses of the Agents view (WS-MCP AMR-1, §5.12) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the Agents canvas of Projects draws the Board, Graph and
+    # List lenses, and its phone view. Off, it draws the map of SW-103. It opens
+    # no data: the map read still needs AGENTS_VIEW_ORGS and AGENT_MAP_ORGS.
+    # AMR-4: on, the map read also answers `detail=summary` and `session=`,
+    # through the same reach rule as the map.
+    # The one reader is `gateway.agent_lenses_flag.agent_lenses_allowed`, and
+    # `GET /auth/me/shell` serves the answer as `agent_lenses`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_auth_me_shell_r8.py.
+    agent_lenses_orgs: str = ""
 
     # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
     #
@@ -1629,6 +1656,20 @@ class Settings(BaseSettings):
     # what the chat can do and spends model tokens.
     # Fence: tests/unit/test_tool_search_off.py.
     tool_search_orgs: str = ""
+
+    # ── The tool gap record (agent_sandbox.md §6.1, SBX-1a) ─────────────────
+    #
+    # ON gives `find_tools` its no-match hook
+    # (`orchestrator.tool_gap_path.make_gap_hook`). When the rank finds no
+    # tool, the hook checks the Studio library and the action catalog, asks
+    # one typed decide question and writes one `tool_gaps` row. OFF (the
+    # default) passes no hook, so the no-match answer stays `FIND_NONE` byte
+    # for byte. It acts only where `TOOL_SEARCH_ORGS` and `STUDIO_ORGS` name
+    # the org. A change needs a restart. The flip on a box is the gate
+    # `enforcement-flip` of rung 6a (agent_sandbox.md §0c).
+    # Fences: tests/unit/test_tool_gap_detection.py,
+    # tests/unit/test_user_tool_injection.py.
+    user_tool_find_enabled: bool = False
 
     # ── The read packs of a WhatsApp turn (chat_reach.md G2, task 3494) ─────
     #
@@ -2593,6 +2634,13 @@ class Settings(BaseSettings):
     # Production also needs a remote gVisor backend. Fence SBX-F26:
     # tests/unit/test_sandbox_broker_compute.py.
     compute_run_orgs: str = ""
+    # SBX-2 (agent_sandbox.md 12.2 decision 4): the hot kill switch of the
+    # sandbox door. A `*_orgs` list ("" off, "*" all, else org ids), so SIGHUP
+    # reloads it (docs/flag_reload.md). Empty, each request with a capability
+    # gets 401 before any read. `*` counts as empty while
+    # SELF_SERVE_SIGNUP_ENABLED is on. Its one reader is
+    # `acb_auth.sandbox_capabilities.door_orgs`. A flip is `enforcement-flip`.
+    sandbox_door_orgs: str = ""
     compute_max_per_org: int = 1
     compute_max_total: int = 1
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
@@ -2771,6 +2819,18 @@ class Settings(BaseSettings):
     # change (`gateway/flag_reload.py`). A production flip is gate
     # `enforcement-flip`. Fence: tests/unit/test_card_revise.py.
     chat_card_revise_orgs: str = ""
+
+    # ── The chat asks which draft (tasks 3977 and 3978) ──
+    #
+    # CHAT_DRAFT_CHOICE_ORGS: a comma list of organization ids, or `*`. Empty
+    # is off, the default, and then each card and each trash is as before. On,
+    # `manage_inbox(action="trash")` on a draft reads Drafts, shows each
+    # matching draft as an unticked row, and the answer counts what left Drafts
+    # and names what stays. The one reader is
+    # `acb_skills.draft_choice.draft_choice_on`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). A production flip is gate
+    # `enforcement-flip`. Fence: tests/unit/test_email_draft_choice.py.
+    chat_draft_choice_orgs: str = ""
 
     # ── A paste is framed as data (HRD-14b, chat_failure_modes.md §4.7b) ──
     #
@@ -3205,6 +3265,21 @@ class Settings(BaseSettings):
     agent_write_window_s: int = 600
     agent_access_token_ttl_s: int = 3600
     agent_refresh_token_ttl_s: int = 30 * 24 * 3600
+    # MCP-G17f (external_agent_access.md §5.5, task 4032, owner directive
+    # 2026-11-26): the grace window of a refresh token, in seconds. A refresh
+    # token that its own client spent less than this many seconds ago gets a
+    # new pair of the same connection, and it does not revoke the connection.
+    # Two sessions that share one login and refresh at once then both keep
+    # the board. 0, the default, turns the window off: rule 5 of
+    # `acb_auth.agent_tokens` holds as before, and each reuse revokes.
+    # `acb_auth.agent_oauth.refresh_reuse_grace_s` is the one reader. It
+    # reads a value below 0 as 0, and a value above
+    # `agent_oauth.REFRESH_REUSE_GRACE_MAX_S` (60) as 60. The env key is
+    # `AGENT_REFRESH_REUSE_GRACE_S`. It is not a `*_ORGS` or `*_MODES` key,
+    # so a SIGHUP reload does not apply it: restart `acb-agent-edge`, which
+    # runs the token endpoint (`docs/flag_reload.md`). 🔴 A change on a box
+    # is gate `enforcement-flip`.
+    agent_refresh_reuse_grace_s: int = 0
     agent_code_ttl_s: int = 60
     agent_connection_idle_ttl_s: int = 90 * 24 * 3600
     agent_client_unused_ttl_s: int = 24 * 3600

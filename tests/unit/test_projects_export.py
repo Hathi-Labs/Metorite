@@ -293,6 +293,12 @@ NOT_ON_THE_EXPORT = {
     # #918. Not a filter: it asks the list to also answer the size of each
     # status lane for the board's column heads. The rows are the same.
     "with_status_counts",
+    # WS-39 SP-3a. Only the Backlog canvas sends `cycle=none`, from its own
+    # query (`lib/backlogCanvas.ts`). The page filters never hold it, so
+    # `lib/export.ts`, which builds the file's query from those filters, never
+    # sends it. Like `unheld`, who sits in an open cycle changes by the hour,
+    # and no saved view pins the filter.
+    "cycle",
 }
 
 

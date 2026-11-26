@@ -1,0 +1,519 @@
+"""SBX-F6: the identity step of the sandbox door (SBX-2, Metorite task 3801).
+
+Spec: ``project-docs/specs/agent_sandbox.md`` §12.2 decisions 3, 4, 8 and 9,
+and done-when 4 to 7, 10 and 15. ``external_agent_access.md`` §10.1 binds it
+as the sibling of branch 0.
+
+Each request goes through the real default deny, the real
+``get_current_user`` under the branch-0 tripwire, the real tenant middleware
+and the real ``SandboxDoorLimits``. The routes sit at real templates. The
+capability row, the member resolve and Redis are stand-ins
+(``_sandbox_door_kit``). ``test_sandbox_capability.py`` runs the door on a
+real database.
+
+This file also pins the digest of ``acb_auth/sandbox_capabilities.py``. That
+module is outside the branch-0 digest, as ``agent_tokens`` is. An edit to it
+fails here until the reviewed commit updates the pin.
+"""
+from __future__ import annotations
+
+import pytest
+from acb_auth import deps, sandbox_capabilities
+from acb_common.db import current_tenant
+from fastapi.testclient import TestClient
+
+from tests.unit import _branch_zero_tripwire as tripwire
+from tests.unit import _sandbox_door_kit as kit
+
+
+@pytest.fixture
+def armed_tripwire():
+    yield tripwire
+    tripwire.assert_clean()
+
+
+def _send(door, method: str, path: str, headers=None, query: str = ""):
+    url = f"{path}?{query}" if query else path
+    with TestClient(door.app) as client:
+        return client.request(method, url, headers=headers)
+
+
+# ── The admitted call ───────────────────────────────────────────────────────
+
+
+def test_a_live_capability_reads_as_the_rows_member(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"email": kit.MEMBER, "org": kit.ORG_A, "sandbox": "run",
+                             "agent": False}
+    assert door.tenants == [kit.ORG_A]
+    assert state.resolves == [kit.MEMBER]
+    assert sum(state.redis.counts.values()) == 1, "the dependency ran once"
+    ttl = next(iter(state.redis.ttls.values()))
+    assert ttl == state.row.seconds_left + 60
+
+
+def test_the_trigger_is_any_x_sandbox_header_in_any_case():
+    from starlette.requests import Request
+
+    def request(*names: str) -> Request:
+        return Request({"type": "http", "method": "GET", "path": "/x",
+                        "headers": [(n.encode(), b"v") for n in names], "query_string": b""})
+
+    assert deps._is_sandbox_request(request("X-SANDBOX-Anything"))
+    assert deps._is_sandbox_request(request("accept", "x-sandbox-capability"))
+    assert not deps._is_sandbox_request(request("x-agent-connection", "authorization"))
+    assert not deps._is_sandbox_request(request("x-sandboxed"))
+
+
+# ── done-when 4: reads only, the list, the public list, no tenant ─────────
+
+
+def test_a_post_with_a_live_capability_is_403_read_only(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "POST", "/crm/leads", kit.headers())
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": "sandbox_read_only"}
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_class_x_pair_is_403_excluded(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/export/all.zip", kit.headers())
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": "sandbox_route_excluded"}
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_class_a_row_off_the_list_is_404_unknown(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/aggregate", kit.headers())
+    assert answer.status_code == 404
+    assert answer.json() == {"detail": "sandbox_route_unknown"}
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_refused_capability_gets_401_on_a_public_template_too(monkeypatch, armed_tripwire):
+    """The sibling raises. It never returns the anonymous context, which the
+    default deny lets through on a template of its ``public`` list."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch, flag=kit.ORG_B)
+    answer = _send(door, "GET", kit.PUBLIC_PATH, kit.headers())
+    assert answer.status_code == 401
+    assert door.ran == [], "the public route did not run"
+    assert door.after == [None]
+
+
+def test_an_unknown_capability_gets_401_on_a_public_template(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", kit.PUBLIC_PATH,
+                   {"X-Sandbox-Capability": "msbx_" + "B" * 43})
+    assert answer.status_code == 401
+    assert door.ran == [] and door.after == [None]
+
+
+# ── done-when 5: the scope of the app ───────────────────────────────────────
+
+
+def test_projects_read_only_is_403_scope_on_a_crm_read(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch, cap=kit.capability(read_scopes=("projects:read",)))
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 403
+    assert answer.json() == {"detail": "sandbox_scope"}
+    assert door.ran == [] and door.after == [None]
+    ok = _send(door, "GET", "/projects/tasks", kit.headers())
+    assert ok.status_code == 200, ok.text
+
+
+# ── done-when 6: the member and the org come only from the row ─────────────
+
+
+@pytest.mark.parametrize("extra", [
+    {"X-User-Email": kit.OTHER_MEMBER},
+    {"Authorization": f"Bearer {kit.INTERNAL}"},
+    {"Authorization": f"Bearer {kit.INTERNAL}", "X-User-Email": kit.OTHER_MEMBER},
+    {"X-User-Role": "executive"},
+    {"X-Agent-Connection": "44444444-4444-4444-4444-444444444444"},
+    {"X-Actor-Via": "sandbox:quote-pdf:v3"},
+    {"X-Actor-Via": "mcp:client.example"},
+])
+def test_a_second_credential_is_401_and_branch_1a_never_runs(
+        monkeypatch, armed_tripwire, extra):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    bound: list[object] = []
+    monkeypatch.setattr(deps, "_bind_session_member", lambda email: bound.append(email))
+    answer = _send(door, "GET", "/crm/leads", kit.headers(**extra))
+    assert answer.status_code == 401
+    assert bound == [], "branch 1a ran"
+    assert state.resolves == [] and state.lookups == []
+    assert door.ran == [] and door.after == [None]
+
+
+@pytest.mark.parametrize("extra", [
+    {"X-Agent-Connection": "44444444-4444-4444-4444-444444444444"},
+    {"X-Actor-Via": "mcp:client.example"},
+])
+def test_the_sibling_runs_before_branch_0(monkeypatch, armed_tripwire, extra):
+    """A capability with a header of branch 0 is the sibling's. Branch 0
+    would answer the anonymous context, and the default deny lets that
+    through on a template of its ``public`` list. The sibling raises."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", kit.PUBLIC_PATH, kit.headers(**extra))
+    assert answer.status_code == 401
+    assert door.ran == [], "the public route did not run"
+
+
+# ── done-when 7: the seat ───────────────────────────────────────────────────
+
+
+def test_a_member_who_is_no_longer_active_is_401_with_no_tenant(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch, active=False)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 401
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_member_of_another_org_is_401_with_no_tenant(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch, member_org=kit.ORG_B)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 401
+    assert door.ran == [] and door.after == [None]
+
+
+def test_an_identity_outage_is_503_with_no_tenant(monkeypatch, armed_tripwire):
+    from acb_auth.access import IdentityUnavailable
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+
+    async def down(email):
+        raise IdentityUnavailable("pool timeout")
+
+    monkeypatch.setattr(deps, "resolve_identity", down)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 503
+    assert answer.headers["retry-after"] == "2"
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_database_outage_on_the_lookup_is_503(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+
+    async def down(raw):
+        raise ConnectionRefusedError("database is down")
+
+    monkeypatch.setattr(sandbox_capabilities, "lookup", down)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 503
+    assert answer.headers["retry-after"] == "2"
+    assert door.ran == []
+
+
+def test_a_lookup_error_that_is_not_an_outage_is_401(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+
+    async def broken(raw):
+        raise ValueError("a bad row")
+
+    monkeypatch.setattr(sandbox_capabilities, "lookup", broken)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 401
+    assert door.ran == []
+
+
+# ── done-when 10: the query and the size of the answer ─────────────────────
+
+
+@pytest.mark.parametrize("query", ["page_size=101", "page_size=0100", "page_size=1e2",
+                                   "limit=500", "per_lane=-1", "page_size="])
+def test_a_page_over_the_cap_is_422(monkeypatch, armed_tripwire, query):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers(), query)
+    assert answer.status_code == 422
+    assert answer.json() == {"detail": "sandbox_page_cap"}
+    assert door.ran == [] and state.redis.counts == {}, "a refused call does not count"
+
+
+@pytest.mark.parametrize("query", ["page_size=100", "limit=7&page_size=1", "per_lane=0"])
+def test_a_page_within_the_cap_passes(monkeypatch, armed_tripwire, query):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers(), query)
+    assert answer.status_code == 200, answer.text
+
+
+@pytest.mark.parametrize("query", ["page_size=10&page_size=20", "a=%FF"])
+def test_a_repeated_key_or_a_bad_query_is_422(monkeypatch, armed_tripwire, query):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers(), query)
+    assert answer.status_code == 422
+    assert answer.json() == {"detail": "sandbox_bad_query"}
+    assert door.ran == []
+
+
+def test_an_answer_of_4_mb_plus_1_byte_is_422_and_no_byte_leaves(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire, big=True)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/owners", kit.headers())
+    assert answer.status_code == 422
+    assert answer.json() == {"detail": "sandbox_response_too_large"}
+    assert kit.BIG_BYTE not in answer.content
+    assert door.ran == ["GET /crm/owners"], "the route ran, and the middleware held it"
+
+
+def test_an_answer_of_exactly_4_mb_passes(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/views", kit.headers())
+    assert answer.status_code == 200
+    assert len(answer.content) == 4_194_304
+
+
+def test_a_large_answer_without_a_capability_passes_untouched(monkeypatch, armed_tripwire):
+    """The cap acts only on a call that the sibling admitted."""
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire, big=True)
+    kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/owners",
+                   {"Authorization": f"Bearer {kit.INTERNAL}"})
+    assert answer.status_code == 200
+    assert len(answer.content) == kit.BIG
+
+
+def test_the_real_gateway_refuses_a_capability_on_its_public_health_route(monkeypatch):
+    """Through ``gateway.main.app`` itself: ``/health`` is on ``PUBLIC_ROUTES``.
+    It answers a plain request, and a request with a capability gets 401
+    while the flag is empty, with no database read and no Redis call."""
+    from acb_common import db, get_settings, tenant_redis
+    from gateway.main import app
+
+    monkeypatch.setattr(get_settings(), "sandbox_door_orgs", "")
+    reads: list[str] = []
+    monkeypatch.setattr(db, "get_session_factory", lambda *a, **k: reads.append("db"))
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda *a, **k: reads.append("redis"))
+    client = TestClient(app)  # no lifespan: the route and the middleware only
+    plain = client.get("/health")
+    refused = client.get("/health", headers=kit.headers())
+    assert plain.status_code == 200, plain.text
+    assert refused.status_code == 401
+    assert refused.json() == {"detail": "Authentication required"}
+    assert reads == []
+
+
+def test_the_record_of_the_sibling_reaches_the_middleware_of_the_gateway():
+    """Decision 9: the ContextVar reaches the middleware. The gateway installs
+    ``SandboxDoorLimits`` inside ``TenantScopeMiddleware``, as the small
+    gateway of these tests does."""
+    from gateway.main import TenantScopeMiddleware, app
+    from gateway.sandbox_door import SandboxDoorLimits
+
+    order = [m.cls for m in app.user_middleware]
+    assert SandboxDoorLimits in order
+    assert order.index(TenantScopeMiddleware) < order.index(SandboxDoorLimits), (
+        "the door's middleware sits inside the tenant middleware")
+
+
+def test_the_record_is_fresh_for_each_request(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire, big=True)
+    kit.arm_door(monkeypatch)
+    with TestClient(door.app) as client:
+        first = client.get("/crm/leads", headers=kit.headers())
+        second = client.get("/crm/owners", headers={"Authorization": f"Bearer {kit.INTERNAL}"})
+    assert first.status_code == 200
+    assert second.status_code == 200 and len(second.content) == kit.BIG
+    assert sandbox_capabilities.current_door_call() is None
+
+
+# ── done-when 15: the flag and the shape of the headers ────────────────────
+
+
+def test_a_flag_of_org_b_only_refuses_a_capability_of_org_a(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch, flag=f" {kit.ORG_B.upper()} ")
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 401
+    assert state.redis.pipelines == 0 and state.resolves == []
+    assert door.ran == [] and door.after == [None]
+
+
+def test_a_flag_that_names_org_a_admits_it(monkeypatch, armed_tripwire):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    kit.arm_door(monkeypatch, flag=f"{kit.ORG_B}, {kit.ORG_A.upper()}")
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 200, answer.text
+
+
+def _spy_reads(monkeypatch) -> list[str]:
+    """Spies on the session factory and on the tenant Redis client."""
+    from acb_common import db, tenant_redis
+
+    reads: list[str] = []
+
+    def factory(*_a, **_k):
+        reads.append("session")
+        raise AssertionError("the door read the database")
+
+    def redis(*_a, **_k):
+        reads.append("redis")
+        raise AssertionError("the door called Redis")
+
+    monkeypatch.setattr(db, "get_session_factory", factory)
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", redis)
+    return reads
+
+
+def test_a_star_with_self_serve_signup_on_is_401_with_no_read(monkeypatch, armed_tripwire):
+    """``*`` counts as empty while self-serve signup is on. The real lookup
+    runs here, and the spy records no read."""
+    from acb_common import get_settings
+
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "sandbox_door_orgs", "*")
+    monkeypatch.setattr(settings, "self_serve_signup_enabled", "true")
+    reads = _spy_reads(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", kit.headers())
+    assert answer.status_code == 401
+    assert reads == []
+    assert door.ran == [] and door.after == [None]
+
+
+@pytest.mark.parametrize("pairs", [
+    [("X-Sandbox-Capability", kit.RAW), ("X-Sandbox-Capability", kit.RAW)],
+    [("X-Sandbox-Capability", kit.RAW), ("X-Sandbox-Other", "1")],
+    [("X-Sandbox-Capabilityx", kit.RAW)],
+    [("X-Sandbox-Other", kit.RAW)],
+    [("X-Sandbox-Capability", "msbx_short")],
+    [("X-Sandbox-Capability", kit.RAW + "A")],
+    [("X-Sandbox-Capability", "Bearer " + kit.RAW)],
+])
+def test_a_second_sandbox_header_or_a_bad_shape_is_401_with_no_read(
+        monkeypatch, armed_tripwire, pairs):
+    door = kit.make_app(monkeypatch, tripwire=armed_tripwire)
+    state = kit.arm_door(monkeypatch)
+    answer = _send(door, "GET", "/crm/leads", pairs)
+    assert answer.status_code == 401
+    assert state.lookups == [] and state.redis.pipelines == 0
+    assert door.ran == [] and door.after == [None]
+
+
+# ── the flag reader ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("raw", "signup", "expected"), [
+    ("", "", frozenset()),
+    ("  ", "", frozenset()),
+    ("*", "", frozenset({"*"})),
+    ("*", "true", frozenset()),
+    ("*", " TRUE ", frozenset()),
+    (f"{kit.ORG_A},*", "true", frozenset()),
+    (f"{kit.ORG_A.upper()} , {kit.ORG_B}", "true", frozenset({kit.ORG_A, kit.ORG_B})),
+    ("*", "false", frozenset({"*"})),
+])
+def test_door_orgs_reads_the_flag(monkeypatch, raw, signup, expected):
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "sandbox_door_orgs", raw)
+    monkeypatch.setattr(settings, "self_serve_signup_enabled", signup)
+    assert sandbox_capabilities.door_orgs() == expected
+
+
+def test_the_flag_reloads_with_sighup():
+    from gateway.flag_reload import reloadable
+
+    assert reloadable("SANDBOX_DOOR_ORGS")
+
+
+# ── the scope and the context ──────────────────────────────────────────────
+
+
+def test_the_context_holds_the_run_and_never_the_token_or_its_hash(monkeypatch):
+    """Step 11: ``sandbox`` holds the run, the thread, the phase, the app,
+    the version and the read scopes. ``agent`` stays ``None``."""
+    import asyncio
+    import dataclasses
+
+    from starlette.requests import Request
+
+    state = kit.arm_door(monkeypatch, cap=kit.capability(
+        app_id="99999999-9999-4999-8999-999999999999", version=3, phase="smoke"))
+
+    request = Request({"type": "http", "method": "GET", "path": "/crm/leads",
+                       "headers": [(b"x-sandbox-capability", kit.RAW.encode())],
+                       "query_string": b"", "route": None})
+    monkeypatch.setattr(deps, "_matched_template", lambda r: "/crm/leads")
+
+    async def go():
+        token = sandbox_capabilities.open_door_call()[1]
+        try:
+            return await deps.get_current_user(request=request)
+        finally:
+            sandbox_capabilities.close_door_call(token)
+
+    user = asyncio.run(go())
+    assert user.agent is None
+    assert user.sandbox is not None
+    assert dataclasses.asdict(user.sandbox) == {
+        "run_id": "run-1", "thread_id": "thread-1", "phase": "smoke",
+        "app_id": "99999999-9999-4999-8999-999999999999", "version": 3,
+        "read_scopes": ("crm:read", "projects:read"),
+    }
+    text = repr(user) + repr(dataclasses.asdict(user.sandbox))
+    assert kit.RAW not in text and state.row.token_sha256 not in text
+    assert current_tenant() is None
+
+
+def test_a_websocket_style_call_with_no_request_never_runs_the_sibling(monkeypatch):
+    import asyncio
+
+    state = kit.arm_door(monkeypatch)
+    user = asyncio.run(deps.get_current_user())
+    assert user.email is None
+    assert state.lookups == []
+
+
+# ── the digest of the capability store ──────────────────────────────────────
+
+#: SHA-256 of the normalised AST of ``acb_auth/sandbox_capabilities.py``, by
+#: Python minor version. Update it ONLY in the commit that carries the
+#: diff-reviewer review and the independent verification of
+#: ``external_agent_access.md`` §10.1, as the branch-0 digest.
+_STORE_DIGESTS: dict[tuple[int, int], str] = {
+    # SBX-2 (2026-11-26): the first pin. CPython 3.12.12 and 3.13.2 gave it.
+    # The diff-reviewer review and the independent verification are OWED.
+    (3, 12): "4b7b1023e4bf925bf157fd821c792b0f6497410f36243ce218eef35e7de6b382",
+    (3, 13): "35c1dc2efa306098723237a202bda3fc91e58455c277d6114da641ba6dd7db2e",
+}
+
+
+def _store_digest() -> str:
+    import ast
+    import hashlib
+
+    with open(sandbox_capabilities.__file__, encoding="utf-8-sig") as fh:
+        return hashlib.sha256(ast.dump(ast.parse(fh.read())).encode()).hexdigest()
+
+
+def test_the_digest_of_the_capability_store_is_pinned():
+    import sys
+
+    version = sys.version_info[:2]
+    assert version in _STORE_DIGESTS, f"No digest is pinned for Python {version}."
+    assert _store_digest() == _STORE_DIGESTS[version], (
+        "sandbox_capabilities.py changed. Get a diff-reviewer review and an "
+        "independent verification, then update this digest in the same commit.")
