@@ -302,6 +302,10 @@ NOT_ON_THE_EXPORT = {
     # sends it. Like `unheld`, who sits in an open cycle changes by the hour,
     # and no saved view pins the filter.
     "cycle",
+    # WS-39 T-1 (task 2532). The team scope, dark behind TEAMS_ORGS. No page
+    # filter holds it yet, so `lib/export.ts` never sends it. T-2 (task 2533)
+    # builds the team chip, and the export must take the value in that slice.
+    "team",
 }
 
 

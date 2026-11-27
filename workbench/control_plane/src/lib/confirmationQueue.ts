@@ -48,6 +48,60 @@ export const CONFIRMATION_RESOLVED = "confirmation_resolved";
  *  the name (`CONFIRMATION_NOT_DONE` in `ask_tools.py`). */
 export const CONFIRMATION_NOT_DONE = "confirmation_not_done";
 
+/** SBX-3b (`agent_sandbox.md` §12.5 decision 8): the result of each row of a
+ *  held sandbox card. The server owns the name (`CONFIRMATION_ROW_RESULTS` in
+ *  `ask_tools.py`), and `tests/unit/test_confirmation_rows.py` checks that the
+ *  two agree. The event carries a status and a door code for each row, and no
+ *  body. */
+export const CONFIRMATION_ROW_RESULTS = "confirmation_row_results";
+
+/** The result of one row of a held sandbox card. */
+export interface RowResult {
+  id: string;
+  status: number;
+  code?: string;
+}
+
+/** The most rows one card may carry (`MAX_CARD_ROWS` in `ask_tools.py`). */
+const MAX_RESULT_ROWS = 100;
+
+/** The rows of a `confirmation_row_results` value, or null when it is not one. */
+export function rowResultsFromEvent(value: unknown): { requestId: string; rows: RowResult[] } | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const rid = v.request_id;
+  if (typeof rid !== "string" || !/^[0-9a-f]{32}$/.test(rid)) return null;
+  if (!Array.isArray(v.rows) || v.rows.length === 0 || v.rows.length > MAX_RESULT_ROWS) return null;
+  const rows: RowResult[] = [];
+  for (const raw of v.rows) {
+    if (!raw || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.id !== "string" || !/^row-[0-9]{1,2}$/.test(r.id)) return null;
+    if (typeof r.status !== "number" || !Number.isInteger(r.status) || r.status < 100 || r.status > 599) return null;
+    rows.push({
+      id: r.id,
+      status: r.status,
+      ...(typeof r.code === "string" && /^sandbox_[a-z_]{1,48}$/.test(r.code) ? { code: r.code } : {}),
+    });
+  }
+  return { requestId: rid, rows };
+}
+
+/** What happened to one row, in a few words. */
+function rowOutcome(r: RowResult): string {
+  if (r.status >= 200 && r.status < 300) return "done";
+  if (r.code === "sandbox_write_refused") return "not done, not approved";
+  if (r.code === "sandbox_approval_timeout") return "not done, the card timed out";
+  if (r.code === "sandbox_not_run") return "not done, the run ended first";
+  return `failed (${r.status})`;
+}
+
+/** The results of a held sandbox card, as one sentence: "Results: row 1 done,
+ *  row 2 not done, not approved." The rows go in card order. */
+export function rowResultsText(rows: readonly RowResult[]): string {
+  return `Results: ${rows.map((r, i) => `row ${i + 1} ${rowOutcome(r)}`).join("; ")}.`;
+}
+
 /**
  * One checkbox of a card with rows (WS-46 P13 one-card). The tool offers the
  * rows, and the member's Approve names the ticked ids.
@@ -406,6 +460,9 @@ export interface ConfirmationReceipt {
   /** WT-6a: the archive that this approved card made, and where its Undo is
    *  (`lib/archiveUndo.ts`). Only the server's `confirmation_undo` sets it. */
   archive?: ArchiveUndo & { state: ArchiveUndoState };
+  /** SBX-3b: the result of each row of a held sandbox card. Only the server's
+   *  `confirmation_row_results` sets it. */
+  rowResults?: readonly RowResult[];
 }
 
 export interface ConfirmationQueueState {
@@ -465,6 +522,12 @@ export function answerReceiptLabel(card: Pick<PendingConfirmation, "detail" | "t
 }
 
 export function receiptText(r: ConfirmationReceipt): string {
+  const head = receiptHead(r);
+  // SBX-3b: a held sandbox card says what happened to each row.
+  return r.rowResults?.length ? `${head} ${rowResultsText(r.rowResults)}` : head;
+}
+
+function receiptHead(r: ConfirmationReceipt): string {
   // WT-6a: an archive line says what its Undo did.
   const undone = r.archive ? archiveUndoText(r.archive.state, r.label) : null;
   if (undone) return undone;
@@ -547,6 +610,9 @@ export type ConfirmationAction =
    *  after it. `confirmation_not_done` carries the card's `request_id`, so the
    *  line of that card alone reads "Not done". No receipt of that key: no change. */
   | { type: "notDone"; requestId: string }
+  /** SBX-3b: the server's `confirmation_row_results` for a held sandbox card.
+   *  Only the line of that card takes it. No line of that key: no change. */
+  | { type: "rowResults"; requestId: string; rows: readonly RowResult[] }
   /** The POST got a 4xx. The card stays gone until a replay shows it again.
    *  `reason` turns its receipt into "Not applied"; none (a resend) drops it. */
   | { type: "dropped"; key: string; reason?: string }
@@ -828,6 +894,11 @@ export function confirmationReducer(
           r.intent === "approved" && (r.kind === "applying" || r.kind === "approved")
             ? { ...r, kind: "notDone", undo: undefined }
             : r),
+      };
+    case "rowResults":
+      return {
+        ...state,
+        receipts: settleReceipt(state.receipts, action.requestId, (r) => ({ ...r, rowResults: action.rows })),
       };
     case "dropped":
       return {
