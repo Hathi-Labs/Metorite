@@ -112,6 +112,9 @@ const HITL_CONTROL_EVENTS = new Set([
   // WT-6a: the Undo of an approved archive card (`lib/archiveUndo.ts`). It
   // drives the receipt line, and is no data to draw or to keep.
   "confirmation_undo",
+  // SBX-3b: the result of each row of a held sandbox card. It drives the
+  // receipt line, and is no data to draw.
+  "confirmation_row_results",
   // A dispatched browser action (H-164): a side effect, never a view. Kept
   // off the message so it neither draws a raw-JSON fold nor is saved.
   "frontend_tool",
