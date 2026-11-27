@@ -478,18 +478,19 @@ test.describe("the row of the waiting dock (WD-1, D10)", () => {
         await resolve(page, TASK);
         await expect(row(page)).toHaveAttribute("data-dock-row", "empty");
         const r1 = (await row(page).boundingBox())!;
-        expect(Math.abs(r1.y - r0.y)).toBeLessThan(1);
-        expect(Math.abs(r1.height - r0.height)).toBeLessThan(1);
-        await expect(row(page)).toHaveText("Nothing waits");
-        await expect(row(page).locator("button")).toHaveCount(0);
         // A double tap that straddles the 800 ms mark of the leave: each
-        // press starts the wait again, so both land on the inert row.
+        // press starts the wait again, so both land on the inert row. The
+        // checks that only read come after the taps, so they cost no time.
         await page.waitForTimeout(Math.max(0, 650 - (Date.now() - t0)));
         await tapAt(page, d.touch, at.x, at.y);
         await page.waitForTimeout(150);
         await tapAt(page, d.touch, at.x, at.y);
         await page.waitForTimeout(400);
         await expect(row(page)).toHaveAttribute("data-dock-row", "empty");
+        expect(Math.abs(r1.y - r0.y)).toBeLessThan(1);
+        expect(Math.abs(r1.height - r0.height)).toBeLessThan(1);
+        await expect(row(page)).toHaveText("Nothing waits");
+        await expect(row(page).locator("button")).toHaveCount(0);
         const seen = await watched(page);
         expect(seen.moved).toEqual([]);
         expect(seen.shift).toBeLessThan(1);

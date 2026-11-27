@@ -6398,7 +6398,8 @@ flip of `WAITING_DOCK_ORGS` on a box is **OWNER-GATE** (`enforcement-flip`).
 on, every card draws in the thread, exactly as with the flag off. This is true
 for each approval, each question card and each generative-UI ask. One row above
 the message box names what waits. Where other text in this section differs from
-D10, D10 wins. D10 replaces D9 and the F1 amendment below.
+D10, D10 wins. That also holds for the amendments of 2026-11-27 in §24.2 and
+§24.10. D10 replaces D9 and the F1 amendment below.
 
 **The reason.** Nine review rounds of WD-1 each found a new route to a commit
 that the member did not want. A dock that holds a commit control, and then
