@@ -64,8 +64,10 @@ ALLOWED_HEADERS = frozenset({
 #: SBX-2: the capability of the sandbox sibling, and the headers that the
 #: sibling reads only to refuse a second credential. Allowed ONLY while the
 #: sibling runs (:data:`_IN_SANDBOX`), so a read of one in branch 0 trips.
+#: SBX-3a adds the one-use ticket of an approved write.
 SANDBOX_HEADERS = frozenset({
     "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
+    "x-sandbox-ticket",
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and

@@ -2535,6 +2535,14 @@ from gateway.routes.agent_kit import router as _agent_kit_router  # noqa: E402
 
 app.include_router(_agent_kit_router)
 
+# SBX-3a (agent_sandbox.md §12.5 decision 4): the one write route of the
+# sandbox door, `POST /sandbox/v1/batch`. Only a sandbox call reaches it, and
+# the door stays off while `SANDBOX_DOOR_ORGS` is empty. A plain import, so a
+# real import error stops the start and does not hide.
+from gateway.sandbox_batch import router as _sandbox_batch_router  # noqa: E402
+
+app.include_router(_sandbox_batch_router)
+
 try:
     # WS-MCP SW-94 — one policy store for agent work (agent_coordination.md
     # §3.11.5 and SW-94): the save of a policy row. Ships dark: 404 while

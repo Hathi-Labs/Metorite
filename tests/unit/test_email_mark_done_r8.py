@@ -48,7 +48,15 @@ Mutations this file catches (R7):
 * the approval or the repair skips its ask after the I/O (F5) ->
   ``test_a_hold_that_begins_during_an_approval_or_a_repair_ends_done``;
 * an automated write on a held row re-arms the reminder (F6) ->
-  ``test_an_automated_write_on_a_held_row_keeps_the_reminder``.
+  ``test_an_automated_write_on_a_held_row_keeps_the_reminder``;
+* the sweep stops at a refused or raising authenticate, or tries it once for
+  each thread (fix round 5, F1) ->
+  ``test_the_sweep_repairs_each_thread_when_the_provider_fails``;
+* the learner's write replaces a row that the member wrote after the learner
+  read it (fix round 5, F2) ->
+  ``test_a_member_write_during_a_correction_beats_the_learner``. A guard
+  that refuses each changed row ->
+  ``test_new_inbound_mail_during_a_correction_lets_the_learner_work``.
 
 Run::
 
@@ -1750,3 +1758,130 @@ async def test_the_sweep_authenticates_once(db, monkeypatch, provider):
     for _thread, first, sent, undated, nudge in threads:
         assert not _all(db, first, sent, undated, nudge) & _OPEN
         assert provider.remote[_pmid(db, sent)] == set()
+
+
+# ── 8. Fix round 5: the sweep with no provider, and a member write (F1, F2) ──
+
+@pytest.mark.parametrize("fault", ["refused", "raises"])
+async def test_the_sweep_repairs_each_thread_when_the_provider_fails(
+    db, monkeypatch, provider, fault,
+):
+    """(F1) The provider refuses to authenticate, or the try raises. The sweep
+    still repairs the local labels of each held thread, and it tries the
+    provider once. Both faults behave the same."""
+    from gateway.routes.email.automation import mark_done
+
+    _flag(monkeypatch, db.org_b)
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    threads = [_follow_up_thread(db, box) for _ in range(3)]
+    for thread, *_rest in threads:
+        await _resolve(db, box, thread)
+    for _thread, _first, sent, *_rest in threads:
+        _set_labels(db, sent, ["Follow-up"])
+    calls = []
+
+    async def _auth() -> bool:
+        calls.append(1)
+        if fault == "raises":
+            raise RuntimeError("the token endpoint is down")
+        return False
+
+    provider.authenticate = _auth  # type: ignore[method-assign]
+    provider.calls.clear()
+    async with _as_member(db, db.org_b):
+        healed = await mark_done.heal_held(box)
+    assert healed == 3
+    assert len(calls) == 1
+    assert provider.calls == []
+    for _thread, first, sent, undated, nudge in threads:
+        assert not _all(db, first, sent, undated, nudge) & _OPEN
+        assert "Done" in _all(db, first, sent)
+
+
+@pytest.mark.parametrize("act", ["move_back", "reopen", "dismiss", "fix"])
+async def test_a_member_write_during_a_correction_beats_the_learner(
+    db, monkeypatch, provider, act,
+):
+    """(F2) The learner reads the rows once, before its corrections. While
+    the correction of A waits for the provider, the member writes B: Mark
+    done and then "Move back", Mark done and then a reopen, a dismiss, or the
+    Fix. The later correction of B must not replace that write."""
+    from gateway.routes.email.automation import mark_done, replyzero
+
+    _flag(monkeypatch, db.org_b)
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    _rule(db, box, "Needs Reply", "Needs Reply", "REPLY")
+    a, a_old, a_new = _learner_thread(db, box)
+    b, b_old, b_new = _learner_thread(db, box)
+    _seed_remote(db, provider, a_old, a_new, b_old, b_new)
+    for m in (a_new, b_new):
+        provider.remote[_pmid(db, m)] = {"Needs Reply"}
+    _quick_jobs(monkeypatch)
+    _pause_authenticate(provider, entered, release)
+    want = {"move_back": ("AWAITING", mark_done.RESTORED_REASON),
+            "reopen": ("NEEDS_REPLY", mark_done.REOPENED_REASON),
+            "dismiss": ("FYI", "Dismissed by the user"),
+            "fix": ("AWAITING", "Fix correction")}[act]
+
+    async with _as_member(db, db.org_b):
+        learner = asyncio.create_task(_sync_stores_the_remote(
+            db, box, provider, a_new, b_new))
+        try:
+            await asyncio.wait_for(entered.wait(), 30)
+            if act == "fix":
+                await replyzero.apply_thread_status_correction(
+                    box, b, "AWAITING_REPLY")
+            elif act == "dismiss":
+                await _resolve(db, box, b, dismiss=True)
+            else:
+                await _resolve(db, box, b)
+                body: dict[str, Any] = {"done": False}
+                if act == "move_back":
+                    body["restore"] = {"status": "AWAITING"}
+                await _resolve(db, box, b, **body)
+        finally:
+            release.set()
+        await asyncio.wait_for(learner, 60)
+
+    assert _row(db, box, a).status == "NEEDS_REPLY"
+    row = _row(db, box, b)
+    assert (row.status, row.reason) == want
+    if act == "move_back":
+        assert "Awaiting Reply" in _labels(db, b_new)
+        assert "Needs Reply" not in _all(db, b_old, b_new)
+        _remote_matches_mirror(db, provider, b_old, b_new)
+
+
+async def test_new_inbound_mail_during_a_correction_lets_the_learner_work(
+    db, monkeypatch, provider,
+):
+    """(F2) The guard reads the reason of the member. New inbound mail on B,
+    which an automated write classifies during the correction of A, is no
+    write of the member. So the correction of B still writes."""
+    _flag(monkeypatch, db.org_b)
+    entered, release = asyncio.Event(), asyncio.Event()
+    box = _account(db.admin_engine, org=db.org_b, owner=ME)
+    _rule(db, box, "Needs Reply", "Needs Reply", "REPLY")
+    _a, a_old, a_new = _learner_thread(db, box)
+    b, b_old, b_new = _learner_thread(db, box)
+    _seed_remote(db, provider, a_old, a_new, b_old, b_new)
+    for m in (a_new, b_new):
+        provider.remote[_pmid(db, m)] = {"Needs Reply"}
+    _quick_jobs(monkeypatch)
+    _pause_authenticate(provider, entered, release)
+
+    async with _as_member(db, db.org_b):
+        learner = asyncio.create_task(_sync_stores_the_remote(
+            db, box, provider, a_new, b_new))
+        try:
+            await asyncio.wait_for(entered.wait(), 30)
+            newer = _mail(db, box, b, days_ago=0.5)
+            await _project(db, box, newer, "FYI")
+            assert _row(db, box, b).status == "FYI"
+        finally:
+            release.set()
+        await asyncio.wait_for(learner, 60)
+
+    row = _row(db, box, b)
+    assert (row.status, row.reason) == ("NEEDS_REPLY", "Fix correction")

@@ -46,11 +46,13 @@ less than :data:`MIN_FREE_MB` of memory is free, and no more than
 :data:`QUIET_S` after its last activity, so a live session of the owner acts
 first.
 
-**The credential.** The token is a read-only box token (D-EA-5, scope
-``projects:read``). It comes from ``METORITE_WATCHER_TOKEN``, which the unit
-reads from ``~/.config/metorite/watcher.env`` (mode 0600). With no token the
-watcher logs one line and exits 0, so the unit can ship before the token
-exists. The session that the watcher starts uses the login of its own lane,
+**The credential.** ``METORITE_WATCHER_TOKEN`` comes first, which the unit
+reads from ``~/.config/metorite/watcher.env`` (mode 0600). With no such file,
+the watcher reads the box token of the machine through the headers helper of
+task 1819 (:func:`token_from_helper`). The owner chose that on 2026-11-27
+(task 4062, answer 9b1d8d04), so the watcher holds the box token's write
+scope and uses only reads. With no token the watcher logs one line and exits
+0. The session that the watcher starts uses the login of its own lane,
 not this token.
 
 Fence: ``tests/unit/test_answer_watcher.py``.
@@ -648,11 +650,38 @@ def _remove(slug: str) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+#: Task 4062, owner answer 9b1d8d04 (2026-11-27): with no
+#: METORITE_WATCHER_TOKEN, the watcher reads the box token of this machine
+#: through the headers helper of task 1819. The helper checks the mode, the
+#: owner and the link count of box.env. On a refusal it prints this bearer.
+BOX_HELPER = os.environ.get("METORITE_WATCHER_HELPER", str(pathlib.Path.home() / ".local/bin/metorite-box-headers"))
+BOX_ENV = os.environ.get("METORITE_WATCHER_BOX_ENV", str(pathlib.Path.home() / ".config/metorite/box.env"))
+REFUSED_BEARER = "box-token-helper-refused"
+
+
+def token_from_helper(helper: str | None = None, box_env: str | None = None) -> str:
+    """The box token from the headers helper, or "" when there is none. Never logged."""
+    helper, box_env = helper or BOX_HELPER, box_env or BOX_ENV
+    try:
+        out = subprocess.run([helper, box_env], capture_output=True, text=True, timeout=20, check=False).stdout
+        auth = json.loads(out or "{}").get("Authorization", "")
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return ""
+    if not isinstance(auth, str) or not auth.startswith("Bearer "):
+        return ""
+    tok = auth[len("Bearer "):].strip()
+    return "" if not tok or tok == REFUSED_BEARER or any(c.isspace() for c in tok) else tok
+
+
 def main() -> int:
     token = os.environ.get("METORITE_WATCHER_TOKEN", "").strip()
+    source = "watcher.env"
     if not token:
-        log("no METORITE_WATCHER_TOKEN. The watcher is off until the owner drops the token.")
+        token, source = token_from_helper(), "the box token helper"
+    if not token:
+        log("no METORITE_WATCHER_TOKEN and no box token. The watcher is off until a token exists.")
         return 0
+    log(f"the token comes from {source}.")
     try:
         sid = open_session(token)
         runs = fetch_runs(token, sid)

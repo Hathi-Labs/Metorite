@@ -164,7 +164,10 @@ async def _apply_label_status_corrections(
     The ask before the loop is a fast path only. A click can commit while an
     earlier correction waits for the provider. So each correction runs as an
     automated one: its write keeps a held row, and it then settles the
-    thread with the member's labels."""
+    thread with the member's labels. The ask also reads the version of each
+    row. A write refuses a row that a member wrote after the ask, such as a
+    move back or a reopen, and the thread then gets the member's labels (fix
+    round 5, F2)."""
     if not corrections:
         return
     from gateway.routes.email.automation import mark_done
@@ -172,7 +175,8 @@ async def _apply_label_status_corrections(
         apply_thread_status_correction,
     )
     try:
-        owned = await mark_done.owned_among(account_id, sorted(corrections))
+        owned, seen = await mark_done.owned_and_seen(
+            account_id, sorted(corrections))
     except Exception as exc:
         # No correction runs when the hold cannot be read: it could end it.
         _log.warning("email.label_status_correction_failed",
@@ -184,8 +188,8 @@ async def _apply_label_status_corrections(
             continue
         try:
             got = await apply_thread_status_correction(
-                account_id, tid, key, automated=True)
-            if got.get("held"):
+                account_id, tid, key, automated=True, seen=seen)
+            if got.get("held") or got.get("member"):
                 await mark_done.settle_owned(account_id, tid)
         except Exception as exc:  # noqa: BLE001
             _log.warning("email.label_status_correction_failed",
