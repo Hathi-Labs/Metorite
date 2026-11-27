@@ -100,6 +100,12 @@ TOOL_MODULES: tuple[str, ...] = (
 #: ``"<path>::<function>::<slice source>"`` → why the cut is not a lost row.
 #: This list only shrinks. Fix the tool with ``paged`` and delete the line.
 ALLOWED: dict[str, str] = {
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::near[:10]":
+        "Names, not rows: the line names at most 10 near spellings that a q counted. "
+        "The list under it holds every row, with its total (CRM-Q34-7).",
+    "packages/acb_skills/acb_skills/crm_tools.py::find_line::nearest[:3]":
+        "Names, not rows: a zero offers its 3 nearest stored names as a hint. "
+        "No row is behind a zero (CRM-Q34-7).",
     'apps/agents/agent-email-assistant/agents.py::_reply_form::notices[:4]':
         "No notice is lost: the card shows four (clean_reply_form refuses more), "
         "and _reply_form puts notices[4:] into the card's note. Removing the cut "
@@ -240,8 +246,6 @@ ALLOWED: dict[str, str] = {
     'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
         "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
         "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
-    'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
-        "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
         'Text: one string with its whitespace collapsed, then cut. A join of words, not of rows.',
     "apps/agents/agent-email-assistant/agents.py::_card_text::' '.join(kept.split())[:limit]":
@@ -293,6 +297,20 @@ ALLOWED: dict[str, str] = {
     "packages/acb_skills/acb_skills/studio_tools.py::_frame_lines::names[:MAX_OUTLINE_PAGES_SHOWN]":
         "No page is lost: the Pages line of the outline names four pages, says 'and N more', and "
         "gives the total in the same line. The manifest keeps every page (STU-AF-8a).",
+    "packages/acb_skills/acb_skills/org_facts_tools.py::verified_lines::' '.join(_member_words().split())[:MATCH_WORDS_MAX]":
+        "One string, not rows: the member's own words, cut to MATCH_WORDS_MAX characters before "
+        "the match call. No row is behind the cut (SEM-8).",
+    "apps/agents/agent-email-assistant/agents.py::_rules_changed_text::rows[:12]":
+        "No row is lost: the text of a refused copy names at most 12 changed lines and says 'and N more lines'. The copy writes nothing, and the model reads the rules again (HRD-10d-4).",
+    "apps/skills/skill-projects/skill_projects/writes.py::_edit_note::new.who[:_NOTE_PEOPLE_MAX]":
+        "No person is lost: the note of an edited card names at most ten people and says 'and N more'. The write already took every person (EAC-1b).",
+    "apps/skills/skill-projects/skill_projects/writes.py::_note_item::flat[:_NOTE_ITEM_MAX - 1]":
+        "The member's words, cut as one string. It is not a list of rows (EAC-1b).",
+    "apps/agents/agent-email-assistant/agents.py::_capped_lines::lines[:cap]":
+        "No row is lost in silence: a cut list of card lines ends with '+N more' (task 3977).",
+    "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
+        "The card says 'The card lists N of M matching drafts'. A draft that it does not "
+        "list has no tick, so it stays in Drafts (task 3977).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -320,8 +338,13 @@ ALLOWED: dict[str, str] = {
 #: of a failed day-flow step, cut to 120 characters (87). STU-A5c-2 added one: the
 #: delete card names ten tables and counts the rest, and the delete takes every
 #: table (88). STU-AF-8a added one: the outline's Pages line names four pages and
-#: says 'and N more' (89).
-ALLOWED_CEILING = 88
+#: says 'and N more' (89). SEM-8 added one: the member's words, cut as one string (91).
+#: HRD-10d-4 added one: the refused copy names 12 changed lines and says 'and N more lines' (92).
+#: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
+#: and cuts one text of the member to 120 characters (94).
+#: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
+#: draft pick card counts the drafts that it does not list (96).
+ALLOWED_CEILING = 96
 
 
 def _stringy(node: ast.AST) -> bool:
@@ -1134,7 +1157,9 @@ def test_crm_module_record_pages_its_fields(monkeypatch) -> None:
     _gw(monkeypatch, crm_tools, lambda p, q: record)
     first = asyncio.run(crm_tools.crm_get_module_record("Products", rid))
     assert "Call again with page=2 for the rest." in first
-    assert "Field 60: v60" in asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    # CRM-Q34-6: the key stands beside the label of a module field.
+    last = asyncio.run(crm_tools.crm_get_module_record("Products", rid, page=2))
+    assert "Field 60 (key f60): v60" in last
 
 
 def test_crm_owners_say_when_the_route_cap_is_hit(monkeypatch) -> None:
@@ -1198,6 +1223,47 @@ def _timeline_route(emails: int, notes: int):
         return {"entries": [e.model_dump() for e in page], "has_more": more}
 
     return answer
+
+
+def test_crm_field_map_pages_its_fields(monkeypatch, crm_agent) -> None:
+    """Task 3953: 70 fields, 30 a page. The last page holds 61 to 70, and the
+    columns show on each page."""
+    fields = [{"key": f"cf_{k:02d}", "label": f"Field {k:02d}", "type": "text",
+               "targets": ["next_step"]} for k in range(70)]
+    body = {"fields": fields, "rules": [], "targets": [
+        {"column": "next_step", "column_type": "text", "kind": "free", "open": True}]}
+    seen = _gw(monkeypatch, crm_agent, lambda p, q: body)
+    first = asyncio.run(crm_agent.crm_field_map("deals"))
+    assert "«Field 29»" in first and "«Field 30»" not in first
+    assert "Showing 1-30 of 70. Call again with offset=30 for the rest." in first
+    last = asyncio.run(crm_agent.crm_field_map("deals", offset=60))
+    assert "«Field 69»" in last and "«Field 59»" not in last
+    assert "Showing 61-70 of 70. This is the last page." in last
+    assert "«next_step» («text») · free · open" in last
+    assert seen[0] == ("/crm/field-rules", {"entity": "deals"})
+
+
+def test_crm_mapping_plans_page_the_versions_and_the_items(monkeypatch, crm_agent) -> None:
+    """Task 3953: 70 versions, 30 a page, and 70 rules of one version."""
+    versions = [{"version": 70 - k, "state": "superseded", "rule_count": 1,
+                 "created_by": "a@x.io"} for k in range(70)]
+    rules = [{"kind": "field", "entity": "deal", "field_api_name": f"cf_{k:02d}",
+              "target_column": "next_step"} for k in range(70)]
+
+    def answer(path, q):
+        if path == "/crm/mapping/plans":
+            return {"approved": 70, "versions": versions}
+        return {"version": 70, "state": "approved", "rules": rules}
+
+    _gw(monkeypatch, crm_agent, answer)
+    first = asyncio.run(crm_agent.crm_list_mapping_plans())
+    assert "has 70 versions" in first and "• version 41 ·" in first
+    assert "• version 40 ·" not in first
+    assert "Showing 1-30 of 70. Call again with offset=30 for the rest." in first
+    assert "• version 1 ·" in asyncio.run(crm_agent.crm_list_mapping_plans(offset=60))
+    one = asyncio.run(crm_agent.crm_list_mapping_plans(version=70, offset=30))
+    assert "«cf_30»" in one and "«cf_29»" not in one and "«cf_60»" not in one
+    assert "Showing 31-60 of 70. Call again with offset=60 for the rest." in one
 
 
 def test_crm_timeline_pages_with_no_repeat_and_no_gap(monkeypatch, crm_agent) -> None:

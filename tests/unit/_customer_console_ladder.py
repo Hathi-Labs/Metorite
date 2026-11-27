@@ -246,3 +246,28 @@ def ensure_second_plan(conn, *, price_inr: str = "600.00") -> str:
         {"slug": SECOND_PLAN, "price": price_inr},
     )
     return SECOND_PLAN
+
+
+def callable_test_vendors(monkeypatch, *names: str, starts: tuple[str, ...] = ()) -> None:
+    """Let a suite's made-up vendors pass rule H2 for the length of one test.
+
+    MS-2 (§6A.18) refuses a declare or a bind whose provider is neither a
+    litellm provider nor a native vendor, because the Router cannot call it.
+    The older suites name made-up vendors (``test/``, ``vendor/``,
+    ``e2e<run>/``) and fake the provider call with ``set_provider_call``, so
+    no vendor ever sees them. This tells the registry those names are
+    callable too. One helper, so no suite carries a copy of the predicate.
+
+    *names* are exact prefixes. *starts* are the beginnings of names a suite
+    makes per run. A real alias (``sarvam.ai``) stays uncallable, because
+    no suite names it here.
+    """
+    from customer_console import provider_registry
+
+    real = provider_registry.is_callable_provider
+    exact = frozenset(names)
+
+    def _callable(provider_id: str) -> bool:
+        return real(provider_id) or provider_id in exact or provider_id.startswith(starts)
+
+    monkeypatch.setattr(provider_registry, "is_callable_provider", _callable)

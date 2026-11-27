@@ -36,6 +36,11 @@ export const MAX_UNITS = 30;
 export const MAX_UNIT_CHARS = 20;
 export const MAX_CODE_CHARS = 80;
 export const MAX_QR_CHARS = 2_000;
+// STU-C15a: an autonumber is a prefix of at most 12 characters, then at most 15 digits.
+export const MAX_AUTONUMBER_PREFIX = 12;
+export const MAX_AUTONUMBER_PAD = 9;
+export const DEFAULT_AUTONUMBER_PAD = 4;
+export const MAX_AUTONUMBER = 999_999_999_999_999;
 /** A rating with no `min` and `max` runs from 1 to 5. */
 export const DEFAULT_RATING_MIN = 1;
 export const DEFAULT_RATING_MAX = 5;
@@ -78,6 +83,10 @@ export interface FieldSpec {
   format?: string;
   /** C13. A lines relation: the field of the object `to` that names this record. It holds no value. */
   lines?: string;
+  /** C15a. An autonumber: the text before the number, the pad width and `never` or `day`. */
+  prefix?: string;
+  pad?: number;
+  reset?: string;
 }
 
 export type CheckResult = { ok: true; value: unknown } | { ok: false; message: string };
@@ -436,6 +445,18 @@ function barcode(f: FieldSpec, v: unknown): CheckResult {
     : fail(`Enter text of 1 to ${MAX_QR_CHARS.toLocaleString("en-US")} characters, with no control character.`);
 }
 
+/** The stored form of an autonumber: a prefix, then digits. The store fills it, so no form sends it. */
+function autonumber(_f: FieldSpec, v: unknown): CheckResult {
+  return typeof v === "string" && new RegExp(`^[A-Za-z0-9_./-]{0,${MAX_AUTONUMBER_PREFIX}}[0-9]{1,15}$`).test(v)
+    ? pass(v)
+    : fail("The store fills this field. Leave it empty.");
+}
+
+/** The stored value of `n` in the format of the field: the prefix, then the zero-padded number. */
+export function autonumberText(f: FieldSpec, n: number): string {
+  return `${f.prefix ?? ""}${String(n).padStart(f.pad ?? DEFAULT_AUTONUMBER_PAD, "0")}`;
+}
+
 const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   text: (_f, v) => text(v, MAX_TEXT_CHARS),
   longText: (_f, v) => text(v, MAX_LONG_TEXT_CHARS),
@@ -459,6 +480,7 @@ const CHECKS: Record<FieldType, (f: FieldSpec, v: unknown) => CheckResult> = {
   quantity,
   percent: (_f, v) => percent(v),
   barcode,
+  autonumber,
 };
 
 /** One value of one field, as the store keeps it. The twin of `check_value`. */

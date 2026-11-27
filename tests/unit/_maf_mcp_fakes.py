@@ -176,16 +176,25 @@ def _filler_tool(i: int, calls: list[str]) -> Any:
 
 
 @contextlib.contextmanager
-def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
+def local_mcp_server(filler: int = 0, instructions: str | None = None,
+                     failing: str | None = None) -> Iterator[LocalServer]:
     """A streamable-HTTP MCP server on 127.0.0.1 with three tools.
 
-    * ``echo`` says it is read-only, so it runs with no card (H-299).
-    * ``delete_record`` says it is destructive, so it needs the card.
-    * ``plain_note`` sends no hints, so it needs the card too.
+    * ``echo`` says it is read-only, so it runs in every run (H-299).
+    * ``delete_record`` says it is destructive. A member's run calls it with
+      no card (MCP-NC1), and a run with no member refuses it.
+    * ``plain_note`` sends no hints, so it counts as not read-only too.
 
     *filler* adds that many read-only tools ``bulk_00``, ``bulk_01`` and so
     on, each with a long description and five arguments. With 10 or more,
     the server has more than 12 tools, so it gets the index (WS-8c item 23).
+
+    *instructions* is the text of the server's ``initialize`` answer (CSY-6).
+
+    *failing* adds one more read-only tool, ``fail_report``, that raises an
+    error with this text (task 3896). The server then answers with
+    ``isError``, as a server does when its tool fails. With no *failing*, the
+    server has its three tools only, so each other suite keeps its count.
     """
     import uvicorn
     from mcp.server.fastmcp import FastMCP
@@ -193,7 +202,7 @@ def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
 
     calls: list[str] = []
     headers_seen: list[dict[str, str]] = []
-    server = FastMCP("probe", stateless_http=True, json_response=True)
+    server = FastMCP("probe", instructions=instructions, stateless_http=True, json_response=True)
     for i in range(filler):
         server.add_tool(
             _filler_tool(i, calls), name=f"bulk_{i:02d}",
@@ -218,6 +227,13 @@ def local_mcp_server(filler: int = 0) -> Iterator[LocalServer]:
         """Write a note."""
         calls.append(f"note:{text}")
         return f"noted:{text}"
+
+    if failing is not None:
+        @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+        def fail_report(period: str) -> str:
+            """Run a report. In this test it always fails."""
+            calls.append(f"fail:{period}")
+            raise ValueError(failing)
 
     inner = server.streamable_http_app()
 

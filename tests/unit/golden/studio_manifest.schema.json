@@ -281,10 +281,46 @@
           "default": null,
           "title": "Options"
         },
+        "pad": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pad"
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prefix"
+        },
         "required": {
           "default": false,
           "title": "Required",
           "type": "boolean"
+        },
+        "reset": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reset"
         },
         "to": {
           "anyOf": [
@@ -321,7 +357,8 @@
             "duration",
             "quantity",
             "percent",
-            "barcode"
+            "barcode",
+            "autonumber"
           ],
           "title": "Type",
           "type": "string"
@@ -515,6 +552,17 @@
           "title": "Name",
           "type": "string"
         },
+        "record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordDef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "rules": {
           "items": {
             "additionalProperties": true,
@@ -620,6 +668,31 @@
         "id"
       ],
       "title": "PageDef",
+      "type": "object"
+    },
+    "RecordDef": {
+      "additionalProperties": false,
+      "properties": {
+        "tabs": {
+          "items": {
+            "enum": [
+              "details",
+              "lines",
+              "related",
+              "files"
+            ],
+            "type": "string"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Tabs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tabs"
+      ],
+      "title": "RecordDef",
       "type": "object"
     },
     "RuntimeDef": {
@@ -967,7 +1040,8 @@
             "processFlow",
             "checklist",
             "map",
-            "markdown"
+            "markdown",
+            "tree"
           ],
           "title": "Block",
           "type": "string"
@@ -1020,6 +1094,62 @@
           ],
           "default": null,
           "title": "Group By"
+        },
+        "icon": {
+          "anyOf": [
+            {
+              "enum": [
+                "Home",
+                "LayoutDashboard",
+                "LayoutGrid",
+                "List",
+                "ListChecks",
+                "Table",
+                "Kanban",
+                "Calendar",
+                "CalendarDays",
+                "Clock",
+                "Users",
+                "User",
+                "Briefcase",
+                "Handshake",
+                "Inbox",
+                "Mail",
+                "Phone",
+                "MessageCircle",
+                "FileText",
+                "Files",
+                "FolderOpen",
+                "Tag",
+                "Star",
+                "Flag",
+                "Bell",
+                "Bookmark",
+                "Wallet",
+                "Receipt",
+                "Package",
+                "Truck",
+                "MapPin",
+                "Wrench",
+                "Settings",
+                "ClipboardList",
+                "CheckSquare",
+                "Target",
+                "Trophy",
+                "Lightbulb",
+                "BookOpen",
+                "Layers",
+                "Activity",
+                "Sparkles"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Icon"
         },
         "id": {
           "pattern": "^[a-z][a-z0-9_-]{0,47}$",

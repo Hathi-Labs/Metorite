@@ -76,13 +76,16 @@ function readCols(v: unknown): number {
 }
 
 /** Read a cell list. A bad cell, a span over `cols`, an unknown view and any cell over the cap are dropped. */
-function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null): CellModel[] {
+function readCells(
+  v: unknown, cols: number, views: ReadonlySet<string> | null, wide: ReadonlySet<string> | null = null,
+): CellModel[] {
   if (!Array.isArray(v)) return [];
   const out: CellModel[] = [];
   for (const raw of v) {
     const c = obj(raw);
     if (!c || !dashed(c.view) || (views && !views.has(c.view))) continue;
-    let span = 1;
+    // A view of a wide block (a calendar) with no span takes the full row.
+    let span = wide?.has(c.view) ? cols : 1;
     if (c.span !== undefined && c.span !== null) {
       if (typeof c.span !== "number" || !Number.isInteger(c.span) || c.span < 1 || c.span > cols) continue;
       span = c.span;
@@ -98,7 +101,9 @@ function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null):
  * cells, or when it has neither (A2 refuses each). `views`, when given, is the set of
  * declared view ids, and a cell of another view is dropped.
  */
-export function readPage(def: unknown, views: ReadonlySet<string> | null = null): PageModel | null {
+export function readPage(
+  def: unknown, views: ReadonlySet<string> | null = null, wide: ReadonlySet<string> | null = null,
+): PageModel | null {
   const d = obj(def);
   if (!d || !dashed(d.id)) return null;
   const hasTabs = Array.isArray(d.tabs) && d.tabs.length > 0;
@@ -113,7 +118,7 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
       const t = obj(raw);
       if (!t || !dashed(t.id) || seen.has(t.id) || typeof t.title !== "string" || !t.title.trim()) continue;
       seen.add(t.id);
-      tabs.push({ id: t.id, title: t.title, cells: readCells(t.cells, cols, views) });
+      tabs.push({ id: t.id, title: t.title, cells: readCells(t.cells, cols, views, wide) });
       if (tabs.length >= PAGE_CAPS.tabsPerPage) break;
     }
   }
@@ -124,7 +129,7 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
     title: typeof d.title === "string" ? d.title : null,
     cols,
     tabs,
-    cells: hasTabs ? [] : readCells(d.cells, cols, views),
+    cells: hasTabs ? [] : readCells(d.cells, cols, views, wide),
     side: sideView,
     layout: null,
     regions: {},
@@ -262,9 +267,10 @@ export function buildPage(
 ): BuiltPage {
   const views = manifest.views ?? [];
   const ids = new Set(views.map((v) => v.id));
+  const wide = new Set(views.filter((v) => v.block === "calendar").map((v) => v.id));
   const pages = (Array.isArray(manifest.pages) ? manifest.pages : [])
     .slice(0, PAGE_CAPS.pages)
-    .map((p) => readPage(p, ids))
+    .map((p) => readPage(p, ids, wide))
     .filter((p): p is PageModel => p !== null);
   // With no readable page the manifest gets the default pages (STU-AF1).
   const all = pages.length > 0 ? pages : defaultPages({ ...manifest, views });

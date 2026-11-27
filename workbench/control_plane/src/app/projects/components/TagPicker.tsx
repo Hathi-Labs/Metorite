@@ -18,6 +18,7 @@ import Icon from "@/components/Icon";
 import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { claimEscape } from "@/components/ui/SelectButton";
 import { useState } from "react";
 
 import {
@@ -81,6 +82,8 @@ export function TagPicker({
   const lookup = registryOf(registry);
   const options = suggest(query, registry, value);
   const creating = wouldCreate(query, lookup);
+  /** The list is on screen. Only then does it take Escape (task 2299). */
+  const listShown = open && (options.length > 0 || creating);
   const colorOf = (name: string) =>
     registry.find((t) => t.name.toLowerCase() === name.toLowerCase())?.color;
 
@@ -157,6 +160,9 @@ export function TagPicker({
                 creating ? autoTagHue(query) : undefined,
               );
             } else if (e.key === "Escape") {
+              // A shown list takes the key, so the task panel stays open.
+              // The next Escape reaches the panel (`claimEscape`).
+              claimEscape(e, listShown);
               setOpen(false);
             } else if (e.key === "Backspace" && query === "" && value.length) {
               // The convention every chip input has: backspace on an empty box
@@ -173,7 +179,7 @@ export function TagPicker({
             `AnchoredPanel`. */}
         <AnchoredPanel
           anchor={field}
-          open={open && (options.length > 0 || creating)}
+          open={listShown}
           maxHeight={256}
         >
           <ul className="overflow-hidden rounded-lg">

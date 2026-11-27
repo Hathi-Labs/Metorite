@@ -144,6 +144,7 @@ from acb_common.assistant_profile import (
     FACT_MAX,
     INTERVIEW_STATES,
     LANGUAGE_NAMES,
+    LANGUAGES_MAX,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -168,8 +169,9 @@ from acb_common.assistant_profile import (
     writes_open,
 )
 from acb_common.paging import paged
+from acb_common.settings import internal_auth_headers
 
-from acb_skills.company_search_tools import _gateway_url, _internal_token
+from acb_skills.company_search_tools import _gateway_url
 from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
 #: The first line of every answer (the ``company_search_tools`` convention).
@@ -182,13 +184,30 @@ SHARED_ROOM = "A shared room cannot look up a colleague. Ask in your own chat."
 #: What the model reads when the gateway refuses the member.
 CLOSED = "The colleague lookup is not open to you."
 
-#: No tier matched.
-NOBODY = "Nobody matches. Ask for the full name or the address."
+#: No tier matched. ``{where}`` names only the places that the tool
+#: searched (CT-1 verify): the mail tier needs ``feature:email``, and the
+#: directory needs ``feature:people``.
+NOBODY = "Nobody matches in {where}. Ask for the full name or the address."
 
-#: The member lacks ``feature:people``, so only their aliases were searched.
+#: The places, by (the directory was searched, the mail was searched).
+WHERE = {
+    (True, True): "the members, the People directory or your mail",
+    (True, False): "the members or the People directory",
+    (False, True): "your saved aliases or your mail",
+    (False, False): "your saved aliases",
+}
+
+#: The first line of an answer from the member's mail (CT-1). These people
+#: are not members. The model asks, and never acts on one without a yes.
+MAIL = ("No member and no People row matches «{asked}». These people are from "
+        "your mail, not a member of Metorite. Ask the member whether one is the "
+        "person they mean, and never act on one without a yes:")
+
+#: The member lacks ``feature:people``, so the directory was not searched.
+#: It says nothing about the mail, which has its own feature (CT-1).
 NO_DIRECTORY = (
-    "Only your saved aliases were searched, because the People directory "
-    "is not open to you. Ask for the full address."
+    "The People directory is not open to you, so it was not searched. "
+    "Ask for the full address."
 )
 
 #: The words of each source in the answer.
@@ -231,7 +250,7 @@ def _headers() -> dict[str, str]:
     if "@" not in user:
         raise _Refused(SHARED_ROOM)
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
     }
@@ -307,11 +326,24 @@ def format_answer(body: Any, asked: str) -> str:
     total = max(int(body.get("total") or 0), len(people))
     lines = [HEADER]
     if not people:
-        lines.append(NOBODY)
+        where = WHERE[(body.get("directory") is not False,
+                       body.get("mail_searched") is True)]
+        lines.append(NOBODY.format(where=where))
         if body.get("directory") is False:
             lines.append(NO_DIRECTORY)
         if body.get("truncated") is True:
             lines.append(TRUNCATED)
+        return "\n".join(lines)
+    if body.get("mail") is True:
+        lines.append(MAIL.format(asked=clean(asked)))
+        lines += [f"- «{n}» <{e}> (from your mail, not a member of Metorite)"
+                  for i, (n, e) in enumerate(people) if i < LIST_CAP]
+        if total > LIST_CAP:
+            lines.append(f"and {total - LIST_CAP} more")
+        if body.get("truncated") is True:
+            lines.append(TRUNCATED)
+        if body.get("directory") is False:
+            lines.append(NO_DIRECTORY)
         return "\n".join(lines)
     if body.get("near") is True:
         # HRD-18a: one near name asks too. It is never a "Match:".
@@ -347,7 +379,8 @@ async def resolve_person(name: str) -> str:
 
     Call it when the member names a person ("send it to Raj") and you need
     the address. It looks in the member's saved aliases first. Then it looks
-    in the People directory and the members together. One match: act on it. Several: ask the
+    in the People directory and the members together, and last in the
+    member's mail. One match: act on it. Several: ask the
     member which one, and never guess. Near spellings only: ask the member to
     confirm one, even when there is one. None: ask for the full name or the
     address.
@@ -689,7 +722,7 @@ async def _write_gate() -> dict[str, str]:
     if await session_is_marked():
         raise _Refused(MARKED, "marked")
     return {
-        "Authorization": f"Bearer {_internal_token()}",
+        **internal_auth_headers(),
         "Content-Type": "application/json",
         "X-User-Email": user,
         "X-Profile-Via": _channel(),
@@ -1196,6 +1229,34 @@ def _merge(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+    """:func:`_merge` for ``style``, with the language pair kept in step
+    (PZ-52). The member says ONE language to the chat, so a ``language`` that
+    differs from the first saved tag replaces the list with a list of one. An
+    ORDER about the answer language (``language_fixed``, task 3131) is not a
+    new list: the ordered language moves to the first place and the others
+    stay. A ``language`` set to null clears the list too. The gateway lets
+    ``languages`` win when a write holds both, so a stale list must go."""
+    merged = _merge(prior, value)
+    if "languages" not in value and "language" in value:
+        held, one = prior.get("languages"), value["language"]
+        if not (isinstance(one, str) and isinstance(held, list) and held):
+            merged.pop("languages", None)
+        elif str(held[0]).lower() == one.lower():
+            merged["language"] = prior.get("language", one)
+        elif value.get("language_fixed") is True:
+            rest = [t for t in held if str(t).lower() != one.lower()]
+            ordered = [one.lower(), *rest]
+            while len(ordered) > LANGUAGES_MAX:
+                ordered.pop()  # a full list drops its last tag
+            merged["languages"] = ordered
+        else:
+            merged.pop("languages", None)
+    elif "languages" in value and value["languages"] is None:
+        merged.pop("language", None)
+    return merged
+
+
 def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[Any]:
     """The free text of a ``profile_set`` that the member must have said:
     ``address.name`` and each NEW style note. A choice field (length,
@@ -1246,6 +1307,25 @@ def _language_order_typed(language: str) -> bool:
     return named and any(w.casefold() in words for w in _ORDER_WORDS)
 
 
+def _drop_unordered_mark(prior: dict[str, Any], merged: dict[str, Any]) -> None:
+    """Drop ``language_fixed`` from *merged* when a write of ``languages``
+    puts a new language first that the member did not order (PZ-52). The old
+    first language keeps the mark. So does a first language that the typed
+    words name in an order (:func:`_language_order_typed`). An empty or a
+    null list has no first language. At a WhatsApp Confirm there are no
+    typed words, and the card still binds the exact value."""
+    def first(style: dict[str, Any]) -> str:
+        listed = style.get("languages")
+        if isinstance(listed, list):
+            return str(listed[0]) if listed else ""
+        return str(style.get("language") or "")
+
+    new = first(merged)
+    if new and (new.lower() == first(prior).lower() or _language_order_typed(new)):
+        return
+    merged.pop("language_fixed", None)
+
+
 @_write_tool
 async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
@@ -1285,14 +1365,23 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     if key == "style" and value.get("language_fixed") is True and not _confirming():
         # Task 3131: the mark is an order of the member, so their own typed
         # words of this turn must hold it. A mail or a page cannot set it.
-        language = value.get("language") or prior.get("language") or ""
+        # PZ-52: a list in the same write wins at the gateway, so the words
+        # must name its first language.
+        listed = value.get("languages")
+        if isinstance(listed, list) and listed:
+            language = listed[0]
+        else:
+            language = value.get("language") or prior.get("language") or ""
         if not language or not _language_order_typed(str(language)):
             raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.
     typed = _ground(*free, card=key == "address")
-    merged = _merge(prior, value)
+    merged = _merge_style(prior, value) if key == "style" else _merge(prior, value)
+    if (key == "style" and "languages" in value and "language_fixed" not in value
+            and prior.get("language_fixed") is True):
+        _drop_unordered_mark(prior, merged)
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]

@@ -31,10 +31,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
+import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from acb_auth.permissions import EffectiveAccess
@@ -345,9 +348,9 @@ class TestTheFeatureGate:
     def test_a_member_with_no_app_gets_nothing(self, fakes):
         answer = run(member())
         assert answer == {"count": 0, "total": 0, "items": [], "totals": {}, "capped": [],
-                          "sources": {"tasks": "absent", "reminders": "absent",
+                          "sources": {"tasks": "absent", "reminders": "absent", "studio": "absent",
                                       "approvals": "absent", "projects": "absent",
-                                      "email": "absent"}}
+                                      "email": "absent", "providers": "absent"}}
         assert fakes.calls == []
 
     def test_a_member_without_approvals_gets_no_pending_action(self, fakes):
@@ -565,9 +568,9 @@ class TestTheAnswer:
         answer = run(member(*ALL))
         assert answer["count"] == len(answer["items"]) == 7
         # RM-2b: `reminders` is a needs source, absent while the flag is off.
-        assert answer["sources"] == {"tasks": "ok", "reminders": "absent",
+        assert answer["sources"] == {"tasks": "ok", "reminders": "absent", "studio": "absent",
                                      "approvals": "absent", "projects": "ok",
-                                     "email": "ok"}
+                                     "email": "ok", "providers": "absent"}
 
 
 class TestTheClock:
@@ -831,11 +834,17 @@ class TestAFailingAppIsLeftOut:
         assert answer["items"] == []
         # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
         assert answer["sources"].pop("reminders") == "absent"
+        # J2b-4a: `studio` is absent for a member without `studio:publish`.
+        assert answer["sources"].pop("studio") == "absent"
+        # AO-2: `providers` is absent for a member without `feature:chat`.
+        assert answer["sources"].pop("providers") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
 
     def test_one_deadline_for_all_apps(self, fakes, monkeypatch):
         monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 0.0)
         answer = run(admin(*ALL, "approvals"))
+        assert answer["sources"].pop("studio") == "absent"
+        assert answer["sources"].pop("providers") == "absent"
         assert set(answer["sources"].values()) == {"failed"}
         assert fakes.calls == []
 
@@ -1141,3 +1150,199 @@ class TestTheReminderSource:
         ids = [i["id"] for i in cut["items"]]
         assert ids[:2] == ["reminders:r-1", "reminders:r-2"]
         assert cut["count"] == shell.DEFAULT_LIMIT and cut["total"] == 32
+
+
+class TestTheStudioApprovalSource:
+    """WS-STU J2b-4a: a share that waits for approval is ONE needs source for
+    a holder of `studio:publish`. It reuses the kind `approval` with app
+    `studio`, calls the route's own list, and drops the member's own rows."""
+
+    RIGHT = "studio:publish"
+
+    @staticmethod
+    def _holder(email: str = ME) -> UserContext:
+        return UserContext(
+            email=email, role=UserRole.EMPLOYEE, organization_id=ORG,
+            access=EffectiveAccess(role_granted=frozenset(
+                {"feature:studio", "studio:publish"})))
+
+    @staticmethod
+    def _row(pid: str, version: int, *, owner: str = OTHER, published_by: str | None = None,
+             asked_by: str | None = None) -> dict:
+        return {"package_id": pid, "name": f"App {pid}", "owner_email": owner,
+                "version": version, "published_by": published_by or owner,
+                "published_at": NOW.isoformat(), "requested_by": asked_by or owner,
+                "requested_at": (NOW - timedelta(minutes=version)).isoformat(),
+                "manifest": {"studio": 1, "secret": "SECRET-MANIFEST"},
+                "manifest_hash": "h"}
+
+    def _on(self, monkeypatch, rows: list[dict], *, studio: bool = True,
+            host: bool = True, truncated: bool = False,
+            skills: list[dict] | None = None, skills_truncated: bool = False) -> list:
+        """The two route lists as fakes. *calls* records each read: the app
+        list as ``(email, state)``, the skill list (J2d) as ``("skills",
+        email, state)``."""
+        from gateway.package_host import flags as host_flags
+        from gateway.routes.studio import flags as studio_flags
+        from gateway.routes.studio import packages
+        from gateway.routes.studio import skills as skill_routes
+
+        calls: list = []
+
+        async def list_approvals(user, state):
+            calls.append((user.email, state))
+            return {"state": "pending", "approvals": rows, "truncated": truncated}
+
+        async def list_skill_shares(user, state):
+            calls.append(("skills", user.email, state))
+            return {"state": "pending", "shares": list(skills or []),
+                    "truncated": skills_truncated}
+
+        monkeypatch.setattr(studio_flags, "studio_allowed", lambda org: studio)
+        monkeypatch.setattr(host_flags, "package_host_allowed", lambda org: host)
+        monkeypatch.setattr(packages, "list_approvals", list_approvals)
+        monkeypatch.setattr(skill_routes, "list_skill_shares", list_skill_shares)
+        return calls
+
+    @staticmethod
+    def _mine(answer: dict) -> list[dict]:
+        return [i for i in answer["items"] if i["app"] == "studio"]
+
+    def test_a_holder_gets_one_row_for_each_pending_version(self, fakes, monkeypatch):
+        calls = self._on(monkeypatch, [self._row("p1", 1), self._row("p1", 2),
+                                       self._row("p2", 1)])
+        answer = run(self._holder())
+        rows = self._mine(answer)
+        assert sorted(r["id"] for r in rows) == [
+            "studio-approval:p1:1", "studio-approval:p1:2", "studio-approval:p2:1"]
+        assert {(r["kind"], r["href"], r["act"], r["act_ref"]) for r in rows} == {
+            ("approval", shell.STUDIO_HREF, None, None)}
+        assert shell.STUDIO_HREF == "/studio"
+        assert answer["sources"]["studio"] == "ok"
+        assert answer["totals"]["studio"] == 3
+        assert calls and calls[0][1] is None
+        # J2d: the skill list is read too, with the same explicit state.
+        assert ("skills", ME, None) in calls
+
+    def test_the_row_names_the_app_the_version_and_who_asked_and_no_manifest(
+        self, fakes, monkeypatch,
+    ):
+        self._on(monkeypatch, [self._row("p1", 3, asked_by="priya@customer.example")])
+        [row] = self._mine(run(self._holder()))
+        assert row["title"] == "A share waits for your approval"
+        assert row["detail"] == "App p1, version 3. Asked by priya."
+        assert "SECRET-MANIFEST" not in repr(row) and "manifest" not in row
+
+    def test_a_member_without_the_right_gets_none_and_the_route_never_runs(
+        self, fakes, monkeypatch,
+    ):
+        calls = self._on(monkeypatch, [self._row("p1", 1)])
+        user = member("studio")
+        answer = run(user)
+        assert answer["sources"]["studio"] == "absent"
+        assert not self._mine(answer)
+        assert calls == []
+
+    def test_with_studio_off_the_source_is_absent_and_no_route_runs(
+        self, fakes, monkeypatch,
+    ):
+        calls = self._on(monkeypatch, [self._row("p1", 1)], studio=False,
+                         skills=[self._skill("s1", 1)])
+        answer = run(self._holder())
+        assert answer["sources"]["studio"] == "absent"
+        assert not self._mine(answer)
+        assert calls == []
+
+    def test_with_the_host_off_only_the_app_rows_leave(self, fakes, monkeypatch):
+        """WS-STU J2d: a skill share needs no install (J2c), so
+        ``PACKAGE_HOST_ORGS`` gates the app rows only. Mutation: read the host
+        flag before the skill rows -> the skill row leaves -> red."""
+        calls = self._on(monkeypatch, [self._row("p1", 1)], host=False,
+                         skills=[self._skill("s1", 1)])
+        answer = run(self._holder())
+        assert answer["sources"]["studio"] == "ok"
+        assert [r["id"] for r in self._mine(answer)] == ["studio-skill-share:s1:1"]
+        assert calls == [("skills", ME, None)]
+
+    def test_the_members_own_rows_are_dropped_case_and_space_blind(
+        self, fakes, monkeypatch,
+    ):
+        self._on(monkeypatch, [
+            self._row("own", 1, owner=ME.upper()),
+            self._row("pub", 1, owner=OTHER, published_by=f" {ME} "),
+            self._row("theirs", 1)])
+        rows = self._mine(run(self._holder()))
+        assert [r["id"] for r in rows] == ["studio-approval:theirs:1"]
+
+    def test_a_truncated_list_marks_the_source_capped(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("p1", 1)], truncated=True)
+        answer = run(self._holder())
+        assert "studio" in answer["capped"]
+
+    # -- WS-STU J2d: a skill share that waits for a holder --
+
+    @staticmethod
+    def _skill(sid: str, version: int, *, owner: str = OTHER,
+               asked_by: str | None = None) -> dict:
+        return {"skill_id": sid, "name": f"Skill {sid}", "slug": sid,
+                "description": "SECRET-DESCRIPTION", "owner_email": owner,
+                "version": version, "requested_by": asked_by or owner,
+                "requested_at": (NOW - timedelta(minutes=version)).isoformat(),
+                "body": {"instructions": "SECRET-BODY"}, "content_hash": "c" * 64}
+
+    def test_a_holder_gets_one_row_for_each_skill_ask_of_another_member(
+        self, fakes, monkeypatch,
+    ):
+        """J2d: one row for each pending skill ask. The row holds the name,
+        the version and who asked, no body and no hash, and no act. It opens
+        a new chat with the ask drafted, and the words hold ids only.
+        Mutation: drop the owner check -> the member's own ask shows -> red."""
+        sid = str(uuid.uuid4())
+        self._on(monkeypatch, [], skills=[
+            self._skill(sid, 2, asked_by="priya@customer.example"),
+            self._skill("own", 1, owner=f" {ME.upper()} ")])
+        answer = run(self._holder())
+        [row] = self._mine(answer)
+        assert row["id"] == f"studio-skill-share:{sid}:2"
+        assert (row["kind"], row["app"], row["act"], row["act_ref"]) == (
+            "approval", "studio", None, None)
+        assert row["title"] == "A skill share waits for your approval"
+        assert row["detail"] == f"Skill {sid}, version 2. Asked by priya."
+        assert row["href"] == shell.skill_share_href(sid, 2)
+        for secret in ("SECRET-BODY", "SECRET-DESCRIPTION", "c" * 64):
+            assert secret not in repr(row)
+        href = urlsplit(row["href"])
+        assert href.path == "/chat"
+        query = parse_qs(href.query)
+        assert query["do"] == ["new-chat"]
+        [words] = query["q"]
+        assert words == (f"Review the skill share ask of skill {sid}, version 2: "
+                         "approve or reject.")
+        # TOF-4b fence: the words name an act, and hold the ids and nothing else.
+        assert "approve" in words and "reject" in words
+        assert re.sub(r"[A-Za-z]+", "", words.replace(sid, "")).strip(" .:,-") == "2"
+        for secret in ("Skill ", "priya", "SECRET"):
+            assert secret not in words
+        # The words load the share pack by its words, and no other Studio pack.
+        from acb_skills import tool_packs as tp
+        assert tp.matched_layer("studio-share", words) == "words"
+        assert tp.matched_layer("studio", words) is None
+
+    def test_a_cut_skill_list_marks_the_source_capped(self, fakes, monkeypatch):
+        self._on(monkeypatch, [], skills=[self._skill("s1", 1)], skills_truncated=True)
+        answer = run(self._holder())
+        assert "studio" in answer["capped"]
+
+    def test_a_member_without_the_right_reads_no_skill_list(self, fakes, monkeypatch):
+        calls = self._on(monkeypatch, [], skills=[self._skill("s1", 1)])
+        answer = run(member("studio"))
+        assert answer["sources"]["studio"] == "absent"
+        assert calls == []
+
+    def test_the_source_registers_before_the_reminders_and_approvals_stays_last(self):
+        provider = shell.REGISTRY["studio"]
+        assert (provider.needs, provider.gated, provider.admin) == (True, False, False)
+        assert provider.permission == self.RIGHT and provider.kinds == {"approval"}
+        order = [p.source for p in shell.needs_providers()]
+        assert order[-1] == "approvals"
+        assert order.index("studio") < order.index("reminders")

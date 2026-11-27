@@ -29,7 +29,22 @@ describe("a result that did not act", () => {
     expect(noActionOf("Nothing changed. No email accounts are connected.")).toBe("unchanged");
   });
 
-  it("is cancelled when the member declines", () => {
+  it("is cancelled when the card did nothing (HRD-7), and keeps the chip of before", () => {
+    // Each outcome of the one table that did nothing, but a chat message and
+    // no card. Mutation: drop the `NOT_DONE_AT_CARD` rule → red.
+    for (const lead of ["Declined", "Timed out", "Answered by another member", "Changed since the card"]) {
+      expect(noActionOf(`${lead}: nothing was done. The email was not sent.`), lead).toBe("cancelled");
+    }
+    expect(noActionOf("Not shown: a card cannot show here, so nothing was done.")).toBe("unchanged");
+    expect(noActionOf("Closed by your message: the member wrote in the chat.")).toBe("revised");
+    // A parked card still waits for the member. Mutation: put `parked` back
+    // in `NOT_DONE_AT_CARD` → red.
+    expect(noActionOf("Parked: the card waits in the chat for the member's answer, and nothing was done yet.")).toBe("question");
+    // A lead with no colon is no outcome.
+    expect(noActionOf("Declined offers are listed below")).toBeNull();
+  });
+
+  it("still reads a stored result of before HRD-7", () => {
     expect(noActionOf("Send cancelled — the reply was not sent.")).toBe("cancelled");
     expect(noActionOf("Cancelled — nothing was moved to Trash.")).toBe("cancelled");
   });
@@ -46,9 +61,14 @@ describe("the agent speaks the words the card reads", () => {
   const agent = readFileSync(AGENT, "utf-8");
 
   it("starts a refusal, a question and a cancel with a word the card knows", () => {
-    for (const lead of ['"Not sent. ', '"Send from which mailbox? ', '"Which mailbox? ', '"Nothing changed. ', '"Send cancelled — ', '"Cancelled — ']) {
+    for (const lead of ['"Not sent. ', '"Send from which mailbox? ', '"Which mailbox? ', '"Nothing changed. ']) {
       expect(agent, lead).toContain(lead);
     }
+    // HRD-7: a card that did nothing takes its words from the one table
+    // (`ask_tools.CARD_OUTCOMES`), and the agent writes no cancel of its own.
+    expect(agent).toContain("card_not_done_text");
+    expect(agent).not.toContain('"Send cancelled — ');
+    expect(agent).not.toContain('"Cancelled — ');
   });
 
   it("draws the no-action card before any other card", () => {
@@ -88,9 +108,12 @@ describe("a card that a chat message closed (§18.11)", () => {
   it("is revised, and never reads as Email sent", () => {
     // Mutation: drop the `revised` rule of `noActionOf` → red (the result
     // falls to the generic card, which says "Email sent").
-    const text = "The member wrote in the chat while the card was open, so the card is closed. Nothing was sent.";
+    const text = "Closed by your message: the member wrote in the chat while the card was open, and nothing was done. Nothing was sent.";
     expect(noActionOf(text)).toBe("revised");
+    // A stored result of before HRD-7 reads the same.
+    expect(noActionOf("The member wrote in the chat while the card was open, so the card is closed.")).toBe("revised");
+    // HRD-7: the head of each such text is the one table's.
     const src = readFileSync(AGENT, "utf8");
-    expect(src).toContain('"The member wrote in the chat while the card was open, so the card is "');
+    expect(src).toContain("card_outcome_head(CLOSED_BY_YOUR_MESSAGE");
   });
 });

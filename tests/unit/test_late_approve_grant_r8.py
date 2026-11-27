@@ -25,6 +25,9 @@ R7, each with the mutation that turns it red:
   the offer after the row closed.
 * ``test_no_grant_crosses_a_thread_a_member_or_an_org`` — key the grant by
   the thread alone, or by the member alone.
+* ``test_twin_rows_approved_at_nearly_the_same_moment_take_the_act_once``
+  (RESUME-2a follow-up, P2-1) — put back the GET and then the DELETE in
+  ``drop_offer``, and a twin's claim in the window loses its mark.
 
 ``HELD_R8_REDIS_URL`` names a PRIVATE Redis, because the suite runs FLUSHDB.
 Never point it at a shared server. With it or the database unset, the suite
@@ -426,6 +429,110 @@ def test_no_grant_crosses_a_thread_a_member_or_an_org(scene, monkeypatch):
             assert await _try(tid, w.org_a, _ALICE)
             assert not await _try(tid, w.org_a, _ALICE)
             assert await _keys(client, late_approve.GRANT_NAMESPACE) == []
+        finally:
+            await client.flushdb()
+            await client.aclose()
+
+    asyncio.run(go())
+
+
+# ---------------------------------------------------------------------------
+# RESUME-2a follow-up, P2-1: the drop keeps a SPENT mark, on the real Redis
+# ---------------------------------------------------------------------------
+
+class _Window:
+    """The real ``TenantRedis``, with ONE window on the offer key: a twin's
+    claim lands after a GET of the key, or just before the one atomic step
+    of ``delete_unless``. Both are the worst order."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.hook: Any = None
+        self.fired = 0
+
+    async def _gap(self, k: Any) -> None:
+        if self.hook is not None and getattr(k, "namespace", "") == late_approve.OFFER_NAMESPACE:
+            hook, self.hook = self.hook, None
+            self.fired += 1
+            await hook()
+
+    async def get(self, k: Any) -> Any:
+        out = await self._inner.get(k)
+        await self._gap(k)
+        return out
+
+    async def delete_unless(self, k: Any, value: str) -> Any:
+        await self._gap(k)
+        return await self._inner.delete_unless(k, value)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def _claim(tid: str, org: str, member: str) -> str:
+    """``claim_act`` of the stand-in card, in a run bound to *tid*, *org* and
+    *member*: what the stored-call yes of a continuation does."""
+    async def _in_run() -> str:
+        _bind_run(tid, org, member)
+        return await late_approve.claim_act(_card("d-neuro", "Payment Complete"))
+
+    return await asyncio.create_task(_in_run())
+
+
+def test_twin_rows_approved_at_nearly_the_same_moment_take_the_act_once(scene, monkeypatch):
+    """P2-1, on the real rows and the real Redis. Two twin cards of one act
+    park. A is approved: its drop, then its claim. B is approved seconds
+    later, and A's claim lands in the window of B's drop. The mark stays, so
+    B's claim reads SPENT: the act is taken ONCE. The real Lua step keeps a
+    SPENT value, deletes any other value, and gives 0 for no key. Mutation:
+    put back the GET and then the DELETE in ``drop_offer`` -> the mark goes
+    -> B takes the act too -> red."""
+    from acb_common.tenant_redis import TenantRedis, key, organization_scope
+
+    w, r = scene
+    tid = w.t_alice
+    call = {"deal_id": "d-neuro", "stage": "Payment Complete"}
+
+    async def go() -> None:
+        client = await _client()
+        _use_redis(monkeypatch, client)
+        try:
+            real = TenantRedis(client)
+            with organization_scope(w.org_a):
+                probe = key(late_approve.OFFER_NAMESPACE, "probe")
+                await real.set(probe, late_approve._SPENT)
+                assert await real.delete_unless(probe, late_approve._SPENT) == 0
+                assert await real.get(probe) == late_approve._SPENT
+                await real.set(probe, "an offer")
+                assert await real.delete_unless(probe, late_approve._SPENT) == 1
+                assert await real.get(probe) is None
+                assert await real.delete_unless(probe, late_approve._SPENT) == 0
+
+            assert (await _run(r, tid, w.org_a, **call)).get("parked")
+            assert (await _run(r, tid, w.org_a, **call)).get("parked")
+            a_rid, b_rid = [c["request_id"] for c in _cards(r, tid)]
+            digest = late_approve.act_of(_card("d-neuro", "Payment Complete"),
+                                         "orchestrator").digest
+            offer = f"cc:{w.org_a}:{late_approve.OFFER_NAMESPACE}:{_ALICE}:{tid}:{digest}"
+            assert await client.exists(offer), "non-vacuity: the twins share one offer"
+
+            win = _Window(real)
+            monkeypatch.setattr(late_approve, "_redis", lambda: win)
+            claims: list[str] = []
+            # A is approved: its route drops the offer, then its run claims.
+            await late_approve.drop_offer(w.org_a, _ALICE, tid, a_rid)
+
+            async def _a_claims() -> None:
+                claims.append(await _claim(tid, w.org_a, _ALICE))
+
+            # B is approved seconds later. A's claim lands in B's drop.
+            win.hook = _a_claims
+            await late_approve.drop_offer(w.org_a, _ALICE, tid, b_rid)
+            assert win.fired == 1, "non-vacuity: A's claim landed in the window"
+            assert await client.get(offer) == late_approve._SPENT, "the drop kept the mark"
+            claims.append(await _claim(tid, w.org_a, _ALICE))
+            assert claims == [late_approve.CLAIM_TAKEN, late_approve.CLAIM_SPENT], claims
+            assert 0 < await client.ttl(offer) <= late_approve.spent_ttl_s()
         finally:
             await client.flushdb()
             await client.aclose()
