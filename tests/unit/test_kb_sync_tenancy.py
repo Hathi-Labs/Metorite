@@ -64,6 +64,8 @@ _PROVIDER_CALLS = frozenset({
     "relist", "bootstrap", "changes", "reconcile", "run_source",
     # KC-4a, the access pass.
     "_read_access", "run_access",
+    # KC-5a, the index pass: the adapter's fetch, the per-file step, the run.
+    "fetch_document", "_file", "run_index",
 })
 
 
@@ -110,9 +112,10 @@ def commits_inside_sessions(source: str) -> list[int]:
 
 def test_the_scan_sees_the_package() -> None:
     names = {p.name for p in _FILES}
-    assert {"access.py", "discovery.py", "engine.py", "runs.py", "scheduler.py"} <= names
+    assert {"access.py", "discovery.py", "engine.py", "index.py", "runs.py",
+            "scheduler.py"} <= names
     # Each file that writes opens sessions, so the scan has blocks to read.
-    for name in ("access.py", "discovery.py", "engine.py", "scheduler.py"):
+    for name in ("access.py", "discovery.py", "engine.py", "index.py", "scheduler.py"):
         tree = ast.parse((_PKG / name).read_text(encoding="utf-8"))
         assert _session_blocks(tree), f"{name} has no tenant_session block"
 
@@ -185,7 +188,8 @@ def test_the_get_db_count_is_not_vacuous() -> None:
 
 import re  # noqa: E402
 
-_TENANT = r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_access)"
+_TENANT = (r"(kb_sources|kb_source_nodes|kb_sync_cursors|kb_sync_runs|kb_node_access"
+           r"|kb_documents|kb_source_includes)")
 #: A read or a write of a tenant table, and its alias. SQL words are upper
 #: case here, and an alias is lower case, so a keyword is never an alias.
 #: K-24 (a): a comma also starts a table reference (``FROM dead d, kb_source_nodes c``).
@@ -224,10 +228,10 @@ def org_predicate_findings(name: str, sql: str) -> list[str]:
 
 
 def _sql_constants() -> dict[str, str]:
-    from gateway.kb_sync import access, discovery, engine, runs
+    from gateway.kb_sync import access, discovery, engine, index, runs
 
     out: dict[str, str] = {}
-    for mod in (access, discovery, engine, runs, scheduler):
+    for mod in (access, discovery, engine, index, runs, scheduler):
         for attr in dir(mod):
             value = getattr(mod, attr)
             if attr.endswith("_SQL") and isinstance(value, str):
@@ -238,7 +242,11 @@ def _sql_constants() -> dict[str, str]:
 def test_the_org_fence_sees_the_sql() -> None:
     names = _sql_constants()
     for must in ("runs.UPSERT_CURSOR_SQL", "engine._CASCADE_GONE_SQL", "engine._CAP_SQL",
-                 "runs._PRUNE_SQL", "runs._DUE_SQL", "discovery.UPSERT_NODES_SQL"):
+                 "runs._PRUNE_SQL", "runs._DUE_SQL", "discovery.UPSERT_NODES_SQL",
+                 # KC-5a, the index pass.
+                 "index._SCOPE_SQL", "index._PENDING_SQL", "index.PENDING_COUNT_SQL",
+                 "index._DELETE_STALE_SQL", "index._UPSERT_DOC_SQL",
+                 "index._NODE_NOW_SQL"):
         assert must in names, must
     assert sum(1 for s in names.values() if re.search(_TENANT, s)) >= 25
 
@@ -263,6 +271,12 @@ def test_each_tenant_table_reference_names_the_org() -> None:
     ("SELECT 1 FROM kb_sync_runs r WHERE r.organization_id = CAST(:org AS uuid)", False),
     ("UPDATE kb_sources SET x = 1 WHERE organization_id = CAST(:org AS uuid)", False),
     ("SELECT id FROM organization ORDER BY id", False),
+    # KC-5a: the two new tables are tenant tables for this fence too.
+    ("SELECT 1 FROM kb_documents d WHERE d.node_id = :n", True),
+    ("DELETE FROM kb_source_includes WHERE source_id = :s", True),
+    ("INSERT INTO kb_documents (node_id) VALUES (:n)", True),
+    ("SELECT 1 FROM kb_documents d WHERE d.organization_id = CAST(:org AS uuid)", False),
+    ("SELECT 1 FROM kb_source_includes i WHERE i.organization_id = CAST(:org AS uuid)", False),
     # K-24 (a): a tenant table after a comma needs its own predicate.
     ("UPDATE kb_source_nodes g SET x = 1 FROM dead d, kb_source_nodes c "
      "WHERE g.organization_id = CAST(:org AS uuid)", True),
@@ -322,3 +336,56 @@ def test_knowledge_off_with_the_sync_list_set_opens_nothing(monkeypatch) -> None
     monkeypatch.setattr(scheduler, "get_db", _tripwire(opened, "get_db"))
     assert asyncio.run(scheduler.run_tick(lambda: None)) == 0
     assert opened == []
+
+
+def test_knowledge_index_empty_opens_no_index_session_and_counts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KC-5a, acceptance A8. ``KNOWLEDGE_SYNC`` names the org, ``KNOWLEDGE_INDEX``
+    is empty: the loop counts nothing, runs no index pass, and the index module
+    opens no session. The due read is the sync loop's own."""
+    import contextlib
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from gateway.kb_sync import index, runs
+
+    settings = get_settings()
+    for name, value in (("knowledge_enabled", True), ("knowledge_orgs", "*"),
+                        ("knowledge_sources", "*"), ("knowledge_sync", "*"),
+                        ("knowledge_source_google", "*"), ("knowledge_index", "")):
+        monkeypatch.setattr(settings, name, value, raising=False)
+    now = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+    row = runs.DueRow(
+        source_id="s1", provider="google_drive", state="ready", db_now=now,
+        last_finished=now - timedelta(minutes=5), running=False,
+        reconciled_at=now - timedelta(minutes=1), discovered_at=None,
+        access_read_at=now - timedelta(minutes=1), access_finished=None, access_status=None)
+    opened: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def session(org: str):
+        yield SimpleNamespace()
+
+    async def due_rows(db: Any, org: str) -> list[Any]:
+        return [row]
+
+    async def orgs() -> list[str]:
+        return ["org-1"]
+
+    async def prune(db: Any, org: str, keep: int = 50) -> int:
+        return 0
+
+    monkeypatch.setattr(scheduler, "_organization_ids", orgs)
+    monkeypatch.setattr(scheduler, "tenant_session", session)
+    monkeypatch.setattr(runs, "due_rows", due_rows)
+    monkeypatch.setattr(runs, "prune", prune)
+    monkeypatch.setattr(index, "tenant_session", _tripwire(opened, "index.tenant_session"))
+    monkeypatch.setattr(index, "pending_count", _tripwire(opened, "index.pending_count"))
+    monkeypatch.setattr(index, "run_index", _tripwire(opened, "index.run_index"))
+
+    def no_adapter() -> Any:
+        raise AssertionError("an adapter was built with KNOWLEDGE_INDEX empty")
+
+    assert asyncio.run(scheduler.run_tick(no_adapter)) == 0
+    assert opened == [], opened

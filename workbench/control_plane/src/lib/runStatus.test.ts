@@ -246,24 +246,28 @@ describe("waiting for you and parked are not working", () => {
     expect(back.phase).toBe("working");
   });
 
-  it("a parked run whose card is answered elsewhere ends", () => {
+  it("a parked run whose card is answered elsewhere ends, with no \"Done\" (RESUME-3a)", () => {
     const p = reduceRun(IDLE_RUN, server(T0, { state: "needs_input", live: false }));
-    expect(reduceRun(p, server(T0 + 5_000, null)).phase).toBe("done");
+    const gone = reduceRun(p, server(T0 + 5_000, null));
+    expect(gone.phase).toBe("idle");
+    expect(runView(gone, T0 + 5_000)).toBeNull();
     // The answer started a new run.
     expect(reduceRun(p, server(T0 + 5_000, RUNNING)).phase).toBe("working");
   });
 
-  it("each draws its own words and tone", () => {
+  it("a parked card reads as a live wait, and keeps its own tone (D-RES-6)", () => {
     const now = T0 + 1_000;
-    expect(runView(reduceRun(working(), { type: "card", at: now, open: true }), now)?.tone).toBe("waiting");
-    expect(runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)?.tone).toBe("parked");
+    const waiting = runView(reduceRun(working(), { type: "card", at: now, open: true }), now)!;
+    const parked = runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)!;
+    expect(waiting.tone).toBe("waiting");
+    // The tone stays `parked`, so the composer sends and offers no Stop.
+    expect(parked.tone).toBe("parked");
     expect(runView(working(), now)?.tone).toBe("working");
-    const labels = new Set([
-      runView(reduceRun(working(), { type: "card", at: now, open: true }), now)!.label,
-      runView(reduceRun(IDLE_RUN, server(now, { state: "needs_input", live: false })), now)!.label,
-      runView(working(), now)!.label,
-    ]);
-    expect(labels.size).toBe(3);
+    expect(parked.label).toBe("Waiting for your answer");
+    expect(waiting.label).toBe(parked.label);
+    // A park has no clock: the run that ran has ended.
+    expect(parked.elapsed).toBeNull();
+    expect(runView(working(), now)!.label).not.toBe(parked.label);
   });
 });
 
@@ -669,5 +673,68 @@ describe("Stopped says what the run did (UXD-4b)", () => {
   it("a new send clears the count", () => {
     const s = run(working(), start("w1"), done("w1"), send(T0 + 5_000));
     expect(s.writesDone).toEqual([]);
+  });
+});
+
+describe("RESUME-2d: a run the server keeps from this reader (review P1)", () => {
+  // A room member who joined after the run started. The list names the run,
+  // the chat attaches, and the reconnect ends with `withheld: true`.
+  const KEYED: ServerRun = { state: "running", live: true, runId: "run-9" };
+  const joined = () => {
+    const listed = reduceRun(IDLE_RUN, server(T0, KEYED));
+    expect(listed.attach).toBe(true);
+    return run(listed, { type: "attach", at: T0 + 10, messageId: "p1" });
+  };
+
+  it("a withheld end rests, with no Done and no step", () => {
+    const s = reduceRun(joined(), { type: "attach_withheld", at: T0 + 50 });
+    expect(s.phase).toBe("idle");
+    expect(s.withheldKey).toBe("id:run-9");
+    expect(s.attach).toBe(false);
+    expect(s.messageId).toBeNull();
+    expect(runView(s, T0 + 60)).toBeNull();
+  });
+
+  it("a withheld end never re-attaches while the list names the run", () => {
+    let s = reduceRun(joined(), { type: "attach_withheld", at: T0 + 50 });
+    for (let i = 1; i <= 60; i++) {
+      const next = reduceRun(s, server(T0 + 50 + i * 5_000, KEYED));
+      expect(next).toBe(s); // the SAME object: nothing changes, nobody is told
+      s = next;
+    }
+    expect(s.phase).toBe("idle");
+    expect(s.attach).toBe(false);
+  });
+
+  it("the run leaves the list, and the key goes", () => {
+    const s = reduceRun(joined(), { type: "attach_withheld", at: T0 + 50 });
+    const gone = reduceRun(s, server(T0 + 5_000, null));
+    expect(gone.withheldKey).toBeNull();
+    expect(gone.phase).toBe("idle");
+  });
+
+  it("a NEW run in the same room attaches as before", () => {
+    const s = reduceRun(joined(), { type: "attach_withheld", at: T0 + 50 });
+    const next = reduceRun(s, server(T0 + 5_000, { ...KEYED, runId: "run-10" }));
+    expect(next.phase).toBe("working");
+    expect(next.attach).toBe(true);
+    expect(next.withheldKey).toBeNull();
+  });
+
+  it("with no run key, a withheld end backs off as a failed attach", () => {
+    const listed = reduceRun(IDLE_RUN, server(T0, RUNNING));
+    const s = run(listed, { type: "attach", at: T0 + 10, messageId: "p1" }, { type: "attach_withheld", at: T0 + 20 });
+    expect(s.withheldKey).toBeNull();
+    expect(s.attachFails).toBe(1);
+    expect(reduceRun(s, server(T0 + 20 + ATTACH_GAP_MS, RUNNING)).attach).toBe(false);
+  });
+
+  it("a normal end still holds Done for DONE_HOLD_MS, as before", () => {
+    const d = reduceRun(joined(), { type: "stream_end", at: T0 + 50, terminal: true });
+    expect(d.phase).toBe("done");
+    expect(d.withheldKey).toBeNull();
+    expect(reduceRun(d, server(T0 + 5_000, KEYED))).toBe(d);
+    const later = reduceRun(d, server(T0 + 50 + DONE_HOLD_MS, { ...KEYED, runId: "run-11" }));
+    expect(later.phase).toBe("working");
   });
 });

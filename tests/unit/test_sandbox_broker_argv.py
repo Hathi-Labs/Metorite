@@ -11,6 +11,7 @@ mounts, because one function builds the mounts for every start.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import re
 from pathlib import Path
@@ -171,6 +172,28 @@ async def test_read_only_always_comes_with_the_tmp_tmpfs(
         monkeypatch.setattr(env["settings"], "sandbox_tmpfs_mb", size)
         with bound_run(ORG, thread=f"t-tmpfs-{size}"), pytest.raises(sb.SandboxRefused):
             await broker.acquire()
+    assert len(docker.runs()) == 2
+
+
+async def test_runsc_adds_one_runtime_flag_and_runc_adds_none(
+    broker: sb.SandboxBroker, docker: FakeDocker, env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SBX-8 (agent_sandbox.md §4.3). The default keeps the argv of before.
+
+    ``runsc`` reaches docker run as ``--runtime=runsc``, once and before the
+    image. An unknown value refuses, so a typo never runs under a runtime
+    that nobody chose.
+    """
+    argv = await _start(broker, docker, thread="t-runc")
+    assert not any(a.startswith("--runtime") for a in argv)
+    monkeypatch.setattr(env["settings"], "sandbox_runtime", "runsc")
+    argv = await _start(broker, docker, thread="t-runsc")
+    assert argv.count("--runtime=runsc") == 1
+    assert argv.index("--runtime=runsc") < argv.index(PINNED_IMAGE)
+    monkeypatch.setattr(env["settings"], "sandbox_runtime", "kata")
+    with bound_run(ORG, thread="t-kata"), pytest.raises(sb.SandboxRefused, match="runtime"):
+        await broker.acquire()
     assert len(docker.runs()) == 2
 
 
@@ -400,3 +423,109 @@ async def test_no_image_starts_nothing(
     with bound_run(ORG), pytest.raises(sb.SandboxUnavailable):
         await broker.acquire()
     assert not docker.runs()
+
+
+# ── WS-43g1: the egress flags (§7.3, task 4009) ──────────────────────────────
+
+
+def _egress_grant(org: str = ORG, name: str = "") -> sb.EgressGrant:
+    """A grant on the network of *name*, the container of the run (WS-43g2a)."""
+    grant = sb.EgressGrant(
+        token="tok-" + "q" * 40, org=org, run="run-1", agent="agent-x",
+        approver="member@example.com", hosts=("pypi.org",), expires_at=0.0, network="",
+    )
+    return dataclasses.replace(grant, network=sb.egress_network_name(org, name, grant.key))
+
+
+def _argv_for(handle: sb.SandboxHandle, broker: sb.SandboxBroker, **extra: Any) -> list[str]:
+    if "egress" in extra and "egress_env_file" not in extra:
+        extra["egress_env_file"] = broker.state_dir() / "egress" / "env" / ("0" * 32 + ".env")
+    from acb_common import get_settings
+
+    return sb.build_run_argv(
+        binding=handle.binding, mounts=sb.mount_list(handle.binding, broker.git_cover()),
+        uid=1000, gid=1000, image=PINNED_IMAGE, limits=sb.Limits.from_settings(get_settings()),
+        start_id="0" * 32, **extra,
+    )
+
+
+async def test_a_grant_changes_only_the_network_and_the_proxy_settings(
+    broker: sb.SandboxBroker,
+) -> None:
+    """The egress argv keeps every flag and mount of rule 6, and gains no port."""
+    with bound_run(ORG) as ws:
+        (ws / ".git").mkdir()
+        handle = await broker.acquire()
+    plain = _argv_for(handle, broker)
+    grant = _egress_grant(name=handle.name)
+    env_file = broker.state_dir() / "egress" / "env" / ("0" * 32 + ".env")
+    granted = _argv_for(handle, broker, egress=grant, egress_env_file=env_file)
+    assert flag_values(granted, "--network") == [grant.network]
+    assert mounts_of(granted) == mounts_of(plain)
+    assert any(m.endswith("target=/workspace/.git,readonly") for m in mounts_of(granted))
+    # The 4 proxy variables come from ONE --env-file in the broker's state
+    # dir, and the token is never in the argv (review round 1).
+    assert flag_values(granted, "--env") == flag_values(plain, "--env")
+    assert flag_values(granted, "--env-file") == [str(env_file)]
+    assert grant.token not in " ".join(granted)
+    url = f"http://grant:tok-{'q' * 40}@{sb.EGRESS_PROXY_NAME}:{sb.EGRESS_PROXY_PORT}"
+    assert sb.egress_env(grant) == dict.fromkeys(
+        ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"), url,
+    )
+    strip = {"--network", "--env-file"}
+    def rest(argv: list[str]) -> list[str]:
+        return [a for i, a in enumerate(argv) if a not in strip and argv[i - 1] not in strip]
+    assert rest(granted) == rest(plain)
+    for flag in ("-p", "--publish", "-P", "--privileged", "--cap-add", "-e"):
+        assert flag not in granted
+
+
+def test_the_env_file_is_0600_and_holds_only_the_proxy_settings(tmp_path: Path) -> None:
+    grant = _egress_grant()
+    path = sb.write_egress_env_file(tmp_path / "env", "1" * 32, grant)
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "env").stat().st_mode & 0o777 == 0o700
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert dict(x.split("=", 1) for x in lines) == sb.egress_env(grant)
+
+
+def test_an_egress_grant_needs_its_env_file_and_the_reverse(tmp_path: Path) -> None:
+    binding = sb.RunBinding(org=ORG, agent="agent-x", thread="t", instance="", workspace=tmp_path)
+    common = {
+        "binding": binding, "mounts": (), "uid": 1000, "gid": 1000, "image": PINNED_IMAGE,
+        "limits": sb.Limits("1", "1g", 256, 256), "start_id": "0" * 32,
+    }
+    with pytest.raises(sb.SandboxRefused, match="env file"):
+        sb.build_run_argv(**common, egress=_egress_grant())
+    with pytest.raises(sb.SandboxRefused, match="env file"):
+        sb.build_run_argv(**common, egress_env_file=tmp_path / "x.env")
+
+
+async def test_an_egress_grant_is_refused_where_no_grant_may_go(
+    broker: sb.SandboxBroker, tmp_path: Path,
+) -> None:
+    with bound_run(ORG):
+        handle = await broker.acquire()
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=_egress_grant("another-org", handle.name))
+    # WS-43g2a: the network of another run of the same org.
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=_egress_grant(ORG, handle.name + "-other"))
+    other = _egress_grant(ORG, handle.name)
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        _argv_for(handle, broker, egress=dataclasses.replace(other, network="mtr-egress-x"))
+    _argv_for(handle, broker, egress=other)  # its own network passes
+    with pytest.raises(sb.SandboxRefused):
+        sb.build_run_argv(
+            binding=handle.binding, mounts=(), uid=1000, gid=1000, image=PINNED_IMAGE,
+            limits=sb.Limits("1", "1g", 256, 256), start_id="0" * 32,
+            workspace_tmpfs_mb=512, egress=_egress_grant(),
+        )
+    compute = sb.RunBinding(
+        org=ORG, agent=sb.COMPUTE_AGENT, thread="t", instance="", workspace=tmp_path,
+    )
+    with pytest.raises(sb.SandboxRefused, match="egress"):
+        sb.build_run_argv(
+            binding=compute, mounts=(), uid=1000, gid=1000, image=PINNED_IMAGE,
+            limits=sb.Limits("1", "1g", 256, 256), start_id="0" * 32, egress=_egress_grant(),
+        )

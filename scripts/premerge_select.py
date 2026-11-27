@@ -52,6 +52,33 @@ def _by_size(files: set[str], root: Path) -> list[str]:
     return sorted(files, key=lambda f: (size(f), f))
 
 
+# Data files that tests read as TEXT (task 3369, comment of 2026-11-15: a 4-space line in
+# tests/fences.json passed alone and broke main's round-trip test). A change to one of
+# these, on either side, runs every test that names it (tier 2).
+DATA_FILE_KEYS = (
+    ("tests/fences.json", "fences.json"),
+    ("docs/flag_reload.md", "flag_reload.md"),
+    ("project-docs/specs/ai_studio_rows/", "ai_studio_rows"),
+)
+
+
+def data_file_readers(files: list[str], root: Path) -> set[str]:
+    """The test files that name a data file (by its name) among `files`."""
+    needles = [needle for prefix, needle in DATA_FILE_KEYS
+               if any(f == prefix or (prefix.endswith("/") and f.startswith(prefix)) for f in files)]
+    if not needles:
+        return set()
+    out: set[str] = set()
+    for t in (root / "tests").rglob("test_*.py"):
+        try:
+            body = t.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if any(n in body for n in needles):
+            out.add(t.relative_to(root).as_posix())
+    return out
+
+
 _CACHE: dict = {}
 
 
@@ -103,6 +130,7 @@ def pick_tiers(pr: list[str], main: list[str], root: Path = at.ROOT) -> tuple[li
     if "tests/fences.json" in (*pr, *main):
         # A changed fence list: the guards that read tests/fences.json run (tier 2 at least).
         changed |= {t for t in getattr(at, "FENCE_GUARD_TESTS", ()) if (root / t).is_file()}
+    changed |= data_file_readers([*pr, *main], root)
     if pr_full and main_full:
         return (["FULL", *_by_size(changed, root)], 0) if changed else None
     if pr_full:

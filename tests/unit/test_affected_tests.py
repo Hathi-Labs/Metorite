@@ -398,6 +398,29 @@ def test_gate_a_flag_only_diff_selects_the_tests_that_name_the_flag(tmp_path: Pa
     assert "tests/unit/test_unrelated.py" not in out["files"]
 
 
+_REGISTRY = "packages/acb_common/acb_common/flag_registry.py"
+_REGISTRY_BASE = "class FlagRegistry:\n    old_orgs: str = ''\n    model_config = 1\n"
+
+
+def test_gate_a_flag_only_diff_of_the_flag_registry_selects_the_tests_that_name_it(
+    tmp_path: Path,
+) -> None:
+    """PR 2380 moved every `*_orgs` field to flag_registry.py. A new flag there is a
+    flag-only diff, as it was in settings.py (CIV-33c-1), so it does not go FULL."""
+    root = _flag_repo(tmp_path)
+    _write(root, _REGISTRY, _REGISTRY_BASE)
+    _write(root, "tests/unit/test_flag_registry.py", "import acb_common.flag_registry\n")
+    case = _added(_REGISTRY, _REGISTRY_BASE, 2, "    # a comment", '    new_thing_orgs: str = ""')
+    out = _gate_flag(root, [_REGISTRY], case)
+    assert out["full"] is False, out["reasons"]
+    assert "tests/unit/test_flag_reader.py" in out["files"]  # names NEW_THING_ORGS
+    assert "tests/unit/test_flag_registry.py" in out["files"]  # the registry fence, by name
+    assert "tests/unit/test_unrelated.py" not in out["files"]
+    # A changed default of a flag that exists is not a new flag: FULL as before.
+    changed = _added(_REGISTRY, _REGISTRY_BASE, 2, '    old_orgs: str = "x"')
+    assert _gate_flag(root, [_REGISTRY], changed)["full"] is True
+
+
 def test_gate_an_env_guard_name_added_is_a_flag_only_diff(tmp_path: Path) -> None:
     root = _flag_repo(tmp_path)
     case = _added(_GUARD, _GUARD_BASE, 2, '    "NEW_THING_ORGS",')
@@ -903,6 +926,13 @@ _SITE_NOT_A_SEAM = {
     # It reads the binding in its SQL (`current_setting`) and binds none. Its R8
     # suite imports it, and the import rules select that suite.
     _AC_REAL + "goal_store.py": "reads the binding, binds none",
+    # It reads the binding in its purge clause and names `tenant_session(` in a
+    # docstring. It opens no connection: the caller's session binds the tenant.
+    # Its R8 suite imports it.
+    _AC_REAL + "member_actions.py": "reads the binding, binds none",
+    # It reads the binding in its read SQL and names `tenant_session(` in a
+    # docstring. Its Redis keys go through the tenant wrapper. It binds nothing.
+    _AC_REAL + "member_habits.py": "reads the binding, binds none",
 }
 # A seam that holds no site of the pattern. Each one says why it is a seam.
 _SEAM_WITHOUT_SITE = {

@@ -764,8 +764,7 @@ answer a company question, and cite what you used.
 | `account_identity(cred)` | The remote account id and display name, for the same-account check |
 | `discover(cred, cursor)` | One page of the folder tree, as `SourceNode(ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url)` |
 | `list_changed(cred, cursor, folder_ext_ids)` | The changes since the cursor, with the provider's own delta API |
-| `fetch_text(cred, node)` | The text of one document, capped, through `attachment_text.extract_text` or the provider's export |
-| `fetch_bytes(cred, node)` | The bytes, only for "Keep a copy" |
+| `fetch_document(cred, node)` | The bytes of one file and their suffix (`FetchedFile`). KC-5a replaced `fetch_text` and `fetch_bytes`. The index pass reads the text with `attachment_text.extract_text`. A Google-native file exports as OOXML. The Google adapter raises `NotImplementedError("KC-5b")` until the real fetch ships |
 | `deep_link(node)` | The URL that opens the document at the provider |
 
 **The providers:**
@@ -918,6 +917,15 @@ loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
+
+WS-FIND FIND-6 (`find_engine.md` §5.4) ends the paragraph with the standing
+rule. Only an org of `FIND_ORGS` with `CONTEXT_RECENCY` on gets it. Every
+other org keeps the paragraph above, byte for byte:
+
+> When the member names a person, a company or a record, call
+> `search_company` once, with all their words. Read how each hit matched. A
+> near or related hit is a lead: say the spelling or the link you used.
+> Before you say that a record does not exist, read the "Where else" line.
 
 The sentences on work in one app came from the chat speed review
 (owner go, 2026-10-25). Before them, a request to write an email searched
@@ -1699,8 +1707,9 @@ page.
 
 - **Input.** `q` (2 to 300 characters), `apps` (an optional comma list of
   source keys), `k` (1 to 10 hits an app, default 5).
-- **Order.** The sources run one after another, never at once. The pool
-  budget is small, and `search.py` records why. Each gets 1.5 s, and the
+- **Order.** The sources run at once, four at most (`FIND_SESSIONS`,
+  D-FIND-6, HRD-4). The pool budget is small, and `search.py` records why.
+  A fifth source waits for a slot. Each gets 1.5 s from its own start, and the
   whole answer 4 s. A source can fail, refuse or run out of time. Then the
   answer leaves it out and names it in `skipped`. It never fails the call.
 - **Fusion.** Each app ranks its own hits, and the scores of two apps do not

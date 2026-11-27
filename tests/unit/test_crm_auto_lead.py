@@ -474,7 +474,7 @@ def test_dw2_the_crm_step_runs_after_every_mail_step() -> None:
     positions = [
         source.index(step) for step in (
             "auto_run_rules_for_account(", "sweep_uncategorized(",
-            "_categorize_senders_job(", "_maybe_classify_threads(",
+            "_categorize_senders_job(", "classify_threads_once(",
             "_maybe_auto_archive(", "create_leads_from_new_mail(",
         )
     ]

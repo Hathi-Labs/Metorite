@@ -92,11 +92,14 @@ from gateway.routes.projects.core import (
     validate_grant_subject,
     validate_icon_slot,
     validate_lifecycle_settings,
+    validate_work_style,
+    wire,
 )
 from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.tasks import _narrow_agent_body
+from gateway.routes.projects.team_scope import TeamScope, resolve_team_scope
 from gateway.routes.projects.updates import latest_update, updates_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -146,6 +149,8 @@ _TRACKED_PROJECT_FIELDS: tuple[str, ...] = (
     # is the same "who did that" question, and the icon is how people find
     # the space in a long sidebar.
     "icon", "icon_slot",
+    # WS-39 SP-3a. "Who turned on sprints here" is the same question.
+    "work_style",
 )
 
 
@@ -421,13 +426,18 @@ class DeleteResponse(BaseModel):
 # ── Reads ───────────────────────────────────────────────────────────────────
 
 async def _visible_projects(
-    db: Any, user: UserContext, vis: Any = None,
+    db: Any, user: UserContext, vis: Any = None, *, team: TeamScope | None = None,
 ) -> list[Any]:
     # ⚠️ `vis` is passed in by a caller that already resolved it. Resolving it
     # a second time costs two more round trips for a caller without
     # `data:org:read`, on the read every Projects page opens with.
     if vis is None:
         vis = await resolve_visibility(db, user)
+    # WS-39 T-1. A team scope is ANDed beside the visibility clause, so it
+    # narrows the list to the projects of one team and opens nothing (§14.9
+    # rule 5). With no team the statement does not change.
+    team_sql = f"AND {team.project_clause('id')} " if team is not None else ""
+    params = {**vis.params, **team.params} if team is not None else vis.params
     # Personal projects are excluded from every TEAM read (147/§3.11). They are
     # ordinary projects the grant model already scopes to one person, so this is
     # not a security filter — it is that "My tasks" does not belong in a
@@ -437,10 +447,11 @@ async def _visible_projects(
         text(
             f"SELECT * FROM pm_projects "
             f"WHERE {vis.project_clause()} AND personal_owner IS NULL "
+            f"{team_sql}"
             # The id breaks a tie of the name: the chat pages this list.
             f"ORDER BY position NULLS LAST, name, id"
         ),
-        vis.params,
+        params,
     )).fetchall()
 
 
@@ -516,7 +527,11 @@ async def grantable_project_ids(user: UserContext) -> frozenset[str]:
 
 
 @router.get("/tree")
-async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
+async def get_tree(
+    user: UserContext = Depends(get_current_user),
+    # WS-39 T-1. A team slug or `all` (`team_scope.py`). Dark behind TEAMS_ORGS.
+    team: str | None = None,
+) -> dict:
     """The caller's forest, nested.
 
     Built in Python from the flat visible set rather than by a recursive read:
@@ -529,10 +544,15 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     with the same counts. ``rows`` does not change (R6), so an old client
     sees no change. Each personal node carries ``personal: true``, and
     ``can_write_grants`` false with the words of the 403 (OP-6b).
+
+    WS-39 T-1. ``team`` narrows ``rows`` to the projects of one team of the
+    caller. A node whose parent is outside the team is a root, as above.
+    ``personal`` does not change, because the member's own tree is no team.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user, vis)
+        scope = await resolve_team_scope(db, user, vis, team)
+        rows = await _visible_projects(db, user, vis, team=scope)
         counts = await _open_and_done(db, vis)
         nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
         own = await _own_personal_projects(db, vis)
@@ -691,9 +711,18 @@ def _attach_progress(
 
 
 @router.get("/nodes")
-async def list_nodes(user: UserContext = Depends(get_current_user)) -> dict:
+async def list_nodes(
+    user: UserContext = Depends(get_current_user),
+    # WS-39 T-1. The team scope of `GET /projects/tree`, on the flat list.
+    team: str | None = None,
+) -> dict:
     async with _tenant_session() as db:
-        rows = await _visible_projects(db, user)
+        if team is None:
+            rows = await _visible_projects(db, user)
+        else:
+            vis = await resolve_visibility(db, user)
+            scope = await resolve_team_scope(db, user, vis, team)
+            rows = await _visible_projects(db, user, vis, team=scope)
     return {"rows": [row_to_dict(r, ProjectModel) for r in rows], "total": len(rows)}
 
 
@@ -1155,6 +1184,9 @@ def check_node_values(user: UserContext, values: dict[str, Any]) -> str:
     validate_choice(values.get("kind"), NODE_KINDS, "node kind")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. A new node may name its style. With none, the column
+    # DEFAULT gives `flow`.
+    validate_work_style(values)
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
@@ -1282,6 +1314,9 @@ async def create_node_in(
 
 
 @router.patch("/nodes/{project_id}")
+# WS-39 SP-3a: the style picker writes here. A deadlock or a lock timeout of
+# the UPDATE answers 409 and writes nothing, as the other tree writes do.
+@_tree_race_as_409
 async def patch_node(
     project_id: str, payload: ProjectIn,
     user: UserContext = Depends(get_current_user),
@@ -1307,6 +1342,9 @@ async def patch_node(
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. The work style of this node only: no inheritance, and a
+    # change deletes nothing (§13.1 rule 2). It writes the one column.
+    validate_work_style(values)
     # Re-parenting is a MOVE, with its own cycle check and root re-stamping.
     # Accepting it here as an ordinary field would skip both.
     if "parent_project_id" in values:
@@ -1778,6 +1816,11 @@ class ArchiveResponse(BaseModel):
     #: Open tasks in the subtree at the moment of archiving. Reported, not acted
     #: on: **no `pm_tasks` row is written by this endpoint** (D-PM-26).
     open_tasks: int
+    #: The new ``updated_at`` of the ROOT row, when this call stamped the root.
+    #: None when the root was already in the target state. WT-6a: the chat
+    #: receipt sends it as ``If-Match`` on its Undo, so the Undo matches this
+    #: archive and no later one.
+    updated_at: str | None = None
 
 
 async def _subtree_open_tasks(db: Any, project_id: str) -> int:
@@ -1825,14 +1868,25 @@ async def archive_node(
         # reporting zero.
         open_tasks = await _subtree_open_tasks(db, project_id)
 
-        stamped = (await db.execute(
+        # WT-6a: the ROOT row's `updated_at` moves, as each other node write
+        # moves it (`update_row`, `personal.py`'s rename). The If-Match of an
+        # Undo is then this archive's own version, and a later archive by
+        # another member gets a new one. The descendants keep their stamp.
+        touched = (await db.execute(
             text(
                 f"UPDATE pm_projects SET archived_at = now(), "
-                f"    archived_root_id = CAST(:pid AS uuid) "
-                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL"
+                f"    archived_root_id = CAST(:pid AS uuid), "
+                f"    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                f"        THEN now() ELSE updated_at END "
+                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL "
+                f"RETURNING id, updated_at"
             ),
             {"pid": project_id},
-        )).rowcount or 0
+        )).fetchall()
+        stamped = len(touched)
+        root_stamp = next(
+            (wire(r.updated_at) for r in touched if str(r.id) == project_id), None,
+        )
 
         if stamped:
             await record_activity(
@@ -1843,6 +1897,7 @@ async def archive_node(
         result = ArchiveResponse(
             project_id=project_id, archived=True,
             projects=int(stamped), open_tasks=int(open_tasks),
+            updated_at=root_stamp,
         )
 
     if stamped:
@@ -1853,6 +1908,7 @@ async def archive_node(
 @router.post("/nodes/{project_id}/unarchive")
 async def unarchive_node(
     project_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> ArchiveResponse:
     """Bring a project and everything its archive filed back.
 
@@ -1868,10 +1924,21 @@ async def unarchive_node(
     need explaining forever. Refusing it and naming the ancestor is the same
     move ``_refuse_lifecycle_on_child`` makes: keep the incoherent case
     unreachable rather than merely documented.
+
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is the rule of
+    :func:`patch_node`. A node has no ``fields_at``, so the version is
+    ``updated_at`` with strict equality. :func:`archive_node` and this route
+    both stamp ``updated_at`` on the root row. The Undo of a chat receipt
+    sends the stamp that its archive answered. So a later restore, a later
+    archive or a field change answers 412 and restores nothing. An absent
+    header passes (D-PM-20).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        # After the visibility load: a caller who cannot see the node gets
+        # 404 and never learns from a 412 that it exists (R5).
+        require_precondition(row, if_match, row_to_dict(row, ProjectModel))
 
         if getattr(row, "archived_at", None) is None:
             return ArchiveResponse(
@@ -1890,10 +1957,14 @@ async def unarchive_node(
                 ),
             )
 
+        # WT-6a: as in `archive_node`, the root row's `updated_at` moves, so
+        # an Undo token of the archive before this restore answers 412.
         cleared = (await db.execute(
             text(
                 "UPDATE pm_projects SET archived_at = NULL, "
-                "    archived_root_id = NULL "
+                "    archived_root_id = NULL, "
+                "    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                "        THEN now() ELSE updated_at END "
                 "WHERE archived_root_id = CAST(:pid AS uuid)"
             ),
             {"pid": project_id},

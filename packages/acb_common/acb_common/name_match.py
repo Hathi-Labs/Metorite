@@ -20,8 +20,16 @@ scores each candidate, and only a name at :data:`NEAR_SCORE` or more is near.
 So the CRM search never calls near a name that the two lookups call far.
 The reverse is not true yet: a candidate must first share raw trigrams. So a
 pair whose raw letters differ a lot (Laxmi and Lakshmi, Puja and Pooja) is
-near in the two lookups and not yet in the CRM search. HRD-18b (task 3226)
-closes that gap.
+near in the two lookups and not yet in the CRM list's own near pass. The
+near step of the company search (HRD-18b, task 3226) reads a vocabulary, so
+it finds these pairs.
+
+**A vocabulary in Python** (HRD-18b, task 3226). The near lookup of the
+company search reads the names that the member can open, at most
+:data:`NEAR_VOCABULARY` rows of each table, and :func:`near_names` scores
+each of their words here. No raw SQL floor stands between a name and the
+judge, so Laxmi finds «Lakshmi» and Puja finds «Pooja». :func:`best_spelling`
+picks the spelling that the search then asks again with.
 
 **A near match is never a match.** Each caller marks it near, and the model
 asks the member to confirm it. So a few pairs of different names may stay
@@ -36,9 +44,11 @@ import it. It opens no connection. Fence: ``tests/unit/test_name_variants.py``.
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
+from collections.abc import Iterable
 from functools import lru_cache
-from typing import Any
+from typing import Any, NamedTuple
 
 #: The spelling variants that one sound has, in the order :func:`fold` applies
 #: them. Each pair maps the left text to the right text, inside a word. The
@@ -97,7 +107,20 @@ SOUND_MIN_LETTERS = 6
 #: fold matches ranks above a name whose sound only matches.
 SOUND_WEIGHT = 0.9
 
+#: The most rows of one table that a near lookup reads (HRD-18b). Each app
+#: reads its newest rows first, so the cap drops the oldest names.
+NEAR_VOCABULARY = 2000
+
+#: The most seconds that one scoring of a vocabulary runs in its thread. It
+#: matches the near lookup's own limit, so a thread stops near when its
+#: lookup does (HRD-18b review of 2026-11-16).
+NEAR_SCORING_S = 0.5
+#: How many names :func:`near_names` scores between two looks at the clock.
+_CHECK_EVERY = 256
+
 _SPLIT = re.compile(r"[^0-9a-z]+")
+#: One token of a name as the record spells it: letters and digits only.
+_TOKEN = re.compile(r"[^\W_]+")
 _DOUBLE = re.compile(r"(.)\1+")
 #: A ``v`` or ``y`` between a consonant and a vowel: the glide of "Swagata".
 _GLIDE = re.compile(r"(?<=[b-df-hj-np-tv-z])[vy](?=[aeiou])")
@@ -214,3 +237,109 @@ def near_query(query_words: list[str]) -> bool:
     return 0 < len(query_words) <= NEAR_MAX_WORDS and any(
         near_eligible(w) for w in query_words
     )
+
+
+class NearName(NamedTuple):
+    """One name that a near lookup found (HRD-18b, ``find_engine.md`` §4.3)."""
+
+    #: The whole name, as the record holds it.
+    name: str
+    #: :func:`word_score` of the asked word against :attr:`spelling`.
+    score: float
+    #: The word of the name that is near, as the record spells it: one token
+    #: of letters and digits, at most :data:`NEAR_MAX_CHARS` characters.
+    spelling: str
+
+
+def same_word(left: str, right: str) -> bool:
+    """True when two words of :func:`words` are one word, or one word and its
+    plural. "printer" and "printers" are one word, so neither is a near
+    spelling of the other."""
+    if left == right:
+        return True
+    return left.rstrip("s") == right.rstrip("s") and abs(len(left) - len(right)) == 1
+
+
+def _raw(asked: str, other: str) -> float:
+    """The trigram overlap of two words with no fold. It only breaks a tie of
+    :func:`word_score`: "Sharat" holds more of "sharath" than "Sarath" does."""
+    return _jaccard(trigrams(asked), trigrams(other))
+
+
+def _as_spelled(name: str, word: str) -> str:
+    """The token of *name* that gives *word*, as the record spells it."""
+    for token in _TOKEN.findall(name):
+        if _words(token) == (word,):
+            return token[:NEAR_MAX_CHARS]
+    return word[:NEAR_MAX_CHARS]
+
+
+def near_names(asked: Any, names: Iterable[Any], k: int, *,
+               deadline: float | None = None) -> list[NearName]:
+    """The names near to one asked word, one name for each near spelling.
+
+    Each distinct word of *names* is scored once with :func:`word_score`. A
+    word at :data:`NEAR_SCORE` or more is a spelling, and the first name that
+    holds it stands for it, so the caller gives the newest names first. The
+    asked word itself counts too, so a caller can tell exact from near. At
+    most *k*, nearest first, then by raw nearness. Pure, so a caller may run
+    it in a thread. *deadline* is a ``time.monotonic()`` instant: past it,
+    the scoring stops and gives what it found, so a thread whose lookup
+    timed out does not keep the CPU (HRD-18b review of 2026-11-16).
+    """
+    ask = _words(str(asked or ""))
+    if len(ask) != 1 or not near_eligible(ask[0]) or k <= 0:
+        return []
+    word = ask[0]
+    scores: dict[str, float] = {}
+    found: dict[str, tuple[float, str]] = {}
+    for i, raw in enumerate(names):
+        if deadline is not None and i % _CHECK_EVERY == 0 and time.monotonic() > deadline:
+            break
+        name = str(raw or "").strip()
+        for part in _words(name):
+            if part not in scores:
+                scores[part] = word_score(word, part) if len(part) > 1 else 0.0
+            if scores[part] >= NEAR_SCORE and part not in found:
+                found[part] = (scores[part], name)
+    ranked = sorted(found.items(), key=lambda item: (-item[1][0], -_raw(word, item[0]), item[0]))
+    return [NearName(name, score, _as_spelled(name, part))
+            for part, (score, name) in ranked[:k]]
+
+
+def near_lookup(asked: Iterable[str], names: Iterable[Any], k: int, *,
+                deadline: float | None = None) -> dict[str, list[NearName]]:
+    """:func:`near_names` for each asked word over one list of names, each
+    with the one *deadline*. Pure."""
+    pool = [str(n or "") for n in names]
+    return {word: near_names(word, pool, k, deadline=deadline) for word in asked}
+
+
+def scoring_deadline() -> float:
+    """The deadline of one scoring in a thread: :data:`NEAR_SCORING_S` from
+    now, on the ``time.monotonic()`` clock."""
+    return time.monotonic() + NEAR_SCORING_S
+
+
+def best_spelling(asked: Any, found: Iterable[NearName]) -> NearName | None:
+    """The nearest name whose spelling is not the asked word itself (HRD-18b).
+
+    A spelling that :func:`same_word` calls the asked word is no near
+    spelling. A tie of score goes to the raw nearness, then to the spelling.
+    ``None`` when no name is near.
+    """
+    ask = _words(str(asked or ""))
+    if len(ask) != 1:
+        return None
+    word = ask[0]
+    best: tuple[float, float, str] | None = None
+    pick: NearName | None = None
+    for item in found:
+        spelled = _words(item.spelling)
+        if len(spelled) != 1 or same_word(word, spelled[0]) or item.score < NEAR_SCORE:
+            continue
+        key = (item.score, _raw(word, spelled[0]), spelled[0])
+        if best is None or (key[0], key[1]) > (best[0], best[1]) or (
+                (key[0], key[1]) == (best[0], best[1]) and key[2] < best[2]):
+            best, pick = key, item
+    return pick

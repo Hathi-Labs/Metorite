@@ -14,27 +14,40 @@
  *    typed its prompt. The typed mark is the one of `lib/typedMark.ts`. The
  *    chat keeps it on the live message only, so a reloaded turn gets no
  *    offer. The dock reads no room, so the dock gets no offer.
- * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and its
- *    result holds the success mark of its tool at its fixed place
- *    (`SUCCESS_MARKS`). That is
- *    positive evidence: a refusal that a tool answers as plain text ("The
- *    member declined. Nothing was filed.") holds no mark, so it gives no
- *    offer. A tool with no mark in the list gives no offer either.
+ * 3. The turn has `MIN_CALLS` or more calls. Each call finished, and it
+ *    counts in one of two ways. A tool of `SUCCESS_MARKS` counts when its
+ *    result holds its mark at its fixed place. That is positive evidence: a
+ *    refusal that a tool answers as plain text ("The member declined.
+ *    Nothing was filed.") holds no mark, so it gives no offer. Any other tool
+ *    counts only as a READ of the chat tool source (TOF-1d): see
+ *    `readAnswered`, a weaker rule, which `onlyReadRows` holds to the rows of
+ *    class A of the source `tool`. A write or a send of that source never
+ *    counts, because its plain-text refusals ("A task needs a title.",
+ *    "Nothing was changed.") have no common mark.
  * 4. Each call maps to one row of the catalog through the `tool` of the row
  *    (`skill_packs.action_tool` on the gateway, the one map). A tool that no
  *    row names, or that two rows name, maps no call. A workflow row maps a
  *    call only through the workflow id in its arguments. One call that maps
  *    to no row stops the offer for the whole turn: a mail tool and a CRM tool
- *    have no catalog action, so their turn gets no offer (fail closed).
+ *    map a row only while the org is on `STUDIO_CHAT_TOOLS_ORGS`, so a turn of
+ *    an org with no `tool:` row gets no offer (fail closed).
  * 5. The viewer did not answer an offer on this message in this page.
+ * 6. No saved skill ran on this turn (task 3830). The stream carries no mark
+ *    of a skill, so the card asks the gateway whether a skill of the member
+ *    matches the typed words (`POST /studio/skills/match`, the matcher of the
+ *    turn itself). A match, an unknown answer and a failed read all show no
+ *    offer.
  *
- * ⚠️ **No tool argument and no tool result goes into the draft.** A model or
- * another person wrote that text. A stored skill goes into the prompt of each
- * later turn that loads it, so an argument in the draft would be a stored
- * prompt injection. The text comes from the viewer's typed words through
- * `skillStarter.starterFor`. The actions are catalog ids, in call order. A
- * workflow id of an argument only picks a row, and the draft holds the id of
- * that row. A result is only searched for the success mark of its tool.
+ * ⚠️ **No tool argument and no tool result goes into the draft, except an
+ * id.** A model or another person wrote that text. A stored skill goes into
+ * the prompt of each later turn that loads it, so an argument in the draft
+ * would be a stored prompt injection. The text comes from the viewer's typed
+ * words through `skillDraft.ts`: a short name, a description, and one
+ * numbered step for each call. A step names its tool, and a target only when
+ * the argument of an allow-listed key has the shape of an id
+ * (`skillDraft.targetOf`). The actions are catalog ids, each once. A workflow
+ * id of an argument only picks a row, and the draft holds the id of that row.
+ * A result is only searched for the success mark of its tool.
  *
  * **The answer.** Save sends ONE `POST /api/studio/skills` through the
  * `create` that the card passes (`skillsApi.createSkill`), with the name in
@@ -54,10 +67,14 @@ import { bareToolName, refusedText } from "@/lib/toolSteps";
 import { refusedResult } from "./recordsCard";
 import { WORDS, placeOfFailure } from "./skillErrors";
 import { MAX_ACTIONS, pickableActions } from "./skillForm";
-import { NAME_MAX, starterFor } from "./skillStarter";
+import { jobDescription, jobInstructions, jobName, targetOf } from "./skillDraft";
+import { NAME_MAX } from "./skillStarter";
 import type { CatalogAction, Reply, Skill, SkillBody, SkillVersion } from "./skillsApi";
 
-/** The fewest finished calls of a turn that earn an offer (rule 3). */
+/**
+ * The fewest finished CALLS of a turn that earn an offer (rule 3). It counts
+ * calls and not distinct tools: three reads of one tool are three steps.
+ */
 export const MIN_CALLS = 3;
 
 /** The title of the card. A short question, and the text is in the body. */
@@ -147,6 +164,61 @@ export const SUCCESS_MARKS: Readonly<Record<string, SuccessMarks>> = {
   },
 };
 
+/**
+ * Rule 3, the weaker tier (TOF-1d): the plain-text answers of a READ tool that
+ * are no answer. ⚠️ A chat tool of the CRM, Email and Projects packs answers a
+ * failure as plain text in some cases, with no common mark: a gateway refusal
+ * starts with `Refused:` (`acb_common.tool_refusals.REFUSED`, and
+ * `refusedText` drops it), but the rest do not. So a read counts when it
+ * finished, it is no refusal, its answer is not empty, and its answer starts
+ * with none of these words. The list names the plain-text non-answers that
+ * were found in the three packs. A new one joins this list, with its source
+ * file. `skillOffer.test.ts` reads each file to hold each text real.
+ *
+ * Weaker than a mark: a failure text that no entry names counts as an answer.
+ * It then gives an offer for a turn that did not work. The cost is one card
+ * that the member can close, because a draft holds no argument and no result,
+ * and Save makes a private draft only (D127.2).
+ */
+export const NON_ANSWER_HEADS: readonly { source: string; text: string }[] = [
+  { source: "packages/acb_skills/acb_skills/crm_tools.py", text: "The CRM is off for this organization" },
+  { source: "packages/acb_skills/acb_skills/crm_tools.py", text: "The CRM is not open to you" },
+  { source: "apps/agents/agent-email-assistant/agents.py", text: "I cannot see that mailbox or message" },
+  { source: "apps/agents/agent-email-assistant/agents.py", text: "This tool has no data for this organization" },
+];
+
+/** The openings of a failure that a framework writes, and a short "not found" line. */
+const FAILURE_OPENING = /^(error\b|unknown tool\b|i (cannot|could not)\b)/i;
+const NOT_FOUND_LINE = /\bnot found\.?$/i;
+/** A "not found" line is a short line. A long answer that ends so is an answer. */
+const NOT_FOUND_MAX = 160;
+
+/**
+ * The weaker tier of rule 3 for one call: it finished, it is no refusal, its
+ * answer is not empty, and its answer is no plain-text non-answer
+ * (`NON_ANSWER_HEADS`). It says nothing of the tool: `onlyReadRows` asks the
+ * catalog for that.
+ */
+export function readAnswered(call: OfferCallLike): boolean {
+  if (call.status !== "done") return false;
+  const result = typeof call.result === "string" ? call.result : "";
+  if (refusedText(result) || refusedResult(result)) return false;
+  const text = result.trim();
+  if (!text) return false;
+  const head = text.toLowerCase();
+  if (NON_ANSWER_HEADS.some((h) => head.startsWith(h.text.toLowerCase()))) return false;
+  if (FAILURE_OPENING.test(text)) return false;
+  return !(text.length <= NOT_FOUND_MAX && NOT_FOUND_LINE.test(text));
+}
+
+/**
+ * A call that may count as a read: its tool has no success mark (a tool with
+ * a mark counts by its mark alone), and `readAnswered` says yes.
+ */
+export function readCandidate(call: OfferCallLike): boolean {
+  return !Object.hasOwn(SUCCESS_MARKS, bareToolName(call.name)) && readAnswered(call);
+}
+
 /** A tool event as the chat holds it. */
 export interface OfferCallLike {
   id: string;
@@ -179,11 +251,20 @@ export interface OfferTurn {
   calls: readonly OfferCallLike[] | undefined;
 }
 
-/** One action of the draft: a catalog row. */
+/**
+ * One CALL of the turn, as one row and one step of the draft (TOF rung 1,
+ * task 3832). Two calls of one tool are two rows, and they share one catalog
+ * id. The skill holds each id once (`body.actions`), and the steps hold each
+ * call.
+ */
 export interface OfferAction {
   id: string;
   title: string;
   cls: string;
+  /** The bare name of the tool of the call. */
+  tool: string;
+  /** An id that the call named, or "" (`skillDraft.targetOf`). */
+  target: string;
 }
 
 /** The skill that Save creates. Its parts are the parts that the card shows. */
@@ -294,7 +375,28 @@ export function offerAsks(turn: OfferTurn, answered: boolean): boolean {
   const prompt = turn.prompt;
   if (!prompt || !prompt.typed || !prompt.byViewer || !prompt.words) return false;
   const calls = turn.calls ?? [];
-  return calls.length >= MIN_CALLS && calls.every(succeededCall);
+  // A call with no mark may still count as a read: the catalog decides (`onlyReadRows`).
+  return calls.length >= MIN_CALLS && calls.every((c) => succeededCall(c) || readCandidate(c));
+}
+
+/**
+ * Rule 3, the second half: each call with no success mark must be a READ of
+ * the chat tool source. Its row is of the source `tool` and of class A, so the
+ * tool says on its own annotation that it reads only (`chat_tool_class`).
+ * False when a call has no row, which also fails closed in `mapCalls`.
+ */
+export function onlyReadRows(calls: readonly OfferCallLike[], catalog: readonly CatalogAction[]): boolean {
+  const reads = new Map<string, CatalogAction[]>();
+  for (const row of pickableActions(catalog)) {
+    const tool = typeof row.tool === "string" ? row.tool.trim().toLowerCase() : "";
+    if (tool) reads.set(tool, [...(reads.get(tool) ?? []), row]);
+  }
+  return calls.every((call) => {
+    if (succeededCall(call)) return true;
+    if (!readCandidate(call)) return false;
+    const found = reads.get(bareToolName(call.name)) ?? [];
+    return found.length === 1 && found[0].source === "tool" && String(found[0].class) === "A";
+  });
 }
 
 /** The workflow id that a call names in its arguments, or "". */
@@ -305,8 +407,9 @@ function workflowIdOf(args: Record<string, unknown> | undefined): string {
 }
 
 /**
- * Rule 4. The catalog rows of the calls, in call order and each once, or
- * null when one call maps to no row. Only a row that a skill may hold maps a
+ * Rule 4. The catalog rows of the calls, in call order with one row for each
+ * call (a repeated tool is a repeated row), or null when one call maps to no
+ * row. Only a row that a skill may hold maps a
  * call (`pickableActions`: no package row, no class X).
  */
 export function mapCalls(
@@ -320,7 +423,6 @@ export function mapCalls(
     byTool.set(tool, [...(byTool.get(tool) ?? []), row]);
   }
   const out: OfferAction[] = [];
-  const seen = new Set<string>();
   for (const call of calls) {
     const found = byTool.get(bareToolName(call.name)) ?? [];
     let row: CatalogAction | undefined;
@@ -331,33 +433,52 @@ export function mapCalls(
       row = found[0];
     }
     if (!row) return null;
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    out.push({ id: row.id, title: String(row.title || row.id), cls: String(row.class) });
+    const tool = bareToolName(call.name);
+    // A workflow call is named by its row id, which `workflowIdOf` checked.
+    const target = row.source === "workflow" ? row.id.slice("workflow:".length).toLowerCase() : targetOf(tool, call.args);
+    out.push({ id: row.id, title: String(row.title || row.id), cls: String(row.class), tool, target });
   }
-  return out.length > 0 && out.length <= MAX_ACTIONS ? out : null;
+  return out.length > 0 && out.length <= MAX_ACTIONS && actionIds(out).length <= MAX_ACTIONS ? out : null;
+}
+
+/** The catalog ids of the rows, each once, in the order of the first call. */
+export function actionIds(rows: readonly OfferAction[]): string[] {
+  return [...new Set(rows.map((r) => r.id))];
 }
 
 /**
- * The draft of the skill. The text comes from the viewer's typed words only,
- * and the actions are catalog ids. No argument and no result reaches it.
+ * The draft of the skill (`skillDraft.ts`, no model call). The name and the
+ * text come from the viewer's typed words. Each call is one numbered step,
+ * with the tool and an id target. The actions are catalog ids, each once. No
+ * other argument and no result reaches it.
  */
 export function offerDraft(words: string, actions: readonly OfferAction[]): SkillDraft {
-  const fields = starterFor(words);
+  const calls = actions.map((a) => ({ tool: a.tool, target: a.target }));
+  const description = jobDescription(words, calls);
   return {
-    name: fields.name,
-    description: fields.description,
-    body: { description: fields.description, instructions: fields.instructions, actions: actions.map((a) => a.id) },
+    name: jobName(words),
+    description,
+    body: { description, instructions: jobInstructions(words, calls), actions: actionIds(actions) },
   };
 }
 
-/** The offer of a turn, or null when the card shows nothing (rules 1 to 5). */
+/**
+ * The offer of a turn, or null when the card shows nothing (rules 1 to 5).
+ * *skillRan* is rule 6 (task 3830): true when a saved skill of the member
+ * matched the words of this turn, so the calls came from that skill. Then no
+ * offer shows. null means the answer is not known yet, or the read failed, and
+ * it shows no offer either (fail closed). The default is false for the pure
+ * rules. The card passes the real answer.
+ */
 export function skillOffer(
   turn: OfferTurn,
   catalog: readonly CatalogAction[] | null | undefined,
   answered: boolean,
+  skillRan: boolean | null = false,
 ): SkillOffer | null {
+  if (skillRan !== false) return null;
   if (!offerAsks(turn, answered) || !catalog || !turn.prompt) return null;
+  if (!onlyReadRows(turn.calls ?? [], catalog)) return null;
   const actions = mapCalls(turn.calls ?? [], catalog);
   if (!actions) return null;
   const draft = offerDraft(turn.prompt.words, actions);

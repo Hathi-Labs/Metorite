@@ -225,8 +225,14 @@ class _Client:
         return self.gw.request(method, url, headers or {}, json)
 
 
+#: WS-24c slice 2: an empty internal token sends no ``Authorization`` header.
+#: The fake gateway fixture sets one, and the tests check the exact bearer.
+_INTERNAL = "test-internal-token"
+
+
 @pytest.fixture
 def gw(monkeypatch):
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", _INTERNAL)
     gateway = Gateway()
     monkeypatch.setattr(st, "_current_user_email", lambda: MEMBER)
     monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
@@ -297,7 +303,7 @@ async def test_an_ask_posts_once_to_the_plain_action_with_the_marker_and_the_doo
     assert post["body"] == _body(verb)
     assert [c["method"] for c in gw.calls] == ["GET", "POST"]
     assert post["headers"]["X-User-Email"] == MEMBER
-    assert post["headers"]["Authorization"].startswith("Bearer ")
+    assert post["headers"]["Authorization"] == f"Bearer {_INTERNAL}"
     assert not [h for h in post["headers"] if "direct" in h.lower()]
 
 
