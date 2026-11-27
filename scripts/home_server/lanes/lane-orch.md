@@ -58,7 +58,8 @@ your cursor. Only events wake you.
      the lane is busy, send the message and do not stop its turn. When the
      lane has no session, do not start one. The lane keeper restarts each
      listed lane, and `my_work` shows the answered run to it. When the run
-     still waits 2 hours later, the watcher writes the event again.
+     still waits 2 hours later, the watcher writes the event again. It
+     writes it 3 times at most.
      Then write one NOTE line with the run id and your act.
    - **`merger-silent`.** Check lane-merge: its session, its last turn, and
      `~/lanes/merge-bot.log`. Wake it when it stopped. Then write one NOTE

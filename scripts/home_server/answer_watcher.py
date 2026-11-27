@@ -407,6 +407,22 @@ def live_sessions() -> int:
     return sum(1 for ln in out.splitlines() if ln.strip())
 
 
+def _emit_once(
+    run: dict[str, Any], lane: str, emit: Callable[[dict[str, Any], str], bool] | None,
+    state_dir: pathlib.Path, key: str,
+) -> None:
+    """Write the event of a lane run. A failed write frees the wake."""
+    try:
+        ok = emit(run, lane) if emit is not None else False
+    except Exception as exc:
+        log(f"event failed for {run['id']} ({type(exc).__name__})")
+        ok = False
+    if ok:
+        log(f"wrote an answered event for run {run['id']} to {lane}")
+    else:
+        release_attempt(state_dir, key)
+
+
 def tick(
     runs: list[dict[str, Any]],
     *,
@@ -455,15 +471,7 @@ def tick(
         if not take_attempt(state_dir, key, now):
             continue
         if lane is not None:
-            try:
-                ok = emit(run, lane) if emit is not None else False
-            except Exception as exc:
-                log(f"event failed for {run['id']} ({type(exc).__name__})")
-                ok = False
-            if ok:
-                log(f"wrote an answered event for run {run['id']} to {lane}")
-            else:
-                release_attempt(state_dir, key)
+            _emit_once(run, lane, emit, state_dir, key)
             continue
         try:
             ok = start(run)
@@ -486,7 +494,7 @@ LANES_DIR = pathlib.Path(os.environ.get("KEEPER_LANES_DIR", str(pathlib.Path.hom
 BOX_HOST = os.environ.get("METORITE_BOX_HOST", "metorite-home")
 #: A lane name. The label of a run is text that a client sent, so only a
 #: plain lane name may name a lane, and only one on the keeper list.
-LANE_RE = re.compile(r"^lane-[a-z0-9][a-z0-9-]{0,38}$")
+LANE_RE = re.compile(r"lane-[a-z0-9][a-z0-9-]{0,38}")
 
 
 def _plain(value: Any) -> str | None:
@@ -503,7 +511,7 @@ def keeper_lanes(lanes_dir: pathlib.Path = LANES_DIR) -> frozenset[str]:
     except OSError:
         return frozenset()
     names = (ln.split("#", 1)[0].strip() for ln in text.splitlines())
-    return frozenset(n for n in names if LANE_RE.match(n))
+    return frozenset(n for n in names if LANE_RE.fullmatch(n))
 
 
 def make_route(lanes: frozenset[str], box_host: str = BOX_HOST) -> Callable[[dict[str, Any]], str | None]:
@@ -515,7 +523,7 @@ def make_route(lanes: frozenset[str], box_host: str = BOX_HOST) -> Callable[[dic
     def route(run: dict[str, Any]) -> str | None:
         label = _plain(run.get("agent_label"))
         host = _plain(run.get("agent_host"))
-        if label is None or host != box_host or not LANE_RE.match(label):
+        if label is None or host != box_host or not LANE_RE.fullmatch(label):
             return None
         return label if label in lanes else None
 
@@ -525,7 +533,7 @@ def make_route(lanes: frozenset[str], box_host: str = BOX_HOST) -> Callable[[dic
 def answered_line(run: dict[str, Any], lane: str, now: float) -> str:
     """One ``answered`` event in the orch_watch.py form. Ids only, no run text."""
     rid = _safe_id(run.get("id", ""))
-    if rid is None or not LANE_RE.match(lane):
+    if rid is None or not LANE_RE.fullmatch(lane):
         raise ValueError("bad run id or lane")
     task = _safe_id(run.get("task_id", "")) or "-"
     hhmm = time.strftime("%H:%M", time.gmtime(now))
