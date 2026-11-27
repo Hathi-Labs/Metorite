@@ -467,6 +467,87 @@ describe("urgency wins after a click too (decision G3)", () => {
   });
 });
 
+describe("no state node is dead", () => {
+  /** `urgent` failed agents, a working orchestrator with one done lane, and `extra` working agents. */
+  const shape = (urgent: number, extra: number, who = "ana") =>
+    buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: urgent }, (_, i) => session(`f${i}`, { person: `${who}@x.test`, state: "failed" })),
+          session("boss"),
+          session("lane", { state: "done" }),
+          ...Array.from({ length: extra }, (_, i) => session(`w${i}`)),
+        ],
+        [],
+        [{ from: "boss", to: "lane" }],
+      ),
+    );
+  const clickDone = (m: ReturnType<typeof shape>) => {
+    let view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const bucket = kind(layoutGraph(m, options({ mode: "all", ...view })), "bucket").find(
+      (b) => b.state === "done" && b.person === "ana@x.test",
+    )!;
+    view = bucketView(view, "ana@x.test", "done", bucket.next);
+    return layoutGraph(m, options({ mode: "all", ...view }));
+  };
+  it("draws a lane that needs its orchestrator, past 40 urgent agents", () => {
+    expect(cards(clickDone(shape(40, 0)))).toContain("lane");
+  });
+  it("draws it with no urgent agent", () => {
+    expect(cards(clickDone(shape(0, 40)))).toContain("lane");
+  });
+  it("draws it while another person holds 40 urgent agents", () => {
+    const m = buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: 40 }, (_, i) => session(`b${i}`, { person: "ben@x.test", state: "failed" })),
+          session("boss"),
+          session("lane", { state: "done" }),
+          ...Array.from({ length: 20 }, (_, i) => session(`w${i}`)),
+        ],
+        [],
+        [{ from: "boss", to: "lane" }],
+      ),
+    );
+    const g = clickDone(m);
+    expect(cards(g)).toContain("lane");
+    expect(cards(g)).toHaveLength(CARDS_MAX);
+  });
+  it("draws a new agent of its state on each state node click, in many fleets", () => {
+    const states = ["waiting_on_person", "failed", "working", "waiting", "quiet", "done"];
+    let seed = 7;
+    const random = (n: number) => {
+      seed = (seed * 48271) % 2147483647;
+      return seed % n;
+    };
+    for (let fleetNo = 0; fleetNo < 150; fleetNo += 1) {
+      const people = ["ana", "ben", "cy"].slice(0, 1 + random(3));
+      const heads = Array.from({ length: 1 + random(6) }, (_, i) => `h${i}`);
+      const lines: Array<{ from: string; to: string }> = [];
+      const sessions = [
+        ...heads.map((id) => session(id, { person: `${people[random(people.length)]}@x.test`, state: states[random(6)] })),
+        ...Array.from({ length: 30 + random(60) }, (_, i) => {
+          if (random(2)) lines.push({ from: heads[random(heads.length)], to: `a${i}` });
+          return session(`a${i}`, { person: `${people[random(people.length)]}@x.test`, state: states[random(random(2) ? 2 : 6)] });
+        }),
+      ];
+      const m = buildLensModel(mapOf(sessions, [], lines), new Map(), { email: "ana@x.test" });
+      let view = NEW_VIEW;
+      for (let click = 0; click < 6; click += 1) {
+        const g = layoutGraph(m, options({ mode: "all", ...view }));
+        const buckets = kind(g, "bucket");
+        if (buckets.length === 0) break;
+        const bucket = buckets[random(buckets.length)];
+        view = bucketView(view, bucket.person, bucket.state, bucket.next);
+        const after = layoutGraph(m, options({ mode: "all", ...view }));
+        expect(cards(after).length).toBeLessThanOrEqual(CARDS_MAX);
+        const fresh = bucket.sessions.filter((s) => cards(after).includes(s.id));
+        expect(fresh.length, `fleet ${fleetNo} click ${click} ${bucket.state}`).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
 describe("a calm, stable map (decision G4)", () => {
   const at = (g: Graph) => g.nodes.map((n) => [n.id, n.x, n.y, n.w, n.h]).sort();
   const base = () => splitFleet();

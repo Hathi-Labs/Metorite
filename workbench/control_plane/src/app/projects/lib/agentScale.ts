@@ -273,9 +273,20 @@ function takeInto(shown: Set<string>, draft: Draft, s: LensSession, cap: number)
   return true;
 }
 
-/** The slots that a click on the state node of `state` needs, at most `WINDOW_ROOM`. */
+/**
+ * The slots that a click on the state node of `state` needs, at most
+ * `WINDOW_ROOM`: its agents, and each orchestrator that must draw with one. A
+ * slot that an orchestrator holds already goes back to the most urgent card.
+ */
 function roomFor(draft: Draft, state: LensState): number {
-  return Math.min(WINDOW_ROOM, draft.ranked.filter((s) => draft.rankOf(s) === state).length);
+  const ids = new Set<string>();
+  for (const s of draft.ranked) {
+    if (draft.rankOf(s) !== state) continue;
+    ids.add(s.id);
+    const orch = draft.holder.get(s.id);
+    if (orch) ids.add(orch.id);
+  }
+  return Math.min(WINDOW_ROOM, ids.size);
 }
 
 /**
