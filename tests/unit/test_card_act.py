@@ -1,116 +1,187 @@
 """WS-PZ MM-1b — the card answer in the act record (hermetic).
 
 Spec: ``personalization.md`` §19.4, ``proactive_loop.md`` §5.3. Code:
-``gateway/card_act.py``, called by ``POST /agent/respond-input``. R8 twin:
-``test_card_act_r8.py``.
+``orchestrator/card_act.py``, called by ``ask_tools.request_confirmation``.
+R8 twin: ``test_card_act_r8.py``.
 
-a. The act: APPROVE and REJECT and a decline map. Any other shape records
-   nothing.
-b. The gates: no org, no flag, no member record nothing and open no session.
-c. A failure never raises. The row holds no text (the writer's fence).
-d. The route calls the seam after delivery and on a late decline only.
+a. The act comes from ``ask_tools.CARD_OUTCOMES``: approved and declined map,
+   each other outcome records nothing.
+b. The flag off for the bound tenant reads no fact and opens no session.
+c. Only the run's own member: a press of another member writes nothing. A
+   late approve takes the run's own member.
+d. A failure never raises.
+e. The wiring: the live card and the late approve call the seam, and the
+   gateway route records no card answer.
 """
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from gateway import card_act
+from acb_common import get_settings, member_actions
+from acb_skills import ask_tools
+from orchestrator import card_act
 
 ORG = "11111111-1111-1111-1111-111111111111"
-USER = SimpleNamespace(organization_id=ORG, email="ana@example.com")
-_AGENT = Path(card_act.__file__).parent / "routes" / "agent.py"
+ANA = "ana@example.com"
+_ROOT = Path(__file__).resolve().parents[2]
+_AGENT_ROUTE = _ROOT / "apps" / "services" / "gateway" / "gateway" / "routes" / "agent.py"
 
 
-@pytest.mark.parametrize("answer,declined,act", [
-    ("APPROVE", False, "card_approve"), (" approve ", False, "card_approve"),
-    ("REJECT", False, "card_reject"), ("anything", True, None),
-    ("APPROVE", True, None), ("", True, None),
-    ('{"kind":"send","body":"hi"}', False, None), ("YES", False, None), ("", False, None),
-])
-def test_the_act_of_an_answer(answer: str, declined: bool, act: str | None) -> None:
-    assert card_act.act_of(answer, declined) == act
+def test_the_acts_come_from_the_card_outcomes() -> None:
+    """Mutation: map "timed out" or "another member answered" to an act."""
+    assert card_act.act_of(ask_tools.CARD_APPROVED) == "card_approve"
+    assert card_act.act_of(ask_tools.CARD_DECLINED) == "card_reject"
+    assert set(card_act.ACT_OF_OUTCOME) <= set(ask_tools.CARD_OUTCOMES)
+    assert set(card_act.ACT_OF_OUTCOME.values()) <= member_actions.ACTS["chat"]
+    for outcome in ask_tools.CARD_OUTCOMES:
+        if outcome not in (ask_tools.CARD_APPROVED, ask_tools.CARD_DECLINED):
+            assert card_act.act_of(outcome) is None, outcome
+    for text in ("APPROVE", "REJECT", "", None, "card_revise"):
+        assert card_act.act_of(text) is None
 
 
 def _flag(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
-    from acb_common import get_settings
-
     monkeypatch.setattr(get_settings(), "member_actions_orgs", value, raising=False)
 
 
-def test_the_flag_off_opens_no_session(monkeypatch: pytest.MonkeyPatch) -> None:
+class _Sess:
+    async def __aenter__(self) -> str:
+        return "DB"
+
+    async def __aexit__(self, *a: Any) -> bool:
+        return False
+
+
+def _wire(monkeypatch: pytest.MonkeyPatch, actor: str = ANA,
+          org: str | None = ORG) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fake the run facts, the session and the writer. Gives the written
+    rows and the fact reads."""
     import acb_common.db as db
 
-    def boom(*a: Any, **k: Any) -> Any:
-        raise AssertionError("a session was opened")
+    written: list[dict[str, Any]] = []
+    looked: list[str] = []
 
-    monkeypatch.setattr(db, "tenant_session", boom)
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "r1", "APPROVE", shared_room=False)) is False
-
-
-def test_a_row_is_written_with_the_session_member_and_org(monkeypatch: pytest.MonkeyPatch) -> None:
-    import acb_common.db as db
-    from acb_common import member_actions
-
-    _flag(monkeypatch, ORG)
-    seen: dict[str, Any] = {}
-
-    class _Sess:
-        async def __aenter__(self) -> str:
-            return "DB"
-
-        async def __aexit__(self, *a: Any) -> bool:
-            return False
-
-    monkeypatch.setattr(db, "tenant_session", lambda org: _Sess())
+    async def facts(tid: str) -> tuple[str | None, str]:
+        looked.append(tid)
+        return org, actor
 
     async def fake(dbs: Any, **kw: Any) -> bool:
-        seen.update(kw, db=dbs)
+        written.append({**kw, "db": dbs})
         return True
 
+    monkeypatch.setattr(card_act, "_facts", facts)
+    monkeypatch.setattr(db, "tenant_session", lambda org: _Sess())
+    monkeypatch.setattr(db, "current_tenant", lambda: None)
     monkeypatch.setattr(member_actions, "record_act", fake)
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "req-1", "APPROVE", shared_room=False)) is True
-    assert seen == {"db": "DB", "org": ORG, "member": "ana@example.com", "app": "chat",
-                    "act": "card_approve", "via": "card", "item_kind": "card",
-                    "item_id": "req-1"}
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "req-2", "REJECT", shared_room=False)) is True
-    assert seen["act"] == "card_reject"
-    # A decline records nothing, and so does a shared room (PZ-32).
-    seen.clear()
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "req-3", "", True, shared_room=False)) is False
-    assert asyncio.run(card_act.record_card_answer(USER, "req-4", "APPROVE")) is False
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "req-4", "APPROVE", shared_room=True)) is False
-    assert seen == {}
+    return written, looked
 
 
-def test_a_failure_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_approve_and_a_decline_of_the_member_write_card_rows(monkeypatch) -> None:
+    """Mutation: drop via="card", or take the member from the answer text."""
+    _flag(monkeypatch, ORG)
+    written, _ = _wire(monkeypatch)
+    rid = "a" * 32
+    assert asyncio.run(card_act.record_card_act("t1", rid, "approved", "Ana@Example.com"))
+    assert asyncio.run(card_act.record_card_act("t1", "b" * 32, "declined", ANA))
+    assert written[0] == {"db": "DB", "org": ORG, "member": ANA, "app": "chat",
+                          "act": "card_approve", "via": "card", "item_kind": "card",
+                          "item_id": rid}
+    assert written[1]["act"] == "card_reject" and written[1]["item_id"] == "b" * 32
+
+
+@pytest.mark.parametrize("outcome", [
+    "timed out", "closed by your message", "another member answered", "no card",
+    "parked", "changed since"])
+def test_each_other_outcome_writes_nothing_and_reads_no_fact(monkeypatch, outcome) -> None:
+    """Mutation: record a card_revise for "closed by your message"."""
+    _flag(monkeypatch, "*")
+    written, looked = _wire(monkeypatch)
+    assert asyncio.run(card_act.record_card_act("t1", "c" * 32, outcome, ANA)) is False
+    assert written == [] and looked == []
+
+
+def test_a_press_of_another_member_writes_nothing(monkeypatch) -> None:
+    """PZ-32: in a shared room a colleague can press the card. Mutation: drop
+    the check that the responder is the run's own member."""
+    _flag(monkeypatch, "*")
+    written, _ = _wire(monkeypatch, actor=ANA)
+    for who in ("bob@example.com", "", None):
+        assert asyncio.run(card_act.record_card_act("t1", "d" * 32, "approved", who)) is False
+    written2, _ = _wire(monkeypatch, actor="")
+    assert asyncio.run(card_act.record_card_act("t1", "d" * 32, "approved", "")) is False
+    assert written == [] and written2 == []
+
+
+def test_a_late_approve_takes_the_runs_own_member_and_a_new_id(monkeypatch) -> None:
+    _flag(monkeypatch, "*")
+    written, _ = _wire(monkeypatch)
+    assert asyncio.run(card_act.record_card_act("t1", None, "approved", late=True))
+    assert written[0]["member"] == ANA and written[0]["act"] == "card_approve"
+    assert re.fullmatch(r"[0-9a-f]{32}", written[0]["item_id"])
+
+
+def test_the_flag_off_reads_no_fact_and_opens_no_session(monkeypatch) -> None:
+    """Mutation: read the run facts before the flag."""
     import acb_common.db as db
 
-    _flag(monkeypatch, ORG)
+    written, looked = _wire(monkeypatch)
+    _flag(monkeypatch, "")
+    monkeypatch.setattr(db, "current_tenant", lambda: ORG)
+    assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
+    assert looked == [] and written == []
+    # No bound tenant: the org of the run decides, and off writes nothing.
+    monkeypatch.setattr(db, "current_tenant", lambda: None)
+    assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
+    assert written == []
+    # No org at all writes nothing.
+    _flag(monkeypatch, "*")
+    written2, _ = _wire(monkeypatch, org=None)
+    assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
+    assert written2 == []
+
+
+def test_a_failure_never_raises(monkeypatch) -> None:
+    import acb_common.db as db
+
+    _flag(monkeypatch, "*")
+    _wire(monkeypatch)
 
     def boom(org: str) -> Any:
         raise RuntimeError("secret")
 
     monkeypatch.setattr(db, "tenant_session", boom)
-    assert asyncio.run(card_act.record_card_answer(
-        USER, "r", "APPROVE", shared_room=False)) is False
-    assert asyncio.run(card_act.record_card_answer(
-        SimpleNamespace(), "r", "APPROVE", shared_room=False)) is False
+    assert asyncio.run(card_act.record_card_act("t1", "f" * 32, "approved", ANA)) is False
+
+    async def slow(tid: str) -> tuple[str, str]:
+        raise TimeoutError
+
+    monkeypatch.setattr(card_act, "_facts", slow)
+    assert asyncio.run(card_act.record_card_act("t1", "f" * 32, "approved", ANA)) is False
 
 
-def test_the_route_calls_the_seam_after_delivery_in_a_room_of_one() -> None:
-    src = _AGENT.read_text(encoding="utf-8")
-    assert src.count("record_card_answer(") == 1
-    body = src.split("async def respond_user_input", 1)[1]
-    first = body.index("record_card_answer(")
-    assert body.index("delivered = await dispatch_control") < first
-    assert first < body.index("record_reply_answer(")
-    assert "shared_room=bool(room.is_shared)" in body
+def test_the_card_gate_calls_the_seam_after_the_outcome() -> None:
+    """The live card passes the outcome, the card id and the gateway's
+    responder. The late approve and the stored-call yes pass late=True.
+    Mutation: move the call above the outcome, or pass a field of the card."""
+    src = Path(ask_tools.__file__).read_text(encoding="utf-8")
+    assert src.count("await _record_card_act(") == 2
+    live = src.index("await _record_card_act(_LAST_OUTCOME.get()")
+    assert src.rindex("_LAST_OUTCOME.set(\n", 0, live) < live
+    assert re.search(r'await _record_card_act\(_LAST_OUTCOME\.get\(\) or "", _rid,\n'
+                     r'\s+_responded\[-1\] if _responded else ""\)', src)
+    late = src.index("await _record_card_act(CARD_APPROVED, None, late=True)")
+    assert src.rindex("_late_approved(_card)", 0, late) < late
+    body = src[src.index("async def _record_card_act"):src.index("async def note_sent_message")]
+    code = re.sub(r'""".*?"""', "", body, flags=re.S)
+    for forbidden in ("_title", "_detail", "_context", "title", "detail", "answer"):
+        assert forbidden not in code
+
+
+def test_the_gateway_route_records_no_card_answer() -> None:
+    """One seam: the route sees the text of an answer, never its outcome."""
+    src = _AGENT_ROUTE.read_text(encoding="utf-8")
+    assert "card_act" not in src and "record_card" not in src

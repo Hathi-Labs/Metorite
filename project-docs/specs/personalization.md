@@ -4470,7 +4470,16 @@ and label of one mail. A fence fails on a second writer.
   writer records no row for it, because the member pressed nothing then.
   Fence: `tests/unit/test_member_action_writer.py` (section f).
 - A bulk archive (`POST /email/messages/bulk`) records nothing.
-- The card answer in `ask_tools` is MM-1b (task 3614), not MM-1.
+- MM-1b (task 3614) records the card answer in `ask_tools`, in
+  `orchestrator/card_act.py`. The outcome comes from `CARD_OUTCOMES`.
+  `approved` gives `card_approve`, and `declined` gives `card_reject`, with
+  `via` `card`. Only an answer of the run's own member records. A late
+  approve records too.
+- No other outcome records. A late decline, a WhatsApp reply code and a
+  `card_revise` record nothing yet.
+- **Open:** a yes on an email card also makes the send route write its own
+  row, with `via` `app`. This section does not say how to join the two rows.
+  The flag stays off until the owner decides.
 
 **The limits:**
 
