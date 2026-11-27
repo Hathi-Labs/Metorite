@@ -11409,13 +11409,13 @@ deployment key needs `serve`.
 **Fences.** `test_provider_alerts.py` and `test_provider_balance.py`.
 `test_console_dependency_boundary.py` admits the one new client.
 
-### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 TO MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
+### 6A.18 Model setup in one step (MS) — MS-1 BUILT, MS-2 BUILT, MS-3 AND MS-4 SPEC ONLY (2026-11-09, Metorite epic task 2458)
 
 **Gate: AGENT-SAFE to build.** MS-1 and MS-2 are HIGH tier, because they write credentials and tier chains. The owner approved the preview and all six owner calls on 2026-11-09. The Opus review ran on 2026-11-09 (owner call 6). Its verdict was "GO after spec edits", and this text holds those edits.
 
 **Slice tasks:** MS-1 is task 2481, MS-2 is task 2482, MS-3 is task 2483 and MS-4 is task 2484. MS-5 stays closed (owner call 4).
 
-**Status, 2026-11-09:** MS-1 is built on branch `mt-312becee-ms1` (task 2481), and it waits for review and merge. MS-2, MS-3 and MS-4 are spec only. "MS-1 as built" below the slice table lists what the build changed in this text.
+**Status, 2026-11-09:** MS-1 merged as `43f5659d5` (task 2481). MS-2 is built on branch `mt-3d9687ea-ms2` (task 2482), and it waits for review and merge. MS-3 and MS-4 are spec only. "MS-1 as built" and "MS-2 as built" below the slice table list what each build changed in this text.
 
 #### The problem, with the production facts
 
@@ -11506,7 +11506,7 @@ class RegistryProvider:
 | `groq` | Speech to text: `groq/whisper-large-v3-turbo` (K), about $0.04 per hour. Chat: `groq/openai/gpt-oss-120b` (K) | The id has two slashes. The registry removes the need to type it |
 | `deepseek` | Chat: `deepseek/deepseek-flash`, `deepseek/deepseek-v4-pro` (K) | No stable vision model |
 | `elevenlabs` | Speech to text: `elevenlabs/scribe_v2` (K). Speech out: `eleven_flash_v2_5` (K) | Speech out needs a voice id. Not offered until the voice setting exists |
-| `deepgram` | Speech to text: `deepgram/nova-3` (K) | Aura speech out is not offered |
+| `deepgram` | Speech to text: `deepgram/nova-3` (K) | Aura speech out is not offered. Key check: `GET /v1/projects`, because `GET /v1/models` answers with no key |
 | `mistral`, `openrouter` | Chat (K) | `openrouter/<vendor>/<model>` |
 
 A Claude 5 model takes only `temperature=1`. Section 6A.17 handles it in the Router. The registry needs no note for it.
@@ -11537,13 +11537,13 @@ The response never holds the key. The audit row records the provider and the lab
 **`POST /catalog/providers/{id}/adopt`** takes `{ "models": [{ "id": "...", "tiers": ["tier-stt"] }], "dry_run": false }`. For each picked model:
 
 1. It declares the capability with the registry's verb and `streams`. It calls `check_invocation_for_task` and `check_model_for_invocation`, so the same checks bind.
-2. **It tries the new model alone, before any bind,** with the platform key. The Try does not walk the chain. When the new model fails, no old step answers in its place, so a pass proves the new model. `/catalog/transcribe/try` uses a bundled WAV of 3 seconds of Hindi-English speech. `/catalog/vision/try` uses a bundled image. Chat uses a one-line prompt.
+2. **It tries the new model alone, before any bind,** with the platform key. The Try does not walk the chain. When the new model fails, no old step answers in its place, so a pass proves the new model. The Try of Speech to text sends a WAV of 3 seconds, and the Try of Image understanding sends one image. Both are built in code ("MS-2 as built"). Chat uses a one-line prompt.
 3. **It binds only a model whose Try passed.** For each tier named, it writes the whole chain in one insert at one `effective_from`. The new model goes first. The old steps stay after it. A model whose Try failed stays declared and unbound, and the result says why.
 4. It returns `{ declared, bound, tries: [{ job, model, ok, said, error }] }`. `model` is the model that answered. `said` holds the first 80 characters of the answer. `error` holds the vendor's words.
 
 Why the Try comes first: a 400 or a 404 is terminal in the Router. A bad first step with one of those statuses stops the walk, so the whole tier fails for every org.
 
-**The Try helpers.** The existing tries walk the chain (`router.py` `_try_chain`). MS adds a single-model mode to them. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
+**The Try helpers.** The existing tries walk the chain (`main.py` `_try_chain`). MS-2 adds a separate single-model Try (`main.py` `_try_one`), and the VOX-4 tries still walk the chain. Chat, image creation, embeddings and speech out have no Try today. MS-2 adds one for each job it offers, by the CP-13b rule: the platform key, an audit row, and no `usage_event` row. A job with no Try is not offered in the connect flow.
 
 **The window.** `MAX_CHAIN_ATTEMPTS` is 3. The doors count the 3 tries after they drop the steps that have no key, no capability, or a WAV-only verb on a non-WAV clip. The chat door and the vision door drop a step for a missing key only, because they call `acompletion` with or without a capability row. When a prepend pushes a working step to position 4 or below in that count, the result says so by name.
 
@@ -11623,12 +11623,41 @@ The build is on branch `mt-312becee-ms1`. Its fences are `tests/unit/test_provid
 - **The registry.** Mistral and OpenRouter carry no model, because this section names no model id for them. The live list at connect time (MS-2) adds them. Speech-out items with no handler are not in the registry.
 - **No flag.** The VOX-4 tries shipped with a matrix row and no flag. MS-1 does the same: two VIEWER reads, and a fix with the bind's gate (ADMIN and a window).
 
-**Deferred to MS-2:**
+**Deferred to MS-2** (MS-2 built each item but the last. "MS-2 as built" says how):
 
 - The H6 button, H7, and the declare-time and bind-time guards.
 - A credential entry for a key under an alias that no chain uses.
 - ⚠️ **A fix can move BYOK customers to a platform key.** Health counts platform keys only. So a step that only a customer's own key (BYOK) serves is a dead step to it. A fix that drops or moves that step sends those customers to a platform key. MS-2 must show that before the write.
 - `providerGuides.ts` still tells the operator to declare `hi,en` for AssemblyAI. MS-4 folds that file into the registry, which holds `/en`.
+
+#### MS-2 as built (2026-11-09, task 2482)
+
+The build is on branch `mt-3d9687ea-ms2`. Its fence is `tests/unit/test_catalog_connect_adopt_r8.py` (R8), in `r8.must_run` of `tests/fences.json`, which both workflows read (CIV-33c-2). The build changed this text in these places:
+
+- **The routes.** Connect is `POST /catalog/providers/{id}/connect`, and adopt is `POST /catalog/providers/{id}/adopt`. Undo is `POST /catalog/adopt/undo`. The H6 button is `POST /catalog/health/fix-key`. Each one is ADMIN with a window in the matrix. No flag gates them, as MS-1 shipped.
+- **One credential writer.** `main._store_credential` rotates and inserts a key. `POST /providers/credentials` and connect call it. The H6 fix does not call it, because it revokes the live row of the same provider first.
+- **The key check.** `customer_console/key_check.py` sends the key to the registry URL only, follows no redirect, and stops after 10 seconds. Each `KeyCheck` now names how the key travels (`auth`), the fixed headers, the method and the place of the model ids in a list. The Anthropic and Gemini list URLs ask for the whole list. A list that cannot be read gives no statuses, so the curated models stay `known`.
+- **A key that is not ASCII.** An HTTP header cannot carry it, so the key check refuses it before it sends a request. Connect and the H6 fix then answer 400 with fixed words, and they store nothing. Before this guard, httpx raised an error that connect did not catch, and connect answered 500.
+- **A key with a control character** (PR 2818 review, P3b). The key check refuses NUL, each other character below 0x20, and DEL (0x7f), with fixed words. No request goes out. These characters pass the whitespace rule of `provider_keys.check_secret`.
+- **No key check uses a public URL** (PR 2818 review, P1). The first build checked a Deepgram key at `GET /v1/models`. That list answers 200 for any key, so connect stored a bad key and revoked the live one. Deepgram now checks at `GET /v1/projects`, a `call` check, as OpenRouter does. `provider_registry.PUBLIC_URLS` names the known open URLs, and `test_provider_registry.py` refuses a key check that uses one. The set holds the known cases only. The other `verified=False` checks are not proven to need a key. The Sarvam check is a paid speech call with the key header, so it cannot pass with no key.
+- **The Try media are built in code, not recorded.** `customer_console/try_media.py` builds a 3 second WAV of soft tones and a red square on a white PNG. The build could not record or synthesise speech. A readable answer proves the key, the id, the verb and the handler, and a transcript can be empty. The Sarvam key check sends the same clip.
+- **The Try is a separate helper.** `main._try_one` calls one model through `router.call_chain`, with the platform key. It writes one audit row (`catalog.chat_try`, `catalog.vision_try` or `catalog.transcribe_try`, with `via: adopt`) and no `usage_event` row. The VOX-4 try routes still walk the chain. `provider_registry.TRY_JOBS` holds Chat, Image understanding and Speech to text. Image creation, embeddings and speech out have no Try, so adopt refuses them.
+- **The Try shows its cost** (owner call 3, PR 2818 review, P2a). A chat Try and a vision Try record `input_tokens`, `output_tokens` and `vendor_cost_usd` on their audit row, as `try_vision` does. The cost is the vendor's own figure, or the profile prices. Each Try in the adopt answer carries `usage` and `vendor_cost_usd`. The answer adds `tries_cost_usd`, the sum of the known costs, and `tries_unpriced`, the count of served Tries with no known cost. An unknown cost is null and never zero. A Speech to text Try records its `seconds`, as the VOX-4 Try does, and its cost stays null. The dry run calls no vendor, so each Try shows the registry `price_hint` in its place.
+- **At most 6 Tries in one adopt** (`main._ADOPT_TRIES_MAX`). Each Try is a paid call. Six covers every Try job of every provider today (Anthropic has three models for Chat and Image understanding). A larger pick answers 400 before any declare, and the dry run answers the same 400.
+- **Connect answers more than the spec named.** Each model carries `offered` and `why_not`. A curated model that a live list does not show comes back with `status: gone` and `offered: false`, and the screen hides it. `jobs` holds the default switch of each job, and `note` holds the sentence of a provider with no list. A retiring model is never in the list.
+- **The adopt body.** Each pick names a registry model, and `tiers` names the tiers to bind. The task of a tier comes from `tier_catalog`. With no `tiers`, a job gets its tier only when it has one registered tier and no working step in the window. Chat has four tiers, so it gets no default. The answer names each skipped job with the reason, and `undo` names each chain it wrote. A model that a live list no longer shows fails its Try, so adopt binds nothing for it.
+- **Undo.** The newest set, staged sets included, must carry the date that the adopt wrote, or Undo answers 409. All the named chains change, or none. A chain that had no set before the adopt gets a tombstone.
+- **Undo reverts an adopt only** (PR 2818 review, P3a). The date alone names any chain write. So the adopt's `catalog.binding` audit row now carries the `effective_from` it wrote. Undo looks for that row (`store.adopt_wrote_chain`, `via: adopt`). A bind, a fix or an earlier Undo at that date answers 409 with fixed words. They start "The newest change to tier-stt is not an adopt". Other chain writes keep their audit row as it was.
+- **The guards.** `catalog_health.pair_refusal` runs H1 to H4 on one pair. The declare runs it after its own checks, and before the database opens, for a job that the jobs table knows (task 2511). Adopt, connect, Undo and the key fix refuse a bad body before the database opens too. A chain write runs it on the steps that the write ADDS. A step that is on the air already stays. So the operator can still reorder a chain with an old dead step, and the health list names that step. The 400 detail is one sentence with the reason and the fix, because the operator console reads `detail` as text. H8 never refuses, because a key can come after the declare.
+- **A task with no jobs-table row is not judged** (PR 2818 review, P2b). `video` and `music` have no row in `JOB_VERBS`, so H1 refused every verb for them. `pair_refusal` now returns no refusal for such a task. The declare, the bind and the chain write call it, so all three accept those tasks again. ⚠️ The health list (`_verb_rules`, MS-1) still gives H1 for a step on such a task. That is open, and this slice does not change it.
+- **H6.** `GET /catalog/health` adds `keys`: one entry for each live platform key under an alias, whether a chain uses it or not. An alias that litellm or a handler can call is never moved. A step entry with the H6 reason now says "Move the key to 'sarvam' to fix this".
+- **H7.** The registry gives each model a `successor`. The three Gemini 2.5 ids are in the registry as (K) items that retire on 2026-12-01. A retiring step still works, so the window counts it, and a fix keeps it as a working step. When every entry of a chain is H7, the banner says "1 entry on Chat retires soon".
+- **BYOK before the write.** An H8 entry carries `byok_orgs`, the count of organizations with their own live key under that exact prefix, and `byok_note`. A chain line carries `byok`. The fix answer and its audit row carry `byok`, the steps the fix moved those customers off.
+- **The partial echo.** `_try_provider_text` now removes a masked key (`sk-proj-****abcd`) and any run of text that shares 8 or more characters with a key.
+- **The two P3 notes of the MS-1 verifier.** A fix answer and its audit row no longer name a model as removed when the chain keeps it. `test_catalog_health_r8.py` now holds an R8 test of the read side of the unbind race.
+- **The older suites.** Their made-up vendors (`test/`, `vendor/`, `e2e<run>/`) fail H2 now. `tests/unit/_customer_console_ladder.py::callable_test_vendors` lets one suite name them as callable for one test.
+
+**Left for MS-3:** the connect panel, the health banner, the H6 button and the BYOK note on screen, and "Advanced". The panel must hide a model with `status: gone`.
 
 #### Owner calls
 
