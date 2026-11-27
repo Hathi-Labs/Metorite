@@ -255,6 +255,21 @@ describe("the open control", () => {
     expect(body({ mode: "admins" })).not.toContain("Reload the rule");
   });
 
+  // The dialog moves the focus to `[data-notice]` after a stopped save
+  // (`accessWiring.test.ts`). These two prove that the element is on screen.
+  it("marks the reload as the notice that takes the focus", () => {
+    const html = body({ mode: "admins", changed: item({ mode: "chosen", groups: ["sales"] }) });
+    expect(html).toMatch(/<button[^>]*data-notice=""[^>]*>(?:(?!<\/button>).)*Reload the rule/);
+    expect(html.match(/data-notice=/g)).toHaveLength(1);
+  });
+
+  it("marks the error line as the notice, and lets it take the focus", () => {
+    const html = body({ mode: "admins", error: "The rule is gone." });
+    const line = html.match(/<p[^>]*data-notice=""[^>]*>The rule is gone\.<\/p>/)?.[0] ?? "";
+    expect(line).toContain('tabindex="-1"');
+    expect(html.match(/data-notice=/g)).toHaveLength(1);
+  });
+
   it("shows one warning when the choice is empty and the rule changed", () => {
     const html = body({ mode: "chosen", changed: item({ mode: "admins" }) });
     expect(html).toContain("Reload the rule");

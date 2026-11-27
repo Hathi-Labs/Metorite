@@ -6,13 +6,15 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { ReactElement } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import { clearAll, put } from "@/lib/dataCache";
 
 import { ACCESS_KEY } from "../lib/accessSave";
-import { CLEAR_CHANGED, RULE_GONE, type AccessItem, type AccessList } from "../lib/whoCanUse";
+import type { Connection } from "../lib/connections";
+import { row } from "../lib/testRows";
+import { ACCESS_WAIT_MS, CLEAR_CHANGED, RULE_GONE, type AccessItem, type AccessList } from "../lib/whoCanUse";
 import ConnectionList from "./ConnectionList";
 import ConnectionsView from "./ConnectionsView";
 import WhoCanUseDialog, { UnmatchedRules, WhoCanUseBody, type WhoCanUseBodyProps } from "./WhoCanUse";
@@ -23,6 +25,8 @@ const hooks = vi.hoisted(() => ({
   dirty: false,
   effects: [] as Array<() => void>,
   rules: null as unknown,
+  rulesError: null as string | null,
+  rows: [] as unknown,
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -60,12 +64,12 @@ vi.mock("@/components/ui/Toast", () => ({ useToast: () => ({ show: () => undefin
 vi.mock("@/components/AccessProvider", () => ({ useAccess: () => ({ access: { email: "a@x.test" } }) }));
 vi.mock("@/components/ViewModeProvider", () => ({ useViewMode: () => ({ isMobile: false }) }));
 vi.mock("@/lib/useCachedResource", () => ({
-  useCachedResource: (key: string) => ({
-    data: key === "integrations:access" ? hooks.rules : [],
-    loading: false,
-    error: null,
-    refresh: () => undefined,
-  }),
+  useCachedResource: (key: string) => {
+    const access = key === "integrations:access";
+    const data = access ? hooks.rules : hooks.rows;
+    const error = access ? hooks.rulesError : null;
+    return { data, loading: data === undefined && !error, error, refresh: () => undefined };
+  },
 }));
 
 /** Run a component until its state settles, then run its effects. */
@@ -130,6 +134,8 @@ function gateway(stored: AccessItem[]): string[] {
 beforeEach(() => {
   hooks.cells = [];
   hooks.rules = null;
+  hooks.rulesError = null;
+  hooks.rows = [];
   clearAll();
   vi.unstubAllGlobals();
 });
@@ -270,6 +276,63 @@ describe("Set to Everyone from the list", () => {
     const tree = await confirm();
     expect(sent).toEqual(["GET"]);
     expect(ofType<Confirm>(tree, ConfirmDialog).children?.props.children).toBe(CLEAR_CHANGED);
+  });
+});
+
+describe("a cold load of the list", () => {
+  type List = { loading: boolean; rowExtra: (r: Connection) => unknown };
+  const mcp = row({ id: "mcp:tally", kind: "mcp", provider: "mcp", detail: { name: "tally" } });
+  const list = () => ofType<List>(render(ConnectionsView, { canManage: true }), ConnectionList);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    hooks.rows = [mcp];
+    hooks.rules = undefined;
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("draws each row and its control together", () => {
+    expect(list().loading).toBe(true);
+    hooks.rules = { services: [item()], readable: true } satisfies AccessList;
+    expect(list().loading).toBe(false);
+    expect(list().rowExtra(mcp)).not.toBeNull();
+  });
+
+  it("ends the wait at once off the flag or with no right (404 and 403)", () => {
+    expect(list().loading).toBe(true);
+    hooks.rules = null;
+    expect(list().loading).toBe(false);
+  });
+
+  it("ends the wait at once when the rules read fails", () => {
+    expect(list().loading).toBe(true);
+    hooks.rulesError = "Gateway unreachable.";
+    expect(list().loading).toBe(false);
+  });
+
+  it("does not wait when no row can take a rule", () => {
+    hooks.rows = [row({ id: "zoho:1" })];
+    expect(list().loading).toBe(false);
+  });
+
+  it("shows the list after the bound while the rules read hangs", () => {
+    expect(list().loading).toBe(true);
+    vi.advanceTimersByTime(ACCESS_WAIT_MS - 1);
+    expect(list().loading).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(list().loading).toBe(false);
+  });
+
+  it("starts the bound when the list arrives", () => {
+    hooks.rows = undefined;
+    expect(list().loading).toBe(true);
+    vi.advanceTimersByTime(ACCESS_WAIT_MS * 3);
+    hooks.rows = [mcp];
+    expect(list().loading).toBe(true);
+    vi.advanceTimersByTime(ACCESS_WAIT_MS);
+    expect(list().loading).toBe(false);
   });
 });
 

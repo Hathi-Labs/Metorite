@@ -585,6 +585,23 @@ class FlagRegistry(BaseSettings):
     # Fence: tests/unit/test_chat_transcribe.py.
     chat_voice_orgs: str = ""
 
+    claim_gate_orgs: str = ""
+
+    # LBB-2 (engineering_practice.md §7b.2): the claim gate of "land before
+    # build". Two comma lists of organization ids, or `*` for each one. Empty
+    # means off, the default. `claim_gate_shadow_orgs` logs
+    # `claim.gate would_refuse` and refuses nothing. `claim_gate_orgs` refuses
+    # an agent's claim of a new task with 422 `land_your_pr` while the agent's
+    # member and label hold an open PR older than 48 hours that no merger has
+    # queued. Either list shows the `land_your_pr` rows of `my_work`. With both
+    # empty, no claim, assignee or run start reads the gate's query. The one
+    # reader of each is in `gateway.routes.projects.claim_gate`
+    # (`claim_gate_on` and `claim_gate_shadow_on`). The names end in `_orgs`,
+    # so a SIGHUP reload applies a change (`docs/flag_reload.md`).
+    # 🔴 A change on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_claim_gate_r8.py and tests/unit/test_flag_reload.py.
+    claim_gate_shadow_orgs: str = ""
+
     # SBX-18 (agent_sandbox.md 0c, rung 6a'): the `compute` target runs Python
     # over data the chat holds, with no network, secret, mount or write. It
     # needs `compute:<org>` in MAF_CODING_SCOPE (sealed, restart) AND the org

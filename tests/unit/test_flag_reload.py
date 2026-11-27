@@ -615,6 +615,43 @@ def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeyp
     assert not card_precondition_on("globex")
 
 
+def test_claim_gate_shadow_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """LBB-2, engineering_practice.md section 7b.2. The reload list holds the
+    key, and the one reader of the shadow of the claim gate sees a change with
+    no restart. The other flag of the gate does not move."""
+    from gateway.routes.projects.claim_gate import claim_gate_on, claim_gate_shadow_on
+
+    assert fr.reloadable("CLAIM_GATE_SHADOW_ORGS")
+    monkeypatch.setenv("CLAIM_GATE_SHADOW_ORGS", "")
+    monkeypatch.setenv("CLAIM_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not claim_gate_shadow_on("acme")
+    env(**{**_START, "CLAIM_GATE_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CLAIM_GATE_SHADOW_ORGS",)
+    assert claim_gate_shadow_on("ACME ")
+    assert not claim_gate_shadow_on("globex")
+    assert not claim_gate_shadow_on(None)
+    assert not claim_gate_on("acme")
+
+
+def test_claim_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """LBB-2, engineering_practice.md section 7b.2. The reload list holds the
+    key, and the one reader of the claim gate sees a change with no restart.
+    ``*`` names every org."""
+    from gateway.routes.projects.claim_gate import claim_gate_on, claim_gate_shadow_on
+
+    assert fr.reloadable("CLAIM_GATE_ORGS")
+    monkeypatch.setenv("CLAIM_GATE_ORGS", "")
+    monkeypatch.setenv("CLAIM_GATE_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert not claim_gate_on("acme")
+    env(**{**_START, "CLAIM_GATE_ORGS": "*"})
+    assert fr.reload_flags().applied == ("CLAIM_GATE_ORGS",)
+    assert claim_gate_on("acme") and claim_gate_on("globex")
+    assert not claim_gate_on("")
+    assert not claim_gate_shadow_on("acme")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""
