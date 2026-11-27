@@ -2,7 +2,7 @@
 
 **Product:** Metorite · **Feature:** My Day runs the whole day of one member · **Updated:** 2026-11-07 · **Owner:** vjvarada
 
-**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). No slice is built. The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
+**Status:** ✅ **ACTIVE** (owner decision 2026-11-07, task 1946). Built on main: CC-2 (dark, `TODAY_RULE_ORGS`), CC-4 and CC-11. CC-5a, the server half of the focus-session log, is built dark behind `FOCUS_LOG_ORGS` (task 1972, PR 1824, migration 509). The owner approved MD-Q1 to MD-Q8 as recommended, and added the "Needs you" tabs (D-MD-9).
 
 **Verified against code on 2026-11-07** at `origin/main` `f2671c706`. Each anchor in §2 comes from the research on task 1946. Re-check each anchor at dispatch.
 
@@ -327,7 +327,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 
 **What exists.** One `actual_start` and `actual_end` pair on `pm_task_personal` (`infra/postgres/187`). Each session writes over the pair. No row holds a session, a pause or an outcome. `estimate-stats` learns from the pair (`routes/projects/planning.py:187-199`).
 
-**CC-5a, storage (migration 501, expand only).** A new table `focus_sessions`:
+**CC-5a, storage (migration 509, expand only).** A new table `focus_sessions`:
 
 - `id uuid` primary key, `member_email text NOT NULL`, and `task_id uuid NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE`. A deleted task takes its sessions with it.
 - `organization_id uuid NOT NULL REFERENCES organization(id) DEFAULT current_setting('app.tenant_id', true)::uuid`, in the idiom of migration 340. A guarded `DO` block enables and forces RLS, with the policy `focus_sessions_tenant_isolation` on `app.tenant_id` for USING and WITH CHECK. `test_tenant_coverage.py` and `test_tenancy_boundary.py` must pass with no exemption.
@@ -338,7 +338,7 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 - A partial unique index on `(organization_id, member_email) WHERE ended_at IS NULL`. A member has at most one open session.
 - The DDL is idempotent, as `infra/postgres/README.md` asks.
 
-A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. Re-check at merge (R1).
+A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build books a number above main's highest, with reserve_migration.sh. CC-2 holds 507. CC-5a holds 509, booked on 2026-11-27. Re-check at merge (R1).
 
 **CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
 

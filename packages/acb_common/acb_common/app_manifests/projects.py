@@ -222,6 +222,11 @@ _PACKAGE_FIELDS = (
     "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
     "tool with the task panel, and the door adds nothing before then."
 )
+_FOCUS_LOG = (
+    "WS-MDC CC-5a: the dark focus-session log of the member "
+    "(my_day_command_centre.md §9.3). No chat tool reaches it yet. CC-10 adds "
+    "the tools, and the door adds nothing before then."
+)
 _AGENT_DELETE = (
     "The typed tool delete_task of §9 serves this route, after the yes of the "
     "member (EA3-51). MCP_ROUTES stays its allowlist."
@@ -466,6 +471,9 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/my/calendar/replan", "", "X", reason=_PLANNER),
         Route("POST", "/projects/my/calendar/rollover", "", "X", reason=_PLANNER),
         Route("GET", "/projects/my/calendar/estimate-stats", "", "X", reason=_PLANNER),
+        Route("POST", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
+        Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", reason=_FOCUS_LOG),
+        Route("GET", "/projects/my/focus-sessions", "", "X", reason=_FOCUS_LOG),
         # ── calendar.py · search.py · export.py · delta.py ──
         Route("GET", "/projects/calendar", "calendar", "A", off_door=LATER, sandbox=True),
         Route("GET", "/projects/search", "find_tasks", "A", off_door=TYPED, sandbox=True),

@@ -195,6 +195,10 @@ const PURGE_LABELS: Record<string, string> = {
   chat_pending_asks: "chat card question",
   studio_shared_views: "shared AI Studio saved view",
   studio_shared_skills: "shared AI Studio skill",
+  // SBX-1a, SBX-4b1 and SBX-2: the member's tool gaps, tool runs and sandbox tokens.
+  tool_gaps: "tool gap",
+  user_tool_runs: "tool run",
+  sandbox_capabilities: "sandbox run token",
 };
 
 function purgeLabel(key: string, n: number): string {

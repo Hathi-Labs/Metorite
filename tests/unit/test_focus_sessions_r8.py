@@ -114,7 +114,7 @@ pytestmark = _DB_GATE
 
 _ROOT = Path(__file__).resolve().parents[2]
 
-#: Migration 501, found by CONTENT, never by number (R1).
+#: Migration 509, found by CONTENT, never by number (R1).
 MIGRATION = next(
     p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
     if "CREATE TABLE IF NOT EXISTS focus_sessions (" in p.read_text(encoding="utf-8"))
@@ -365,7 +365,7 @@ def test_the_integrity_errors_are_told_apart() -> None:
 
 def test_the_migration_has_the_shape_of_section_9_3() -> None:
     sql = MIGRATION.read_text(encoding="utf-8")
-    assert MIGRATION.name == "501_focus_sessions.sql"
+    assert MIGRATION.name == "509_focus_sessions.sql"
     flat = " ".join(sql.split())
     assert ("organization_id UUID NOT NULL REFERENCES organization (id) ON DELETE CASCADE "
             "DEFAULT current_setting('app.tenant_id', true)::uuid") in flat

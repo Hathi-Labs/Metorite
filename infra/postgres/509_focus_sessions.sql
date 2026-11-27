@@ -1,7 +1,7 @@
 -- ============================================================================
--- 501_focus_sessions.sql — the focus-session log (WS-MDC CC-5a, Metorite task
+-- 509_focus_sessions.sql — the focus-session log (WS-MDC CC-5a, Metorite task
 -- 1972, D188 D-MD-5).
--- History: renumbered 350 to 501 on 2026-11-23 (R1).
+-- History: renumbered 350 to 501 on 2026-11-23, and 501 to 509 on 2026-11-27 (R1).
 --
 -- What: one new table. `focus_sessions` holds one focus session of one member
 --       on one task: the start, the end, the planned end, the pauses, the
@@ -47,7 +47,8 @@
 -- The number (R1): 350 at build time. On 2026-11-07 origin/main held 347,
 -- a branch held 348 (the revoke reason of EA-18a) and CC-2 took 349 for its
 -- build. On 2026-11-23 origin/main held 496, CC-2 held 498, and the box
--- booked 501 for this file. Check it again at merge.
+-- booked 501 for this file. On 2026-11-27 origin/main held 507 (CC-2),
+-- and the box ledger booked 509. Check it again at merge.
 -- Pinned by tests/unit/test_focus_session_rls_r8.py and
 -- tests/unit/test_focus_sessions_r8.py, which find this file by CONTENT,
 -- never by number (R1).
