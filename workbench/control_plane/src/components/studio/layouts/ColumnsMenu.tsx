@@ -23,6 +23,11 @@ export default function ColumnsMenu({ columns, hidden, onToggle, onShowAll }: Co
   const btn = useRef<HTMLDivElement>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   const off = new Set(hidden);
+  // `ContextMenu` leaves the focus to its caller. Without this, a close drops the keyboard on the page body.
+  const close = () => {
+    setAt(null);
+    btn.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  };
   const choices = columns.slice(1);
   if (choices.length === 0) return null;
   const items: CtxItem[] = [
@@ -36,7 +41,7 @@ export default function ColumnsMenu({ columns, hidden, onToggle, onShowAll }: Co
         onClick={() => { const r = btn.current?.getBoundingClientRect(); setAt({ x: r ? r.right - 200 : 0, y: r ? r.bottom + 4 : 0 }); }}>
         {hidden.length > 0 ? `Columns (${hidden.length} hidden)` : "Columns"}
       </Button>
-      {at ? <ContextMenu x={at.x} y={at.y} items={items} autoFocus onClose={() => setAt(null)} /> : null}
+      {at ? <ContextMenu x={at.x} y={at.y} items={items} autoFocus onClose={close} /> : null}
     </div>
   );
 }

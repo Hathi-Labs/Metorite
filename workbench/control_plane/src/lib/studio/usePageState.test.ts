@@ -44,6 +44,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(hist.url.split("?")[1] ?? ""),
 }));
 
+import { decodePageState } from "@/lib/studio/pageState";
 import { FILTER_DEBOUNCE_MS, mergePageQuery, usePageState, type PageStateApi } from "@/lib/studio/usePageState";
 import { PAGE_STATE_LIMITS, type PageTabs } from "@/lib/studio/pageState";
 import { closeRecord, openRecord, withFullPage } from "@/lib/studio/recordPageModel";
@@ -329,3 +330,22 @@ describe("the floor view key (STU-D23a)", () => {
     expect(q).not.toContain("rec=");
   });
 });
+
+// Task 4115: `hide` is a key that the page owns. Without it, a merge kept the old `hide` and added a new
+// one, the decoder read the first, and no second column could hide or show again (LY-2b).
+describe("mergePageQuery and the hidden columns", () => {
+  const base = decodePageState("");
+  it("replaces `hide` on each merge, and keeps a foreign key", () => {
+    const one = mergePageQuery("pkg=abc", { ...base, hide: "owner" });
+    const two = mergePageQuery(one, { ...base, hide: "owner,day" });
+    const q = new URLSearchParams(two);
+    expect(q.getAll("hide")).toEqual(["owner,day"]);
+    expect(q.get("pkg")).toBe("abc");
+    expect(decodePageState(two).hide).toBe("owner,day");
+  });
+  it("drops `hide` when every column shows again", () => {
+    const one = mergePageQuery("pkg=abc", { ...base, hide: "owner" });
+    expect(new URLSearchParams(mergePageQuery(one, base)).has("hide")).toBe(false);
+  });
+});
+
