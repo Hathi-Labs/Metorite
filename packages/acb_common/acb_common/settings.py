@@ -1381,6 +1381,21 @@ class Settings(BaseSettings):
     # Fences: tests/unit/test_agent_claim_scope_r8.py and
     # test_agent_policies_r8.py::test_the_claim_scope_flag_is_not_read_by_the_store.
     agent_claim_scope_modes: str = ""
+    # LBB-2 (engineering_practice.md §7b.2): the claim gate of "land before
+    # build". Two comma lists of organization ids, or `*` for each one. Empty
+    # means off, the default. `claim_gate_shadow_orgs` logs
+    # `claim.gate would_refuse` and refuses nothing. `claim_gate_orgs` refuses
+    # an agent's claim of a new task with 422 `land_your_pr` while the agent's
+    # member and label hold an open PR older than 48 hours that no merger has
+    # queued. Either list shows the `land_your_pr` rows of `my_work`. With both
+    # empty, no claim, assignee or run start reads the gate's query. The one
+    # reader of each is in `gateway.routes.projects.claim_gate`
+    # (`claim_gate_on` and `claim_gate_shadow_on`). The names end in `_orgs`,
+    # so a SIGHUP reload applies a change (`docs/flag_reload.md`).
+    # 🔴 A change on a box is gate `enforcement-flip`. Fences:
+    # tests/unit/test_claim_gate_r8.py and tests/unit/test_flag_reload.py.
+    claim_gate_shadow_orgs: str = ""
+    claim_gate_orgs: str = ""
     # SW-56 (agent_coordination.md SW-56): the organizations where the results
     # of `claim_task` and `my_work` carry the `protocol` block, up to six short
     # lines of fixed server text. The same shape as `agent_access_orgs`: ids

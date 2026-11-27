@@ -728,8 +728,9 @@ cannot drift.
 
 ## 7b. Land before build (owner directive, 2026-11-26)
 
-**Status: ACTIVE spec. No slice is built (verified against code
-2026-11-26).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+**Status: ACTIVE spec. LBB-2, the claim gate, is BUILT DARK (2026-11-27,
+task 4041). Both of its flags are empty, and no flip is done. The other
+slices are not built.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -852,6 +853,10 @@ opens a fix task.
   thresholds) and `tests/unit/test_built_not_live_r8.py` (the My Day row).
 
 ### 7b.2 The claim gate (rule 2)
+
+**Status: BUILT DARK, 2026-11-27 (task 4041).** Find the migration by its
+CHECK name, `pm_task_refs_landing_state_known`, never by a number (R1). The
+flip of §7b.2 "The flip" is not done.
 
 **What it is, and what it is not.** The gate guides agents that cooperate.
 It is not a security control. It reads `pm_agent_runs.agent_label`, which is
