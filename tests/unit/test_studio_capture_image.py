@@ -281,3 +281,50 @@ async def test_the_real_child_refuses_an_output_over_the_cap(monkeypatch) -> Non
         await si.encode_capture(noise)
     assert caught.value.status == 400
     assert "still larger than" in str(caught.value)
+
+
+# ── Merge with #2714 (task 3343 delta verify): the two fences that were missing ──
+
+
+def _unconfined_ok() -> bytes:
+    import base64
+    import json
+
+    good = {"content_type": "image/png", "data": base64.b64encode(b"\x89PNG\r\n\x1a\nx").decode(),
+            "width": 1, "height": 1, "dark_share": 0, "clear_share": 0,
+            "confined": False, "unconfined_os": "linux"}
+    return json.dumps({"ok": good}).encode()
+
+
+@pytest.mark.parametrize("kind", ["logo", "photo", "avatar", si.CAPTURE])
+def test_no_kind_takes_an_unconfined_answer_on_linux(kind, monkeypatch) -> None:
+    """The child read hostile bytes, so an `ok` with no confinement mark is
+    refused for EVERY kind, capture and avatar too (`read_answer`,
+    `_was_confined`). An exemption for one kind turns this red."""
+    monkeypatch.setattr(si.sys, "platform", "linux")
+    assert si.read_answer(_unconfined_ok(), kind=kind) == ("refused", "unavailable")
+    if kind != "avatar":  # avatar reads the answer through avatar.py, not _parse
+        with pytest.raises(si.SignatureImageError) as caught:
+            si._parse(_unconfined_ok(), kind)
+        assert caught.value.status == 503
+
+
+async def test_only_a_capture_reads_the_larger_answer(monkeypatch) -> None:
+    """`run_worker` passes the 5 MiB answer cap for a capture only. Every
+    other kind keeps the default cap of `_run_child`."""
+    seen: dict[str, dict] = {}
+
+    async def spy(argv, data, timeout, **kw):
+        import json
+
+        seen[json.loads(argv[-1])["kind"]] = kw
+        return None, False
+
+    monkeypatch.setattr(si, "_run_child", spy)
+    monkeypatch.setattr(si, "_confine_path", lambda: "/nowhere/child_confine.py")
+    for kind in ("logo", "photo", "avatar", si.CAPTURE):
+        await si.run_worker(kind, b"x")
+    assert seen[si.CAPTURE] == {"cap": si._MAX_CAPTURE_ANSWER_BYTES}
+    for kind in ("logo", "photo", "avatar"):
+        assert "cap" not in seen[kind], kind
+    assert si._MAX_CAPTURE_ANSWER_BYTES > si._MAX_ANSWER_BYTES
