@@ -44,14 +44,10 @@ LIVE_ASR_URL = os.environ.get("LIVE_ASR_URL", "").strip()
 # master key. Unset AND no LIVE_ASR_URL -> the bot records but has no captions.
 LIVE_TOKEN_URL = os.environ.get("LIVE_TOKEN_URL", "").strip()
 _AAI_WS = "wss://streaming.assemblyai.com/v3/ws"
-# How often to ask the gateway whether this meeting should be streaming. The
-# answer changes when the copilot is toggled mid-meeting, and streaming is
-# billed per minute — so this interval is both the delay before captions start
-# and the most you can overpay after switching the copilot off.
-try:
-    _LIVE_RECHECK_S = float(os.environ.get("LIVE_RECHECK_SECONDS", "30"))
-except ValueError:
-    _LIVE_RECHECK_S = 30.0
+# How long to wait before the worker opens the stream again after it closed
+# early (the ASR dropped the socket, or no credential came back). The wait keeps
+# a stream that fails at once from a tight loop of reconnects (task 4120).
+_LIVE_RETRY_S = 5.0
 # The per-meeting callback URL comes from the join request; this token authents
 # the worker → gateway callback (defaults to the shared bot token).
 LIVE_CALLBACK_TOKEN = os.environ.get(
@@ -132,40 +128,6 @@ async def _embed_pcm(pcm: bytes) -> list[float] | None:
             with contextlib.suppress(OSError):
                 os.remove(p)
     return None
-
-
-def _wanted_url(meeting_callback: str) -> str:
-    """The gateway's "should I be streaming?" endpoint for this meeting.
-
-    Derived from the per-meeting callback the gateway already hands us at join
-    (.../meetings/{id}/live/segment), so no new field has to be threaded
-    through the join contract."""
-    return meeting_callback.rsplit("/live/segment", 1)[0] + "/live/wanted"
-
-
-async def _live_wanted(meeting_callback: str) -> bool:
-    """Whether anything is reading the stream right now. Fail-open: if the
-    gateway can't be reached we keep streaming, because losing captions is
-    worse than one meeting's spend — and the gateway itself fails open too."""
-    if not meeting_callback:
-        return True
-    try:
-        import httpx
-
-        headers = {}
-        if LIVE_CALLBACK_TOKEN:
-            headers["Authorization"] = f"Bearer {LIVE_CALLBACK_TOKEN}"
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(_wanted_url(meeting_callback), headers=headers)
-            r.raise_for_status()
-            data = r.json()
-        wanted = bool(data.get("wanted", True))
-        if not wanted:
-            log.info("live not needed: %s", str(data.get("reason", ""))[:160])
-        return wanted
-    except Exception as exc:
-        log.warning("live-wanted check failed (assuming yes): %s", str(exc)[:160])
-        return True
 
 
 def live_enabled() -> bool:
@@ -402,55 +364,29 @@ async def _asr_reader(ws, meeting_callback: str, chunking: bool, windows: list,
 
 
 async def stream_transcription(meeting_callback: str, stop: asyncio.Event) -> None:
-    """Supervise the live stream for the whole call, paying only while needed.
+    """Keep the live stream open for the whole call.
 
-    Streaming ASR bills per minute, so this opens the socket when something is
-    actually reading it (the copilot) and closes it when nothing is. Both edges
-    matter: switching the copilot ON mid-meeting has to start captions, and
-    switching it OFF has to stop the meter — a start-only check would leave a
-    four-hour call streaming for an agent that was turned off in minute three.
+    The worker streams whenever live is configured. It does not ask the
+    gateway first (task 4120). The old poll of ``GET .../live/wanted`` got 401
+    from the auth gate of the gateway on every call, and its fail-open default
+    then said "wanted". So the poll never changed what the worker did. The
+    gateway route cannot answer the worker safely yet: it has no tenant to
+    read the meeting under. ``note_taker_app.md`` records the decision.
 
-    The archival recording runs the whole time regardless, so nothing is lost
-    while the stream is closed: the batch pipeline transcribes it afterwards.
+    When a stream closes before the call ends, the worker waits
+    ``_LIVE_RETRY_S`` and opens it again. The archival recording runs the
+    whole time, so the batch pipeline transcribes any gap afterwards.
     """
     if not live_enabled():
         return
     while not stop.is_set():
-        if not await _live_wanted(meeting_callback):
-            # Wait on `stop` rather than sleeping, so ending the call doesn't
-            # have to sit through the rest of the interval.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=_LIVE_RECHECK_S)
-            continue
-        # Stops when the call ends OR when live stops being wanted.
-        session_stop = asyncio.Event()
-        watch = asyncio.create_task(
-            _watch_wanted(meeting_callback, stop, session_stop)
-        )
-        try:
-            await _stream_once(meeting_callback, session_stop)
-        finally:
-            session_stop.set()
-            watch.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watch
-
-
-async def _watch_wanted(
-    meeting_callback: str, stop: asyncio.Event, session_stop: asyncio.Event
-) -> None:
-    """Close the stream once nothing is reading it any more."""
-    while not stop.is_set() and not session_stop.is_set():
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=_LIVE_RECHECK_S)
-            break                      # the call ended
-        except TimeoutError:
-            pass
-        if not await _live_wanted(meeting_callback):
-            log.info("live no longer needed — closing the ASR stream")
-            session_stop.set()
-            return
-    session_stop.set()
+        await _stream_once(meeting_callback, stop)
+        if stop.is_set():
+            break
+        # Wait on `stop` rather than sleeping, so ending the call doesn't
+        # have to sit through the rest of the interval.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=_LIVE_RETRY_S)
 
 
 async def _stream_once(meeting_callback: str, stop: asyncio.Event) -> None:

@@ -270,24 +270,30 @@ async def read_live_wanted(
     meeting_id: str,
     authorization: str | None = Header(default=None),
 ) -> LiveWanted:
-    """Cheap poll for the producers, so turning the copilot on mid-meeting
-    starts streaming and turning it off stops it. Bot-token authed because the
-    worker is the main caller.
+    """Should the meeting-bot worker stream this meeting. One boolean and a
+    settings-derived sentence, behind the bot token.
 
-    **Deliberately NOT member-owner-scoped** (N1, 2026-08-04). This is a
-    machine entrypoint: the caller is the meeting-bot worker in its own
-    container, holding ``MEETING_BOT_TOKEN`` and no member identity at all —
-    which is why the route is in ``core.router``'s ``exempt`` list and in
-    ``test_org_access_enforcement.GATED_ROUTERS``. Bolting a member owner
-    predicate onto it would need an owner it does not have, and the honest
-    implementations of that (trust a client-supplied email, or fall back to
-    the meeting's own owner) would each turn the bot token into a way to
-    assert an identity. The bot token IS the authority here, exactly as it is
-    for ``/live/segment`` — which posts the transcript this route only decides
-    whether to keep paying for. What leaks without a member check is one
-    boolean plus a settings-derived sentence; no meeting content, no title,
-    and the same answer for a meeting id that does not exist (``live_wanted``
-    never raises and defaults to ``True``)."""
+    ⚠️ **No caller reaches this route today** (task 4120). It is in neither
+    ``main.PUBLIC_ROUTES`` nor ``core.router``'s ``exempt`` list. So
+    ``require_authenticated`` and then the feature gate answer 401 to the
+    worker before ``_check_bot_auth`` runs. The worker stopped calling it in
+    task 4120, because its fail-open default turned each 401 into "wanted".
+
+    The route stays gated on purpose. With no member there is no bound
+    tenant, so ``live_wanted`` reads with no ``db``, in an unbound session.
+    FORCE row level security then hides ``meeting``, ``copilot_config`` and
+    ``live_session``. On a fresh connection the read sees zero rows, and the
+    answer is the defaults ("auto", copilot off). On a pooled connection the
+    tenant setting is ``''``, the uuid cast fails, and the answer is
+    ``(True, "unknown")``. Neither is the setting of the meeting (R8 case in
+    ``test_notes_meeting_owner_r8.py``). To open the route, first resolve the
+    tenant of the meeting through a SECURITY DEFINER read, then read in
+    ``tenant_session(org)``.
+
+    **Not member-owner-scoped** (N1, 2026-08-04). The caller is a machine
+    with ``MEETING_BOT_TOKEN`` and no member identity. An owner predicate
+    would need an owner it does not have. ``live_wanted`` never raises, and
+    gives the same answer for a meeting id that does not exist."""
     from gateway.routes.notes.live_transcript import _check_bot_auth
 
     _check_bot_auth(authorization)

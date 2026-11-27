@@ -626,5 +626,46 @@ async def test_r8_the_poll_on_read_of_the_owner_writes_in_the_bound_tenant(
     assert seen.count(alice_pb) == 1
 
 
+# ── /live/wanted cannot read a meeting with no bound tenant (task 4120) ─────
+
+
+async def test_r8_the_unbound_live_wanted_read_does_not_see_the_meeting(
+    world,
+) -> None:
+    """Task 4120 keeps ``GET /live/wanted`` gated, and this case is the why.
+
+    The worker has no member, so the route calls ``live_wanted`` with no
+    ``db``. That read runs in an unbound session, and FORCE RLS hides the
+    meeting and its settings. Alice set ``never``. The bound read answers
+    "switched off". The unbound read must not give that answer, because it
+    cannot see her row. If this case goes red, the unbound read crosses the
+    tenant wall, and that is a leak, not a repair."""
+    from acb_common.db import tenant_session
+    from gateway.routes.notes import live
+
+    mid = world.alice["meeting"]
+    with world.p.admin_engine.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO copilot_config (organization_id, owner_email, "
+                "live_transcription) VALUES (CAST(:o AS uuid), :e, 'never')"
+            ),
+            {"o": world.org_b, "e": ALICE},
+        )
+    url = world.p.app_url.render_as_string(hide_password=False)
+    async with tenant_engine_scope(url):
+        token = bind_tenant(world.org_b)
+        try:
+            async with tenant_session() as db:
+                bound = await live.live_wanted(mid, db)
+        finally:
+            release_tenant(token)
+        unbound = await live.live_wanted(mid)
+    assert bound[0] is False and "switched off" in bound[1], bound
+    assert "switched off" not in unbound[1], (
+        f"the unbound read saw Alice's setting: {unbound}"
+    )
+
+
 def test_this_suite_is_in_the_r8_must_run_list() -> None:
     assert "tests/unit/test_notes_meeting_owner_r8.py" in r8_lists.must_run()

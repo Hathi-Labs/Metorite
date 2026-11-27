@@ -26,7 +26,8 @@ Config (all via env; the feature is inert but safe until configured):
 - ``NOTES_BOT_PROVIDER`` — ``selfhosted`` (default) or ``recall``.
 - ``NOTES_BOT_NAME``     — default display name for the bot ("AI Notetaker").
 - self-hosted: ``MEETING_BOT_URL`` — the worker's base URL (required to enable);
-                ``MEETING_BOT_TOKEN`` — optional bearer for the worker.
+                ``MEETING_BOT_TOKEN`` — the bearer for the worker. Required:
+                with no token the worker answers 503 to each call (task 4120).
 - recall:      ``RECALL_API_KEY`` (required); ``RECALL_REGION`` (default
                 ``us-east-1``) or ``RECALL_BASE_URL``.
 """

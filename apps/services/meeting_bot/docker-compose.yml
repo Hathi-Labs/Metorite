@@ -13,10 +13,10 @@
 # on another box, reach this port through an SSH tunnel or a proxy with TLS.
 # Do not publish it on 0.0.0.0. Fence: tests/unit/test_compose_ports_local.py.
 #
-# MEETING_BOT_TOKEN is REQUIRED. app/main.py checks the bearer token only when
-# the token is set, so an empty token is an open API. This file has no
-# profiles, so the `:?` form stops only this file, and only when the token is
-# missing or empty.
+# MEETING_BOT_TOKEN is REQUIRED. With no token, app/main.py answers 503 to
+# each route except /health (task 4120), so the gateway cannot send a bot.
+# This file has no profiles, so the `:?` form stops only this file, and only
+# when the token is missing or empty.
 services:
   meeting-bot:
     build: .

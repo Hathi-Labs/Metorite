@@ -11,7 +11,10 @@ Contract (what the gateway provider speaks):
     GET    /bots/{id}           -> {id, status, download_url|null, error|null}
     POST   /bots/{id}/leave     -> 202  (leave the call now)
     GET    /bots/{id}/recording -> audio bytes (when status == "done")
-    GET    /health              -> {ok: true}
+    GET    /health              -> {ok: true}   (the one route with no token)
+
+Every route except /health needs ``Authorization: Bearer <MEETING_BOT_TOKEN>``.
+An unset token answers 503, and a wrong one answers 401 (task 4120).
 
 Status vocabulary matches the gateway's lifecycle directly:
     joining -> waiting_room -> in_call -> processing -> done
@@ -25,6 +28,7 @@ worker instance — scale by running more instances (each is ~1 headless Chrome)
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -37,7 +41,8 @@ from pydantic import BaseModel
 from .meet import MeetingBotError, join_and_record
 
 DATA_DIR = os.environ.get("MEETING_BOT_DATA", "/data")
-TOKEN = os.environ.get("MEETING_BOT_TOKEN", "").strip()
+#: The setting that holds the shared secret of the gateway and this worker.
+BOT_TOKEN_ENV = "MEETING_BOT_TOKEN"
 #: How many meetings this worker will take at once. One by default, and that is
 #: not timidity: a bot is a real Chrome joining a live WebRTC call (~1.5-3 vCPU,
 #: 3-6 GB each — the figures the commercial providers publish for their own
@@ -51,7 +56,13 @@ logging.basicConfig(
 )
 _log = logging.getLogger("meeting_bot")
 
-app = FastAPI(title="Metorite Meeting Bot", version="0.1.0")
+# No /docs, /redoc or /openapi.json (task 4120). Only the gateway calls this
+# API, and it needs no schema page. A page with no token check is one more
+# open surface on a worker that holds a signed-in browser.
+app = FastAPI(
+    title="Metorite Meeting Bot", version="0.1.0",
+    docs_url=None, redoc_url=None, openapi_url=None,
+)
 
 
 class _Job:
@@ -155,8 +166,38 @@ def _get_job(job_id: str) -> _Job | None:
     return _JOBS.get(job_id) or _load_persisted(job_id)
 
 
+#: True after the first refusal for an unset token logged its line.
+_unset_logged = False
+
+
+def _bot_token() -> str:
+    return os.environ.get(BOT_TOKEN_ENV, "").strip()
+
+
 def _auth(authorization: str | None) -> None:
-    if TOKEN and authorization != f"Bearer {TOKEN}":
+    """The ONE check of the bot token on this worker (task 4120).
+
+    Every route calls it first, except ``/health``. It fails closed, with the
+    status meaning of the gateway check ``live_transcript._check_bot_auth``
+    (task 4113).
+
+    * An unset or blank token answers 503 and names the setting. The first
+      refusal logs one line with the setting name, never a value.
+    * A missing or wrong bearer answers 401. The compare is constant-time.
+
+    Before, an unset token let every caller through, and the compare was
+    ``!=``. The env is read on each call."""
+    global _unset_logged
+    expected = _bot_token()
+    if not expected:
+        if not _unset_logged:
+            _unset_logged = True
+            _log.warning("bot_token.not_configured setting=%s", BOT_TOKEN_ENV)
+        raise HTTPException(
+            status_code=503, detail=f"{BOT_TOKEN_ENV} is not configured"
+        )
+    presented = (authorization or "").encode("utf-8")
+    if not hmac.compare_digest(presented, f"Bearer {expected}".encode()):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -258,6 +299,9 @@ def _active_count() -> int:
 
 @app.get("/health")
 async def health() -> dict:
+    """Open on purpose, with no token (task 4120). ``scripts/vps_apply.sh``
+    reads it with a bare ``curl`` to find a busy worker and to see that the
+    worker started. It returns two counts and no meeting data."""
     from .meet import PROFILE_DIR
 
     return {
