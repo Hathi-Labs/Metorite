@@ -5,7 +5,7 @@
 > **Built 2026-11-18, CRM-Q34-12 (task 3761):** a module route takes the API name or the label of a module. `modules.resolve_module` is the one resolver. It tries the API name, the folded API name, then the label, plural label and singular label. It never guesses between two modules, and an unknown module answers a 404 that names up to 3 close ones. The list, record, timeline, field list, field search, term and aggregate paths use it. No flag, no new tool. Fence: `tests/unit/test_crm_module_resolver.py`.
 > **Built 2026-11-18, CRM-Q34-6 (task 3699):** `crm_list_fields` finds a field by its words in one module or in each mirrored module. It is dark behind `CRM_MODULE_FIND_ORGS`, empty by default.
 > **Built 2026-11-22, task 3869 (not merged):** the mirror reads each generic module in full once in 7 days, and discovery queues one full read of a module whose stored pick-list values left the current options (§18.7, CRM-Q6a). It is dark behind `CRM_MODULE_REREAD_ORGS`, empty by default. No migration.
-> **Built 2026-11-22, task 3870 (not merged):** the weekly read of a generic module is also its delete walk (§18.7, CRM-Q6a). A row that two complete weekly reads missed goes, by the rule and the guards of the core walk. Migration 516 adds `crm_module_records.ext_seen_at`. The same flag gates it. ⚠️ Its R8 file has not run yet.
+> **Built 2026-11-22, task 3870 (not merged):** the weekly read of a generic module is also its delete walk (§18.7, CRM-Q6a). A row that two complete weekly reads missed goes, by the rule and the guards of the core walk. Migration 516 adds `crm_module_records.ext_seen_at`. The same flag gates it. Its R8 file ran on a real database on 2026-11-27: 6 passed, 0 skipped.
 > **Built 2026-11-22, CRM-Q30c (task 3868), not merged:** the read tools say how old the Zoho mirror of a module is. `GET /crm/sync/mirror-age` gives the age of each module, and the note of the read tools adds one line when the module of the call is held, not available in Zoho, or read 2 hours ago or more. It is dark behind `CRM_MIRROR_AGE_ORGS`, empty by default. No migration. See §18.11.2.
 
 > **Board row:** WS-53 · **Created:** 2026-10-11 · **Owner directive:** 2026-10-11
@@ -1719,7 +1719,12 @@ each of these on a real database:
     more than 20 % of more than 10 rows. That last guard refuses each
     delete that the guard of the task refuses (more than 20 % and more than
     25 rows), and more. The count is the one that `_module_estimate` keeps,
-    up to 24 hours old, so the walk spends no credit. A refusal deletes
+    so the walk spends no credit. The walk takes that count only when the
+    last count call of the module answered, less than 25 hours ago
+    (`DISCOVERY_EVERY` plus `MODULE_COUNT_MARGIN`). The counts row keeps the
+    time of that call under `good_at`, and a failed call removes it. Else
+    the count is unknown and the walk refuses. A counts row from before
+    `good_at` reads as unknown too. A refusal deletes
     nothing, keeps `seen_prev`, sets `delete_kept` in the counts of the run
     and logs one line of counts. A module key keeps no `refused` count, and
     its refusal never sets `walk_short`, so the switch does not wait for it.
@@ -1749,8 +1754,8 @@ each of these on a real database:
     and the delete waits a week.
   - Fences: `tests/unit/test_crm_module_delete_walk.py` (hermetic, and a
     static check of migration 516) and
-    `tests/unit/test_crm_module_delete_walk_r8.py` (R8). ⚠️ The R8 file has
-    not run yet: it waits for a box with a database.
+    `tests/unit/test_crm_module_delete_walk_r8.py` (R8). The R8 file ran on
+    a real database on 2026-11-27: 6 passed, 0 skipped.
 - After its first import, a module reads its changed list at most once an hour
   (`MODULE_READ_EVERY`), the same cadence as the deleted lists. During its first
   import it reads on each run, within the reserve.

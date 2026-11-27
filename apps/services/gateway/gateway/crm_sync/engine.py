@@ -350,6 +350,15 @@ DISCOVERY_ALLOWANCE = 25
 RECONCILE_EVERY = timedelta(hours=24)
 #: The source profile is read again after this long (CRM-Q1).
 DISCOVERY_EVERY = timedelta(hours=24)
+#: Task 3870: the key of :data:`MODULE_COUNTS_ROW` that keeps, for each
+#: module, the start of the run whose count call last answered. A failed
+#: call removes the module from it. A row from before this key has none.
+MODULE_COUNT_GOOD_KEY = "good_at"
+#: Task 3870: the delete walk of a generic module takes the stored count only
+#: when that count answered less than :data:`DISCOVERY_EVERY` plus this time
+#: ago. The count is read again at the end of a run, after the walk, so a
+#: count read on time is at most one day and one run old at a walk.
+MODULE_COUNT_MARGIN = timedelta(hours=1)
 #: The deleted lists cost 2 credits each, so an idle run reads them hourly.
 DELETED_EVERY = timedelta(hours=1)
 #: The longest wait that the spend of a run can add between two runs.
@@ -2906,7 +2915,8 @@ async def _end_seen_walk(
     of the switch (CRM-Z10b) deletes nothing either: no read of Zoho follows
     the switch, so a wrong delete there could never heal. Else
     :func:`_drop_stale` decides, with the count of :func:`_module_estimate`,
-    so the walk spends no credit. A refusal keeps the old ``seen_prev``. One
+    so the walk spends no credit. :func:`_walk_count` gives that count only
+    when it is fresh and its last call answered, else the walk refuses. A refusal keeps the old ``seen_prev``. One
     log line names the module and the counts, never a record.
     """
     if seen.start is None:
@@ -2916,7 +2926,7 @@ async def _end_seen_walk(
     if seen.prev is not None and seen.start - seen.prev < MODULE_WALK_GAP:
         return seen.prev
     before = _whole((ctx.counts.get(entity) or {}).get("deleted")) or 0
-    known = _provider_count(ctx, entity, None)
+    known = _walk_count(ctx, entity)
     if not await _drop_stale(
         ctx, db, entity, MODULE_TABLE, seen.prev, seen.count, known, failed_ids,
     ):
@@ -2927,6 +2937,24 @@ async def _end_seen_walk(
         entity, seen.count, known, dropped,
     )
     return seen.start
+
+
+def _walk_count(ctx: _Ctx, entity: str) -> int | None:
+    """The count of a generic module that its delete walk may trust (task
+    3870), else None, and the walk then refuses with ``count_unknown``.
+
+    :func:`_module_estimate` keeps the last count that answered, and moves
+    its stamp also when the call fails, so Sync health still shows a number.
+    The walk asks more: the last count call of the module answered, and it
+    answered less than :data:`DISCOVERY_EVERY` plus
+    :data:`MODULE_COUNT_MARGIN` ago. A row with no
+    :data:`MODULE_COUNT_GOOD_KEY` gives None, so an old row fails closed.
+    """
+    state = _row(ctx, MODULE_COUNTS_ROW).state or {}
+    good = _parse((state.get(MODULE_COUNT_GOOD_KEY) or {}).get(entity))
+    if good is None or ctx.started - good > DISCOVERY_EVERY + MODULE_COUNT_MARGIN:
+        return None
+    return _whole((state.get("counts") or {}).get(entity))
 
 
 def _walk_short(local: int, walked: int, known: int | None) -> bool:
@@ -4271,6 +4299,7 @@ async def _module_estimate(ctx: _Ctx, entity: str) -> None:
     state = row.state or {}
     counts = {str(k): v for k, v in (state.get("counts") or {}).items()}
     stamps = {str(k): v for k, v in (state.get("at") or {}).items()}
+    good = {str(k): v for k, v in (state.get(MODULE_COUNT_GOOD_KEY) or {}).items()}
     stamp = _parse(stamps.get(entity))
     due = stamp is None or ctx.started - stamp >= DISCOVERY_EVERY
     if due and not _budget_low(ctx, MODULES_RESERVE):
@@ -4284,10 +4313,15 @@ async def _module_estimate(ctx: _Ctx, entity: str) -> None:
             count = None
         if count is not None:
             counts[entity] = int(count)
+            good[entity] = _iso(ctx.started)
+        else:
+            # Task 3870: the old count stays for Sync health, but the delete
+            # walk must not trust it (:func:`_walk_count`).
+            good.pop(entity, None)
         stamps[entity] = _iso(ctx.started)
         saved = CursorRow(
             MODULE_COUNTS_ROW, row.last_pulled_at,
-            {"counts": counts, "at": stamps},
+            {"counts": counts, "at": stamps, MODULE_COUNT_GOOD_KEY: good},
             row.initial_done_at or ctx.started, row.last_reconciled_at,
         )
         if isinstance(counts.get(entity), int):

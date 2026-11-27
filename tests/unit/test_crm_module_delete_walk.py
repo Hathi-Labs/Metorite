@@ -115,6 +115,9 @@ class World:
     #: ``(API name, page)`` -> how many more reads of that page fail.
     fail: dict[tuple[str, int], int] = field(default_factory=dict)
     fail_code: str = ""
+    #: True: each ``count_records`` call fails. The calls are counted.
+    count_fails: bool = False
+    count_calls: int = 0
 
     def stale(self, module: str, prev: datetime) -> list[str]:
         """What the stale read of ``_drop_stale`` answers, done in Python."""
@@ -162,6 +165,13 @@ class _Zoho:
 
     async def list_users(self) -> tuple[SourceRecord, ...]:
         return ()
+
+    async def count_records(self, entity: str) -> int | None:
+        self.credits_used += 1
+        self.world.count_calls += 1
+        if self.world.count_fails:
+            raise SourceError("HTTP 500")
+        return len(self.world.zoho.get(entity.split(":", 1)[1], []))
 
     async def list_changed(self, entity: str, cursor: SourceCursor) -> SourcePage:
         self.credits_used += 1
@@ -325,7 +335,8 @@ async def _run(
     **kw: Any,
 ) -> engine._Ctx:
     """One changed pass of *entity* at *at*. The module count of the run is
-    the number of records that Zoho holds, unless *count* says another."""
+    the number of records that Zoho holds, unless *count* says another. That
+    count answered at *at*, so the walk trusts it."""
     world.now = at
     module = engine.changed_module(entity)
     cursors: dict[str, CursorRow] = {module: world.saved[module]}
@@ -333,7 +344,8 @@ async def _run(
     if known is not None:
         cursors[engine.MODULE_COUNTS_ROW] = CursorRow(
             engine.MODULE_COUNTS_ROW, None,
-            {"counts": {entity: known}, "at": {entity: at.isoformat()}}, LONG_AGO, None,
+            {"counts": {entity: known}, "at": {entity: at.isoformat()},
+             "good_at": {entity: at.isoformat()}}, LONG_AGO, None,
         )
     ctx = _ctx(cursors, started=at, entity=entity, **kw)
     await engine._changed_pass(ctx, entity)
@@ -552,6 +564,131 @@ async def test_a_read_shorter_than_the_count_or_with_no_count_drops_nothing(
     assert _seen_prev(world) == W1.isoformat()
     await _run(world, at=W4)
     assert _gone(world, "i3")
+
+
+# ── The count of the walk (task 3870, review round 2) ─────────────────────────
+
+
+async def _count_run(world: World, *, at: datetime, entity: str = INVOICES, **kw: Any) -> None:
+    """One run that reads no page and only asks for the count of *entity*, by
+    the real :func:`engine._module_estimate`. The counts row it saves is the
+    one that the next walk reads."""
+    world.now = at
+    cursors = {k: v for k, v in world.saved.items() if k == engine.MODULE_COUNTS_ROW}
+    await engine._module_estimate(_ctx(cursors, started=at, entity=entity, **kw), entity)
+
+
+async def _real_run(world: World, *, at: datetime, entity: str = INVOICES) -> engine._Ctx:
+    """One run of the module step in its real order: the changed pass, which
+    ends the walk, then the count. Each takes the cursors that runs before it
+    saved, the counts row too."""
+    world.now = at
+    ctx = _ctx(dict(world.saved), started=at, entity=entity)
+    await engine._changed_pass(ctx, entity)
+    await engine._module_estimate(ctx, entity)
+    return ctx
+
+
+def _refused_for(world: World, reason: str) -> list[str]:
+    return [x for x in world.logs
+            if x.startswith("crm.sync.reconcile_refused") and f"reason={reason} " in x]
+
+
+async def test_a_walk_refuses_when_the_last_count_call_failed(world: World) -> None:
+    """``_module_estimate`` keeps the old count and moves its stamp when the
+    call fails. The walk must not take that old count as fresh."""
+    _start(world)
+    await _count_run(world, at=W1 - timedelta(hours=1))  # a good count: 2
+    await _real_run(world, at=W1)  # i3: strike one
+    assert _seen_prev(world) == W1.isoformat()
+
+    world.count_fails = True
+    # Each day of the week the count call fails, the last time 1 hour before
+    # the walk. So the count of the walk run, after its walk, is not due.
+    for at in [*(W1 + timedelta(days=d) for d in range(1, 7)), W2 - timedelta(hours=1)]:
+        await _count_run(world, at=at)
+    calls = world.count_calls
+    counts = world.saved[engine.MODULE_COUNTS_ROW].state or {}
+    assert counts["counts"][INVOICES] == 2, "Sync health still shows the old count"
+
+    refused = await _real_run(world, at=W2)
+    assert not _gone(world, "i3"), "a walk deleted by a count of a failed call"
+    assert world.deletes == []
+    assert refused.counts[INVOICES][engine.DELETE_KEPT_FLAG] == 1
+    assert _refused_for(world, "count_unknown")
+    assert _seen_prev(world) == W1.isoformat(), "the strikes stay as they were"
+    assert world.count_calls == calls, "the walk spent no count call of its own"
+
+    # The positive control: the count answers again, and the next walk deletes.
+    world.count_fails = False
+    await _count_run(world, at=W3 - timedelta(hours=1))
+    await _real_run(world, at=W3)
+    assert _gone(world, "i3")
+
+
+async def test_a_walk_refuses_a_count_older_than_a_day_and_the_margin(world: World) -> None:
+    """The budget can stop the count for days, and then its stamp does not
+    move. A walk must not take a count of any age."""
+    _start(world)
+    await _count_run(world, at=W1 - timedelta(hours=1))
+    await _real_run(world, at=W1)  # i3: strike one
+    # A week with no count: each count run meets the reserve.
+    for day in range(1, 8):
+        await _count_run(world, at=W1 + timedelta(days=day), budget=engine.MODULES_RESERVE)
+    refused = await _real_run(world, at=W2)
+    assert not _gone(world, "i3"), "a walk deleted by a count 8 days old"
+    assert refused.counts[INVOICES][engine.DELETE_KEPT_FLAG] == 1
+    assert _refused_for(world, "count_unknown")
+    assert _seen_prev(world) == W1.isoformat()
+
+
+#: ``engine.MODULE_COUNT_MARGIN``. A copy, so this file collects and fails
+#: on its assertions against the code of before the rule.
+COUNT_MARGIN = timedelta(hours=1)
+
+
+@pytest.mark.parametrize(("age", "kept"), [
+    (timedelta(hours=24) + COUNT_MARGIN, False),
+    (timedelta(hours=24) + COUNT_MARGIN + timedelta(minutes=1), True),
+])
+async def test_the_walk_takes_a_count_up_to_a_day_and_the_margin_old(
+    world: World, age: timedelta, kept: bool,
+) -> None:
+    assert timedelta(hours=24) == engine.DISCOVERY_EVERY
+    assert getattr(engine, "MODULE_COUNT_MARGIN", None) == COUNT_MARGIN
+    _start(world)
+    await _run(world, at=W1)  # i3: strike one
+    module = engine.changed_module(INVOICES)
+    stamp = (W2 - age).isoformat()
+    cursors = {
+        module: world.saved[module],
+        engine.MODULE_COUNTS_ROW: CursorRow(
+            engine.MODULE_COUNTS_ROW, None,
+            {"counts": {INVOICES: 2}, "at": {INVOICES: stamp},
+             "good_at": {INVOICES: stamp}}, LONG_AGO, None,
+        ),
+    }
+    world.now = W2
+    await engine._changed_pass(_ctx(cursors, started=W2), INVOICES)
+    assert _gone(world, "i3") is not kept
+
+
+async def test_a_counts_row_from_before_the_good_stamp_fails_closed(world: World) -> None:
+    """A row that the code of before this rule saved has no ``good_at``."""
+    _start(world)
+    await _run(world, at=W1)
+    module = engine.changed_module(INVOICES)
+    cursors = {
+        module: world.saved[module],
+        engine.MODULE_COUNTS_ROW: CursorRow(
+            engine.MODULE_COUNTS_ROW, None,
+            {"counts": {INVOICES: 2}, "at": {INVOICES: W2.isoformat()}}, LONG_AGO, None,
+        ),
+    }
+    world.now = W2
+    await engine._changed_pass(_ctx(cursors, started=W2), INVOICES)
+    assert not _gone(world, "i3")
+    assert _refused_for(world, "count_unknown")
 
 
 # ── The gates ────────────────────────────────────────────────────────────────
