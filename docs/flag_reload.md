@@ -904,8 +904,8 @@ gateway already runs the file value. For an edge flag, the tool restarts
 `acb-agent-edge` when its process runs another value, and checks the new
 process.
 
-So the tool also repairs a hand edit: run it with the value that the files
-already hold, and it makes each service run that value. The chat-turn smoke
+So the tool also repairs a hand edit. Run it with the value that the files
+already hold. It then makes each service run that value. The chat-turn smoke
 runs after the tool frees the deploy lock.
 
 The tool prints the rollback commands. It appends one line to
