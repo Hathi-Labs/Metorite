@@ -17,7 +17,9 @@ claims, with a fake stream, a fake journal and a fake spend read:
 """
 from __future__ import annotations
 
+import fcntl
 import importlib.util
+import json
 import re
 import subprocess
 import sys
@@ -41,8 +43,18 @@ def _load(name: str):
 
 
 @pytest.fixture()
-def turn():
-    return _load("smoke_chat_turn")
+def turn(tmp_path):
+    mod = _load("smoke_chat_turn")
+    mod._test_state = str(tmp_path / "smoke-chat-turn.json")
+    return mod
+
+
+def _jl(msg: str, ts_s: int = 1_795_752_000) -> str:
+    """One line of ``journalctl -o json``."""
+    return json.dumps({"MESSAGE": msg, "__REALTIME_TIMESTAMP": str(ts_s * 1_000_000)})
+
+
+QUIET_LOG = "\n".join([_jl("INFO run.start"), _jl("INFO run.finished")]) + "\n"
 
 
 def _rollup(*costs: tuple[str, float]) -> dict:
@@ -54,7 +66,7 @@ class Fake:
 
     def __init__(self, *, spend=(200, _rollup(("2026-10-31", 50.0), ("2026-11-26", 1.25))),
                  frames=None, status=200, answer="There are 3 integrations.",
-                 journal=(0, "INFO run.start\nINFO run.finished\n")):
+                 journal=(0, QUIET_LOG)):
         self.spend = spend
         self.frames = frames if frames is not None else [
             b'data: {"type":"tool_start","id":"t1","name":"list_integrations"}\n',
@@ -97,8 +109,15 @@ def _run(turn, fake: Fake, cfg) -> int:
                     nap=lambda _s: None)
 
 
-def _on(turn, cap="5"):
-    return turn.read_config({"SMOKE_CHAT_TURN": "1", "SMOKE_CHAT_TURN_CAP_USD": cap})
+def _on(turn, cap="5", **extra):
+    env = {"SMOKE_CHAT_TURN": "1", "SMOKE_CHAT_TURN_CAP_USD": cap,
+           "SMOKE_TURN_STATE": turn._test_state, **extra}
+    return turn.read_config(env)
+
+
+def _state(turn) -> dict | None:
+    p = Path(turn._test_state)
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
 # ── 1. The switch and the cap ───────────────────────────────────────────────
@@ -170,7 +189,7 @@ def test_a_good_turn_passes_all_four_checks(turn, capsys) -> None:
     fake = Fake()
     assert _run(turn, fake, _on(turn)) == 0
     out = capsys.readouterr().out
-    for line in ("ok   T1 spend $1.25 of $5.00", "ok   T2 stream done (tools: list_integrations)",
+    for line in ("ok   T1 turn 1 this month, metered $1.25 of $5.00", "ok   T2 stream done (tools: list_integrations)",
                  "ok   T3 saved answer", "ok   T4 no Traceback"):
         assert line in out, out
     body = fake.posted
@@ -218,23 +237,185 @@ def test_an_empty_saved_answer_is_red(turn, capsys, answer) -> None:
     assert len(reads) == turn.READ_TRIES
 
 
-def test_a_traceback_in_the_log_window_is_red(turn, capsys) -> None:
-    log = ("INFO run.start\nTraceback (most recent call last):\n"
-           '  File "x.py", line 1\nValueError: boom\n')
-    fake = Fake(journal=(0, log))
+def test_a_traceback_of_this_turn_is_red_and_prints_no_log_text(turn, capsys) -> None:
+    tb = ('{"event": "run.failed", "thread_id": "sid-1", "exception": '
+          '"Traceback (most recent call last):\\n  File \\"x.py\\"\\nValueError: secret-of-x"}')
+    fake = Fake(journal=(0, "\n".join([_jl("INFO run.start"), _jl(tb, 1_795_752_007)])))
     assert _run(turn, fake, _on(turn)) == 1
     out = capsys.readouterr().out
-    assert "FAIL T4 gateway log: 1 Traceback(s)" in out and "ValueError: boom" in out
+    assert "FAIL T4 gateway log: 1 Traceback(s) of this turn at 04:00:07 UTC" in out, out
+    assert "secret-of-x" not in out and "ValueError" not in out and "x.py" not in out
+    assert "journalctl -u acb-gateway" in out
+
+
+def test_a_traceback_of_another_run_is_a_warning_and_prints_no_log_text(turn, capsys) -> None:
+    """Review P1: the window is shared with every tenant on the box."""
+    lines = [_jl("INFO run.start"),
+             _jl('{"thread_id": "other-tenant", "exception": "Traceback (most recent call last):'
+                 ' tenant-secret"}', 1_795_752_003),
+             _jl("Traceback (most recent call last):", 1_795_752_004),
+             _jl('  File "/opt/acb/app/tenant_code.py", line 9', 1_795_752_004)]
+    fake = Fake(journal=(0, "\n".join(lines)))
+    assert _run(turn, fake, _on(turn)) == 0
+    out = capsys.readouterr().out
+    assert "WARNING T4 gateway log: 2 Traceback(s)" in out and "04:00:03, 04:00:04" in out
+    assert "FAIL" not in out
+    assert "tenant-secret" not in out and "tenant_code" not in out and "other-tenant" not in out
+
+
+def test_a_message_of_control_bytes_is_read(turn) -> None:
+    """journald keeps a message with ANSI colour as a list of bytes."""
+    raw = list(b"\x1b[31mTraceback (most recent call last): sid-1")
+    line = json.dumps({"MESSAGE": raw, "__REALTIME_TIMESTAMP": "1795752000000000"})
+    level, _ = turn.judge_journal(0, line, "sid-1")
+    assert level == "fail"
 
 
 @pytest.mark.parametrize(("rc", "text", "why"), [
     (1, "", "exited 1"),
     (0, "", "no line"),
 ])
-def test_an_unread_log_is_red_and_never_a_pass(turn, capsys, rc, text, why) -> None:
+def test_an_unread_log_is_a_warning_and_never_red(turn, capsys, rc, text, why) -> None:
     fake = Fake(journal=(rc, text))
-    assert _run(turn, fake, _on(turn)) == 1
-    assert why in capsys.readouterr().out
+    assert _run(turn, fake, _on(turn)) == 0
+    out = capsys.readouterr().out
+    assert "WARNING T4" in out and why in out
+
+
+# ── 3b. The count guard (fix round 1: the cap must not trust Redis) ─────────
+
+ZERO_ROLLUP = {"days": [{"date": f"2026-11-{d:02d}", "cost": 0.0} for d in range(1, 28)]
+               + [{"date": f"2026-10-{d:02d}", "cost": 0.0} for d in range(28, 32)],
+               "totals": {"cost": 0.0, "tokens": 0, "calls": 0}}
+
+
+def test_the_count_is_written_before_the_turn(turn) -> None:
+    seen: list = []
+    fake = Fake()
+    real_stream = fake.stream
+
+    def stream(base, cookie, body):
+        seen.append(_state(turn))
+        return real_stream(base, cookie, body)
+
+    fake.stream = stream
+    assert _run(turn, fake, _on(turn)) == 0
+    assert seen == [{"month": "2026-11", "turns": 1}], "a crash in the turn must still count"
+
+
+def test_a_missing_file_is_zero_turns(turn) -> None:
+    assert _state(turn) is None
+    assert _run(turn, Fake(), _on(turn)) == 0
+    assert _state(turn) == {"month": "2026-11", "turns": 1}
+
+
+@pytest.mark.parametrize(("turns", "est", "runs"), [
+    (19, None, True),    # 19 x 0.25 = 4.75 < 5
+    (20, None, False),   # 20 x 0.25 = 5.00, at the cap
+    (25, None, False),
+    (4, "1.25", False),  # 4 x 1.25 = 5.00
+])
+def test_counted_turns_at_the_cap_skip_with_no_spend_read(turn, capsys, turns, est,
+                                                         runs) -> None:
+    Path(turn._test_state).write_text(json.dumps({"month": "2026-11", "turns": turns}),
+                                      encoding="utf-8")
+    extra = {"SMOKE_CHAT_TURN_EST_USD": est} if est else {}
+    fake = Fake()
+    assert _run(turn, fake, _on(turn, "5", **extra)) == 0
+    out = capsys.readouterr().out
+    if runs:
+        assert fake.posted is not None and _state(turn)["turns"] == turns + 1
+    else:
+        assert "WARNING T1 turn skipped" in out and "at or over the cap" in out
+        assert fake.posted is None and fake.calls == [], "the count guard needs no Redis"
+        assert _state(turn)["turns"] == turns, "a skip does not count"
+
+
+def test_the_month_rolls_over(turn) -> None:
+    Path(turn._test_state).write_text(json.dumps({"month": "2026-10", "turns": 999}),
+                                      encoding="utf-8")
+    fake = Fake()
+    assert _run(turn, fake, _on(turn)) == 0
+    assert fake.posted is not None
+    assert _state(turn) == {"month": "2026-11", "turns": 1}
+
+
+@pytest.mark.parametrize("body", [
+    "{not json", "", "[]", '{"month": "2026-11"}', '{"month": "2026-11", "turns": -1}',
+    '{"month": "2026-11", "turns": "3"}', '{"month": "2026-11", "turns": true}',
+    '{"month": "Nov", "turns": 1}', '{"month": "2026-11", "turns": 1.5}',
+])
+def test_a_corrupt_count_file_fails_closed(turn, capsys, body) -> None:
+    Path(turn._test_state).write_text(body, encoding="utf-8")
+    fake = Fake()
+    assert _run(turn, fake, _on(turn)) == 0
+    assert "does not parse" in capsys.readouterr().out
+    assert fake.posted is None and fake.calls == []
+    assert Path(turn._test_state).read_text(encoding="utf-8") == body, "never repaired by hand"
+
+
+def test_a_count_dir_that_does_not_exist_skips(turn, tmp_path, capsys) -> None:
+    fake = Fake()
+    cfg = _on(turn, SMOKE_TURN_STATE=str(tmp_path / "no-such-dir" / "c.json"))
+    assert _run(turn, fake, cfg) == 0
+    assert "cannot be opened" in capsys.readouterr().out
+    assert fake.posted is None
+
+
+def test_a_count_that_cannot_be_written_skips(turn, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(turn, "write_count", lambda *a: False)
+    fake = Fake()
+    assert _run(turn, fake, _on(turn)) == 0
+    assert "cannot be written" in capsys.readouterr().out
+    assert fake.posted is None
+
+
+def test_a_count_held_by_another_smoke_skips(turn, capsys) -> None:
+    with open(turn._test_state + ".lock", "a", encoding="utf-8") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fake = Fake()
+        assert _run(turn, fake, _on(turn)) == 0
+    assert "another smoke holds the turn count" in capsys.readouterr().out
+    assert fake.posted is None
+
+
+def test_the_write_is_atomic_and_leaves_no_temp_file(turn) -> None:
+    assert turn.write_count(turn._test_state, "2026-11", 7)
+    d = Path(turn._test_state).parent
+    assert sorted(p.name for p in d.iterdir()) == ["smoke-chat-turn.json"]
+    assert turn.read_count(turn._test_state, "2026-11") == 7
+
+
+def test_a_redis_rollup_of_zeros_is_unknown_after_a_counted_turn(turn, capsys) -> None:
+    """Verifier F1: a failed Redis read or a flush gives 31 days of 0.0."""
+    Path(turn._test_state).write_text(json.dumps({"month": "2026-11", "turns": 2}),
+                                      encoding="utf-8")
+    fake = Fake(spend=(200, ZERO_ROLLUP))
+    assert _run(turn, fake, _on(turn)) == 0
+    assert "metered spend of this month could not be read" in capsys.readouterr().out
+    assert fake.posted is None and _state(turn)["turns"] == 2
+
+
+def test_a_redis_rollup_of_zeros_is_zero_before_the_first_turn(turn) -> None:
+    """No turn this month: zero is the expected answer, or the turn never starts."""
+    fake = Fake(spend=(200, ZERO_ROLLUP))
+    assert _run(turn, fake, _on(turn)) == 0
+    assert fake.posted is not None
+
+
+def test_zeros_with_calls_are_a_real_zero(turn) -> None:
+    body = dict(ZERO_ROLLUP, totals={"cost": 0.0, "calls": 4})
+    assert turn.month_spend(200, body, NOW, turns_this_month=3) == 0.0
+
+
+@pytest.mark.parametrize("est", ["0", "-1", "x", "nan"])
+def test_a_bad_estimate_is_a_refusal(turn, est) -> None:
+    cfg = _on(turn, SMOKE_CHAT_TURN_EST_USD=est)
+    assert cfg.refusal and "SMOKE_CHAT_TURN_EST_USD" in cfg.refusal
+
+
+def test_the_estimate_defaults_to_a_quarter(turn) -> None:
+    assert _on(turn).est_usd == 0.25
 
 
 # ── 4. The journal child: no cookie, no stdin, a time window ────────────────
@@ -245,11 +426,11 @@ def test_journalctl_gets_no_cookie_and_reads_dev_null(turn, monkeypatch) -> None
 
     def fake_run(argv, **kw):
         seen["argv"], seen["kw"] = argv, kw
-        return subprocess.CompletedProcess(argv, 0, "INFO ok\n", "")
+        return subprocess.CompletedProcess(argv, 0, "{}\n", "")
 
     monkeypatch.setenv("SMOKE_COOKIE", COOKIE)
     monkeypatch.setattr(turn.subprocess, "run", fake_run)
-    assert turn.read_journal(1_800_000_000.4, 1_800_000_090.9) == (0, "INFO ok\n")
+    assert turn.read_journal(1_800_000_000.4, 1_800_000_090.9) == (0, "{}\n")
     argv, kw = seen["argv"], seen["kw"]
     assert COOKIE not in " ".join(argv)
     assert "SMOKE_COOKIE" not in kw["env"] and COOKIE not in kw["env"].values()
@@ -258,6 +439,7 @@ def test_journalctl_gets_no_cookie_and_reads_dev_null(turn, monkeypatch) -> None
     assert argv[:3] == ["journalctl", "-u", "acb-gateway"]
     assert argv[argv.index("--since") + 1] == "@1800000000"
     assert argv[argv.index("--until") + 1] == "@1800000091"
+    assert argv[argv.index("-o") + 1] == "json"
 
 
 def test_a_journal_that_hangs_is_an_unread_log(turn, monkeypatch) -> None:
@@ -266,14 +448,17 @@ def test_a_journal_that_hangs_is_an_unread_log(turn, monkeypatch) -> None:
 
     monkeypatch.setattr(turn.subprocess, "run", hang)
     rc, _ = turn.read_journal(0, 1)
-    assert rc != 0 and turn.judge_journal(rc, "") is not None
+    assert rc != 0 and turn.judge_journal(rc, "", "sid-1")[0] == "warn"
 
 
-def test_the_module_writes_no_file_and_names_no_cookie_in_argv() -> None:
-    """The source holds one subprocess call, and no open() for writing."""
+def test_the_module_writes_only_the_count_file() -> None:
+    """The source holds one subprocess call. It opens two files to write: the
+    temp file of the count and the lock beside it."""
     text = (SCRIPTS / "smoke_chat_turn.py").read_text(encoding="utf-8")
     assert text.count("subprocess.run(") == 1
-    assert not re.search(r"open\([^)]*['\"][wa]", text)
+    writes = re.findall(r"open\(([^,]+), ['\"][wa]", text)
+    assert writes == ["tmp", 'f"{path}.lock"'], writes
+    assert 'json.dump({"month": month, "turns": turns}, fh)' in text
     assert "SMOKE_COOKIE" in text  # only to strip it from the child's env
 
 

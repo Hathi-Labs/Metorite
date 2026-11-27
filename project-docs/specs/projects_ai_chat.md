@@ -802,7 +802,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
-| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and the gateway log of the turn has no Traceback. `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
+| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback. `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -4035,12 +4035,33 @@ orchestrator, with its tools on, in the smoke session. The module is
   `/opt/acb/app/.env`. The script reads both on each run, so a change needs no
   restart. Both are unset, so the turn is off. The owner has not set the cap.
 - On with no cap is `REFUSED`, exit 2, and the smoke writes nothing.
-- T1 reads the smoke org's cost rollup of this UTC month through
-  `GET /api/observability/cost`. At or over the cap, or when the read fails,
-  no turn runs. The smoke prints a `WARNING T1` line and stays green.
-- T2 needs the `done` event. T3 needs an assistant row with text. T4 reads
-  `journalctl -u acb-gateway` from the turn start to now. A Traceback, or a
-  window with no line, is red. Each failure is exit 1, with no PASS line.
+- T1 has two guards, and either one skips the turn. A skip prints a
+  `WARNING T1` line, the smoke stays green, and `deploy.yml` shows a
+  `Model turn skipped` warning.
+- The count guard does not need Redis. The smoke keeps its own count of this
+  UTC month's turns in `/var/lib/acb/smoke-chat-turn.json`. It writes the
+  count + 1 before the turn, so a crash still counts the turn. It skips when
+  the count times `SMOKE_CHAT_TURN_EST_USD` (default 0.25) is at or over the
+  cap. A corrupt file, a file it cannot write, or a lock that another smoke
+  holds skips the turn.
+- The metering guard reads the smoke org's cost rollup of this UTC month
+  through `GET /api/observability/cost`. The rollup is in Redis, and a model
+  with no price writes no cost, so it is a second guard and not the cap. An
+  empty rollup is unknown. Zeros with no calls are also unknown after a
+  counted turn of this month.
+- T2 needs the `done` event, and T3 needs an assistant row with text. Each
+  failure is exit 1, with no PASS line.
+- T4 reads `journalctl -u acb-gateway -o json` from the turn start to now. A
+  Traceback on a line with the thread id of this turn is red. That works
+  with `LOG_FORMAT=json`, where the executor binds `thread_id` to each line
+  of the run. Any other Traceback, or a log that acb cannot read, is a
+  `WARNING T4` line. Another tenant can own that line. T4 prints the count
+  and the times of the hits only, and never the log text.
+- Before the flip, the owner runs `journalctl -u acb-gateway -n 1` as acb.
+  If acb cannot read it, add acb to the `systemd-journal` group. Without
+  that, T4 cannot check the log.
+- A retry of the smoke after an ssh drop can run up to 3 turns in one
+  release. The count guard counts each one.
 - The turn takes at most 227 s of `SMOKE_TURN_S` (240 s).
 - `bash deploy/smoke_chat.sh --turn-only` runs the turn alone. A later
   `flag_flip.sh` calls it after a flip.

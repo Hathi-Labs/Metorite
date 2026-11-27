@@ -292,7 +292,7 @@ if [ "$1" = "-c" ]; then
   if [ "$n" -le "${PROBE_DOWN:-0}" ]; then echo "down:502"; else echo "${PROBE_STATE:-ok}"; fi
   exit 0
 fi
-printf '%s|%s|%s\n' "${SMOKE_CHAT_TURN:-}" "${SMOKE_CHAT_TURN_CAP_USD:-}" "${SMOKE_TURN_ONLY:-}" >> "$FAKE/turn.log"
+printf '%s|%s|%s|%s\n' "${SMOKE_CHAT_TURN:-}" "${SMOKE_CHAT_TURN_CAP_USD:-}" "${SMOKE_CHAT_TURN_EST_USD:-}" "${SMOKE_TURN_ONLY:-}" >> "$FAKE/turn.log"
 [ -n "${SMOKE_HANG:-}" ] && exec /bin/sleep "$SMOKE_HANG"
 echo "ok   1 create session"
 [ "${SMOKE_RC:-0}" = 1 ] && { echo "FAIL 2 save one row: HTTP 500"; exit 1; }
@@ -327,7 +327,8 @@ def app(tmp_path: Path):
     def run(via_stdin: bool = False, args: tuple[str, ...] = (),
             **extra: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)
-        for name in ("SMOKE_BASE_URL", "SMOKE_CHAT_TURN", "SMOKE_CHAT_TURN_CAP_USD"):
+        for name in ("SMOKE_BASE_URL", "SMOKE_CHAT_TURN", "SMOKE_CHAT_TURN_CAP_USD",
+                     "SMOKE_CHAT_TURN_EST_USD"):
             env.pop(name, None)
         env.update(PATH=f"{binr}{os.pathsep}{env.get('PATH', '')}",
                    FAKE=fake.as_posix(), APP_DIR=appd.as_posix(), HOME=tmp_path.as_posix(),
@@ -469,29 +470,30 @@ class TestTheScript:
     def test_the_turn_is_off_with_no_box_env(self, app) -> None:
         r = app.run()
         assert r.returncode == 0, r.stdout + r.stderr
-        assert self._turn_log(app) == ["||0"], "no .env means the turn is off"
+        assert self._turn_log(app) == ["|||0"], "no .env means the turn is off"
 
     def test_the_switch_and_the_cap_come_from_the_box_env(self, app) -> None:
         app.box_env.write_text(
-            'SMOKE_CHAT_TURN=0\nSMOKE_CHAT_TURN="1"\nSMOKE_CHAT_TURN_CAP_USD=\'5\'\r\n',
+            'SMOKE_CHAT_TURN=0\nSMOKE_CHAT_TURN="1"\nSMOKE_CHAT_TURN_CAP_USD=\'5\'\r\n'
+            "SMOKE_CHAT_TURN_EST_USD=0.5\n",
             encoding="utf-8", newline="\n")
         r = app.run()
         assert r.returncode == 0, r.stdout + r.stderr
-        assert self._turn_log(app) == ["1|5|0"], "the last line wins, and quotes go"
+        assert self._turn_log(app) == ["1|5|0.5|0"], "the last line wins, and quotes go"
 
     def test_the_environment_wins_over_the_box_env(self, app) -> None:
         app.box_env.write_text("SMOKE_CHAT_TURN=1\nSMOKE_CHAT_TURN_CAP_USD=5\n",
                                encoding="utf-8", newline="\n")
         r = app.run(SMOKE_CHAT_TURN="0")
         assert r.returncode == 0, r.stdout + r.stderr
-        assert self._turn_log(app) == ["0|5|0"]
+        assert self._turn_log(app) == ["0|5||0"]
 
     def test_turn_only_is_passed_on_and_leaks_nothing(self, app) -> None:
         app.box_env.write_text("SMOKE_CHAT_TURN=1\nSMOKE_CHAT_TURN_CAP_USD=5\n",
                                encoding="utf-8", newline="\n")
         r = app.run(args=("--turn-only",))
         assert r.returncode == 0, r.stdout + r.stderr
-        assert self._turn_log(app) == ["1|5|1"]
+        assert self._turn_log(app) == ["1|5||1"]
         argv = (app.fake / "argv.log").read_text(encoding="utf-8")
         for value in (SECRET, JWE):
             assert value not in argv and value not in r.stdout + r.stderr
@@ -534,6 +536,8 @@ case "$mode" in
   drop) echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255 ;;
   nopass) echo "ok   1 create session"; exit 0 ;;
   busy) echo "smoke_chat: BUSY." >&2; exit 75 ;;
+  turnskip) echo "WARNING T1 turn skipped: 20 turns ran this month. No model turn ran."
+            echo "WARNING T4 gateway log: journalctl exited 1. The log was not checked." ;;
   fail) echo "FAIL 2 save one row: HTTP 500"; exit 1 ;;
   env)  echo "smoke_chat: the smoke org is missing." >&2; exit 2 ;;
   auth) echo "acb@10.0.0.1: Permission denied (publickey)." >&2; exit 255 ;;
@@ -601,6 +605,15 @@ class TestTheWorkflowStep:
     def test_a_wrong_environment_is_red_and_does_not_retry(self, runner, jobs) -> None:
         r = runner.run(jobs, SMOKE_MODE="env")
         assert r.returncode == 1, r.stdout + r.stderr
+        assert _runs(runner) == 1
+
+    def test_a_skipped_turn_is_green_with_a_warning(self, runner, jobs) -> None:
+        """Fix round 1 (review P2): a skip must show on the run page."""
+        r = runner.run(jobs, SMOKE_MODE="turnskip")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert ("::warning title=Model turn skipped::WARNING T1 turn skipped: 20 turns ran"
+                in r.stdout), r.stdout
+        assert "::warning title=Model turn log not checked::WARNING T4" in r.stdout
         assert _runs(runner) == 1
 
     def test_a_busy_lock_is_a_warning_and_not_a_red(self, runner, jobs) -> None:

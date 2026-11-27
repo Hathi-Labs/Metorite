@@ -20,19 +20,34 @@
 # 🤖 THE MODEL TURN (CIV-SMOKE-TURN, task 4061). It is DARK. When the switch
 # is on, step 3 also runs ONE short real model turn, with tools on, in the
 # smoke org (scripts/smoke_chat_turn.py). The turn must stream to its `done`
-# event and save an answer with text. The acb-gateway journal from the turn
-# start must hold no Traceback. Its lines start with `T`.
+# event and save an answer with text. A failure of either is red. In the
+# acb-gateway journal from the turn start, a Traceback on a line with the
+# thread id of the turn is red. Any other Traceback is a WARNING, and the
+# smoke prints only the count and the times, never the log text. Its lines
+# start with `T`.
 #
 #   SMOKE_CHAT_TURN          the switch. Off by default. `1` turns it on.
 #   SMOKE_CHAT_TURN_CAP_USD  the monthly cap of the smoke org, in USD. No
 #                            default. On with no cap: REFUSED, exit 2.
+#   SMOKE_CHAT_TURN_EST_USD  the cost of one turn for the count guard.
+#                            Default 0.25.
 #
 # 🔧 THE OPERATOR SETS BOTH in /opt/acb/app/.env, the file of the box flags.
 # This script reads the last line of each key there on each run, so a change
 # needs no restart and no SIGHUP. A value in the environment of this script
-# wins over the file. Before the turn, the smoke reads the smoke org's spend
-# of this UTC month from its cost rollup. At or over the cap, the turn does
-# not run, and the smoke prints a WARNING line and stays green.
+# wins over the file.
+#
+# Two guards come before the turn, and either one skips it. The smoke keeps
+# its own count of this month's turns in /var/lib/acb/smoke-chat-turn.json
+# (SMOKE_TURN_STATE), and it writes count + 1 BEFORE the turn. It skips when
+# count x SMOKE_CHAT_TURN_EST_USD reaches the cap. It also reads the smoke
+# org's metered spend of this UTC month. A skip prints a WARNING line, and
+# the smoke stays green. A retry after an ssh drop can run up to 3 turns in
+# one release. The count counts each one.
+#
+# ⚠️ BEFORE THE FLIP, run `journalctl -u acb-gateway -n 1` as acb. If acb
+# cannot read it, add acb to the systemd-journal group. Without that, T4
+# cannot check the log, and it gives a WARNING on each run.
 #
 # `--turn-only` runs the turn alone: no sweep, no save check. A later
 # flag_flip.sh calls it after a flag flip. With the switch off, it checks
@@ -157,6 +172,7 @@ box_env() {
 }
 SMOKE_CHAT_TURN="${SMOKE_CHAT_TURN:-$(box_env SMOKE_CHAT_TURN)}"
 SMOKE_CHAT_TURN_CAP_USD="${SMOKE_CHAT_TURN_CAP_USD:-$(box_env SMOKE_CHAT_TURN_CAP_USD)}"
+SMOKE_CHAT_TURN_EST_USD="${SMOKE_CHAT_TURN_EST_USD:-$(box_env SMOKE_CHAT_TURN_EST_USD)}"
 
 # The shared lock, on fd 9, until this script exits. It comes BEFORE the
 # mint, so a long lock wait cannot use up the life of the session. `flock` ignores the
@@ -232,7 +248,7 @@ else:
     print("ok")
 '
 export SMOKE_BASE_URL SMOKE_MEMBER_EMAIL SMOKE_ORG_SLUG
-export SMOKE_CHAT_TURN SMOKE_CHAT_TURN_CAP_USD SMOKE_TURN_ONLY
+export SMOKE_CHAT_TURN SMOKE_CHAT_TURN_CAP_USD SMOKE_CHAT_TURN_EST_USD SMOKE_TURN_ONLY
 state=""
 for try in $(seq 1 "$SMOKE_WAIT_TRIES" </dev/null); do
   state="$(SMOKE_COOKIE="$SMOKE_COOKIE" timeout -k 5 20 "$PY" -c "$PROBE_PY" </dev/null 2>/dev/null)" || state="down:000"

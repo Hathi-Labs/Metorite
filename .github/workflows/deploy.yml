@@ -2244,6 +2244,14 @@ jobs:
             timeout -k 10 "$SMOKE_SSH_TIMEOUT" ssh "${CI_SSH_OPTS[@]}" \
               "$SSH_USER@$SSH_HOST" "bash -s" < deploy/smoke_chat.sh 2>&1 | tee /tmp/smoke.log
             rc=${PIPESTATUS[0]}
+            # Task 4061: a skipped model turn, or a gateway log that T4 could
+            # not judge, is green. Say so on the run page, or nobody sees it.
+            grep -E '^WARNING T[0-9]' /tmp/smoke.log | head -n 5 | while IFS= read -r turn_line; do
+              case "$turn_line" in
+                "WARNING T4"*) echo "::warning title=Model turn log not checked::$turn_line" ;;
+                *) echo "::warning title=Model turn skipped::$turn_line" ;;
+              esac
+            done
             # A teardown flake after the smoke passed is still a pass.
             if grep -qF "$SMOKE_DONE" /tmp/smoke.log; then
               echo "✅ Chat saves on production."

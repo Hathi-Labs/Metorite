@@ -48,7 +48,8 @@ The model turn (CIV-SMOKE-TURN, task 4061). Between step 3 and step 4,
 when ``SMOKE_CHAT_TURN`` is on. Its lines start with ``T``. It is off by
 default, and then it prints one ``skip T0`` line. On with no
 ``SMOKE_CHAT_TURN_CAP_USD`` is ``REFUSED`` and exit 2, before anything is
-written. A spend at or over the cap is a ``WARNING T1`` line and no turn.
+written. When the smoke's own count of turns, or the metered spend, reaches
+the cap, it prints a ``WARNING T1`` line and runs no turn.
 
 ``SMOKE_TURN_ONLY=1`` (``deploy/smoke_chat.sh --turn-only``) runs the turn
 alone: step 1, the turn, step 4, and ``PASS chat turn on``. It skips the
@@ -56,7 +57,7 @@ sweep and steps 2 and 3. With the switch off, it writes nothing.
 
 Exit 0 when all four steps pass, 1 when a step fails, 2 when the environment
 is wrong. A turn failure is exit 1. A skipped turn and a switch that is off
-do not change the exit code. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 900 s
+do not change the exit code. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 1200 s
 session in memory on the box, and ``deploy.yml`` goes red when it fails.
 """
 from __future__ import annotations
