@@ -528,6 +528,15 @@ class Settings(FlagRegistry):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+    # WS-61 KC-5a (knowledge_curation.md §17). The organization ids whose
+    # included Drive folders the index pass reads, in the grammar of
+    # `knowledge_orgs`. `*` is each org. It needs `knowledge_sync` and the
+    # provider flag too. Empty, the default, means no organization: the loop
+    # starts no index run, makes no provider call and opens no session for it.
+    # The one reader is `gateway.routes.knowledge.flags`. A flip on production
+    # is the owner's, and the two P1s of KC-5b (#463) block it.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_index: str = ""
 
 
     reach_enabled: bool = False
