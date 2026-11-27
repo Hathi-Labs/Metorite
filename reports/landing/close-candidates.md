@@ -41,3 +41,8 @@ repaired it and handed it to the merge bot. Task 4037 owns the slow scan fences.
 | PR | Task | Why |
 |---|---|---|
 | 1769 | 1400 | You parked it on 2026-11-06. A task comment of 2026-11-11 says that we will switch to Anthropic or Google models, so the OpenRouter design needs a rewrite or a close. The slices OR-1 to OR-10 need the same decision. |
+| 998 | none | You must approve the privacy wording before a merge, because the merge publishes the public site. |
+| 1604 | 98357 | You must approve the words of the Gmail disclosure step (Q-GM-7) and choose the release. |
+| 1920 | 1685 | The second verifier failed it. You must decide on the residual risk that the PR names. |
+| 1940 | 1859 | Your preview question on the task has had no answer since 2026-11-08. PR 1944 is stacked on it. |
+| 2729 | 3867 | A proposed spec. It waits for your answers to its section 11. |
