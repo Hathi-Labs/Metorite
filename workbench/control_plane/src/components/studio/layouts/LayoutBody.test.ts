@@ -95,6 +95,9 @@ describe("the dashboard", () => {
     expect(html).toMatch(/data-dashboard-charts[^>]*grid-cols-1[^>]*lg:grid-cols-2/);
     expect(html.indexOf("data-dashboard-charts")).toBeLessThan(html.indexOf("data-dashboard-worklist"));
   });
+  it("gives a stat with a long value two columns", () => {
+    expect(html).toMatch(/<section[^>]*has-\[\[data-stat-wide\]\]:col-span-2/);
+  });
   it("leaves out the chart and worklist rows when the page names none", () => {
     const only = draw("dashboard", { kpis: ["k1"] });
     expect(only).not.toContain("data-dashboard-charts");
@@ -120,6 +123,7 @@ describe("the frame", () => {
   });
   it("passes retryable to the shared state and draws no list bar over a dashboard", () => {
     expect(frame).toContain("retryable={canRetryRead(rows.error)}");
+    expect(frame).toContain('forbidden={refusal === "forbidden"} signedOut={refusal === "sign-in"}');
     expect(frame).toContain('if (built.page.layout === "dashboard") return null;');
   });
   it("gives each stat and chart tile of a dashboard its own state", () => {

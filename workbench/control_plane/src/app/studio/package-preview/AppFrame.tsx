@@ -55,7 +55,7 @@ import { type PreviewControls, boardGroupKeys, fieldSpecs, recordTitle } from "@
 import { countSourceFor, pageObject, sourceWithMe } from "@/lib/studio/railCounts";
 import { hasRail, railFor, visibleRail } from "@/lib/studio/railModel";
 import { useRailCounts } from "@/lib/studio/useRailCounts";
-import { READ_ONLY_SENTENCE, type PackageDetail } from "@/lib/studio/realDoor";
+import { READ_ONLY_SENTENCE, type PackageDetail, refusalOf } from "@/lib/studio/realDoor";
 import { type ViewDetail, type ViewMapContext, type ViewLens, mapView } from "@/lib/studio/viewBlocks";
 import {
   closeRecord, openRecord, openedRecord, parseRecordLink, recordLinkBase, withFullPage, withRecordTab,
@@ -125,9 +125,10 @@ function LayoutList({ source, door, active, noun, shape = "rows", tile = false, 
   const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
   const n = rows.data?.length ?? 0;
   const failed = Boolean(rows.error) && rows.data === undefined;
+  const refusal = failed ? refusalOf(rows.error) : null;
   const state = (
     <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
-      forbidden={false} retryable={canRetryRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
+      forbidden={refusal === "forbidden"} signedOut={refusal === "sign-in"} retryable={canRetryRead(rows.error)} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
       onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;

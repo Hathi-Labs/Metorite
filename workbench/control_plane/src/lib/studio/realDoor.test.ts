@@ -36,7 +36,7 @@ import {
   AGGREGATE_KEYS, TREE_KEYS, TREE_LEVEL, TREE_PARENT, treeBody, flattenTree, aggregateBody, APPROVAL_SENTENCE, WAITING_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
   listOrgPackages, listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
   NOT_OPEN_SENTENCE, READ_ONLY_SENTENCE, packageAccess, readActions,
-  GONE_SENTENCE, NOT_DECLARED_SENTENCE, SIGN_IN_SENTENCE, UNPUBLISHED_SENTENCE, busySentence,
+  GONE_SENTENCE, NOT_DECLARED_SENTENCE, SIGN_IN_SENTENCE, UNPUBLISHED_SENTENCE, busySentence, refusalOf,
 } from "./realDoor";
 import { ACTION_FAILED } from "./TypedActionButton";
 import { canRetryRead, rowsMeta } from "./dataDoor";
@@ -395,6 +395,17 @@ describe("fix round 1: the body marker, the generic 500, the rule words, the kep
     for (const s of ["Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource.",
       "The network connection was lost.", "The request timed out.", busySentence(null), ACTION_FAILED]) {
       expect(canRetryRead(s), s).toBe(true);
+    }
+  });
+  it("reads a 401 as sign-in and a 403 as forbidden, with no Retry for either", () => {
+    const m = (status: number, body: unknown = {}) => mapAnswer(status, body).message;
+    expect(refusalOf(m(401))).toBe("sign-in");
+    for (const s of [m(403), m(403, { detail: { code: "not_declared" } }), m(403, { detail: { code: "read_only" } })]) {
+      expect(refusalOf(s), String(s)).toBe("forbidden");
+    }
+    for (const s of [m(401), m(403)]) expect(canRetryRead(s)).toBe(false);
+    for (const s of [m(404), m(422, { detail: { message: "The filter field is not known." } }), m(500), m(503), null]) {
+      expect(refusalOf(s), String(s)).toBeNull();
     }
   });
   it("offers no Retry on a refusal that would fail the same way", () => {

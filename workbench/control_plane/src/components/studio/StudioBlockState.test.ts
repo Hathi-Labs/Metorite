@@ -62,6 +62,13 @@ describe("StudioBlockState", () => {
     expect(html).toContain("cannot be shown");
     expect(html).not.toContain("<button");
   });
+  it("tells a member whose session ended to sign in again, with no Retry", () => {
+    const html = draw({ error: "x", signedOut: true, retryable: false, onRetry: () => {} });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Your session ended.");
+    expect(html).toContain("Sign in again to see the visits.");
+    expect(html).not.toContain("<button");
+  });
   it("draws no-permission with no button", () => {
     const html = draw({ forbidden: true, askWho: "an admin" });
     expect(html).toContain("You cannot open the visits.");

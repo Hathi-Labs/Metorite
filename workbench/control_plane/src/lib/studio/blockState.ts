@@ -26,6 +26,8 @@ export interface BlockStateInput {
   forbidden: boolean;
   /** A second try may work. False for a refusal that would fail the same way (a 422, a gone record). Default true. */
   retryable?: boolean;
+  /** The session ended (a 401 of the door). The member must sign in again, and a Retry cannot help. */
+  signedOut?: boolean;
   /** The one record is gone, or the viewer may not read it. The door says one text for both (STU-LY-3). */
   missing?: boolean;
   /** The rows that the block draws now. */
@@ -62,6 +64,8 @@ export interface BlockStateWords {
   askWho?: string;
   /** A second try may work (see `BlockStateInput.retryable`). */
   retryable?: boolean;
+  /** The session ended (see `BlockStateInput.signedOut`). */
+  signedOut?: boolean;
 }
 
 /** The sentence of one state. Loading has no copy, and the skeleton draws it. */
@@ -88,6 +92,10 @@ export function blockStateCopy(
         action: "Clear filters",
       };
     case "error":
+      // A session that ended has its own words: the member can act, and a Retry cannot (STU-LY-7).
+      if (words.signedOut) {
+        return { icon: "Lock", message: "Your session ended.", hint: `Sign in again to see the ${noun}.` };
+      }
       // A refusal that a second try cannot change has no Retry and no "try again" (capture finding, task 3320).
       if (words.retryable === false) {
         return {

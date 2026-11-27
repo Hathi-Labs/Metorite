@@ -66,7 +66,8 @@ export default function LayoutBody({ layout, regions, renderView, titleOf, table
 function Dashboard({ regions, renderView, titleOf }: Pick<LayoutBodyProps, "regions" | "renderView" | "titleOf">) {
   const tile = (id: string) => {
     const node = renderView(id);
-    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0">{node}</section> : null;
+    // A stat with a long value takes two columns, so its number stays large enough to read (`StudioStat`).
+    return node ? <section key={id} aria-label={titleOf(id)} className="min-w-0 has-[[data-stat-wide]]:col-span-2">{node}</section> : null;
   };
   const kpis = (regions.kpis ?? []).map(tile);
   const charts = (regions.charts ?? []).map(tile);

@@ -75,7 +75,7 @@ describe("StudioStat", () => {
     expect(html).toContain("Deals");
     expect(html).toContain(">25<");
     expect(html).toContain("+50%");
-    expect(html).toContain("vs Oct 2026");
+    expect(html).toMatch(/ vs <span[^>]*>Oct 2026</);
     expect(html).toContain("<polyline");
   });
 
@@ -85,12 +85,6 @@ describe("StudioStat", () => {
     const good = renderToStaticMarkup(createElement(StudioStat, { data: { good: "down" }, rows: [down] }));
     expect(bad).not.toBe(good);
     expect(bad).toContain("−33.3%");
-  });
-
-  it("never cuts the value, and lets the small line go under it in a narrow tile (STU-LY-7)", () => {
-    const html = renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [AGG] }));
-    expect(html).toMatch(/data-stat-value="" class="(?![^"]*truncate)[^"]*overflow-wrap:anywhere/);
-    expect(html).toMatch(/class="mt-1 flex flex-wrap /);
   });
 
   it("says there is no trend without a date group, and No data without a result", () => {
@@ -152,5 +146,45 @@ describe("the mapped views (D4c)", () => {
     expect(agg?.total.count).toBe(3);
     expect(chartFromAggregate("bar", agg).ok).toBe(true);
     expect(statFromAggregate(agg)?.trend).not.toBeNull();
+  });
+});
+
+/**
+ * STU-LY-7: a number never breaks between two digits, and it is never cut. This test has no layout
+ * engine. So it reads the line rules and the size rule that the markup gives, and works them out
+ * against the true glyph widths of the app font.
+ */
+describe("the value of a stat in a narrow tile", () => {
+  /** Advance widths in em of semibold tabular figures, a little over what Chromium and SF draw. */
+  const trueEms = (v: string) => [...v].reduce((w, c) => w + (/[0-9]/.test(c) ? 0.66 : /[., ]/.test(c) ? 0.3 : 0.75), 0);
+  const draw = (value: number, currency: string | null) => {
+    const row: Row = { ...AGG, currencies: [currency], total: { key: null, count: 1, values: [value] }, groups: [
+      { key: "2026-11-02", count: 1, values: [1] }, { key: "2026-11-03", count: 1, values: [2] },
+    ] };
+    return renderToStaticMarkup(createElement(StudioStat, { data: {}, rows: [row] }));
+  };
+  // The content width of a tile in px: 2 columns of a 320 px phone, and the full row.
+  const NARROW = 116;
+  const FULL = 262;
+
+  it.each([[987654321, "INR"], [18456000, "INR"], [1234567, null], [12, null], [98765432100, "INR"]] as const)(
+    "draws %s on one line inside its tile", (n, currency) => {
+      const html = draw(n, currency);
+      const [, attrs, text] = /<div data-stat-value=""([^>]*)>([^<]*)<\/div>/.exec(html)!;
+      // No rule lets the text break inside itself, and no rule cuts it.
+      expect(attrs).toContain("whitespace-nowrap");
+      expect(attrs).not.toMatch(/overflow-wrap|word-break|break-all|break-words|truncate|overflow-hidden|text-ellipsis/);
+      const size = /font-size:min\(1\.5rem, calc\(100cqi \/ ([\d.]+)\)\)/.exec(attrs);
+      expect(size, attrs).not.toBeNull();
+      const wide = html.includes("data-stat-wide");
+      const room = wide ? FULL : NARROW;
+      const px = Math.min(24, room / Number(size![1]));
+      expect(trueEms(text) * px, text).toBeLessThanOrEqual(room);
+      // The number stays large enough to read.
+      expect(px, text).toBeGreaterThanOrEqual(12);
+    });
+
+  it("keeps the date of the trend on one line", () => {
+    expect(draw(12, null)).toMatch(/data-stat-against="" class="whitespace-nowrap">2026-11-02</);
   });
 });
