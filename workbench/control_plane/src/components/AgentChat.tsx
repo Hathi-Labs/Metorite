@@ -2634,9 +2634,11 @@ export default function AgentChat({
   // In the dock an answered card leaves at once, and a failed send puts it
   // back as a new mount: it starts from here, so nothing the member did is
   // lost (WD-1). A ref, so a keystroke does not draw the whole chat again.
+  const dockOn = useWaitingDockOn();
   const questionDraftsRef = useRef(new Map<string, ElicitationDraft>());
   useEffect(() => { questionDraftsRef.current.clear(); }, [sessionId]);
-  const draftProps = (rid: string | undefined) => rid
+  // Only with the dock on: with it off, the chat is the chat of before.
+  const draftProps = (rid: string | undefined) => dockOn && rid
     ? {
         initialDraft: questionDraftsRef.current.get(rid),
         onDraft: (d: ElicitationDraft) => { questionDraftsRef.current.set(rid, d); },
@@ -2674,7 +2676,6 @@ export default function AgentChat({
   // answered question card keeps its folded line there (C5, F2). The state
   // is the state of today: an answer, a decline, a run end or a redraft
   // takes an item out of the dock, as it took it out of the thread.
-  const dockOn = useWaitingDockOn();
   const dockSources = {
     confirmations: confirmations.cards,
     elicitation: elicitationWaits ? elicitation : null,
@@ -2688,7 +2689,10 @@ export default function AgentChat({
     (!userInputWaits || !userInput || picksOnly({ kind: "question", questions: userInputShape(userInput) }));
   // K1: the last key in the box, so an arrival never moves the focus while
   // the member types (a key in the last 3 s, or text in the box).
-  const lastKeyAtRef = useRef(0);
+  // Minus infinity: no key yet, so an arrival in the first 3 s may blur.
+  const lastKeyAtRef = useRef(Number.NEGATIVE_INFINITY);
+  // The dock's host, outside the form (K6 reads it).
+  const dockHostRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const box = inputRef.current;
     if (!dockOn || !box) return;
@@ -2719,7 +2723,7 @@ export default function AgentChat({
       // Only when the focus is nowhere else: a member who types in another
       // field of the page keeps it (an app rail beside its app).
       const at = typeof document === "undefined" ? null : document.activeElement;
-      if (!at || at === document.body || !!box?.form?.contains(at)) focusQuietly();
+      if (!at || at === document.body || !!box?.form?.contains(at) || !!dockHostRef.current?.contains(at)) focusQuietly();
     }
   }, [dockOn, dockN, dockPicksOnly, phoneChrome, focusQuietly]);
   const renderDockCards = (folded: boolean, unfold: () => void, controls: React.ReactNode): React.ReactNode => (
@@ -3256,6 +3260,19 @@ export default function AgentChat({
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
+      {/* WD-1 (§24.11): the dock, between the thread and the form. It is
+          OUTSIDE the form on purpose: a button of a card inside a form is a
+          submit button, and Enter in a card field would send the message. */}
+      {dockOn && (
+        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2`}>
+          <WaitingDockLive count={dockN} />
+          {showDock && (
+            <WaitingDock count={dockN} phone={phoneChrome || touchKeyboard()}>
+              {renderDockCards}
+            </WaitingDock>
+          )}
+        </div>
+      )}
       <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 glass:border-transparent glass:bg-transparent ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
@@ -3272,14 +3289,6 @@ export default function AgentChat({
         {/* The element that waits on the member, while it is out of view.
             With the dock on, only a generative-UI ask (WD-2 moves it). */}
         {dockOn ? <AskPin ask={genUiWaiting} threadRef={threadRef} /> : <AskPin ask={waiting} threadRef={threadRef} />}
-        {/* WD-1 (§24.11): the dock is the one card in the form. Each card
-            that waits draws here, as a tab of ONE card, outside the thread. */}
-        {dockOn && <WaitingDockLive count={dockN} />}
-        {showDock && (
-          <WaitingDock count={dockN} phone={phoneChrome || touchKeyboard()}>
-            {renderDockCards}
-          </WaitingDock>
-        )}
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the

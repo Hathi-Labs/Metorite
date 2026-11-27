@@ -71,11 +71,15 @@ describe("C1: the composer form draws no card", () => {
     expect(form).not.toMatch(/<(Pinned\w*|Draft\w*Card|ConfirmationCard|ElicitationCard|ConfirmationQueue)\b/);
   });
 
-  it("§24.11 (WD-1): with the flag on, the dock is the one card path in the form", () => {
-    // One dock, and only while the flag is on and an item waits.
-    expect(form.match(/<WaitingDock\b/g)?.length).toBe(1);
-    expect(form).toContain("{showDock && (");
-    expect(form).toContain("{renderDockCards}");
+  it("§24.11 (WD-1): with the flag on, the dock sits between the thread and the form, never inside it", () => {
+    // A button of a card inside the form is a submit button: Enter in a card
+    // field sent the message, and an option tap sent the box (verifier P0).
+    expect(form).not.toMatch(/<WaitingDock\b/);
+    const before = chat.slice(0, chat.indexOf("<form onSubmit={handleSubmit}"));
+    const host = before.slice(before.lastIndexOf("<div ref={dockHostRef}"));
+    expect(host).toContain("<WaitingDock count={dockN}");
+    expect(host).toContain("{showDock && (");
+    expect(host).toContain("{renderDockCards}");
     expect(chat).toContain("const showDock = dockShown(dockOn, dockSources);");
     // Flag off: the thread draws the cards as before.
     expect(chat).toContain("if (dockOn) return renderDockThreadPart();");

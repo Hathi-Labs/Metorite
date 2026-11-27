@@ -33,7 +33,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useVisualViewport } from "@/app/tasks/lib/useVisualViewport";
 import Button from "@/components/ui/Button";
 import { revealWithin } from "@/lib/scrollWithin";
-import { dockCap, dockFolded, isTextField, keyboardUp, liveAnnouncement } from "@/lib/waitingDock";
+import { dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
 
 export interface WaitingDockProps {
   /** How many items wait on the member (`dockCount`). */
@@ -47,20 +47,33 @@ export interface WaitingDockProps {
 }
 
 /**
- * The heights the cap reads, from the form. `chat` is the room that the
- * thread and the form share (the thread is the form's previous sibling), so a
- * header row above the thread is not counted. `composer` is all of the form
- * but the dock's body: the box, its rows, and the dock's own control row.
+ * The three boxes around the dock. The dock sits in its host, OUTSIDE the
+ * form: the thread is the host's previous sibling and the form its next one.
+ */
+function around(root: HTMLElement | null): { host: HTMLElement; thread: HTMLElement; form: HTMLElement } | null {
+  const host = root?.closest<HTMLElement>("[data-dock-host]");
+  const thread = host?.previousElementSibling as HTMLElement | null | undefined;
+  const form = host?.nextElementSibling as HTMLElement | null | undefined;
+  return host && thread && form ? { host, thread, form } : null;
+}
+
+/**
+ * The heights the cap reads. `chat` is the room that the thread, the dock and
+ * the form share, so a header row above the thread is not counted.
+ * `composer` is all of that room but the thread and the dock's body: the
+ * form, and the dock's own padding.
  */
 function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: number; composer: number } | null {
-  const form = root?.closest("form");
-  const thread = form?.previousElementSibling as HTMLElement | null | undefined;
-  if (!root || !body || !form || !thread) return null;
+  const a = around(root);
+  if (!a || !body) return null;
   return {
-    chat: thread.clientHeight + form.offsetHeight,
-    composer: Math.max(0, form.offsetHeight - body.offsetHeight),
+    chat: a.thread.clientHeight + a.host.offsetHeight + a.form.offsetHeight,
+    composer: Math.max(0, a.form.offsetHeight + a.host.offsetHeight - body.offsetHeight),
   };
 }
+
+/** How long after a press ends the dock waits before it may fold (K3). */
+const PRESS_GRACE_MS = 500;
 
 export default function WaitingDock({ count, phone, children, initialFolded = false }: WaitingDockProps) {
   const rootRef = useRef<HTMLElement>(null);
@@ -72,6 +85,17 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   const [layout, setLayout] = useState(0);
   const [over, setOver] = useState(false);
   const vp = useVisualViewport();
+  // K2: a new item opens the dock to its cap, also after a fold by hand.
+  const [seenCount, setSeenCount] = useState(count);
+  if (seenCount !== count) {
+    setSeenCount(count);
+    if (count > seenCount) setManual(false);
+  }
+  // K3: a press inside the dock. iOS gives a tapped button no focus, so the
+  // field's blur has no related target. While a press runs, and a moment
+  // after, the dock keeps the item open, so Submit is under the finger.
+  const pressingRef = useRef(false);
+  const graceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 
   const kbUp = keyboardUp({ phone, viewport: vp?.height ?? null, layout });
@@ -105,15 +129,15 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   });
   useEffect(() => {
     const root = rootRef.current;
-    const form = root?.closest("form");
-    const column = form?.parentElement;
-    const thread = form?.previousElementSibling;
+    const a = around(root);
     if (!root || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => read());
     ro.observe(root);
-    if (form) ro.observe(form);
-    if (column) ro.observe(column);
-    if (thread) ro.observe(thread);
+    if (a) {
+      ro.observe(a.form);
+      ro.observe(a.thread);
+      if (a.host.parentElement) ro.observe(a.host.parentElement);
+    }
     if (bodyRef.current) ro.observe(bodyRef.current);
     window.addEventListener("resize", read);
     return () => {
@@ -132,9 +156,35 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   };
   const onFocusOut = (e: React.FocusEvent<HTMLElement>) => {
     const next = e.relatedTarget as HTMLElement | null;
-    if (next && rootRef.current?.contains(next) && isTextField(next)) return;
+    // The focus moves inside the dock, or a press inside it runs: stay open.
+    if (next && rootRef.current?.contains(next)) return;
+    if (pressingRef.current) return;
     setFieldFocus(false);
   };
+  // After a press, fold back only when no field of the dock has the focus.
+  // The wait lets the click of the press land first.
+  const settleAfterPress = () => {
+    if (graceRef.current) clearTimeout(graceRef.current);
+    graceRef.current = setTimeout(() => {
+      pressingRef.current = false;
+      const at = typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null);
+      if (!(at && rootRef.current?.contains(at) && isTextField(at))) setFieldFocus(false);
+    }, PRESS_GRACE_MS);
+  };
+  const onPointerDown = () => {
+    if (graceRef.current) clearTimeout(graceRef.current);
+    pressingRef.current = true;
+    const end = () => {
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", end, true);
+      settleAfterPress();
+    };
+    window.addEventListener("pointerup", end, true);
+    window.addEventListener("pointercancel", end, true);
+  };
+  useEffect(() => () => {
+    if (graceRef.current) clearTimeout(graceRef.current);
+  }, []);
   // K7: the fold row of the keyboard opens the card only when the member
   // asks. A tap on its button opens the card and drops the keyboard.
   const unfold = () => {
@@ -179,6 +229,7 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
       aria-label="Waiting for you"
       onFocus={onFocusIn}
       onBlur={onFocusOut}
+      onPointerDown={onPointerDown}
       className="max-w-3xl mx-auto mb-2"
     >
       {/* The one scroll box of the dock: the open item over the cap (C3). */}
@@ -207,8 +258,9 @@ export function WaitingDockLive({ count }: { count: number }) {
   // reaches the same words.
   if (prev !== count) {
     setPrev(count);
-    const said = liveAnnouncement(prev, count);
-    if (said) setLive(said);
+    // Empty again clears the words, so the next arrival is read (`liveAfter`).
+    const next = liveAfter(prev, count, live);
+    if (next !== live) setLive(next);
   }
   return (
     <p role="status" aria-live="polite" className="sr-only" data-dock-live="">

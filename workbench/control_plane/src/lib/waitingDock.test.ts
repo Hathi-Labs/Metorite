@@ -30,6 +30,7 @@ import {
   focusBoxAfterLast,
   isTextField,
   keyboardUp,
+  liveAfter,
   liveAnnouncement,
   liveWords,
   picksOnly,
@@ -174,6 +175,18 @@ describe("the live region (the a11y line)", () => {
     expect(liveAnnouncement(3, 2)).toBeNull();
     expect(liveAnnouncement(2, 2)).toBeNull();
     expect(liveWords(2)).toBe("2 items wait for you");
+  });
+
+  it("1, then 0, then 1: the second arrival speaks again", () => {
+    let words = "";
+    words = liveAfter(0, 1, words);
+    expect(words).toBe("1 item waits for you");
+    words = liveAfter(1, 0, words);
+    expect(words).toBe("");
+    words = liveAfter(0, 1, words);
+    expect(words).toBe("1 item waits for you");
+    // A fall that leaves items keeps the words.
+    expect(liveAfter(3, 2, "3 items wait for you")).toBe("3 items wait for you");
   });
 });
 

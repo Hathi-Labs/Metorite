@@ -146,7 +146,9 @@ describe("the frame", () => {
 
   it("the chat mounts the region while the flag is on, outside the dock", () => {
     const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf-8");
-    expect(chat).toContain("{dockOn && <WaitingDockLive count={dockN} />}");
+    const host = chat.slice(chat.indexOf("<div ref={dockHostRef}"), chat.indexOf("<form onSubmit={handleSubmit}"));
+    expect(host).toContain("<WaitingDockLive count={dockN} />");
+    expect(chat).toContain("{dockOn && (");
   });
 
   it("the body is the one scroll box, with a cap", () => {

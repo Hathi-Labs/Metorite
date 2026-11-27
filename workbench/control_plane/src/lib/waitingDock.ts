@@ -82,6 +82,18 @@ export function liveAnnouncement(prev: number, n: number): string | null {
   return n > prev && n > 0 ? liveWords(n) : null;
 }
 
+/**
+ * The words of the live region after the count moved from `prev` to `n`. A
+ * rise says the new count. A fall to 0 clears the words, so the next arrival
+ * is a change that a screen reader reads again (1, 0, 1 speaks twice). Any
+ * other fall keeps the words.
+ */
+export function liveAfter(prev: number, n: number, words: string): string {
+  const said = liveAnnouncement(prev, n);
+  if (said) return said;
+  return n === 0 ? "" : words;
+}
+
 /** The label of the fold row's button. It only opens the card (audit rule 2). */
 export function unfoldLabel(kind: DockKind): string {
   return kind === "approval" ? "Review" : "Answer";
