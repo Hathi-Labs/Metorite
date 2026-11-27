@@ -854,10 +854,11 @@ that it pushed has a disposition.
   with `scripts/hand_over.sh` and never merges by hand.
 - A merge gate trusts a green pr-check on a head that holds today's main. That
   is the early exit of `premerge.sh` today.
-- A head that is behind main gets the trial merge and the collision fences.
-  It re-runs tests on the merge result only when the union adds a migration or
-  touches an R8 suite (`affected_tests.py --r8`). Otherwise the clean trial
-  merge and a green pr-check on the head decide.
+- A head that is behind main gets the trial merge, the collision fences and
+  the type check. In the mode `auto`, which a merger that runs `--no-tests`
+  may choose (§7b.9), it re-runs tests on the merge result only when the
+  union adds a migration or touches an R8 suite (`affected_tests.py --r8`).
+  The merge bot keeps the default mode, which always runs the merge test.
 - HIGH tier: the merge path. PR 2407 (one time budget) and PR 2488 (the
   release freeze), which it needed first, are on main (e4cd863c40 and
   e93626d2e).
@@ -1493,7 +1494,11 @@ In `auto`:
      file under `infra/postgres/` or `infra/customer_console/`. The lists
      `pr.txt` and `main.txt` give it.
    - **R, an R8 suite.** The picker's list (`sel.txt`) holds a file that
-     `affected_tests.py --r8` lists.
+     `affected_tests.py --r8` lists. `--r8` runs only when M is false, with a
+     cap of 60 seconds inside the budget.
+
+   Both sides FULL is not a trigger of its own: step 4 runs for it only when
+   M or R is true.
 6. When neither is true, step 4 does not run. One line prints: "auto: no
    migration and no R8 suite in the merge. The trial merge, the fences, the
    type check and the green pr-check decide." The exit is 0 when the rest
@@ -1502,11 +1507,16 @@ In `auto`:
    time budget. The line names the reason: `auto: migration <file>` or
    `auto: R8 suite <file>`, the first of each.
 
-**When `auto` FAILs.** It never passes a merge on a step that gave no answer.
-- The picker fails, times out, is killed, or is absent: FAIL, as the
-  default mode does.
-- `affected_tests.py --r8` fails or prints no file: FAIL. The text names the
-  command.
+**When `auto` FAILs, and when it says UNPROVEN.** A step that gives no answer
+at all FAILs. A step that runs and hits its time cap prints UNPROVEN and
+exits 0, as the default mode does. The merger then writes "UNPROVEN" in its
+DONE line. For a merger that runs `--no-tests` today, that is never looser.
+- The picker fails, times out or is killed: FAIL, as the default mode does.
+- The picker is absent: FAIL. The default mode prints UNPROVEN and exits 0
+  here, and `auto` is stricter.
+- `affected_tests.py --r8` fails, prints no file, or hits its cap: FAIL. The
+  text names the command.
+- Step 4 or the type check hits its cap: UNPROVEN, exit 0, as the default.
 - `PREMERGE_AFFECTED_CMD` is set (a test override): `auto` runs that command,
   as the default mode does. R counts as true.
 - R is true, and `CUSTOMER_CONSOLE_DATABASE_URL` or
@@ -1520,8 +1530,13 @@ In `auto`:
 default mode, `auto` skips step 4 when M and R are both false. Then one case
 can pass: (a) a hermetic test that passes on each side alone and fails after
 the merge, as the collisions of 2026-11-13 and 2026-11-14 did
-(`premerge_select.py`). The type check case (TS2739) cannot pass, because
-step 3b runs in `auto`.
+(`premerge_select.py`). The type check case (TS2739) passes only when the
+type check hits its cap, and then the line says UNPROVEN.
+
+One gap of M is accepted. A migration on one side can leave the picker's
+list with no ladder suite, and then step 4 does not test the migration. The
+ladder replay of pr-check on each head is the evidence for the migration
+itself.
 
 Against `--no-tests`, `auto` adds the type check and step 4 for M and R, and
 it passes nothing that `--no-tests` fails. Case (a) is why the merge bot
@@ -1532,9 +1547,13 @@ A change to `lane-merge.md`: metorite-78 writes the step after one week of
 `auto` lines.
 
 **Fences.** `tests/unit/test_premerge.py`, with its temp git repo and stub
-commands. Each fence that sets no database unsets both R8 variables, because
-`_run` copies `os.environ`. Fences 3 and 4 commit a stub
-`scripts/affected_tests.py` that answers `--r8`.
+commands. Two harness traps:
+- `_run` copies `os.environ`. Each fence that sets no database unsets both R8
+  variables.
+- `_run` sets `PREMERGE_AFFECTED_CMD=true` by default, and then R counts as
+  true. Each `auto` fence clears `PREMERGE_AFFECTED_CMD` and commits a stub
+  picker and a stub `scripts/affected_tests.py` that answers `--r8`. The
+  other choice is to set both R8 variables.
 1. `auto` with a PR that adds `infra/postgres/NNN_x.sql`: step 4 runs.
 2. `auto` with a main side that adds a migration: step 4 runs.
 3. `auto` with an R8 file in the picker's list, and both variables set: step 4
@@ -1547,13 +1566,15 @@ commands. Each fence that sets no database unsets both R8 variables, because
 7. `auto` with a picker that times out, and with no picker: FAIL.
 8. `auto` with `--r8` that fails: FAIL.
 9. `auto` with a head that holds main: the early exit, as today.
-10. `auto` when both sides are FULL: step 4 runs the changed tests, as the
-    default mode does.
+10. `auto` when both sides are FULL and the PR adds a migration: step 4 runs
+    the changed tests, as the default mode does.
 11. The default and `--no-tests` behave as before: every existing test passes
     unchanged. `--auto-tests` then `--no-tests` gives `--no-tests`.
+12. `auto` with step 4 at its cap: the UNPROVEN line, and exit 0.
+13. `auto` with no picker: FAIL, where the default mode exits 0.
 
 **Done when.**
-1. Fences 1 to 11 pass, and every existing `test_premerge.py` test passes
+1. Fences 1 to 13 pass, and every existing `test_premerge.py` test passes
    unchanged.
 2. The header comment of `premerge.sh` names the three modes, and who may
    use `auto`.
