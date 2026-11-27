@@ -1438,9 +1438,8 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   te
 
 ### 7b.8 LBB-2b: the owner run of a PR (task 4056)
 
-**Status.** Spec, 2026-11-27. The facts below were checked against the code of
-PR 2898 at 145d99c98a. Every anchor of this section is in that PR, and none is
-on main yet. The code waits until PR 2898 is on main. **It must merge before
+**Status.** LBB-2b built, 2026-11-27 (task 4056). PR 2898 is on main, and
+the owner rule is in `claim_gate.py` `_counted_sql`. **It must merge before
 anyone sets `CLAIM_GATE_SHADOW_ORGS`** (the flip list of §7b.2). The shadow
 day cannot show this defect, because the gate logs nothing for a PR that it
 does not count.
