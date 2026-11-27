@@ -1182,7 +1182,7 @@ answer-watcher timer does.
 **The env file** (mode 0600, no secret). Its full key set:
 - `LIVE_CHECK_MODE`: a missing file or `off` (the default) exits 0 with no
   call. `dry` writes the report. Any other value reads as `off` and logs one
-  line.
+  line to stderr, which journald keeps.
 - `LIVE_CHECK_GATEWAY_URL`: the production gateway, with no default. When it
   is missing, the run writes one `UNKNOWN` line and exits 0.
 
@@ -1228,8 +1228,11 @@ work that is not live.
 **The report.** One line for each merge in each run, appended to
 `~/lanes/live-check.tsv`:
 `<UTC time><TAB><pr><TAB><merge sha><TAB><task or -><TAB><state><TAB><deployed sha or ->`.
+A run-level `UNKNOWN` line (a null `applied_sha`, a failed read or a missing
+URL) holds `-` in the pr, merge SHA and task columns. Its time is now, in UTC.
 
-**Test seams.** `LIVE_CHECK_VERSION_CMD` (the `/version` read),
+**Test seams** (read from the environment; the env file sets only the two keys
+above). `LIVE_CHECK_VERSION_CMD` (the `/version` read),
 `LIVE_CHECK_LANES` (the folder of the logs and the report),
 `LIVE_CHECK_SRC` (the clone), `LIVE_CHECK_NOW` (now, epoch seconds).
 
