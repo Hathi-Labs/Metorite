@@ -126,7 +126,10 @@ def _uuid(n: int) -> str:
 WRITE_TOOL_NAMES = ("set_task_status", "add_task_reference", "create_task", "update_task",
                     "update_tasks", "add_comment", "update_comment", "delete_comment",
                     "claim_task", "set_assignees", "add_task_link",
-                    "remove_task_link", "create_project",
+                    "remove_task_link",
+                    # SW-27b: the next number of a project sequence.
+                    "reserve_number",
+                    "create_project",
                     "update_project", "preview_move_tasks", "move_tasks",
                     # WS-39 LP-1a: one update of a project.
                     "post_project_update",
@@ -542,9 +545,9 @@ class TestTheWriteToolsAtTheEdge:
         assert off == [n for n in on if n not in set(WRITE_TOOL_NAMES)]
         # The seven reads of EA-3, the two reads of EA-15 (§12.4) and
         # `get_attachment` of IMG-3, `board_stats` of MCP-G19a, the two of MCP-G21,
-        # `get_plan` of SP-12, `list_project_updates` of WS-39 LP-1a and
-        # `list_templates` of WS-39 TPL-1a.
-        assert len(off) == 16
+        # `get_plan` of SP-12, `list_project_updates` of WS-39 LP-1a,
+        # `list_templates` of WS-39 TPL-1a and `get_agent_map` of SW-113.
+        assert len(off) == 17
 
     @pytest.mark.parametrize("scope,scopes", [
         ("projects:read projects:write", WRITE_SCOPES),

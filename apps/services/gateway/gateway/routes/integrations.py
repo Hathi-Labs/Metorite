@@ -35,13 +35,14 @@ from acb_auth import (
     require_role,
 )
 from acb_common import env_guard, get_logger, get_settings
+from acb_common.api_connections_flag import api_connections_allowed
 from acb_llm.key_store import CUSTOM_INTEGRATION_TYPE, INTEGRATION_ENV_MAP
 from fastapi import APIRouter, Depends, HTTPException, status
 from gateway import outbound_guard
 from gateway.connections import github as github_connection
 from gateway.connections import store as connection_store
 from gateway.db import current_tenant, tenant_session
-from pydantic import BaseModel, StrictBool, model_validator
+from pydantic import BaseModel, Field, StrictBool, StrictStr, field_validator, model_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.integrations")
@@ -900,7 +901,10 @@ async def integration_status(
         for row in custom_rows:
             if row["service_id"] in known:
                 continue  # skip if service_id conflicts with built-in
-            result.append(_custom_status_row(row, custom_keys_by_service))
+            status_row = _custom_status_row(row, custom_keys_by_service)
+            if api_connections_allowed(current_tenant()):
+                status_row["chat_use"] = dict(CUSTOM_ROW_CHAT_USE)
+            result.append(status_row)
     except Exception:
         pass  # graceful degradation if table doesn't exist yet
 
@@ -920,6 +924,15 @@ async def _stored_custom_keys(store: Any) -> dict[str, list[str]]:
         if len(parts) == 3 and parts[0] == "custom":
             keys.setdefault(parts[1], []).append(parts[2])
     return keys
+
+
+#: API-6 (task 3792, bug 3766). A custom row from "Add API" stores keys, and no
+#: chat path reads them. With API connections on for the org, the row says so.
+#: The text names the way that works: a connection from the templates.
+CUSTOM_ROW_CHAT_USE: dict[str, Any] = {
+    "usable": False,
+    "note": "The chat cannot use this yet. A connected API from the template list works in the chat.",
+}
 
 
 def _custom_status_row(
@@ -1975,30 +1988,45 @@ class McpServerRequest(BaseModel):
     agent_scope: list[str] = ["*"]
     enabled: bool = True
     #: H-300: every tool of the server needs the member's card, whatever its
-    #: hints say. A new server is set to always confirm unless the admin
-    #: says no.
+    #: hints say. MCP-NC1 (task 3603): a new server is off unless the admin
+    #: turns it on, so a member's run calls each tool with no card. A body
+    #: with no key keeps the switch of a row that exists (``None``), so a
+    #: re-register never turns a stored ``true`` off.
     #: Strict, as the PATCH is: "false", "off" or 0 is 422, never "off".
-    always_confirm: StrictBool = True
+    always_confirm: StrictBool | None = None
     #: MCP-C2 (item 32): the admin says the key can only read, so no tool of
     #: the server waits for the card. Off for a new server. A register is a
     #: full register, so a body with no key turns it off. Strict too.
     read_only_key: StrictBool = False
 
 
-class McpSwitchesRequest(BaseModel):
-    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2).
+#: CSY-7: the longest description that the PATCH stores. The chat reads at
+#: most 400 characters of it (``chat_connected_systems.md`` §3.2).
+MCP_DESCRIPTION_MAX = 400
 
-    Either switch, or both. A body with neither is 422, and so is a value
-    that is not a JSON boolean. A body with only ``always_confirm`` is the
-    H-300 body, and it behaves as it did."""
+
+class McpSwitchesRequest(BaseModel):
+    """The body of ``PATCH /integrations/mcp/{name}`` (H-300, MCP-C2, CSY-7).
+
+    Either switch, the description, or any of them. A body with none is 422,
+    and so is a switch that is not a JSON boolean. A body with only
+    ``always_confirm`` is the H-300 body, and it behaves as it did. The
+    description is trimmed and holds 400 characters at most (the chat reads
+    it, ``chat_connected_systems.md`` §3.2). An empty one clears it."""
 
     always_confirm: StrictBool | None = None
     read_only_key: StrictBool | None = None
+    description: StrictStr | None = Field(default=None, max_length=MCP_DESCRIPTION_MAX)
+
+    @field_validator("description", mode="after")
+    @classmethod
+    def _trim_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @model_validator(mode="after")
-    def _one_switch_at_least(self) -> McpSwitchesRequest:
-        if self.always_confirm is None and self.read_only_key is None:
-            raise ValueError("Send always_confirm, read_only_key, or both.")
+    def _one_field_at_least(self) -> McpSwitchesRequest:
+        if self.always_confirm is None and self.read_only_key is None and self.description is None:
+            raise ValueError("Send always_confirm, read_only_key, description, or any of them.")
         return self
 
 
@@ -2088,6 +2116,40 @@ async def list_mcp_servers(
         _log.warning("mcp.list_failed", error=type(exc).__name__)
         raise HTTPException(500, "The MCP servers could not be read.") from exc
 
+@router.get(
+    "/mcp/{name}/use", summary="The chat use of one MCP server in the last 7 days",
+    dependencies=[_REQUIRE_MANAGE],
+)
+async def read_mcp_use(
+    name: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """CSY-8 (task 3408, spec ``chat_connected_systems.md`` §3.7): the use panel's counts.
+
+    The chat calls of each of the last 7 days (today and the 6 before, zero-filled),
+    the turns that left the server out by reason, and the last call. The org comes
+    from the session, and the server must be a server of that org, or it is 404
+    (never a count of another org). A Redis fault answers zeros with
+    ``available: false``. It returns names and counts only.
+    """
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    try:
+        from gateway.connections import mcp as mcp_registry  # noqa: PLC0415
+
+        found = any(s.name == name for s in await mcp_registry.list_servers(org))
+    except Exception as exc:  # the class only: a DB message can echo a value
+        _log.warning("mcp.use_failed", error=type(exc).__name__)
+        raise HTTPException(500, "The MCP server could not be read.") from exc
+    if not found:
+        raise HTTPException(404, f"MCP server '{name}' not found.")
+    from acb_common import mcp_use  # noqa: PLC0415
+    from acb_skills import server_brief  # noqa: PLC0415
+
+    return await mcp_use.read_use(org, name, server_brief.REASONS)
+
+
 #: D85: an MCP server over stdio starts a process on the host.
 _MCP_STDIO_REFUSED = (
     "Metorite does not run MCP servers over stdio. Use an http-sse server."
@@ -2176,14 +2238,17 @@ async def register_mcp_server(
     # does. The insert sets both stamps to one now(). An update keeps
     # ``created_at``. No header and no url go into the payload.
     # MCP-C2: the event records both switches, because a re-POST with no
-    # ``read_only_key`` turns that switch off too.
+    # ``read_only_key`` turns that switch off too. MCP-NC1 (F7): a body with
+    # no ``always_confirm`` keeps the stored switch, so the event records the
+    # switch as saved, never the body's ``None``.
     stamp = getattr(saved, "created_at", None)
     created = stamp is not None and stamp == getattr(saved, "updated_at", None)
+    always_saved = bool(getattr(saved, "always_confirm", req.always_confirm))
     audit_integration(user, org, f"mcp:{req.name}", action="integration.mcp.registered",
-                      always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+                      always_confirm=always_saved, read_only_key=req.read_only_key,
                       outcome="created" if created else "updated")
     _log.info("mcp.registered", name=req.name, actor=user.email,
-              always_confirm=req.always_confirm, read_only_key=req.read_only_key)
+              always_confirm=always_saved, read_only_key=req.read_only_key)
     return {"ok": True, "name": req.name}
 
 
@@ -2223,6 +2288,7 @@ async def set_mcp_switches(
     try:
         server = await mcp_registry.set_switches(
             org, name, always_confirm=req.always_confirm, read_only_key=req.read_only_key,
+            description=req.description,
         )
     except mcp_registry.McpSwitchRefused as exc:
         _log.info("mcp.switches_refused", name=name, actor=user.email, reason=exc.reason)
@@ -2248,6 +2314,14 @@ async def set_mcp_switches(
         _log.info("mcp.read_only_key_set", name=server.name, actor=user.email,
                   read_only_key=server.read_only_key)
         out["read_only_key"] = server.read_only_key
+    if req.description is not None:
+        # The audit event holds the length, never the text.
+        audit_integration(user, org, f"mcp:{server.name}",
+                          action="integration.mcp.description",
+                          description_length=len(server.description))
+        _log.info("mcp.description_set", name=server.name, actor=user.email,
+                  description_length=len(server.description))
+        out["description"] = server.description
     return out
 
 

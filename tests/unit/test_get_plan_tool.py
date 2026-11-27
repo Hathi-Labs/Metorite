@@ -138,3 +138,24 @@ def test_the_pack_holds_it_as_a_read() -> None:
     from acb_skills.skill_families import SKILL_FAMILIES
 
     assert "get_plan" in SKILL_FAMILIES["projects-plan"]["tools"]
+
+
+async def test_a_plan_with_no_estimate_says_the_finish_is_unknown(monkeypatch) -> None:
+    """Task 2473: no date and no minutes when no slice has an estimate."""
+    unknown = {"mins": None, "working_days": None, "date": None, "unknown": True,
+               "guessed": 4, "words": "The finish is unknown: 4 tasks have no estimate, "
+                                      "so no length can be added up."}
+    _gateway(monkeypatch, _plan(finish=unknown))
+    out = await skill_projects.get_plan(ROOT)
+    assert "The finish is unknown: 4 tasks have no estimate" in out
+    assert "Give each slice an estimate" in out
+    assert "Finish: None" not in out and "working days" not in out
+
+
+async def test_a_plan_with_some_estimates_says_how_many_it_guessed(monkeypatch) -> None:
+    some = {"mins": 450, "working_days": 2, "date": "2026-11-10", "guessed": 2,
+            "words": "2 tasks have no estimate, so this finish guesses their length."}
+    _gateway(monkeypatch, _plan(finish=some))
+    out = await skill_projects.get_plan(ROOT)
+    assert "Note: 2 tasks have no estimate" in out
+    assert "Finish: 2026-11-10 (2 working days, 450 minutes" in out

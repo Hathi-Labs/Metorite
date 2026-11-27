@@ -135,6 +135,19 @@ def _gateway(
         path, method = call["path"], call["method"]
         if task is not None and path == f"/projects/tasks/{UUID}" and method == "GET":
             return task
+        if path == "/projects/tasks" and method == "GET":
+            # The one subtree read: every level under the parent, top down.
+            query = call["params"] or {}
+            assert query.get("include_descendants") == "true"
+            flat: list[dict] = []
+            level = [(str(query["parent_task_id"]), 1)]
+            while level:
+                pid, depth = level.pop(0)
+                for cid, cat in children.get(pid, []):
+                    flat.append({"id": cid, "status_category": cat, "depth": depth})
+                    level.append((cid, depth + 1))
+            size, page_no = int(query["page_size"]), int(query["page"])
+            return {"rows": flat[(page_no - 1) * size : page_no * size], "total": len(flat)}
         if path.endswith("/relations"):
             tid = path.split("/")[-2]
             rows = [
@@ -575,7 +588,7 @@ async def test_the_count_reaches_every_level_the_cascade_reaches(monkeypatch) ->
     assert "5 subtasks (every level) archived with it" in asked[0]["detail"]
     count = await W._subtask_counts(LIVE)
     assert (count.total, count.open, count.capped) == (5, 4, False), "a closed child's own"
-    assert len([c for c in calls if c["path"].endswith("/relations")]) >= 6
+    assert len([c for c in calls if c["path"].endswith("/relations")]) == 0
 
 
 async def test_a_direct_children_count_fails_the_every_level_check(monkeypatch) -> None:
@@ -599,10 +612,50 @@ async def test_complete_counts_the_open_ones_at_every_level(monkeypatch) -> None
 
 async def test_a_huge_tree_is_read_to_a_cap_and_the_card_says_at_least(monkeypatch) -> None:
     approve(monkeypatch)
+    monkeypatch.setattr(W, "SUBTREE_PAGE_SIZE", 2)
     monkeypatch.setattr(W, "SUBTREE_READS", 2)
-    fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    calls = fake_gateway(monkeypatch, _gateway(tree=NESTED))
     out = await skill_projects.archive_task(LIVE)
     assert "has at least 4 subtasks (every level)" in out
+    assert len([c for c in calls if c["path"] == "/projects/tasks"]) == 2, "two pages, then the cap"
+
+
+async def test_the_count_is_one_gateway_read_for_a_tree_of_several_levels(monkeypatch) -> None:
+    """H-254: one GET, not one per task. NESTED has four levels and five tasks."""
+    calls = fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    count = await W._subtask_counts(LIVE)
+    reads = [c for c in calls if c["method"] == "GET"]
+    assert len(reads) == 1, [c["path"] for c in reads]
+    assert reads[0]["path"] == "/projects/tasks"
+    assert reads[0]["params"]["parent_task_id"] == LIVE
+    assert reads[0]["params"]["include_descendants"] == "true"
+    assert (count.total, count.open, count.capped) == (5, 4, False)
+
+
+async def test_a_tree_past_one_page_pages_and_a_page_cap_marks_it_capped(monkeypatch) -> None:
+    monkeypatch.setattr(W, "SUBTREE_PAGE_SIZE", 2)
+    calls = fake_gateway(monkeypatch, _gateway(tree=NESTED))
+    count = await W._subtask_counts(LIVE)
+    assert (count.total, count.open, count.capped) == (5, 4, False)
+    assert len([c for c in calls if c["path"] == "/projects/tasks"]) == 3
+    monkeypatch.setattr(W, "SUBTREE_READS", 1)
+    count = await W._subtask_counts(LIVE)
+    assert (count.total, count.capped) == (2, True)
+
+
+async def test_a_row_at_the_depth_bound_marks_the_count_capped(monkeypatch) -> None:
+    """The gateway walk stops at level 10, so a row there may have more below."""
+    deep = {LIVE: [(A, "todo")], A: [(B, "todo")]}
+    monkeypatch.setattr(W, "SUBTREE_MAX_DEPTH", 2)
+    fake_gateway(monkeypatch, _gateway(tree=deep))
+    count = await W._subtask_counts(LIVE)
+    assert (count.total, count.open, count.capped) == (2, 2, True)
+
+
+def test_the_depth_bound_matches_the_gateway() -> None:
+    from gateway.routes.projects.tasks import DESCENDANTS_MAX_DEPTH
+
+    assert W.SUBTREE_MAX_DEPTH == DESCENDANTS_MAX_DEPTH
 
 
 # ── Review round 1 — the edit form asks the subtasks question itself ───────

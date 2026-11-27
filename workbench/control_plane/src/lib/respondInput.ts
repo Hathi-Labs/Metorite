@@ -25,6 +25,11 @@
  *   is now signed in to another. The route refused it before the gateway, so
  *   nothing reached the other org. The caller keeps the card and says
  *   "Switch to <account> to answer".
+ * - A 409 `answered_once` (HRD-16) is `answered`: a run already took an
+ *   answer for this card, from another device or a double tap. The card
+ *   leaves and says that someone answered it. The caller sends nothing,
+ *   never the answer as a message and never a new run (owner decision,
+ *   2026-11-23). A plain 409 stays a `drop`.
  *
  * Fences: `src/lib/confirmationQueue.test.ts` ("the answer POST") and
  * `src/lib/respondInput.test.ts` (the other account).
@@ -32,13 +37,34 @@
 
 import { restartedCardDisplay, restartedCardMessage } from "@/lib/chatRecovery";
 import type { CardAnswer } from "@/lib/cardAnswer";
+import { runCapFromRaw } from "@/lib/runErrors";
 
-export type RespondOutcome = "ok" | "drop" | "retry";
+export type RespondOutcome = "ok" | "drop" | "retry" | "answered";
+
+/**
+ * RESUME-3a: a late Approve that started a continuation run (RESUME-2a, the
+ * 200 `{ok, resumed: true, threadId, runId}`). The run is new, with its own
+ * reply row at the end of the chat (case B). `messageId` names that row when
+ * the server sends it.
+ *
+ * RESUME-3b: `sameReply` is true when the run goes on in the parked reply,
+ * under the parked run's id (case A of RESUME-2b). `messageId` then names the
+ * parked reply. A late decline never takes case A, and its 200 has neither.
+ */
+export interface ResumedRun {
+  runId: string;
+  threadId: string;
+  messageId?: string;
+  sameReply?: true;
+}
 
 /** The outcome, plus the message to send instead when the run restarted. */
 export interface RespondResult {
   outcome: RespondOutcome;
   resend: string | null;
+  /** The continuation run that the answer started (RESUME-3a). The chat
+   *  sends no envelope and draws no notice for it. */
+  resumed?: ResumedRun | null;
   /** What the member sees for `resend`: the answered card (owner report,
    *  2026-10-13). Null for an old gateway, and the chat then parses the
    *  envelope (`lib/cardAnswer.ts`). */
@@ -110,6 +136,19 @@ export function otherAccountOf(body: string): string | null {
   return null;
 }
 
+/** True for the gateway's 409 `answered_once` body (HRD-16). */
+export function answeredOnceOf(body: string): boolean {
+  try {
+    const d = (JSON.parse(body) as { detail?: { error?: unknown } })?.detail;
+    return !!d && typeof d === "object" && d.error === "answered_once";
+  } catch {
+    return false;
+  }
+}
+
+/** What the member reads when someone answered the card first (HRD-16). */
+export const ANSWERED_ONCE_TEXT = "Someone already answered this. Your answer was not sent.";
+
 /** The detail text of a gateway refusal, if it holds a plain one. */
 function refusalDetail(body: string): string | null {
   try {
@@ -131,6 +170,7 @@ function refusalDetail(body: string): string | null {
 export function respondFailureText(status: number | undefined, body = ""): string {
   if (status === undefined) return "Metorite could not be reached. Check the connection, then try again.";
   if (status >= 500) return "The server could not take the answer. Try again.";
+  if (status === 409 && answeredOnceOf(body)) return ANSWERED_ONCE_TEXT;
   if (status === 409) return "Nothing waits on this answer now. The run ended, or someone answered it.";
   if (status === 403) return "You cannot answer this request. Ask its owner to answer it.";
   if (status === 401) return "Your session ended. Sign in again, then answer.";
@@ -139,14 +179,66 @@ export function respondFailureText(status: number | undefined, body = ""): strin
 }
 
 /**
- * What a failed POST means. `status` is undefined for a network fault.
- * A network fault, a 5xx, a 400 and a 422 keep the card (`retry`). Any other
- * 4xx (401, 403, 404, 409) drops it, because a click cannot fix those.
+ * The continuation run of a 2xx body, or null (RESUME-3a). Only `resumed:
+ * true` with a run id and a thread id that are strings counts. Any other
+ * body is a plain `ok`, as before.
  */
-export function respondFailure(status: number | undefined): "retry" | "drop" {
+export function resumedOf(body: string): ResumedRun | null {
+  try {
+    const j = JSON.parse(body) as {
+      resumed?: unknown; runId?: unknown; threadId?: unknown; messageId?: unknown; sameReply?: unknown;
+    };
+    if (!j || j.resumed !== true) return null;
+    if (typeof j.runId !== "string" || !j.runId || typeof j.threadId !== "string" || !j.threadId) return null;
+    return {
+      runId: j.runId,
+      threadId: j.threadId,
+      ...(typeof j.messageId === "string" && j.messageId ? { messageId: j.messageId } : {}),
+      // RESUME-3b: only the JSON `true` counts. Any other value is case B.
+      ...(j.sameReply === true ? { sameReply: true as const } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why the run cap refused a continuation (RESUME-3a, §4.12.4 item 5), or
+ * null when the body is no `too_many_runs` refusal. The card stays, and the
+ * member answers it again.
+ */
+export function runCapAnswerReason(status: number, body: string): string | null {
+  if (status !== 429) return null;
+  const cap = runCapFromRaw(body);
+  if (!cap) return null;
+  const limit = cap.limit > 0 ? String(cap.limit) : "too many";
+  const count = limit === "1" ? "1 assistant" : `${limit} assistants`;
+  return `You have ${count} running. Wait for one to finish or stop one, then answer the card again.`;
+}
+
+/**
+ * What a failed POST means. `status` is undefined for a network fault.
+ * A network fault, a 5xx, a 400 and a 422 keep the card (`retry`). A 409
+ * `answered_once` is `answered`: someone answered the card, so nothing sends
+ * again (HRD-16). Any other 4xx (401, 403, 404, a plain 409) drops it,
+ * because a click cannot fix those.
+ */
+export function respondFailure(status: number | undefined, body = ""): "retry" | "drop" | "answered" {
   if (status === undefined) return "retry";
   if (status === 400 || status === 422) return "retry";
+  if (status === 409 && answeredOnceOf(body)) return "answered";
   return status >= 500 ? "retry" : "drop";
+}
+
+/**
+ * True when a card sends its answer as a chat message after this outcome.
+ * Only a `drop` does: a stale card whose run ended, so the answer is never
+ * lost. `answered` (HRD-16) never does, because a run already took an answer
+ * for that card, and a resend would act twice. Every card kind in the chat
+ * asks this, so one rule holds for all of them.
+ */
+export function resendsAnswer(outcome: RespondOutcome | "resent"): boolean {
+  return outcome === "drop";
 }
 
 export async function sendRespondInput(
@@ -174,15 +266,25 @@ export async function sendRespondInputResult(
     console.error("respond-input failed — restoring HITL card", err);
     return { outcome: "retry", resend: null, reason: respondFailureText(undefined) };
   }
-  if (res.ok) return { outcome: "ok", resend: null };
+  if (res.ok) {
+    // RESUME-3a: a late Approve that started a continuation run says so.
+    const resumed = resumedOf(await res.text().catch(() => ""));
+    return resumed ? { outcome: "ok", resend: null, resumed } : { outcome: "ok", resend: null };
+  }
   const text = await res.text().catch(() => "");
   const otherAccount = res.status === 409 ? otherAccountOf(text) : null;
   if (otherAccount) {
     // Not sent. The card stays, so the member can answer after the switch.
     return { outcome: "retry", resend: null, otherAccount };
   }
-  const outcome = respondFailure(res.status);
-  if (outcome === "drop") {
+  // RESUME-3a: the run cap refused the continuation. Nothing ran, the row
+  // still waits, and the card stays with the reason beside its buttons.
+  const capReason = runCapAnswerReason(res.status, text);
+  if (capReason) return { outcome: "retry", resend: null, reason: capReason };
+  const outcome = respondFailure(res.status, text);
+  if (outcome === "answered") {
+    console.info("respond-input: someone already answered this card, nothing sent again");
+  } else if (outcome === "drop") {
     const resend = res.status === 409 ? restartedCardMessage(text) : null;
     if (resend) return { outcome, resend, display: restartedCardDisplay(text) };
     console.warn(`respond-input refused (${res.status}), card dropped`, text);

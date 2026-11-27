@@ -23,6 +23,7 @@ export const GENERATED_PANE_HREFS: readonly string[] = [
   "/projects",
   "/studio",
   "/tasks",
+  "/waiting",
   "/whatsapp",
 ];
 

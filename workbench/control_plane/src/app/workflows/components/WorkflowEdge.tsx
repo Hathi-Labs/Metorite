@@ -66,7 +66,7 @@ export default function WorkflowEdge({
         >
           {d.branch && (
             <span
-              className={`font-mono text-[8.5px] uppercase tracking-[0.1em] px-1.5 py-px rounded-full border bg-background ${
+              className={`font-mono text-[10px] uppercase tracking-[0.1em] px-1.5 py-px rounded-full border bg-background ${
                 d.branch === "true"
                   ? "text-success border-success/40"
                   : "text-muted-foreground border-border"

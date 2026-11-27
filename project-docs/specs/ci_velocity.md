@@ -54,6 +54,27 @@ in the probed tree. So a commit before the culprit added the test is good, and
 the revert tree passes. Stdout of `bisect_main.sh` holds only the answer line.
 CIV-5 and §8.8 hold it.
 
+**CIV-31f is BUILT on 2026-11-15** (task 3379, branch `civ31f-mt-c7e389ac`).
+HIGH tier. It must merge before `on`. A probe that ran no test is not a pass.
+The pass calls it `absent`. On a tip of `main`, `absent` goes to a person and is
+never a fix. On the parent and the revert tree, it makes the case vacuous, and
+a vacuous revert PR gets no `VERIFY: PASS` and no hand-over. The helper judges
+each file, so a module-level skip is no longer absent. CIV-5 and §8.8 hold it.
+
+**CIV-RN is BUILT on 2026-11-26** (task 4055, branch `devx-migration-at-merge`).
+HIGH tier. lane-merge sets the migration number at merge with
+`merge_bot.sh --renumber <pr> <sha>`. §8.10 holds the rule and the fence.
+
+**CIV-ORCH is BUILT on 2026-11-27** (task 4058, branch `devx-orch-off-pc`).
+HIGH tier (the box path). The orchestrator watch runs on the box, and the lane
+keeper wakes `lane-orch` for each new batch of events. The timer ships
+disabled. §5 CIV-ORCH holds it.
+
+**CIV-LIVE is BUILT on 2026-11-27** (task 4060, branch `devx-lane-liveness`,
+stacked on CIV-ORCH). HIGH tier (the box path). The lane keeper names why a
+lane stopped, and it wakes a lane after a network error or a usage reset. The
+weekly review shows the time lost. §5 CIV-LIVE holds it.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -460,14 +481,29 @@ owner has not installed the timer.
   is `scripts/probe_present_tests.sh`. The bisect calls it by the absolute
   path of the running checkout, because the probed commit can be older than
   the helper. An id is absent when its file (the text before the first `::`)
-  is not in the tree. It is also absent when the collection of its file exits
-  0 or 5 and does not list its exact node id. When every id is absent, the
-  commit is good. A collection that exits with another code, or prints no node
-  id, leaves nothing out. So while the file of an id is in the tree, a
-  collection error never makes the commit good. An id whose file is not in the
-  tree passes with no pytest run, also when the conftest does not load. On
-  2026-11-14, 5 of 7 red runs stopped with exit 3, because each failed test
-  was new in the range.
+  is not in the tree. It is also absent when the collection exits 0 or 5, its
+  file gives at least one node id, and its exact node id is not one of them
+  (CIV-31f: the rule applies to each file). A file that gives no node id keeps
+  its ids. A module-level skip (`pytest.importorskip`, or `pytest.skip` with
+  `allow_module_level=True`) is such a file, and so is a file whose tests the
+  `-m` filter deselects. pytest then runs those ids and exits 4 or 5, so the
+  bisect cannot judge the commit. When every id is absent, the commit is good. A
+  collection that exits with another code leaves nothing out. So while the
+  file of an id is in the tree, a collection error never makes the commit
+  good. An id whose file is not in the tree passes with no pytest run, also
+  when the conftest does not load. CIV-31f: the helper removes a trailing CR
+  from each id first. On 2026-11-14, 5 of 7 red runs stopped with exit 3,
+  because each failed test was new in the range.
+- **A known limit: a moved test** (CIV-31f). The bisect calls an absent test
+  good. When a PR moves or renames the failed test, the commits before it do
+  not hold the new name, so the bisect names the move and not the break. The
+  automatic revert finds that its proof ran no test (§8.8, vacuous), and a
+  person acts.
+- **The two absent notes are a contract** (CIV-31f). The helper writes
+  `these ids are absent from this tree, so they do not run:` with each id
+  after it, and `ALL_ABSENT:` when no id is left. `auto_revert.py` reads both.
+  Each text lives in one place on each side. Fence:
+  `test_civ31f_the_absent_notes_are_one_contract`.
 - **Stdout is the answer line** (CIV-31e). The output of each probe goes to
   stderr. Exits 3 and 5 print their reason as the one stdout line, so the
   poller result names the reason and not a line of pytest.
@@ -479,8 +515,9 @@ owner has not installed the timer.
 - `scripts/home_server/systemd/metorite-bisect-poll.{service,timer}` are unit
   files. Nobody installed them.
 - Fence: `tests/unit/test_bisect_main.py` (21 tests, a fixture repo and a
-  shimmed `gh_cmd`) and `tests/unit/test_probe_present_tests.py` (10 tests,
-  the absent rule and one bisect with the default probe).
+  shimmed `gh_cmd`) and `tests/unit/test_probe_present_tests.py` (16 tests,
+  the absent rule, the rule for each file, the CR, the exact match, and one
+  bisect with the default probe).
 
 **By hand.** `bash scripts/bisect_main.sh <good> <bad> tests/unit/test_x.py::test_y`.
 The default probe is `bash <checkout>/scripts/probe_present_tests.sh "$@"`. It
@@ -774,6 +811,70 @@ supplies it.
 `scripts/home_server/metorite-lane-keeper.timer`.
 **Fence:** `tests/unit/test_lane_keeper.py`.
 
+### CIV-ORCH: the orchestrator watch on the box (task 4058)
+
+**Status: BUILT 2026-11-27** (task 4058). HIGH tier, because it changes the
+box path. The timer ships disabled.
+
+The orchestrator and its watch loop ran on the owner's PC. When the PC shut
+down, nothing watched the lanes. Now the box does it, in two parts.
+
+`metorite-orch-watch.timer` runs `orch_watch.py` every 5 minutes. One pass
+checks three rules. (a) A listed lane is idle for more than 30 minutes, or
+active for more than 60, and it is not on `~/lanes/orch_resting.txt`. (b) A
+new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`, or a new
+`BACK` or `RED` line is in `~/lanes/merge-bot.log`. (c) Lane-merge
+wrote no NOTE line and no transcript record for 90 minutes.
+
+Each new event is one line in `~/lanes/orch-events.log`. A state file stops a
+repeat while the condition stays the same.
+
+The lane keeper wakes `lane-orch` when that log has lines after the cursor of
+lane-orch. It wakes it one time for each new batch, and never while it is
+busy. Only events wake lane-orch. The plain keeper wake leaves it out. `lanes/lane-orch.md` is its role. It never merges, deploys or flips a flag.
+
+To start it, the owner or lane-devx installs and enables the timer, and adds
+`lane-orch` to `keeper-lanes.txt` (`docs/home_box.md` §3.10).
+
+**Files:** `scripts/home_server/orch_watch.py`, `orch_watch.sh`,
+`metorite-orch-watch.service`, `metorite-orch-watch.timer`, `lane_keeper.py`,
+`lanes/lane-orch.md`.
+**Fence:** `tests/unit/test_orch_watch.py` and the `test_civ_orch_*` tests of
+`tests/unit/test_lane_keeper.py`. The first file tests each rule, the repeat,
+the resting list and the timer. The keeper tests check one wake for each batch.
+
+### CIV-LIVE: the lane keeper brings a lane back by itself (task 4060)
+
+**Status: BUILT 2026-11-27** (task 4060). HIGH tier, because it changes the
+box path. Stacked on CIV-ORCH.
+
+Owner, 2026-11-26: lanes stopped on usage limits, network drops, memory kills
+and sign-outs, and each one waited for a person. Now the keeper reads why the
+last turn of a lane ended. `stop_cause()` reads the transcript tail. The
+causes are `network`, `usage`, `signout`, `memory` and `normal`.
+
+- `network`: a wake at the first keeper pass after 2, 5, 15 and 30 minutes,
+  for each lane. The timer runs every 10 minutes. A good turn resets the wait.
+- `usage`: no wake before the reset time plus 2 minutes, or 60 minutes with no
+  reset time.
+- `signout`: no wake, and one NOTE line in `~/lanes/merge-queue.log`. The
+  NOTE names §5.1 of `docs/home_box.md` for a Claude account, and §5.2 and
+  §5.3 for the Metorite MCP. Only an error result of a `mcp__metorite__*`
+  tool counts.
+- `memory` and `normal`: the CIV-19 rules.
+
+- `lane-orch` keeps its event wake, but not on a sign-out or before a usage
+  reset.
+
+The keeper writes `~/lanes/lane-stops.tsv`, one row for each stop of a fault
+cause. It removes a closed row after 30 days. The weekly review (CIV-10) puts
+a table of the hours lost by lane and cause into the prompt of its session. `docs/home_box.md` §3.7 holds the operator view.
+
+**Files:** `scripts/home_server/lane_keeper.py`,
+`scripts/home_server/delivery_review.sh`, `.claude/commands/delivery-review.md`.
+**Fence:** the `test_civ_live_*` tests of `tests/unit/test_lane_keeper.py`, and
+`tests/unit/test_delivery_review.py`.
+
 ### CIV-10: the weekly delivery review (task 1643)
 
 **Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
@@ -859,6 +960,8 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-20 | 2207 | | |
 | CIV-22 | 2288 | | |
 | CIV-19 | 2206 | | |
+| CIV-ORCH | 4058 | | |
+| CIV-LIVE | 4060 | | |
 
 The slices of §8 have their own table in §8.5.
 
@@ -869,6 +972,8 @@ The slices of §8 have their own table in §8.5.
 **Owner request, 2026-11-12:** "push code as fast as we develop it". The three
 release slots stay (D194). Testing and the merge to `main` go as fast as the
 quality allows. Task 3051 (CIV-26) holds this plan.
+
+**Land before build (2026-11-26).** The owner directive that built work must reach production before new work starts is `engineering_practice.md` §7b. It holds the claim gate, the landing sweeper, zero orphans at a stop, done means live and the "built, not live" view (tasks 4040 to 4046).
 
 ### 8.1 The rule
 
@@ -968,11 +1073,12 @@ Each rung ends in a demo (D211). Each slice of a rung blocks its demo task.
 | CIV-37 | 3062 | 0 | LOW | Model routing by job |
 | CIV-38 | 3063 | 0 | LOW | The quality numbers and the rollback rule |
 | CIV-30 | 3055 | 1 | HIGH | The green pointer. A release ships green. CIV-30c BUILT 2026-11-14 (task 3121): the status `green/main` marks a batch when GitHub refuses the ref, and a slot run picks at its slot (§8.7) |
-| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on`. CIV-31c BUILT 2026-11-14 (task 3228): four authorization files join the HIGH list. A merged revert waits for `DONE` only while the merge bot runs. The pass opens the culprit's task again with one `claude -p` call. A pure revert has `VERIFY: PASS`. The revert author is `Metorite auto-revert`. Fix round 1: a guard hook and the parsed tool calls hold the reopen to one task, the pass pins the MCP entry, the merge bot holds a revert PR while the mode is not `on`, and only the lock shows a live merge bot. CIV-31d BUILT 2026-11-15 (task 3307): the reopen has no allow list, so only the guard's allow output approves a call, and a slow or broken guard approves nothing. The guard lets `set_task_status` set only an `in_progress` status of the task's project. `auto_revert_mode.sh` is the one reader of the mode for the pass, the merge bot and lane-merge. `reopen-check` runs one supervised reopen before `on`. It must merge before `on`. CIV-31e BUILT 2026-11-15 (task 3359): the probe leaves out a failed test that is not in the probed tree, so the parent of a culprit that added the test passes, and so does the revert tree |
+| CIV-31 | 3056 | 1 | HIGH | Automatic revert, with a dry run first. **BUILT 2026-11-14**, dark (code default `off`, unit `dry`). §8.8 holds the design. CIV-31b BUILT 2026-11-14 (task 3212): the pass reads `main` until it holds still, closes an open revert PR when a fix lands, ends the watch of a PR that a person merged or closed, and stops at 14 hours. The merge bot merges a revert PR only after the pass tested the tip of `main`. The HIGH list covers the tenancy, RLS, grant, visibility, member, role, identity, money and sharing files. It must merge before `on`. CIV-31c BUILT 2026-11-14 (task 3228): four authorization files join the HIGH list. A merged revert waits for `DONE` only while the merge bot runs. The pass opens the culprit's task again with one `claude -p` call. A pure revert has `VERIFY: PASS`. The revert author is `Metorite auto-revert`. Fix round 1: a guard hook and the parsed tool calls hold the reopen to one task, the pass pins the MCP entry, the merge bot holds a revert PR while the mode is not `on`, and only the lock shows a live merge bot. CIV-31d BUILT 2026-11-15 (task 3307): the reopen has no allow list, so only the guard's allow output approves a call, and a slow or broken guard approves nothing. The guard lets `set_task_status` set only an `in_progress` status of the task's project. `auto_revert_mode.sh` is the one reader of the mode for the pass, the merge bot and lane-merge. `reopen-check` runs one supervised reopen before `on`. It must merge before `on`. CIV-31e BUILT 2026-11-15 (task 3359): the probe leaves out a failed test that is not in the probed tree, so the parent of a culprit that added the test passes, and so does the revert tree. CIV-31f BUILT 2026-11-15 (task 3379): a probe that ran no test is `absent`, not a pass. On a tip of `main` it goes to a person and never closes a revert PR. On the parent or the revert tree it makes the case vacuous, with no `VERIFY: PASS` and no hand-over. The helper judges each file, removes a trailing CR, and matches a node id exactly. It must merge before `on` |
 | CIV-32 | 3057 | 2 | STANDARD | **BUILT 2026-11-13.** A repair round tests what failed and what the fix reaches (`ci_unit_guard.py repair`) |
 | CIV-33 | 3058 | 2 | STANDARD | Profile the shards, then a sharper selection. CIV-33a BUILT 2026-11-13 (task 3071): one `tests/unit` argument plus `scripts/pytest_only_selected.py`. CIV-33d BUILT 2026-11-13 (task 3074): the scan fences of six large files moved to `*_scan.py` files, and `test_scanner_budget.py` caps a scanner file at 30 s. The scanner set costs 1,748 s, down from 2,333 s. `test_affected_tests.py` (381 s) waits for PR 2205. CIV-33c-1 BUILT 2026-11-13 (task 3073): a hub selects its importers up to 20% of the test files, a flag-only diff of `settings.py` or `env_guard.py` selects the tests that name the flag, and `scripts/replay_gate.py` measures the FULL share. For a hub or a flag diff, an app entry, or a test helper that builds an app, selects its test importers. The closure over test imports starts from the import picks, not from the scanners or the SAFETY fences. CIV-33c-2 BUILT 2026-11-14 (task 3073): the R8 must-run, never-skip and disarmed lists moved from the two workflows to the `r8` key of `tests/fences.json`. A workflow or a composite action stays FULL. Any other file under `.github/` is not FULL. An edit of `tests/fences.json` selects the files it adds to a list and the guard's own tests, and a file that does not parse is FULL. The replay of 300 main commits shows 96 FULL (32.0%), and 38 of the 43 commits whose only FULL reason was `.github/` edited a list only. With those edits in `tests/fences.json`, the projected share is 58 of 300 (19.3%). `packages/acb_common/` is the next cause (37 commits). CIV-33c-3 BUILT 2026-11-14 (task 3073): an acb_common change selects each test that imports it at any depth, and the projected FULL share is 19.3%. The target of 15% is not met. CIV-33e BUILT 2026-11-14 (task 3075): `SHARD_TARGET_S` is 300 and `ALL_SHARDS` is 8, and `test_board_stats_r8.py` split into three files of 300 s or less. |
 | CIV-34 | 3059 | 2 | STANDARD | Conflict rules in the merge bot, tested on the merged tree. CIV-34a BUILT 2026-11-14 (§8.9): the rules, the checks on the merged tree, and the trailer. The fix round of the PR 2266 review (same day) removed `rerere`, `rebuild` and the markdown `union`, and added the ref checks and the `ls-remote` check. CIV-34b (a model proposal) is open |
 | CIV-35 | 3060 | 2 | LOW | A proposal: review depth by file class. It needs an owner decision |
+| CIV-SMOKE-TURN | 4061 | 0 | HIGH | **BUILT 2026-11-27, dark.** The release smoke runs one real model turn with tools on, in the smoke org. It checks the `done` event and a saved answer with text. A Traceback of the turn's own thread id is red with `LOG_FORMAT=json` only. Today T4 warns, and another Traceback is a warning. Two guards hold a monthly cap: the smoke's own count of turns, and the metered spend. `SMOKE_CHAT_TURN` is off, and the owner sets `SMOKE_CHAT_TURN_CAP_USD` before it goes on. `projects_ai_chat.md` §21.10 holds the design |
 
 The demo tasks: rung 0 is task 3064, rung 1 is task 3065, and rung 2 is task
 3066. Each slice task holds its full done-when and its fence.
@@ -1121,13 +1227,36 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
 - **A test that the culprit added** (CIV-31e). The default probe of the pass is
   the one of the bisect, `scripts/probe_present_tests.sh`, by its absolute
   path in the box checkout. A failed test that is not in the probed tree does
-  not run. When no failed test is in the tree, the probe passes. So the parent
-  of a culprit that added the test passes, and so does the revert tree. When
-  the file of a failed test is in the tree and pytest cannot collect it, the
-  probe still gives `unknown`, and the pass stops. The rule applies to each
-  probe. When `main` deletes a failed test, the probe of a new tip passes. Then
-  the pass makes no revert, or it closes the open revert PR (before, `unknown`
-  and a `PERSON` line).
+  not run. When the file of a failed test is in the tree and pytest cannot
+  collect it, the probe still gives `unknown`, and the pass stops.
+- **A probe that ran no test is not a pass** (CIV-31f). The helper exits 0
+  when it left out a failed test and no other test failed. Its stderr note
+  then makes the answer of `probe()` `absent`, not `pass`. Exit 1 stays `fail`,
+  also when the helper did not run some of the ids. Each check reads `absent`
+  by what it wants:
+  - **A tip of `main`** (the first check, the recheck of an open revert PR,
+    and the check of a new tip): `absent` counts as `unknown`, so a person
+    acts. It is never a fix. When `main` moves or renames a failed test, the
+    test can still fail under its new name. So the pass makes no `SKIP`, and
+    it does not close an open revert PR. It writes one `PERSON` line.
+  - **The culprit** (want fail): `absent` counts as `unknown`, and the pass
+    stops.
+  - **The parent and the revert tree** (want pass): `absent` counts as a pass,
+    and the case is **vacuous**. The `WOULD-REVERT` line and the report carry
+    `vacuous=yes`. The PR body says that the proof ran no test there, and it
+    names the absent ids. The revert commit makes no claim that the tests
+    pass. A vacuous revert PR gets no `VERIFY: PASS` line, and the pass does
+    not hand it over. It takes the path of a revert that is not pure: the
+    `REVERT` line, the state file, and one `PERSON` line with `vacuous=yes`.
+    The merge bot never sees the PR, because only a hand-over puts a PR in
+    its queue, and `lane_handover.sh` refuses a body with no `VERIFY: PASS`.
+    A PR in the queue with no such line goes `BACK` before `revert_tested`.
+    The vacuous cases: the culprit added the failed test, or it moved or
+    renamed the test while an earlier PR broke the code. The bisect names the
+    move in the second case (CIV-5, a known limit).
+  - Fence: the `test_civ31f_*` tests of `tests/unit/test_auto_revert.py`.
+    They run the real helper, the real bisect, and the default probe of the
+    pass.
 - **Main moves.** The probes can take hours, and `main` can move. Before the
   revert goes out, the pass reads `main` again. When the failed tests pass on
   the new tip, a fix landed, and the pass makes no revert (`SKIP`). Else it
@@ -1155,8 +1284,9 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   closes the PR with `gh pr close` and writes `SKIP` with `fixed_at=<tip>`. A
   failed close writes one `PERSON` line, and each later pass tries it again. A
   fail on the first run keeps the PR. Any other answer writes one `PERSON`
-  line. Such an answer comes from a flake, a fix in part, a deleted test, or a
-  probe that cannot start. Then the watch belongs to a person, and the pass runs no
+  line. Such an answer comes from a flake, a fix in part, a probe that cannot
+  start, or `absent`: a failed test that `main` moved, renamed or deleted
+  (CIV-31f). Then the watch belongs to a person, and the pass runs no
   more probes for that PR. A file in `~/.cache/metorite-auto-revert/open/`
   keeps the failed tests and the last tip with a sure answer. The pass writes
   it to a temp file and moves it in place with `os.replace`, so no reader sees
@@ -1198,6 +1328,8 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   those numbers. pr-check still gates the PR. Another revert, such as one with
   an edit on top, gets no `VERIFY: PASS` line. The pass does not hand it over,
   and it writes a `PERSON` line. A HIGH or migration culprit still stops first.
+  CIV-31f: a vacuous case takes the same path (see "A probe that ran no test
+  is not a pass").
 - **The author of a revert** (CIV-31c, owner decision). The revert commit has
   the author and committer name `Metorite auto-revert`. The email is the
   `user.email` of the checkout that the pass runs in (`AUTO_REVERT_REPO_DIR`,
@@ -1359,8 +1491,8 @@ That unit takes the place of `metorite-bisect-poll`, so install only one.
   (`claude setup-token`) is a precondition, because the box sign-in can
   expire. `docs/home_box.md` §3.8 holds the exact steps.
 - **Go `on`.** After the week of `dry`, read the log and the reports. CIV-38
-  lands first (§8.5), and the supervised reopen passes. Then set the mode to
-  `on` with the steps of `docs/home_box.md` §3.8.
+  lands first (§8.5), CIV-31f lands too, and the supervised reopen passes.
+  Then set the mode to `on` with the steps of `docs/home_box.md` §3.8.
 
 ### 8.9 CIV-34a as built: conflict rules in the merge bot (2026-11-14)
 
@@ -1423,3 +1555,67 @@ on the new head. A conflicted PR never gets checks. So the bot looks for a
 conflict while a PR waits on checks. A lane that reads a `RESOLVED` line pulls
 its branch before its next commit. CIV-34b (a model-written proposal for a
 conflict that no rule fits) is open.
+
+### 8.10 CIV-RN as built: the merge gate sets the migration number (2026-11-26)
+
+A builder books a number with `reserve_migration.sh`. When `main` takes that
+number while the PR waits, premerge step 1 refuses the PR (R1). Before this
+slice, the PR went back to its lane for a renumber by hand.
+
+**The rule.** The builder keeps the number that it booked. lane-merge runs
+the bot's own copy, `~/lanes/merge-bot-src/scripts/home_server/merge_bot.sh
+--renumber <pr> <sha>`, right before premerge (`lane-merge.md` step d). The
+copy in a PR branch can be old or changed, so lane-merge never runs it. The
+sub-command does these steps:
+
+1. It refuses a PR that is not open, a fork, or a base that is not `main`.
+   It also refuses a protected head branch, and a head that is not `<sha>`.
+2. It checks out `<sha>` on the bot branch `merge-bot/pr-<n>`, in the bot
+   workdir, under the lock of the bot.
+3. It reads the `.sql` files that the PR adds at the top level of
+   `infra/postgres/`. Main's highest number comes from the same files. A
+   subfolder such as `infra/postgres/generated/` never counts.
+4. When one added file has a number at or below main's highest, every added
+   file from that number up moves. So the PR keeps its own order (R6). An
+   `ALTER` never lands before its `CREATE`.
+5. It runs main's `scripts/renumber_migration.py`, from `git show
+   origin/main:...` into the bot state folder. A PR cannot change the tool
+   that runs with the push reach of the bot.
+6. Each file first moves to a work number (900000 and up). Then, lowest first,
+   it moves to the next number of `~/lanes/reserve_migration.sh <lane> <task>
+   <pr>`, at the width of its old name. So no booked number meets a file of
+   the PR. Each move rewrites each reference to the file name.
+7. One commit holds all the moves:
+   `merge gate: renumber migration <old> to <new> above main's <top> (R1)`.
+8. `push_head` pushes it with no force. It is the one push of the bot
+   (CIV-34a). It pushes only when the head branch on GitHub is still `<sha>`.
+9. The log gets `RENUMBERED <pr> <old>-><new>[, ...]`. When a prose line still
+   says `migration <old>`, the line ends with `check by hand: <file>:<line>`.
+   The sub-command prints the new head SHA, and nothing else, on stdout.
+
+The ledger books the number, so premerge step 0b names no other pull request.
+A PR with no low number prints `nothing to renumber`, and nothing changes.
+Each failure exits 1, resets the workdir to `<sha>` and pushes nothing. A
+refused push, a moved head, a failed booking, a taken number and a dirty tree
+are failures. A number that the ledger booked before the failure stays
+booked, because only `reserve_migration.sh` writes the ledger.
+
+When a pass of
+the bot holds the lock, the sub-command waits up to `MERGE_BOT_RENUMBER_WAIT`
+seconds (600). Then it exits 75. The flock lock and the mkdir lock both wait.
+
+The sub-command never merges. The new head needs its own pr-check. lane-merge
+waits for it, and then starts again at the first step of `lane-merge.md`. The
+bot pass is the same as before, because a migration PR is HIGH tier (D218,
+CIV-28b).
+
+**Fence:** `tests/unit/test_merge_bot_renumber.py`. It covers a low number that
+moves to the ledger's next number, with a rewritten reference. Then the real
+premerge passes.
+
+The fence also covers the order of a low and a high file, and a subfolder.
+It covers main's copy of the tool, and two PRs with the same number. It covers a PR
+with no migration, and each refusal that leaves the PR as it was. Exit 75
+has a test for each lock. A second `git push` in the bot fails the test of the
+push seam. `tests/unit/test_renumber_migration.py` covers `--file` and
+`--width`.

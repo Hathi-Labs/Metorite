@@ -29,6 +29,7 @@ import ast
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -653,7 +654,9 @@ def _reminder_answers(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path == "/projects/my/today":
         today = W._today().isoformat()
-        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+        # WS-MDC CC-2: the org has today's focus, so `todays_focus` sends.
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True,
+                "today_rule": True}
     if not path.startswith("/projects/my/reminders"):
         return None
     body = call["json"] if isinstance(call["json"], dict) else {}
@@ -1170,7 +1173,7 @@ async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, responder)
     for kwargs in _WRITES[tool]:
         out = await getattr(skill_projects, tool)(**kwargs)
-        assert out == W.CANCELLED, f"{tool} did not report the cancel: {out!r}"
+        assert out == card_outcome_text(CARD_DECLINED), f"{tool} did not report the cancel: {out!r}"
     assert writes(calls) == [], f"{tool} wrote before consent: {writes(calls)}"
 
 
@@ -2641,6 +2644,9 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-MCP SW-23: an outside agent reports a run of a Check over MCP. The
     # chat moves a task through `update_task`.
     sw_23 = {"report_check"}
+    # WS-MCP SW-32: an outside agent sets the plan of its own run. The chat
+    # has no run of its own.
+    sw_32 = {"set_run_plan"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
@@ -2652,9 +2658,18 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # pack `agents-overview`. Its `agents_list` reads the overview route, and
     # its `agent_recent_runs` reads the drill-down.
     aga_11 = {"agents_list", "agent_recent_runs"}
+    # WS-MCP SW-45: the free tasks of the member's own apps. The MCP `my_work`
+    # reads the route. The chat `my_work` does not show the group yet.
+    sw_45 = {"own_app_free"}
+    # LBB-2 (engineering_practice.md section 7b.2): an agent reads its own
+    # unlanded PRs over MCP. The chat lists them in my_work later.
+    lbb_2 = {"land_your_pr"}
+    # WS-39 T-1 (task 2532): the read of the teams of a member, dark behind
+    # TEAMS_ORGS. T-6 (task 2537) gives it to the chat and the MCP.
+    t_6 = {"list_teams"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
                               | mcp_g15 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
-                              | sw_23 | aga_11), m.PLANNED
+                              | sw_23 | sw_32 | aga_11 | sw_45 | lbb_2 | t_6), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
     assert "change_agent_answer" in skill_projects.__all__
     assert not {"withdraw_agent_answer", "replace_agent_answer", "change_agent_answer"} & set(
@@ -3863,7 +3878,7 @@ async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
     _chat_files(monkeypatch, PNG)
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _files_gateway())
-    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

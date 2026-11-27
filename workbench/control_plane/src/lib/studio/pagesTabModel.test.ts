@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import { addPage, addRow, addSection, materializePages, moveRow, movePage, removePage, removeSection, setPageCols } from "./frameEdit";
 import { moveCell } from "./pageLayout";
 import {
-  COLS_HINT, applyFrame, colsOptions, layoutView, moveCellArgs, pagesView, railView, tabTitleOrDefault,
+  COLS_HINT, PRESET_NOTE, applyFrame, colsOptions, layoutView, moveCellArgs, pagesView, railView, tabTitleOrDefault,
 } from "./pagesTabModel";
 import { layoutAct } from "./tabEdit";
 
@@ -154,5 +154,36 @@ describe("layoutView keeps the raw index (AF-8b-3b fix)", () => {
     const cells = layoutView(m, "home").lists[0].cells;
     expect(cells).toHaveLength(1);
     expect(cells[0].index).toBe(2);
+  });
+});
+
+describe("layoutView of a page with a preset (STU-LY-8b)", () => {
+  const m = {
+    studio: 1,
+    views: [{ id: "t1", block: "table", title: "Visits" }, { id: "t2", block: "table" }, { id: "d1", block: "detail" }, { id: "b1", block: "board" }],
+    pages: [{ id: "p", layout: "list_detail", regions: { list: ["t1"] } }],
+  };
+  it("is not broken, has no cell lists, and names each region of the preset", () => {
+    const v = layoutView(m, "p");
+    expect(v.broken).toBe(false);
+    expect(v.lists).toEqual([]);
+    expect(v.preset?.layout).toBe("list_detail");
+    expect(v.preset?.label).toBe("List and detail");
+    expect(v.preset?.regions.map((r) => r.name)).toEqual(["list", "detail"]);
+  });
+  it("lists the views of a region, the choices of its block, the room and the need", () => {
+    const [list, detail] = layoutView(m, "p").preset!.regions;
+    expect(list.views).toEqual([{ id: "t1", label: "Visits" }]);
+    expect(list.choices).toEqual([{ id: "t2", label: "t2" }]);
+    expect(list.room).toBe(false);
+    expect(list.need).toBeNull();
+    expect(detail.views).toEqual([]);
+    expect(detail.choices).toEqual([{ id: "d1", label: "d1" }]);
+    expect(detail.need).toBe("Add a detail view. The detail region needs one.");
+  });
+  it("keeps the note of a grid page that has both lists, and an unknown preset is broken as before", () => {
+    expect(PRESET_NOTE).toContain("preset layout");
+    expect(layoutView({ ...m, pages: [{ id: "p", layout: "gallery", regions: {} }] }, "p").broken).toBe(true);
+    expect(layoutView({ ...m, pages: [{ id: "p", layout: "board", cells: [{ view: "b1" }], regions: {} }] }, "p").preset).toBeUndefined();
   });
 });

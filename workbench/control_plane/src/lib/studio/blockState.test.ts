@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { blockStateCopy, blockStateKind, type BlockStateInput } from "@/lib/studio/blockState";
+import { blockStateCopy, blockStateKind, pluralOf, type BlockStateInput } from "@/lib/studio/blockState";
 
 const base: BlockStateInput = { loading: false, error: null, forbidden: false, rows: 3, filtersActive: false };
 
@@ -17,6 +17,11 @@ describe("blockStateKind", () => {
     expect(blockStateKind({ ...all, forbidden: false })).toBe("error");
     expect(blockStateKind({ ...all, forbidden: false, error: null })).toBe("loading");
     expect(blockStateKind({ ...all, forbidden: false, error: null, loading: false })).toBe("empty");
+  });
+  it("draws not-found for a missing record, under no-permission and over error", () => {
+    expect(blockStateKind({ ...base, rows: 0, missing: true })).toBe("not-found");
+    expect(blockStateKind({ ...base, rows: 0, missing: true, error: "x" })).toBe("not-found");
+    expect(blockStateKind({ ...base, rows: 0, missing: true, forbidden: true })).toBe("no-permission");
   });
   it("tells a filtered empty from a true empty", () => {
     expect(blockStateKind({ ...base, rows: 0, filtersActive: true })).toBe("filtered");
@@ -44,9 +49,24 @@ describe("blockStateCopy", () => {
     expect(c.hint).toContain("data is safe");
     expect(c.action).toBe("Retry");
   });
+  it("says one sentence for a record that is gone and one the viewer may not read", () => {
+    const c = blockStateCopy("not-found", { noun: "visit" });
+    expect(c.message).toBe("This visit was not found, or you cannot open it.");
+    expect(c.action).toBeUndefined();
+  });
   it("says who to ask for access", () => {
     expect(blockStateCopy("no-permission", { ...w, askWho: "an admin" }).hint).toBe("Ask an admin for access.");
     expect(blockStateCopy("no-permission", w).hint).toContain("owner");
     expect(blockStateCopy("no-permission", w).action).toBeUndefined();
+  });
+});
+
+describe("pluralOf", () => {
+  it("makes the lower-case plural of an object label", () => {
+    expect(pluralOf("Visit")).toBe("visits");
+    expect(pluralOf("Company")).toBe("companies");
+    expect(pluralOf("Day")).toBe("days");
+    expect(pluralOf("Box")).toBe("boxes");
+    expect(pluralOf("  ")).toBe("records");
   });
 });

@@ -2,6 +2,8 @@
 
 **Status: DRAFT (2026-11-14, task 3312). The owner answered the three questions of §9 on 2026-11-14, and the spec is not yet ACTIVE. LY-0 is BUILT, dark (2026-11-15, task 3313, PR 2354): the model, the validator and the TS twin, with no renderer.** Board: WS-STU, Metorite task 3312, slices 3313 to 3322. Parent spec: `ai_studio.md` (§5.5 is the app frame, D219). Research note: the lane file `studio_layouts.md` of 2026-11-14. This spec holds the result, and the note is not a source of record.
 
+**§11 status.** §11, the look of an app (LOOK-0, task 3358), is added on 2026-11-26. The owner answered its three questions on 2026-11-15 (§11.8). LOOK-2 slice 1 is BUILT, dark (task 3362, PR 2401): the icon on a stat view.
+
 **Bottom line.** Studio ships 12 page presets and 2 patterns (record 360 and form wizard). A page preset is one enum value plus named regions. The author and Mira pick a preset, and the app draws it. A page with no preset keeps today's grid, so stored manifests stay valid. Build six first: table workspace, record 360, board, form wizard, work queue with approval, and dashboard. Record 360 and form wizard build as the record page and a Form mode (§6).
 
 ## 1. What exists on main (checked against origin/main, 2026-11-14)
@@ -66,7 +68,7 @@ Each entry gives the purpose, example apps, the regions, what is missing today, 
 ### L2. Table workspace
 - **Purpose:** find, compare, edit and bulk-act on many records. **Apps:** inventory, purchase requests, expense claims, candidates.
 - **Slots:** header, filter bar with layout switch, Table, optional side panel, bulk bar.
-- **Missing:** a bulk bar. Column hide and reorder. (The filter bar exists, AF-4.)
+- **Missing:** a bulk bar. Column reorder. (The filter bar exists, AF-4. Column hide is LY-2b.)
 - **Widths:** desktop: full table, sticky header, record in side panel. Tablet: fewer columns, panel overlays. Phone: a card list of the first 3 fields, with filters in a sheet.
 - **Bar:** the first column is a name, not an id. Active filters show as removable chips. At most two inline row actions, and the rest in a menu. The bulk bar appears on the first selection and shows the count. Editing opens a non-modal panel. The count shows total and filtered. A filtered-empty offers "Clear filters". A partial bulk failure lists the failed rows.
 
@@ -177,7 +179,9 @@ page: { id, title,
   regions: { list?, main?, detail?, kpis?, charts?, worklist?, recent? /* LOOK-1, app_home only */, outline?, body? } }
 ```
 
-**Two patterns are not page layouts.** Record 360 (L6) is the quality bar of the AF-5 record page and the `record` key (task 3254). A page in `pages` has no record context. Form wizard (L9) is a step mode of the Form block that the AF-6 dialog opens. LY-3 and LY-5 build them there. So the enum holds 12 values. LOOK-1 adds a 13th, `app_home` (§11.3), and then its row joins the table below.
+**Two patterns are not page layouts.** Record 360 (L6) is the quality bar of the AF-5 record page and the `record` key (task 3254). A page in `pages` has no record context. Form wizard (L9) is a step mode of the Form block that the AF-6 dialog opens. LY-3 and LY-5 build them there.
+
+So the enum holds 12 values. LOOK-1 adds a 13th, `app_home` (§11.3), and then its row joins the table below.
 
 **Rules.**
 1. A region holds view ids. The table below gives the block type and the cap of each region. A bar (filter, bulk, decision, progress, save) is a frame part or a block mode, not a region.
@@ -244,15 +248,16 @@ Each layout slice has four parts: the preset component built on `StudioPage` and
 
 | Id | Task | Slice | Done when |
 |---|---|---|---|
-| LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark **Status: BUILT, dark (2026-11-15, PR 2354).** No renderer yet: a layout page draws "This page has no views." until LY-2. Nothing writes `layout` before LY-8. |
+| LY-0 | 3313 | Preset model: `layout`, `regions`, validator, TS twin, golden, the four validator changes of §6 | An old manifest validates. A bad region fails to publish. First six values only. HIGH, dark **Status: BUILT, dark (2026-11-15, PR 2354).** LY-2 adds the first renderer (the table workspace). Nothing writes `layout` before LY-8. |
 | LY-1 | 3314 | Shared states component | Every preset uses it. A test refuses a local copy. |
-| LY-2 | 3315 | Table workspace | Meets the L2 bar, with bulk bar. |
-| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). |
+| LY-2 | 3315 | Table workspace: the layout, the shared states, the count line, and a table that keeps 40rem and scrolls in its own strip | The layout and states of the L2 bar. The column hide and the bulk bar are in LY-2b (task 3356), by the LY-2 audit on task 3315 (2026-11-15). The active-filter chips, the phone card list and the tablet panel overlay have no slice yet. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2363).** |
+| LY-2b | 3356 | Table workspace: column hide, kept in the URL | A member hides columns. The first column never hides, and one column stays. **Status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2386): the column hide.** The bulk bar is not built. The owner chose "Only a bulk action that the app declares" (task 3356, answer `5e83e927`, 2026-11-15). |
+| LY-3 | 3316 | Record 360, as the AF-5 record page | Meets the L6 bar. Needs `record` (task 3254). **Status: PARTLY BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2364): the key facts in the header, the Files count and the not-found sentence.** Left: the main action in the header, the cap of 4 related lists and their counts, the Activity tab (D22), the side panel and the draft keep. |
 | LY-4 | 3317 | Board | Shared filters with L2, phone stage switcher. |
 | LY-5 | 3318 | Form wizard, as a step mode of Form | Steps, progress, review step, draft keep. |
 | LY-6 | 3319 | Work queue and approval | Next item, decision bar, success empty state. |
 | LY-7 | 3320 | Dashboard | Tile states, caps, tile-to-list link. |
-| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. |
+| LY-8 | 3321 | Mira and IDE | `studio_describe` knows the presets. The Pages tab has a picker. Eval passes. **Status: BUILT (PR 2372): `studio_describe` and the eval of 14 prompts on `layout_hint`.** The Pages-tab picker is LY-8b (task 3352). **LY-8b status: BUILT, dark behind `NEXT_PUBLIC_STUDIO_APP_FRAME` (PR 2381): the picker, the region rows and the note for left-out views.** |
 | LY-9 to LY-15 | 3322 | Calendar, list and detail, gallery, map, timeline, checklist, document and settings | One slice each, after its block. |
 
 ## 9. Owner decisions (2026-11-14, task 3312)
@@ -324,7 +329,13 @@ A narrow pass read **one docs page for each of five products**. WebFetch gives a
 - **States:** a tile with no data says "No data yet" and keeps its height. An empty "needs me" is a success: "All clear". An empty "recent" says what the app holds and offers the "New <Object>" button.
 - **Quality bar:** (1) the first thing a member reads is a sentence for them, not a column header. (2) At most 4 numbers. (3) One main action. (4) Each number links to its list. (5) No table above the fold. (6) The same page at 390 px, with no horizontal scroll. (7) Light and dark, from tokens only.
 
-**Home as the default first page (owner question 2, recommended YES).** Rule 3 of §5.5 changes, behind a flag that is off by default. A new app with no `pages` and one stat view or more gets Home first. A page for each object follows, with "All <objects>" in the rail. An app with no stat view keeps today's pages. Mira's design step (§11.5) adds the stat views, so a Home is real for the apps that she builds. A template app that declares `pages` keeps them. The template `packages/acb_common/acb_common/studio_templates/field_visits.json` is static, and no flag gates it. So LOOK-1 does **not** edit it. The shipped template keeps its Dashboard page until the owner flips both flags. The demo runs on a fixture copy of the template with an `app_home` page first. After the flip, the slice LOOK-1b (task 3370) changes the shipped template: Home first, and the Dashboard page stays in the rail. The new flag is a public client flag, like `NEXT_PUBLIC_STUDIO_APP_FRAME`. A public flag is global: the build fixes it for every org. So the demo (§11.7) names both flips. The slice follows the flag-list rule of the repo (`docs/flag_reload.md` and the flag tests).
+**Home as the default first page (owner decision 2, §11.8).** Rule 3 of §5.5 changes, behind a flag that is off by default. A new app with no `pages` and one stat view or more gets Home first. A page for each object follows, with "All <objects>" in the rail. An app with no stat view keeps today's pages.
+
+Mira's design step (§11.5) adds the stat views, so a Home is real for the apps that she builds. A template app that declares `pages` keeps them.
+
+The template `packages/acb_common/acb_common/studio_templates/field_visits.json` is static, and no flag gates it. So LOOK-1 does **not** edit it. The shipped template keeps its Dashboard page until the owner flips both flags. The demo runs on a fixture copy of the template with an `app_home` page first. After the flip, the slice LOOK-1b (task 3370) changes the shipped template: Home first, and the Dashboard page stays in the rail.
+
+The new flag is a public client flag, like `NEXT_PUBLIC_STUDIO_APP_FRAME`. A public flag is global: the build fixes it for every org. So the demo (§11.7) names both flips. The slice follows the flag-list rule of the repo (`docs/flag_reload.md` and the flag tests).
 
 ### 11.4 Presentation variants, inside D12
 
@@ -334,13 +345,13 @@ D12 forbids a colour key and a size key. It does not forbid a choice of presenta
 |---|---|---|---|
 | Card list | `emphasis: "card"` on a table view | Each row as a card: a title, two fields, and an optional cover, avatar or icon | The board card parts, `ValueElement` for a person, `Badge` |
 | Cover | `cover: <file field key>` with `emphasis: "card"` | An image at the top of a card. A failed image shows a plain plate with the icon | An `attachments` image, never a raw id |
-| Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title | `Icon`, the 42 names of the icon list |
+| Icon | `icon: <name of NAV_ICONS>` on a stat or card view | A small icon before the title. The stat view is BUILT (PR 2401), and the card view is still to come. | `Icon`, the 42 names of the icon list |
 | Stat with trend | exists (D4) | The number and the change against the last period | `StudioStat` |
 | Progress | `target: <number>` on a stat view | A bar for the share of the target | `ProgressBar` |
 | Hero header | `hero: true` on the page `header` (after AF-7) | A larger title, the sentence, and an optional cover | `PageHeader` |
 | Empty state with an icon | derived from the object icon | A large icon plate, one sentence and one action | The shared state of LY-1 |
 
-**Not in this list.** A free colour, a per-app theme, a custom logo sized in pixels and a custom illustration for each app. These break D12 or need imagery that the product does not own. **An app accent colour** is the one D12 change worth asking about. It is owner question 1 (recommended NO: the member accent, icons and images carry the look).
+**Not in this list.** A free colour, a per-app theme, a custom logo sized in pixels and a custom illustration for each app. These break D12 or need imagery that the product does not own. **An app accent colour** is the one D12 change worth asking about. The owner decided NO (decision 1, §11.8): the member accent, icons and images carry the look.
 
 Each key is an optional addition to the model of §6, so a stored manifest stays valid (R6). Each key changes the manifest validator. So the part of a slice that adds a key is HIGH tier, with an independent verifier and an Opus review. The fence for each key is a case in `test_studio_manifest.py` and its twin. The D12 scan already walks the whole document.
 
@@ -361,11 +372,13 @@ Today Mira plans the objects, the actions and the views. She does not plan the l
 | Requests to handle or approve | Work queue (L7) or approval queue (L8) |
 | One customer, patient or asset at a time | Record 360 (L6) behind a list |
 
-`studio_describe` teaches this table and the variants of §11.4 in its `frame` part, as it teaches §7 today. The layout picker reads the audience first and the keywords second. A live eval of the picker costs money, so it is an owner spend gate (§11.8).
+`studio_describe` teaches this table and the variants of §11.4 in its `frame` part, as it teaches §7 today. The layout picker reads the audience first and the keywords second. A live eval of the picker costs money, so it binds to the spend cap of decision 3 (§11.8).
 
 ### 11.6 G13 for block pages, and the look rubric
 
-**G13, moved earlier for block pages.** Today G13 reads captures of custom code screens in wave 3. This slice gives Mira the same loop for the block pages of the app frame. After a change, the member's browser or the preview route captures the first page of the app at desktop and 390 px, in light and dark. Mira reads the four captures against the rubric below and fixes what fails, in **one** fix round. The capture runs in the browser and never on the production box (D127.2). The credit cap of the build (J3) binds.
+**G13, moved earlier for block pages.** Today G13 reads captures of custom code screens in wave 3. This slice gives Mira the same loop for the block pages of the app frame.
+
+After a change, the member's browser or the preview route captures the first page of the app. It captures desktop and 390 px, in light and dark. Mira reads the four captures against the rubric below and fixes what fails, in **one** fix round. The capture runs in the browser and never on the production box (D127.2). The credit cap of the build (J3) binds.
 
 **The look rubric.** The same list serves G13 and G6. Each check is pass or fail, and the capture or the sample data is the evidence.
 1. The first screen is not a bare table, unless the audience is a table audience (§11.5).
@@ -377,7 +390,7 @@ Today Mira plans the objects, the actions and the views. She does not plan the l
 7. Icons come from the icon list. A record with an image shows it.
 8. The sample data looks real.
 
-**G6.** The rubric becomes a column of the build eval: the pass rate of the eight checks for each shape. The replay half runs in the unit suite at no cost. A live run needs a fresh owner OK on the spend (§11.8).
+**G6.** The rubric becomes a column of the build eval: the pass rate of the eight checks for each shape. The replay half runs in the unit suite at no cost. Decision 3 (§11.8) allows one live run, at USD 2.00 at most, after the replay half passes. A second live run needs a new owner OK.
 
 ### 11.7 Slices and the rung plan (D211)
 
@@ -385,16 +398,20 @@ Today Mira plans the objects, the actions and the views. She does not plan the l
 |---|---|---|
 | **4b** | 3360: a fixture copy of the field-visit app opens on a Home overview in place of its Dashboard grid. An app with no `pages` opens on Home too, from a fixture. Light, dark and 390 px. | LOOK-0 spec (task 3358). LOOK-1 App Home, the `header` key of AF-7, the fixture and the default first page (3361). The shipped template changes after the flip. LOOK-2 presentation variants, first the icon on a stat and the card list for `recent` (3362). Blocked first by LY-2 (task 3315). |
 | **4c** | 3363: Mira builds an app that looks good, names who uses it, and checks her screens. | LOOK-3 the design step, with the stat views and the `recent` view in Mira's skeleton, so that a Mira prompt gives a Home (3364). LOOK-4 G13 for block pages (3365). |
-| Later | none | LOOK-1b the shipped field-visit template opens on Home, after the owner flips both flags (3370). LOOK-5 the look rubric in the G6 eval, live run (3366, an owner spend gate). |
+| Later | none | LOOK-1b the shipped field-visit template opens on Home, after the owner flips both flags (3370). LOOK-5 the look rubric in the G6 eval, live run (3366, within the cap of decision 3). |
 
-**What rung 4b really holds.** It is the smallest path that works end to end, with three foundations that ride with it (rule 5 of `orchestration_playbook.md` §6d): the `header` key (AF-7), the first renderer of a preset page (LY-2) and the "All clear" state (LY-6). It does not need a change to Mira. Rung 4c then teaches Mira to choose it. Each UI slice carries the UI gate: four captures from lane-ui (task 2855) beside a built-in app.
+**What rung 4b really holds.** It is the smallest path that works end to end. Three foundations ride with it (rule 5 of `orchestration_playbook.md` §6d). They are the `header` key (AF-7), the LY-2 renderer and the "All clear" state (LY-6). It does not need a change to Mira.
+
+Rung 4c then teaches Mira to choose it. Each UI slice carries the UI gate: four captures from lane-ui (task 2855) beside a built-in app.
 
 **The flips of the demo.** `NEXT_PUBLIC_STUDIO_APP_FRAME` and the new Home flag are public client flags. They are global, so a pilot organization cannot hold them alone. The demo runs on the local staging gate first (D145). Production gets the demo when the owner flips both flags, with a dated grant. Flags stay off until then.
 
-### 11.8 Owner decisions (asked on task 3358, 2026-11-15)
+### 11.8 Owner decisions (task 3358, answered 2026-11-15)
 
-1. **An app accent colour (a D12 change).** Recommended **NO**. The member accent, icons and images carry the look.
-2. **Home as the default first page of a new app.** Recommended **YES**, dark behind a flag first.
-3. **The spend cap for the look eval.** Recommended **USD 2.00** for one live run, after the replay half passes.
+The owner chose "Take my three recommendations" on task 3358 (answer `db996bda`, 2026-11-15).
 
-Nobody builds against an answer until the owner gives it on task 3358. LOOK-1 needs answer 2 for the default page, and not for the preset.
+1. **An app accent colour (a D12 change): NO.** The member accent, icons and images carry the look. D12 stays.
+2. **Home as the default first page of a new app: YES**, dark behind a flag first.
+3. **The spend cap for the look eval: USD 2.00** for one live run, after the replay half passes. A second live run needs a new owner OK.
+
+AI Studio is unpaused since D233 (2026-11-26), so the LOOK slices may build now.

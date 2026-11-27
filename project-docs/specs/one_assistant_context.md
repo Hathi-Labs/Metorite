@@ -4,9 +4,15 @@
 OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
-TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. The `search` arm itself waits for TS-5b (task 3289) and the flag `TOOL_SEARCH_ORGS`. No live run, no spend.
+TS-5a is BUILT (2026-11-14, task 3288): the Studio chats and the checks of the `search` arm, scripted only, in `evals/one_assistant_measure`. TS-5b is BUILT (2026-11-15, task 3289, stacked on TS-2a PR 3): the `find_tools` plans, the scripted pass of the `search` arm and the cap chat `stu_cap`. No live run, no spend.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-1b and WT-4 to WT-6 are not built.
+**As built, task 3649 (2026-11-17).** The measure holds a tune split and a held-out split. The tag `holdout` marks a held-out chat. A results file keeps counts only for the held-out rows. The rows go to a sibling file, and no fixer brief names it. `run --compare B.json,A.json` prints the flips and the noise of B. It exits 0 only when A wins.
+
+A wins when each `case:<k>` chat passes both repeats of A and the tune gain on `t2874` is at least `max(2, n + 1)`. Neither the held-out count nor the email count may fall by more than the noise `n`. The README of `evals/one_assistant_measure` holds the rule.
+
+Task 2874 adds seven chats of the owner chat of 2026-11-11, with their checks, in `evals/one_assistant_measure`. The switch `--mirror-prod` sets the chat flags of production in the eval process only. Scripted only, no live run, no spend.
+
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-6a is BUILT, dark behind `HELD_CLASS_C_ORGS` (2026-11-07, task 1690). WT-4 is BUILT (2026-11-07, task 1688, "WT-4 as built" in §9.4). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). WT-1b, WT-5 and WT-6b are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -30,6 +36,8 @@ OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2
 
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
 
+Task 2492 NARROWS the pack mark (2026-11-09, "Each call" in "As built, OA-7b"). Only a pack call whose answer can bring outside text marks the chat. A new `send_email` leaves the chat clear. `send_draft`, `schedule_send` and `manage_inbox` mark, because their answer can quote a draft or a mail. The map is `tool_packs.PACK_OUTSIDE_TEXT`, and the fence is `tests/unit/test_pack_outside_text.py`.
+
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
 
 OA-9f is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-30, "As built, OA-9f" in §4.5). It changes the rule of §6.3 from a count to a kind of job. A child reads long material or runs a chain of steps. The main assistant makes light reads itself, in parallel. The flag flip stays OWNER-GATE.
@@ -50,11 +58,16 @@ guarded builder its live caller.
 OA-7c is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-7c"
 below, PR #1383). The flag is off on each box, so no run loads a pack yet.
 
+G2 is BUILT, dark behind `CHAT_PACKS_BATCH_ORGS` (2026-11-18, task 3494,
+`chat_reach.md` §3.2, "G2" in §4.2.7). The member's own WhatsApp turn holds
+the read tools of its packs and no write tool. The specialist of each owner
+stays. No pack of mail loads there. The flag flip is OWNER-GATE.
+
 RX-1 is BUILT, not merged (2026-11-02, D169, "As built, RX-1" in §4.2.3). A held chat keeps the writes that a card shows, and a load makes room. It ships dark behind `HELD_CARD_WRITES_ORGS`, which is empty by default, and a merge changes no held chat until a person names an org. `TOOL_PACKS` must name `projects-reminders`, or no run loads that pack.
 
 Task 1747 is BUILT, in review (2026-11-06, "As built, task 1747" in §4.2.3). A pack that this turn named, and a pack that the last member turn used, never step aside. A load by the model is sticky. The reach of the Projects owner counts a spare pack as free. A load moves out a pack that came in only by the words (D169 item 8, as amended on 2026-11-06). A turn that a sticky pack left at its start says so.
 
-TS-0 (task 3190, 2026-11-14) is a design, DECIDED under D222. The owner adopted D222 as written on 2026-11-14. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build: the reland of its PR 2 fits the Studio split (§4.2.9 status). It is the narrowed spike, after the spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO. The owner approved decision 11 (the Studio split) and chose "Always, in the base set" for decision 13. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
+TS-0 (task 3190, 2026-11-14) is a design, DECIDED under D222. The owner adopted D222 as written on 2026-11-14. PR 2268 merged TS-1 (`20059a075`). TS-2a (task 3222) is BUILT, dark behind `TOOL_SEARCH_ORGS` (2026-11-15, PR 3 on the branch `ts2a-wire`, "What PR 3 holds" in §4.2.9). The flip is OWNER-ONLY (`work_plan.md` §6 D4). It is the narrowed spike, after the spec audit of TS-2 on 2026-11-14 found TS-2 as written NO-GO. The owner approved decision 11 (the Studio split) and chose "Always, in the base set" for decision 13. The model finds a single tool with `find_tools`, and the run loads that tool and not its whole pack (§4.2.9). The slices are TS-1 to TS-9, tasks 3195 to 3203, TS-2a, task 3222, and TS-1b, the Studio split, task 3207. TS-1c is optional, task 3213. The demo tasks of rungs 1 to 4 are tasks 3208 to 3211.
 
 TS-1b is live, not dark, because it changes the Studio packs of every org. An Opus audit of TS-1b on 2026-11-14 (task 3207) found NO-GO as written. This text applies the seven edits that clear it: the golden matrix, the dark workflow pack, the Verify line, the pack fields, the surface owner, the sticky cost and the Files list. The writer re-verified the anchors on the merged tree of `7c5c0e595`. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only. The writer verified the anchors of TS-0 on 2026-11-14, on the branch after a merge of main at `378c65428`.
 
@@ -288,6 +301,10 @@ middle of a turn.
   of a mail pack says that a connected server stops it. Precedence differs
   by layer. In layer (a) the email pack wins and the MCP server stays out.
   In layer (b) the MCP tool wins and the pack stays out.
+- **A server named in the turn (CSY-4).** CSY-4 adds one reason to layer (a),
+  dark behind `MCP_MAIL_PRECEDENCE_ORGS`. A turn that names a connected server
+  evicts each sticky mail pack that it does not name. It acts only in a chat
+  whose mail mark reads set. `chat_connected_systems.md` §3.4 holds the rule.
 - **The refusal acts live.** A load of `email-setup` after `email` gives
   the run every email pack. From that call on, a hand-off to the email
   assistant gets the pack refusal (`PackRun.refusal`). The answer gives the
@@ -733,7 +750,9 @@ dropped names and the skipped names. A slug that is no pack gives None.
   forward or a new mail goes to the held card.
 - **Each call.** `_pack_call` puts `tool_packs.owner_scope` outside the
   permission gate. It marks the chat before the tool body, through the
-  executor's `_mark_untrusted_session`. It closes the profile writes after
+  executor's `_mark_untrusted_session`. Task 2492: it marks only for a call
+  that `tool_packs.marks_chat` names, which reads `PACK_OUTSIDE_TEXT`. A read,
+  a search and a thread mark. A send that reads nothing does not. It closes the profile writes after
   the call, also after a raise. It writes the email working set through
   `_email_working_set_for` and `_record_email_working_set`.
 - **The held set.** A held pack drops each tool that `_is_egress` or
@@ -744,7 +763,8 @@ dropped names and the skipped names. A slug that is no pack gives None.
   form. It names no other assistant. It does not say that the web is off,
   because the orchestrator's own web tools stay on behind the card.
   The `email` rules name `artifact:orchestrator:<path>` for a file of the
-  chat, because a bare path names a file of the email assistant.
+  chat. `send_email` also writes a bare path of a chat folder as its
+  `artifact:` ref (task 3598). A held run takes no such file.
 - **The marks.** Each pack tool carries `__cc_gated__`, so
   `_gate_own_maf_tools` never gates it twice. `PACK_OWNER_ATTR` names the
   owner. `_inject_mcp_servers` gives no registry MCP server to a run that
@@ -864,6 +884,12 @@ ships dark behind `CHAT_CONSTRAINTS`, default off.
 - Fences: `tests/unit/test_chat_constraints.py` and
   `evals/trajectories/test_chat_constraints_trajectory.py`.
 - Open: the visible chip in the chat is a later slice.
+- HRD-12a (`chat_failure_modes.md` §6, 2026-11-16) adds the kind
+  `decision`, under the same flag. The store keeps a limit as a plain
+  string, the old shape, and only a decision as `{kind, text}`. So a reader
+  from before HRD-12a loses only the decisions. Decisions show on their own
+  line, after the limits, and they hold for the rest of the chat. A decision
+  is not a request, so the model does not act on it.
 
 **OA-3 is built and dark (2026-10-25).** The flag `ATTACHMENT_OCR` turns it
 on, and it is off by default. §4.1 records what was built, and the three
@@ -1300,7 +1326,7 @@ OA-5 did not measure this state, because tier routing was off in the eval (repor
 
 - **OA-1 (`acb_skills/handoff.py`).** A pack turn delegates nothing, so `head_task` heads nothing. The orchestrator reads the words of the member in its own history. `head_task` still heads each delegation that stays (`acb_skills/handoff.py:224-243`): unpacked apps, background calls and the children of OA-9.
 - **The reply rules of OA-2 (`acb_skills/handoff.py:61-72`).** In a pack turn, the orchestrator reads each source itself. So the pack rules carry the first-hand form (`evals/one_assistant_measure/pack.py:83-85`). "A file name is a label, not content. Say a fact that you did not read as a guess." OA-5 showed that the shape does not fix cause C2 (report `:188-209`). OA-3 fixes it.
-- **OA-4 (`acb_skills/chat_constraints.py`).** The kept corrections already show in the per-turn context of the orchestrator (`orchestrator/executor.py:9213-9219`). The two correction tools already belong to the orchestrator (`orchestrator/agents.py:1002-1007`). Nothing changes.
+- **OA-4 (`acb_skills/chat_constraints.py`).** The kept corrections already show in the per-turn context of the orchestrator (`orchestrator/executor.py:11581-11587`). The two correction tools already belong to the orchestrator (`orchestrator/agents.py:1199-1207`). Nothing changes.
 - **The tier question.** It still reads only the task (`orchestrator/executor.py:8862-8865`).
 
 #### 4.2.6 The rule against an unasked draft (OA-7g)
@@ -1326,10 +1352,17 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **CAL-3: day rules in the `calendar-day` pack** (BUILT, 2026-11-07, task 1677). The pack holds fourteen tools now. The four new ones are `my_tasks_list_day_rules` (read only, numbered "1. Mon-Fri 8-11 focus 'Deep work'"), `my_tasks_add_day_rule`, `my_tasks_edit_day_rule` and `my_tasks_delete_day_rule`. They read and write `day_templates` of `/tasks/settings`. Each write proposes first (`confirmed=False` writes nothing and shows "Version: <token>"), applies only with that version (no version: refused, changed list: refused with nothing written, because a rule number is valid only for the list the member saw), checks the rule as the server normaliser does and refuses in text instead of dropping it, and edits by the number shown in the list. A write saves the whole list, so `PUT /tasks/settings` takes an optional `If-Match` header. The token is the sha256 hex of the canonical JSON (sorted keys) of the normalised list, and `GET` and `PUT` return it in `ETag`. With `If-Match` the server locks the member's row in the same transaction and answers 412 with nothing written when the token differs. With no header the write is as before, so the Calendar sheet is unchanged. The tool answers a 412 with "The day rules changed since I read them. Read the list again." `REACH_MIN_TOOLS` stays 11, and `tool_packs.REACH_NOT_WORK` names `calendar-day`, because a count cannot tell a pack of 14 tools from `projects-reports` with 11. In a held chat the pack holds off ten writes and keeps four reads. Fences: `tests/unit/test_day_rules_tools.py` and `tests/unit/test_day_rules_if_match_r8.py`.
 - **CAL-4: the two day flows in the `calendar-day` pack** (BUILT, 2026-11-07, task 1678). The pack holds sixteen tools now. The two new ones are `my_tasks_start_my_day(energy_note)` and `my_tasks_close_my_day()`. Each gathers the steps of the Calendar app in ONE reply and changes nothing, because it calls only `GET` routes and the `apply=False` proposals. Start my day follows `StartupRitual.tsx`: the digest of today (`GET /tasks/calendar/day-summary`), a rollover proposal (`rollover-today`), the unscheduled next actions to pick the One Thing from (`GET /projects/my/inbox`) and a rebuild proposal (`plan-today` with the energy note). Close my day follows `EndOfDayReview.tsx`: what got done and what did not (`day-summary`), the rollover proposal, and the tasks to seed tomorrow with. A step that fails shows "The rollover proposal is not available now: <reason>" and the other steps stay. Each reply ends with the next steps: the tools the model calls after the member agrees (`my_tasks_rollover`, `my_tasks_plan_day` and `my_tasks_set_one_thing`). The server keeps ONE pending proposal for the day, so the model proposes again before it applies. **Limit.** The planner tools plan TODAY only (`my_tasks_plan_day` has no date), so Close my day cannot fit tomorrow. It says so and offers the One Thing for tomorrow (`my_tasks_set_one_thing` with tomorrow's date). Both tools sit in `egress.HELD_OFF_PACK_WRITES`: the propose calls store a pending plan on the server. `REACH_MIN_TOOLS` stays 11. Fences: `tests/unit/test_day_flows_tools.py` and the rows of `test_calendar_day_pack.py`, `test_calendar_day_held.py` and `test_pack_requests.py`.
 - **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
-- **`TOOL_SEARCH_ORGS`** (TS-2, PROPOSED, D222) lists the organization ids that get `find_tools` and layer (a′), or `*`. It is empty by default. It acts only where `packs_on` allows packs, and it searches only those packs.
-  - **One reader**, in the pattern of `packs_on`. It fails closed. The name ends in `_ORGS`, so a SIGHUP reloads it with no deploy (`docs/flag_reload.md`).
-  - **The flip is owner-only.** It moves which tools a run holds, and it spends model tokens. TS-2 adds the flag to `work_plan.md` §6 D4, beside `TOOL_PACKS`, in the same PR.
+- **`TOOL_SEARCH_ORGS`** (BUILT in TS-2a PR 3, dark, D222) lists the organization ids that get `find_tools`, or `*`. Layer (a′) joins it in TS-3. It is empty by default. It acts only where `packs_on` allows packs, and it searches only those packs.
+  - **One reader**, `tool_packs.tool_search_on`, in the pattern of `packs_on`. It fails closed. The name ends in `_ORGS`, so a SIGHUP reloads it with no deploy (`docs/flag_reload.md`).
+  - **The flip is owner-only.** It moves which tools a run holds, and it spends model tokens. TS-2a PR 3 added the flag to `work_plan.md` §6 D4, beside `TOOL_PACKS`.
   - **Off leaves each item of the list below byte-identical**, and the run reads and writes no state of a found tool. The fence is `tests/unit/test_tool_search_off.py`, in the pattern of `test_tool_packs_off.py`.
+- **G2: `CHAT_PACKS_BATCH_ORGS`** (BUILT, dark, task 3494, `chat_reach.md` §3.2) lists the organization ids, or `*`. Empty means off. With the org named, the member's own WhatsApp turn holds the read tools of its packs. The words or the sticky packs of the turn choose them.
+  - **One reader**, `tool_packs.packs_batch_on`. It fails closed. Two callers ask it, `executor._start_pack_turn` and `executor._whatsapp_pack_turn_due`. The first runs with `whatsapp=True`. The second reads the channel. A SIGHUP reloads it (`docs/flag_reload.md`).
+  - **The gates** are the channel `whatsapp` that `bot_run` binds, a solo room, a chat thread, the verified member and no delegation. A workflow run, a shared room and a sender with no verified member get no pack.
+  - **Read only.** `tool_packs.batch_read_tools` keeps a tool only when the risk registry marks it read-only, so a tool with no mark leaves. A mail pack never loads (`batch_allowed`), so the run keeps its MCP servers. The record refuses no hand-off, so the specialist still does the writes. A write tool that reaches a pack call answers `tool_packs.BATCH_WRITE_REFUSED`.
+  - **The subset.** The WhatsApp subset holds the READ tools of the Projects packs, the Studio read packs, CRM and calendar-day, but never a display tool (`subagent_contract.DISPLAY_TOOLS`). **Owner question (task 3494):** may a WhatsApp turn read CRM, calendar and Projects data? The recommendation is yes.
+  - **No loader.** The turn holds no `load_skill_tools`, no `find_tools` and no published skill. Its sticky state lives in `tool_packs.BATCH_NAMESPACE`, so a WhatsApp turn never changes the sticky packs of the web chat.
+  - **Off leaves the batch run byte-identical**, and the run never calls the pack turn. The fence is `tests/unit/test_chat_packs_batch.py`.
 
 **Off leaves these byte-identical:**
 - the tool names of the orchestrator, their order and each specialist tool
@@ -1533,7 +1566,7 @@ OA-7h is the gate before the flag turns on for any organization.
 
 #### 4.2.9 Tool search: load a tool, not a whole pack (TS-0, DECIDED)
 
-**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build. PR 2318 merged its PR 2 (`find_tools`, no caller) as `9bcbfd452`. PR 2333 reverted it, because its tests assumed the unsplit `studio` pack after TS-1b. The reland of PR 2 makes the candidates every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. PR 3, the wiring, comes next. The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
+**Status.** DECIDED, 2026-11-14, task 3190. The owner wrote that D222 is adopted as written: load by tool, amending D117 item 2. PR 2268 merged TS-1 (`20059a075`), and it has no caller. TS-2a (task 3222) is in build. PR 2318 merged its PR 2 (`find_tools`, no caller) as `9bcbfd452`. PR 2333 reverted it, because its tests assumed the unsplit `studio` pack after TS-1b. The reland of PR 2 makes the candidates every pack of `PACK_ONLY_OWNERS` that `packs_on` allows and layer (a) did not load, follow packs included. PR 3, the wiring, is BUILT, dark behind `TOOL_SEARCH_ORGS` (2026-11-15, "What PR 3 holds" in the block TS-2a). The owner accepted decisions 2, 6, 7 and 9 on 2026-11-14 (04:24 UTC). The owner approved decision 11 and chose "Always, in the base set" for decision 13 (10:18 UTC). The decisions list marks each point. A rule that D222 does not state stays a proposal, and the slice audit settles it.
 
 **Dark and live.** TS-1 adds code with no caller. TS-1b is LIVE, not dark: it changes the Studio packs of every org that holds them. Each slice from TS-2 on ships dark behind `TOOL_SEARCH_ORGS`, and the flip is owner-only.
 
@@ -1578,12 +1611,14 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 
 **How `find_tools` works (TS-2).**
 1. **The tool.** `find_tools(query)` is a `FunctionTool` with `approval_mode="never_require"`. Its description lists the index line of each pack that has a candidate in this run.
-2. **The middleware.** A `FunctionMiddleware`, a sibling of `LoadSkillTools` (`tool_packs.py:3428-3686`), takes the call. A `ContextProvider` attaches it beside `_offer_pack_loader` (`_tool_injection.py:4412`).
+2. **The middleware.** A `FunctionMiddleware`, a sibling of `LoadSkillTools` (`tool_packs.py:3428-3686`), takes the call. A `ContextProvider` attaches it in the one provider list of `_offer_pack_loader` (`_tool_injection.py:4555` at TS-2a PR 3).
 3. **The candidates.** They are the tools that the guarded builds of this run return. So each filter runs before the rank ("The candidates", below).
 4. **The rank.** The ranker of TS-1 ranks the query over the candidates and keeps at most 5.
 5. **The room.** It makes room by the room rule below. With no room, it refuses and names the limit.
 6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
 7. **The answer.** It gives one line for each found tool: its name and the first line of its description. Then it gives the rules block of each owning pack, once in a run (below). With no match, it says so and names `load_skill_tools`.
+   - (D225, 2026-11-15) SBX-1 extends the no-match answer. `find_tools` then also checks the library and the catalog actions, and writes a `tool_gaps` row (`agent_sandbox.md` §6.1). D187 planned that as a second tool, `find_tool`, and SBX-1 does not build it.
+   - (SBX-1a, 2026-11-26) The extension is the hook `on_gap` of `FindTools`, made by `orchestrator.tool_gap_path.make_gap_hook` behind `user_tool_find_enabled`. With no hook, the no-match answer stays `FIND_NONE` (`agent_sandbox.md` §12.1 decision 2).
 
 **The rules block and the hold note go with the tools.** D117 item 2 makes a pack of its tools and a rules block, so a found tool needs both.
 - Today the rules block reaches the model on three paths. `persona_for` adds it for each pack in `loaded` (`tool_packs.py:2543`, `:2609`). The `LOADED` answer of `load_skill_tools` carries it (`:2936`, `:3670`). Layer (c) puts it in the instructions of the turn (`load_early`, `:3596-3598`, the text at `:3630`).
@@ -1633,7 +1668,7 @@ Two guards need new code.
 
 **The candidates.** They are the tools that the run could load and use. The rank reads only them, so a dropped tool never takes a place of the top 5.
 - They come from the packs of `loadable(allow, choice.slugs)` (`tool_packs.py:3217-3231`), as `_apply_tool_packs` calls it (`_tool_injection.py:4082`). So a pack of layer (a) is not a candidate. `loaded` holds pairs of a slug and its held answer, so it cannot take that place. `allow` is `packs_on(org)` after the S2 toggles and `with_followers`.
-- They pass the tests of the loader plan: `_available` of `_plan_pack_loader` (`_tool_injection.py:4345`, `:4387`), the owner filters and the held drop (`:3441-3442`). For Studio the owner filter is `_drop_pack_unless_studio` (`:3558-3567`).
+- They pass the tests of the loader plan. These are `_pack_available` (`_tool_injection.py:4379` at TS-2a PR 3), which `_plan_pack_loader` reads too, the owner filters and the held drop (`:3441-3442`). For Studio the owner filter is `_drop_pack_unless_studio` (`:3558-3567`).
 - The rank skips each name in the live tool list, and each pack of `run.holds()`. The setup build made other objects than the live ones.
 - Without that rule, an add of such a name raises `ValueError`, and no tool of the batch loads. When the add works, the rules block comes twice.
 - `LoadSkillTools` stays safe, because it passes the live names as `holds` to a fresh build (`tool_packs.py:3691`).
@@ -1657,7 +1692,7 @@ Two guards need new code.
 **The room rule.** A found tool counts against `MAX_REQUEST_TOOLS` (110). It takes no place of `MAX_PACKS` (3).
 - `find_tools` itself takes a place in the request. An example: a base of 55 ("As built, OA-8b"), `load_skill_tools`, `email` (31) and the core Projects pack (23) make 110. With `find_tools` the count is 111.
 - **The owner chose "Always, in the base set" (decision 13, 2026-11-14).** The run offers `find_tools` on every turn where the flag is on for the org, as it offers the pack loader. It counts against the base tools.
-- The load tool counts in the base before `choose` (`base += 1`, near `_tool_injection.py:4090` on origin/main at `ed2274b1c`, in `_apply_tool_packs`). TS-2a adds `find_tools` the same way. It needs no new count check.
+- The load tool counts in the base before `choose` (`base += 1`, `_tool_injection.py:4111` at TS-2a PR 3, in `_apply_tool_packs`). TS-2a PR 3 adds `find_tools` the same way, before the first `choose` (`:4096-4098`). It needs no new count check.
 - **The trade.** At the cap of 110 tools, the base count can push out the last pack. `choose` drops the last pack that replaces a specialist (`tool_packs.py:2259-2263`). The owner accepted that trade.
 - `planned_tools` (`_tool_injection.py:4143-4144`) only feeds a log line (`:4168`) and enforces nothing. The log count follows the new base.
 - **Where it sits.** Layer (c) counts the pool and `context.tools` only (`tool_packs.py:3776-3777`). So `find_tools` must join the run before `load_early` runs. A SEPARATE provider, `FindToolsProvider`, adds it in its own `before_run`, because decision 13 offers `find_tools` on every turn, also when the loader offers nothing. PR 3 lists it BEFORE `LoadSkillToolsProvider` in one `agent_with_providers` list. A test proves that layer (c) counts `find_tools`, and that a request never reaches 111 tools. Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
@@ -1775,7 +1810,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 | TS-3 | 3197 | Layer (a′) | STD, shared seam, Opus builder | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-4 | 3198 | Sticky state for each tool, its line, the unknown-name line, the room order and the budget | STD, shared seam, Opus builder (D218) | AGENT-SAFE, dark. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 2 | TS-2 |
 | TS-5a | 3288 | The Studio chats, the six checks and stop result 12 of the `search` arm, scripted only. BUILT 2026-11-14 | LOW | AGENT-SAFE | 3 | none |
-| TS-5b | 3289 | The `find_tools` plans and the scripted pass on `search` | LOW | AGENT-SAFE | 3 | PR 2318 and TS-2a PR 3 |
+| TS-5b | 3289 | The `find_tools` plans and the scripted pass on `search`. BUILT 2026-11-15 | LOW | AGENT-SAFE | 3 | PR 2318 and TS-2a PR 3 |
 | TS-7 | 3201 | The live measure, in two parts: TS-7a on Studio chats, TS-7b on CRM and Projects chats | LOW | OWNER-GATE (spend) | 3 | TS-5a and TS-5b for TS-7a, TS-6 for TS-7b |
 | TS-6 | 3200 | Search over every pack | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 3 | After TS-5b, and its flip after TS-7 |
 | TS-9 | 3203 | MCP tools and published skills in the index | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE. Needs its own spec audit (spec-auditor, Opus) before dispatch. | 4 | TS-6 |
@@ -1850,16 +1885,41 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   1. **PR 1, docs.** This spec change.
   2. **PR 2, HIGH, no caller.** `acb_skills/tool_packs.py`: the tool, the `FunctionMiddleware`, the answer, and ONE lock that `find_tools` shares with `LoadSkillTools`. Fence: `tests/unit/test_find_tools_guards.py`.
   3. **PR 3, HIGH.** The wiring in `orchestrator/_tool_injection.py`, the flag `TOOL_SEARCH_ORGS` in `acb_common/settings.py` and a §6 D4 line in `work_plan.md`. Fences: `tests/unit/test_find_tools_maf_loop.py` and `tests/unit/test_tool_search_off.py`.
-- **What PR 2 holds.** `acb_skills/tool_packs.py` holds `find_tools` (`find_tool`), the middleware `FindTools`, `FindToolsProvider`, `search_packs`, `find_candidates`, `setup_candidates` and the one lock `PackRun.lock`. No code calls them. Fence: `tests/unit/test_find_tools_guards.py`.
+- **What PR 2 holds.** `acb_skills/tool_packs.py` holds `find_tools` (`find_tool`), the middleware `FindTools`, `FindToolsProvider`, `search_packs`, `find_candidates`, `setup_candidates` and the one lock `PackRun.lock`. PR 3 is their caller. Fence: `tests/unit/test_find_tools_guards.py`.
+- **What PR 3 holds.** BUILT on 2026-11-15, dark behind `TOOL_SEARCH_ORGS`, on the branch `ts2a-wire` from `9c838d023`. The flip is OWNER-ONLY. The anchors below are of that branch.
+  - **The reader.** `tool_packs.tool_search_on(org)` sits beside `packs_on` (`tool_packs.py:1513`). It reads the setting on each call, takes `*` or a comma list, and fails closed. It never calls `packs_on`. Its one caller is `_apply_tool_packs`, which passes the bound tenant (`current_tenant()`, R5).
+  - **The setting.** `tool_search_orgs` is empty by default. `env_guard.py` refuses `TOOL_SEARCH_ORGS` as the key of an integration, so no tenant can set it. `.env.example`, `docs/flag_reload.md` and the §6 D4 line of `work_plan.md` name it.
+  - **The count.** `_apply_tool_packs` adds 1 to `base` before the first `choose`, only with `offer_loader` and the flag on (`_tool_injection.py:4096-4098`). The load tool adds its own 1 later (`:4111`). The setup needs the choice, so it runs after this count. When the setup gives no finder (no MAF `Agent`, or a fault), the count is one high. That skew errs on the safe side, and PR 3 keeps it. `executor._log_pack_request_tools` counts `find_tools` too (`executor.py:2087`).
+  - **The setup.** `_search_setup` (`_tool_injection.py:4487`) acts only with the flag on and a native MAF `Agent`. It makes the owner test once, then calls `setup_candidates` through `_find_candidates` (`:4507`). Its inputs are the `allow` of the apply, `choice.slugs` with `choice.evicted`, the live names and `PACK_ONLY_OWNERS`. The builder is `_build_pack_for_load`, and the context is the `build_ctx` of the apply, which holds the run key. A fault gives no search and logs `executor.find_tools_refused`. The line `executor.find_tools_setup` gives the cost of the setup builds. In the tests it was 2.3 ms for one candidate pack (13 tools) and 4.0 ms for two (23 tools), with an in-memory store. On a box each build also reads the mark of the chat once.
+  - **One owner test.** `_pack_available` (`_tool_injection.py:4379`) takes the place of the `_available` closure of `_plan_pack_loader`. It awaits `_studio_member_open` once, and only when `studio` is in `allow`. With the flag off, `_plan_pack_loader` makes it at the old place, after the MCP lookahead.
+  - **The finder and the list.** `_make_finder` (`:4540`) makes ONE `FindTools` for each run, with `record=applied.record`. `_offer_pack_loader` (`:4555`) puts `FindToolsProvider` BEFORE `LoadSkillToolsProvider` in one `agent_with_providers` list. With no offer, the list holds the finder alone. With the flag off, the list is as before PR 3.
+  - **The early returns.** With the flag on, the apply returns a `PackApply` also with no build, no offer and no skill (`:4171`, `:4225`). So the run key and the record bind, and `find_tools` answers `FIND_NONE` when it has no candidate. With the flag off, such a turn returns None, as on main, and the executor binds no run key. `test_tool_search_off.py` holds both cases.
+  - **A pack that left is no candidate.** A sticky pack that leaves at the start of the turn (`choice.evicted`, `PackRun.gone`) goes to the setup as a loaded pack. So `find_tools` does not offer it in the turn where `left_line` names it. The text of `left_line` does not change, with the flag on or off. Fence: `test_a_sticky_pack_that_left_at_the_start_is_no_candidate` in `test_find_tools_maf_loop.py`.
+  - **The MCP clash.** `_maf_mcp._names_held` (`_maf_mcp.py:703`) also holds the name of the tool of each `FindToolsProvider` of the run (`_finder_names`, `:716`). So a registry server that gives a tool with the name `find_tools` stays out of the run and logs `mcp.name_collision`. With the flag off, no such provider exists, and the check is as before. Fence: `test_a_server_tool_named_find_tools_leaves_only_beside_the_finder` in `test_maf_mcp_injection.py`.
+  - **The 422 line of `studio-more` is not changed.** With the flag on and no loader offer, the line names `load_skill_tools`, which the run does not hold. `find_tools` can still find `studio_list_actions` when the core is a candidate. The owner decides the text at the flip ask.
+  - **Fences.** `tests/unit/test_find_tools_maf_loop.py` and `tests/unit/test_tool_search_off.py`. The golden of the off test came from main at `9c838d023` (`tests/unit/golden/tool_search_off.json`). The count cases are in `test_exact_tool_count.py`, and `test_a_held_run_keeps_find_tools` is in `test_no_egress_tool_audit.py`.
+  - **Not in PR 3.** Sticky state, the room order and the budget of each request (TS-4). The surface rule (TS-2). The harness (TS-5).
+  - **Open.**
+    - The clash check of `_maf_mcp` does not read `load_skill_tools`, the tool of `LoadSkillToolsProvider`. A registry server with the name `load` and a tool `skill_tools` still gives a second `load_skill_tools`. PR 3 leaves this gap, because a change there would change the MCP path with the flag off.
+    - The 422 line of `studio-more` and the line `PACKS_LEFT_OFF` are two texts for the owner when the loader offers nothing (below).
+    - The base count is one high when the flag is on and the setup gives no finder ("The count", above).
+- **Tell the owner at the flip of `TOOL_SEARCH_ORGS`.**
+  1. `find_tools` takes one place in EVERY turn of a listed org, also when it can find nothing. This occurs for a member without `feature:studio`, an org outside `STUDIO_ORGS` and a turn that holds both Studio packs. So put on the flag only the orgs that `STUDIO_ORGS` lists.
+  2. At exactly 110 tools, the +1 makes `choose` drop a pack. That is the oldest sticky pack, which can be `email` or a Projects pack. `drop_sticky` then deletes its sticky record. With no sticky pack, the last pack of the surface leaves, or the last pack that replaces a specialist.
+  3. Two texts to decide when the loader offers nothing. The 422 line of `studio-more` says "load the studio pack with load_skill_tools first". The line of a pack that left says "Do not call the {labels} tools in this turn" (`PACKS_LEFT_OFF`).
+  4. Before the flip, check the registry MCP servers of the org. No server may have the name `find` with a tool `tools`. PR 3 leaves such a server out of the run, so the org loses it.
+  5. The cost of a turn: one more guarded build for each candidate Studio pack. Watch the ms of `executor.find_tools_setup` on the box.
+  6. Where `TOOL_PACKS` names `studio-workflows` or is `*`, its two workflow writes become findable, also past `MAX_PACKS`.
+  7. The rule that follow packs are candidates is the decision of the orchestrator of 2026-11-14. It is not an owner grant.
 - **PR 3 must.**
   - List `FindToolsProvider` BEFORE `LoadSkillToolsProvider`, in one `agent_with_providers` list.
   - Make ONE `FindTools` for each run, with `record=applied.record`. Never put it on a shared agent object.
-  - Call `setup_candidates` inside the bound frame of the run, with a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3782`). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
-  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded=choice.slugs`, and `available=` the `_available` test of `_plan_pack_loader`.
-  - Pass the `allow` of `_apply_tool_packs` (`_tool_injection.py:4072`). It widens the admin toggles with `with_followers`. Never pass a fresh `packs_on`.
+  - Call `setup_candidates` inside the bound frame of the run. Give it a context that holds `PACK_RUN_KEY`, as `_build_early` does (`tool_packs.py:3812` at TS-2a PR 3). Else `_pack_tools` gives an empty build, and the tool ships with an empty catalog.
+  - Pass `measure=_maf_mcp.schema_tokens`, `owners=PACK_ONLY_OWNERS`, `loaded` as the packs of `choice.slugs` and `choice.evicted` (a pack that left at the start of the turn is no candidate), and `available=` the `_pack_available` test that `_plan_pack_loader` also uses.
+  - Pass the `allow` of `_apply_tool_packs` (`_tool_injection.py:4083` at TS-2a PR 3). It widens the admin toggles with `with_followers`. Never pass a fresh `packs_on`.
   - `search_packs` keys on the owner `studio-builder` and on `allow`. So `studio-more` is a candidate wherever `studio` is on. The dark `studio-workflows` is one only where `TOOL_PACKS` names it or is `*`.
   - The orchestrator decided on 2026-11-14 that follow packs are candidates. It is not an owner grant. The owner sees it at the PR 3 preview and at the flip ask. The reland of PR 2 has a test for each case.
-  - Pass `available=` the `_available` test of `_plan_pack_loader` (`_tool_injection.py:4387`).
+  - Pass `available=` the test of the loader plan. PR 3 made it ONE module helper, `_pack_available` (`_tool_injection.py:4374`), that both callers read.
   - Measure the setup cost. A turn can now make two or three `_pack_tools` builds at setup, one for each candidate pack.
   - The demo turn is a turn where layer (a) loaded the core alone, so `studio-more` holds tools to find.
   - Decide the text of the 422 line of `studio-more` when the loader offers nothing and the flag is on. With the flag off, the run stays byte-identical.
@@ -1875,7 +1935,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - **The race.** In one batch, `find_tools` can add a tool while `LoadSkillTools` awaits its build (`tool_packs.py:3691`, `:3828`). Then the `add_tools` of the load raises, because MAF tests the identity of a tool (`agent_framework/_tools.py:1358-1361`), and the load answers `LOAD_UNAVAILABLE`. So `find_tools` and `LoadSkillTools` share ONE lock. A test runs two adds in one batch.
   - **The hold state.** A setup build fixes `held` at the start of the turn. A mark in the middle of the turn would leave the answer with no hold note. So `find_tools` builds the answer tools at call time, as `LoadSkillTools` does. A test proves the hold note after a mid-turn mark.
   - The answer holds the rules block of each owning pack, once in the run.
-  - **The join.** `FindToolsProvider` adds `find_tools` in its own `before_run`. It comes before `LoadSkillToolsProvider` in the list, so its tool is in `context.tools` when `load_early` runs (`tool_packs.py:3747-3765`). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
+  - **The join.** `FindToolsProvider` adds `find_tools` in its own `before_run`. It comes before `LoadSkillToolsProvider` in the list, so its tool is in `context.tools` when `load_early` runs (`tool_packs.py:3777-3795` at TS-2a PR 3). Its description is a pure function of the candidates, in the order of `PACKS`, so the cache prefix stays stable.
   - **The count.** `find_tools` joins the base set, as `_apply_tool_packs` adds the pack loader (`base += 1`). With the flag on, the base count rises by 1 on every turn. With the flag off, it does not change. TS-2a adds no new count check. A request never passes 110 tools, because `choose` drops a pack.
   - The rank skips each live name and each pack of `run.holds()`. A dropped tool never takes a place of the top 5.
   - `find_tools` runs both checks of `_admit_pack` before each add: the size of the pack and `_beside_mcp` (`tool_packs.py:3528`).
@@ -1961,7 +2021,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
   - Six pure checks: `found_tool`, `search_round`, `not_searched`, `no_studio_names`, `held_note` and `schema_tokens`.
   - Stop result 12 and the search numbers join the report.
   - The numbers are the searches per turn, the tools that ran after a find, the false searches on their own, and the schema tokens per request.
-  - `search` is listed in `--arms`. It prints SKIP until the settings hold `tool_search_orgs`. An unknown `--arms` value exits with status 2.
+  - `search` is listed in `--arms`. It prints SKIP when `run.SEARCH_PLANS` is False or the settings hold no `tool_search_orgs`. TS-5b set `SEARCH_PLANS` to True. An unknown `--arms` value exits with status 2.
 - **One chat list for each arm.**
 
   | Arm | Chats | Runs when |
@@ -1979,7 +2039,9 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Order.** After PR 2318 and TS-2a PR 3, because the arm needs the flag `tool_search_orgs` and the tool `find_tools`.
 - **Files.** `evals/one_assistant_measure/run.py` (`scripted_models` raises `NotImplementedError` for `search` today) and `scenarios_studio.py`.
 - **Acceptance.** A scripted plan on the `search` arm calls `find_tools` once, then the Studio tool. `--scripted --arms pack,search` passes on both arms, with `found_tool`, `search_round`, `not_searched` and `schema_tokens` giving True. The layer of each found tool joins the report here, because it needs the product log of TS-2a.
-- **Held chat.** The check `held_note` may be impossible to satisfy if the Studio pack is not held in the product. TS-5b must check that the pack is held in a held chat before it relies on the check. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona.
+- **Held chat.** The check `held_note` is satisfiable. The product holds the Studio pack in a chat that read mail, and the answer of `find_tools` carries the hold note after the rules text. On the `pack` arm the held answer of the `studio` load has no hold note, and the note is in the persona. The event stream keeps 2000 characters of a tool result. The note comes after them. So the harness reads the full answer from the next request.
+- **BUILT (2026-11-15).** `Plan.find` and `Plan.search_calls` (`scenarios.py`) carry the plans. `scripted_models` (`run.py`) plays `find_tools`, then the Studio tool, with no `load_skill_tools`. The queries are `list my saved skills` (`stu_skills`, `stu_no_feature`, `stu_held` turn 2) and `draft a new app` (`stu_new_app`). `stu_plain` makes no find. For `stu_no_feature` the find answers `FIND_NONE` and no Studio tool runs. `make a new app` does NOT rank `studio_draft` in the top 5, so the plan uses `draft a new app`. `--scripted --arms pack,search` passes on both arms. Stop result 12 reads STOP on a Studio-only set, because 3 of 3 app turns search. The rule counts the full app set (decision 12), so this is no finding against the product. The layer of each found tool is NOT in the report yet: it needs the log line `tool_packs.found`, and the report does not read it. A later slice owns it.
+- **Cap turn.** The chat `stu_cap` is the case that the tool-search design exists for. Turns 1 to 3 load three packs by words (CRM, email, reminders) and run one tool each, so the run holds `MAX_PACKS` (3) packs. Turn 4 asks the words of `stu_skills`, which no pack matches. The loader offers nothing, so `load_skill_tools` is not in the request. On `search`, `find_tools` is in it, and the model finds `studio_skill_list` in `studio-more`. On `pack`, no Studio tool runs and the answer says that it cannot. A test proves the plan of the loader on the real run. The same slice adds two fields to each row (`find_tools_offered`, `find_tools_requests`). It adds the summary line "offered but not called: N of M". It adds the check `drafts_listed_fairly`, which lets an answer name a published skill as published.
 - **Fence.** `tests/unit/test_one_assistant_measure_search.py`.
 
 **TS-6. Search over every pack (task 3200).**
@@ -1999,6 +2061,7 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
 - **Parts.** TS-7a runs on Studio chats on OTHER surfaces, after TS-5a and TS-5b. TS-7b runs on `crm_miss` and `pm_miss`, after TS-6. TS-5a built the Studio chats, the fixtures, the flags, the six checks and stop result 12. TS-5b builds the `find_tools` plans.
 - **Cost (harness count).** A pilot of about 14 turns on two arms costs about USD 0.37. The full run of about 53 turns, two arms and 3 repeats costs about USD 4.2, with `--budget-usd 6`.
 - **The bill.** On 2026-10-30 the Router billed 2.75 times the harness count. So the bills can be about USD 1.0 and USD 11.6.
+- **The cap (TS-7a-cap, task 3338). BUILT 2026-11-15.** The pilot of 2026-11-15 counted USD 0.328, and `usage_event` billed USD 0.4889. The tap saw all 57 calls. The card priced the buffered specialist calls as DeepSeek, but the Router served Claude. Now the card of the served model prices each call, and an unknown model takes the most expensive rate. The runner checks the cap before each model send inside a turn. A replay of the pilot counts USD 0.4889. The run prints the `usage_event` check line at its end. Fence: `tests/unit/test_eval_spend_count.py`.
 - **Command.** `uv run python -m evals.one_assistant_measure.run --live --arms pack,search --scenarios <ids> --repeat 3 --timeout 200 --budget-usd 6 --spent-before-from <chunks> --out chunk_ts_a.json`. `--scenarios` takes a comma list of chat IDS, for example `stu_skills,stu_new_app`. It does not take a set name. It needs the tunnel and the `deploy` grant (the harness README).
 - **Files.** A report in `docs/`, in the form of the last measure report, `docs/one_assistant_measure_oa8e_run5_2026-10-30.md`.
 - **Acceptance.** The report gives the numbers of §4.3.3 for `pack` and `search` on the same chats, and the state of stop results 1 to 12. It names the spend from `usage_event`. A switch needs the result "not worse" of §4.3.3, and the owner.
@@ -2072,6 +2135,8 @@ The core frees 13 places of the 110. Beside `email`, `find_tools` takes one plac
     - Stop result 12 counts the full app set, not only the Studio chats. This is the rule, and it is no fifth condition.
     A switch needs this result AND the owner. The owner may change any number.
 13. **The place of `find_tools`. "Always, in the base set" (2026-11-14, task 3190).** The run offers it on every turn where the flag is on for the org, and it counts against the base tools. At the cap of 110 tools, the base count can push out the last pack. The owner accepted that trade.
+
+**The skill description match (TOF-1c, `ai_studio_rows/TOF-1c.md`).** `tool_search.match_skill_descriptions` reads a separate corpus: the head descriptions of the Studio skills that the member may load. It uses that text for scores only, so decision 6 still holds for the index. The owner accepted this corpus on 2026-11-16 (task 3412). `rank`, `build_index` and `default_index` never read the text, and only a skill id and a hit count leave the function. Its one caller is `_tool_injection._turn_with_skills`, when no skill name matches and `STUDIO_CHAT_TOOLS_ORGS` names the org. `TOOL_SEARCH_ORGS` does not gate it, and `find_tools` never sees the text.
 
 ### 4.3 OA-8: every other app
 
@@ -3033,8 +3098,10 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. The rest is design
-(2026-11-04). Task 1648. The review below is checked against
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. WT-6a BUILT, dark (2026-11-07, task 1690). WT-4 BUILT (2026-11-07, task 1688). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). The rest is design
+(2026-11-04).
+
+Task 1648. The review below is checked against
 the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
 in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
 this section. `chat_organization.md` §7.1 reads it and writes it never.
@@ -3048,10 +3115,14 @@ do the act. The member's own words go across. Untrusted text never goes across.
 
 A swap in place is **not** a way through a hold. The mark is keyed on
 `(org, session_id)` and slides for 400 days (`packages/acb_skills/acb_skills/egress.py:328-453`, slide at :430). No code
-clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3198`), so
+clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3199`), so
 a new persona or a reloaded pack stays held. A swap in place is for a **topic
-change that is not held**. It reuses `persona_for` (`tool_packs.py:1907`) and
-`load_tool` (`:2515`), and adds no second router. A mark-clear act is a
+change that is not held**. It reuses `persona_for` (`tool_packs.py:2231`) and
+`load_tool` (`:2910`), and adds no second router.
+
+The swap itself is already
+built (layer (a) of `begin_turn`, with the RX-1 eviction), dark under
+`TOOL_PACKS`. WT-4 adds only the line that tells the member (§9.4). A mark-clear act is a
 separate HIGH design, and it is out of scope here.
 
 ### 9.2 The review: each act the hold removes
@@ -3092,6 +3163,14 @@ separate HIGH design, and it is out of scope here.
    `custom_events`, `agent_state`, `authority`, `tool_events`,
    `member_summary` or a file reference. `prepare_new_session` purges by id
    only, so no file id crosses.
+   **HRD-19a (2026-11-17, task 2998).** The carry of a chat ROW stays as this item
+   says. Beside it, the route copies two server records of the SAME member, key
+   to key, in the store that owns each: the decisions of the OA-4 list
+   (`chat_constraints.carry_decisions`, under `CHAT_CONSTRAINTS`, the kind
+   `decision` only) and the item in focus (`chat_focus.carry_focus`, under
+   `CHAT_FOCUS_ORGS`, with its original time, only while it is fresh). A copy
+   writes no `text`, no `chat_message` row and no `continued_from` read. A shared
+   room copies nothing. Open cards and limits do not cross (HRD-19b).
 6. **No seed row.** The route writes no `chat_message` row. It returns
    `{session_id, text}`. The web shell puts `text` in the composer, and the
    member sends it. `_write_prompt_row` (`apps/services/gateway/gateway/routes/agent.py:2625`)
@@ -3120,15 +3199,59 @@ separate HIGH design, and it is out of scope here.
 | Slice | What | Tier | Gate |
 |---|---|---|---|
 | WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
-| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. Since 2026-11-17, slice HRD-14d of `chat_failure_modes.md` §4.7b owns the stored-mail match. | HIGH | AGENT-SAFE, dark |
 | WT-2 | 🔨 **BUILT, dark (2026-11-05, task 1686).** The tap: a `Continue in a fresh chat` pill. The server marks a held turn with the event `chat_continue_offer`. Only an org on `CHAT_CONTINUE_ORGS` gets it. The dock opens the new chat and fills the composer, and never sends. WT-1 fix: a failed room lookup answers 503. Fences: `test_continue_offer.py`, `chatContinue.test.ts`. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | 🔨 **BUILT (2026-11-07, task 1687): no hold text says "new chat".** The `_CONTINUE` form of each `NO_WRITES` text names the pill "Continue in a fresh chat". `egress.py` takes that form only after `offer_continue()` sent the event of the pill. Else the plain form names the app and offers no tap. The persona hold note is built before the run queue exists, so it always takes the plain form. The `_CONTINUE` form reaches the model through a refused held write. Fences: `test_no_new_chat_copy.py`, `test_continue_offer.py`, `test_held_card_writes.py`. ⚠️ Before the WT-5 flip: only the dock draws the pill, so a member on `/chat` or an app rail reads a tap with no pill. | HIGH | AGENT-SAFE |
-| WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
+| WT-4 | The switch line (not held): when this turn loads a pack that the sticky set of the last turn did not hold, the run sends one `chat_pack_switched` event with the pack label, and the chat shows "Switched to Projects". It reads `begin_turn` and `packs_on`, and adds no second matcher. **No suggestion chip** (see WT-4 below). No flag of its own: it follows `TOOL_PACKS`, which production sets, so it is live (owner approval 2026-11-27). Needs PR 1743 for the event seam (`offer_continue` pattern). | STANDARD | AGENT-SAFE, live with `TOOL_PACKS` |
 | WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. ⚠️ Before the `CHAT_CONTINUE_ORGS` flip: only the assistant dock draws the pill (`AssistantDock.tsx`). `/chat`, the Tasks and Projects rails, the email chat and the app editor do not. Either each host draws the pill, or the owner accepts the gap. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
-| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH | AGENT-SAFE, dark |
+| WT-6a | 🔨 **BUILT, dark (2026-11-07, task 1690).** `egress.HELD_CLASS_C_TOOLS` and its reader `held_class_c_on`. Flag `HELD_CLASS_C_ORGS` in `settings.py` and `env_guard.py`, empty. `ask_tools.publish_card_undo` sends `confirmation_undo`. The two unarchive routes take an optional `If-Match`. The client is `src/lib/archiveUndo.ts`. No migration. Class C archive with an Undo receipt. `archive_task` and `archive_project` join the held set behind a NEW flag `HELD_CLASS_C_ORGS`, default empty. The chat receipt line (`ConfirmationReceipts`) offers Undo. Undo calls the existing unarchive route under the member's own session, as a `lib/undo.ts` command in the style of `taskUndo.ts` (If-Match, 412 means changed since). | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE (`work_plan.md` §6 D4) |
+| WT-6b | The person-class tick (email plan §21.4) for the report recipient tools, which add a person to a list for mail later. The `nudge_task` tick is dropped: its person is always an org member who waits on the task, so the class is always `org` and the tick decides nothing. | HIGH | AGENT-SAFE, dark |
 
 **WT-1 done when:** each case of §9.5 passes on a real database, the flag-off
 answer is 404, and the verification commands of §9.6 pass.
+
+**WT-6a done when:** (owner decision, 2026-11-07)
+
+- `archive_task` and `archive_project` run from a held chat only when `HELD_CLASS_C_ORGS` holds the org. The flag is a comma list of org ids or `*`, empty by default, with one reader that fails closed. The name ends in `_ORGS`, so a flag reload applies it.
+- `HELD_CARD_WRITES_ORGS` does NOT open Class C. The owner approved that flag for class B only (RX-1, D169).
+- `delete_*`, `merge_*`, `move_project` and `revert_activity` stay out of the held set until a server restore exists. A restore for them is its own HIGH slice.
+- The receipt offers Undo. Undo calls `unarchive_task` or `unarchive_project` under the member's own session and RLS. It never uses a server token. A 412 says the row changed since. A receipt of chat A does not undo in chat B. A member of org X does not undo in org Y (R5).
+- Each new held tool has its name, the `card_write` annotation and the exact parameter pin (`is_held_card_write`).
+- A held chat archives one task, with Undo. It never archives a subtree. It refuses `include_subtasks`.
+- The Undo token is the version that the archive wrote. A stale Undo never clears a later archive by another member.
+- Fences: `tests/unit/test_held_card_writes.py` (flag off means refused), an R8 test (archive in a held chat, Undo restores the row, 412 after another member's change, cross-org gives 404), and vitest beside `taskUndo.test.ts`.
+
+**WT-6a as built (2026-11-07):**
+
+- The class C flag acts only where `HELD_CARD_WRITES_ORGS` is on too. With that flag off, the held rule is off, as before RX-1.
+- After an approved archive, the tool sends `confirmation_undo` with the card's `request_id`, the row and its version. The tool names no card. Only an APPROVE sets the card that it names.
+- The line offers Undo only while `HELD_CLASS_C_ORGS` holds the org. The line reads that flag only, and not `HELD_CARD_WRITES_ORGS`.
+- A held chat refuses `include_subtasks` (`egress.HELD_REFUSED_PARAMS`). With subtasks and no answer, a held chat does not ask. Its card says that the subtasks stay on the board. So a held chat archives one task, with Undo, and never a subtree.
+- An open chat can still file subtasks. That receipt offers no Undo, because the route restores one task.
+- The browser calls `POST /api/projects/tasks/{id}/unarchive` or `.../nodes/{id}/unarchive` with `If-Match`. The task rule is `precondition_holds`. The node rule is strict equality on `updated_at`.
+- `archive_node` and `unarchive_node` stamp `updated_at = now()` on the root row. The descendants keep their stamp. The archive answers the new root stamp, and the tool sends that stamp as the Undo token. A restore and a new archive by others then give 412.
+- The task half needed no change to its version. Migration 304 moves `fields_at` when `archived_at` changes.
+- The archive route of a task answers `was_archived` (review fix, 2026-11-22). It is true when another member archived the task first, and the route then writes nothing. The tool offers Undo only when `was_archived` is false. So member A's Undo cannot clear member B's archive. A reply with no `was_archived` offers no Undo, as a project reply with no stamp.
+- A 409 from the unarchive route (`core.transient_as_409`) wrote nothing. The receipt keeps its Undo button, and the member can try again.
+- Fences: `tests/unit/test_held_card_writes.py` §12 and §13, `tests/unit/test_archive_undo_r8.py` (R8), and `src/lib/archiveUndo.test.ts`.
+
+**WT-4 done when:**
+
+- A new pack in an unheld chat sends one switch event with its `SKILL_FAMILIES` label. The label is a pack label. "Calendar" is a surface of the `projects` pack, so the line reads "Switched to Projects".
+- A held chat sends no switch event, and its mark stays set. A Redis fault reads as held.
+- `TOOL_PACKS` off sends nothing. The same pack as the last turn sends nothing.
+- The slice only READS the mark (`session_mark_state` or `_pack_held`). It never writes, clears or re-keys it. An edit to the mark code moves the slice to HIGH.
+- **The chip.** Layer (a) already switches with no tap, so a chip that asks first is a second decision path. WT-4 builds no chip. A chip for a load that layer (a) did not do needs an owner decision first (open question on task 1688).
+
+**WT-4 as built (2026-11-07, task 1688).**
+
+- `tool_packs.pack_switch_label(turn, slugs)` is the pure signal. It compares the sticky set of `begin_turn` with the packs that layer (a) loaded. It returns the `SKILL_FAMILIES` label of the first new pack, or None.
+- It counts only packs that `packs_on` allows. It gives None on the first turn and after a failed sticky read.
+- A follower pack (Calendar day planner) gives way to its parent. So Calendar reads "Switched to Projects".
+- `executor._pack_switch_event` reads the hold with `_pack_held`, and it fails closed. A held chat and a Redis fault send nothing. It never writes the mark.
+- The event rides `_ProfileMarkHold.add`. It leaves with the first output, so a turn with no answer sends none.
+- The client twin is `src/lib/packSwitch.ts`. `PackSwitchMark` draws the line beside the mailbox mark.
+- Open: a pack that the model loads mid-turn with `load_skill_tools` (layer (b)) draws no line. A later slice can add it.
 
 ### 9.5 Fences (R7)
 
@@ -3147,6 +3270,12 @@ answer is 404, and the verification commands of §9.6 pass.
   - The route writes no `chat_message` row.
   - The new id is the server's.
   - The carry holds only `content`.
+- `tests/unit/test_continue_carries.py` (HRD-19a): the decisions and the item in
+  focus cross key to key, and the answer and `text` stay as above. Nothing else
+  of the old chat crosses: no limit, no record of another member or another
+  org, no old or bad item. A Redis fault gives the normal 200. A shared room and
+  every flag off copy nothing. The route holds no `cc:` key of its own.
+- `tests/unit/test_pack_switch_line.py` (WT-4): `test_a_new_pack_in_an_unheld_chat_sends_one_switch_event_with_its_label`, `test_a_held_chat_sends_no_switch_event_and_its_mark_stays_set`, `test_a_redis_fault_reads_as_held_and_sends_nothing`, `test_tool_packs_off_sends_nothing`, `test_the_same_pack_as_the_last_turn_sends_nothing`, `test_the_calendar_surface_names_the_projects_label`, and `test_the_switch_reads_packs_on_and_no_second_matcher` (a structural scan). The client twin is `src/lib/packSwitch.test.ts`.
 - `tests/unit/test_continued_from_readers.py`: a structural scan allows the
   `continued_from` column in three places only. They are the WT-1 route, the
   session list and the CO-5 chip read.
@@ -3158,4 +3287,20 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
 uv run ruff check apps/services/gateway packages/acb_common
 uv run python scripts/affected_tests.py --run
+```
+
+WT-6a adds these:
+
+```
+uv run pytest tests/unit/test_held_card_writes.py tests/unit/test_archive_undo_r8.py tests/unit/test_delegation_no_egress.py -q
+uv run ruff check packages/acb_skills apps/skills/skill-projects apps/services/gateway
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/archiveUndo.test.ts src/lib/confirmationReceipts.test.ts
+```
+
+WT-4 adds these:
+
+```
+uv run pytest tests/unit/test_pack_switch_line.py tests/unit/test_delegation_no_egress.py tests/unit/test_tool_packs_choice.py -q
+uv run ruff check packages/acb_skills apps/services/orchestrator
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/packSwitch.test.ts
 ```

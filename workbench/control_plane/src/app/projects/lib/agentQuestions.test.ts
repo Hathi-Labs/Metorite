@@ -19,6 +19,7 @@ import {
   type QuestionRow,
   ageText,
   answerRoute,
+  agentName,
   askedLine,
   badgeCount,
   cappedLine,
@@ -331,5 +332,26 @@ describe("rows of an old query", () => {
   it("a failed read clears rows of another query and keeps rows of the same one", () => {
     expect(keepRowsAfterFailedRead(mine, everyone)).toBe(false);
     expect(keepRowsAfterFailedRead(mine, mine)).toBe(true);
+  });
+});
+
+
+describe("agentName (task 4071)", () => {
+  it("names the lane on its client when the run has a label", () => {
+    expect(agentName({ agent_name: "Box metorite-home", agent_label: "lane-devx" })).toBe(
+      "lane-devx on Box metorite-home",
+    );
+  });
+  it("falls back to the client, then to the label alone", () => {
+    expect(agentName({ agent_name: "Claude Code", agent_label: null })).toBe("Claude Code");
+    expect(agentName({ agent_name: "Claude Code" })).toBe("Claude Code");
+    expect(agentName({ agent_name: "Claude Code", agent_label: "   " })).toBe("Claude Code");
+    expect(agentName({ agent_name: null, agent_label: "lane-devx" })).toBe("lane-devx");
+    expect(agentName({ agent_name: null, agent_label: null })).toBeNull();
+  });
+  it("the asked line uses the lane", () => {
+    expect(askedLine({ agent_name: "Box metorite-home", agent_label: "lane-merge", asked_at: null }, NOW)).toBe(
+      "lane-merge on Box metorite-home asked",
+    );
   });
 });

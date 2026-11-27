@@ -319,7 +319,9 @@ QUICK_TIMEOUT_S = 15
 WORKING_AFTER_S = 20
 
 #: WAC-13: the run error codes that mean Metorite itself did not answer.
-UNAVAILABLE_CODES = frozenset({"timeout", "connection"})
+#: AO-3 split a Router 502 or 503 off ``connection`` as ``ai_unavailable``.
+#: It still means the AI path did not answer, so it holds the message too.
+UNAVAILABLE_CODES = frozenset({"timeout", "connection", "ai_unavailable"})
 #: The row codes of WAC-13. ``updating``: the message waits for the AI path.
 #: ``updating_plain``: an org that the sweep does not visit, so nothing waits,
 #: and the member sends the message again.
@@ -1176,8 +1178,9 @@ def _ai_path_down(code: str, exc: BaseException, run_started: float,
                   cap: float | None = None) -> bool:
     """Did Metorite's AI path fail to answer (WAC-13)?
 
-    ``connection`` always: the Router or the model refused or dropped the
-    call. ``timeout`` from a call (a 504, a read timeout) too. The run's OWN
+    ``connection`` and ``ai_unavailable`` always: the Router or the model
+    refused or dropped the call. ``timeout`` from a call (a 504, a read
+    timeout) too. The run's OWN
     time limit is ``timeout`` as well, and a long job meets it with every
     part of Metorite up. So that one counts only when the Router failed during
     this run (review round 1).
