@@ -271,6 +271,9 @@ NOT_ON_THE_EXPORT = {
     # MCP-G19a. `compact` is a row shape for the agent door, not a filter. The
     # CSV has its own columns.
     "compact",
+    # MCP-G19c. The type filters and the task number of the agent door. The
+    # board never sends them, and the export of them is a later slice.
+    "type_id", "type_name", "task_number",
     # A page is a screen's unit. Half a filter's tasks in a file IS the silent
     # truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",
@@ -293,6 +296,12 @@ NOT_ON_THE_EXPORT = {
     # #918. Not a filter: it asks the list to also answer the size of each
     # status lane for the board's column heads. The rows are the same.
     "with_status_counts",
+    # WS-39 SP-3a. Only the Backlog canvas sends `cycle=none`, from its own
+    # query (`lib/backlogCanvas.ts`). The page filters never hold it, so
+    # `lib/export.ts`, which builds the file's query from those filters, never
+    # sends it. Like `unheld`, who sits in an open cycle changes by the hour,
+    # and no saved view pins the filter.
+    "cycle",
 }
 
 

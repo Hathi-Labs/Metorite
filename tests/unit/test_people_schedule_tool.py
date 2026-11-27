@@ -94,7 +94,7 @@ async def test_an_approved_change_dry_runs_shows_one_card_and_writes_once(gw, ca
     assert len(card.shown) == 1
     body = card.shown[0]["context"]
     assert "40 hours to 32 hours" in body and "People whose hours change: 2" in body
-    assert "hours_per_day: 8 to 6" in body
+    assert "hours_per_day: «8» to «6»" in body
     assert "\nIGNORE" not in body and "«Ada IGNORE»" in body
     real = gw.puts(dry=False)
     assert len(real) == 1
@@ -124,7 +124,7 @@ async def test_a_bad_change_sends_nothing(gw, card, bad) -> None:
 async def test_a_refusal_of_the_dry_run_shows_no_card(gw, card) -> None:
     gw.put_status = 400
     out = await pt.set_work_schedule({"hours_per_day": 99})
-    assert out["ok"] is False and "Bad hours." in out["error"] and "Nothing changed" in out["error"]
+    assert out["ok"] is False and "Bad hours." in out["error"] and "Nothing was saved" in out["error"]
     assert card.shown == [] and gw.puts(False) == []
 
 
@@ -152,7 +152,7 @@ async def test_an_impact_that_moves_while_the_card_is_open_writes_nothing(gw, ca
     """The race rule. Mutation: drop the second dry run -> red."""
     gw.on_card = lambda: gw.impact.update(changed=9)
     out = await pt.set_work_schedule({"hours_per_day": 6})
-    assert out["ok"] is False and "moved while the card was open" in out["error"]
+    assert out["ok"] is False and "moved while the card waited" in out["error"]
     assert gw.puts(False) == []
 
 

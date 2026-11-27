@@ -251,6 +251,7 @@ export default function NodeInspector({
   onLabel,
   onDelete,
   studioWrite,
+  fill = false,
 }: {
   node: WorkflowGraphNode | null;
   catalog: Catalog | null;
@@ -262,6 +263,8 @@ export default function NodeInspector({
   onDelete: () => void;
   /** Absent: nobody is the owner, so a Studio write step is read-only. */
   studioWrite?: StudioWriteContext;
+  /** E7a: a phone draws the inspector alone, at the full width and with no rule. A desktop keeps its fixed width. */
+  fill?: boolean;
 }) {
   const set = useCallback(
     (key: string, value: unknown) => onConfig({ [key]: value }),
@@ -278,10 +281,11 @@ export default function NodeInspector({
       : "";
     return (catalog?.tools ?? []).find((t) => t.action === action) ?? null;
   }, [catalog, node]);
+  const width = fill ? "w-full min-w-0" : "w-64 xl:w-72 shrink-0 border-l border-border";
 
   if (!node) {
     return (
-      <div className="w-64 xl:w-72 shrink-0 border-l border-border p-4">
+      <div className={`${width} p-4`}>
         <p className="text-xs text-muted-foreground">
           Select a node to configure it. Fields accept{" "}
           <code className="text-[10px] bg-secondary px-1 rounded">
@@ -307,7 +311,7 @@ export default function NodeInspector({
   const noteOnly = readOnlyNote(type);
 
   return (
-    <div className="w-64 xl:w-72 shrink-0 border-l border-border overflow-y-auto scrollbar-thin">
+    <div className={`${width} overflow-y-auto scrollbar-thin`}>
       {/* Header mirrors the card it belongs to: same plate, same kind eyebrow */}
       <div className="p-3 border-b border-border flex items-start justify-between gap-2">
         <div className="flex items-start gap-2 min-w-0">

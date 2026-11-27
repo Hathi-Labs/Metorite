@@ -218,6 +218,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # projects_ai_chat.md §31 VOX-1: the orgs whose chat shows the mic. Each
     # clip draws AI credits, so only the operator writes it.
     "CHAT_VOICE_ORGS",
+    # my_day_command_centre.md §9.2 (WS-MDC CC-2): the orgs where the Today
+    # chip reads the one Today predicate. It changes what each member sees, so
+    # only the owner writes it (gate enforcement-flip).
+    "TODAY_RULE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -243,10 +247,19 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
     "API_CONNECTIONS_ORGS",
+    # integrations_console.md §3.9 ACC-1: the orgs whose admins may set who
+    # can use each integration. It opens an access-control route for the org,
+    # so only the operator writes it.
+    "INTEGRATION_ACCESS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.
     "PROJECT_EDIT_CARD_ORGS",
+    # email_app_master_plan.md §6.6: the orgs whose Email app shows Mark done.
+    # It changes which threads the automation may move, so only the operator
+    # writes it. The `EMAIL_` prefix covers it too, and the exact name keeps
+    # the fence if that prefix ever narrows.
+    "EMAIL_MARK_DONE_ORGS",
     # WS-17 task 1966: the orgs whose Outlook push watches all mail. It changes
     # what Microsoft sends to the box, so only the operator writes it.
     "OUTLOOK_ALL_MAIL_WEBHOOK_ORGS",
@@ -311,6 +324,15 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # SW-68a: MY_WORK_PLAN_ORDER_ORGS turns on the plan order of `my_work`. It
     # changes which task an agent takes first, so only the operator writes it.
     "MY_WORK_PLAN_ORDER_ORGS",
+    # SW-45: AGENT_CLAIM_SCOPE_MODES warns on or refuses an agent claim outside
+    # the member's own apps. A tenant that set it would change the claims of
+    # every org, so only the operator writes it.
+    "AGENT_CLAIM_SCOPE_MODES",
+    # LBB-2: CLAIM_GATE_ORGS refuses an agent's claim of new work while its
+    # old pull requests wait, and CLAIM_GATE_SHADOW_ORGS only logs it. A tenant
+    # that set either would change the claims of every org, so only the
+    # operator writes them.
+    "CLAIM_GATE_ORGS", "CLAIM_GATE_SHADOW_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
@@ -358,6 +380,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.
     "MCP_IMAGE_UPLOAD_ORGS",
+    # WS-MCP SW-27c1: SEQUENCE_MARKS_ORGS lets an outside agent mark the
+    # numbers of its own run (`mark_number`). Only the owner opens it.
+    "SEQUENCE_MARKS_ORGS",
     # WS-55 MCP-G20: the write cap of each agent connection on the box. A
     # tenant that raised it would lift the cap of every org, so only the
     # owner writes it. The AGENT_ prefix covers both too, and the exact
@@ -381,6 +406,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-MCP SW-102: AGENT_MAP_ORGS opens the map read of the agent runs for
     # an org. The map reads the runs of the org, so only the owner writes it.
     "AGENT_MAP_ORGS",
+    # WS-MCP AMR-1: AGENT_LENSES_ORGS shows the new Agents view to the members
+    # of an org. The owner previews it first, so only the owner writes it.
+    "AGENT_LENSES_ORGS",
     # WS-42 PST-4: STATUS_SET_GUARD_ORGS turns on the shared-set refusal of the
     # chat status tools. It changes what a chat write may do, so only the owner
     # writes it.
@@ -440,7 +468,29 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # CIV-14f: the answer watcher of the home box (scripts/home_server). The
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
-    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD", "METORITE_WATCHER_HELPER", "METORITE_WATCHER_BOX_ENV",
+    # Task 4062: the host name of the box lanes, for the answered route.
+    "METORITE_BOX_HOST",
+    # Task 4086: the guarded flag flip (scripts/flag_flip.py) on the box, and
+    # its test seams. A tenant must never save these.
+    "FLAG_FLIP_APP_DIR", "FLAG_FLIP_AUDIT_LOG", "FLAG_FLIP_DEPLOY_LOCK", "FLAG_FLIP_LOCK_WAIT_S",
+    "FLAG_FLIP_PYTHON", "FLAG_FLIP_RELOAD_WAIT_S", "FLAG_FLIP_VERSION_URL",
+    # MCP-G17g: the sign-in alarm of a dev machine (scripts/home_server). It
+    # reads its channel, its files and the login to mention. A tenant must
+    # never save these.
+    "METORITE_ALARM_CHANNEL", "METORITE_ALARM_CREDS", "METORITE_ALARM_GH_REPO",
+    "METORITE_ALARM_GH_USER", "METORITE_ALARM_HOST", "METORITE_ALARM_LOG",
+    "METORITE_ALARM_STATE",
+    # CIV-ORCH (task 4058): the lane keeper's cursor of orch-events.log, for
+    # tests. A tenant must never save it.
+    "KEEPER_ORCH_CURSOR",
+    # CIV-LIVE (task 4060): the stop log that the weekly review reads, and a
+    # fixed time for its test (delivery_review.sh). A tenant must never save these.
+    "LANE_STOPS", "LANE_STOPS_NOW",
+    # SBX-13: the sandbox door client reads the run capability from this name
+    # (sandbox/metorite_door.py). The broker sets it in the tool container. A
+    # tenant must never save it.
+    "METORITE_API_TOKEN",
     # CIV-31: the auto-revert pass of the home box (scripts/home_server). It
     # reads its mode, its files and the merge bot log. A tenant must never save these.
     "AUTO_REVERT_LOG", "AUTO_REVERT_MODE", "AUTO_REVERT_REPORTS",
@@ -580,6 +630,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # for an org, and each call draws credits. A tenant that set it could
     # open it for every org on the box.
     "IMAGE_ANALYSIS_",
+    # WS-PZ MM-1: the act record. MEMBER_ACTIONS_ORGS opens it for an org, so a
+    # tenant that set it could record the acts of every org on the box.
+    "MEMBER_ACTIONS_",
     # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
     # tenant that set it could send a push to the members of every org.
     "DUE_PUSH_",
@@ -591,6 +644,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # STU-E12a: CORE_EVENTS_ORGS opens the core app events for an org, so a
     # tenant that set it could open them for every org on the box.
     "CORE_",
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS opens the focus-session log for an org,
+    # so a tenant that set it could open the log for every org on the box.
+    "FOCUS_LOG_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

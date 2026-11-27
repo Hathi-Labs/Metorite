@@ -83,6 +83,12 @@ _OAUTH = (
     "chat does not sign in to a provider."
 )
 
+#: WS-PKG PKG-14a: the dark door of the extension values of a package.
+_PACKAGE_FIELDS = (
+    "WS-PKG PKG-14a: the dark door of the extension values of a package "
+    "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
+    "tool with the record sheet, and moves this row."
+)
 CRM = App(
     id="crm",
     name="CRM",
@@ -93,71 +99,91 @@ CRM = App(
     routes=(
         # ── records ──
         Route("GET", "/crm/leads", "search_crm", "A",
-              also=("crm_list_records",), off_door=_DOOR_READ),
+              also=("crm_list_records",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/leads/{record_id}", "get_record", "A",
-              also=("crm_get_record",), off_door=_DOOR_READ),
+              also=("crm_get_record",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/leads/{record_id}/timeline", "get_timeline", "A", off_door=_DOOR_READ),
         Route("POST", "/crm/leads/{record_id}/activities", "log_activity", "B",
-              off_door=_DOOR_WRITE),
-        Route("PATCH", "/crm/leads/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
+        Route("PATCH", "/crm/leads/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("DELETE", "/crm/leads/{record_id}", "", "C", planned="CRM-M2c", off_door=_DOOR_WRITE),
-        Route("POST", "/crm/leads", "create_lead", "B", off_door=_DOOR_WRITE),
+        Route("POST", "/crm/leads", "create_lead", "B", off_door=_DOOR_WRITE, sandbox_write=True),
         Route("GET", "/crm/export/leads.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/deals", "search_crm", "A",
-              also=("crm_list_records",), off_door=_DOOR_READ),
+              also=("crm_list_records",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/deals/{record_id}", "get_record", "A",
-              also=("crm_get_record",), off_door=_DOOR_READ),
+              also=("crm_get_record",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/deals/{record_id}/timeline", "get_timeline", "A", off_door=_DOOR_READ),
         Route("POST", "/crm/deals/{record_id}/activities", "log_activity", "B",
-              off_door=_DOOR_WRITE),
-        Route("PATCH", "/crm/deals/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
+        Route("PATCH", "/crm/deals/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("DELETE", "/crm/deals/{record_id}", "", "C", planned="CRM-M2c", off_door=_DOOR_WRITE),
-        Route("POST", "/crm/deals", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE),
+        Route("POST", "/crm/deals", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("GET", "/crm/export/deals.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/contacts", "search_crm", "A",
-              also=("crm_list_records",), off_door=_DOOR_READ),
+              also=("crm_list_records",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/contacts/{record_id}", "get_record", "A",
-              also=("crm_get_record",), off_door=_DOOR_READ),
+              also=("crm_get_record",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/contacts/{record_id}/timeline", "get_timeline", "A",
               off_door=_DOOR_READ),
         Route("POST", "/crm/contacts/{record_id}/activities", "log_activity", "B",
-              off_door=_DOOR_WRITE),
-        Route("PATCH", "/crm/contacts/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
+        Route("PATCH", "/crm/contacts/{record_id}", "crm_update_record", "B", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("DELETE", "/crm/contacts/{record_id}", "", "C",
               planned="CRM-M2c", off_door=_DOOR_WRITE),
-        Route("POST", "/crm/contacts", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE),
+        Route("POST", "/crm/contacts", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("GET", "/crm/export/contacts.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/organizations", "search_crm", "A",
-              also=("crm_list_records",), off_door=_DOOR_READ),
+              also=("crm_list_records",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/organizations/{record_id}", "get_record", "A",
-              also=("crm_get_record",), off_door=_DOOR_READ),
+              also=("crm_get_record",), off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/organizations/{record_id}/timeline", "get_timeline", "A",
               off_door=_DOOR_READ),
         Route("POST", "/crm/organizations/{record_id}/activities", "log_activity", "B",
-              off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
         Route("PATCH", "/crm/organizations/{record_id}", "crm_update_record", "B",
-              off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
         Route("DELETE", "/crm/organizations/{record_id}", "", "C",
               planned="CRM-M2c", off_door=_DOOR_WRITE),
-        Route("POST", "/crm/organizations", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE),
+        Route("POST", "/crm/organizations", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         Route("GET", "/crm/export/organizations.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/export/all.zip", "", "X", reason=_DOWNLOAD),
+        # ── package_fields.py (WS-PKG PKG-14a, dark behind PACKAGE_HOST_ORGS) ──
+        Route("GET", "/crm/leads/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/leads/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/deals/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/deals/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/contacts/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/contacts/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/organizations/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/organizations/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
         # ── owners ──
-        Route("GET", "/crm/owners", "crm_list_owners", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/owners", "crm_list_owners", "A", off_door=_DOOR_READ, sandbox=True),
         # ── activities ──
         Route("GET", "/crm/activities/{activity_id}", "", "A",
-              planned="CRM-M2l", off_door=_DOOR_READ),
+              planned="CRM-M2l", off_door=_DOOR_READ, sandbox=True),
         Route("PATCH", "/crm/activities/{activity_id}", "crm_update_task", "B",
-              off_door=_DOOR_WRITE),
+              off_door=_DOOR_WRITE, sandbox_write=True),
         Route("DELETE", "/crm/activities/{activity_id}", "", "C",
               planned="CRM-M2c", off_door=_DOOR_WRITE),
         # ── change-history ──
-        Route("GET", "/crm/change-history", "crm_change_history", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/change-history", "crm_change_history", "A", off_door=_DOOR_READ,
+              sandbox=True),
         Route("POST", "/crm/change-history/{change_id}/undo", "", "B",
               planned="CRM-M2c", off_door=_DOOR_WRITE),
         # ── statuses ──
         Route("GET", "/crm/statuses/{kind}", "crm_aggregate", "A",
-              also=("crm_list_records",), off_door=_DOOR_READ),
+              also=("crm_list_records",), off_door=_DOOR_READ, sandbox=True),
         # CRM-M2e (task 3951): add, change and reset the order on one card.
         # The PUT of the order and the DELETE stay planned: the agent sends no
         # PUT and no DELETE (apps/AGENTS.md, `_ALLOWED_METHODS`).
@@ -170,15 +196,18 @@ CRM = App(
         Route("DELETE", "/crm/statuses/{kind}/{status_id}", "", "C",
               planned="CRM-M2e", off_door=_SETUP),
         # ── lost-reasons ──
-        Route("GET", "/crm/lost-reasons", "update_deal_status", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/lost-reasons", "update_deal_status", "A", off_door=_DOOR_READ,
+              sandbox=True),
         Route("POST", "/crm/lost-reasons", "crm_edit_lost_reason", "B", off_door=_SETUP),
         Route("PATCH", "/crm/lost-reasons/{reason_id}", "crm_edit_lost_reason", "B",
               off_door=_SETUP),
         Route("DELETE", "/crm/lost-reasons/{reason_id}", "", "C",
               planned="CRM-M2e", off_door=_SETUP),
         # ── fields ──
-        Route("GET", "/crm/fields-search", "crm_list_fields", "A", off_door=_DOOR_READ),
-        Route("GET", "/crm/fields/{entity}", "crm_list_fields", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/fields-search", "crm_list_fields", "A", off_door=_DOOR_READ,
+              sandbox=True),
+        Route("GET", "/crm/fields/{entity}", "crm_list_fields", "A", off_door=_DOOR_READ,
+              sandbox=True),
         Route("POST", "/crm/fields/{entity}", "", "B", planned="CRM-M2f", off_door=_SETUP),
         Route("PATCH", "/crm/fields/{entity}/{key}", "", "B", planned="CRM-M2f", off_door=_SETUP),
         Route("DELETE", "/crm/fields/{entity}/{key}", "", "C", planned="CRM-M2f", off_door=_SETUP),
@@ -198,36 +227,39 @@ CRM = App(
         Route("PATCH", "/crm/field-rules/{rule_id}", "", "B",
               planned="CRM-M2f", off_door=_DECISION),
         # ── catalogue ──
-        Route("GET", "/crm/catalogue", "crm_list_modules", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/catalogue", "crm_list_modules", "A", off_door=_DOOR_READ, sandbox=True),
         Route("PUT", "/crm/catalogue/{module}", "", "B", planned="CRM-M2f", off_door=_SETUP),
         # ── conversion-mapping ──
         Route("GET", "/crm/conversion-mapping", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
         Route("PUT", "/crm/conversion-mapping", "", "B", planned="CRM-M2i", off_door=_SETUP),
         # ── reports ──
-        Route("GET", "/crm/reports/pipeline", "crm_report", "A", off_door=_DOOR_READ),
-        Route("GET", "/crm/reports/funnel", "crm_report", "A", off_door=_DOOR_READ),
-        Route("GET", "/crm/reports/win-loss", "crm_report", "A", off_door=_DOOR_READ),
-        Route("GET", "/crm/reports/owners", "crm_report", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/reports/pipeline", "crm_report", "A", off_door=_DOOR_READ, sandbox=True),
+        Route("GET", "/crm/reports/funnel", "crm_report", "A", off_door=_DOOR_READ, sandbox=True),
+        Route("GET", "/crm/reports/win-loss", "crm_report", "A", off_door=_DOOR_READ, sandbox=True),
+        Route("GET", "/crm/reports/owners", "crm_report", "A", off_door=_DOOR_READ, sandbox=True),
         # ── pipeline ──
-        Route("GET", "/crm/pipeline", "get_pipeline", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/pipeline", "get_pipeline", "A", off_door=_DOOR_READ, sandbox=True),
         # ── records ──
-        Route("POST", "/crm/leads/{lead_id}/convert", "convert_lead", "C", off_door=_DOOR_WRITE),
+        Route("POST", "/crm/leads/{lead_id}/convert", "convert_lead", "C", off_door=_DOOR_WRITE,
+              sandbox_write=True),
         # ── modules ──
-        Route("GET", "/crm/modules", "crm_list_modules", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/modules", "crm_list_modules", "A", off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/modules/{module}/records", "crm_list_module_records", "A",
-              off_door=_DOOR_READ),
+              off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/modules/{module}/records/{record_id}", "crm_get_module_record", "A",
-              off_door=_DOOR_READ),
+              off_door=_DOOR_READ, sandbox=True),
         Route("GET", "/crm/modules/{module}/records/{record_id}/timeline", "", "A",
-              planned="CRM-M2l", off_door=_DOOR_READ),
+              planned="CRM-M2l", off_door=_DOOR_READ, sandbox=True),
         Route("PATCH", "/crm/modules/{module}/records/{record_id}", "", "B",
-              planned="CRM-M2d", off_door=_DOOR_WRITE),
+              planned="CRM-M2d", off_door=_DOOR_WRITE, sandbox_write=True),
         # ── aggregate ──
         Route("GET", "/crm/aggregate", "crm_aggregate", "A", off_door=_DOOR_READ),
-        Route("GET", "/crm/aggregate/stage-dwell", "crm_stage_dwell", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/aggregate/stage-dwell", "crm_stage_dwell", "A", off_door=_DOOR_READ,
+              sandbox=True),
         # ── analysis ──
-        Route("POST", "/crm/analysis/rerun", "", "B", planned="CRM-M2k", off_door=_AI_RUN),
-        Route("GET", "/crm/analysis/status", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
+        # P-3 (task 3954): the chat reads the analysis and starts it on one card.
+        Route("POST", "/crm/analysis/rerun", "crm_rerun_analysis", "B", off_door=_AI_RUN),
+        Route("GET", "/crm/analysis/status", "crm_analysis_status", "A", off_door=_DOOR_READ),
         # ── connection ──
         Route("GET", "/crm/connection", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("POST", "/crm/connection/zoho/start", "", "X", reason=_OAUTH),
@@ -243,9 +275,9 @@ CRM = App(
         Route("POST", "/crm/cutover", "", "C", planned="CRM-M2k", off_door=_CONNECTION),
         # ── deals ──
         Route("GET", "/crm/deals/{deal_id}/contacts", "crm_deal_contacts", "A",
-              off_door=_DOOR_READ),
+              off_door=_DOOR_READ, sandbox=True),
         Route("POST", "/crm/deals/{deal_id}/contacts", "", "B",
-              planned="CRM-M2d", off_door=_DOOR_WRITE),
+              planned="CRM-M2d", off_door=_DOOR_WRITE, sandbox_write=True),
         Route("DELETE", "/crm/deals/{deal_id}/contacts/{contact_id}", "", "B",
               planned="CRM-M2d", off_door=_DOOR_WRITE),
         # ── digests ──
@@ -261,17 +293,24 @@ CRM = App(
               planned="CRM-M2i", off_door=_DECISION),
         Route("POST", "/crm/mapping/plans/{version}/restore", "", "B",
               planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/preview", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
+        # P-3 (task 3954): the chat previews the records of one suggestion.
+        Route("POST", "/crm/mapping/preview", "crm_preview_suggestion", "A",
+              off_door=_DOOR_READ),
         # ── notes ──
         Route("GET", "/crm/notes/search", "crm_search_notes", "A", off_door=_DOOR_READ),
         # ── pipelines ──
-        Route("GET", "/crm/pipelines", "crm_list_pipelines", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/pipelines", "crm_list_pipelines", "A", off_door=_DOOR_READ,
+              sandbox=True),
         Route("GET", "/crm/pipelines/preview", "crm_create_pipeline", "A", off_door=_DOOR_READ),
         Route("POST", "/crm/pipelines", "crm_create_pipeline", "B", off_door=_SETUP),
         Route("PATCH", "/crm/pipelines/{pipeline_id}", "", "B", planned="CRM-M2j", off_door=_SETUP),
         Route("POST", "/crm/pipelines/{pipeline_id}/stages", "", "B",
               planned="CRM-M2j", off_door=_SETUP),
         Route("DELETE", "/crm/pipelines/{pipeline_id}/stages/{status_id}", "", "C",
+              planned="CRM-M2j", off_door=_SETUP),
+        # CRM-M3b: the win chance and the warning days of a stage in one
+        # pipeline. It ships dark with no UI, and CRM-M2j gives the chat its tool.
+        Route("PATCH", "/crm/pipelines/{pipeline_id}/stages/{status_id}", "", "B",
               planned="CRM-M2j", off_door=_SETUP),
         # ── source-profile ──
         Route("GET", "/crm/source-profile", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
@@ -304,7 +343,7 @@ CRM = App(
         # ── settings ──
         Route("GET", "/crm/settings", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         # ── mode ──
-        Route("GET", "/crm/mode", "crm_list_records", "A", off_door=_DOOR_READ),
+        Route("GET", "/crm/mode", "crm_list_records", "A", off_door=_DOOR_READ, sandbox=True),
         # ── settings ──
         Route("PUT", "/crm/settings/labels", "", "B", planned="CRM-M2g", off_door=_SETUP),
         Route("PATCH", "/crm/settings", "", "B", planned="CRM-M2g", off_door=_SETUP),
@@ -314,13 +353,16 @@ CRM = App(
         # ── import ──
         Route("POST", "/crm/import/zoho/stages", "", "B", planned="CRM-M2k", off_door=_CONNECTION),
         # ── mapping ──
-        Route("GET", "/crm/mapping/suggestions", "", "A", planned="CRM-M2i", off_door=_DOOR_READ),
-        Route("POST", "/crm/mapping/suggestions/{slot}/approve", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/suggestions/{slot}/undo", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
-        Route("POST", "/crm/mapping/suggestions/{slot}/dismiss", "", "B",
-              planned="CRM-M2i", off_door=_DECISION),
+        # P-3 (task 3954): the chat reads the suggestions, and uses, undoes and
+        # dismisses one on one card.
+        Route("GET", "/crm/mapping/suggestions", "crm_mapping_suggestions", "A",
+              also=("crm_preview_suggestion", "crm_decide_suggestion"), off_door=_DOOR_READ),
+        Route("POST", "/crm/mapping/suggestions/{slot}/approve", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
+        Route("POST", "/crm/mapping/suggestions/{slot}/undo", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
+        Route("POST", "/crm/mapping/suggestions/{slot}/dismiss", "crm_decide_suggestion", "B",
+              off_door=_DECISION),
         # ── sync ──
         Route("GET", "/crm/sync/status", "", "A", planned="CRM-M2l", off_door=_DOOR_READ),
         Route("GET", "/crm/sync/short-reads", "crm_list_modules", "A", off_door=_DOOR_READ),
@@ -335,7 +377,7 @@ CRM = App(
         Route("POST", "/crm/verified-queries/match", "org_facts", "A", off_door=_DOOR_READ),
         Route("GET", "/crm/verified-queries/{key}", "org_facts", "A", off_door=_DOOR_READ),
         # ── views ──
-        Route("GET", "/crm/views", "", "A", planned="CRM-M2g", off_door=_DOOR_READ),
+        Route("GET", "/crm/views", "", "A", planned="CRM-M2g", off_door=_DOOR_READ, sandbox=True),
         Route("POST", "/crm/views", "", "B", planned="CRM-M2g", off_door=_VIEW),
         Route("PATCH", "/crm/views/{view_id}", "", "B", planned="CRM-M2g", off_door=_VIEW),
         Route("DELETE", "/crm/views/{view_id}", "", "C", planned="CRM-M2g", off_door=_VIEW),

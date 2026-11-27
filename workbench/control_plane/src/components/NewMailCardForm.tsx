@@ -33,6 +33,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import EarlierDraftQuestion, { declineStep } from "@/components/EarlierDraftQuestion";
 import { AddressRow } from "@/components/ReplyCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -77,6 +78,11 @@ export interface NewMailCardFormProps {
   detail?: string;
   onAnswer: (answer: ReplyApproval) => void;
   onDiscard: () => void;
+  /**
+   * Task 3978: Discard, then "Delete it", on a form with an `earlier` draft.
+   * With none, Discard never asks, and the form is as before.
+   */
+  onDiscardEarlier?: () => void;
   /**
    * Put words in the chat box, and focus it. It never sends. With none (a
    * surface with no chat box), the nudge line shows with no chips.
@@ -210,6 +216,7 @@ export default function NewMailCardForm({
   detail,
   onAnswer,
   onDiscard,
+  onDiscardEarlier,
   onSuggest,
   armed,
   disabled = false,
@@ -281,6 +288,16 @@ export default function NewMailCardForm({
     if (a) onAnswer(a);
   };
   const files = form.files ?? [];
+  // Task 3978: Discard asks first when the form names an earlier draft of this
+  // chat, and the card can carry the answer. Else it is the Discard of before.
+  const [asking, setAsking] = useState(false);
+  // After Back, the Discard button takes the focus again.
+  const [cameBack, setCameBack] = useState(false);
+  const discard = () => {
+    const step = declineStep(armed, form.earlier, onDiscardEarlier);
+    if (step === "ask") setAsking(true);
+    else if (step === "decline") onDiscard();
+  };
   return (
     <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
       <div className="min-w-0">
@@ -411,6 +428,22 @@ export default function NewMailCardForm({
         carriesEdits={carriesEdits}
       />
 
+      {asking && onDiscardEarlier ? (
+        // Task 3978 (§18.13.1): Discard asks about the draft of this email
+        // that the chat saved earlier, on this same card. Keep is the plain
+        // Discard of before. A card that closes with no answer keeps it too.
+        <EarlierDraftQuestion
+          line={form.earlier ?? ""}
+          effect={form.earlierEffect}
+          onKeep={onDiscard}
+          onDelete={onDiscardEarlier}
+          onBack={() => {
+            setAsking(false);
+            setCameBack(true);
+          }}
+          disabled={disabled}
+        />
+      ) : (
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -436,15 +469,19 @@ export default function NewMailCardForm({
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => armed && onDiscard()}
+          onClick={discard}
           disabled={disabled}
           aria-disabled={!armed || undefined}
+          autoFocus={cameBack}
           data-reply-discard=""
         >
           Discard
         </Button>
       </div>
-      <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>
+      )}
+      {/* Task 3978: the question holds its own hint, so the line of the
+          buttons that it hides ("Discard drops it.") goes too. */}
+      {!asking && <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>}
     </div>
   );
 }

@@ -86,7 +86,7 @@ from gateway.routes.crm.core import (
     StatusModel,
     _tenant_session,
     now,
-    read_statuses,
+    read_deal_stages,
     router,
     status_wire,
     wire,
@@ -283,7 +283,9 @@ class _Totals:
 async def _deal_stages(db: Any) -> list[Any]:
     """The deal lanes in board order — the vocabulary every block joins to."""
     # CRM-C3: the effective values, so `stage_probability` binds the overlay.
-    return await read_statuses(db, "crm_deal_statuses")
+    # CRM-M3b: the reports cover every pipeline, as the board of all pipelines
+    # does, so each lane binds the win chance of the default deal pipeline.
+    return await read_deal_stages(db)
 
 
 async def _currencies(db: Any) -> list[str]:
