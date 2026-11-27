@@ -94,3 +94,47 @@ async def test_the_preview_shows_the_real_address(
     assert out.from_name == REAL
     assert out.draft.title == f"Email from {REAL}: Wire the funds"
     assert "ceo@company.test" not in out.model_dump_json()
+
+
+async def test_the_card_shows_the_real_address_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chain of task 3973: the preview feeds the approval card of the
+    chat. For a planted mail, the card names the real address once and never
+    the planted one. Mutation: show the stored name in the preview -> red."""
+    pytest.importorskip("agent_framework", reason="MAF not installed")
+    from skill_my_tasks import core
+
+    row = types.SimpleNamespace(
+        id="e1", subject="Pay", snippet="today", thread_id="t1",
+        from_address=json.dumps({"name": "ceo@company.test", "email": REAL}))
+
+    @contextlib.asynccontextmanager
+    async def session() -> Any:
+        yield object()
+
+    async def load(*_a: Any) -> Any:
+        return row
+
+    async def none(*_a: Any) -> Any:
+        return None
+
+    async def nothing(*_a: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(ce, "_tenant_session", session)
+    monkeypatch.setattr(ce, "_load_email", load)
+    monkeypatch.setattr(ce, "_find_existing_capture", none)
+    monkeypatch.setattr(ce, "_find_similar_tasks", nothing)
+    preview = await ce.preview_capture_from_email(
+        ce.CaptureFromEmailRequest(account_id="a1", email_id="e1"),
+        user=types.SimpleNamespace(email="member@company.test"))
+
+    async def request(method: str, path: str, **_k: Any) -> Any:
+        assert (method, path) == ("POST", core._CAPTURE_EMAIL_PREVIEW)
+        return json.loads(preview.model_dump_json())
+
+    monkeypatch.setattr(core, "_request", request)
+    got = await core._source_row({"account_id": "a1", "email_id": "e1"})
+    assert isinstance(got, tuple)
+    assert got[1] == f"source mail: from «{REAL}», subject: «Pay»"

@@ -1200,6 +1200,17 @@ def _parse_imap_fetch_full(msg_data: list) -> list[EmailMessage]:
     return messages
 
 
+def _decode_body(payload: bytes, charset: str) -> str:
+    """The text of one body part. A charset that Python does not know, such as
+    ``unknown-8bit`` or ``x-mac-roman``, reads as UTF-8 with each bad byte
+    replaced, as the inbound receiver does. The mail is stored, never skipped
+    (task 4016)."""
+    try:
+        return payload.decode(charset, errors="replace")
+    except (LookupError, TypeError, ValueError):
+        return payload.decode("utf-8", errors="replace")
+
+
 def _parse_one_imap_message(
     raw: str, uid: str, flags: list[str], internaldate: str
 ) -> EmailMessage | None:
@@ -1265,21 +1276,21 @@ def _parse_imap_raw_message(
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    body_text = payload.decode(charset, errors="replace")
+                    body_text = _decode_body(payload, charset)
             elif content_type == "text/html" and "attachment" not in disposition:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    body_html = payload.decode(charset, errors="replace")
+                    body_html = _decode_body(payload, charset)
     else:
         content_type = parsed.get_content_type()
         payload = parsed.get_payload(decode=True)
         if payload:
             charset = parsed.get_content_charset() or "utf-8"
             if content_type == "text/html":
-                body_html = payload.decode(charset, errors="replace")
+                body_html = _decode_body(payload, charset)
             else:
-                body_text = payload.decode(charset, errors="replace")
+                body_text = _decode_body(payload, charset)
 
     # Flags
     is_seen = "\\Seen" in flags
