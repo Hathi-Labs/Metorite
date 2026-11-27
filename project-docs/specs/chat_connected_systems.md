@@ -13,12 +13,17 @@ The owner said yes to D-CSY-2 on 2026-11-20 (task 3403). D-CSY-4 is open.
 |---|---|---|---|---|
 | CSY-1 | 3400 | 2026-11-19 | `bf81bd008` | `CONNECTED_SYSTEMS_ORGS` |
 | CSY-2 | 3401 | 2026-11-21 | `7ab4a2d1d` | none |
+| CSY-3 | 3402 | 2026-11-27 | PR 2507 | none: eval only |
 | CSY-4 | 3403 | 2026-11-21 | this change | `MCP_MAIL_PRECEDENCE_ORGS`, owner-only |
 | CSY-5 | 3405 | 2026-11-19 | `65e304b36` | `CONNECTED_SYSTEMS_ORGS` |
 | CSY-6 | 3406 | 2026-11-20 | `a6b153ebf` | `CONNECTED_SYSTEMS_ORGS` |
 | CSY-7, description half | 3407 | 2026-11-16 | `496518c6d` | none |
 | CSY-8 | 3408 | 2026-11-21 | `cdedfb514` | none |
 | CSY-10 | 3410 | 2026-11-16 | `f19ed4135` | none |
+
+**CSY-3 (task 3402) is BUILT, 2026-11-27.** It is the scripted set `mcp` of
+`evals/one_assistant_measure`. It reads the block of §3.2. It has no live arm,
+so demo 3396 still proves the model's choice.
 
 **CSY-10 (task 3410) is BUILT, 2026-11-16.** CSY-10 covers the main chat row
 only. Sub-agent rows, saved history and the Tier 2 shim keep the old words.
@@ -593,7 +598,7 @@ model, so they ship with no flag.
 | **CSY-R0** | 3399 | 0 | The owner asks Shaurrya's admin to confirm that the key can only read, and to tick the switch | The registry row reads `read_only_key` true, and a `call_operation` call logs no `mcp.confirm` line | none: an act, not code | OWNER-GATE | none |
 | **CSY-1** | 3400 | 1 | BUILT dark, 2026-11-19. `server_brief` (§3.1) and the block (§3.2), behind `CONNECTED_SYSTEMS_ORGS`. `McpServer` gains the description | With a server attached and the flag on, the context ends with the block. With no server, or the flag off, the context is byte-identical. A server that the grant refuses never shows | `test_server_brief.py`, new. `test_connected_systems_block.py`, new. `test_maf_mcp_injection.py`, `test_no_tenant_name_in_prompts.py`, `test_studio_split_matrix.py`, and `test_tool_search_off.py` once PR 2369 merges | STANDARD, Opus review · AGENT-SAFE dark | PR 2369 merged |
 | **CSY-2** | 3401 | 1 | BUILT, 2026-11-21. The `mcp.call` line (§3.3) on every path of `McpPermissionGate` | Each call logs one line with an outcome from the closed list. No line holds an argument value, a result or a header | `test_mcp_call_log.py`, new. `test_maf_mcp_confirm.py` | STANDARD · AGENT-SAFE | PR 2369 merged |
-| **CSY-3** | 3402 | 1 | A scripted routing eval on the OA-8e harness, with a fake MCP server: a question that only the server answers, a Metorite question, a miss in Metorite, and a mail question | `--scripted` passes the four cases. A scripted run plays known-good plans, so it proves the path and the checks, never the model's choice. The model's choice is proved by demo 3396, or by a small live arm with the owner's OK | `test_one_assistant_measure_mcp.py`, new | LOW · AGENT-SAFE. A live run is OWNER-GATE (spend) | CSY-1 |
+| **CSY-3** | 3402 | 1 | BUILT, 2026-11-27. A scripted routing eval on the OA-8e harness, with a fake MCP server: a question that only the server answers, a Metorite question, a miss in Metorite, and a mail question | `--scripted` passes the four cases. A scripted run plays known-good plans, so it proves the path and the checks, never the model's choice. The model's choice is proved by demo 3396, or by a small live arm with the owner's OK | `test_one_assistant_measure_mcp.py`, new | LOW · AGENT-SAFE. A live run is OWNER-GATE (spend) | CSY-1 |
 | **CSY-4** | 3403 | 2 | BUILT dark, 2026-11-21. The precedence rule of §3.4, as one more reason inside `choose`, behind `MCP_MAIL_PRECEDENCE_ORGS` | Sticky email and server words: the pack is evicted and the server attaches. Named email and server words: the pack stays and the server stays out. No run holds a mail pack and an MCP tool | `test_pack_choose_server_words.py`, new, in the safety list of `tests/fences.json`. It holds the TS-1b matrix of `test_studio_split_matrix.py` and two rows of its own. It also covers the grammar, the fail-closed mark, the fresh guard, TOF-1b, the shared filter, the step-3a pin and the flag places. Kept green: `test_pack_guards.py`, `test_load_skill_tools.py`, `test_loader_replaces_handoff.py`, `test_maf_mcp_injection.py`, `test_maf_mcp_confirm.py`, `test_connected_systems_block.py`, `test_studio_split_matrix.py`, `test_tool_search_off.py`, `test_flag_doc_sorted.py`, and `test_maf_mcp_org_scope_r8.py` (R8) | HIGH: its own spec audit, an independent verifier and an Opus review · the flip is OWNER-GATE and waits for task 3604 | CSY-1. CSY-7 for admin words, held by D-CSY-4 |
 | **CSY-5** | 3405 | 2 | BUILT dark, 2026-11-19. The reasons line of §3.6 | Each reason of the closed list gives its line. A server that the grant refuses gives no line. The `mail` line names no mail | `test_connected_systems_block.py`, extended | STANDARD · AGENT-SAFE dark | CSY-1 |
 | **CSY-6** | 3406 | 2 | BUILT dark, 2026-11-19. The server's instructions (§3.5), kept by `RunScopedMCPTool` and carried by the brief | A fake server's instructions reach the block, capped and framed. A control character is escaped. The log holds the length only | `test_mcp_server_instructions.py`, new. `test_server_brief.py` | HIGH: third-party text · AGENT-SAFE dark | CSY-1. Read CA-1 (task 1029) first |
@@ -630,6 +635,8 @@ choose it.
 | **D-CSY-5** | May a server with a read-only key stay beside the email pack? | No. Keep OA-7b | A read-only key stops a write on the server. It does not stop mail text from steering the model to send mailbox data in a search argument. D-CSY-2 covers the common case |
 | **D-CSY-6** | Who asks Shaurrya's admin to tick the read-only key? | The owner. Shaurrya must confirm that the key can only read | The tick is the customer's statement about their key. MCP-C2 built the switch for this case |
 | **Owner directive, 2026-11-16 (task 3603)** | Does an external app's tool ask a card? | No. An external app's tool asks no card in a member's chat in Metorite. There D-CSY-6 (the read-only key tick) is no longer needed. On WhatsApp the tick is still needed: WhatsApp refuses Shaurrya's `call_operation`, which says that it is destructive, unless the tick is on | A member of Shaurrya approved 12 cards in 20 minutes for reads. `agent_architecture.md` §12.2 WS-8c item 33 (MCP-NC1) holds the rule: a member's run in Metorite asks no card, "always confirm" and the mark of §1.2 still ask, and a run with no member and a WhatsApp run still refuse a write |
+
+**Answered: D-CSY-1 = yes (2026-11-21, owner in chat, relayed by metorite-78, comment on task 3790).** The chat reads the admin's description of each attached server in each turn. It sits in the per-turn block of §3.2, capped at 400 characters and framed as data. D-CSY-2 to D-CSY-6 stay as they were. API-4 (task 3790) and SEM-14 (`semantic_model.md`) no longer wait for D-CSY-1.
 
 ## 10. Agreements with other sessions (2026-11-15)
 

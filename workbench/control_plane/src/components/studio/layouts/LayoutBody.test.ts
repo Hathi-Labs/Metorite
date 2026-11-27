@@ -31,6 +31,15 @@ describe("LayoutBody", () => {
     expect(html).toMatch(/data-table-strip[^>]*overflow-x-auto[^>]*><div class="min-w-\[40rem\]">/);
     expect(html.indexOf("data-table-strip")).toBeLessThan(html.indexOf('data-view="all"'));
   });
+  it("draws the header control above the table of a table workspace only", () => {
+    const withHeader = (layout: "table_workspace" | "board") => renderToStaticMarkup(createElement(LayoutBody, {
+      layout, regions: { main: ["t"] }, renderView: (id) => createElement("div", { "data-view": id }, id),
+      titleOf: (id) => id, tableHeader: createElement("div", { "data-columns-menu": "" }, "Columns"),
+    }));
+    const t = withHeader("table_workspace");
+    expect(t.indexOf("data-columns-menu")).toBeLessThan(t.indexOf("data-table-strip"));
+    expect(withHeader("board")).not.toContain("data-columns-menu");
+  });
   it("says so when the main region has no view", () => {
     expect(draw("table_workspace", { main: [] })).toContain("no table to show");
   });
@@ -50,6 +59,11 @@ describe("LayoutBody", () => {
 
 describe("the frame", () => {
   const frame = readFileSync(join(__dirname, "../../../app/studio/package-preview/AppFrame.tsx"), "utf-8");
+  it("hides the columns of the URL in the main table, and draws the Columns menu", () => {
+    expect(frame).toContain("hideNode(model.node, parseHidden(state.hide))");
+    expect(frame).toContain("<ColumnsMenu");
+    expect(frame).toContain("toggleHidden(s, k, tableColumns)");
+  });
   it("wraps the main table of a table workspace in LayoutList, which draws StudioBlockState", () => {
     expect(frame).toContain('built.page.layout === "table_workspace"');
     expect(frame).toContain("<LayoutList");

@@ -24,6 +24,10 @@ SCRIPT = ROOT / "scripts" / "home_server" / "merge_bot.sh"
 #: CIV-31d (H1): the one reader of the auto-revert mode.
 MODE_READER = ROOT / "scripts" / "home_server" / "auto_revert_mode.sh"
 PREMERGE = ROOT / "scripts" / "premerge.sh"
+#: Task 3415: the one copy of the release freeze. The bot runs it from its own checkout.
+FREEZE = ROOT / "scripts" / "release_freeze.sh"
+OUTSIDE_FREEZE = 1794823200  # 2026-11-16 10:00 UTC
+IN_FREEZE = 1794861000  # 2026-11-16 20:30 UTC, inside the 20:20 window of the 21:30 slot
 BASH = shutil.which("bash")
 pytestmark = pytest.mark.skipif(BASH is None, reason="needs bash")
 
@@ -346,6 +350,8 @@ class Env:
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(SCRIPT, copy)
             shutil.copy(MODE_READER, copy.parent / MODE_READER.name)
+            # Task 3415: the bot runs the release freeze of its own checkout.
+            shutil.copy(FREEZE, src / "scripts" / FREEZE.name)
         return src / "scripts" / "home_server" / "merge_bot.sh"
 
     def run(self, home=None, script=None, **extra):
@@ -362,6 +368,9 @@ class Env:
             # the comment turns it off, so a pass of many PRs stays fast. None
             # removes the variable, and the script default (on) applies.
             "MERGE_BOT_BACK_COMMENT": "0",
+            # Task 3415: the bot runs the REAL scripts/release_freeze.sh. 10:00 UTC is
+            # outside every window, so a case does not depend on the hour that it runs.
+            "PREMERGE_NOW": str(OUTSIDE_FREEZE),
             **extra,
         }
         env = {k: v for k, v in env.items() if v is not None}
@@ -479,6 +488,43 @@ def test_a_premerge_failure_goes_back_with_its_output(env):
     env.run()
     assert env.log.startswith("BACK 5 premerge: ") and "boom" in env.log
     assert "pr merge" not in env.calls and env.log.count("\n") == 1
+
+
+def test_a_release_freeze_is_a_wait_and_never_a_back(env):
+    """premerge.sh exits 75 inside a freeze window (task 3415). A wait, not a BACK to the lane."""
+    env.pr(5)
+    env.premerge("75")
+    env.run()
+    assert "BACK" not in env.log, env.log
+    assert "pr merge" not in env.calls
+
+
+def test_the_bot_freezes_a_pr_whose_premerge_has_no_freeze_step(env):
+    """Review of PR 2488 (P1): the gate runs the premerge.sh of the PR HEAD. A PR cut
+    before task 3415 has no step 00, so the bot runs the freeze of its own checkout."""
+    env.pr(5, path="scripts/premerge.sh", text="#!/usr/bin/env bash\nexit 0\n")
+    r = env.run(PREMERGE_CMD="bash scripts/premerge.sh", PREMERGE_NOW=str(IN_FREEZE),
+                PREMERGE_RUNS_CMD="true")
+    assert env.log == "", env.log  # no BACK, no DONE: the next pass tries again
+    assert "pr merge" not in env.calls
+    assert "release freeze" in r.stderr
+    # The next pass, outside the window, merges it.
+    env.run(PREMERGE_CMD="bash scripts/premerge.sh")
+    assert env.log == "DONE 5 abc123\n", env.log
+
+
+def test_the_bot_checks_the_freeze_again_right_before_the_merge(env):
+    """The gate can pass on one side of a window and the merge come on the other.
+    The first gh answer lists the nightly run, and the second lists none."""
+    env.pr(5)
+    count = (env.fix / "runs.count").as_posix()
+    runs = (f'n=$(cat "{count}" 2>/dev/null || echo 0); echo $((n + 1)) > "{count}"; '
+            f'if [ "$n" = 0 ]; then printf "2026-11-16T21:20:00Z\\tdeploy (nightly)\\n"; fi')
+    r = env.run(PREMERGE_NOW=str(IN_FREEZE + 3300), PREMERGE_RUNS_CMD=runs)  # 21:25 UTC
+    assert env.premerge_runs == 1
+    assert env.log == "", env.log
+    assert "pr merge" not in env.calls
+    assert "release freeze" in r.stderr
 
 
 def test_main_moving_during_premerge_runs_premerge_again(env):
@@ -618,7 +664,9 @@ def test_p1_1_the_real_premerge_gates_a_branch_one_commit_behind(env):
     env.pr(5)
     env.commit("other.txt", "y\n", "main moved")
     git(env.seed, "push", "-q", "origin", "main")
-    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}")
+    # The REAL premerge.sh reads the clock for the release freeze (task 3415). 10:00 UTC is
+    # outside every window, so this case does not depend on the hour that it runs.
+    env.run(PREMERGE_CMD=f"bash {PREMERGE.as_posix()}", PREMERGE_NOW=str(OUTSIDE_FREEZE))
     assert "detached" not in env.log
     assert env.log == "DONE 5 abc123\n"
 
@@ -716,10 +764,13 @@ def test_p2b_the_bot_refuses_to_clean_its_own_checkout(env):
     copy = work / "scripts" / "home_server" / "merge_bot.sh"
     copy.parent.mkdir(parents=True)
     shutil.copy(SCRIPT, copy)
+    # Task 3415: the bot runs the release freeze of its own checkout before the gate.
+    shutil.copy(FREEZE, work / "scripts" / FREEZE.name)
     keep = work / "keep.txt"
     keep.write_text("mine\n", encoding="utf-8")
     env_ = {
         **os.environ,
+        "PREMERGE_NOW": str(OUTSIDE_FREEZE),
         "PATH": f"{env.tmp / 'bin'}{os.pathsep}{os.environ['PATH']}",
         "FIX": env.fix.as_posix(),
         "MERGE_QUEUE": (env.tmp / "queue.tsv").as_posix(),

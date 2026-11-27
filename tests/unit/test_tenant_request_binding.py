@@ -241,7 +241,16 @@ _BRANCH_ZERO = (
     # CIV-14b: the one body reader. It reads the copy that the gateway keeps
     # of a signed form, or `await request.body()`.
     "_signed_body",
+    # SBX-2 (agent_sandbox.md §12.2 decision 3): the sandbox sibling of branch
+    # 0. Its trigger and its steps see the request, so the scan, the tripwire
+    # and the one digest cover them.
+    "_is_sandbox_request", "_sandbox_user",
 )
+
+#: The functions that may loop over the header NAMES, each name used only in
+#: a prefix test (see :meth:`_InvertedScan.trigger_loop`). The sandbox sibling
+#: counts its own headers and refuses an ``X-Agent-`` header that way.
+_TRIGGER_FUNCTIONS = frozenset({"_is_agent_request", "_is_sandbox_request", "_sandbox_user"})
 
 #: The attribute chains a scan accepts from `request`, each with the ONE use
 #: it may have (see :meth:`_InvertedScan.chain_use`).
@@ -268,6 +277,18 @@ _HEADERS = frozenset({
     "content-length", "transfer-encoding", "x-agent-nonce", "x-agent-session",
     "x-agent-approval", "if-match",
 })
+#: SBX-2 (agent_sandbox.md §12.2): the sibling's own headers. The capability,
+#: and the names that it reads only to refuse a second credential. Only the
+#: functions of :data:`_SANDBOX_FUNCTIONS` may name them, so the scan still
+#: refuses such a read in ``_agent_user``. SBX-3a (agent_sandbox.md §12.5
+#: decision 4) adds ``x-sandbox-ticket``, the one-use ticket of an approved
+#: write. The sibling reads the body of that write only through the hand-off
+#: to ``_signed_body`` (:data:`_BODY_READER`), the one body reader.
+_SANDBOX_HEADERS = frozenset({
+    "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
+    "x-sandbox-ticket",
+})
+_SANDBOX_FUNCTIONS = frozenset({"_is_sandbox_request", "_sandbox_user"})
 #: EA-6a (EA3-28): the ONE function that may read the body, and only as
 #: ``await request.body()`` with no argument. It hashes the body of a write
 #: for the signature. The runtime tripwire refuses the read on a GET.
@@ -356,8 +377,9 @@ _PINNED_STORES = frozenset({
 _MATCHES_RECEIVER = "context"
 
 #: The trigger's loop variable may only be used as
-#: ``<var>.lower().startswith(<literal that starts with this>)``.
-_TRIGGER_PREFIX = "x-agent-"
+#: ``<var>.lower().startswith(<literal that starts with one of these>)``.
+#: SBX-2 adds the prefix of the sandbox sibling.
+_TRIGGER_PREFIX = ("x-agent-", "x-sandbox-")
 
 #: Scanned functions of ``agent_signing.py`` carry this prefix in the source
 #: map, so their names never collide with a branch-0 name.
@@ -504,6 +526,9 @@ class _InvertedScan:
             for child in ast.iter_child_nodes(parent)
         }
         self.protected = _protected(name)
+        #: The headers this function may name: the shared set, and the set of
+        #: the sandbox sibling for its own two functions only.
+        self.headers = _HEADERS | _SANDBOX_HEADERS if name in _SANDBOX_FUNCTIONS else _HEADERS
         self.problems: list[str] = []
 
     def flag(self, node, what: str) -> None:
@@ -525,11 +550,11 @@ class _InvertedScan:
                 self.occurrence(node)
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_one_header":
                 key = node.args[1] if len(node.args) > 1 else None
-                if key is None or (_fold(key) or "\0").lower() not in _HEADERS:
+                if key is None or (_fold(key) or "\0").lower() not in self.headers:
                     self.flag(node, "_one_header without an allowed literal header")
         if self.name == "_one_header":
             self.one_header_name()
-        if self.name == "_is_agent_request":
+        if self.name in _TRIGGER_FUNCTIONS:
             self.trigger_loop()
         if self.name == "_effective_template":
             self.pinned_stores()
@@ -787,14 +812,14 @@ class _InvertedScan:
                 self.key_of(use, key)
             return
         if key == ("headers",):
-            if isinstance(use, ast.For) and use.iter is top and self.name == "_is_agent_request":
+            if isinstance(use, ast.For) and use.iter is top and self.name in _TRIGGER_FUNCTIONS:
                 return  # the trigger reads header NAMES (see `trigger_loop`)
             if isinstance(use, ast.Compare) and len(use.ops) == 1 and top in use.comparators \
                     and isinstance(use.ops[0], (ast.In, ast.NotIn)):
-                self.literal(use.left, _HEADERS, "header")
+                self.literal(use.left, self.headers, "header")
                 return
             if isinstance(use, ast.Subscript) and use.value is top:
-                self.literal(use.slice, _HEADERS, "header")
+                self.literal(use.slice, self.headers, "header")
                 return
         # EA-6a: `await request.body()`, no argument, in `_BODY_READER` only.
         if (key == ("body",) and self.name == _BODY_READER
@@ -830,7 +855,7 @@ class _InvertedScan:
             if (self.name == "_one_header" and isinstance(given, ast.Name)
                     and given.id in set(_params(self.fn)) - {"request"}):
                 return  # `one_header_name` and `run` check this parameter
-            self.literal(given, _HEADERS, "header")
+            self.literal(given, self.headers, "header")
         else:
             self.literal(given, _SCOPE_KEYS, "scope key")
 
@@ -920,6 +945,27 @@ def test_the_body_is_read_once_and_in_one_function():
                     and isinstance(node.value, ast.Name) and node.value.id == "request"):
                 found.append(name)
     assert found == [_BODY_READER]
+
+
+#: The scanned functions that may hand the request to :data:`_BODY_READER`.
+#: Branch 0 hashes the body of a signed write. SBX-3a (agent_sandbox.md §12.5
+#: decision 4): of the sandbox functions, only ``_sandbox_user`` may, for the
+#: body hash of a ticket.
+_BODY_READER_CALLERS = frozenset({"_agent_user", "_sandbox_user"})
+
+
+def test_only_branch_0_and_the_sandbox_sibling_hand_the_body_to_the_reader():
+    """SBX-3a. The body read of the sibling goes through ``_signed_body``,
+    and no other scanned function calls it."""
+    import ast
+
+    callers = set()
+    for name, source in _sources().items():
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == _BODY_READER:
+                callers.add(name)
+    assert callers == _BODY_READER_CALLERS
+    assert _BODY_READER_CALLERS - {"_agent_user"} <= _SANDBOX_FUNCTIONS
 
 
 def test_the_kept_body_key_is_the_one_constant():
@@ -1239,8 +1285,40 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
     # does not change. Diff-reviewer (Opus) APPROVE and an independent
     # verification PASS. The old pins were 3.12 ``fa6f0023…6fbfe9`` and 3.13
     # ``de650553…653174``. CPython 3.12.12 and 3.13.2 gave the new pins.
-    (3, 12): "acb6431cdc901da090564c5212e194576915fcda94c802074cf2a63aff7c0624",
-    (3, 13): "caf1fed03b3a63278a16016dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6",
+    # SBX-2 (2026-11-26, agent_sandbox.md §12.2, task 3801): the sandbox
+    # sibling of branch 0. `_is_sandbox_request` and `_sandbox_user` join the
+    # scan, and `_refuse_sandbox`, `_read_capability`, `_sandbox_gate` and
+    # `_claim_sandbox_call` join the helpers. `get_current_user` runs the
+    # sibling first. The sibling has its own header set (`_SANDBOX_HEADERS`):
+    # `x-sandbox-capability` and the three headers that it reads only to
+    # refuse. The scan allows them in the two sibling functions only, and the
+    # tripwire only while the sibling runs (review note, 2026-11-26). The
+    # trigger prefix becomes a tuple. The tripwire wraps the sibling too. The
+    # pins before it were 3.12 ``acb6431c…aff7c0624`` and 3.13
+    # ``caf1fed0…dd681e2bfa20885a78f6e00d93a3253d1b8d1edd6``. CPython 3.12.12
+    # and 3.13.2 gave the new pins. The diff-reviewer review (Opus) gave
+    # APPROVE on 6f43f4210, and it traced the sibling before branch 0 with no
+    # fall-through. The independent verification (Opus) of e4a27a373 passed
+    # each code item of §12.2, with 4 of 4 mutants caught. The pins did not
+    # change after either one (lane-sbx, 2026-11-26).
+    # SBX-3a (2026-11-27, agent_sandbox.md §12.5 decision 4, task 3802): the
+    # writes of the sandbox door. Step 2 of `_sandbox_user` takes at most one
+    # `X-Sandbox-Ticket` in its shape beside the capability, and a GET with a
+    # ticket is 401. Step 4b reads the body through `_signed_body`, the one
+    # body reader, and takes the ticket once in the new helper
+    # `_take_sandbox_ticket` (GETDEL in the ROW's org, 403 `sandbox_ticket`, a
+    # store fault 503). `_sandbox_gate` admits the batch pair with no steps 6
+    # to 8, and with a ticket it checks `SANDBOX_WRITE_ROUTES` and the write
+    # scope. The scope carries `write_scopes`, and `stamp` only from the
+    # ticket. `x-sandbox-ticket` joins `_SANDBOX_HEADERS` and the tripwire's
+    # list. The pins before it were 3.12 ``01b17a9f…0cf06a71`` and 3.13
+    # ``46de0ff1…90246f7a``. CPython 3.12.16 and 3.13.18 gave the new pins.
+    # Reviewed: the Opus diff-reviewer APPROVE of 8f89b8ca57 ("Digest
+    # 82bea7a4... (py3.12) of deps.py (branch 0) approved by this review"),
+    # held at 44d12c5cb0. Verified (external_agent_access.md §10.1): the
+    # independent Opus ws-verifier PASS of 44d12c5cb0. Task 3802, 2026-11-27.
+    (3, 12): "82bea7a4e5d25380a146ad4369b5d5aa13fcea990bf9bcb550909b12b4b467be",
+    (3, 13): "f781ee5f96b307cbee7fbd97f133bd5c46a2592be3a65e30edb91e7caca75904",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
@@ -1253,9 +1331,13 @@ _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
 #: helpers of the spend: ``_approval_of``, the digest of an approved call,
 #: and ``_spend_approval``, the one spend in a tenant session of the ROW's
 #: organization. Neither sees the request.
+#: SBX-2 adds the four helpers of the sandbox sibling: the refusal, the
+#: capability read, the gate of steps 5 to 8 and the call cap. None of them
+#: sees the request.
 _BRANCH_ZERO_HELPERS = ("_read_connection", "_claim_write", "_claim_call", "_door_gate",
                         "_claim_door_read", "_audit_door", "_approval_of",
-                        "_spend_approval")
+                        "_spend_approval", "_refuse_sandbox", "_read_capability",
+                        "_claim_sandbox_call", "_sandbox_gate", "_take_sandbox_ticket")
 
 
 def _branch_zero_digest() -> str:
@@ -1497,6 +1579,11 @@ _BYPASSES: dict[str, tuple[str, str, list[str], dict[str, str]]] = {
     "B79 the body read with an argument": (
         "_agent_user", _A_AGENT, ["_b = await request.body(1)"], {}),
     "B80 the request stream": ("_agent_user", _A_AGENT, ["_b = request.stream()"], {}),
+    # ── SBX-2: the sibling's headers stay the sibling's ──
+    "B81 branch 0 tests for authorization": (
+        "_agent_user", _A_AGENT, ["_h = 'authorization' in request.headers"], {}),
+    "B82 branch 0 reads x-user-email": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('x-user-email')"], {}),
 }
 
 
@@ -1529,8 +1616,9 @@ def test_the_scan_turns_red_for_each_bypass(label):
 
 
 def test_the_bypass_list_has_the_count_the_spec_names():
-    """79 until EA-6a, which added B76 to B80 for the body read."""
-    assert len(_BYPASSES) == 84
+    """79 until EA-6a, which added B76 to B80 for the body read. SBX-2 adds
+    B81 and B82: a header of the sandbox sibling read in branch 0."""
+    assert len(_BYPASSES) == 86
 
 
 # ── The runtime tripwire ─────────────────────────────────────────────────────
@@ -1576,6 +1664,11 @@ _TRIPWIRE_MUTANTS: dict[str, tuple[str, str, list[str]]] = {
          "        self.calls[0] += 1",
          "        return 'x-agent-connection' if self.calls[0] == 1 else 'host'",
          "_h = request.headers.get(_Sly('Host'))"]),
+    # ── SBX-2: a header of the sandbox sibling, read in branch 0 ──
+    "branch 0 reads authorization": (
+        "_agent_user", _A_AGENT, ["_h = request.headers.get('authorization')"]),
+    "branch 0 tests for x-sandbox-capability": (
+        "_agent_user", _A_AGENT, ["_h = 'x-sandbox-capability' in request.headers"]),
     "3b dict.get on the scope, TypeError caught": (
         "_agent_user", _A_AGENT,
         ["try:", "    _h = dict.get(request.scope, 'server')",
