@@ -1517,12 +1517,11 @@ In `auto`:
   at a time: dev_db uses one shared scratch database."
 
 **What `auto` can miss, accepted for a `--no-tests` merger.** Against the
-default mode, `auto` skips step 4 when M and R are both false. Two cases can
-then pass:
-- (a) A hermetic test that passes on each side alone and fails after the
-  merge, as the collisions of 2026-11-13 and 2026-11-14 did
-  (`premerge_select.py`).
-- (b) Nothing else of the type check: step 3b runs in `auto`.
+default mode, `auto` skips step 4 when M and R are both false. Then one case
+can pass: (a) a hermetic test that passes on each side alone and fails after
+the merge, as the collisions of 2026-11-13 and 2026-11-14 did
+(`premerge_select.py`). The type check case (TS2739) cannot pass, because
+step 3b runs in `auto`.
 
 Against `--no-tests`, `auto` adds the type check and step 4 for M and R, and
 it passes nothing that `--no-tests` fails. Case (a) is why the merge bot
