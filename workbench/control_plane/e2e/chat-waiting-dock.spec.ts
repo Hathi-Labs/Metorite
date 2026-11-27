@@ -59,9 +59,11 @@ declare global {
  * - `longQ`: a long `ask_questions` card and the `ask_user` card;
  * - `approvals`: a task, a new mail and a task, then the `ask_questions` card;
  * - `one`: one task approval only;
- * - `longMail`: one long new mail only.
+ * - `longMail`: one long new mail only;
+ * - `remote`: a new mail that does not block the run (no request id), then
+ *   the `ask_questions` card. A run end takes the question and leaves the mail.
  */
-type Cards = "questions" | "q1" | "longQ" | "approvals" | "one" | "longMail";
+type Cards = "questions" | "q1" | "longQ" | "approvals" | "one" | "longMail" | "remote";
 
 async function install(page: Page, opts: { cards: Cards; gated?: boolean; dock?: boolean }) {
   await page.addInitScript(({ cards, gated, dock, form, longForm, values, pid, mail, task, task2, ask, user }) => {
@@ -161,6 +163,14 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; dock?:
               title: "Create this task?", detail: "«Ship the pack» · Launch", request_id: task,
             } };
             if (cards === "one") { send(task1); return; }
+            if (cards === "remote") {
+              send({ type: "message_end", messageId: "m-1" });
+              send({ type: "custom", name: "confirmation_requested", value: {
+                title: "Send this new email?", detail: "From Work · Rates for May", reply: form,
+              } });
+              send(askQuestions(false));
+              return;
+            }
             if (cards === "longMail") {
               send({ type: "custom", name: "confirmation_requested", value: {
                 title: "Send this new email?", detail: "From Work · Rates for May", request_id: mail, reply: longForm,
@@ -652,4 +662,246 @@ test.describe("the waiting dock (WD-1, D9)", () => {
     await expect(page.locator("[data-dock-body] [data-elicitation-card]")).toBeVisible();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
   });
+});
+
+// ── F1 of the verifier: nothing moves under the pointer (2026-11-28) ───────
+//
+// A second press after a Submit, a Not now or a remote removal landed on a
+// commit control of the thread: the dock shrank at once, and the thread grew
+// into the gap. Each row lines a commit control of the thread up with the
+// dock control, under the dock, with the thread scrolled up from its foot.
+// Then it presses twice at one point, and asserts that no approval or send
+// went and that no second question was answered.
+
+const QUESTION_IDS = new Set(["q".repeat(32), "u".repeat(32)]);
+
+/** The device of a row: the viewport, and a mouse or a finger. */
+const DEVICES = [
+  { name: "390 touch", width: 390, height: 844, touch: true },
+  { name: "390 mouse", width: 390, height: 844, touch: false },
+  { name: "1280 mouse", width: 1280, height: 800, touch: false },
+  { name: "1280 touch", width: 1280, height: 800, touch: true },
+] as const;
+type Device = (typeof DEVICES)[number];
+
+async function device(browser: Browser, d: Device) {
+  const ctx = await browser.newContext({
+    viewport: { width: d.width, height: d.height }, hasTouch: d.touch, isMobile: d.touch && d.width < 600,
+    baseURL: "http://localhost:3101",
+  });
+  return { ctx, page: await ctx.newPage() };
+}
+
+/** The centre of the open question's control, on the screen. */
+async function centreOf(page: Page, sel: string) {
+  const b = (await open(page, sel).boundingBox())!;
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+}
+
+/** The commit controls of the open approval card in the thread. */
+const THREAD_COMMITS = ["[data-reply-send]", "[data-reply-save]", "[data-reply-discard]", "[data-confirmation-approve]"]
+  .map((c) => `[data-chat-ask] [data-confirmation-card] ${c}`)
+  .join(", ");
+
+/**
+ * Line a commit control of the thread up with the open question's control
+ * `sel`: pick the thread control that shares the most of its width, and
+ * scroll the thread so its centre lies at the centre of `sel`. The thread
+ * control is then under the dock, and the thread is up from its foot. It
+ * returns the point to press, and the place of the thread control after the
+ * scroll, as a check.
+ */
+async function lineUp(page: Page, sel: string, text = "") {
+  return page.evaluate(([dockSel, commits, words]) => {
+    const t = document.querySelector("[data-dock-host]")!.previousElementSibling as HTMLElement;
+    const own = Array.from(document.querySelectorAll<HTMLElement>(`[data-dock-body] [data-dock-question]:not([hidden]) ${dockSel}`))
+      .find((el) => (el.textContent ?? "").includes(words as string))!
+      .getBoundingClientRect();
+    const overlap = (r: DOMRect) => Math.min(r.right, own.right) - Math.max(r.left, own.left);
+    const pick = Array.from(document.querySelectorAll<HTMLElement>(commits))
+      .filter((el) => el.offsetParent !== null)
+      .sort((a, b) => overlap(b.getBoundingClientRect()) - overlap(a.getBoundingClientRect()))[0];
+    const r = pick.getBoundingClientRect();
+    const y = own.top + own.height / 2;
+    const x = (Math.max(r.left, own.left) + Math.min(r.right, own.right)) / 2;
+    t.scrollTop += r.top + r.height / 2 - y;
+    const after = pick.getBoundingClientRect();
+    return {
+      x, y, overlap: overlap(r), name: pick.textContent?.trim() ?? "",
+      lined: after.top + after.height / 2, foot: t.scrollHeight - t.clientHeight - t.scrollTop,
+    };
+  }, [sel, THREAD_COMMITS, text] as const);
+}
+
+/**
+ * Watch the point of a press, each frame. Nothing may move under the pointer
+ * while the dock holds (800 ms). The point may show the control that was
+ * there at the start, or the dock's inert line in its place
+ * (`[data-dock-held]`), and nothing else. It records each other element.
+ */
+async function watchPoint(page: Page, x: number, y: number) {
+  await page.evaluate(([px, py]) => {
+    const w = window as unknown as { __moved: string[]; __watch: boolean };
+    const CONTROL = "button, a[href], input, textarea, select, [role='tab']";
+    const first = document.elementFromPoint(px, py)?.closest(CONTROL) ?? null;
+    w.__moved = [];
+    w.__watch = true;
+    const tick = () => {
+      if (!w.__watch) return;
+      const el = document.elementFromPoint(px, py);
+      const same = !!first && !!el && first.contains(el);
+      if (el && !same && !el.closest("[data-dock-held]")) {
+        const d = (el.closest(CONTROL) ?? el).outerHTML.slice(0, 90);
+        if (!w.__moved.includes(d)) w.__moved.push(d);
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [x, y]);
+}
+
+async function moved(page: Page) {
+  return page.evaluate(() => {
+    const w = window as unknown as { __moved: string[]; __watch: boolean };
+    w.__watch = false;
+    return w.__moved;
+  });
+}
+
+async function pressAt(page: Page, d: Device, x: number, y: number) {
+  if (d.touch) await page.touchscreen.tap(x, y);
+  else await page.mouse.click(x, y);
+}
+
+/** What went: the approvals, the questions and the chat messages. */
+async function wire(page: Page) {
+  const a = await answers(page);
+  return {
+    approvals: a.filter((x) => !QUESTION_IDS.has(x.request_id)).map((x) => x.request_id),
+    questions: a.filter((x) => QUESTION_IDS.has(x.request_id)).map((x) => x.request_id),
+    sends: await sends(page),
+  };
+}
+
+/** The Send of the open mail card in the thread. */
+const THREAD_SEND = "[data-chat-ask] [data-confirmation-card] [data-reply-send]";
+
+test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  for (const d of DEVICES) {
+    test(`${d.name}: a double press on Submit sends the question once, and nothing of the thread`, async ({ browser }) => {
+      const { ctx, page } = await device(browser, d);
+      try {
+        await start(page, { cards: "approvals" });
+        await expect(threadCard(page)).toHaveCount(1, { timeout: 20_000 });
+        // The thread's mail tab, so its Send is the commit under the dock.
+        await page.locator('[data-chat-ask] [data-confirmation-card] [role="tab"]').nth(1).click();
+        await expect(page.locator(THREAD_SEND)).toHaveCount(1);
+        await open(page, "[data-elicitation-card] button:has-text('North depot')").click();
+        await page.waitForTimeout(600);
+        const at = await lineUp(page, "[data-elicitation-submit]");
+        expect(at.overlap).toBeGreaterThan(4);
+        expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
+        expect(at.foot).toBeGreaterThan(0);
+        await watchPoint(page, at.x, at.y);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(150);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(550);
+        expect(await moved(page)).toEqual([]);
+        await page.waitForTimeout(1000);
+        const w = await wire(page);
+        expect(w.questions).toEqual(["q".repeat(32)]);
+        expect(w.approvals).toEqual([]);
+        expect(w.sends).toEqual(["Plan the June run."]);
+      } finally {
+        await ctx.close();
+      }
+    });
+
+    test(`${d.name}: a double press on Not now declines once, and sends nothing of the thread`, async ({ browser }) => {
+      const { ctx, page } = await device(browser, d);
+      try {
+        await start(page, { cards: "approvals" });
+        await expect(threadCard(page)).toHaveCount(1, { timeout: 20_000 });
+        await page.locator('[data-chat-ask] [data-confirmation-card] [role="tab"]').nth(1).click();
+        await expect(page.locator(THREAD_SEND)).toHaveCount(1);
+        await page.waitForTimeout(600);
+        const at = await lineUp(page, "[data-not-now]");
+        expect(at.overlap).toBeGreaterThan(4);
+        expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
+        await watchPoint(page, at.x, at.y);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(150);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(550);
+        expect(await moved(page)).toEqual([]);
+        await page.waitForTimeout(1000);
+        const w = await wire(page);
+        expect(w.questions).toEqual(["q".repeat(32)]);
+        expect(w.approvals).toEqual([]);
+        expect(w.sends).toEqual(["Plan the June run."]);
+      } finally {
+        await ctx.close();
+      }
+    });
+
+    test(`${d.name}: a run end takes the question, and a press 300 ms later sends nothing of the thread`, async ({ browser }) => {
+      const { ctx, page } = await device(browser, d);
+      try {
+        await start(page, { cards: "remote" });
+        await expect(threadCard(page)).toHaveCount(1, { timeout: 20_000 });
+        await expect(page.locator(THREAD_SEND)).toHaveCount(1);
+        await page.waitForTimeout(600);
+        // The member goes to pick an option.
+        const at = await lineUp(page, "[data-elicitation-card] button", "South depot");
+        expect(at.overlap).toBeGreaterThan(4);
+        expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
+        // The run ends: the question leaves the dock with no press.
+        await watchPoint(page, at.x, at.y);
+        await page.evaluate(() => window.__push({ type: "done" }));
+        await page.waitForTimeout(300);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(400);
+        expect(await moved(page)).toEqual([]);
+        await page.waitForTimeout(1100);
+        const w = await wire(page);
+        expect(w.questions).toEqual([]);
+        expect(w.approvals).toEqual([]);
+        expect(w.sends).toEqual(["Plan the June run."]);
+      } finally {
+        await ctx.close();
+      }
+    });
+
+    test(`${d.name}: a double press on Q1's Submit while Q2 waits never answers Q2`, async ({ browser }) => {
+      const { ctx, page } = await device(browser, d);
+      try {
+        await start(page, { cards: "questions" });
+        await expect(dockTabs(page)).toHaveCount(2, { timeout: 20_000 });
+        // Q2 has its pick, so its Submit is live when it shows.
+        await dockTabs(page).nth(1).click();
+        await open(page, "button:has-text('Monday')").click();
+        await dockTabs(page).nth(0).click();
+        await open(page, "button:has-text('North depot')").click();
+        await page.waitForTimeout(600);
+        const at = await centreOf(page, "[data-elicitation-submit]");
+        await watchPoint(page, at.x, at.y);
+        await pressAt(page, d, at.x, at.y);
+        // Past the 400 ms arm of Q2, inside the 800 ms hold.
+        await page.waitForTimeout(500);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(200);
+        expect(await moved(page)).toEqual([]);
+        await page.waitForTimeout(1300);
+        const w = await wire(page);
+        expect(w.questions).toEqual(["q".repeat(32)]);
+        expect(w.approvals).toEqual([]);
+        expect(w.sends).toEqual(["Plan the June run."]);
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
 });
