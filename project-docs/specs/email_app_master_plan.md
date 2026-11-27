@@ -21932,8 +21932,9 @@ writes nothing into the record.
 4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
    and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
 5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
-   card and the held card. A later run drew the "Not confirmed" receipt. It drew them dark, light, compact, comfortable, with a changed accent
-   and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
+   card and the held card, in dark, light, compact, comfortable, a changed accent and at
+   390 px. A later run drew the "Not confirmed" receipt in dark, light, compact, a changed
+   accent and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
    under its "-" mark. At 390 px, the status line of the held card cuts "Waiting for your answer".
 6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
    `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
