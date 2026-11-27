@@ -2666,6 +2666,10 @@ class SandboxBroker:
         self._grants: dict[str, EgressGrant] = {}
         #: WS-43g1: one change at a time of the networks and the proxy.
         self._egress_lock = asyncio.Lock()
+        #: WS-43g2a: the network of each forgotten grant, to the container
+        #: that was on it. :meth:`_flush_networks` removes each one, so the
+        #: live egress networks are never more than the live grants (§7.3).
+        self._spent_networks: dict[str, str] = {}
         self._live: dict[str, SandboxHandle] = {}
         #: The ``compute`` containers (SBX-18). A separate registry, so the
         #: compute caps and the ``sandbox_max_*`` caps never share a count.
@@ -3764,6 +3768,8 @@ class SandboxBroker:
         except SandboxError as exc:
             async with self._registry_lock:
                 self._drop(handle)
+            # The drop spent the network of a live grant (WS-43g2a).
+            await asyncio.shield(self._flush_networks())
             raise SandboxUnavailable(
                 f"The sandbox restart failed, so the sandbox is gone: {exc} "
                 "Nothing runs on the host."
@@ -3864,7 +3870,16 @@ class SandboxBroker:
         return removed
 
     async def _remove(self, handle: SandboxHandle) -> None:
-        await self._remove_container(handle.container_id, handle.start_id)
+        """Remove the container of *handle*, then the network of each spent grant.
+
+        Every exit of a container comes through here: a restart, an eviction,
+        the reap, a release past its lifetime and a run-data delete. So a
+        dropped grant never leaves its network behind (WS-43g2a).
+        """
+        try:
+            await self._remove_container(handle.container_id, handle.start_id)
+        finally:
+            await asyncio.shield(self._flush_networks())
 
     async def _remove_all(self, handles: Iterable[SandboxHandle]) -> None:
         for handle in list(handles):
@@ -3929,12 +3944,31 @@ class SandboxBroker:
             return
         handle.egress = None
         self._grants.pop(grant.key, None)
+        # WS-43g2a: the network of the grant goes at the next flush. Each
+        # removal of a container flushes, so no exit path can skip it.
+        self._spend_network(grant.network, handle.container_id or handle.name)
         try:
             self._write_grants()
         except (OSError, SandboxError) as exc:
             _log.warning("sandbox_broker.egress_grants_write_failed", error=str(exc)[:300])
 
-    async def _ensure_egress_network(self, grant: EgressGrant, container: str) -> str:
+    def _spend_network(self, name: str, container: str = "") -> None:
+        """Mark the network *name* for removal at the next flush. No await."""
+        if name:
+            self._spent_networks[name] = container or self._spent_networks.get(name, "")
+
+    async def _flush_networks(self) -> None:
+        """Remove the network of each spent grant. Best effort. Never raises."""
+        while self._spent_networks:
+            name, container = self._spent_networks.popitem()
+            try:
+                await self._release_network(name, container)
+            except Exception as exc:  # a flush must never fail its caller
+                _log.warning("sandbox_broker.egress_network_rm_failed", error=str(exc)[:300])
+
+    async def _ensure_egress_network(
+        self, grant: EgressGrant, container: str, attempt: list[str] | None = None,
+    ) -> str:
         """The ``--internal`` network of *grant* alone (WS-43g2a).
 
         It refuses a found network that is not internal, or whose org label
@@ -3957,6 +3991,10 @@ class SandboxBroker:
                     "network, so no grant opens."
                 )
             return name
+        if attempt is not None:
+            # Set BEFORE the call: a client timeout can still make the network
+            # on the daemon, so the caller removes it on any later failure.
+            attempt.append(name)
         made = await self._docker.run(
             ["network", "create", "--driver", "bridge", "--internal",
              "--label", f"{LABEL_EGRESS}=1", "--label", f"{LABEL_ORG}={grant.org}",
@@ -4031,30 +4069,46 @@ class SandboxBroker:
             networks = sorted({g.network for g in self._grants.values()} | {network})
         else:
             networks = [network]
+        # Each live network gets its join. A failed join of ANOTHER grant's
+        # network is logged and the loop goes on, so one bad network never
+        # strands the later grants. Only the new grant's own join refuses.
+        failed_own = False
         for name in networks:
-            joined = await self._docker.run(
-                ["network", "connect", name, EGRESS_PROXY_NAME],
-                timeout=_SMALL_TIMEOUT_SECONDS,
-            )
-            if joined.rc != 0 and "already exists" not in joined.stderr:
-                _log.warning("sandbox_broker.egress_join_failed", error=joined.stderr[-300:])
-                raise SandboxUnavailable("The egress proxy did not join the network.")
+            try:
+                joined = await self._docker.run(
+                    ["network", "connect", name, EGRESS_PROXY_NAME],
+                    timeout=_SMALL_TIMEOUT_SECONDS,
+                )
+                ok = joined.rc == 0 or "already exists" in joined.stderr
+                error = joined.stderr[-300:]
+            except (SandboxError, OSError) as exc:
+                if name == network:
+                    raise
+                ok, error = False, str(exc)[:300]
+            if not ok:
+                _log.warning("sandbox_broker.egress_join_failed", network=name, error=error)
+                failed_own = failed_own or name == network
+        if failed_own:
+            raise SandboxUnavailable("The egress proxy did not join the network.")
 
-    async def _release_network(self, name: str) -> None:
-        """Disconnect the proxy from the network of one grant, and remove it.
+    async def _release_network(self, name: str, container: str = "") -> None:
+        """Disconnect the proxy, and *container* if named, from the network of
+        one grant, and remove the network.
 
-        Each revoke does this for its own grant, whatever the other grants of
-        the org (WS-43g2a). A network that a live grant still names stays.
-        Never raises.
+        Each forgotten grant does this for its own network, whatever the other
+        grants of the org (WS-43g2a). A network that a live grant still names
+        stays. Never raises.
         """
         async with self._egress_lock:
             if any(g.network == name for g in self._grants.values()):
                 return
             try:
-                await self._docker.run(
-                    ["network", "disconnect", "-f", name, EGRESS_PROXY_NAME],
-                    timeout=_SMALL_TIMEOUT_SECONDS,
-                )
+                for member in (EGRESS_PROXY_NAME, container):
+                    if member:
+                        await self._docker.run(
+                            ["network", "disconnect", "-f", name, member],
+                            timeout=_SMALL_TIMEOUT_SECONDS,
+                        )
                 gone = await self._docker.run(
                     ["network", "rm", name], timeout=_SMALL_TIMEOUT_SECONDS,
                 )
@@ -4124,33 +4178,44 @@ class SandboxBroker:
         async with handle.lock:
             self._require_live(handle)
             old = handle.egress
-            ours = False
+            #: The network name once ``network create`` was called for it.
+            #: A client timeout can still make it on the daemon, and the name
+            #: holds a fresh random key, so it is never another run's.
+            attempt: list[str] = []
             try:
                 async with self._egress_lock:
+                    # The old grant's network is spent here, and the removal
+                    # of the old container in _restart removes it.
                     self._forget_grant(handle)
-                    await self._ensure_egress_network(grant, handle.name)
-                    ours = True
+                    await self._ensure_egress_network(grant, handle.name, attempt)
                     await self._ensure_proxy(image, grant.network)
                     handle.egress = grant
                     self._grants[grant.key] = grant
                     await asyncio.to_thread(self._write_grants)
             except BaseException:
-                # A network that this grant made goes with it. A found network
-                # that is not its own is never touched.
+                # A found network that is not its own is never touched.
                 if handle.egress is grant:
                     self._forget_grant(handle)
-                if ours:
-                    await asyncio.shield(self._release_network(grant.network))
+                if attempt:
+                    self._spend_network(grant.network)
+                if old is not None and not handle.removed and self._live.get(handle.name) is handle:
+                    # A failed re-grant: the container is still on the old
+                    # network with a dead token. Put it back on none (§7.3).
+                    try:
+                        await asyncio.shield(self._restart(handle, "egress_regrant_failed"))
+                    except Exception as exc:  # the original failure is the answer
+                        _log.warning(
+                            "sandbox_broker.egress_regrant_restore_failed",
+                            name=handle.name, error=str(exc)[:300],
+                        )
+                await asyncio.shield(self._flush_networks())
                 raise
             try:
                 await self._restart(handle, "egress_grant")
             except BaseException:
                 self._forget_grant(handle)
-                await asyncio.shield(self._release_network(grant.network))
+                await asyncio.shield(self._flush_networks())
                 raise
-            finally:
-                if old is not None and old.network != grant.network:
-                    await asyncio.shield(self._release_network(old.network))
         _log.info(
             "sandbox_broker.egress_granted", name=handle.name, org=handle.org, run=run,
             agent=handle.agent, approver=approver, hosts=list(names),
@@ -4180,7 +4245,9 @@ class SandboxBroker:
             if not handle.removed and self._live.get(handle.name) is handle:
                 await self._restart(handle, f"egress_{why}")
         finally:
-            await self._release_network(grant.network)
+            # _restart removed the container and flushed. A handle that is
+            # already gone flushes here.
+            await asyncio.shield(self._flush_networks())
             _log.info(
                 "sandbox_broker.egress_revoked", name=handle.name, org=grant.org,
                 run=grant.run, why=why,
@@ -4213,6 +4280,8 @@ class SandboxBroker:
         and a shared remote daemon holds the networks of other deployments.
         """
         self._grants.clear()
+        # The label filter below removes every egress network, spent or not.
+        self._spent_networks.clear()
         for handle in self._registered_handles():
             handle.egress = None
         with contextlib.suppress(OSError, SandboxError):

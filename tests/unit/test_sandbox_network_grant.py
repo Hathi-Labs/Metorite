@@ -498,6 +498,169 @@ async def test_a_bridge_name_collision_fails_closed(
     assert list(_grants_file(broker)["grants"]) == [ga.key]
 
 
+# ── WS-43g2a fix round 1: no exit path leaves a network ─────────────────────
+
+
+def _rm_calls(docker: EgressDocker, network: str) -> list[list[str]]:
+    return [c for c in docker.calls if c == ["network", "rm", network]]
+
+
+@pytest.mark.parametrize(
+    "path", ["eviction", "reap", "release_past_lifetime", "run_data_delete", "replace"],
+)
+async def test_every_exit_path_removes_the_grants_network(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch, path: str,
+) -> None:
+    """§7.3: the live egress networks are never more than the live granted
+    containers. Each path that drops a granted container removes its network."""
+    settings = egress_on["settings"]
+    with bound_run(ORG, member=MEMBER, thread="ta"):
+        handle = await broker.acquire()
+        grant = await broker.grant_egress(handle, "pip", ["pypi.org"])
+        if path != "release_past_lifetime":
+            await broker.release(handle)
+    assert set(docker.networks) == {grant.network}
+    if path == "eviction":
+        monkeypatch.setattr(settings, "sandbox_max_per_org", 1)
+        with bound_run(ORG, member=MEMBER, thread="tb"):
+            await broker.acquire()
+    elif path == "reap":
+        monkeypatch.setattr(settings, "sandbox_idle_ttl_seconds", -1)
+        assert await broker.reap_once() == 1
+    elif path == "release_past_lifetime":
+        monkeypatch.setattr(settings, "sandbox_max_lifetime_seconds", -1)
+        await broker.release(handle)
+    elif path == "run_data_delete":
+        # The drop path alone: the run's end revokes first, so skip that.
+        async def no_revoke(*_a: Any) -> bool:
+            return False
+
+        monkeypatch.setattr(broker, "_revoke_for_run", no_revoke)
+        monkeypatch.setattr(sb, "_remove_run_data", lambda _rel: True)
+        broker._run_data[(handle.workspace, handle.binding.thread)] = "run-data"
+        with bound_run(ORG, member=MEMBER, thread="ta"):
+            await broker.end_run()
+    else:  # a held container that no longer fits is replaced
+        handle.stale = True
+        with bound_run(ORG, member=MEMBER, thread="ta"):
+            await broker.acquire()
+    await broker.settle()
+    assert handle.removed and handle.egress is None and not broker._grants
+    assert len(_rm_calls(docker, grant.network)) == 1
+    assert docker.networks == {}, "no network outlives its grant"
+
+
+async def test_a_failed_regrant_puts_the_container_on_none_and_removes_the_old_network(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """A re-grant that fails before the recreate (here: no free pool) leaves
+    no container on the old network with a dead token."""
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        first = await broker.grant_egress(handle, "pip", ["pypi.org"])
+        docker.no_pool = True
+        with pytest.raises(sb.SandboxUnavailable, match="address pool"):
+            await broker.grant_egress(handle, "pip", ["files.pythonhosted.org"])
+    assert handle.egress is None and not broker._grants
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == ["none"]
+    assert handle.network == "none"
+    assert len(_rm_calls(docker, first.network)) == 1
+    assert docker.networks == {}
+
+
+async def test_a_create_that_times_out_still_removes_its_network(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """The client gives up, but the daemon made the network. The grant fails,
+    and the broker removes that network by its fresh name."""
+    real_network = docker._network
+
+    def slow_create(argv: list[str]) -> sb.DockerResult:
+        if argv[1] == "create":
+            real_network(argv)  # the daemon makes it
+            raise sb.SandboxUnavailable("docker network create timed out")
+        return real_network(argv)
+
+    docker._network = slow_create  # type: ignore[method-assign]
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        with pytest.raises(sb.SandboxUnavailable, match="timed out"):
+            await broker.grant_egress(handle, "pip", ["pypi.org"])
+    (made,) = [c[-1] for c in docker.network_calls("create")]
+    assert _rm_calls(docker, made) == [["network", "rm", made]]
+    assert docker.networks == {} and handle.egress is None
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == ["none"]
+
+
+async def test_a_second_grant_on_one_container_removes_the_old_network(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """One ``network rm`` of the old network. It comes after the old
+    container is removed, and the container then runs on the new network."""
+    with bound_run(ORG, member=MEMBER):
+        handle = await broker.acquire()
+        first = await broker.grant_egress(handle, "pip", ["pypi.org"])
+        old_id = handle.container_id
+        second = await broker.grant_egress(handle, "pip", ["files.pythonhosted.org"])
+    (rm_old,) = _rm_calls(docker, first.network)
+    at = next(i for i, c in enumerate(docker.calls) if c is rm_old)
+    removed_old = next(
+        i for i, c in enumerate(docker.calls) if c[:2] == ["rm", "-f"] and old_id in c
+    )
+    assert removed_old < at
+    assert flag_values(docker.sandbox_runs()[-1], "--network") == [second.network]
+    assert _rm_calls(docker, second.network) == []
+    assert set(docker.networks) == {second.network}
+
+
+async def test_a_failed_join_of_another_grant_does_not_strand_the_later_ones(
+    broker: sb.SandboxBroker, docker: EgressDocker, egress_on: dict[str, Any],
+) -> None:
+    """A fresh proxy joins each live network. A failed join of one other
+    grant is logged, and the later grants and the new one still join."""
+    grants = []
+    for thread in ("ta", "tb"):
+        with bound_run(ORG, member=MEMBER, thread=thread):
+            h = await broker.acquire()
+            grants.append(await broker.grant_egress(h, "pip", ["pypi.org"]))
+    docker.proxy_running = False  # the proxy died
+    bad = min(g.network for g in grants)
+    real_run = docker.run
+
+    async def flaky(args: Sequence[str], *, timeout: float) -> sb.DockerResult:
+        if list(args[:3]) == ["network", "connect", bad]:
+            docker.calls.append(list(args))
+            return sb.DockerResult(1, "", "Error: network is broken")
+        return await real_run(args, timeout=timeout)
+
+    docker.run = flaky  # type: ignore[method-assign]
+    with bound_run(ORG_B, member=MEMBER, thread="tc"):
+        c = await broker.acquire()
+        gc = await broker.grant_egress(c, "pip", ["pypi.org"])
+    after = _calls_after(docker, docker.proxy_runs[-1])
+    joined = [x[2] for x in after if x[:2] == ["network", "connect"]]
+    assert sorted(joined) == sorted([*(g.network for g in grants), gc.network])
+    assert c.egress is gc
+
+    # The new grant's own failed join still refuses.
+    docker.proxy_running = False
+
+    async def own_fails(args: Sequence[str], *, timeout: float) -> sb.DockerResult:
+        if list(args[:2]) == ["network", "connect"] and args[2] not in {
+            g.network for g in [*grants, gc]
+        }:
+            docker.calls.append(list(args))
+            return sb.DockerResult(1, "", "Error: network is broken")
+        return await real_run(args, timeout=timeout)
+
+    docker.run = own_fails  # type: ignore[method-assign]
+    with bound_run(ORG_B, member=MEMBER, thread="tc"), pytest.raises(
+        sb.SandboxUnavailable, match="did not join",
+    ):
+        await broker.grant_egress(c, "pip", ["pypi.org"])
+
+
 # ── WS-43g2a: the door wait (§7.3, task 4070) ───────────────────────────────
 
 
