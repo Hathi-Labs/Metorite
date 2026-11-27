@@ -134,7 +134,9 @@ CONVERT_REFUSED = (
 )
 
 #: Each project that the member leads, and each project below one. ``UNION``
-#: and not ``UNION ALL``, so a cycle in the tree ends the walk.
+#: and not ``UNION ALL``, so a cycle in the tree ends the walk. It binds
+#: ``:me``. SW-48 embeds this text in ``agent_runs.person_may_end_sql``. Do
+#: not copy it (``tests/unit/test_app_ownership_seam.py``).
 LED_SUBTREE_SQL = (
     "WITH RECURSIVE led AS ("
     "  SELECT id FROM pm_projects WHERE lower(lead) = :me"

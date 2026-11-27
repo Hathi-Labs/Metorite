@@ -381,6 +381,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # question and opens the list of the questions, so only the owner writes
     # it.
     "AGENT_QUESTIONS_ORGS",
+    # WS-MCP SW-48: APP_LEAD_RUNS_ORGS lets the app lead Release and Resume a
+    # teammate's agent run. It widens who may write to a run, so only the
+    # owner writes it.
+    "APP_LEAD_RUNS_ORGS",
     # WS-55 CIV-14b: MCP_IMAGE_UPLOAD_ORGS lets an outside agent upload an
     # image to a task and show it on a question. A tenant must not open it
     # for another org, so only the owner writes it.
