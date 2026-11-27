@@ -2294,7 +2294,7 @@ async def test_a_stage_repair_and_a_pipeline_copy_at_one_moment_never_deadlock(
     take the lock out of ``apply_repair`` -> 40P01 in one of the two."""
     import asyncio
 
-    from acb_common.db import tenant_session
+    from acb_common.db import bind_tenant, clear_tenant, release_tenant, tenant_session
     from gateway.routes.crm.stage_metadata import RepairPlan, apply_repair
 
     ids = _seed(pns, pns.org_a)
@@ -2312,8 +2312,15 @@ async def test_a_stage_repair_and_a_pipeline_copy_at_one_moment_never_deadlock(
     url = pns.app_url.render_as_string(hide_password=False)
 
     async def repair() -> None:
-        async with tenant_engine_scope(url), tenant_session(pns.org_a) as db:
-            await apply_repair(db, RepairPlan(updates={stage: dict(values)}))
+        # The route binds the tenant of the request, and the create lock keys
+        # on it (``current_tenant``). The task binds it the same way.
+        scope = clear_tenant()
+        try:
+            bind_tenant(pns.org_a)
+            async with tenant_engine_scope(url), tenant_session(pns.org_a) as db:
+                await apply_repair(db, RepairPlan(updates={stage: dict(values)}))
+        finally:
+            release_tenant(scope)
 
     tasks: list[Any] = []
     with pns.admin_engine.connect() as c:
