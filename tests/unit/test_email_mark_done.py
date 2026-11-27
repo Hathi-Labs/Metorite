@@ -86,7 +86,7 @@ def test_no_module_reads_the_setting_but_its_one_reader() -> None:
                 hits.append(p.relative_to(ROOT).as_posix())
     assert sorted(hits) == [
         "apps/services/gateway/gateway/routes/email/automation/mark_done.py",
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
     ]
 
 
