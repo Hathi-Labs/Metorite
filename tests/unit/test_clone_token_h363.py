@@ -687,6 +687,19 @@ def test_a_read_only_store_is_reported(tmp_path: Path, home: Path, monkeypatch) 
 _SECRET_URL = re.compile(r"""https?://[^/\s'"]*\{[^}]+\}[^/\s'"]*@""")
 
 
+#: The one allowed line, by path and by the exact text of the line. WS-43g1
+#: (task 4009): the egress proxy of a sandbox run reads its grant token from
+#: the userinfo of HTTP_PROXY, the only place where curl and pip take proxy
+#: credentials. The token is the run's own grant, not a platform secret: it
+#: lives 30 minutes at most, the grants file holds only its hash, and
+#: ``write_egress_env_file`` keeps it out of the ``docker run`` argv. A second
+#: line, or a change to this one, fails the test again.
+_ALLOWED_SECRET_URLS: frozenset[tuple[str, str]] = frozenset({
+    ("apps/services/orchestrator/orchestrator/sandbox_broker.py",
+     'url = f"http://grant:{grant.token}@{EGRESS_PROXY_NAME}:{EGRESS_PROXY_PORT}"'),
+})
+
+
 def test_no_source_builds_a_url_with_a_secret() -> None:
     hits: list[str] = []
     for top in ("apps", "packages"):
@@ -695,7 +708,8 @@ def test_no_source_builds_a_url_with_a_secret() -> None:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             for n, line in enumerate(text.splitlines(), 1):
-                if _SECRET_URL.search(line):
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                if _SECRET_URL.search(line) and (rel, line.strip()) not in _ALLOWED_SECRET_URLS:
                     hits.append(f"{path.relative_to(REPO_ROOT)}:{n}: {line.strip()[:120]}")
     assert not hits, "a URL with a secret in it:\n" + "\n".join(hits)
 
