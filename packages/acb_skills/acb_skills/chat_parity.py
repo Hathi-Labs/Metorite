@@ -877,21 +877,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "download",
         "The bytes of a chat file for the viewer and the download button. The chat writes and reads its files itself.",
     ),
-    # PAR-11 part c (task 4014): five requests that are no act of a member in the
+    # PAR-11 part c (task 4014): three requests that are no act of a member in the
     # chat. Task 4014 says that a row only the browser can do takes a reason,
-    # and no new kind.
-    "POST /api/agent/workspace/{}/upload": (
-        "chat",
-        "The paperclip of the chat's own composer (FileUploadButton.tsx). The member picks a file "
-        "on their own device, and only the browser can read it. The file then goes with the "
-        "member's next turn, as the mic of VOX-1 does.",
-    ),
-    "POST /api/agent/artifacts/upload": (
-        "download",
-        "The Upload button of the email rule editor (RulesTab.tsx) sends a file that the member "
-        "picks on their own device, and only the browser can read it. It is a file stream, as a "
-        "download is. The email assistant lists these files with its own list_artifacts.",
-    ),
+    # and no new kind. The two file uploads stay debt (the P-5b-2 precedent).
     "PATCH /api/agent/workspace/{}": (
         "chat",
         "The app builder binds its own chat to the folder of the app when the page opens "
@@ -1252,6 +1240,11 @@ DEBT: dict[str, str] = {
     "PATCH /api/chat/sessions/{}": "P-7",
     "PATCH /api/chat/sessions/{}/participants/{}": "P-7",
     "PATCH /api/chat/sessions/{}/room": "P-7",
+    # PAR-11 part c (task 4014): a file upload from the device of the member
+    # stays debt, as the avatar and resume uploads of P-5b-2 do. No kind of
+    # EXEMPT_KINDS is added to make a row pass.
+    "POST /api/agent/artifacts/upload": "P-7",
+    "POST /api/agent/workspace/{}/upload": "P-7",
     "POST /api/chat/sessions/{}/agents": "P-7",
     "POST /api/chat/sessions/{}/participants": "P-7",
     "POST /api/chat/suggestions": "P-7",
@@ -1391,7 +1384,7 @@ DEBT_CEILING: dict[str, int] = {
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
-    "chat": 18,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. PAR-11 part c (task 4014) paid the ten rows of the chat files: five with the four tools of chat-files, and five exemptions (28 to 18).
+    "chat": 20,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. PAR-11 part c (task 4014) decided the ten rows of the chat files: five paid with the four tools of chat-files, and three exemptions. The two file uploads stay debt (28 to 20).
     "shell": 9,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2). WS-AP AP-2a added GET /api/shell/waiting and its /count (7 to 9). The chat tool my_waits of AP-10 (task 1860) pays both. Paid by task 1860.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 12,  # ACC-2 (task 3988) added the read and the write of who can use an integration (10 to 12). The chat tool is ACC-4 (task 3990), which waits for the owner decision of PAR-6b (task 3932). Paid by task 3990. PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge, and PAR-4d (task 3936) paid the five seat rows with read_seats and set_seat (17 to 10).

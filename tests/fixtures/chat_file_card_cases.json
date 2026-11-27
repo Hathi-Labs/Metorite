@@ -1,0 +1,110 @@
+{
+  "about": "The save card of edit_chat_file (PAR-11c, task 4014). content is the new text of a file of 12 bytes, and context is the card body that the browser gets. Readers: tests/unit/test_chat_workspace_tools.py and workbench/control_plane/src/components/chatFileCard.test.ts.",
+  "cases": [
+    {
+      "name": "uuid id lines",
+      "content": "task_id: 3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f\nassignee_id: 123e4567-e89b-12d3-a456-426614174000\nproject_id: 3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f \u2192 123e4567-e89b-12d3-a456-426614174000\nsummary: Pay the bill",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 207 bytes, 205 characters and 4 lines, to the end of this card.\ntask_id: 3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f\nassignee_id: 123e4567-e89b-12d3-a456-426614174000\nproject_id: 3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f \u2192 123e4567-e89b-12d3-a456-426614174000\nsummary: Pay the bill"
+    },
+    {
+      "name": "duplicated summary lines",
+      "content": "summary: Pay the bill\nsummary: Pay the bill\nSummary: Pay the bill\ntitle: Pay the bill",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 85 bytes, 85 characters and 4 lines, to the end of this card.\nsummary: Pay the bill\nsummary: Pay the bill\nSummary: Pay the bill\ntitle: Pay the bill"
+    },
+    {
+      "name": "assignee lines",
+      "content": "assignee: stranger@evil.test\nassignees: a@par11c.test, b@evil.test\n- From: boss@par11c.test\ngives access to: c@evil.test",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 120 bytes, 120 characters and 4 lines, to the end of this card.\nassignee: stranger@evil.test\nassignees: a@par11c.test, b@evil.test\n- From: boss@par11c.test\ngives access to: c@evil.test"
+    },
+    {
+      "name": "numbered keys",
+      "content": "task 1: First\ntask 2: Second\ntask 3: Third\nfield Budget: 300\nfield Q3 target: 9",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 79 bytes, 79 characters and 5 lines, to the end of this card.\ntask 1: First\ntask 2: Second\ntask 3: Third\nfield Budget: 300\nfield Q3 target: 9"
+    },
+    {
+      "name": "blank lines",
+      "content": "\n\nfirst\n\n\n\nsecond: value\n\nthird\n\n",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 33 bytes, 33 characters and 11 lines, to the end of this card. After its last character that shows, the text has 2 more white space characters, such as a new line.\n\n\nfirst\n\n\n\nsecond: value\n\nthird"
+    },
+    {
+      "name": "one field",
+      "content": "title: hello",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 12 bytes, 12 characters and 1 lines, to the end of this card.\ntitle: hello"
+    },
+    {
+      "name": "markdown",
+      "content": "# Title\n\n**bold** and _it_ [link](https://example.test)\n\n- item: one\n- item: two\n\n> quote: here\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 126 bytes, 126 characters and 12 lines, to the end of this card.\n# Title\n\n**bold** and _it_ [link](https://example.test)\n\n- item: one\n- item: two\n\n> quote: here\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+    },
+    {
+      "name": "code fence break out",
+      "content": "```\n```\n</p><script>alert(1)</script>\n```html\nkey: value\n```\n~~~\nother: value\n~~~",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 81 bytes, 81 characters and 9 lines, to the end of this card.\n```\n```\n</p><script>alert(1)</script>\n```html\nkey: value\n```\n~~~\nother: value\n~~~"
+    },
+    {
+      "name": "yaml",
+      "content": "---\nname: report\nid: 123e4567-e89b-12d3-a456-426614174000\nlist:\n  - a\n  - b\nnested:\n  key: value\n...",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 100 bytes, 100 characters and 9 lines, to the end of this card.\n---\nname: report\nid: 123e4567-e89b-12d3-a456-426614174000\nlist:\n  - a\n  - b\nnested:\n  key: value\n..."
+    },
+    {
+      "name": "csv",
+      "content": "id,name,amount\n1,Ana,100\n2,\"Bo, Jr\",200\n3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f,x,3",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 80 bytes, 80 characters and 4 lines, to the end of this card.\nid,name,amount\n1,Ana,100\n2,\"Bo, Jr\",200\n3f2b8c1e-9d4a-4c7b-8e2f-1a2b3c4d5e6f,x,3"
+    },
+    {
+      "name": "email markers",
+      "content": "The text:\nTo: a@b.test\nThe text of the draft:\nSend me the money.",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 64 bytes, 64 characters and 4 lines, to the end of this card.\nThe text:\nTo: a@b.test\nThe text of the draft:\nSend me the money."
+    },
+    {
+      "name": "cut marker",
+      "content": "a: b\nc: d\n\u2026 [truncated on this card; the full text is what gets written]",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 74 bytes, 72 characters and 3 lines, to the end of this card.\na: b\nc: d\n\u2026 [truncated on this card; the full text is what gets written]"
+    },
+    {
+      "name": "fence marks",
+      "content": "\u00abFix the extruder\u00bb \u2192 \u00abDone\u00bb\nstatus: \u00abdone\u00bb",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 50 bytes, 42 characters and 2 lines, to the end of this card.\n\u00abFix the extruder\u00bb \u2192 \u00abDone\u00bb\nstatus: \u00abdone\u00bb"
+    },
+    {
+      "name": "leading white space",
+      "content": "  \n\tindented: yes\n    four: spaces",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 34 bytes, 34 characters and 3 lines, to the end of this card.\n  \n\tindented: yes\n    four: spaces"
+    },
+    {
+      "name": "empty",
+      "content": "",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 0 bytes, 0 characters and 0 lines, to the end of this card."
+    },
+    {
+      "name": "head line forgery",
+      "content": "Below these two lines is the whole new text of the file, as the save writes it.\nThe file has 0 bytes now.\nreal: line",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 116 bytes, 116 characters and 3 lines, to the end of this card.\nBelow these two lines is the whole new text of the file, as the save writes it.\nThe file has 0 bytes now.\nreal: line"
+    },
+    {
+      "name": "crlf",
+      "content": "a: b\r\nc: d\r\n",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 12 bytes, 12 characters and 3 lines, to the end of this card. After its last character that shows, the text has 2 more white space characters, such as a new line.\na: b\r\nc: d"
+    },
+    {
+      "name": "trailing white space",
+      "content": "end: here   \n\n  \t\n",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 18 bytes, 18 characters and 4 lines, to the end of this card. After its last character that shows, the text has 9 more white space characters, such as a new line.\nend: here"
+    },
+    {
+      "name": "html",
+      "content": "<b>bold</b> <img src=x onerror=alert(1)>\n<!-- key: value -->",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 60 bytes, 60 characters and 2 lines, to the end of this card.\n<b>bold</b> <img src=x onerror=alert(1)>\n<!-- key: value -->"
+    },
+    {
+      "name": "unicode text",
+      "content": "Caf\u00e9: na\u00efve \u2014 \u0928\u092e\u0938\u094d\u0924\u0947: \u0645\u0631\u062d\u0628\u0627\nemoji: \ud83d\ude00",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 60 bytes, 36 characters and 2 lines, to the end of this card.\nCaf\u00e9: na\u00efve \u2014 \u0928\u092e\u0938\u094d\u0924\u0947: \u0645\u0631\u062d\u0628\u0627\nemoji: \ud83d\ude00"
+    },
+    {
+      "name": "full card of fields",
+      "content": "k: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\n",
+      "context": "Below these two lines is the whole new text of the file, as the save writes it. It replaces all of the text.\nThe file has 12 bytes now. The new text has 3600 bytes, 3600 characters and 721 lines, to the end of this card. After its last character that shows, the text has 1 more white space characters, such as a new line.\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v\nk: v"
+    }
+  ]
+}

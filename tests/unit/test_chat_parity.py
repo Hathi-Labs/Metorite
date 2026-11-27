@@ -698,7 +698,7 @@ def test_five_ceilings_are_above_p0() -> None:
     # P-2c (task 3919) took email below its baseline (14 to 10). PAR-6a (task
     # 3109) took the integrations below their baseline (22 to 4).
     # PAR-3 (task 3105) took Knowledge below its baseline (17 to 15).
-    # PAR-11 part c (task 4014) took the chat below its baseline (28 to 18).
+    # PAR-11 part c (task 4014) took the chat below its baseline (28 to 20).
     assert up == ["calendar", "settings", "studio"]
 
 

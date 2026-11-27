@@ -33,10 +33,18 @@ approve sends. The delete card names the file.
 
 Each PAR-11c tool sends the route of the Files panel as the verified run member,
 for the chat of the run. A shared room, WhatsApp and a run with no chat get a
-refusal and no request. The tools pay five chat rows, and five other rows are
-exempt. The chat ceiling goes from 28 to 18. The pack is in no `FOLLOWS` entry,
-so it stays off until the owner adds `chat-files` to `TOOL_PACKS`. §6.4 holds
-the decision of each row.
+refusal and no request. The pack is in no `FOLLOWS` entry, so it stays off
+until the owner adds `chat-files` to `TOOL_PACKS`.
+
+The tools pay five chat rows, and three other rows are exempt. The two file
+uploads stay debt, as the uploads of P-5b-2 do. The chat ceiling goes from 28
+to 20. §6.4 holds the decision of each row.
+
+The save card of `edit_chat_file` shows each character that the save writes.
+Its body starts with two lines that hold no `key: value` field. So the card of
+the web app reads no field in the body, and it draws the body as one text. A
+text with a lone carriage return, U+2028 or U+2029 gets no card. The shared fixture
+`tests/fixtures/chat_file_card_cases.json` pins the body and its drawing.
 
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
@@ -631,7 +639,7 @@ ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
 waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
 
 AP-2a raised shell from 7 to 9, and SBX-1b raised studio from 3 to 4. PAR-11c
-(task 4014) took chat from 28 to 18. The total of `DEBT_CEILING` is 247.
+(task 4014) took chat from 28 to 20. The total of `DEBT_CEILING` is 249.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -985,8 +993,9 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
 - **Rung 8, PAR-11c (task 4014).** It decides the ten rows of the files of a
-  chat. Five rows go to the dark pack `chat-files`, and five rows are exempt
-  with a kind of `EXEMPT_KINDS`. The table below holds each row. The demo
+  chat. Five rows go to the dark pack `chat-files`, and three rows are exempt
+  with a kind of `EXEMPT_KINDS`. The two file uploads stay debt. The table
+  below holds each row. The demo
   needs the owner to add `chat-files` to `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
@@ -1001,11 +1010,11 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
   |---|---|---|
   | `GET /api/agent/workspace/{}` | COVERED, `list_chat_files` | The file list of the panel |
   | `GET /api/agent/workspace/{}/history` | COVERED, `list_chat_files` | The versions of one file |
-  | `PUT /api/agent/workspace/{}/file` | COVERED, `edit_chat_file` | The Save of the viewer, text only, after one card with the whole text |
+  | `PUT /api/agent/workspace/{}/file` | COVERED, `edit_chat_file` | The Save of the viewer, text only, after one card that shows each character of the text |
   | `POST /api/agent/workspace/{}/promote` | COVERED, `promote_chat_file` | "Promote to Agent Data", after one card. The body holds `path` only |
   | `DELETE /api/agent/workspace/{}/file` | COVERED, `delete_chat_file` | The Delete of the panel, after one card that names the file |
-  | `POST /api/agent/workspace/{}/upload` | EXEMPT, `chat` | The paperclip of the composer. The member picks a file on the device |
-  | `POST /api/agent/artifacts/upload` | EXEMPT, `download` | The Upload of the email rule editor. The member picks a file on the device |
+  | `POST /api/agent/workspace/{}/upload` | DEBT, P-7 | The paperclip of the composer. A file upload stays debt, as in P-5b-2 |
+  | `POST /api/agent/artifacts/upload` | DEBT, P-7 | The Upload of the email rule editor. A file upload stays debt, as in P-5b-2 |
   | `PATCH /api/agent/workspace/{}` | EXEMPT, `chat` | The app builder binds its own chat to the app folder when the page opens |
   | `POST /api/artifacts/compile` | EXEMPT, `download` | The preview of a React file. The workbench builds it, and no member click sends it |
   | `POST /api/documents/pdf` | EXEMPT, `download` | The Download PDF of a saved report. The browser saves the file |

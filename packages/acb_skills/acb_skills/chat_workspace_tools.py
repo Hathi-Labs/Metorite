@@ -39,6 +39,15 @@ The rules:
   the approve, and sends nothing when the file changed. A save shows the whole
   new text on its card, so a text that does not fit on one card gets plain
   words and no card.
+* **The card of a save shows the text as the save writes it.** The card of the
+  web app reads a body of ``key: value`` lines as fields. It drops an id line,
+  joins numbered keys and renames keys (``ConfirmationCard.parseCardBody``).
+  So the body of a save card (:func:`_card_text`) starts with two lines of the
+  tool that are no field. The card then draws the body as one text, each
+  character as sent. A carriage return that is not before a new line, and a
+  Unicode line or paragraph separator, draw as no line break. So a text with
+  one of them gets plain words and no card. The shared fixture
+  ``tests/fixtures/chat_file_card_cases.json`` pins the body and the drawing.
 * **Not in a shared room, not on WhatsApp, not in a run with no chat.** The
   answer of a shared room shows to each person in it. So each tool refuses
   there with no request.
@@ -60,6 +69,7 @@ Fences: ``tests/unit/test_chat_workspace_tools.py`` and the R8 suite
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 from typing import Any
 from urllib.parse import quote
@@ -102,9 +112,16 @@ TEXT_SUFFIXES = frozenset({
     ".yml", ".xml", ".css", ".js", ".jsx", ".ts", ".tsx", ".py", ".sh", ".toml",
     ".ini", ".cfg", ".log", ".sql",
 })
-#: The longest new text of a save: the whole text must fit on one card
-#: (``acb_common.card_body.CARD_CLIP``).
-CONTENT_MAX = CARD_CLIP
+#: The room on a save card for the two head lines of :func:`_card_text`.
+_HEAD_ROOM = 400
+#: The longest new text of a save: the head lines and the whole text must fit
+#: on one card (``acb_common.card_body.CARD_CLIP``, the clip of
+#: ``ask_tools.request_confirmation``).
+CONTENT_MAX = CARD_CLIP - _HEAD_ROOM
+#: The characters that the card draws as no line break, though a file reads
+#: them as one: a carriage return that is not before a new line, U+2028 and
+#: U+2029.
+_FALSE_BREAK = re.compile("\r(?!\n)|[\u2028\u2029]")
 #: The rows of one page, by default and at most.
 DEFAULT_ROWS = 25
 MAX_ROWS = 50
@@ -136,6 +153,9 @@ _BAD_CONTENT = "Send the new text of the file as text. Nothing changed."
 _TOO_LONG = ("The new text is too long to show in full on one card ({n} characters, and a "
              "card holds {max}). Make the text shorter, or change the file in the Files panel. "
              "Nothing changed.")
+_FALSE_BREAK_TEXT = ("The new text holds a carriage return that is not before a new line, or a "
+                    "Unicode line separator. The card cannot show it as the file reads it. "
+                    "Use a plain new line. Nothing changed.")
 _NOT_INPUT = ("Only an upload in inputs can move to Agent Data. Read the file list for the "
               "paths. Nothing changed.")
 _CHANGED = ("The file changed after the card showed, so nothing was sent. Read the file list "
@@ -232,8 +252,10 @@ def _path(raw: Any, *, panel: bool = True) -> tuple[str, str]:
     history read takes a path in any folder of the list."""
     if not isinstance(raw, str):
         return "", _BAD_PATH
-    text = raw.strip().replace("\\", "/").lstrip("/")
-    if not text or len(text) > MAX_PATH_CHARS or not text.isprintable():
+    text = raw.strip().replace("\\", "/")
+    # A leading "/" is no path of the list. The tool refuses it, and never
+    # strips it, so the card names the path that the model sent.
+    if not text or text.startswith("/") or len(text) > MAX_PATH_CHARS or not text.isprintable():
         return "", _BAD_PATH
     problem = hidden_problem(text, "path")
     if problem is not None:
@@ -350,6 +372,26 @@ def _history_row(r: dict[str, Any]) -> dict[str, Any]:
         "size": int(r.get("size") or 0),
         "when": _line(r.get("created_at"), 40),
     }
+
+
+def _card_text(content: str, old_size: int) -> str:
+    """The body of a save card: two head lines, then *content* as it is.
+
+    No head line holds a colon, so the card of the web app reads no field in
+    the body, and it draws the body as one text (``parseCardBody``). The card
+    and ``request_confirmation`` strip the end of the body, so the second line
+    counts the white space at the end of the text."""
+    size = len(content.encode("utf-8"))
+    lines = content.count("\n") + 1 if content else 0
+    head = ("Below these two lines is the whole new text of the file, as the save writes it. "
+            "It replaces all of the text.")
+    counts = (f"The file has {old_size} bytes now. The new text has {size} bytes, "
+              f"{len(content)} characters and {lines} lines, to the end of this card.")
+    tail = len(content) - len(content.rstrip())
+    if tail:
+        counts += (f" After its last character that shows, the text has {tail} more "
+                   "white space characters, such as a new line.")
+    return f"{head}\n{counts}\n{content}"
 
 
 async def _approved(title: str, detail: str, member: str, context: str = "") -> bool:
@@ -469,6 +511,8 @@ async def edit_chat_file(path: str, content: str) -> dict[str, Any]:
     problem = hidden_problem(content, "content")
     if problem is not None:
         return _refusal(f"{problem} Nothing changed.")
+    if _FALSE_BREAK.search(content):
+        return _refusal(_FALSE_BREAK_TEXT)
     if len(content) > CONTENT_MAX:
         return _refusal(_TOO_LONG.format(n=len(content), max=CONTENT_MAX))
     rows, why = await _files(member, sid)
@@ -478,10 +522,12 @@ async def edit_chat_file(path: str, content: str) -> dict[str, Any]:
     if row is None:
         return _refusal(_NOT_IN_LIST)
     before = _snapshot(row)
-    new_size = len(content.encode("utf-8"))
-    detail = (f"{_line(rel, MAX_PATH_CHARS)}: the new text replaces all of the text. "
-              f"Now {int(row.get('size') or 0)} bytes, after the save {new_size} bytes.")
-    if not await _approved("Save this file?", detail, member, context=content):
+    card = _card_text(content, int(row.get("size") or 0))
+    if len(card.strip()) > CARD_CLIP:
+        # Fail closed: a card that the clip cuts does not show the whole text.
+        return _refusal(_TOO_LONG.format(n=len(content), max=CONTENT_MAX))
+    detail = f"{_line(rel, MAX_PATH_CHARS)}: the new text replaces all of the text."
+    if not await _approved("Save this file?", detail, member, context=card):
         return _not_done("edit")
     why = await _still(member, sid, rel, before)
     if why:
