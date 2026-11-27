@@ -1515,6 +1515,15 @@ class TestTheLowerSet:
               "overdue": {"shown": 9, "acted": 0, "not_useful": 2},
               "stale_next": {"shown": 3, "acted": 3, "not_useful": 3}}
 
+    @pytest.mark.parametrize("raw", [None, "", "not json", '"approval"',
+                                     '{"approval": 1}', "[1]", '["approval", 1]', "null"])
+    def test_a_stored_value_that_is_no_list_of_kinds_is_a_miss(self, raw):
+        assert state._stored_lowered(raw) is None
+
+    def test_a_stored_list_of_kinds_is_the_set(self):
+        assert state._stored_lowered('["approval", "overdue"]') == {"approval", "overdue"}
+        assert state._stored_lowered("[]") == frozenset()
+
     def test_three_not_useful_lower_the_kind_for_the_member_only(
             self, fakes, taught):  # noqa: F811
         taught.counts[ME] = self.COUNTS
