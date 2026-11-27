@@ -718,6 +718,22 @@ class TestARefusedQuestionLeavesNoOpenRun:
         assert len(gw.starts()) == 2
         assert gw.releases() == []
 
+    @pytest.mark.parametrize(("detail", "text"), [
+        (agent_oauth.WRITE_CAP_DETAIL, tools.TEXT_CALL_CAP),
+        (agent_oauth.WRITE_ROW_CAP_DETAIL, tools.TEXT_ROW_CAP),
+    ], ids=["calls", "rows"])
+    async def test_b6b_a_real_cap_detail_keeps_the_run(self, gw, detail, text):
+        """MCP-G28a (D209) after the merge with CIV-14b. The real gateway
+        names its counter in the detail of the 429, so the edge gives the
+        text of that counter, not ``TEXT_CAP``. That text keeps the run too,
+        as b6 does. Mutation: let ``tools._refused`` check ``TEXT_CAP``
+        only, and a release goes out here."""
+        gw.release_answer = (429, {"detail": detail})
+        result = await self._ask(gw, (429, {"detail": detail}))
+        assert _text(result) == text
+        assert len(gw.starts()) == 1
+        assert gw.releases() == []
+
     async def test_b7_a_question_that_never_left_the_edge_releases_the_run(self, gw):
         """Fix round 3, item 2. A connect error means no byte of the question
         went out, so the gateway wrote nothing. The call answers the busy

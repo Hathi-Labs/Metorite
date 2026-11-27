@@ -180,6 +180,10 @@ TEXT_CALL_CAP = (
 TEXT_ROW_CAP = (
     "Too many changes. This connection changed all of the rows that it may"
     " change for now. Wait a few minutes.")
+#: The three texts of a 429 of a write. A caller that must know "the cap
+#: refused this" checks this set, never one text, so a new counter text
+#: cannot slip past it (``_BULK_STOP_TEXTS``, ``_refused``).
+_CAP_TEXTS: frozenset[str] = frozenset({TEXT_CAP, TEXT_CALL_CAP, TEXT_ROW_CAP})
 #: MCP-G10. The seconds of a wait that an agent sees, at most. A header value
 #: beyond it is a fault, and the edge does not pass it on.
 MAX_RETRY_AFTER_S = 3600
@@ -7608,8 +7612,7 @@ TEXT_BULK_STOPPED = (
     "Metorite refused this connection, so it did not try this item. Nothing"
     " changed for this task.")
 #: The texts after which no later item can land, so the call sends no more.
-_BULK_STOP_TEXTS: frozenset[str] = frozenset({
-    TEXT_CAP, TEXT_CALL_CAP, TEXT_ROW_CAP, TEXT_WRITES_OFF})
+_BULK_STOP_TEXTS: frozenset[str] = _CAP_TEXTS | {TEXT_WRITES_OFF}
 
 _BULK_UPDATE_INPUT: dict[str, Any] = {
     "type": "object",
@@ -10763,16 +10766,18 @@ async def _question_images(ctx: Context, task_id: str, ids: list[str]) -> None:
 
 def _refused(error: ToolError) -> bool:
     """True when the gateway refused a write and a release can follow: a
-    write that never left the edge, and every tool error but two texts.
+    write that never left the edge, and every tool error but the busy text
+    and the cap texts.
 
     * The busy text. A busy answer can come after the write landed (CIV-14b
       fix round 2).
-    * The cap text (fix round 3). The cap counts each write, so the release
+    * The cap texts (fix round 3). The cap counts each write, so the release
       gets 429 too. The run stays, and after the wait a retry with the same
-      key asks on that run."""
+      key asks on that run. MCP-G28a: a 429 of the gateway names its
+      counter, so each text of :data:`_CAP_TEXTS` keeps the run."""
     if isinstance(error, _NotSent):
         return True
-    return error.text not in (TEXT_BUSY, TEXT_CAP)
+    return error.text != TEXT_BUSY and error.text not in _CAP_TEXTS
 
 
 async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
