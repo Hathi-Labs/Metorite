@@ -235,12 +235,25 @@ async def _provider_for_message(db: Any, message_id: str, user_email: str):
 #: of a row, for a trash that checks it. The IMAP sync keeps the Message-ID
 #: as the thread id and leaves ``internet_message_id`` empty, so the read
 #: falls back to ``thread_id``, as ``reply_card._read_reply_to`` does.
+#:
+#: Task 4100: a Drafts or Sent row reads no ``thread_id``. The IMAP parse puts
+#: the In-Reply-To of the parent in ``thread_id`` when a mail has no
+#: Message-ID, and an old Drafts or Sent row holds a bare UID that can name
+#: that parent in INBOX. So such a row gives NULL, and its trash moves nothing.
+#: Since task 4100 the parse stores the mail's own Message-ID in
+#: ``internet_message_id``, which wins for each folder. The gate names the
+#: folders and not ``inbox``, because the delete route and the bulk route
+#: write ``folder = 'trash'`` before this read. Known limit: an old Drafts or
+#: Sent row that those two routes trash has already lost its folder here.
+_STORED_MESSAGE_ID_EXPR = (
+    "COALESCE(NULLIF(internet_message_id, ''),"
+    " CASE WHEN LOWER(COALESCE(folder, '')) NOT IN ('drafts', 'draft', 'sent')"
+    " THEN thread_id END)")
 _STORED_MESSAGE_ID_SQL = (
-    "SELECT COALESCE(NULLIF(internet_message_id, ''), thread_id) AS message_id"
+    f"SELECT {_STORED_MESSAGE_ID_EXPR} AS message_id"
     " FROM email_messages WHERE id = CAST(:id AS uuid)")
 _STORED_MESSAGE_IDS_SQL = (
-    "SELECT provider_message_id,"
-    " COALESCE(NULLIF(internet_message_id, ''), thread_id) AS message_id"
+    f"SELECT provider_message_id, {_STORED_MESSAGE_ID_EXPR} AS message_id"
     " FROM email_messages"
     " WHERE account_id = CAST(:aid AS uuid) AND provider_message_id = ANY(:pmids)")
 
@@ -253,6 +266,24 @@ async def _trash_message_id(db: Any, provider: Any, message_id: str) -> str | No
     an Outlook trash makes no extra read. A row with no value gives None, and
     the IMAP trash then raises and moves nothing."""
     if not trash_checks_message_id(provider):
+        return None
+    row = (await db.execute(text(_STORED_MESSAGE_ID_SQL),
+                            {"id": message_id})).fetchone()
+    return (getattr(row, "message_id", None) or None) if row else None
+
+
+async def _stored_message_id_before_trash(db: Any, message_id: str) -> str | None:
+    """The stored Message-ID of row ``message_id``, read BEFORE a write that
+    sets its folder to ``trash`` (task 4100, review P2).
+
+    ``_STORED_MESSAGE_ID_EXPR`` gates on the folder, so a read after that
+    write sees ``trash`` and loses the gate of a Drafts or Sent row. The
+    caller keeps this value and uses it only for a provider whose trash
+    checks it (``trash_checks_message_id``). An id that is no uuid gives
+    None, and the read sends nothing to the database."""
+    try:
+        UUID(str(message_id))
+    except ValueError:
         return None
     row = (await db.execute(text(_STORED_MESSAGE_ID_SQL),
                             {"id": message_id})).fetchone()

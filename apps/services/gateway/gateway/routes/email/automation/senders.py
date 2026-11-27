@@ -34,6 +34,7 @@ from gateway.routes.email.core import (
     _assert_account_owner,
     _llm_json,
     _log,
+    _STORED_MESSAGE_ID_EXPR,
     _owned_accounts_sql,
     _savepoint,
     _tenant_session,
@@ -462,11 +463,24 @@ async def bulk_action(
         # Doing it in a single statement (rather than SELECT-then-UPDATE-by-id)
         # keeps the write atomic and avoids shipping a 50k-element id array back
         # into the next query.
+        #
+        # Task 4100 (review P2): the CTE reads the stored Message-ID of each row
+        # BEFORE the UPDATE writes ``trash``. The folder gate of
+        # ``_STORED_MESSAGE_ID_EXPR`` must still see a Drafts or Sent row. The
+        # CTE and the UPDATE read one snapshot, so ``trash_mid`` is the old row.
+        # ``UPDATE ... FROM pre`` is one join, so a sweep of 50,000 rows stays
+        # linear (re-review P1).
         rows = (await db.execute(text(
-            f"""UPDATE email_messages SET {_BULK_DB_UPDATE[req.action]},
+            f"""WITH pre AS (
+                    SELECT em.id, {_STORED_MESSAGE_ID_EXPR} AS trash_mid
+                      FROM email_messages em WHERE {where_sql})
+                UPDATE email_messages SET {_BULK_DB_UPDATE[req.action]},
                        updated_at = now()
-                 WHERE id IN (SELECT em.id FROM email_messages em WHERE {where_sql})
-             RETURNING id, provider_message_id, account_id, from_address"""
+                  FROM pre
+                 WHERE email_messages.id = pre.id
+             RETURNING email_messages.id, email_messages.provider_message_id,
+                       email_messages.account_id, email_messages.from_address,
+                       pre.trash_mid"""
         ), params)).fetchall()
         if not rows:
             return {"affected": 0}
@@ -484,10 +498,17 @@ async def bulk_action(
 
         # Group provider message ids per account for background reconciliation.
         per_account: dict[str, list[str]] = {}
+        mids: dict[str, dict[str, str | None]] = {}
         for r in rows:
             per_account.setdefault(str(r.account_id), []).append(r.provider_message_id)
+            mids.setdefault(str(r.account_id), {})[r.provider_message_id] = (
+                getattr(r, "trash_mid", None) or None)
         for aid, pmids in per_account.items():
-            background.add_task(_bulk_reconcile_provider, aid, pmids, req.action)
+            if req.action == "trash":  # task 4100: the ids read before the UPDATE
+                background.add_task(_bulk_reconcile_provider, aid, pmids,
+                                    req.action, stored_message_ids=mids[aid])
+            else:
+                background.add_task(_bulk_reconcile_provider, aid, pmids, req.action)
 
         return {"affected": len(rows)}
 
@@ -501,7 +522,8 @@ _RECONCILE_BACKOFF_S = (2, 8)
 
 
 async def _bulk_reconcile_provider(
-    account_id: str, provider_msg_ids: list[str], action: str
+    account_id: str, provider_msg_ids: list[str], action: str,
+    *, stored_message_ids: dict[str, str | None] | None = None,
 ) -> None:
     """Push a bulk action to the provider (runs in background), retrying what
     fails and never leaving the local mirror claiming work that didn't happen.
@@ -543,8 +565,13 @@ async def _bulk_reconcile_provider(
             pending = list(provider_msg_ids)
             # Task 4095: the IMAP trash checks the stored Message-ID of each
             # row. Other providers and actions pass nothing new.
+            # Task 4100: the bulk route passes the ids that it read before its
+            # UPDATE wrote ``trash``. A provider whose trash does not check
+            # them gets nothing new, as before.
             stored = (await _trash_message_ids(db, sess.provider, account_id,
                                                pending) if action == "trash" else None)
+            if stored is not None and stored_message_ids is not None:
+                stored = {p: stored_message_ids.get(p) for p in pending}
             check = {} if stored is None else {"message_ids": stored}
             for attempt in range(_RECONCILE_ATTEMPTS):
                 failed: list[str] = []

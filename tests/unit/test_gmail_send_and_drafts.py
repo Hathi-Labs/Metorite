@@ -788,7 +788,8 @@ def _draft_row(pmid: str, *, to: tuple[str, ...] = (RAVI,),
     return SimpleNamespace(
         provider_message_id=pmid, subject="Re: Quote", body_text="Thanks",
         to_addresses=_listed(*to), cc_addresses=_listed(*cc),
-        bcc_addresses=_listed(*bcc), thread_id="t-1", body_html=None)
+        bcc_addresses=_listed(*bcc), thread_id="t-1", body_html=None,
+        internet_message_id="<own-1@test>")
 
 
 async def test_a_signed_send_sends_the_id_that_the_update_returns(
@@ -994,8 +995,10 @@ async def test_the_imap_fallback_sends_each_to_cc_and_bcc(
     sent = imap.send_message.await_args.kwargs
     assert sent["to"] == [RAVI, "meera@contoso-em-g3a.test"]
     assert sent["cc"] == [LEAD] and sent["bcc"] == [AUDIT]
-    # Task 4095: the IMAP trash gets the thread id of the row as its Message-ID.
-    imap.trash_message.assert_awaited_once_with("draft-Drafts", message_id="t-1")
+    # Task 4100: the IMAP trash gets the draft's OWN Message-ID, never the
+    # thread id, which can name the parent mail.
+    imap.trash_message.assert_awaited_once_with(
+        "draft-Drafts", message_id="<own-1@test>")
 
 
 def _forwarded_draft(name: str | None) -> bytes:

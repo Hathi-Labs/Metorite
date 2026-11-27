@@ -347,7 +347,8 @@ def _drow(thread_id: str | None = "t-1") -> SimpleNamespace:
     return SimpleNamespace(
         provider_message_id="pm-1", subject="Re: Quote",
         to_addresses=[{"email": "Ravi@Contoso.test"}, {"email": "kim@contoso.test"}],
-        cc_addresses=[], bcc_addresses=[], body_text="Hi", thread_id=thread_id)
+        cc_addresses=[], bcc_addresses=[], body_text="Hi", thread_id=thread_id,
+        internet_message_id=None)  # task 4100: the trash reads it
 
 
 def _member() -> Any:

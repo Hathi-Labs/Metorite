@@ -16,7 +16,12 @@ from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
-from email_ingestion.providers.base import canonical_folder, local_folder_after_move, trash_checked
+from email_ingestion.providers.base import (
+    canonical_folder,
+    local_folder_after_move,
+    trash_checked,
+    trash_checks_message_id,
+)
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from gateway.routes.email import act_features
@@ -44,7 +49,7 @@ from gateway.routes.email.core import (
     _row_to_message,
     _savepoint,
     _tenant_session,
-    _trash_message_id,
+    _stored_message_id_before_trash,
     _truncate_body,
     folder_scope,
     router,
@@ -1415,6 +1420,10 @@ async def delete_message(
     and the next sync can bring the message back. ``reason`` is one fixed
     word, and never the text of an error."""
     async with _tenant_session() as db:
+        # Task 4100 (review P2): read the stored Message-ID BEFORE the UPDATE
+        # below writes ``trash``, so the folder gate of the read still sees a
+        # Drafts or Sent row. It is used only for an IMAP trash.
+        pre_mid = await _stored_message_id_before_trash(db, message_id)
         result = await db.execute(
             text(
                 """UPDATE email_messages SET folder = 'trash', updated_at = now()
@@ -1438,7 +1447,7 @@ async def delete_message(
             built = await _provider_for_message(
                 db, message_id, user.email or "anonymous"
             )
-            stored_mid = await _trash_message_id(db, built[0], message_id)
+            stored_mid = pre_mid if trash_checks_message_id(built[0]) else None
         except Exception as exc:  # noqa: BLE001
             push_error = exc
 
