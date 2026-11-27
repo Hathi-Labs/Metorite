@@ -280,7 +280,6 @@ export function durationText(iso: string | null | undefined, now: number): strin
   return `${Math.floor(hours / 24)} d ${hours % 24} h`;
 }
 
-/** "Claude Code asked 3 h ago". */
 /**
  * The name of the agent that asked: "<lane> on <client>" when the run has a
  * label, else the client name. Null when both are absent. Task 4071.
@@ -291,6 +290,7 @@ export function agentName(r: Pick<QuestionRow, "agent_name" | "agent_label">): s
   return r.agent_name ? `${label} on ${r.agent_name}` : label;
 }
 
+/** "Claude Code asked 3 h ago", or "lane-devx on Box metorite-home asked 3 h ago". */
 export function askedLine(r: Pick<QuestionRow, "agent_name" | "agent_label" | "asked_at">, now: number): string {
   const agent = agentName(r) || "An agent";
   const age = ageText(r.asked_at, now);
