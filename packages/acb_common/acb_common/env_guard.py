@@ -465,6 +465,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "METORITE_ALARM_CHANNEL", "METORITE_ALARM_CREDS", "METORITE_ALARM_GH_REPO",
     "METORITE_ALARM_GH_USER", "METORITE_ALARM_HOST", "METORITE_ALARM_LOG",
     "METORITE_ALARM_STATE",
+    # CIV-ORCH (task 4058): the lane keeper's cursor of orch-events.log, for
+    # tests. A tenant must never save it.
+    "KEEPER_ORCH_CURSOR",
     # SBX-13: the sandbox door client reads the run capability from this name
     # (sandbox/metorite_door.py). The broker sets it in the tool container. A
     # tenant must never save it.

@@ -446,6 +446,51 @@ the cause, and run the check again. Then delete the folder.
    `bash scripts/worktree.sh remove <slug>`. Before you remove one, push any
    commit that is on no remote.
 
+### 3.10 The orchestrator lane and its watch (CIV-ORCH)
+
+The orchestrator watch ran on the owner's PC, and it stopped when the PC shut
+down. Now the box runs it (task 4058). Two parts do the work:
+
+- `metorite-orch-watch.timer` runs `scripts/home_server/orch_watch.py` every
+  5 minutes. One pass writes one line to `~/lanes/orch-events.log` for each
+  new event. An event is an idle lane, a silent lane-merge, or a new queue
+  line. A queue line is `BACK`, `HOLD` or `RED` in `~/lanes/merge-queue.log`,
+  or `BACK` or `RED` in `~/lanes/merge-bot.log`. The header of the script
+  holds the rules. It uses no model and reads no credential, so the memory
+  floor of lane rule 11 does not apply.
+- The lane keeper (§3.7) wakes `lane-orch` when the log has lines after the
+  cursor `~/.local/state/metorite/orch_events.cursor`. It wakes it one time
+  for each new batch. Only events wake lane-orch. The plain 30-minute wake
+  leaves it out. Its role is `scripts/home_server/lanes/lane-orch.md`.
+
+| File on the box | What it does |
+|---|---|
+| `~/lanes/orch-events.log` | One `EVENT` line for each new event. |
+| `~/lanes/orch_resting.txt` | Lanes that rest on purpose. Each line starts with a lane name or a session id. The watch skips them. |
+| `~/.local/state/metorite/orch_watch.json` | The conditions that the watch reported, so it does not repeat one. |
+| `~/.local/state/metorite/orch_watch.pos` | The place in `merge-queue.log`. |
+| `~/.local/state/metorite/orch_watch_bot.pos` | The place in `merge-bot.log`. |
+| `~/.local/state/metorite/orch_events.cursor` | The count of event lines that lane-orch handled. |
+
+The timer ships DISABLED. After the merge, the owner or lane-devx does these
+steps on the box:
+
+1. Run `bash scripts/home_server/orch_watch.sh install`. It fetches
+   `origin/main` and takes each file from there with `git show`, never from
+   the working tree. It copies `orch_watch.py`, `lane_keeper.py` and
+   `secret_shapes.py` to `~/.local/lib/metorite`, and the units to
+   `~/.config/systemd/user`. It enables nothing. `secret_shapes.py` is the one
+   credential list (task 1272). The watch scrubs each detail with it.
+2. Run `bash scripts/home_server/orch_watch.sh enable`. This is OWNER-GATE
+   `deploy`.
+3. Write the start note `~/lanes/start/lane-orch.txt` from `lane-orch.md` and
+   `lane-rules.md` (§3.2).
+4. Add `lane-orch` to `~/lanes/keeper-lanes.txt`.
+5. Stop the PC loop `~/lanes/orch_watch.sh` on the PC, so that two watches do
+   not run.
+
+To stop the watch, run `bash scripts/home_server/orch_watch.sh disable`.
+
 ---
 
 ## 4. Remote Control and the web UI
