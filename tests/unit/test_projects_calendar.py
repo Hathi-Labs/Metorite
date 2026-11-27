@@ -218,6 +218,10 @@ NOT_ON_THE_CALENDAR = {
     # hand order to be an order OF, so accepting it would declare a parameter
     # the endpoint could not act on. Excluded rather than added, deliberately.
     "view_id",
+    # WS-39 SP-3a. Only the Backlog canvas sends `cycle=none`, from its own
+    # query. A calendar is laid out by date and has no backlog, so it cannot
+    # drop the parameter silently. The export names it for the same reason.
+    "cycle",
     # EA-14a. An AGENT's filter: the MCP `list_tasks` sends it to find a task
     # no other AI session holds. The board never sends it, so the calendar
     # cannot drop it silently.
@@ -235,6 +239,13 @@ NOT_ON_THE_CALENDAR = {
     # them silently. `compact` is a row shape, not a filter.
     "has_parent", "is_epic", "assigned", "updated_before", "updated_after",
     "created_after", "title_prefix", "compact",
+    # MCP-G19c. The type filters and the task number of the agent door. The
+    # board never sends them, so the calendar cannot drop them silently.
+    "type_id", "type_name", "task_number",
+    # WS-39 T-1 (task 2532). The team scope, dark behind TEAMS_ORGS. No screen
+    # sends it yet. T-2 (task 2533) builds the team chip, and the calendar
+    # must take the value in that slice, before the chip sends it.
+    "team",
 }
 
 

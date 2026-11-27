@@ -20,8 +20,10 @@ import { leaveAccount } from "@/lib/accountLeave";
 import { signOut } from "next-auth/react";
 import { clearAccountNamespaces } from "@/lib/sessions";
 import { FORGET_TIMEOUT_MS, forgetThisDevice, thisDeviceEndpoint } from "@/lib/push";
+import { clearOutbox } from "@/lib/chatOutbox";
 import { safeLocalPath, signInUrl } from "@/lib/orgLink";
 import { clearAppearanceForAccounts, pointAppearanceAt } from "@/lib/theme/scope";
+import { clearPinSuggestForAccounts } from "@/lib/shell/pinSuggestStore";
 
 /**
  * The keys that belong to one organization. Each test in
@@ -241,6 +243,7 @@ export async function switchTo(
     /* no body: the backstop still runs */
   }
   clearOrgScopedStorage();
+  clearOutbox(); // HRD-17b
   leaveAccount();
   go(safeLocalPath(target) ?? "/");
   return true;
@@ -260,6 +263,7 @@ export async function addAccount(
   const res = await act("stash", await pushEndpointBody());
   if (!res.ok) return false;
   clearOrgScopedStorage();
+  clearOutbox(); // HRD-17b
   go(callbackUrl === undefined ? "/signin?add=1" : signInUrl(callbackUrl, true));
   return true;
 }
@@ -395,6 +399,8 @@ export async function signOutThis(
   // names the leaving account, so the DELETE deletes ITS row. `next` stays on
   // this browser and shares its one subscription, so the subscription stays.
   // It never throws and gives up after a few seconds, so the sign-out goes on.
+  // HRD-17b: a waiting chat message belongs to the leaving member.
+  clearOutbox();
   await forgetThisDevice(FORGET_TIMEOUT_MS, { keepSubscription: true });
   // True once the server swapped the cookie to `next`. From then on this tab
   // must never stay on the leaving account's page.
@@ -430,6 +436,7 @@ export async function signOutThis(
     if (!(await removed(next.slot)) && !(await removed(next.slot))) return await fallBack();
     clearAccountNamespaces([activeEmail]);
     clearAppearanceForAccounts([activeEmail]);
+    clearPinSuggestForAccounts([activeEmail]);
     clearOrgScopedStorage();
     leaveAccount();
     go("/");
@@ -461,6 +468,7 @@ export async function signOutThis(
 export async function signOutAll(): Promise<void> {
   // WS-66 PN-1: first, while the session still names the active account.
   // It never throws, so the sign-out below always runs.
+  clearOutbox(); // HRD-17b
   await forgetThisDevice();
   try {
     const res = await act("signout-all");
@@ -469,6 +477,7 @@ export async function signOutAll(): Promise<void> {
     // The same accounts' appearance keys, which carry each address in their
     // names (lib/theme/scope.ts).
     clearAppearanceForAccounts(body.emails ?? []);
+    clearPinSuggestForAccounts(body.emails ?? []);
   } catch {
     /* the sign-out below still runs */
   }

@@ -37,14 +37,14 @@ import json
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, NamedTuple
 from uuid import UUID
 
 from acb_auth import require_feature_router
-from acb_common import get_logger
+from acb_common import get_logger, name_match
 
 # The shared seam (BO-10 / D-CRM-4 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -469,6 +469,38 @@ OPEN_LEAD_SQL = (
 
 
 @dataclass(frozen=True)
+class RelatedSearch:
+    """A ``?q=`` match on the names of a related table (CRM-X1, HRD-18a).
+
+    :func:`related_hits` reads each one ONCE for a request, before the list
+    query. So the count, the page and each lane of the board share one read,
+    and the list query holds no sub-select. Each text is a constant of THIS
+    module, never caller text. FORCE RLS keeps each read in the tenant of the
+    session.
+    """
+
+    #: The FROM of the read, with its aliases.
+    source: str
+    #: The name columns that a word matches, by the aliases of :attr:`source`.
+    columns: tuple[str, ...]
+    #: Each link: an expression of :attr:`source`, and the column of the
+    #: entity that its value fills.
+    links: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class RelatedHits:
+    """What each word of ``?q=`` reaches through a name (HRD-18a).
+
+    One dict for each word of :func:`search_words`: a column of the entity,
+    and the values that the word reaches in it. :func:`related_hits` builds
+    the exact hits. The near pass builds its own, of the near names.
+    """
+
+    words: tuple[dict[str, tuple[str, ...]], ...] = ()
+
+
+@dataclass(frozen=True)
 class Entity:
     """One CRM record type, and everything generic code needs to know about it."""
 
@@ -488,10 +520,10 @@ class Entity:
     default_sort: str
     #: Columns ``?q=`` matches with ILIKE.
     search: tuple[str, ...] = ()
-    #: More ``?q=`` predicates, each a SQL constant of THIS module that reads
-    #: the bound ``:q`` (WS-53 CRM-X1). :func:`list_contract` adds each one to
-    #: the OR group of :attr:`search`. Never caller text.
-    search_sql: tuple[str, ...] = ()
+    #: The names of related tables that ``?q=`` matches too (WS-53 CRM-X1,
+    #: HRD-18a). :func:`search_where` adds each one to the OR group of each
+    #: word, beside :attr:`search`.
+    related_search: tuple[RelatedSearch, ...] = ()
     #: Phone columns that ``?q=`` also matches on their digits alone, so
     #: "98450 12345" finds "+91-98450-12345" (CRM-X1 review round 1). Each
     #: name is a constant of this module, never caller text.
@@ -612,10 +644,24 @@ DEALS = Entity(
     },
     default_sort="last_activity_at",
     search=("name", "next_step"),
-    # A deal also matches the name of its company (CRM-X1). FORCE RLS keeps
-    # the inner read in the tenant of the session.
-    search_sql=(
-        "company_id IN (SELECT c.id FROM crm_companies c WHERE c.name ILIKE :q)",
+    # A deal also matches the name of its company (CRM-X1), the names of its
+    # contacts and the name of its source lead (HRD-18a). A lead is the
+    # source when it converted into the deal, or when the deal names it.
+    # FORCE RLS keeps each inner read in the tenant of the session.
+    related_search=(
+        RelatedSearch(
+            source="crm_companies c", columns=("c.name",),
+            links=(("c.id", "company_id"),),
+        ),
+        RelatedSearch(
+            source="crm_contacts c JOIN crm_deal_contacts dc ON dc.contact_id = c.id",
+            columns=("c.first_name", "c.last_name"),
+            links=(("dc.deal_id", "id"),),
+        ),
+        RelatedSearch(
+            source="crm_leads l", columns=("l.lead_name",),
+            links=(("l.converted_deal_id", "id"), ("l.id", "lead_id")),
+        ),
     ),
     status_table="crm_deal_statuses",
     cascades=(
@@ -848,8 +894,13 @@ def status_wire(row: Any) -> StatusModel:
 ADMIN_ORDER_TAIL = 1_000_000
 
 
-def _effective_columns(table: str, *, deal: bool) -> str:
-    """The SELECT list of one status table, over the alias ``s``."""
+def _effective_columns(table: str, *, deal: bool, membership: str | None = None) -> str:
+    """The SELECT list of one status table, over the alias ``s``.
+
+    *membership* is the alias of a ``crm_pipeline_stages`` row of the read
+    (CRM-M3b, D166). Then the win chance and the warning days come from that
+    row, and a NULL there reads the stage row. The Mirror overlay
+    ``ui_probability`` still wins over both."""
     # A scalar subquery with no WHERE: row level security binds it to the
     # tenant, and it reads the whole kind even when the outer read is a subset.
     ordered = f"(SELECT bool_or(o.ui_position IS NOT NULL) FROM {table} o)"
@@ -864,13 +915,18 @@ def _effective_columns(table: str, *, deal: bool) -> str:
         "COALESCE(s.ui_color, s.color) AS color",
     ]
     # Both kinds carry a win chance since migration 288 (CRM-U6).
+    source = f"COALESCE({membership}.probability, s.probability)" if membership else "s.probability"
     columns += [
-        "s.ui_probability", "s.probability AS source_probability",
-        "COALESCE(s.ui_probability, s.probability) AS probability",
+        "s.ui_probability", f"{source} AS source_probability",
+        f"COALESCE(s.ui_probability, {source}) AS probability",
     ]
     if deal:
+        dwell = (
+            f"COALESCE({membership}.max_dwell_days, s.max_dwell_days)"
+            if membership else "s.max_dwell_days"
+        )
         columns += [
-            "s.required_fields", "s.max_dwell_days", "s.forecast_category",
+            "s.required_fields", f"{dwell} AS max_dwell_days", "s.forecast_category",
         ]
     return ", ".join(columns)
 
@@ -887,6 +943,15 @@ EFFECTIVE_STATUS_COLUMNS: dict[str, str] = {
     "crm_lead_statuses": _effective_columns("crm_lead_statuses", deal=False),
 }
 
+#: CRM-M3b (D166, migration 513): the SELECT list of a deal stage ``s`` in one
+#: deal pipeline, over its membership ``ps`` (``crm_pipeline_stages``). The win
+#: chance is ``COALESCE(s.ui_probability, ps.probability, s.probability)``, and
+#: the warning days are ``COALESCE(ps.max_dwell_days, s.max_dwell_days)``. A
+#: read with no membership row (a LEFT JOIN that found none) reads the stage
+#: row, as :data:`EFFECTIVE_STATUS_COLUMNS` does. ``GET /crm/statuses/{kind}``
+#: keeps that list, because it serves the stage row.
+PIPELINE_STAGE_COLUMNS = _effective_columns("crm_deal_statuses", deal=True, membership="ps")
+
 
 async def read_statuses(db: Any, table: str) -> list[Any]:
     """Each row of one status table, with the effective values, in lane order."""
@@ -896,6 +961,28 @@ async def read_statuses(db: Any, table: str) -> list[Any]:
             "ORDER BY position, name"
         ),
         {},
+    )).fetchall())
+
+
+async def read_deal_stages(db: Any, pipeline_id: str | None = None) -> list[Any]:
+    """Each deal stage, with the values of its membership of one deal pipeline,
+    in lane order (CRM-M3b).
+
+    The pipeline is *pipeline_id*, else the default deal pipeline: the board
+    of all pipelines and the reports read the default one. A stage that the
+    pipeline does not list reads its stage row. With no deal pipeline at all,
+    this is :func:`read_statuses`."""
+    target = pipeline_id or await default_pipeline_id(db)
+    if not target:
+        return await read_statuses(db, "crm_deal_statuses")
+    return list((await db.execute(
+        text(
+            f"SELECT {PIPELINE_STAGE_COLUMNS} FROM crm_deal_statuses s "
+            "LEFT JOIN crm_pipeline_stages ps ON ps.status_id = s.id "
+            "AND ps.pipeline_id = CAST(:pipeline_id AS uuid) "
+            "ORDER BY position, name"
+        ),
+        {"pipeline_id": str(target)},
     )).fetchall())
 
 
@@ -971,16 +1058,68 @@ DIRECTIONS: dict[str, str] = {"asc": "ASC", "desc": "DESC"}
 #: Fewer would match nearly every number.
 MIN_PHONE_DIGITS = 4
 
+#: A ``?q=`` of more words than this is one phrase, as before HRD-18a. It
+#: bounds the size of the SQL.
+MAX_SEARCH_WORDS = 8
+
+#: The longest ``?q=``, in characters. A longer one is a 422, never a slow
+#: read (HRD-18a repair round: 5,000 characters took 33 s).
+MAX_Q_CHARS = 200
+
+#: The most rows of one near pass (HRD-18a). The pass answers page 1 only.
+NEAR_LIMIT = 20
+
+#: The most near rows that the ``also`` mode adds after the exact rows
+#: (HRD-18a repair round). The chat must see «Sharat» beside «Sharath .».
+NEAR_ALSO_LIMIT = 5
+
+#: The most rows that the last read of a near pass orders by nearness.
+NEAR_SCAN = 500
+
+#: The near modes of a list read. ``fallback`` answers the near pass when the
+#: exact read finds no row. ``also`` does that too, and when the exact read
+#: has rows, it adds the near rows that are not exact.
+NEAR_MODES = ("fallback", "also")
+
+
+@dataclass(frozen=True)
+class NearPlan:
+    """The near pass of one list read (HRD-18a). :func:`run_list` runs it.
+
+    ``clauses`` are the clauses of the list, with the exact search clause
+    ``exact`` at ``search_at``. The pass reads candidates with the other
+    clauses, judges them with ``acb_common.name_match``, and reads the near
+    rows with each clause. ``also`` leaves the exact rows out.
+    """
+
+    q: str
+    related: RelatedHits | None
+    clauses: tuple[str, ...]
+    search_at: int
+    params: dict[str, Any]
+    exact: str
+    order_by: str
+    limit: int
+    also: bool = False
+
 
 @dataclass(frozen=True)
 class ListQuery:
-    """A validated list request, rendered as SQL fragments + bound parameters."""
+    """A validated list request, rendered as SQL fragments + bound parameters.
+
+    ``near`` is the near pass of HRD-18a, when the caller asked for one and
+    the query allows one. :func:`run_list` runs it only when this query finds
+    no row. ``also`` is the near pass without the exact rows (the ``also``
+    mode), and :func:`run_list` runs it only when this query finds rows.
+    """
 
     where: str
     order_by: str
     limit: int
     offset: int
     params: dict[str, Any]
+    near: NearPlan | None = None
+    also: NearPlan | None = None
 
 
 def checked_uuid(value: str, what: str) -> str:
@@ -993,28 +1132,161 @@ def checked_uuid(value: str, what: str) -> str:
         ) from None
 
 
-def search_where(entity: Entity, q: str | None) -> tuple[str | None, dict[str, Any]]:
-    """The ONE search predicate of ``?q=`` and its bound values (CRM-X1).
+def search_words(q: str | None) -> list[str]:
+    """The words of ``?q=`` (HRD-18a). Each word must match.
+
+    A word holds a letter or a digit, so a lone dash is no word. A query with
+    no such word, or with more than :data:`MAX_SEARCH_WORDS` words, is one
+    phrase, as before HRD-18a. A query of more than :data:`MAX_Q_CHARS`
+    characters is a 422.
+    """
+    phrase = (q or "").strip()
+    if not phrase:
+        return []
+    if len(phrase) > MAX_Q_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The search is longer than {MAX_Q_CHARS} characters.",
+        )
+    found = [w for w in phrase.split() if any(ch.isalnum() for ch in w)]
+    if not found or len(found) > MAX_SEARCH_WORDS:
+        return [phrase]
+    return found
+
+
+def clip_query(q: str | None) -> str:
+    """*q* cut to :data:`MAX_Q_CHARS` characters at the last word bound.
+
+    For a search that is no route: the command bar and the company search
+    take a longer query (``retrieval/company.MAX_CHARS`` is 300), and a 422
+    there would leave the CRM out. A list route keeps its 422 for a long
+    ``?q=``. One word longer than the cap is cut at the cap.
+    """
+    phrase = " ".join((q or "").split())
+    if len(phrase) <= MAX_Q_CHARS:
+        return phrase
+    head = phrase[:MAX_Q_CHARS + 1]
+    cut = head.rfind(" ")
+    return (head[:cut] if cut > 0 else head[:MAX_Q_CHARS]).strip()
+
+
+def near_words(q: str | None) -> list[tuple[int, str]]:
+    """The words of ``?q=`` that may match nearly, each with its index in
+    :func:`search_words`. None when the query has more than
+    ``name_match.NEAR_MAX_WORDS`` words: a long query gets no near pass, and
+    neither does the one phrase of a query of more than
+    :data:`MAX_SEARCH_WORDS` words."""
+    tokens = [w for w in (q or "").split() if any(ch.isalnum() for ch in w)]
+    if not name_match.near_query(tokens):
+        return []
+    return [(i, w) for i, w in enumerate(tokens) if name_match.near_eligible(w)]
+
+
+def _value_arms(found: dict[str, tuple[str, ...]], key: str,
+                params: dict[str, Any]) -> list[str]:
+    """One ``= ANY`` arm for each column of *found* that holds a value. The
+    column names are constants of this module, and the values are bound."""
+    arms = []
+    for column in sorted(found):
+        if not found[column]:
+            continue
+        params[f"{key}_{column}"] = list(found[column])
+        arms.append(f"{column} = ANY(CAST(:{key}_{column} AS uuid[]))")
+    return arms
+
+
+def _exact_arms(entity: Entity, i: int, related: RelatedHits | None,
+                params: dict[str, Any]) -> list[str]:
+    """The exact arms of word *i*: each search column, and its related hits."""
+    arms = [f"{col} ILIKE :q{i}" for col in entity.search]
+    if related is not None and i < len(related.words):
+        arms += _value_arms(related.words[i], f"r{i}", params)
+    return arms
+
+
+def search_where(
+    entity: Entity, q: str | None, *,
+    related: RelatedHits | None = None, near: RelatedHits | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """The ONE search predicate of ``?q=`` and its bound values (CRM-X1, HRD-18a).
 
     The list contract and the board read (``GET /crm/pipeline``) both call it,
     so a search finds the same deals on both. ``(None, {})`` when there is
     nothing to search for.
+
+    Each word must match one search column or one related name: AND across
+    the words, OR across the columns. A deal also matches the names of its
+    company, its contacts and its source lead. Those come from *related*,
+    which :func:`related_hits` read for this request, so the predicate holds
+    no sub-select. An entity with related names refuses to build without them.
+    *near* adds the near names of the near pass (:func:`run_list`).
     """
-    if not (q and (entity.search or entity.search_sql)):
+    found = search_words(q)
+    if not found or not (entity.search or entity.related_search):
         return None, {}
-    params: dict[str, Any] = {"q": f"%{q.strip()}%"}
-    terms = [*(f"{col} ILIKE :q" for col in entity.search), *entity.search_sql]
-    digits = "".join(ch for ch in q if ch.isascii() and ch.isdigit())
+    if entity.related_search and related is None:
+        raise ValueError(
+            f"{entity.slug}: read related_hits() first, so ?q= matches the "
+            "related names",
+        )
+    params: dict[str, Any] = {}
+    groups: list[str] = []
+    for i, word in enumerate(found):
+        params[f"q{i}"] = f"%{word}%"
+        arms = _exact_arms(entity, i, related, params)
+        if near is not None and i < len(near.words):
+            arms += _value_arms(near.words[i], f"n{i}", params)
+        groups.append(f"({' OR '.join(arms) or 'false'})")
+    clause = " AND ".join(groups)
+    digits = "".join(ch for ch in (q or "") if ch.isascii() and ch.isdigit())
     if entity.phone_search and len(digits) >= MIN_PHONE_DIGITS:
         # The digits are their own bound parameter. The column names are
         # constants of the entity. No index serves this, and none is
         # needed at the size of one tenant's CRM.
         params["q_digits"] = f"%{digits}%"
-        terms += [
+        phones = " OR ".join(
             f"regexp_replace({col}, '\\D', '', 'g') LIKE :q_digits"
             for col in entity.phone_search
+        )
+        clause = f"({clause}) OR {phones}"
+    return f"({clause})", params
+
+
+async def related_hits(db: Any, entity: Entity, q: str | None) -> RelatedHits:
+    """What each word of ``?q=`` reaches through the related names of *entity*.
+
+    One read of each :class:`RelatedSearch`, for all the words at once. The
+    list, the board and the command bar call it before they build the
+    predicate, in the session of their read. An entity with no related name
+    gives no read.
+    """
+    found = search_words(q)
+    hits: list[dict[str, set[str]]] = [{} for _ in found]
+    if not found or not entity.related_search:
+        return RelatedHits(tuple({} for _ in found))
+    params = {f"q{i}": f"%{w}%" for i, w in enumerate(found)}
+    for related in entity.related_search:
+        flags = [
+            "(" + " OR ".join(f"{col} ILIKE :q{i}" for col in related.columns) + ")"
+            for i in range(len(found))
         ]
-    return f"({' OR '.join(terms)})", params
+        picked = [f"{expr} AS link_{j}" for j, (expr, _col) in enumerate(related.links)]
+        picked += [f"{flag} AS hit_{i}" for i, flag in enumerate(flags)]
+        rows = (await db.execute(text(
+            f"SELECT {', '.join(picked)} FROM {related.source} WHERE {' OR '.join(flags)}"
+        ), params)).fetchall()
+        for row in rows:
+            for i in range(len(found)):
+                if not getattr(row, f"hit_{i}", None):
+                    continue
+                for j, (_expr, column) in enumerate(related.links):
+                    value = getattr(row, f"link_{j}", None)
+                    if value is not None:
+                        hits[i].setdefault(column, set()).add(str(value))
+    return RelatedHits(tuple(
+        {column: tuple(sorted(values)) for column, values in word.items()}
+        for word in hits
+    ))
 
 
 def list_contract(
@@ -1032,12 +1304,25 @@ def list_contract(
     pipeline_takes_unset: bool = False,
     extra_where: tuple[str, ...] = (),
     extra_params: dict[str, Any] | None = None,
+    near: bool | str = False,
+    related: RelatedHits | None = None,
 ) -> ListQuery:
     """Validate one list request and render it. The same contract for all four.
 
     Raises 422 for an unknown sort key or direction. That is deliberately not a
     silent fall back to the default: a client sorting by a column it thinks
     exists and quietly getting `created_at` is a bug that survives review.
+
+    *related* is the read of :func:`related_hits` for ``q``. An entity with
+    related names needs it.
+
+    ``near=True`` (or ``"fallback"``) adds the near pass of HRD-18a as
+    ``ListQuery.near``, for page 1 of a query that :func:`near_words` allows.
+    The pass keeps every other filter. It answers at most :data:`NEAR_LIMIT`
+    rows, nearest first. ``near="also"`` adds ``ListQuery.also`` too: the same
+    pass with the exact rows left out, at most :data:`NEAR_ALSO_LIMIT` rows.
+    Only :func:`run_list` runs either, so an export and an aggregate stay
+    exact.
     """
     column = entity.sorts.get(sort or entity.default_sort)
     if column is None:
@@ -1058,7 +1343,8 @@ def list_contract(
     clauses: list[str] = list(extra_where)
     params: dict[str, Any] = dict(extra_params or {})
 
-    search_clause, search_params = search_where(entity, q)
+    search_at = len(clauses)
+    search_clause, search_params = search_where(entity, q, related=related)
     if search_clause:
         clauses.append(search_clause)
         params.update(search_params)
@@ -1099,14 +1385,30 @@ def list_contract(
 
     page = max(1, page)
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    # `column` is a value from the entity's own allowlist and `order` is one
+    # of two literals — neither is caller text.
+    order_by = f"{column} {order} NULLS LAST, id {order}"
+    mode = "fallback" if near is True else (near or "")
+    if mode and mode not in NEAR_MODES:
+        raise ValueError(f"unknown near mode {mode!r}")
+    near_pass: NearPlan | None = None
+    also_pass: NearPlan | None = None
+    if mode and search_clause and page == 1 and near_words(q):
+        near_pass = NearPlan(
+            q=q or "", related=related, clauses=tuple(clauses), search_at=search_at,
+            params=dict(params), exact=search_clause, order_by=order_by,
+            limit=min(page_size, NEAR_LIMIT),
+        )
+        if mode == "also":
+            also_pass = replace(near_pass, limit=NEAR_ALSO_LIMIT, also=True)
     return ListQuery(
         where=(" WHERE " + " AND ".join(clauses)) if clauses else "",
-        # `column` is a value from the entity's own allowlist and `order` is one
-        # of two literals — neither is caller text.
-        order_by=f"{column} {order} NULLS LAST, id {order}",
+        order_by=order_by,
         limit=page_size,
         offset=(page - 1) * page_size,
         params=params,
+        near=near_pass,
+        also=also_pass,
     )
 
 
@@ -1224,6 +1526,14 @@ class ExtraFilterInput:
     close_from: str | None = None
     close_to: str | None = None
     custom: tuple[tuple[str, str], ...] = ()
+
+
+def in_parts(value: str) -> list[str]:
+    """The values of one ``.in`` filter: *value* split on commas, each part
+    trimmed, and each empty part dropped. The ONE grammar of ``.in``: the
+    ``custom.<key>.in`` filter of a list and the ``field.<key>.in`` filter
+    of a module (CRM-Q34-5, ``field_sql``) both read it."""
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 def custom_value_clauses(
@@ -1354,9 +1664,7 @@ async def extra_filters(
             if name in known:
                 grouped.setdefault((name, False), []).append(value)
             elif name.endswith(".in") and name[:-3] in known:
-                grouped.setdefault((name[:-3], True), []).extend(
-                    part.strip() for part in value.split(",") if part.strip()
-                )
+                grouped.setdefault((name[:-3], True), []).extend(in_parts(value))
             else:
                 raise HTTPException(
                     status_code=422,
@@ -1419,7 +1727,30 @@ async def run_list(
     the page and nothing else: no count, no provider link and no next
     activity, because the command bar has 1.5 seconds for every app. Then
     ``total`` is the count of the rows on the page.
+
+    **The near pass (HRD-18a).** When the query finds no row and carries
+    ``query.near``, the near pass answers instead. Each of its rows carries
+    ``near: true``, and ``total`` counts the near rows. When the query finds
+    rows and carries ``query.also``, the near rows that are not exact follow
+    the exact rows, each with ``near: true``. ``total`` then counts the exact
+    rows only. A caller that shows the rows must say that the near rows are
+    near spellings, not matches.
     """
+    found = await _read_list(db, entity, query, rows_only=rows_only)
+    if found.total:
+        if query.also is None:
+            return found
+        extra = await _near_read(db, entity, query.also, rows_only=True)
+        return ListResponse(rows=[*found.rows, *extra.rows], total=found.total)
+    if query.near is None:
+        return found
+    return await _near_read(db, entity, query.near, rows_only=rows_only)
+
+
+async def _read_list(
+    db: Any, entity: Entity, query: ListQuery, *, rows_only: bool,
+) -> ListResponse:
+    """One exact read of :func:`run_list`: the count, then the page."""
     if not rows_only:
         total = (await db.execute(
             text(f"SELECT count(*) FROM {entity.table}{query.where}"), query.params,
@@ -1438,6 +1769,143 @@ async def run_list(
     await attach_ext_urls(db, entity.table, wired)
     await attach_next_activity(db, entity, wired)
     return ListResponse(rows=wired, total=int(total))
+
+
+async def _near_candidates(
+    db: Any, source: str, links: tuple[tuple[str, str], ...], columns: tuple[str, ...],
+    filters: list[str], words: list[tuple[int, str]], params: dict[str, Any],
+) -> list[tuple[dict[str, str], list[str], float]]:
+    """The candidates of one table for the near words: SQL only finds them.
+
+    ``strict_word_similarity`` at the low floor ``name_match.
+    NEAR_CANDIDATE_SIMILARITY``, nearest first, ``name_match.NEAR_CANDIDATES``
+    rows at most. Each candidate is its links, its names and its SQL score.
+    Every text is a constant of this module, and each word a bound value.
+    """
+    # One call for each word over all the names of the row, not one for each
+    # column: the measure stops at word bounds, so the result is the same.
+    names = f"concat_ws(' ', {', '.join(columns)})" if len(columns) > 1 else columns[0]
+    scores = ", ".join(f"strict_word_similarity(:w{i}, {names})" for i, _w in words)
+    picked = [f"{expr} AS link_{j}" for j, (expr, _col) in enumerate(links)]
+    picked += [f"{col} AS name_{k}" for k, col in enumerate(columns)]
+    where = f" WHERE {' AND '.join(filters)}" if filters else ""
+    rows = (await db.execute(text(
+        f"SELECT * FROM (SELECT {', '.join(picked)}, GREATEST({scores}) AS near_s "
+        f"FROM {source}{where}) cand WHERE near_s >= :near_floor "
+        "ORDER BY near_s DESC LIMIT :near_cap"
+    ), params)).fetchall()
+    out = []
+    for row in rows:
+        link = {col: getattr(row, f"link_{j}") for j, (_expr, col) in enumerate(links)}
+        names = [getattr(row, f"name_{k}") for k in range(len(columns))]
+        out.append(({c: str(v) for c, v in link.items() if v is not None},
+                    [str(n) for n in names if n], float(row.near_s or 0.0)))
+    return out
+
+
+async def _near_read(
+    db: Any, entity: Entity, plan: NearPlan, *, rows_only: bool,
+) -> ListResponse:
+    """The near pass of HRD-18a, with the cost bounded (repair round 2).
+
+    1. SQL finds candidates: the entity's own rows under the list's other
+       clauses, and each related table (:func:`_near_candidates`).
+    2. ``acb_common.name_match`` judges each one. Only a name at
+       ``NEAR_SCORE`` or more is near, so the CRM search never calls near a
+       name that the colleague lookups call far. A pair whose raw letters
+       differ a lot (Laxmi and Lakshmi) is not a candidate yet (HRD-18b).
+    3. One read takes the rows that each word matches exactly or nearly, with
+       every clause of the list, by ``= ANY`` of the near values. No
+       sub-select runs for each row.
+    4. Python orders them by their nearness. A word that the row holds
+       exactly counts in full, because the candidates of a common word stop
+       at ``NEAR_CANDIDATES``. A tie goes to the raw spelling
+       that SQL scored nearer ("Sharat" before "Sarath" for "Sharath", which
+       fold alike), then to the list's order.
+
+    Each row carries ``near: true``. ``total`` is what the pass can answer:
+    the near rows, :data:`NEAR_LIMIT` at most.
+    """
+    words = near_words(plan.q)
+    if not words:
+        return ListResponse(rows=[], total=0)
+    params: dict[str, Any] = {
+        **plan.params,
+        "near_floor": name_match.NEAR_CANDIDATE_SIMILARITY,
+        "near_cap": name_match.NEAR_CANDIDATES,
+        **{f"w{i}": w for i, w in words},
+    }
+    filters = [c for k, c in enumerate(plan.clauses) if k != plan.search_at]
+    sources = [(entity.table, (("id", "id"),), entity.search, filters)]
+    sources += [(r.source, r.links, r.columns, []) for r in entity.related_search]
+    #: For each word: an entity column → a value → its best (score, SQL score).
+    scored: dict[int, dict[str, dict[str, tuple[float, float]]]] = {i: {} for i, _w in words}
+    for source, links, columns, where in sources:
+        for link, names, sql_score in await _near_candidates(
+            db, source, links, columns, where, words, params,
+        ):
+            for i, word in words:
+                score = max((name_match.name_score(word, n) for n in names), default=0.0)
+                if score < name_match.NEAR_SCORE:
+                    continue
+                for column, value in link.items():
+                    best = scored[i].setdefault(column, {})
+                    best[value] = max((score, sql_score), best.get(value, (0.0, 0.0)))
+    if not any(scored[i] for i, _w in words):
+        return ListResponse(rows=[], total=0)
+    count = len(search_words(plan.q))
+    near_hits = RelatedHits(tuple(
+        {col: tuple(sorted(vals)) for col, vals in scored.get(i, {}).items()}
+        for i in range(count)
+    ))
+    clause, near_params = search_where(
+        entity, plan.q, related=plan.related, near=near_hits,
+    )
+    clauses = list(plan.clauses)
+    clauses[plan.search_at] = clause or "false"
+    if plan.also:
+        # COALESCE, because a NULL column can make the exact group NULL, and
+        # NOT NULL is NULL, which would drop a near row.
+        clauses.append(f"NOT COALESCE({plan.exact}, false)")
+    # Whether each near word matches the row exactly, for the order below.
+    flags = [
+        f"COALESCE(({' OR '.join(_exact_arms(entity, i, plan.related, near_params))}),"
+        f" false) AS near_exact_{i}"
+        for i, _w in words
+    ]
+    inner = (
+        f"SELECT *, {', '.join(flags)} FROM {entity.table} WHERE {' AND '.join(clauses)} "
+        f"ORDER BY {plan.order_by} LIMIT :near_scan"
+    )
+    rows = (await db.execute(
+        text(project_joined(entity, inner, qualify(plan.order_by, "base"))),
+        {**params, **near_params, "near_scan": NEAR_SCAN},
+    )).fetchall()
+
+    def nearness(row: Any) -> tuple[float, float]:
+        score = sql_score = 0.0
+        for i, _w in words:
+            if getattr(row, f"near_exact_{i}", False):
+                best = (1.0, 1.0)
+            else:
+                best = max(
+                    (vals.get(str(getattr(row, col, None)), (0.0, 0.0))
+                     for col, vals in scored[i].items()),
+                    default=(0.0, 0.0),
+                )
+            score += best[0]
+            sql_score += best[1]
+        return score, sql_score
+
+    # `sorted` is stable, so a tie keeps the order of the list.
+    ranked = sorted(rows, key=nearness, reverse=True)
+    page = [row_to_dict(r, entity.model) for r in ranked[:plan.limit]]
+    for row in page:
+        row["near"] = True
+    if not rows_only:
+        await attach_ext_urls(db, entity.table, page)
+        await attach_next_activity(db, entity, page)
+    return ListResponse(rows=page, total=min(len(ranked), NEAR_LIMIT))
 
 
 # ── The link to a record in the provider's app (WS-53 CRM-Q1) ──────────────
@@ -1588,12 +2056,17 @@ async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
     pipeline = await default_pipeline_id(db)
     if pipeline is None:
         return
+    # CRM-M3b: the membership copies the win chance and the warning days of
+    # the stage row (migration 513).
     await db.execute(
         text(
-            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
-            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), COALESCE((SELECT "
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
+            "probability, max_dwell_days) "
+            "SELECT CAST(:p AS uuid), s.id, COALESCE((SELECT "
             "max(position) + 1 FROM crm_pipeline_stages WHERE pipeline_id = "
-            "CAST(:p AS uuid)), 0)) ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+            f"CAST(:p AS uuid)), 0), {copied_values_sql()} "
+            "FROM crm_deal_statuses s WHERE s.id = CAST(:s AS uuid) "
+            "ON CONFLICT (pipeline_id, status_id) DO NOTHING"
         ),
         {"p": pipeline, "s": str(status_id)},
     )
@@ -1637,6 +2110,12 @@ async def pipeline_takes_unset(db: Any, pipeline_id: str | None) -> bool:
 DEAL_PIPELINE_SQL = "kind = 'deal'"
 
 
+#: The order that picks the default deal pipeline: the flagged one, then the
+#: first by place and age. :func:`default_pipeline_id` and
+#: :func:`default_deal_pipeline_sql` share it, so the two never disagree.
+_DEFAULT_PIPELINE_ORDER = "ORDER BY is_default DESC, position, created_at LIMIT 1"
+
+
 async def default_pipeline_id(db: Any) -> str | None:
     """The id of the organization's default deal pipeline, or ``None``.
 
@@ -1646,11 +2125,248 @@ async def default_pipeline_id(db: Any) -> str | None:
     row = (await db.execute(
         text(
             f"SELECT id FROM crm_pipelines WHERE {DEAL_PIPELINE_SQL} "
-            "ORDER BY is_default DESC, position, created_at LIMIT 1"
+            f"{_DEFAULT_PIPELINE_ORDER}"
         ),
         {},
     )).first()
     return str(row.id) if row is not None else None
+
+
+def default_deal_pipeline_sql(org_column: str) -> str:
+    """The default deal pipeline of the org in *org_column*, as a scalar
+    subquery (CRM-M3b). The rule of :func:`default_pipeline_id`.
+
+    It names the org itself, so a read under a role that row level security
+    does not bind still reads one org. *org_column* is SQL of this package,
+    such as ``d.organization_id``, never caller text."""
+    return (
+        f"(SELECT dp.id FROM crm_pipelines dp WHERE {DEAL_PIPELINE_SQL} "
+        f"AND dp.organization_id = {org_column} {_DEFAULT_PIPELINE_ORDER})"
+    )
+
+
+# ── The win chance and the warning days of a stage in a pipeline (CRM-M3b) ──
+
+#: The two values of a deal stage that sit on its membership of one deal
+#: pipeline (D166, migration 513). NULL there reads the stage row. The stage
+#: row keeps both columns: ``GET /crm/statuses/deal`` serves it, and a new
+#: membership copies it.
+MEMBERSHIP_COLUMNS: tuple[str, ...] = ("probability", "max_dwell_days")
+
+#: D-CRM-10: a ``won`` stage forecasts 100 and a ``lost`` stage 0, in each
+#: pipeline. ``admin.py`` and ``pipelines.py`` refuse a write that breaks it,
+#: with a 422 and words. A write that copies a value, or puts a stored value
+#: back, writes NULL in its place (:func:`fitted_value_sql`).
+CLAMPED_PROBABILITY: dict[str, int] = {"won": 100, "lost": 0}
+
+
+def fitted_value_sql(column: str, value: str, stage: str = "s") -> str:
+    """*value*, as SQL, when it passes each rule of *column* for the stage row
+    *stage* NOW, else NULL (CRM-M3b repair 1).
+
+    The rules are the CHECKs of migration 513, and for the win chance the
+    clamp of D-CRM-10 for the CURRENT type of the stage. NULL on a membership
+    reads the stage row, and the old route keeps that row clamped. So a write
+    that copies a value, or puts a stored value back, leaves a state that
+    ``PATCH /crm/pipelines/{id}/stages/{status_id}`` takes. It never refuses,
+    so no Undo stays stuck on a stage whose type changed. *value* and *stage*
+    are SQL of this package, never caller text."""
+    if column == "max_dwell_days":
+        return f"CASE WHEN {value} >= 1 THEN {value} END"
+    if column != "probability":
+        raise ValueError(f"not a membership column: {column}")
+    pinned = " ".join(
+        f"WHEN '{kind}' THEN {value} = {chance}"
+        for kind, chance in sorted(CLAMPED_PROBABILITY.items())
+    )
+    return (
+        f"CASE WHEN {value} BETWEEN 0 AND 100 "
+        f"AND (CASE {stage}.type {pinned} ELSE true END) THEN {value} END"
+    )
+
+
+def copied_values_sql(source: str | None = None) -> str:
+    """The two values of a new membership of the deal stage ``s``, as SQL, in
+    the order of :data:`MEMBERSHIP_COLUMNS`.
+
+    With *source*, the alias of the membership of the pipeline that a create
+    copies, each value comes from there first. Else from the stage row. Each
+    value passes :func:`fitted_value_sql`, else it is NULL."""
+    return ", ".join(
+        fitted_value_sql(c, f"COALESCE({source}.{c}, s.{c})" if source else f"s.{c}")
+        for c in MEMBERSHIP_COLUMNS
+    )
+
+
+def restored_values_sql() -> str:
+    """The two values that the Undo of a take-out puts back, from the binds
+    ``:probability`` and ``:max_dwell_days``, as SQL over the stage row ``s``.
+    Each value passes :func:`fitted_value_sql` for the stage now, else it is
+    NULL (CRM-M3b repair 1)."""
+    return ", ".join(
+        fitted_value_sql(c, f"CAST(:{c} AS smallint)") for c in MEMBERSHIP_COLUMNS
+    )
+
+
+async def fit_member_values(
+    db: Any, status_id: str, values: dict[str, Any],
+) -> dict[str, Any]:
+    """Each membership value of *values*, or None where it fails the rules of
+    the deal stage *status_id* NOW (CRM-M3b repair 1).
+
+    One read through :func:`fitted_value_sql`, so SQL holds the one rule. An
+    Undo that puts stored values back calls it before its write, so its row
+    logs what it wrote."""
+    columns = [c for c in MEMBERSHIP_COLUMNS if c in values]
+    if not columns:
+        return {}
+    row = (await db.execute(
+        text(
+            "SELECT "
+            + ", ".join(
+                f"{fitted_value_sql(c, f'CAST(:{c} AS smallint)')} AS {c}" for c in columns
+            )
+            + " FROM crm_deal_statuses s WHERE s.id = CAST(:status_id AS uuid)"
+        ),
+        {"status_id": str(status_id), **{c: values[c] for c in columns}},
+    )).first()
+    return {c: (getattr(row, c, None) if row is not None else None) for c in columns}
+
+
+async def entry_probability(db: Any, status: Any, pipeline_id: Any) -> int | None:
+    """The win chance that a deal takes when it enters *status* (CRM-M3b).
+
+    It reads the membership of the deal's pipeline, else of the default deal
+    pipeline when the deal names none. A NULL there, or no membership, reads
+    the stage row, as before CRM-M3b. A new deal, a moved deal and the deal of
+    a convert call it, so the three agree. Two small reads, so the hermetic
+    fakes answer them too."""
+    fallback = getattr(status, "probability", None)
+    target = str(pipeline_id) if pipeline_id else await default_pipeline_id(db)
+    if not target:
+        return fallback
+    row = (await db.execute(
+        text(
+            "SELECT probability FROM crm_pipeline_stages "
+            "WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"
+        ),
+        {"p": target, "s": str(status.id)},
+    )).first()
+    found = getattr(row, "probability", None) if row is not None else None
+    return found if found is not None else fallback
+
+
+async def stage_memberships(
+    db: Any, status_id: str, columns: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    """The stored values of *columns* in each membership of one deal stage, by
+    pipeline id. It locks the rows ``FOR UPDATE`` in pipeline id order, so
+    two writers of one stage take them in one order (CRM-M3b)."""
+    rows = (await db.execute(
+        text(
+            "SELECT pipeline_id, probability, max_dwell_days FROM crm_pipeline_stages "
+            "WHERE status_id = CAST(:s AS uuid) ORDER BY pipeline_id FOR UPDATE"
+        ),
+        {"s": str(status_id)},
+    )).fetchall()
+    return {
+        str(r.pipeline_id): {c: getattr(r, c, None) for c in columns}
+        for r in rows
+    }
+
+
+async def write_memberships(
+    db: Any, status_id: str, values: dict[str, dict[str, Any]],
+) -> None:
+    """Write the values of each membership of one deal stage (CRM-M3b).
+
+    *values* is ``{pipeline id: {column: value}}``, with columns of
+    :data:`MEMBERSHIP_COLUMNS` only. The memberships follow the guard of the
+    stage row, because each write here goes with a write of that row: a
+    Mirror admin may write ``max_dwell_days`` (UX-Q5) and no other column."""
+    for pipeline_id, row in sorted(values.items()):
+        columns = [c for c in MEMBERSHIP_COLUMNS if c in row]
+        if not columns:
+            continue
+        await assert_writable(
+            db, current_tenant(), "crm_deal_statuses", {c: row[c] for c in columns},
+        )
+        await db.execute(
+            text(
+                "UPDATE crm_pipeline_stages SET "
+                + ", ".join(f"{c} = :{c}" for c in columns)
+                + " WHERE pipeline_id = CAST(:p AS uuid) AND status_id = CAST(:s AS uuid)"
+            ),
+            {**{c: row[c] for c in columns}, "p": pipeline_id, "s": str(status_id)},
+        )
+
+
+async def fan_out_stage_values(
+    db: Any, status_id: str, values: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Each membership of one deal stage takes the membership columns of
+    *values* (CRM-M3b). The write of the stage row calls it in the same
+    transaction: the old route ``PATCH /crm/statuses/deal/{id}`` sets a value
+    for every pipeline, and so does the stage import.
+
+    Returns ``(before, after)`` of each membership that changed, by pipeline
+    id, so a Change history row can put each one back. The caller has locked
+    the stage row first, then this locks the memberships (one order)."""
+    columns = [c for c in MEMBERSHIP_COLUMNS if c in values]
+    if not columns:
+        return {}, {}
+    held = await stage_memberships(db, status_id, columns)
+    before: dict[str, dict[str, Any]] = {}
+    after: dict[str, dict[str, Any]] = {}
+    for pipeline_id, stored in held.items():
+        changed = {c: values[c] for c in columns if stored.get(c) != values[c]}
+        if changed:
+            before[pipeline_id] = {c: stored.get(c) for c in changed}
+            after[pipeline_id] = changed
+    await write_memberships(db, status_id, after)
+    return before, after
+
+
+async def clamp_stage_memberships(
+    db: Any, status_id: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Each membership of one deal stage that holds a value that fails the
+    rules of the stage NOW takes NULL there (CRM-M3b round 2).
+
+    A write that changes the ``type`` of a stage calls it after the stage row:
+    the status PATCH, its Undo and the stage repair. NULL reads the stage row,
+    which those writes keep clamped. So no pipeline shows a ``won`` stage at
+    a win chance other than 100, and a value that a membership took while
+    the stage had another type cannot stay. The rule is
+    :func:`fitted_value_sql`. It locks the memberships ``FOR UPDATE`` in
+    pipeline id order, as :func:`stage_memberships` does.
+
+    Returns ``(before, after)`` of each membership that it changed, by
+    pipeline id, so the change row of the caller can put each one back."""
+    fitted = ", ".join(
+        f"ps.{c} AS {c}, {fitted_value_sql(c, f'ps.{c}')} AS fitted_{c}"
+        for c in MEMBERSHIP_COLUMNS
+    )
+    rows = (await db.execute(
+        text(
+            f"SELECT ps.pipeline_id, {fitted} FROM crm_pipeline_stages ps "
+            "JOIN crm_deal_statuses s ON s.id = ps.status_id "
+            "WHERE ps.status_id = CAST(:s AS uuid) ORDER BY ps.pipeline_id FOR UPDATE OF ps"
+        ),
+        {"s": str(status_id)},
+    )).fetchall()
+    before: dict[str, dict[str, Any]] = {}
+    after: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        broken = [
+            c for c in MEMBERSHIP_COLUMNS
+            if getattr(row, c, None) is not None and getattr(row, f"fitted_{c}", None) is None
+        ]
+        if broken:
+            before[str(row.pipeline_id)] = {c: getattr(row, c, None) for c in broken}
+            after[str(row.pipeline_id)] = dict.fromkeys(broken)
+    await write_memberships(db, status_id, after)
+    return before, after
 
 
 async def require_deal_pipeline(db: Any, pipeline_id: str) -> Any:
@@ -1682,7 +2398,10 @@ async def lock_pipeline_creates(db: Any) -> None:
     delete of a status, and the routes that put a stage in a pipeline or take
     it out. So no two of them wait on each other in a cycle (40P01). A status
     delete then reads :func:`pipelines_holding` and deletes in one state. The
-    lock is re-entrant inside one transaction.
+    status PATCH of a deal stage takes it first too (CRM-M3b repair 3), and
+    so does the stage repair of the Zoho import (``stage_metadata.
+    apply_repair``). Each locks the memberships of the stage after the stage
+    row. The lock is re-entrant inside one transaction.
     ``tests/unit/test_crm_lead_pipelines.py`` holds the order in the source."""
     await db.execute(text(PIPELINE_CREATE_LOCK_SQL), {
         "key": f"crm_pipeline_create:{current_tenant()}",
@@ -1775,7 +2494,13 @@ async def load_row(
 ) -> Any | None:
     """One row by id, or None. ``lock=True`` reads it ``FOR UPDATE``, so a
     check of its values holds until the write of the same transaction (the
-    Undo of a change, CRM-M1)."""
+    Undo of a change, CRM-M1). An id that is not a UUID names no row, so it
+    is None and the caller answers 404, not a 500 from the cast (task 2313:
+    ``GET /crm/deals/aggregate`` read "aggregate" as a deal id)."""
+    try:
+        UUID(str(record_id))
+    except ValueError:
+        return None
     return (await db.execute(
         text(
             f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"
@@ -1785,8 +2510,12 @@ async def load_row(
     )).fetchone()
 
 
-async def require_row(db: Any, table: str, record_id: str, what: str) -> Any:
-    row = await load_row(db, table, record_id)
+async def require_row(
+    db: Any, table: str, record_id: str, what: str, *, lock: bool = False,
+) -> Any:
+    """One row by id, or 404. ``lock=True`` reads it ``FOR UPDATE``
+    (:func:`load_row`)."""
+    row = await load_row(db, table, record_id, lock=lock)
     if row is None:
         raise HTTPException(status_code=404, detail=f"{what} not found")
     return row
@@ -2529,9 +3258,16 @@ async def merge_status_from_source(
             ),
             ids,
         )
+        # CRM-M3b: a moved deal membership holds the values of the folded row.
+        # It takes NULL, so it reads the kept row, as one value per stage of
+        # Mirror mode needs (migration 513).
+        values = (
+            ", probability = NULL, max_dwell_days = NULL"
+            if stages == "crm_pipeline_stages" else ""
+        )
         await db.execute(
             text(
-                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid) "
+                f"UPDATE {stages} SET status_id = CAST(:keep AS uuid){values} "
                 "WHERE status_id = CAST(:drop AS uuid)"
             ),
             ids,

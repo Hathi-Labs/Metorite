@@ -34,7 +34,7 @@ Run::
 * A2. ``G/tasks.py``: ``_refuse_agent_assignees`` checks a member caller too. ``test_r10_a_members_put_is_not_narrowed``.
 * A3. ``G/tasks.py``: ``_write_assignees`` notifies ``wanted``, not ``added``. ``test_r2_one_bell_for_the_added_person_only``.
 * A4. ``G/tasks.py``: ``_agent_via_note`` returns None. ``test_r1_create_with_an_assignee_and_the_planning_fields`` and ``test_r2_one_bell_for_the_added_person_only``.
-* A5. ``G/tasks.py``: ``set_assignees`` drops the agent's ``_require_exact_version``. ``test_r4_a_stale_version_is_refused_for_set_assignees`` and ``test_r14_an_agent_put_keeps_strict_equality``.
+* A5. ``G/tasks.py``: ``set_assignees`` drops the agent's ``require_exact_version`` (in ``core`` since SP-8a). ``test_r4_a_stale_version_is_refused_for_set_assignees`` and ``test_r14_an_agent_put_keeps_strict_equality``.
 * A6. ``G/tasks.py``: ``move_task`` drops ``_check_version``. ``test_r5_a_stale_version_is_refused_for_the_move``.
 * A7. ``G/tasks.py``: ``move_task_in`` drops ``_refuse_agent_parent``. ``test_r6_a_move_to_another_project_is_refused``.
 * A8. ``G/tasks.py``: ``AGENT_MOVE_FIELDS`` gains ``project_id``. ``test_r6_a_move_to_another_project_is_refused``.

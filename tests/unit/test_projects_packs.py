@@ -67,17 +67,23 @@ REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
-         "projects-reports", "projects-authority")
+         "projects-reports", "projects-authority", "projects-cycles")
 #: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
 #: area and notification tools left structure for reminders. PJP-4 added update_tasks to
 #: bulk, ALN-2a added the two decision tools to reminders, and ALN-4 added the authority pack.
 #: WS-39 TPL-1a added the three template tools to structure. WS-39 LP-1a added
-#: the three update tools to authority.
-SIZES = {"projects": 23, "projects-plan": 25, "projects-structure": 27, "projects-bulk": 22,
-         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 6}
+#: the three update tools to authority. SP-8a added set_epic_contract there.
+#: WS-39 SP-5a added the cycles pack (6 tools).
+#: SW-43c added change_agent_answer to plan, beside waiting_agent_requests. It takes
+#: the last room of plan in the sticky-pack case (a 27th tool fails
+#: test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name).
+SIZES = {"projects": 23, "projects-plan": 26, "projects-structure": 27, "projects-bulk": 22,
+         "projects-reminders": 19, "projects-reports": 11, "projects-authority": 9,
+         "projects-cycles": 6}
 #: CAL-1a: the owner also holds the ``calendar-day`` pack. It is no Projects family
 #: (its eight tools are not in ``skill_projects.__all__``), so ``SLUGS`` stays the seven.
-OWNER_SLUGS = (*SLUGS, "calendar-day")
+#: P-1b (task 3922): and the ``mail-tasks`` pack, two My Tasks tools.
+OWNER_SLUGS = (*SLUGS, "calendar-day", "mail-tasks")
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -131,8 +137,10 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
     # SP-12 added get_plan (127). WS-39 LP-1a added the three update tools (130),
-    # and WS-39 TPL-1a the three template tools (133).
-    assert len(union) == 133 == len(set(union)), "no tool is in two packs"
+    # WS-39 TPL-1a the three template tools (133), SP-8a set_epic_contract (134),
+    # WS-39 SP-5a six cycle tools (140), SW-43c change_agent_answer (141), and EA-18d agent_questions with
+    # answer_agent_question (143).
+    assert len(union) == 143 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -167,6 +175,7 @@ def _facts_tools_stay(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── 2. The cap ──────────────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("compute_mode")
 async def test_the_core_pack_loads_beside_the_email_pack_at_the_measured_base(
     orchestrator, monkeypatch,
 ) -> None:
@@ -469,7 +478,9 @@ def test_make_a_task_from_this_email_loads_both_packs() -> None:
     "task"-blind -> one pack is missing -> red."""
     choice = tp.choose(
         _turn(words="Make a task from this email"), allowed=EVERY, base_tools=40)
-    assert choice.slugs == ("email", "projects")
+    # P-1b (task 3922): the mail task pack joins, and projects stays.
+    # test_my_tasks_p1b_tools.py measures each base from 30 to 59.
+    assert choice.slugs == ("email", "projects", "mail-tasks")
 
 
 # ── 6. The persona, the refusal, the rules ──────────────────────────────────
@@ -691,7 +702,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 133  # SP-12 get_plan, three update tools (LP-1a), three template tools (TPL-1a)
+    assert seen == 143  # SP-12, LP-1a, TPL-1a, SP-8a, six cycle tools (SP-5a), SW-43c
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -727,7 +738,8 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
     with _in_run(loader):
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
-    assert answer.startswith("Loaded the Projects planning tools (25 tools)"), answer
+    # SW-43c: change_agent_answer is the 26th tool of the plan pack.
+    assert answer.startswith("Loaded the Projects planning tools (26 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))
@@ -1151,6 +1163,7 @@ MIXED = [
 ]
 
 
+@pytest.mark.usefixtures("compute_mode")
 @pytest.mark.parametrize("words", MIXED)
 @pytest.mark.parametrize("surface", ["", "projects"])
 def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
@@ -1428,7 +1441,9 @@ def test_a_pack_too_small_for_work_does_not_reach_the_owner() -> None:
     ``REACH_MIN_TOOLS`` filter from ``plan_loader`` -> the owner is reached
     while no work pack fits, and a bulk load refuses with LOAD_NO_PATH -> red."""
     assert len(_family("projects-authority")) < tp.REACH_MIN_TOOLS
-    work = min(len(_family(slug)) for slug in SLUGS if slug != "projects-authority")
+    assert len(_family("projects-cycles")) < tp.REACH_MIN_TOOLS  # SP-5a: 6 tools, no work pack
+    small = {"projects-authority", "projects-cycles"}
+    work = min(len(_family(slug)) for slug in SLUGS if slug not in small)
     assert work >= tp.REACH_MIN_TOOLS
     held = ("projects", "projects-plan")
     current = _BASE + sum(len(_family(slug)) for slug in held)
@@ -1534,7 +1549,13 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
                  "list_project_updates", "post_project_update", "delete_project_update"}
     assert set(_family("projects-reminders")) == seven | organising | {"answer_decision", "my_decisions"}
     assert not organising & set(_family("projects-structure"))
-    assert set(_family("projects-authority")) == authority
+    # SP-8a: the contract of an epic joins the authority pack.
+    assert set(_family("projects-authority")) == authority | {
+        "set_epic_contract", "agent_questions", "answer_agent_question"}  # WS-55 EA-18d
+    cycles = {"list_cycles", "cycle_detail", "create_cycle", "plan_cycle", "start_cycle",
+              "close_cycle"}  # WS-39 SP-5a: the cycles of a project have their own pack
+    assert set(_family("projects-cycles")) == cycles
+    assert not cycles & set(_family("projects-bulk")) and not cycles & authority
     assert not authority & set(_family("projects-bulk"))
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
@@ -1557,3 +1578,115 @@ def _held_card_writes_on(monkeypatch) -> None:
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+
+
+# ── SBX-19: compute_run never costs a pack its place ────────────────────────
+
+
+@pytest.fixture(params=["dark", "lit"])
+def compute_mode(request, monkeypatch):
+    """Run a test twice: with the compute target off, and on. In the lit run
+    the broker reader says True and the room is reset. ``_compute_withheld``
+    stays real, so the room logic is part of the run."""
+    from orchestrator import sandbox_broker
+
+    on = request.param == "lit"
+    monkeypatch.setattr(sandbox_broker, "compute_enabled", lambda org: on, raising=False)
+    token = ti._COMPUTE_ROOM.set(True)
+    yield request.param
+    ti._COMPUTE_ROOM.reset(token)
+
+
+@pytest.fixture
+def compute_on(monkeypatch) -> None:
+    """The compute target is on for the org (SBX-18's reader, a fake here)."""
+    from orchestrator import sandbox_broker
+
+    monkeypatch.setattr(sandbox_broker, "compute_enabled", lambda org: True, raising=False)
+    ti._COMPUTE_ROOM.set(True)
+
+
+def test_the_base_count_never_holds_compute_run(orchestrator, compute_on) -> None:
+    """The base was at the cap, so a place in it cost a pack a place (111 > 110
+    at 57 + 31 + 23). With the org on, the estimate is the one of the dark
+    run. Mutation: count ``compute_run`` in the base -> one more -> red."""
+    on = _measured_base(orchestrator)
+    names = ti._pack_base_names(
+        orchestrator[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+        agent_config=CONFIG, disabled=frozenset())
+    assert "compute_run" not in names
+    assert on + 1 + 31 + 23 <= tp.MAX_REQUEST_TOOLS  # base, loader, email, core: 110
+
+
+async def test_a_mixed_email_turn_keeps_both_packs_with_compute_on(
+    store, orchestrator, compute_on,
+) -> None:
+    """"Make a recurring task from this email" loads email and projects, and
+    ``compute_run`` leaves when the request is full (55 + 1 + 31 + 23 = 110,
+    the cap, so no place is left). Mutation: ``choose`` sees
+    the tool in the base -> the Projects pack is skipped -> red."""
+    with _tenant():
+        applied = await _apply(orchestrator, "email me my overdue tasks", allowed=EVERY)
+    assert applied is not None and applied.record.slugs == ("email", "projects")
+    assert tp.MAX_REQUEST_TOOLS >= 110
+
+
+async def test_compute_run_leaves_when_the_base_is_at_the_cap(
+    store, orchestrator, compute_on, monkeypatch,
+) -> None:
+    """A base of 110 leaves no place, so the tool goes and no pack does."""
+    monkeypatch.setattr(ti, "_pack_base_count", lambda *a, **k: tp.MAX_REQUEST_TOOLS)
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is False
+    assert ti._compute_withheld() == frozenset({"compute_run"})
+
+
+async def test_compute_run_stays_when_a_place_is_left(store, orchestrator, compute_on) -> None:
+    with _tenant():
+        await _apply(orchestrator, "Tell Anil that we pay on Friday", allowed=EVERY)
+    assert ti._COMPUTE_ROOM.get() is True
+    assert ti._compute_withheld() == frozenset()
+
+
+
+
+LOAD_WORDS = [*MIXED, "export my tasks", "start the sprint"]
+
+
+@pytest.mark.parametrize("surface", ["", "projects"])
+@pytest.mark.parametrize("words", LOAD_WORDS)
+async def test_compute_run_never_costs_a_pack_or_a_load_its_place(
+    words: str, surface: str, store, orchestrator, compute_on, monkeypatch,
+) -> None:
+    """The invariant, from the ``executor.pack_plan`` line of the real apply:
+    the tool fits (``planned + room <= 110``), and each pack that the loader
+    offers and that fits without the tool still fits with it. Mutation: the
+    room ignores the offered packs -> "export my tasks" (planned 88, offers
+    projects-bulk 22) fits 110 without the tool and 111 with it -> red."""
+    import copy
+
+    from acb_skills import skill_families as sf
+
+    seen: list[dict[str, Any]] = []
+    real = ti._log.info
+
+    def spy(event, **kw):
+        if event == "executor.pack_plan":
+            seen.append(kw)
+        return real(event, **kw)
+
+    monkeypatch.setattr(ti._log, "info", spy)
+    agent = copy.copy(orchestrator[0])
+    agent.default_options = {**orchestrator[0].default_options,
+                             "tools": list(orchestrator[0].default_options["tools"])}
+    await _apply_on([agent], words, surface, EVERY)
+    if not seen:
+        return
+    plan = seen[-1]
+    planned, room = plan["planned_tools"], int(ti._COMPUTE_ROOM.get())
+    assert planned + room <= tp.MAX_REQUEST_TOOLS, (words, planned, room)
+    for slug in plan["offered"]:
+        n = len(sf.SKILL_FAMILIES[slug]["tools"])
+        if planned + n <= tp.MAX_REQUEST_TOOLS:
+            assert planned + room + n <= tp.MAX_REQUEST_TOOLS, (words, slug, planned, n, room)

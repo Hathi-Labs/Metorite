@@ -12,14 +12,12 @@ import { stubApi } from "./visual/harness";
  *
  * Each test is written so the obvious wrong build fails it:
  *   1. Flag off: no shell bell, and My Tasks still mounts its own bell.
- *   2. Flag on: the bell is in the shell bar with the feed's count, and
- *      neither My Tasks nor Projects mounts a bell of its own.
- *   3. The panel lists the same rows as My Day's "Needs you" card.
- *   4. Done closes the panel, takes the row out of the card too, and a real
- *      click on the store's Undo puts it back. The panel's scrim would cover
- *      the toast, so the panel must close first.
- *   5. Escape closes the panel, and focus goes back to the bell.
- *   6. Phone: the Menu drawer holds the bell, and it opens the same list.
+ *   2. Flag on: the sidebar's Needs you row (the Home row) holds the
+ *      feed's count, and neither My Tasks nor Projects mounts a bell.
+ *   3. Phone: the Menu drawer holds the bell. The panel lists the same rows
+ *      as My Day's "Needs you" card, Escape closes it, Done takes the row out
+ *      of both with a pressable Undo, and Mark read clears the row. GL-12
+ *      removed the desktop bell, so these cases run on the phone.
  */
 
 const MEMBER = {
@@ -117,14 +115,15 @@ async function setup(page: Page, opts: { dock: boolean; myDay?: boolean }) {
 
 const shellBar = (page: Page) => page.locator("[data-shell-bar]");
 const appBar = (page: Page) => page.locator('[data-app-bar="desktop"]');
-/**
- * The shell bar's bell. By its marker, not its role: while the panel is up,
- * the dialog marks the page behind it `aria-hidden`, and a role query
- * finds nothing there.
- */
-const bell = (page: Page) => shellBar(page).locator("[data-shell-bell]");
 const panel = (page: Page) => page.getByRole("dialog", { name: "Needs you" });
 const card = (page: Page) => page.getByTestId("needs-you");
+/** The phone's bell: the Menu drawer holds it. `dispatchEvent`, as the phone case explains. */
+const phoneBell = async (page: Page, count: number) => {
+  await page.getByRole("button", { name: "Menu" }).dispatchEvent("click");
+  const b = page.getByRole("button", { name: `Needs you, ${count} items` });
+  await expect(b).toBeVisible();
+  return b;
+};
 /** The row titles of a list, in order. */
 const titles = (scope: ReturnType<Page["locator"]>) =>
   scope.locator("li a span.block.truncate.text-sm").allInnerTexts();
@@ -141,77 +140,21 @@ test.describe("desktop", () => {
     await expect(shellBar(page).getByRole("button", { name: /^Needs you/ })).toHaveCount(0);
   });
 
-  test("flag on: the bell is in the shell bar with the feed's count, and no app mounts its own", async ({ page }) => {
+  test("flag on: the sidebar's Needs you row holds the feed's count, and no app mounts its own bell", async ({ page }) => {
     await setup(page, { dock: true });
     await page.goto("/tasks");
     await expect(appBar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
-    await expect(bell(page).locator("[data-nav-badge]")).toHaveText("3");
-    // The bell sits before the activity control, at the bar's right end.
-    const end = shellBar(page).locator("div.justify-end").last();
-    await expect(end.locator("button").first()).toHaveAttribute("data-shell-bell", "count");
+    // GL-12 (30e72d332): no top bar. The row is the sidebar's Home row (`data-nav-my-day`), and it carries the count.
+    await expect(shellBar(page)).toHaveCount(0);
+    const row = page.locator("[data-nav-my-day]");
+    await expect(row).toHaveAttribute("aria-label", "Home, 3 need you");
+    await expect(row).toContainText("3");
     // Neither app mounts a bell of its own.
     await expect(page.getByRole("button", { name: /^Notifications/ })).toHaveCount(0);
     await page.goto("/projects");
     await expect(appBar(page).getByRole("heading", { level: 1, name: "Projects" })).toBeVisible();
-    await expect(bell(page)).toBeVisible();
+    await expect(page.locator("[data-nav-my-day]")).toBeVisible();
     await expect(page.getByRole("button", { name: /^Notifications/ })).toHaveCount(0);
-  });
-
-  test("the panel lists My Day's rows, and Escape closes it and returns focus", async ({ page }) => {
-    await setup(page, { dock: true, myDay: true });
-    await page.goto("/");
-    await expect(card(page).getByText("Send the quote")).toBeVisible();
-    const cardRows = await titles(card(page));
-    expect(cardRows).toEqual(["Send the quote", "Priya assigned you Draft the plan", "Re: the supplier contract"]);
-
-    await bell(page).click();
-    await expect(panel(page)).toBeVisible();
-    // The same groups, in the same order, with the same rows.
-    for (const group of ["Overdue", "From your projects", "Waiting for your reply"]) {
-      await expect(panel(page).getByRole("group", { name: group })).toBeVisible();
-    }
-    expect(await titles(panel(page))).toEqual(cardRows);
-    await expect(panel(page).getByRole("link", { name: /Open My Day/ })).toBeVisible();
-
-    await page.keyboard.press("Escape");
-    await expect(panel(page)).toHaveCount(0);
-    await expect(bell(page)).toBeFocused();
-  });
-
-  test("Done closes the panel, takes the row out of both, and its Undo is pressable", async ({ page }) => {
-    await setup(page, { dock: true, myDay: true });
-    await page.goto("/");
-    await expect(card(page).getByText("Send the quote")).toBeVisible();
-    await bell(page).click();
-    // Done, through the My Tasks store's own gesture.
-    await panel(page).getByRole("button", { name: "Mark Send the quote done" }).click();
-    // The panel gets out of the way, so the toast is not under its scrim.
-    await expect(panel(page)).toHaveCount(0);
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 2 items");
-    // The card is the same list, so the row left it too.
-    await expect(card(page).getByText("Send the quote")).toHaveCount(0);
-    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
-    // A REAL click on the store's Undo. Playwright fails it if anything
-    // covers the button, which `toBeVisible()` never checks.
-    await page.getByRole("button", { name: "Undo" }).click({ timeout: 5_000 });
-    await expect(card(page).getByText("Send the quote")).toBeVisible();
-    await expect(bell(page)).toHaveAttribute("aria-label", "Needs you, 3 items");
-  });
-
-  test("Mark read takes a notification out of both, through the Projects route", async ({ page }) => {
-    await setup(page, { dock: true, myDay: true });
-    const reads: string[] = [];
-    page.on("request", (req) => {
-      if (req.method() === "POST" && req.url().includes("/api/projects/notifications/read")) reads.push(req.postData() ?? "");
-    });
-    await page.goto("/");
-    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
-    await bell(page).click();
-    await panel(page).getByRole("button", { name: "Mark Priya assigned you Draft the plan read" }).click();
-    await expect(panel(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
-    await expect(card(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
-    expect(reads).toEqual([JSON.stringify({ ids: ["n1"] })]);
   });
 });
 
@@ -235,5 +178,50 @@ test.describe("phone", () => {
       "Priya assigned you Draft the plan",
       "Re: the supplier contract",
     ]);
+  });
+
+  test("the panel lists My Day's rows, and Escape closes it", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    await page.goto("/");
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    const cardRows = await titles(card(page));
+    expect(cardRows).toEqual(["Send the quote", "Priya assigned you Draft the plan", "Re: the supplier contract"]);
+    await (await phoneBell(page, 3)).click();
+    await expect(panel(page)).toBeVisible();
+    for (const group of ["Overdue", "From your projects", "Waiting for your reply"]) {
+      await expect(panel(page).getByRole("group", { name: group })).toBeVisible();
+    }
+    expect(await titles(panel(page))).toEqual(cardRows);
+    await expect(panel(page).getByRole("link", { name: /Open My Day/ })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(panel(page)).toHaveCount(0);
+  });
+
+  test("Done closes the panel, takes the row out of both, and its Undo is pressable", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    await page.goto("/");
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+    await (await phoneBell(page, 3)).click();
+    await panel(page).getByRole("button", { name: "Mark Send the quote done" }).click();
+    await expect(panel(page)).toHaveCount(0);
+    await expect(card(page).getByText("Send the quote")).toHaveCount(0);
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click({ timeout: 5_000 });
+    await expect(card(page).getByText("Send the quote")).toBeVisible();
+  });
+
+  test("Mark read takes a notification out of both, through the Projects route", async ({ page }) => {
+    await setup(page, { dock: true, myDay: true });
+    const reads: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST" && req.url().includes("/api/projects/notifications/read")) reads.push(req.postData() ?? "");
+    });
+    await page.goto("/");
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toBeVisible();
+    await (await phoneBell(page, 3)).click();
+    await panel(page).getByRole("button", { name: "Mark Priya assigned you Draft the plan read" }).click();
+    await expect(panel(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
+    await expect(card(page).getByText("Priya assigned you Draft the plan")).toHaveCount(0);
+    expect(reads).toEqual([JSON.stringify({ ids: ["n1"] })]);
   });
 });

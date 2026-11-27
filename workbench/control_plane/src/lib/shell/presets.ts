@@ -21,6 +21,7 @@
  * two lists differ.
  */
 import { PANES, type NavPane, type NavSection } from "@/lib/nav";
+import type { OrgDefault } from "@/lib/shell/orgLayout";
 
 export type PresetId =
   | "founder"
@@ -260,18 +261,48 @@ export interface ShellLayout {
  * The layout to draw. A stored value wins, field by field. With nothing
  * stored, or with no answer from the server at all, the role picks the
  * cards and the jobs, and every held app shows.
+ *
+ * **The org default** (PKG-17b, `package_host.md` §9.1) is the fallback for a
+ * member with no stored choice, and it follows `shell_layout.resolve_layout`.
+ * The member's own `pins` win, even an empty list. Null `pins` take the
+ * default's pins, and the default stars exactly those apps (`known` holds
+ * every starrable app, so no other app reads as new). The member's own preset
+ * wins, else the default's, else the role's. The default applies only when
+ * `stored` is known. `stored` is the member's answer, or the browser copy of
+ * an earlier answer (`shellCache.ts`). With neither, as after a failed first
+ * read, the sidebar is today's. `starredHrefs` still hides a pane the member
+ * does not hold.
+ *
+ * The default does not flash. Its own browser copy draws the first frame.
+ * With no copy, `useShellPrefs` holds the skeleton for null pins until the
+ * default answers, for `ORG_LAYOUT_WAIT_MS` at most (`orgLayoutSettled`).
  */
-export function shellLayout(stored: StoredShell | null | undefined, roles: readonly string[]): ShellLayout {
-  const preset = presetById(stored?.preset) ?? presetById(roleDefault(roles).preset)!;
+export function shellLayout(
+  stored: StoredShell | null | undefined,
+  roles: readonly string[],
+  orgDefault?: OrgDefault | null,
+): ShellLayout {
+  const org = stored ? (orgDefault ?? null) : null;
+  const preset = presetById(stored?.preset) ?? presetById(org?.preset) ?? presetById(roleDefault(roles).preset)!;
+  const fromOrg = stored != null && stored.pins === null && org?.pins != null;
   return {
     preset,
     answered: stored?.answered ?? null,
-    pins: stored?.pins ?? null,
-    known: stored?.known ?? null,
+    pins: fromOrg ? org!.pins : (stored?.pins ?? null),
+    known: fromOrg ? [...STARRABLE] : (stored?.known ?? null),
     cards: stored?.cardOrder ?? preset.cards,
     jobs: stored?.newOrder ?? preset.jobs,
     needsFirst: preset.needsFirst,
   };
+}
+
+/**
+ * The stored layout to build a star toggle on. A member with null `pins`
+ * toggles from the stars the screen shows, which may be the org default, and
+ * not from "every app". The save then writes the member's own `pins`.
+ */
+export function starBase<T extends Stars>(base: T, layout: Stars): T {
+  return base.pins === null && layout.pins !== null ? { ...base, pins: [...layout.pins], known: layout.known && [...layout.known] } : base;
 }
 
 // ── Stars (owner, 2026-10-11) ──────────────────────────────────────────────
@@ -355,8 +386,15 @@ export function starsToSave(
 ): { pins: string[]; known: string[] } {
   const held = starrableHeld(sections).map((p) => p.href);
   const want = new Set(shown);
-  const kept = (before?.pins ?? []).filter((h) => !held.includes(h) && STARRABLE.has(h));
-  return { pins: [...held.filter((h) => want.has(h)), ...kept], known: held };
+  // PKG-6c-2: a save made with no install pane in `sections` (the manifest has
+  // not answered, or failed) must not un-hide an install. It keeps the stored
+  // install hrefs in `pins` and in `known`. The gateway drops a stale or
+  // foreign one itself.
+  const noInstalls = !sections.some((s) => s.items.some((p) => p.team === "apps" && !STARRABLE.has(p.href)));
+  const isStoredInstall = (h: string) => noInstalls && !STARRABLE.has(h) && h.startsWith("/");
+  const kept = (before?.pins ?? []).filter((h) => !held.includes(h) && (STARRABLE.has(h) || isStoredInstall(h)));
+  const keptKnown = noInstalls ? (before?.known ?? []).filter((h) => !held.includes(h) && isStoredInstall(h)) : [];
+  return { pins: [...held.filter((h) => want.has(h)), ...kept], known: [...held, ...keptKnown] };
 }
 
 /** The stars with `href` shown, or hidden. */

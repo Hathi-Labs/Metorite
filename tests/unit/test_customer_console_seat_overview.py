@@ -64,6 +64,7 @@ from customer_console.main import app
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
+from tests.unit import _r8_lists as r8_lists
 from tests.unit._customer_console_ladder import (
     apply_ladder,
     ensure_deployment,
@@ -532,9 +533,7 @@ class TestThisSuiteIsRegistered:
     the closest a hand-list gets to defending itself."""
 
     def test_this_suite_is_named_in_the_ci_skip_guard(self):
-        workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(
-            encoding="utf-8")
-        assert "tests/unit/test_customer_console_seat_overview.py" in workflow
+        assert "tests/unit/test_customer_console_seat_overview.py" in r8_lists.must_run()
 
     def test_this_suite_is_named_in_the_owning_spec_verify_block(self):
         spec = (_ROOT / "project-docs/specs/customer_console.md").read_text(

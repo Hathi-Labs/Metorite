@@ -5,6 +5,13 @@ The owner accepted every proposal of §15 and every default of §16 the same
 day ("Go with defaults"), recorded as **D104**. Board row **WS-61**.
 Verified against the code on 2026-10-25.
 
+**KR-ZERO is BUILT, 2026-11-12** (branch `mt-bdf0d8ea-kr-zero`, no
+migration, behind `CONTEXT_RECENCY`, Metorite task 2974). A zero answer of
+`GET /search/company` asks again with each word alone. The answer says what
+became of the meaning half, and the tool says that zero is not proof
+(§20.4, §20.7). Merged with `main` and checked again on 2026-11-14, with
+the Fracktal queries in the fence.
+
 **KB-9b slice 2 is BUILT, 2026-10-26** (branch `kb-9b2-sync-card`, no
 migration, dark behind `MY_DAY_PROVIDERS` and `KNOWLEDGE_SOURCES`, Metorite
 task #461). The card `source_sync_failed` for the member who connected a
@@ -757,8 +764,7 @@ answer a company question, and cite what you used.
 | `account_identity(cred)` | The remote account id and display name, for the same-account check |
 | `discover(cred, cursor)` | One page of the folder tree, as `SourceNode(ext_id, parent_ext_id, kind, name, mime, size, modified_at, web_url)` |
 | `list_changed(cred, cursor, folder_ext_ids)` | The changes since the cursor, with the provider's own delta API |
-| `fetch_text(cred, node)` | The text of one document, capped, through `attachment_text.extract_text` or the provider's export |
-| `fetch_bytes(cred, node)` | The bytes, only for "Keep a copy" |
+| `fetch_document(cred, node)` | The bytes of one file and their suffix (`FetchedFile`). KC-5a replaced `fetch_text` and `fetch_bytes`. The index pass reads the text with `attachment_text.extract_text`. A Google-native file exports as OOXML. The Google adapter raises `NotImplementedError("KC-5b")` until the real fetch ships |
 | `deep_link(node)` | The URL that opens the document at the provider |
 
 **The providers:**
@@ -911,6 +917,15 @@ loads tool packs (OA-7), every app's writes are such tools.
 
 KB-4 adds the last sentence, "offer to draft a page", when a member can
 save one.
+
+WS-FIND FIND-6 (`find_engine.md` §5.4) ends the paragraph with the standing
+rule. Only an org of `FIND_ORGS` with `CONTEXT_RECENCY` on gets it. Every
+other org keeps the paragraph above, byte for byte:
+
+> When the member names a person, a company or a record, call
+> `search_company` once, with all their words. Read how each hit matched. A
+> near or related hit is a lead: say the spelling or the link you used.
+> Before you say that a record does not exist, read the "Where else" line.
 
 The sentences on work in one app came from the chat speed review
 (owner go, 2026-10-25). Before them, a request to write an email searched
@@ -1692,8 +1707,9 @@ page.
 
 - **Input.** `q` (2 to 300 characters), `apps` (an optional comma list of
   source keys), `k` (1 to 10 hits an app, default 5).
-- **Order.** The sources run one after another, never at once. The pool
-  budget is small, and `search.py` records why. Each gets 1.5 s, and the
+- **Order.** The sources run at once, four at most (`FIND_SESSIONS`,
+  D-FIND-6, HRD-4). The pool budget is small, and `search.py` records why.
+  A fifth source waits for a slot. Each gets 1.5 s from its own start, and the
   whole answer 4 s. A source can fail, refuse or run out of time. Then the
   answer leaves it out and names it in `skipped`. It never fails the call.
 - **Fusion.** Each app ranks its own hits, and the scores of two apps do not
@@ -1708,6 +1724,35 @@ page.
   fails. So one search makes at most one embedding call. The command bar
   asks for the lexical half only, so a keystroke costs no embedding.
 - **Output.** `{query, hits: [hit], skipped: [key]}`. No chat model runs.
+- **A zero is not proof (KR-ZERO, task 2974).** Each app matches every word
+  of the query in one record. So "Aroh Attero" found nothing on production,
+  over a mailbox with about 10 Aroh threads. On 2026-11-14, "Sharath 3D
+  printer" and "Neuropeak Sharath" also found nothing. Each word was in a
+  different CRM record, such as the deal «Neuropeak - Snowflake 3D printer».
+  With `CONTEXT_RECENCY` on, the route does three more things:
+  1. It starts the query embed at its start, as one task, when a source with
+     meaning is asked. The task runs while the keyword sources run. Each
+     source that needs the vector waits for that task inside its own time.
+     The log line is `search.company.embed ms=… outcome=…`.
+  2. The answer says in `meaning` what became of that embed: `ran`,
+     `timed_out`, `failed` or `off`.
+  3. When every app that answered found nothing, and the query holds 2 to 5
+     bare words, the route asks those apps again with each word alone. It
+     skips a stop word and a one-letter word, and it runs no vector half.
+     `broadened` names each word and its hits. `hits` holds the merged hits,
+     with no repeated id. A query with a quote, `or` or a leading `-` is not
+     broadened.
+
+  The budgets are constants in `retrieval/company.py`. The embed task has
+  3 s (`EMBED_BUDGET_S`), and each source still waits at most 0.8 s for it.
+  The second pass has 2.5 s (`BROADEN_BUDGET_S`), and the words share it
+  equally. The whole answer stops at 6 s (`ANSWER_CAP_S`), so the worst case
+  is 1.5 times the 4 s of the first pass. With the flag off, the answer of
+  KR-1 does not change.
+
+  The first pass still asks the apps one at a time, in one budget. So a
+  slow app can run out of time, as Email did for "Sharath 3D printer". The
+  second pass does not ask that app again. HRD-4 (task 2983) owns that gap.
 
 ### 20.5 `search_company` — the assistant's tool
 
@@ -1770,6 +1815,7 @@ Somebody should write a page from those emails.
 | **KR-4** | `narrow_and_read` gets a `company` adapter over the route, and per-app reads | A question over 60 records from three apps narrows with no model | AGENT-SAFE |
 | **KR-5** | The My Day context join of §20.6 | A `needs_reply` card from a CRM contact shows the contact's open deal | AGENT-SAFE. The `decide` modes stay owner flips (MD-10) |
 | **KR-6** | A vector column for tasks and for CRM records, in their own tables, behind their own reads | The source's answer changes, and the seam does not | AGENT-SAFE to build. The embed spend is the owner's flip |
+| **KR-ZERO** ✅ BUILT 2026-11-12 (task 2974) | A zero answer is not proof (§20.4). With `CONTEXT_RECENCY` on, the route starts one embed task at its start, and it asks again with each word alone after a zero. The answer carries `meaning` and `broadened`. The `search_company` text says that every word must be in one record. A dated zero answer names what the route tried | `test_company_search_zero.py` passes, and so does the second-pass case of `test_company_search_r8.py` (R8). The other `test_company_search_*.py` suites stay green. With the flag off, the answer of KR-1 does not change | AGENT-SAFE. The flip of `EMAIL_SEMANTIC_SEARCH_ENABLED` stays the owner's |
 
 The order is KR-1, KR-2, then KB-3 with KR-3, then KR-5, KR-4 and KR-6.
 
@@ -1818,6 +1864,16 @@ isolation for tasks and people, and the other four sources rest on their
 apps' own R8 suites. With the flag on, the persona's citation rule also
 moves from `[entity:uuid]` to the `full_id` line. The legacy citation
 names tables that hold no rows.
+
+### 20.10 The find engine (WS-FIND, 2026-11-14)
+
+`find_engine.md` extends this section, and this section stays the owner of the
+seam. It keeps the source, the hit, the route and the fences of §20.9. The
+find engine owns the ladder of `GET /search/company`: eight rungs in three
+passes, inside 6 seconds. It also owns `matched_by` on each hit, the honest
+zero, the source contract `contributes.search` and the chat's find tools.
+Each rung calls the app's own search function, as §20.2 and §20.3 set. So
+the engine adds no second read path.
 
 ---
 

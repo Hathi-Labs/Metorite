@@ -30,20 +30,27 @@ import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
 import {
   NO_TICKS,
+  earlierOf,
+  asNewMailEdits,
+  asTaskEdits,
   rowTicksReducer,
   rowsView,
+  type FormEdit,
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
 import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { CardDraft } from "@/lib/redraftCard";
-import { isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
+import { DELETE_EARLIER_ANSWER, isNewMail, type EarlierDraft, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
+import type { TaskCardEdits, TaskEditApproval } from "@/lib/taskEditCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
- *  Each goes in ONE respond-input. */
-export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyApproval;
+ *  Each goes in ONE respond-input. Task 3978: the Discard of a new-mail card
+ *  that also deletes the earlier draft of the chat is a REJECT too. */
+export type ConfirmationAnswer =
+  | "APPROVE" | "REJECT" | typeof DELETE_EARLIER_ANSWER | RowsApproval | ReplyApproval | TaskEditApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
@@ -59,13 +66,14 @@ interface ConfirmationQueueProps {
   /** §18.11: a message in the chat carries the member's version now. */
   carriesEdits?: boolean;
   /**
-   * The member's edits of a new-mail form, by key. The CHAT holds them
-   * (fix round 5), because this queue mounts again on each new message,
-   * and when its last card leaves.
+   * The member's edits of a form, by key: a new mail or a task card (EAC-2).
+   * The CHAT holds them (fix round 5), because this queue mounts again on each
+   * new message, and when its last card leaves. Each card reads its own kind
+   * through a guard (`asNewMailEdits`, `asTaskEdits`).
    */
-  savedEdits?: (key: string) => NewMailEdits | undefined;
-  /** A new-mail form reports the member's edits, by key. */
-  onEdits?: (key: string, edits: NewMailEdits) => void;
+  savedEdits?: (key: string) => FormEdit | undefined;
+  /** A form reports the member's edits, by key. */
+  onEdits?: (key: string, edits: FormEdit) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -183,12 +191,23 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
+      // Task 3978: Discard or Reject, then "Delete it", on a card that names a draft of the chat.
+      {...earlierProps(card, onAnswer)}
       // §18.11: the slot of a redraft answers nothing. A new-mail card
       // reports each edit, and a redrafted card knows the member's last version.
       {...(card.redraft ? { slot: card.redraft } : {})}
       {...(onDraftChange ? { onDraftChange: (d: CardDraft | null) => onDraftChange(card.key, d) } : {})}
       {...(isNewMail(card.reply)
-        ? { carriesEdits, savedEdits: savedEdits?.(card.key), onEdits: (value: NewMailEdits) => onEdits?.(card.key, value) }
+        ? { carriesEdits, savedEdits: asNewMailEdits(savedEdits?.(card.key)), onEdits: (value: NewMailEdits) => onEdits?.(card.key, value) }
+        : {})}
+      // EAC-2: a task card that carries a form. Approve sends the edit answer, or a plain APPROVE.
+      {...(card.edit
+        ? {
+            edit: card.edit,
+            savedTaskEdits: asTaskEdits(savedEdits?.(card.key)),
+            onTaskEdits: (value: TaskCardEdits) => onEdits?.(card.key, value),
+            onEditAnswer: (answer: "APPROVE" | TaskEditApproval) => onAnswer(card, answer),
+          }
         : {})}
       {...(card.before ? { before: card.before } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
@@ -201,6 +220,22 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
     />
   );
   return shownCard;
+}
+
+/**
+ * Task 3978 (§18.13.1): the props that let a card ask "Keep the earlier
+ * draft, or delete it?". A new-mail card with an `earlier` draft gets the
+ * answer only, because its form holds the line. A plain card gets the line
+ * too. Any other card gets nothing, so its Discard or Reject is as before.
+ */
+export function earlierProps(
+  card: PendingConfirmation,
+  onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void,
+): { onDiscardEarlier?: () => void; earlier?: EarlierDraft } {
+  const earlier = earlierOf(card);
+  if (!earlier) return {};
+  const onDiscardEarlier = () => onAnswer(card, DELETE_EARLIER_ANSWER);
+  return isNewMail(card.reply) ? { onDiscardEarlier } : { onDiscardEarlier, earlier };
 }
 
 /** A card's tab: its kind, a short label (`tabLabel`), and the card's full

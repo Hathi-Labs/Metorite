@@ -472,9 +472,13 @@ class _FakeGateDb:
 
 class TestTheMigration:
     def _file(self) -> Path:
+        # SW-39 (migration ``agent_run_child``) builds the same index again,
+        # without the children. The status CHECK is in this file only.
         found = [p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
                  if "pm_agent_runs_one_open_per_task" in p.read_text(encoding="utf-8")
-                 and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8")]
+                 and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8")
+                 and "ADD CONSTRAINT pm_agent_runs_status_check" in p.read_text(
+                     encoding="utf-8")]
         assert len(found) == 1, found
         return found[0]
 
@@ -680,7 +684,9 @@ def _person(email: str, org: str, *, admin: bool = False, sees_all: bool = True)
     if sees_all:
         perms.append("data:org:read")
     if admin:
-        perms.append("admin:members:read")
+        # H-409 item 2 (task 748): an admin of a release holds the write
+        # slug `admin:members:manage` (owner, Q5), and a real admin holds both.
+        perms.extend(["admin:members:read", "admin:members:manage"])
     return UserContext(
         email=email, role=UserRole.EMPLOYEE, access=build_access(perms), organization_id=org)
 
@@ -1535,7 +1541,14 @@ class TestOneAiForEachTask:
         newest and moves the rest to ``abandoned``, so the index builds."""
         path = next(p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
                     if "pm_agent_runs_one_open_per_task" in p.read_text(encoding="utf-8")
-                    and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8"))
+                    and "CREATE UNIQUE INDEX" in p.read_text(encoding="utf-8")
+                    and "ADD CONSTRAINT pm_agent_runs_status_check" in p.read_text(
+                        encoding="utf-8"))
+        # SW-39: the file that leaves the children out of the index. It runs
+        # after this one below, so the ladder ends in the shape of main.
+        child = next(p for p in _MIGRATIONS.glob("[0-9]*_*.sql")
+                     if "ADD COLUMN IF NOT EXISTS parent_run_id" in p.read_text(
+                         encoding="utf-8"))
         task = _fresh(w)
         other = _fresh(w)
         with w.p.admin_engine.begin() as c:
@@ -1596,3 +1609,10 @@ class TestOneAiForEachTask:
                 "client_via, status, started_by) VALUES (CAST(:o AS uuid), "
                 "CAST(:t AS uuid), :m, :v, 'created', :m)"),
                 {"o": w.org, "t": task, "m": CAROL, "v": VIA})
+        # SW-39: the later file builds the index again without the children,
+        # so the ladder that the next tests meet is the ladder of main.
+        with engine.connect() as c:
+            c.connection.dbapi_connection.cursor().execute(child.read_text(encoding="utf-8"))
+        [index] = _rows(w.p, "SELECT indexdef FROM pg_indexes"
+                             " WHERE indexname = 'pm_agent_runs_one_open_per_task'")
+        assert "kind" in index.indexdef and "child" in index.indexdef, index.indexdef

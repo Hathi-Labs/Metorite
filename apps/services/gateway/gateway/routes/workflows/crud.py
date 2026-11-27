@@ -1,18 +1,33 @@
 """Workflow CRUD — the edit-model lifecycle (spec F1, §6).
 
 Workflows are org-internal: any member holding the ``workflows`` feature sees
-and edits every workflow (v1 — per-workflow ACLs are an open question, spec
-Q3 covers publish rights). ``owner_email`` is attribution, not access.
+every workflow (v1 — per-workflow ACLs are an open question, spec Q3 covers
+publish rights). ``owner_email`` is attribution, not access.
+
+A write (create, duplicate, edit, delete) also carries ``AUTHOR_GATE``: it
+needs ``feature:studio`` where ``WORKFLOW_STUDIO_GATE_ORGS`` holds the org
+(STU-J1-3, ``core.py``). ``validate`` writes nothing, so it is a read and
+keeps the router gate only.
+
+A Save of a PUBLISHED workflow that arms a schedule, webhook or event trigger
+also needs ``workflows:publish`` (STB-6c, owner decision of 2026-11-13):
+``publish.refuse_live_arming``. A Save that arms nothing is unchanged.
+
+A Save by a member who is not the owner may not add or change a
+``studio_write`` step (WFC-4a-2s): ``_refuse_foreign_studio_write``.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
+    AUTHOR_GATE,
     HOOK_PATH,
     MAX_GRAPH_BYTES,
     _tenant_session,
@@ -25,7 +40,12 @@ from gateway.routes.workflows.core import (
     parse_jsonb,
     router,
 )
-from gateway.routes.workflows.engine.graph import validate_graph
+from gateway.routes.workflows.engine.graph import studio_write_prints, validate_graph
+from gateway.routes.workflows.triggers import TIMER_ARM_KEY
+
+# `__init__` imports publish before crud, so this import keeps the order in
+# which the routes register.
+from gateway.routes.workflows.publish import refuse_live_arming
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -102,7 +122,7 @@ async def list_workflows(
     ]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[AUTHOR_GATE])
 async def create_workflow(
     body: WorkflowCreate,
     user: UserContext = Depends(get_current_user),
@@ -131,7 +151,7 @@ async def create_workflow(
     }
 
 
-@router.post("/{workflow_id}/duplicate", status_code=201)
+@router.post("/{workflow_id}/duplicate", status_code=201, dependencies=[AUTHOR_GATE])
 async def duplicate_workflow(
     workflow_id: str,
     user: UserContext = Depends(get_current_user),
@@ -219,6 +239,12 @@ async def get_workflow(
         # directly, not the control-plane proxy (see core.hook_url).
         "hook_url": hook_url(row.hook_token),
         "hook_path": HOOK_PATH.format(token=row.hook_token or ""),
+        # STB-6b (ai_studio.md E13b): whether a schedule, a webhook or an event
+        # of this org can start a run with no person present. It is the answer
+        # of the one reader for the org of the ROW, as `runs.run_workflow`
+        # takes it, and never the list. The chat card of a publish names it.
+        "runs_unattended": unattended.org_allowed(
+            str(getattr(row, "organization_id", "") or "") or None),
         "triggers": triggers,
         "versions": [
             {
@@ -231,7 +257,7 @@ async def get_workflow(
     }
 
 
-@router.put("/{workflow_id}")
+@router.put("/{workflow_id}", dependencies=[AUTHOR_GATE])
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdate,
@@ -245,6 +271,34 @@ async def update_workflow(
         _validate_trigger_specs(body.triggers)
     async with _tenant_session() as db:
         row = await load_workflow_or_404(db, workflow_id)
+        old_triggers: list[Any] = []
+        if body.triggers is not None:
+            # Lock the triggers before any check reads them. The trigger state
+            # route (publish.py) locks them first too, so a Save cannot judge
+            # an old state while that route changes it.
+            old_triggers = (
+                await db.execute(
+                    text(
+                        "SELECT kind, config, enabled, last_fired_at "
+                        "FROM workflow_triggers WHERE workflow_id = :id "
+                        "ORDER BY created_at, id FOR UPDATE"
+                    ),
+                    {"id": workflow_id},
+                )
+            ).fetchall()
+            if not _is_author(row, user):
+                await _refuse_foreign_studio_trigger(db, workflow_id, body.triggers)
+            # STB-6c: a Save that arms a trigger of a workflow with a version
+            # (published or disabled) needs workflows:publish.
+            refuse_live_arming(
+                user,
+                row.latest_version,
+                [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_triggers],
+                [(t.kind, t.config, t.enabled) for t in body.triggers],
+            )
+        # WFC-4a-2s. It runs after the trigger lock, so a Save takes the
+        # trigger rows and then the workflow row, as before.
+        await _refuse_foreign_studio_write(db, workflow_id, row, user, body.graph)
         sets, params = [], {"id": workflow_id}
         if body.name is not None:
             sets.append("name = :name")
@@ -273,23 +327,25 @@ async def update_workflow(
             # in a state that never fires again. Carry it across for triggers
             # that did not actually change; a schedule whose cron or timezone
             # was edited is deliberately re-armed from now.
-            previous = {
-                _trigger_identity(r.kind, parse_jsonb(r.config, {}) or {}): r.last_fired_at
-                for r in (
-                    await db.execute(
-                        text(
-                            "SELECT kind, config, last_fired_at "
-                            "FROM workflow_triggers WHERE workflow_id = :id"
-                        ),
-                        {"id": workflow_id},
-                    )
-                ).fetchall()
-            }
+            # STU-E9a: a timer trigger also keeps the print of its arm in
+            # `config.timer_arm`. It is server state too, so it is carried the
+            # same way, and a value that the body sends is dropped. The rows
+            # are the ones read and locked above.
+            previous: dict[tuple[str, str], tuple[Any, Any]] = {}
+            for r in old_triggers:
+                cfg = parse_jsonb(r.config, {}) or {}
+                previous[_trigger_identity(r.kind, cfg)] = (
+                    r.last_fired_at, cfg.get(TIMER_ARM_KEY))
             await db.execute(
                 text("DELETE FROM workflow_triggers WHERE workflow_id = :id"),
                 {"id": workflow_id},
             )
             for trig in body.triggers:
+                last_fired, arm = previous.get(
+                    _trigger_identity(trig.kind, trig.config), (None, None))
+                config = {k: v for k, v in trig.config.items() if k != TIMER_ARM_KEY}
+                if arm is not None and last_fired is not None:
+                    config[TIMER_ARM_KEY] = arm
                 await db.execute(
                     text(
                         """INSERT INTO workflow_triggers
@@ -299,11 +355,9 @@ async def update_workflow(
                     {
                         "wid": workflow_id,
                         "kind": trig.kind,
-                        "config": json.dumps(trig.config, default=str),
+                        "config": json.dumps(config, default=str),
                         "enabled": trig.enabled,
-                        "last_fired": previous.get(
-                            _trigger_identity(trig.kind, trig.config)
-                        ),
+                        "last_fired": last_fired,
                     },
                 )
         # No mid-block commit: the wrapper owns the one transaction (a commit
@@ -319,7 +373,7 @@ async def update_workflow(
     }
 
 
-@router.delete("/{workflow_id}", status_code=204)
+@router.delete("/{workflow_id}", status_code=204, dependencies=[AUTHOR_GATE])
 async def delete_workflow(
     workflow_id: str,
     user: UserContext = Depends(get_current_user),
@@ -361,18 +415,122 @@ async def validate_workflow(
     return {"ok": not issues, "issues": [i.as_dict() for i in issues]}
 
 
+def _is_author(row: Any, user: Any) -> bool:
+    """True when the caller is the author (``owner_email``) of the workflow.
+    The compare ignores case and outer spaces."""
+    return str(row.owner_email or "").strip().lower() == str(_uid(user) or "").strip().lower()
+
+
+def _studio_event_keys(triggers: list[tuple[str, dict[str, Any], bool]]) -> set[str]:
+    """The enabled Studio record-event triggers, one canonical key each. The
+    server half of a timer (``timer_arm``) is no part of the key."""
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    return {
+        json.dumps({k: v for k, v in cfg.items() if k != TIMER_ARM_KEY},
+                   sort_keys=True, default=str)
+        for kind, cfg, enabled in triggers
+        if enabled and kind == "event" and str(cfg.get("source") or "").strip() == RECORD_EVENT_SOURCE
+    }
+
+
+async def _refuse_foreign_studio_trigger(
+    db: Any, workflow_id: str, new: list[Any]
+) -> None:
+    """403 when a member who is not the workflow author ADDS or CHANGES a Studio
+    record-event trigger (STU-E3 fix, task 3076).
+
+    A record event starts the workflow when its AUTHOR can read the package.
+    The run shows the payload to every member who reads runs. So another
+    member must not point the author's workflow at a package they cannot read.
+    Removing a trigger, or any other trigger kind, is unchanged.
+    """
+    wanted = _studio_event_keys([(t.kind, t.config, t.enabled) for t in new])
+    if not wanted:
+        return
+    old_rows = (
+        await db.execute(
+            text("SELECT kind, config, enabled FROM workflow_triggers WHERE workflow_id = :id"),
+            {"id": workflow_id},
+        )
+    ).fetchall()
+    old = _studio_event_keys(
+        [(r.kind, parse_jsonb(r.config, {}) or {}, bool(r.enabled)) for r in old_rows]
+    )
+    if wanted - old:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the author of this workflow can add or change a Studio record trigger.",
+        )
+
+
+#: The 403 of a Save in which a member who is not the owner adds or changes a
+#: Studio write step (WFC-4a-2s). ``{owner}`` is the address of the owner.
+STUDIO_WRITE_REFUSAL = (
+    "Only the owner of this workflow may add or change a step that writes a record. "
+    "Ask {owner}."
+)
+
+
+async def _refuse_foreign_studio_write(
+    db: Any, workflow_id: str, row: Any, user: Any, new: dict[str, Any] | None
+) -> None:
+    """403 when a member who is not the workflow owner ADDS or CHANGES a
+    ``studio_write`` node (WFC-4a-2s, task 3309). A Save with no graph, and
+    each Save of the owner (``_is_author``), pass with no read.
+
+    The write runs as ``owner_email`` after the owner approves a card. The
+    card hides a value whose key looks like a secret, and it clips a long
+    value (``park.py``). So another member must not write a step that the
+    owner approves without seeing each value. A node whose print
+    (``graph.studio_write_prints``: the id, the exact type and the config) is
+    not in the stored draft is new or changed. Keeping a write as it is, or
+    removing it, is unchanged.
+
+    It reads the stored draft again with ``FOR UPDATE``, in the tenant session
+    of the Save. So a Save of the owner cannot change the draft between this
+    check and the write.
+    """
+    if new is None or _is_author(row, user):
+        return
+    wanted = studio_write_prints(new)
+    if not wanted:
+        return
+    stored = (
+        await db.execute(
+            text("SELECT graph FROM workflows WHERE id = :id FOR UPDATE"),
+            {"id": workflow_id},
+        )
+    ).fetchone()
+    old = studio_write_prints(parse_jsonb(getattr(stored, "graph", None), {}))
+    if wanted - old:
+        owner = str(row.owner_email or "").strip() or "the owner"
+        raise HTTPException(status_code=403, detail=STUDIO_WRITE_REFUSAL.format(owner=owner))
+
+
 def _trigger_identity(kind: str, config: dict[str, Any]) -> tuple[str, str]:
     """What makes two saves "the same trigger" for fire-state purposes.
 
     For a schedule that is the cron expression and its timezone: change either
     and the maker meant a different schedule, so it re-arms from now rather
     than inheriting a baseline that could fire an unexpected catch-up tick.
-    Other kinds carry no scheduler state, so the kind alone is enough.
+
+    A timer trigger (STU-E9a) keeps its arm time in ``last_fired_at``. The
+    package, the object and the rule are its identity. A save that keeps them
+    keeps the arm time, so no breach is lost. A save that changes one re-arms
+    the trigger from the next scan, so a record that was due before it starts
+    no run. Other kinds carry no scheduler state, so the kind alone is enough.
     """
+    from gateway.routes.workflows.triggers import is_breach_trigger
+
     if kind == "schedule":
         cron = str(config.get("cron") or "").strip()
         timezone = str(config.get("timezone") or "UTC").strip() or "UTC"
         return (kind, f"{cron}@{timezone}")
+    if kind == "event" and is_breach_trigger(config):
+        flt = config.get("filter") or {}
+        parts = [str(flt.get(k) or "") for k in ("package_id", "object", "timer")]
+        return (kind, "timer:" + json.dumps(parts))
     return (kind, "")
 
 
@@ -399,6 +557,60 @@ def _validate_trigger_specs(triggers: list[TriggerSpec]) -> None:
                 status_code=422,
                 detail="Event triggers need a source (e.g. zoho)",
             )
+        if trig.kind == "event" and trig.config.get("filter") is not None:
+            _validate_event_filter(trig.config)
+        if trig.kind == "event" and "timer" in trig.config:
+            # STU-E9a: the rule of a timer is `filter.timer`, never a key of
+            # its own, so no stray key reads as a timer.
+            raise HTTPException(status_code=422, detail="A timer trigger names its rule as filter.timer")
+
+
+def _validate_event_filter(config: dict[str, Any]) -> None:
+    """422 on a malformed record filter (STU-E3). Only a Studio trigger has
+    one, and only the keys of ``RECORD_FILTER_KEYS``, each a non-empty string.
+
+    A timer trigger (STU-E9a) has the op ``breach``. It names the package, the
+    object and the rule (``timer``), and its event type is empty or
+    ``studio.record.breached``. Only a timer trigger names a ``timer``."""
+    from acb_common.studio_fields import NAME_PATTERN
+    from gateway.routes.workflows.triggers import (
+        BREACH_EVENT_TYPE,
+        BREACH_OP,
+        RECORD_FILTER_KEYS,
+    )
+    from gateway.studio.preview import RECORD_EVENT_SOURCE
+
+    flt = config.get("filter")
+    if str(config.get("source") or "").strip() != RECORD_EVENT_SOURCE:
+        raise HTTPException(status_code=422, detail="Only a studio event trigger has a filter")
+    if not isinstance(flt, dict) or not flt:
+        raise HTTPException(status_code=422, detail="The trigger filter must be an object")
+    for key, val in flt.items():
+        if key not in RECORD_FILTER_KEYS:
+            raise HTTPException(status_code=422, detail=f"Unknown trigger filter key '{key}'")
+        if not isinstance(val, str) or not val.strip() or val != val.strip():
+            raise HTTPException(status_code=422, detail=f"Trigger filter '{key}' must be a text")
+        if key == "op" and val not in ("create", "update", "delete", BREACH_OP):
+            raise HTTPException(
+                status_code=422, detail="Trigger filter 'op' is create, update, delete or breach"
+            )
+    breach = flt.get("op") == BREACH_OP
+    if "timer" in flt and not breach:
+        raise HTTPException(status_code=422, detail="Only a breach trigger names a timer")
+    if not breach:
+        return
+    if not all(k in flt for k in ("package_id", "object", "timer")):
+        raise HTTPException(
+            status_code=422,
+            detail="A breach trigger names the package_id, the object and the timer",
+        )
+    if not re.fullmatch(NAME_PATTERN, flt["timer"], re.ASCII):
+        raise HTTPException(status_code=422, detail="Trigger filter 'timer' names a rule")
+    if str(config.get("event_type") or "").strip() not in ("", BREACH_EVENT_TYPE):
+        raise HTTPException(
+            status_code=422,
+            detail=f"A breach trigger has the event type {BREACH_EVENT_TYPE}",
+        )
 
 
 def _cron_is_valid(expr: str, timezone: str = "UTC") -> bool:

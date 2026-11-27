@@ -16,6 +16,10 @@
  * - **No `[key]` reaches the text.** A trailing `[word]` becomes the block's
  *   `tag`, and the card draws it as a word or a chip.
  * - The fence marks stay in the text, and `FencedText` draws them.
+ * - **No data frame reaches a block** (task 3920). A tool that frames text from
+ *   outside writes `<<<LABEL token>>>` and `<<<END LABEL token>>>` lines and
+ *   one data note for the model. `isFrameLine` drops all three from a card.
+ *   The frame stays in the tool result, so the model still reads it.
  *
  * The email and CRM reads use the same blocks (follow-up of #716 and #735).
  * They print `•` rows, `id=<uuid>` and `(id=<uuid>)`, and `• key: value`
@@ -49,6 +53,27 @@ const FIELD = /^\s+([^:«»]{1,40}):\s(.*)$/;
  */
 const MODEL_ONLY = [/\bwhen you call the tool\b/i, /\bCall it when the member asks\b/i];
 
+/**
+ * A line of the data frame of `acb_skills.untrusted.UntrustedFrame`: an open or
+ * END marker line, or the data note that names the markers. The model needs
+ * them, and a member does not (task 3920). The token is hex, 16 characters
+ * today, and the test keeps to 8 or more so a longer token still matches.
+ */
+const FRAME_MARKER = /^\s*<<<(?:END )?[A-Z][A-Z ]*[A-Z] [0-9a-f]{8,64}>>>\s*$/;
+const FRAME_NOTE = /<<<NAME [0-9a-f]{8,64}>>>/;
+
+export function isFrameLine(line: string): boolean {
+  return FRAME_MARKER.test(line) || FRAME_NOTE.test(line);
+}
+
+/** The text with each frame line removed. Pure, for a card that keeps its own lines. */
+export function withoutFrame(text: string): string {
+  return (text || "")
+    .split(/\r?\n/)
+    .filter((line) => !isFrameLine(line))
+    .join("\n");
+}
+
 /** Remove every id from one line of text. */
 export function withoutIds(line: string): string {
   return line
@@ -81,7 +106,7 @@ export function parseReadout(result: string, legend = ""): ReadoutBlock[] {
   const out: ReadoutBlock[] = [];
   let section = "";
   for (const raw of (result || "").split(/\r?\n/)) {
-    if (!raw.trim() || (legend && raw.startsWith(legend))) continue;
+    if (!raw.trim() || (legend && raw.startsWith(legend)) || isFrameLine(raw)) continue;
     if (MACHINE.test(raw) || MODEL_ONLY.some((re) => re.test(raw))) continue;
     // `• status_id: <uuid>` is an id fact. It goes before its value does.
     const dotKey = /^\s*•\s+([a-z][a-z_ ]{0,39}):/.exec(raw);

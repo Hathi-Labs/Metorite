@@ -9,6 +9,9 @@ import type { Email, EmailAccount } from "../lib/types";
 import { timeLabel } from "../lib/utils";
 import { useEmailStore, isRealFolder, foldersInScope, scopeBusy, checkedRows } from "../lib/emailStore";
 import { MailboxChip } from "./MailboxChip";
+import { useMarkDone } from "./useMarkDone";
+import { markDoneItemLabel } from "../lib/markDone";
+import { UnreadBar, UnreadLabel, ReadToggle, readTone, rowButtonClass } from "./UnreadMark";
 import { LabelChip, ColorSwatch, LabelColorGrid } from "./LabelChip";
 import { presetForLabel } from "../lib/labelColors";
 import { FixDialog } from "./automation/ai-settings/fixDialog";
@@ -164,12 +167,13 @@ export function EmailList({
     selectedIds, toggleEmailSelected, setSelectedEmails, clearEmailSelection,
     bulkUpdateSelected, bulkDeleteSelected, captureEmailToTasks,
     runTestOnMessage, testRunningIds, snoozeEmail,
-    viewAll, accounts, searchQuery, searchScope, searchFilters,
+    viewAll, accounts, searchQuery, searchScope, searchFilters, searchBroadened,
   } = useEmailStore();
   // In All inboxes each row names its mailbox (EM-T8d, D-EM-22, §11.4).
   const mailboxOfRow = (accountId: string) =>
     viewAll && accounts.length > 1 ? accounts.find((a) => a.id === accountId) ?? null : null;
   const { isMobile } = useViewMode();
+  const { enabled: canMarkDone, markDone } = useMarkDone();
   // Treat the post-sync "processing" window (background rules/labels pipeline)
   // as busy too, so the pull-to-refresh spinner keeps turning until it settles.
   const syncing = scopeBusy({ viewAll, selectedAccountId, accounts, syncStatus });
@@ -208,6 +212,11 @@ export function EmailList({
   const clearSelection = clearEmailSelection;
   const bulkUpdate = bulkUpdateSelected;
   const bulkDelete = bulkDeleteSelected;
+  // Mark done acts on the conversations of the checked rows (task 3995).
+  const markCheckedDone = () => {
+    void markDone(emails.filter((e) => checked.includes(e.id)));
+    clearEmailSelection();
+  };
 
   const openContextAt = (px: number, py: number, email: Email) => {
     // Clamp so the menu stays on-screen.
@@ -374,6 +383,11 @@ export function EmailList({
             {checked.length} selected
           </span>
           <div className="flex-1" />
+          {canMarkDone && (
+            <Button variant="ghost" size="sm" icon="Check" onClick={markCheckedDone} className="flex-shrink-0">
+              Mark done
+            </Button>
+          )}
           <ToolbarBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdate({ isRead: true })} />
           <ToolbarBtn icon={themedIcon("Mail")} label="Mark unread" onClick={() => bulkUpdate({ isRead: false })} />
           <ToolbarBtn icon={themedIcon("Flag")} label="Flag" onClick={() => bulkUpdate({ isFlagged: true })} />
@@ -440,6 +454,16 @@ export function EmailList({
             <AppIcon name="X" size={11} /> Clear
           </Button>
         </div>
+      )}
+
+      {/* No mail held every word, so these hold at least one (server `broadened`). */}
+      {searchBroadened && emails.length > 0 && (
+        <p
+          data-testid="email-search-broadened"
+          className="px-3 py-1.5 border-b border-border flex-shrink-0 text-[11px] text-muted-foreground"
+        >
+          No email holds every word. These hold at least one.
+        </p>
       )}
 
       {/* Persistent select-all header — aligned with the per-row checkboxes. */}
@@ -510,11 +534,12 @@ export function EmailList({
           <>
             {emails.map((email) => {
               const isSel = selected.has(email.id);
+              const tone = readTone(email.isRead, selectedId === email.id);
               return (
               <div
                 key={email.id}
                 data-email-row={email.id}
-                className={`group flex items-stretch border-b border-border ${
+                className={`group relative flex items-stretch border-b border-border ${
                   isSel ? "bg-primary/5" : ""
                 }`}
               >
@@ -541,23 +566,13 @@ export function EmailList({
                 onTouchMove={cancelLongPress}
                 onTouchEnd={cancelLongPress}
                 onTouchCancel={cancelLongPress}
-                className={`flex-1 min-w-0 text-left pr-3 pl-1 py-3 transition-colors flex flex-col gap-1 select-none ${
-                  selectedId === email.id
-                    ? "bg-primary/10 border-l-2 border-l-primary"
-                    : "hover:bg-secondary/50"
-                }`}
+                className={rowButtonClass(selectedId === email.id)}
               >
+                <UnreadLabel isRead={email.isRead} />
                 {/* Sender + indicators + time */}
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    {!email.isRead && (
-                      <div className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0 mt-0.5" />
-                    )}
-                    <span
-                      className={`text-xs truncate ${
-                        email.isRead ? "text-foreground/70" : "text-foreground font-medium"
-                      }`}
-                    >
+                    <span className={`text-xs truncate ${tone.sender}`}>
                       {email.from.name}
                     </span>
                     {(() => {
@@ -587,7 +602,7 @@ export function EmailList({
                     {email.isStarred && (
                       <AppIcon name="Star" size={10} className="text-warning fill-warning" />
                     )}
-                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                    <span className={`text-[10px] whitespace-nowrap ${tone.time}`}>
                       {timeLabel(email.receivedAt)}
                     </span>
                   </div>
@@ -595,9 +610,7 @@ export function EmailList({
 
                 {/* Subject */}
                 <div
-                  className={`text-xs truncate ${
-                    email.isRead ? "text-foreground/60" : "text-foreground"
-                  }`}
+                  className={`text-xs truncate ${tone.subject}`}
                 >
                   {email.subject}
                 </div>
@@ -671,6 +684,8 @@ export function EmailList({
                   </div>
                 )}
               </button>
+              <UnreadBar isRead={email.isRead} />
+              <ReadToggle email={email} update={updateEmail} />
               </div>
               );
             })}
@@ -720,6 +735,11 @@ export function EmailList({
             clearCategories(ctx.bulk ? checked : [ctx.email.id])
           }
           onClose={() => setCtx(null)}
+          onMarkDone={
+            !canMarkDone || (!ctx.bulk && !ctx.email.threadId)
+              ? undefined
+              : ctx.bulk ? markCheckedDone : () => void markDone([ctx.email])
+          }
           snoozedView={selectedFolder === "snoozed"}
           onSnooze={(until) =>
             (ctx.bulk ? checked : [ctx.email.id]).forEach((id) =>
@@ -760,7 +780,8 @@ export function EmailList({
   );
 }
 
-function ContextMenu({
+export function ContextMenu({
+  onMarkDone,
   ctx,
   folders,
   colorAccountId,
@@ -779,6 +800,8 @@ function ContextMenu({
   onBulkDelete,
   onFix,
 }: {
+  /** Mark done (task 3995), or undefined when the app does not offer it. */
+  onMarkDone?: () => void;
   ctx: CtxState;
   folders: { key: string; label: string }[];
   /** The mailbox whose label colours this menu may change, or null for none. */
@@ -839,11 +862,23 @@ function ContextMenu({
         className="fixed z-[81] w-52 bg-popover border border-border rounded-lg shadow-xl py-1 text-xs"
         style={{ left: menuPos.x, top: menuPos.y, ...(menuMax ? { maxHeight: menuMax, overflowY: "auto" as const } : {}) }}
       >
-        {bulk ? (
+        {bulk && (
           <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground border-b border-border mb-1">
             {count} selected
           </div>
-        ) : (
+        )}
+        {/* Mark done is the FIRST item, for one mail and for a selection. */}
+        {onMarkDone && (
+          <>
+            <CtxItem
+              icon={themedIcon("Check")}
+              label={markDoneItemLabel(Boolean(bulk), count)}
+              onClick={() => run(onMarkDone)}
+            />
+            <CtxDivider />
+          </>
+        )}
+        {!bulk && (
           <>
             <CtxItem icon={themedIcon("Reply")} label="Reply" onClick={() => run(() => onReply("reply"))} />
             <CtxItem icon={themedIcon("ReplyAll")} label="Reply All" onClick={() => run(() => onReply("reply-all"))} />

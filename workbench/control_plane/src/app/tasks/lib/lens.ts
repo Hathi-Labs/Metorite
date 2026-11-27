@@ -496,6 +496,21 @@ export async function lensFetchScheduled(start: string, end: string): Promise<My
 }
 
 /**
+ * The same read, with its `entries` key (CE-5a). The key is there only when
+ * the gateway flag `CALENDAR_EVENTS` is on, so `entries` is `[]` without it.
+ * The Calendar calls this only when `NEXT_PUBLIC_CALENDAR_EVENTS` is on.
+ * Every other caller keeps `lensFetchScheduled`, which reads the rows alone.
+ */
+export async function lensFetchCalendar(
+  start: string,
+  end: string,
+): Promise<{ tasks: MyTask[]; entries: unknown[] }> {
+  const q = new URLSearchParams({ start, end });
+  const res = await projectsCall<ListResponse & { entries?: unknown }>(`my/calendar?${q}`);
+  return { tasks: res.rows.map(mapLensItem), entries: Array.isArray(res.entries) ? res.entries : [] };
+}
+
+/**
  * My first next actions, in the inbox's own order. One page of
  * `GET /projects/my/inbox?disposition=NEXT`. The route filters BEFORE it
  * pages, so `limit` rows are the first `limit` next actions. My Day's Next
