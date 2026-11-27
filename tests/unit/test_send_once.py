@@ -1500,7 +1500,9 @@ def replay(monkeypatch, route) -> Any:
 
     monkeypatch.setattr(stream_relay, "replay_events", _replay)
     monkeypatch.setattr(stream_relay, "subscribe_events", _subscribe)
-    monkeypatch.setattr(agent, "_thread_owner_ok", lambda *_a, **_k: True)
+    # RESUME-2d: the route reads the room once (`_thread_room`). None is no
+    # rooms layer, so the guard and the replay rule both pass.
+    monkeypatch.setattr(agent, "_thread_room", lambda *_a, **_k: None)
     return route
 
 
@@ -1542,11 +1544,13 @@ def test_reconnect_reads_the_one_replay() -> None:
     from gateway.routes import agent
 
     src = inspect.getsource(agent.reconnect_agent_stream)
-    assert "_replay_run_events(thread_id, since)" in src
+    assert "_replay_run_events(thread_id, since, room=room)" in src
     assert "subscribe_events" not in src and "recover_dead_run" not in src
     assert "replay_events(" not in src.replace("_replay_run_events(", "")
     whole = inspect.getsource(agent)
     assert whole.count("subscribe_events(thread_id, since_id=_cursor)") == 1
+    # RESUME-2d: the one replay keeps the withheld check of main.
+    assert whole.count("await _replay_ok(thread_id, room)") == 1
 
 
 def test_the_replay_of_a_send_stops_at_a_newer_run(replay) -> None:

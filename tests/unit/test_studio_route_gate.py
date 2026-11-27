@@ -20,8 +20,9 @@ c. A holder of ``feature:studio`` passes the gate on each route. With the
 d. The router carries one feature gate, ``feature:studio``. No route adds a
    second gate. Only the org and group install of WS-PKG PKG-8b, its
    uninstall of PKG-8e, the member of a run with no viewer of WS-STU B6a, the
-   share with people of J2b-2, and the list, the approve and the reject of
-   WS-STU J2b-1 read ``studio:publish``, in their handlers. Such an install
+   share with people of J2b-2, the list, the approve and the reject of
+   WS-STU J2b-1, and the list, the approve, the reject and the unshare of the
+   skill share of J2c read ``studio:publish``, in their handlers. Such an install
    is a share to others (D180.3, ``package_host.md`` §6.1), and J2b-1 is its
    review. No other route reads it. The fence reads the syntax tree, so a second read
    in another quote style fails too.
@@ -99,12 +100,28 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # F2a, the skill routes.
     ("GET", "/studio/skills"),
     ("POST", "/studio/skills"),
+    # TOF rung 1 (task 3830): does a saved skill match these words.
+    ("POST", "/studio/skills/match"),
     ("GET", "/studio/skills/{skill_id}"),
     ("GET", "/studio/skills/{skill_id}/versions/{version}"),
     ("POST", "/studio/skills/{skill_id}/versions"),
     ("GET", "/studio/skills/{skill_id}/versions"),
     ("POST", "/studio/skills/{skill_id}/undo"),
     ("PATCH", "/studio/skills/{skill_id}/state"),
+    # WS-STU J2c, the share of a skill with the org.
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share"),
+    ("GET", "/studio/skill-shares"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/approve"),
+    ("POST", "/studio/skills/{skill_id}/versions/{version}/share/reject"),
+    ("DELETE", "/studio/skills/{skill_id}/share"),
+    # WS-STU J2d (TOF-4b), the owner's read of the share. It reads no right.
+    ("GET", "/studio/skills/{skill_id}/share"),
+    # TOF-3b F4b, the test run of a skill.
+    ("POST", "/studio/skills/{skill_id}/tests/run"),
+    # TOF-3a F12c, the history, the repair and the approve of a skill.
+    ("GET", "/studio/skills/{skill_id}/runs"),
+    ("POST", "/studio/skills/{skill_id}/repairs"),
+    ("POST", "/studio/skills/{skill_id}/repairs/{proposal_id}/approve"),
     # A5, the package routes.
     ("POST", "/studio/packages"),
     # K1a, the template list and the one-step create from a template.
@@ -156,6 +173,10 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
     # B1b-2, the refresh of the tools of one MCP server.
     ("POST", "/studio/mcp/{server}/refresh"),
+    # B1b-3, the approval of the text of one MCP tool.
+    ("POST", "/studio/mcp/{server}/tools/{tool}/approve"),
+    # SBX-1a, the gap view of an approver (agent_sandbox.md §9.2).
+    ("GET", "/studio/tool-gaps"),
 )
 
 _PARAMS = {
@@ -167,7 +188,9 @@ _PARAMS = {
     "email": "ben@example.test",
     "view_id": str(uuid.uuid4()),
     "server": "github",
+    "tool": "get_issue",
     "object_name": "ledger",
+    "proposal_id": str(uuid.uuid4()),
 }
 
 STUDIO = ["feature:studio"]
@@ -219,15 +242,17 @@ def no_store(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
         return _fn
 
-    from gateway.routes.studio import connections, invoke, packages, skills, views
+    from gateway.routes.studio import connections, invoke, packages, skills, tool_gaps, views
 
-    for module in (actions, connections, invoke, packages, skills, views):
+    for module in (actions, connections, invoke, packages, skills, tool_gaps, views):
         if hasattr(module, "_tenant_session"):
             monkeypatch.setattr(module, "_tenant_session", _trip(f"{module.__name__}.session"))
     monkeypatch.setattr(actions, "catalog_rows", _trip("catalog_rows"))
     # B1b-2: the refresh and the cache read of the MCP tools.
     monkeypatch.setattr(actions.mcp_tools, "refresh", _trip("mcp_tools.refresh"))
     monkeypatch.setattr(actions.mcp_tools, "catalog_tools", _trip("mcp_tools.catalog_tools"))
+    # B1b-3: the approval of the text of one tool.
+    monkeypatch.setattr(actions.mcp_tools, "approve_tool", _trip("mcp_tools.approve_tool"))
     monkeypatch.setattr(actions, "package_rows", _trip("package_rows"))
     return reached
 

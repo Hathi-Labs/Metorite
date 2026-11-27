@@ -349,8 +349,9 @@ class TestOneRegistry:
         # WS-61 KB-9a adds the gated `knowledge`. WS-66 RM-2b makes `reminders`
         # a needs provider: it registers before `approvals`, which stays last.
         # WS-ALN ALN-2b adds the gated `decisions` at the end of `needs.py`.
-        # WS-55 EA-18c adds the gated `agent_questions`, after `chat`.
-        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "studio",
+        # WS-55 EA-18c adds the gated `agent_questions`, after `chat`. AO-2
+        # adds the needs source `providers`, after `studio`.
+        assert list(shell.REGISTRY) == ["tasks", "projects", "email", "studio", "providers",
                                         "reminders", "approvals", "decisions", "calendar",
                                         "tasks_followups",
                                         "email_followups", "crm", "people", "chat",
@@ -363,7 +364,7 @@ class TestOneRegistry:
 
     def test_the_needs_subset_is_todays_five_in_todays_order(self):
         assert list(shell.PROVIDERS) == ["tasks", "projects", "email", "studio",
-                                         "reminders", "approvals"]
+                                         "providers", "reminders", "approvals"]
         assert [p.source for p in shell.needs_providers()] == list(shell.PROVIDERS)
         assert [p.source for p in shell.feed_only_providers()] == ["calendar"]
         for source, (feature, run) in shell.PROVIDERS.items():
@@ -398,7 +399,7 @@ class TestOneRegistry:
             "email:a-mine:th-old", "email:a-mine:th-new",
         ]
         assert set(today["sources"]) == {"tasks", "projects", "email", "studio",
-                                         "reminders", "approvals"}
+                                         "providers", "reminders", "approvals"}
 
     @pytest.mark.parametrize("limit", [1, 5, 40, 80, 500])
     def test_the_needs_view_is_at_the_needs_default_whatever_the_feed_limit(self, fakes, limit):
@@ -434,7 +435,7 @@ class TestOneRegistry:
         alone = run_needs(user)
         assert {i["kind"] for i in alone["items"]} <= NEEDS_KINDS
         assert set(alone["sources"]) == {"tasks", "projects", "email", "studio",
-                                         "reminders", "approvals"}
+                                         "providers", "reminders", "approvals"}
         assert not {name for name, _, _ in fakes.calls} & CALENDAR_CALLS
 
     def test_each_signal_is_a_kind_its_provider_names(self, fakes):
@@ -591,7 +592,8 @@ class TestTheCardShape:
         assert {c["app"] for c in answer["cards"]} == {
             "tasks", "projects", "email", "approvals", "calendar"}
         assert answer["sources"] == {"tasks": "ok", "projects": "ok", "email": "ok",
-                                     "reminders": "absent", "studio": "absent", "approvals": "ok",
+                                     "reminders": "absent", "studio": "absent", "providers": "absent",
+                                     "approvals": "ok",
                                      "calendar": "ok"}
 
     def test_done_and_read_tap_and_every_other_act_opens(self, fakes):
@@ -1122,8 +1124,10 @@ class TestTheBudgets:
         assert {answer["sources"][k] for k in shell.PROVIDERS} == {"ok", "absent"}
         assert answer["sources"]["reminders"] == "absent"
         assert answer["sources"]["studio"] == "absent"
+        assert answer["sources"]["providers"] == "absent"
         assert answer["needs"]["sources"] == {
-            k: "absent" if k in ("reminders", "studio") else "ok" for k in shell.PROVIDERS}
+            k: "absent" if k in ("reminders", "studio", "providers") else "ok"
+            for k in shell.PROVIDERS}
         assert answer["needs"] == run_needs(user)
 
     def test_the_feed_only_budget_is_its_own(self, fakes, monkeypatch):
@@ -1160,6 +1164,7 @@ class TestTheBudgets:
         # `reminders` is absent while CALENDAR_REMINDERS is off (RM-2b).
         assert answer["sources"].pop("reminders") == "absent"
         assert answer["sources"].pop("studio") == "absent"
+        assert answer["sources"].pop("providers") == "absent"
         assert set(answer["sources"].values()) == {"ok"}
 
 
@@ -1342,8 +1347,12 @@ class TestTheLearningFlagOff:
         assert (made, keys) == ([], [])
         # Non-vacuity: the same store, with the org listed, changes the answer.
         monkeypatch.setattr(get_settings(), "my_day_learn_orgs", ORG)
-        assert json.dumps(run_feed(user), default=str) != before
+        learned = run_feed(user)
+        assert json.dumps(learned, default=str) != before
         assert made == ["prefs", "counts"] and keys
+        # LOOP-4b (W1): each card of a listed org says why, and no card before.
+        assert "why_seen" not in before
+        assert learned["cards"] and all(c["why_seen"] for c in learned["cards"])
 
     def test_the_score_of_a_provider_card_holds_no_affinity(self):
         """Only the state join adds the member's term, so a card with no
@@ -1639,7 +1648,7 @@ class TestTheFeedOnlyGather:
               _feed_only("early", _recorder(ran, "early")))
         answer = run_feed(member(*FULL))
         assert list(answer["sources"]) == [
-            "tasks", "projects", "email", "studio", "reminders", "approvals",
+            "tasks", "projects", "email", "studio", "providers", "reminders", "approvals",
             "calendar", "late", "early"]
 
     def test_the_needs_providers_still_run_one_after_another(self, fakes, monkeypatch):

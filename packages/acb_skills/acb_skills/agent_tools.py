@@ -128,11 +128,6 @@ async def call_agent(agent_name: str, message: str) -> str:
     Runs the target agent synchronously and awaits the full result. Use this
     when your current task depends on the sub-agent's output before continuing.
 
-    When an active parent SSE stream exists (i.e. called from within a tool
-    dispatch during run_agent_stream), the sub-agent's tokens, tool calls, and
-    tool results are forwarded to the parent stream as SUB_AGENT_* events so
-    the UI shows the sub-agent working in real time.
-
     Args:
         agent_name: Exact registered name of the target agent — use one from
                     the registered-agents list in your system prompt.
@@ -145,6 +140,9 @@ async def call_agent(agent_name: str, message: str) -> str:
         Returns an error description (not raises) if the agent fails, so
         you can handle partial failures gracefully.
     """
+    # With an active parent SSE stream (a tool dispatch inside
+    # run_agent_stream), the sub-agent's tokens, tool calls and results go to
+    # the parent stream as SUB_AGENT_* events, so the UI shows it working.
     run_id = str(_uuid.uuid4())
 
     refusal = (_delegation_refusal(agent_name)

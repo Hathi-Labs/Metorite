@@ -42,6 +42,8 @@ export type RunErrorCode =
   | "run_restarted_steered"
   | "answer_in_other_account"
   | "too_many_runs"
+  | "ai_unavailable"
+  | "answered_once"
   | "unknown";
 
 export interface RunErrorWords {
@@ -171,6 +173,30 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     tone: "notice",
     action: "Open activity",
   },
+  // AO-3 (incident 2026-11-17): the AI could not answer at all. The server
+  // names it when the Router answers 502 or 503 (every model refused, or it
+  // was down). Nothing of the member's is lost, so it draws as a notice, with
+  // the resting elephant (`AiRestingCardView`) and one "Try again". The words
+  // name no vendor, no tier and no credits: the member cannot act on those.
+  ai_unavailable: {
+    title: "The AI is taking a breather",
+    body:
+      "It cannot answer right now. This is on our side, not yours. " +
+      "Your message is saved, so try again in a few minutes.",
+    retry: true,
+    tone: "notice",
+    action: "Try again",
+  },
+  // HRD-16: a run already took an answer for this card, from another device
+  // or a double tap. The gateway refused the repeat with 409
+  // `answered_once`, and the chat sent nothing again. Nothing is lost, so the
+  // notice only informs (owner decision, 2026-11-23).
+  answered_once: {
+    title: "Someone already answered this",
+    body: "Your answer was not sent, because the question was already answered.",
+    retry: false,
+    tone: "notice",
+  },
   unknown: {
     title: "Something went wrong",
     body: "Metorite could not finish this answer. Press Retry. If it happens again, tell your admin.",
@@ -285,9 +311,11 @@ export function isRunErrorCode(v: unknown): v is RunErrorCode {
  * reached the executor (the gateway refused the request, or the route could
  * not reach it). `runErrors.test.ts` pins the same table.
  *
- * Two statuses differ on purpose, because here they come from the GATEWAY,
+ * Three statuses differ on purpose, because here they come from the GATEWAY,
  * not from the model. A 401 is the member's session (`signed_out`). A 404 is
- * a missing session or route, not a model that refused (`unknown`).
+ * a missing session or route, not a model that refused (`unknown`). A 502 or
+ * a 503 is the app itself, which is updating (`connection`). On the server
+ * the same statuses come from the AI Router (`ai_unavailable`, AO-3).
  */
 export function codeForStatus(status: number): RunErrorCode {
   if (status === 402) return "credits";

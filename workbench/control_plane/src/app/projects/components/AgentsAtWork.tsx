@@ -18,15 +18,18 @@
  * It extends the Agents panel of SW-8 and SW-51 when they land. Until then it
  * is a minimal section of Projects. The chips come from `statusAccent.ts`.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { relativeTime } from "@/lib/taskCard";
 
 import Icon from "@/components/Icon";
+import { ModeSwitch, type ModeOption } from "@/components/ModeSwitch";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
-import { agentRecentRunsApi, agentsOverviewApi } from "../lib/api";
+import { agentMapApi, agentRecentRunsApi, agentsOverviewApi } from "../lib/api";
+import { type AgentMapRead, LIST_LABEL, MAP_LABEL, MAP_RESPONSE_MARK, SWITCH_LABEL } from "../lib/agentMap";
+import { AgentMapView } from "./AgentMapView";
 import {
   type AgentAtWork,
   type AgentRunsRead,
@@ -70,6 +73,105 @@ export function useAgentsAtWork(): AgentsAtWorkRead {
   }, []);
   return read;
 }
+
+/** The Map re-reads every 30 s while the page is visible, and on focus. */
+export const MAP_REFRESH_MS = 30_000;
+
+/**
+ * The map read (WS-MCP SW-103). It reads once when `enabled` turns on, so the
+ * switch knows if the map is dark. It re-reads each 30 s and on focus only
+ * while `live` is on and the document is visible. No event stream.
+ */
+export function useAgentMap(
+  enabled: boolean,
+  live: boolean,
+  showQuiet: boolean,
+  projectId?: string,
+  retry = 0,
+  /** AMR-4: the lenses read the summary, so a large fleet stays small on the wire. */
+  summary = false,
+): AgentMapRead {
+  // The read carries the project it answers for. A read of another project, or
+  // a read while `enabled` is off, counts as loading on the same render. No
+  // effect resets it, so a project never shows under the map of the last one.
+  const key = `${projectId ?? ""}${summary ? "|summary" : ""}`;
+  const [state, setState] = useState<{ key: string; read: AgentMapRead }>({
+    key,
+    read: { kind: "loading" },
+  });
+  const read: AgentMapRead =
+    enabled && state.key === key ? state.read : { kind: "loading" };
+  // Polls stop once the read is dark or failed: nothing is drawn, so nothing refreshes.
+  const kindRef = useRef<AgentMapRead["kind"]>("loading");
+  kindRef.current = read.kind;
+  const load = useCallback(
+    (alive: () => boolean) => {
+      agentMapApi
+        .read({ showQuiet, projectId, summary })
+        .then((map) => {
+          // The mark of the AMR-4 timing: from the answer to the first drawn overview.
+          if (summary && map) {
+            performance.clearMarks(MAP_RESPONSE_MARK);
+            performance.mark(MAP_RESPONSE_MARK);
+          }
+          if (alive()) setState({ key, read: map ? { kind: "ready", map } : { kind: "dark" } });
+        })
+        .catch(() => {
+          // A failed refresh keeps the map on screen.
+          if (alive()) {
+            setState((old) =>
+              old.key === key && old.read.kind === "ready" ? old : { key, read: { kind: "error" } },
+            );
+          }
+        });
+    },
+    [showQuiet, projectId, summary, key],
+  );
+  useEffect(() => {
+    if (!enabled) return;
+    let on = true;
+    const alive = () => on;
+    load(alive);
+    if (!live) {
+      return () => {
+        on = false;
+      };
+    }
+    const refresh = () => {
+      const kind = kindRef.current;
+      if (document.visibilityState === "visible" && kind !== "dark" && kind !== "error") load(alive);
+    };
+    const timer = window.setInterval(refresh, MAP_REFRESH_MS);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      on = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [enabled, live, load, retry]);
+  return read;
+}
+
+/** True below 640 px, the width where the outline takes the place of the canvas. */
+export function usePhone(): boolean {
+  const [phone, setPhone] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 639px)");
+    const sync = () => setPhone(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+  return phone;
+}
+
+type AgentsMode = "list" | "map";
+const MODES: readonly ModeOption<AgentsMode>[] = [
+  { id: "list", icon: "List", label: LIST_LABEL },
+  { id: "map", icon: "Network", label: MAP_LABEL },
+];
 
 /** One read of the last runs of one agent, when its list opens. */
 export function useAgentRuns(agentKey: string): AgentRunsRead {
@@ -200,11 +302,32 @@ export interface AgentsAtWorkViewProps {
   read: AgentsAtWorkRead;
   onBack?: () => void;
   nowMs?: number;
+  /** Opens a task on the board. Without it the Map links to the task page. */
+  onOpenTask?: (taskId: string) => void;
+  /** A test passes the map read, and the view does not fetch. */
+  mapRead?: AgentMapRead;
+  /** The mode on first draw. */
+  initialMode?: AgentsMode;
 }
 
 /** The section. It draws nothing while the feature is dark. */
-export function AgentsAtWorkView({ read, onBack, nowMs = Date.now() }: AgentsAtWorkViewProps) {
+export function AgentsAtWorkView({
+  read,
+  onBack,
+  nowMs = Date.now(),
+  onOpenTask,
+  mapRead,
+  initialMode = "list",
+}: AgentsAtWorkViewProps) {
+  const [mode, setMode] = useState<AgentsMode>(initialMode);
+  const [showQuiet, setShowQuiet] = useState(false);
+  const phone = usePhone();
+  const fetched = useAgentMap(!mapRead && read.kind === "ready", mode === "map", showQuiet);
+  const map = mapRead ?? fetched;
   if (read.kind === "dark") return null;
+  // Dark means absent: no switch until the map read answers, and none when it answers 404, 401 or 403.
+  const mapOn = read.kind === "ready" && map.kind === "ready";
+  const showMap = mapOn && mode === "map";
   return (
     <section
       aria-label={SECTION_TITLE}
@@ -213,13 +336,27 @@ export function AgentsAtWorkView({ read, onBack, nowMs = Date.now() }: AgentsAtW
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="text-sm font-semibold text-foreground">{SECTION_TITLE}</h2>
+        {mapOn ? (
+          <div className="ml-auto">
+            <ModeSwitch modes={MODES} mode={mode} onPick={setMode} label={SWITCH_LABEL} />
+          </div>
+        ) : null}
         {onBack ? (
-          <Button className="ml-auto" size="sm" variant="ghost" onClick={onBack}>
+          <Button className={mapOn ? "" : "ml-auto"} size="sm" variant="ghost" onClick={onBack}>
             Back to the board
           </Button>
         ) : null}
       </div>
-      {read.kind === "loading" ? (
+      {showMap ? (
+        <AgentMapView
+          read={map}
+          showQuiet={showQuiet}
+          onShowQuiet={setShowQuiet}
+          phone={phone}
+          onOpenTask={onOpenTask}
+          nowMs={nowMs}
+        />
+      ) : read.kind === "loading" ? (
         <div className="space-y-2 p-3">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />

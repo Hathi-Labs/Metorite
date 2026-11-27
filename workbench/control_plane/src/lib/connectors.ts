@@ -22,7 +22,17 @@ export type Connector = {
   built_in_app_shows_data: boolean;
   key_hint: string;
   scope: "org" | "member";
+  /**
+   * API-5: the one switch of an API connection (an `api:` row only). False
+   * while no chat tool reads it. API-4 sets it to true. Absent reads as true.
+   */
+  chat_reads?: boolean;
 };
+
+/** False only for a row that says that no chat tool reads it yet (`connector_list.chat_reads`). */
+export function chatReads(row: Pick<Connector, "chat_reads">): boolean {
+  return row.chat_reads !== false;
+}
 
 export function connectorRows(): readonly Connector[] {
   return CONNECTOR_ROWS;
