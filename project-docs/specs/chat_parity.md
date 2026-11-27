@@ -614,6 +614,9 @@ Task 3963 took notes to 45.
 The total of `DEBT_CEILING` is 252. The "Today" column above does not show
 all of these changes.
 
+ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
+waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
+
 ### 6.3 Rungs 0 to 3, slice by slice
 
 Take the slices of the lowest open rung first. Inside a rung, take them in the
