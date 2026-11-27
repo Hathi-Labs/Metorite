@@ -43,6 +43,9 @@ Fences (R7):
   every stray process, the restart, the timeout, the cap and the disk checks.
 - SBX-F21 ``tests/unit/test_sandbox_remote_backend.py`` — the runtime
   (SBX-8), the ``docker-remote`` backend and one org per remote box (SBX-15).
+- ``tests/unit/test_sandbox_broker_tools.py`` — the ``tools`` target of
+  SBX-4a and SBX-4b1: ``acquire_tool``, its caps and its lock, the mounts of
+  ``<tool-data>`` and the exec env file.
 - WS43-F9 ``tests/unit/test_sandbox_network_grant.py`` — the egress grant,
   the revoke, the network of each grant, the sweep and the dark default
   (WS-43g1, WS-43g2a).
@@ -84,7 +87,7 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -138,12 +141,20 @@ COMPUTE_TARGET = "compute"
 #: The ``tools`` target of a user tool (SBX-4a, ``agent_sandbox.md`` §6.2 and
 #: §0c item 4). It is in the set, so a ``tools:`` entry of ``MAF_CODING_SCOPE``
 #: parses and every other target stays on (fence SBX-F24). An unknown target
-#: turns every target off. The target is inert: :meth:`SandboxBroker.acquire`
-#: refuses it, and only ``build_tool`` of SBX-4b will start it.
+#: turns every target off. :meth:`SandboxBroker.acquire` refuses it. The one
+#: way in is :meth:`SandboxBroker.acquire_tool`, and only the step engine of
+#: SBX-4b1 (``acb_skills/user_tool_build.py``) calls it (§12.4 decision 1).
 TOOLS_TARGET = "tools"
 #: The broker's agent name of a user-tool run, the middle part of the
 #: container key (organization, ``user-tool``, thread) of §6.2.
 USER_TOOL_AGENT = "user-tool"
+#: The suffix of ``<tool-data>``, the run-data sibling of a ``tools`` container
+#: (SBX-4b1, §12.4 decision 2). A thread slug ends in 8 hex digits, so
+#: ``<thread slug>.user-tool`` is never the slug of another thread.
+TOOL_DATA_SUFFIX = ".user-tool"
+#: The folder of ``<tool-data>`` that a ``tools`` container sees at
+#: ``/workspace/outputs``. It is not the output folder of the member.
+TOOL_OUTPUTS_DIR = "outputs"
 MAF_CODING_TARGETS = frozenset(
     {"code_task", APP_BUILDER_TARGET, PROJECTS_TARGET, COMPUTE_TARGET, TOOLS_TARGET}
 )
@@ -283,8 +294,9 @@ LABEL_EGRESS_RUN = "metorite.egress.run"
 DOOR_READ_TIMEOUT_EXTRA_S = 30
 DOOR_READ_TIMEOUT_MIN_S = 90
 #: The targets that may get a grant. ``projects`` and ``compute`` never do:
-#: a covered run sends nothing off the platform (H-236, §16.3).
-EGRESS_TARGETS = frozenset({"code_task", APP_BUILDER_TARGET})
+#: a covered run sends nothing off the platform (H-236, §16.3). ``tools`` gets
+#: the narrow grants of one smoke round (SBX-4b1, §12.4 decision 3).
+EGRESS_TARGETS = frozenset({"code_task", APP_BUILDER_TARGET, TOOLS_TARGET})
 #: The door name of ``agent_sandbox.md`` §12.3. The proxy forwards it to
 #: ``sandbox_egress_door_upstream`` (done-when 9).
 DOOR_HOST = "metorite-api.sandbox"
@@ -706,6 +718,30 @@ class RunBinding:
         return _real_state_root() / self.run_data_rel
 
     @property
+    def tool_data_rel(self) -> str:
+        """``.run-data/<org slug>/<thread slug>.user-tool``, relative to the
+        state root (SBX-4b1, §12.4 decision 2). A sibling of
+        :attr:`run_data_rel`, so no ``projects`` mount of the thread holds it."""
+        return self.run_data_rel + TOOL_DATA_SUFFIX
+
+    @property
+    def tool_data(self) -> Path:
+        """``<tool-data>``: the one host dir that a ``tools`` container mounts."""
+        return _real_state_root() / self.tool_data_rel
+
+    @property
+    def mount_root(self) -> Path:
+        """The host dir that the container of this binding mounts and writes.
+
+        ``<tool-data>`` for the ``tools`` target, which mounts no working dir
+        (§12.4 decision 2). The working dir for every other target. The lock
+        of a handle, the sandbox-dir list and the quota follow it.
+        """
+        if self.target == TOOLS_TARGET:
+            return self.tool_data
+        return self.workspace
+
+    @property
     def name(self) -> str:
         """``mtr-sbx-`` plus 16 hex digits of a SHA-256 of the three keys."""
         return CONTAINER_PREFIX + _digest(self.org, self.agent, self.thread)
@@ -916,6 +952,22 @@ def read_compute_binding() -> RunBinding:
     from dataclasses import replace
 
     return replace(read_run_binding(), agent=COMPUTE_AGENT)
+
+
+def read_tool_binding() -> RunBinding:
+    """The bound run as a ``tools`` binding (SBX-4b1, §12.4 decision 1).
+
+    The org, the member, the thread and the working dir come from the run
+    binding alone (R5). The agent becomes ``user-tool``, so the container key
+    is (org, ``user-tool``, thread), as §6.2 says. The working dir stays the
+    run's own: it keys the run data of the thread for :meth:`SandboxBroker.end_run`.
+    The container never mounts it. Raises :class:`SandboxRefused`.
+    """
+    from dataclasses import replace
+
+    binding = replace(read_run_binding(), agent=USER_TOOL_AGENT)
+    _require_thread_slug(binding)
+    return binding
 
 
 def compute_enabled(org: str | None) -> bool:
@@ -1179,6 +1231,52 @@ def projects_mounts(binding: RunBinding, skill_cover: Path) -> list[Mount]:
     ]
 
 
+def prepare_tool_dirs(binding: RunBinding) -> None:
+    """Make ``<tool-data>`` and its ``outputs/`` folder (SBX-4b1, §12.4 decision 2).
+
+    The ``tools`` target only. Each dir is made with the safe opener, so no
+    part of its path can be a link. A file or a link in the way raises
+    :class:`SandboxRefused`.
+    """
+    from acb_skills import safe_open
+
+    try:
+        safe_open.ensure_dir(_real_state_root(), f"{binding.tool_data_rel}/{TOOL_OUTPUTS_DIR}")
+    except (safe_open.UnsafePath, FileExistsError, NotADirectoryError) as exc:
+        raise SandboxRefused(
+            "A dir of this thread's tool sandbox is not a real dir, so no sandbox starts."
+        ) from exc
+    except ValueError as exc:
+        raise SandboxRefused("This thread's id cannot name a sandbox folder.") from exc
+
+
+def tools_mounts(binding: RunBinding) -> list[Mount]:
+    """The two mounts of the ``tools`` target (SBX-4b1, §12.4 decision 2).
+
+    - ``<tool-data>/`` at ``/workspace/.run``, read-write. The package, the
+      installed lock and the smoke input live there.
+    - ``<tool-data>/outputs/`` at ``/workspace/outputs``, read-write. It is
+      not the output folder of the member, so a build never writes a member
+      file.
+
+    No working dir of an agent and no tenant dir. ``<tool-data>`` is a sibling
+    of the run-data dir of the thread, so it never lies inside a source of
+    :func:`projects_mounts`, and no such source lies inside it.
+    :func:`prepare_tool_dirs` makes the dirs. This checks them again.
+    """
+    try:
+        data = _real_dir(binding.tool_data)
+        outputs = _real_dir(data / TOOL_OUTPUTS_DIR)
+    except ValueError as exc:
+        if isinstance(exc, SandboxError):
+            raise
+        raise SandboxRefused("This thread's id cannot name a sandbox folder.") from exc
+    return [
+        Mount(data, RUN_DATA_TARGET, readonly=False),
+        Mount(outputs, OUTPUTS_TARGET, readonly=False),
+    ]
+
+
 def mount_list(
     binding: RunBinding,
     cover: GitCover,
@@ -1208,9 +1306,13 @@ def mount_list(
     - *readonly_mounts* come from code, never from a caller. The one list is
       :meth:`SandboxBroker.app_builder_mounts` (WS-43h). A source with
       ``.git`` at any depth is refused.
+    - The ``tools`` target (SBX-4b1) mounts only :func:`tools_mounts`.
     """
     if binding.target == COMPUTE_TARGET:
         return []  # SBX-18: the compute target mounts nothing.
+    if binding.target == TOOLS_TARGET:
+        # SBX-4b1: <tool-data> and its outputs folder, and nothing else.
+        return tools_mounts(binding)
     ws = binding.workspace
     _check_source_text(ws)
     if not ws.is_dir() or _is_link(ws) or ws.resolve() != ws:
@@ -1446,6 +1548,48 @@ def write_egress_env_file(folder: Path, start_id: str, grant: EgressGrant) -> Pa
     return path
 
 
+#: The names that the env file of one exec may hold (SBX-4b1, §12.4
+#: decision 4). The step engine passes the smoke capability here, and nothing
+#: else reaches a command this way.
+EXEC_ENV_NAMES = frozenset({"METORITE_API_TOKEN"})
+
+
+def check_exec_env(values: Mapping[str, str]) -> dict[str, str]:
+    """The env of one exec, checked. Raises :class:`SandboxRefused`.
+
+    Each name is in :data:`EXEC_ENV_NAMES`, and each value is one line of
+    text, so the file can hold no second variable.
+    """
+    if not isinstance(values, Mapping) or not values:
+        raise SandboxRefused("An exec env file holds at least one value.")
+    out: dict[str, str] = {}
+    for name, value in values.items():
+        if name not in EXEC_ENV_NAMES:
+            raise SandboxRefused("An exec env file may not hold this name.")
+        if not isinstance(value, str) or not value or any(c in value for c in "\r\n\x00"):
+            raise SandboxRefused("An exec env value is not one line of text.")
+        out[name] = value
+    return out
+
+
+def write_exec_env_file(folder: Path, values: Mapping[str, str]) -> Path:
+    """Write the env of ONE exec, mode 0600, in a 0700 folder (§12.4 decision 4).
+
+    ``docker exec --env-file`` reads it, so a value never shows in the argv
+    or the process list. The caller removes the file when the command ends.
+    The startup sweep empties the folder.
+    """
+    checked = check_exec_env(values)
+    folder.mkdir(parents=True, exist_ok=True)
+    os.chmod(folder, 0o700)
+    path = folder / f"exec-{uuid.uuid4().hex}.env"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        for key, value in checked.items():
+            handle.write(f"{key}={value}\n")
+    return path
+
+
 def build_proxy_argv(
     *, image: str, bin_dir: Path, grants_dir: Path, door_read_timeout_s: int,
 ) -> list[str]:
@@ -1623,6 +1767,19 @@ def build_run_argv(
         # sys.path, so a module that another member's run wrote in a shared
         # folder is never imported by name (review P1, fix round 1).
         env["PYTHONSAFEPATH"] = "1"
+    if binding.target == TOOLS_TARGET:
+        # SBX-4b1 (§12.4 decisions 6 and 7): the step engine installs with
+        # `pip --target`, which refuses `PIP_USER`. No user site, and no
+        # import from the cwd. The run command adds `PYTHONPATH` itself.
+        env = {
+            "HOME": "/tmp",
+            "PATH": SYSTEM_PATH,
+            "PIP_CACHE_DIR": "/tmp/pip-cache",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
     if binding.target == APP_BUILDER_TARGET:
         # WS-43h (§7.8): `build_t2.mjs` reads the vendor cache here. The
         # value is the fixed container path of the read-only mount, never a
@@ -2687,6 +2844,9 @@ class SandboxBroker:
         #: The ``compute`` containers (SBX-18). A separate registry, so the
         #: compute caps and the ``sandbox_max_*`` caps never share a count.
         self._compute_live: dict[str, SandboxHandle] = {}
+        #: SBX-4b1 (§12.4 decision 1): the (org, thread) of each build that
+        #: holds its ``tools`` container. One build at a time in a thread.
+        self._tool_builds: set[tuple[str, str]] = set()
         self._registry_lock = asyncio.Lock()
         self._dir_locks: dict[Path, asyncio.Lock] = {}
         self._dirs: set[Path] | None = None
@@ -2695,7 +2855,7 @@ class SandboxBroker:
         self._background: set[asyncio.Task[Any]] = set()
         #: Every run-data dir this process made, keyed by (working dir, thread),
         #: as a path relative to the real state root. ``end_run`` deletes it.
-        self._run_data: dict[tuple[Path, str], str] = {}
+        self._run_data: dict[tuple[Path, str], set[str]] = {}
         #: Docker health for ``covers()``: the last answer and when it came.
         self._docker_ok: bool | None = None
         self._docker_checked = 0.0
@@ -2847,7 +3007,7 @@ class SandboxBroker:
 
     def _sandbox_dirs(self) -> set[Path]:
         """Every dir that a container mounts now, or mounted."""
-        return set(self._load_dirs()) | {h.workspace for h in self._live.values()}
+        return set(self._load_dirs()) | {h.binding.mount_root for h in self._live.values()}
 
     def _record_dir(self, path: Path) -> None:
         """Append *path* to the list BEFORE a container mounts it."""
@@ -3047,6 +3207,14 @@ class SandboxBroker:
         The quota bounds the bytes AND the count of entries, so a flood of
         small files cannot use up the inodes of the host file system.
         """
+        if handle.binding.target == TOOLS_TARGET:
+            # SBX-4b1 (§12.4 decision 6): the container mounts <tool-data>
+            # only, and the same quota bounds it.
+            used, entries = await asyncio.to_thread(_dir_usage, handle.binding.tool_data)
+            quota_mb, max_files = self._quota()
+            handle.workspace_bytes, handle.workspace_files = used, entries
+            handle.over_quota = used > quota_mb * _MIB or entries > max_files
+            return used
         used, entries = await asyncio.to_thread(_dir_usage, handle.workspace)
         if handle.binding.target == PROJECTS_TARGET:
             # The run-data dir lies outside the working dir, and the same
@@ -3271,11 +3439,13 @@ class SandboxBroker:
                     raise SandboxBusy("This thread's sandbox is busy. Try again when it finishes.")
                 self._drop(held)
                 victims.append(held)
+            if binding.target == TOOLS_TARGET:
+                victims += self._make_tool_room(binding.org)
             victims += self._make_room(binding.org)
             # `remote` is set here, under the lock, so a second acquire of the
             # thread joins this start, and the one-org check sees it in flight.
             handle = SandboxHandle(
-                binding=binding, lock=self._lock_for(binding.workspace),
+                binding=binding, lock=self._lock_for(binding.mount_root),
                 leases=1, last_used=self._clock(), remote=remote,
             )
             self._live[binding.name] = handle
@@ -3303,8 +3473,8 @@ class SandboxBroker:
         handle.removed = True
         if self._live.get(handle.name) is handle:
             del self._live[handle.name]
-        source = handle.workspace
-        shared = any(h.workspace == source for h in self._live.values())
+        source = handle.binding.mount_root
+        shared = any(h.binding.mount_root == source for h in self._live.values())
         lock = self._dir_locks.get(source)
         if lock is not None and not shared and not lock.locked():
             del self._dir_locks[source]
@@ -3342,6 +3512,110 @@ class SandboxBroker:
             victims.append(victim)
         return victims
 
+    def _make_tool_room(self, org: str) -> list[SandboxHandle]:
+        """The two caps of the ``tools`` target (SBX-4b1, §12.4 decision 1).
+
+        Called under the registry lock, before :meth:`_make_room`, so a
+        ``tools`` container also counts against the broker's own caps (§6.2).
+        At ``user_tool_max_per_org`` the org stops its own oldest idle
+        ``tools`` container. At ``user_tool_max_total`` the oldest idle
+        ``tools`` container of any org stops. With none idle, it raises
+        :class:`SandboxBusy`.
+        """
+        settings = self._settings()
+        per_org = int(getattr(settings, "user_tool_max_per_org", 1))
+        total = int(getattr(settings, "user_tool_max_total", 1))
+        victims: list[SandboxHandle] = []
+        tools = [h for h in self._live.values() if h.binding.target == TOOLS_TARGET]
+        mine = [h for h in tools if h.org == org]
+        if len(mine) >= per_org:
+            victim = _oldest_idle(mine)
+            if victim is None:
+                raise SandboxBusy(
+                    "This organization runs its share of tool sandboxes, and none "
+                    "is idle. Try again in a minute."
+                )
+            self._drop(victim)
+            victims.append(victim)
+            tools.remove(victim)
+        if len(tools) >= total:
+            victim = _oldest_idle(tools)
+            if victim is None:
+                raise SandboxBusy(
+                    "The box runs its maximum of tool sandboxes, and none is idle. "
+                    "Try again in a minute."
+                )
+            self._drop(victim)
+            victims.append(victim)
+        return victims
+
+    async def acquire_tool(self) -> SandboxHandle:
+        """The ``tools`` container of the bound run (SBX-4b1, §12.4 decision 1).
+
+        The one way in to the ``tools`` target. Only the step engine
+        (``acb_skills/user_tool_build.py``) calls it, and a source scan holds
+        that (SBX-F11). The key is (org, ``user-tool``, thread), from the run
+        binding alone (R5). It refuses unless ``MAF_CODING_SCOPE`` names
+        ``tools`` for the org, egress is on and the door has an upstream
+        address. So a stack with no door refuses before any start.
+
+        One build at a time in a thread: a second call before
+        :meth:`release_tool` raises :class:`SandboxBusy`. The caps are
+        ``user_tool_max_per_org`` and ``user_tool_max_total``. Raises
+        :class:`SandboxRefused`, :class:`SandboxBusy` or
+        :class:`SandboxUnavailable`, and never falls back to the host.
+        """
+        binding = read_tool_binding()
+        if not maf_coding_scope_allows(TOOLS_TARGET, binding.org):
+            raise SandboxRefused(
+                "MAF_CODING_SCOPE does not name the tools target for this "
+                "organization, so the sandbox starts nothing."
+            )
+        settings = self._settings()
+        if not egress_enabled(settings):
+            raise SandboxRefused(EGRESS_OFF)
+        check_grant_hosts((DOOR_HOST,), settings)
+        backend = self._backend()
+        self._check_target(binding, backend)
+        await self._await_startup()
+        self._check_free_disk()
+        key = (binding.org, binding.thread)
+        if key in self._tool_builds:
+            raise SandboxBusy("A tool build already runs in this chat. Try again when it ends.")
+        self._tool_builds.add(key)
+        try:
+            if not self._reusable(binding):
+                await self._preflight(binding)
+            handle, victims, fresh = await self._claim(binding)
+            if not fresh:
+                return await self._join(handle)
+            try:
+                if victims:
+                    await asyncio.shield(self._spawn_background(self._remove_all(victims)))
+                await self._start(handle)
+            except BaseException:
+                self._abandon(handle)
+                raise
+        except BaseException:
+            self._tool_builds.discard(key)
+            raise
+        handle.starting = False
+        handle.ready.set()
+        self._ensure_reaper()
+        return handle
+
+    async def release_tool(self, handle: SandboxHandle) -> None:
+        """End the build that holds *handle* (SBX-4b1). Never raises.
+
+        It frees the (org, thread) of the build, and marks the container idle
+        through :meth:`release`.
+        """
+        self._tool_builds.discard((handle.org, handle.binding.thread))
+        try:
+            await self.release(handle)
+        except Exception as exc:  # the end of a build must never fail
+            _log.warning("sandbox_broker.tool_release_failed", error=str(exc)[:300])
+
     async def release(self, handle: SandboxHandle) -> None:
         """Mark the container idle. A container past its lifetime stops now."""
         handle.leases = max(0, handle.leases - 1)
@@ -3359,13 +3633,19 @@ class SandboxBroker:
     async def _mounts_for(self, binding: RunBinding) -> list[Mount]:
         """The mounts of a start, after the nesting check (review P1-c)."""
         others = self._sandbox_dirs()
-        if binding.target == PROJECTS_TARGET:
+        if binding.target in (PROJECTS_TARGET, TOOLS_TARGET):
             # Recorded BEFORE the dir exists, so end_run deletes it even when
             # the start fails half way.
             self._note_run_data(binding)
         return await asyncio.to_thread(self._build_mounts, binding, others)
 
     def _build_mounts(self, binding: RunBinding, others: set[Path]) -> list[Mount]:
+        if binding.target == TOOLS_TARGET:
+            # SBX-4b1: <tool-data> is the one source. It must not nest with a
+            # dir that another container mounts, or did.
+            prepare_tool_dirs(binding)
+            check_not_nested(binding.tool_data, others)
+            return mount_list(binding, self.git_cover())
         check_not_nested(binding.workspace, others)
         cover = None
         readonly: list[tuple[Path, str]] = []
@@ -3474,7 +3754,15 @@ class SandboxBroker:
     # ── the projects target: host files and run data (§16.3) ────────────────
 
     def _note_run_data(self, binding: RunBinding) -> None:
-        self._run_data[(binding.workspace, binding.thread)] = binding.run_data_rel
+        """Record the run-data rel of *binding* for :meth:`end_run`.
+
+        One key (working dir, thread) holds a SET of rels (SBX-4b1, §12.4
+        decision 2): the run-data dir of a ``projects`` binding, and
+        ``<tool-data>`` of a ``tools`` binding. So two bindings of one key
+        never overwrite each other's rel.
+        """
+        rel = binding.tool_data_rel if binding.target == TOOLS_TARGET else binding.run_data_rel
+        self._run_data.setdefault((binding.workspace, binding.thread), set()).add(rel)
 
     @contextlib.asynccontextmanager
     async def host_dir(self) -> AsyncIterator[RunBinding]:
@@ -3519,7 +3807,9 @@ class SandboxBroker:
 
         The file tools refuse a write then, and still allow a delete.
         """
-        return any(h.workspace == workspace and h.over_quota for h in self._live.values())
+        return any(
+            h.binding.mount_root == workspace and h.over_quota for h in self._live.values()
+        )
 
     async def end_run(self) -> bool:
         """Delete the bound run's run-data dir at the end of the run (§16.3).
@@ -3559,17 +3849,21 @@ class SandboxBroker:
         except (OSError, RuntimeError):
             return False
         revoked = await self._revoke_for_run(workspace, thread) if self._grants else False
-        rel = self._run_data.get((workspace, thread))
+        rels = sorted(self._run_data.get((workspace, thread)) or ())
         remote = [
             h for h in self._live.values()
             if h.remote and h.workspace == workspace and h.binding.thread == thread
         ]
-        if rel is None and not remote:
+        if not rels and not remote:
             return revoked
         async with self._lock_for(workspace):
             removed = False
-            if rel is not None:
-                removed = await asyncio.to_thread(_remove_run_data, rel)
+            for rel in rels:
+                # SBX-4b1: <tool-data> has the lock of its own container.
+                own = self._dir_locks.get(_real_state_root() / rel)
+                async with own if own is not None else contextlib.nullcontext():
+                    gone = await asyncio.to_thread(_remove_run_data, rel)
+                removed = gone or removed
             self._run_data.pop((workspace, thread), None)
             stale = [
                 h for h in self._live.values()
@@ -3624,7 +3918,7 @@ class SandboxBroker:
                 egress_env_file=env_file,
             )
             handle.remote, handle.pushed = remote, frozenset()
-            await asyncio.to_thread(self._record_dir, handle.workspace)
+            await asyncio.to_thread(self._record_dir, handle.binding.mount_root)
             # SBX-15 review P2: the admit and `docker run` hold ONE lock, so two
             # starts of two orgs never both pass the admit.
             async with self._start_gate(remote):
@@ -4144,7 +4438,12 @@ class SandboxBroker:
         """
         from acb_skills.write_artifact import artifact_context
 
-        binding = read_run_binding()
+        # SBX-4b1 (§12.4 decision 3): a `tools` handle has the key (org,
+        # `user-tool`, thread), so it compares with the tool binding. The org
+        # and the member still come from the run binding.
+        binding = (
+            read_tool_binding() if handle.binding.target == TOOLS_TARGET else read_run_binding()
+        )
         if binding.org != handle.org or binding.name != handle.name:
             raise SandboxRefused("This sandbox is not the bound run's own container.")
         ctx = artifact_context()
@@ -4331,9 +4630,12 @@ class SandboxBroker:
 
     # ── exec (§7.1 rules 9, 10 and 11) ──────────────────────────────────────
 
-    def _exec_argv(self, handle: SandboxHandle, command: str, timeout_s: int) -> list[str]:
+    def _exec_argv(
+        self, handle: SandboxHandle, command: str, timeout_s: int, env_path: Path | None = None,
+    ) -> list[str]:
+        env = ["--env-file", str(env_path)] if env_path is not None else []
         return [
-            "exec", "--workdir", WORKSPACE_TARGET, handle.name,
+            "exec", "--workdir", WORKSPACE_TARGET, *env, handle.name,
             "bash", "-c", EXEC_WRAPPER, "mtr-exec", str(timeout_s), command,
         ]
 
@@ -4352,8 +4654,16 @@ class SandboxBroker:
             )
         return clean
 
-    async def exec(self, handle: SandboxHandle, command: str, timeout_s: float) -> ExecResult:
+    async def exec(
+        self, handle: SandboxHandle, command: str, timeout_s: float,
+        *, env_file: Mapping[str, str] | None = None,
+    ) -> ExecResult:
         """Run one command in the container, under the lock of its mount source.
+
+        *env_file* (SBX-4b1, §12.4 decision 4) holds values for this command
+        only. The broker writes them to a 0600 file in a 0700 folder, passes
+        it with ``docker exec --env-file``, and deletes it when the command
+        ends. So no value shows in the argv. Only :data:`EXEC_ENV_NAMES` pass.
 
         One exec at a time per mount source. The disk floor and the quota are
         checked first. After the command, every stray process dies, and the
@@ -4370,10 +4680,13 @@ class SandboxBroker:
         """
         if not isinstance(command, str) or not command.strip():
             raise SandboxRefused("The command is empty.")
+        if env_file is not None:
+            check_exec_env(env_file)
         timeout = self._clamp_timeout(timeout_s)
         await self._wait_ready(handle)
         await handle.lock.acquire()
         handed_off = False
+        env_path: Path | None = None
         try:
             self._require_live(handle)
             self._check_free_disk()
@@ -4381,8 +4694,12 @@ class SandboxBroker:
             if handle.egress is not None and handle.egress.expires_at <= self._wall():
                 # §7.3: an expired grant ends at the next exec, as a revoke.
                 await self._revoke_locked(handle, "expired")
+            if env_file is not None:
+                env_path = await asyncio.to_thread(
+                    write_exec_env_file, self._egress_dir() / "env", env_file,
+                )
             try:
-                return await self._exec_locked(handle, command, timeout)
+                return await self._exec_locked(handle, command, timeout, env_path)
             except BaseException:
                 handed_off = True
                 cleanup = self._spawn_background(self._clean_after_abort(handle))
@@ -4390,6 +4707,9 @@ class SandboxBroker:
                     await asyncio.shield(cleanup)
                 raise
         finally:
+            if env_path is not None:
+                with contextlib.suppress(OSError):
+                    env_path.unlink()
             if not handed_off:
                 handle.lock.release()
 
@@ -4410,7 +4730,7 @@ class SandboxBroker:
             handle.lock.release()
 
     async def _exec_locked(
-        self, handle: SandboxHandle, command: str, timeout: int,
+        self, handle: SandboxHandle, command: str, timeout: int, env_path: Path | None = None,
     ) -> ExecResult:
         cap = int(getattr(self._settings(), "sandbox_output_cap_bytes", 12288))
         if handle.remote:
@@ -4419,7 +4739,7 @@ class SandboxBroker:
         handle.last_used = self._clock()
         started = time.monotonic()
         result = await self._docker.stream(
-            self._exec_argv(handle, command, timeout),
+            self._exec_argv(handle, command, timeout, env_path),
             timeout=timeout + _HOST_GRACE_SECONDS, head=cap // 2, tail=cap - cap // 2,
         )
         elapsed = time.monotonic() - started

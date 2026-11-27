@@ -1479,6 +1479,15 @@ class Settings(FlagRegistry):
     sandbox_max_total: int = 4
     compute_max_per_org: int = 1
     compute_max_total: int = 1
+    # SBX-4b1 (agent_sandbox.md §5.6 and §12.4 decisions 1 and 8). The caps of
+    # the `tools` target: one container for each org, and one on the box. A
+    # `tools` container also counts against the two caps above. At a cap the
+    # build gets "busy". The whole build of one user tool has
+    # `user_tool_step_seconds_build` seconds: the session, the installs and
+    # the smoke rounds. Fence: tests/unit/test_user_tool_build.py.
+    user_tool_max_per_org: int = 1
+    user_tool_max_total: int = 1
+    user_tool_step_seconds_build: int = 600
     # Disk checks of §7.1 rule 10. The floor is the free space of the file
     # system that holds state_root(). The owner sizes it at WS43-G3.
     sandbox_min_free_disk_mb: int = 5120
