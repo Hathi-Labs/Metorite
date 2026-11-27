@@ -360,7 +360,7 @@ def _long(value: Any, width: int = MAX_LONG_CHARS) -> str:
 def _error(value: Any) -> str:
     """The text of a run error: each link, key, address and path removed
     (``tool_refusals.scrub_text``), one line."""
-    return scrub_text(strip_hidden(str(value or "")), limit=MAX_ERROR_CHARS)
+    return scrub_text(_scrub(str(value or "")), limit=MAX_ERROR_CHARS)
 
 
 def _empty(value: Any) -> bool:
@@ -377,10 +377,7 @@ def _fold(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return _line(value)
     if depth >= MAX_DEPTH:
-        # Only the first part of a deep value is shown, so only that part is
-        # cleaned. The slice is longer than the line, so a cut secret is past it.
-        text = json.dumps(value, ensure_ascii=False, default=str)[:MAX_FIELD_CHARS * 4]
-        return _line(text)
+        return _deep_line(value)
     if isinstance(value, dict):
         kept = [(k, v) for k, v in value.items()
                 if not _empty(v) and not is_secret_field_key(k)]
@@ -393,6 +390,24 @@ def _fold(value: Any, depth: int = 0) -> Any:
             out.append(f"(+{page.total - len(page.items)} more)")
         return out
     return _line(value)
+
+
+def _no_secret_keys(value: Any) -> Any:
+    """*value* with each key that names a secret (the wide rule,
+    ``is_secret_key``) removed in the WHOLE subtree. Run it before any dump,
+    so no depth lets a secret key through."""
+    if isinstance(value, dict):
+        return {k: _no_secret_keys(v) for k, v in value.items() if not is_secret_key(k)}
+    if isinstance(value, (list, tuple)):
+        return [_no_secret_keys(v) for v in value]
+    return value
+
+
+def _deep_line(value: Any) -> str:
+    """A value past :data:`MAX_DEPTH` as one line. The secret keys of the whole
+    subtree go first, then the dump, then the scrub of the full text
+    (:func:`_line`), and the cut comes last."""
+    return _line(json.dumps(_no_secret_keys(value), ensure_ascii=False, default=str))
 
 
 def _capped(pairs: list[tuple[Any, Any]], clean: Any) -> dict[str, Any]:
@@ -452,8 +467,11 @@ def _fail(status: int, body: Any, member: str) -> dict[str, Any]:
         return _refusal(_UNREACHED)
     if status == 401:
         return _refusal(_SIGNED_OUT, status=401)
-    detail, _fields = safe_detail(status, body, member, limit=MAX_ERROR_CHARS)
-    detail = strip_hidden(detail)
+    # A hidden character inside a key hides the key from the scrub of
+    # ``safe_detail``. So each text of the body loses its hidden characters
+    # first, and the detail takes the scrub of the shape list again after.
+    detail, _fields = safe_detail(status, _unhidden(body), member, limit=MAX_ERROR_CHARS)
+    detail = _scrub(detail)
     if status == 403:
         return _refusal(f"{_NO_RIGHT} {detail}".strip(), status=403)
     if detail:
@@ -476,6 +494,17 @@ async def _feature_refusal(member: str, feature: str) -> dict[str, Any] | None:
     if feature not in features:
         return _refusal(_NO_FEATURE.format(page=_FEATURE_PAGES[feature]), status=403)
     return None
+
+
+def _unhidden(value: Any) -> Any:
+    """*value* with each text in it free of hidden characters."""
+    if isinstance(value, str):
+        return strip_hidden(value)
+    if isinstance(value, dict):
+        return {_unhidden(k): _unhidden(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_unhidden(v) for v in value]
+    return value
 
 
 def _q(value: str) -> str:
@@ -612,6 +641,8 @@ def _clean_config(value: Any, depth: int = 0) -> Any:
         return _capped(kept, lambda v: _clean_config(v, depth + 1))
     if isinstance(value, str):
         return _long(value, MAX_FIELD_CHARS)
+    if depth >= MAX_DEPTH and isinstance(value, (dict, list, tuple)):
+        return _deep_line(value)
     return _fold(value, depth)
 
 
@@ -639,7 +670,10 @@ async def agent_registry_config(repo: str) -> dict[str, Any]:
         return _fail(status, body, member)
     if not isinstance(body, dict):
         return _refusal(_SHAPE)
-    return await _framed("AGENT CONFIG", _clean_config(body), "config", _CONFIG_NOTE,
+    # The secret keys of the whole file go first, at each depth, before any
+    # fold or dump.
+    return await _framed("AGENT CONFIG", _clean_config(_no_secret_keys(body)), "config",
+                         _CONFIG_NOTE,
                          found=True, repo=slug)
 
 

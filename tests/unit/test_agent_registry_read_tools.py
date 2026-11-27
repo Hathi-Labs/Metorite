@@ -564,6 +564,58 @@ async def test_a_huge_since_hours_is_clamped_to_what_the_route_takes(gw: Gateway
     assert ar.MAX_SINCE_HOURS < 2**31
 
 
+def _nest(depth: int, leaf: dict[str, Any]) -> dict[str, Any]:
+    """*leaf* under *depth* levels of one key each."""
+    out: dict[str, Any] = leaf
+    for i in range(depth):
+        out = {f"n{i}": out}
+    return out
+
+
+@pytest.mark.parametrize("depth", [4, 5, 6])
+async def test_a_secret_key_at_any_depth_never_reaches_the_model(gw: Gateway,
+                                                                 depth: int) -> None:
+    """Past MAX_DEPTH the subtree is dumped. Its secret keys go first.
+    Mutation: dump the subtree with no key filter -> red."""
+    gw.force["get_agent_config"] = (200, _nest(depth, {"password": "hunter2PlainValue",
+                                                       "api_key": "plainkeyvalue99",
+                                                       "keep": "seen"}))
+    with _run():
+        out = await ar.agent_registry_config("acme/sales")
+    text = _all_text(out)
+    assert "hunter2PlainValue" not in text and "plainkeyvalue99" not in text
+    assert "password" not in text and "seen" in text
+
+
+@pytest.mark.parametrize("depth", [5, 6])
+def test_the_fold_drops_a_secret_key_past_its_depth(depth: int) -> None:
+    out = ar._fold(_nest(depth, {"client_secret": "hunter2PlainValue", "x": 1}))
+    assert "hunter2PlainValue" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("pad", [" " * 1178, "\u200b" * 1178, " \u200b" * 600])
+def test_a_padded_token_past_the_cut_is_scrubbed(pad: str) -> None:
+    """The scrub reads the full text, and the cut comes after. Mutation: cut
+    the dump before the scrub -> red."""
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    split = "ghp_A1b2\u200bC3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    for value in ([pad + token], [pad + split], {"x": [pad + token]}):
+        out = json.dumps(ar._fold(value, ar.MAX_DEPTH), ensure_ascii=False)
+        assert "A1b2C3d4E5f6" not in out and "Q7r8" not in out, out[-200:]
+    long_text = ar._long(pad + token, ar.MAX_FIELD_CHARS)
+    assert "Q7r8" not in long_text and "A1b2C3d4" not in long_text
+
+
+async def test_a_route_error_with_a_hidden_character_in_a_key_is_scrubbed(gw: Gateway) -> None:
+    """``safe_detail`` scrubs before a hidden character goes. So the body loses
+    it first. Mutation: strip the hidden characters after the scrub -> red."""
+    hidden = "sk-" + "A1b2C3d4E5f6\u200bG7h8I9j0K1l2M3n4"
+    gw.force["runs"] = (400, {"detail": f"bad key {hidden}"})
+    with _run():
+        out = await ar.agent_registry_runs()
+    assert "G7h8I9j0" not in out["error"] and "A1b2C3d4" not in out["error"], out
+
+
 @pytest.mark.parametrize("repo", ["/etc", "C:\\agents\\x", "../../etc/passwd",
                                   "https://evil.test/acme/x", "acme/x/tree/main", "acme",
                                   "acme/x?ref=1"])
