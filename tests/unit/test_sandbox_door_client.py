@@ -246,11 +246,46 @@ def _is_door_url(node: ast.AST) -> bool:
     )
 
 
+_BATCH_PATH = "/sandbox/v1/batch"
+
+
+def _is_batch_url(node: ast.AST) -> bool:
+    """``DOOR_URL + BATCH_PATH``, and nothing else."""
+    return (
+        _is_door_url(node)
+        and isinstance(node.right, ast.Name)  # type: ignore[attr-defined]
+        and node.right.id == "BATCH_PATH"  # type: ignore[attr-defined]
+    )
+
+
 def url_problems(source: str) -> list[str]:
-    """One host, ``DOOR_URL``. Each call of the session is a GET to DOOR_URL + path."""
+    """One host, ``DOOR_URL``. Each call of the session is a GET to DOOR_URL + path,
+    plus the one batch POST to ``DOOR_URL + BATCH_PATH`` (SBX-3b)."""
     tree = ast.parse(source)
     docs = _docstrings(tree)
     problems: list[str] = []
+    batch_paths = [
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "BATCH_PATH" for t in node.targets)
+    ]
+    # Each binding of the name: a store, a parameter, or an import alias.
+    rebinds = [
+        node
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Name) and node.id == "BATCH_PATH"
+            and not isinstance(node.ctx, ast.Load))
+        or (isinstance(node, ast.arg) and node.arg == "BATCH_PATH")
+        or (isinstance(node, ast.alias) and (node.asname or node.name) == "BATCH_PATH")
+    ]
+    batch_ok = (
+        len(batch_paths) == 1
+        and len(rebinds) == 1
+        and isinstance(batch_paths[0], ast.Constant)
+        and batch_paths[0].value == _BATCH_PATH
+    )
+    posts = 0
     door_urls = [
         node.value
         for node in tree.body
@@ -291,13 +326,24 @@ def url_problems(source: str) -> list[str]:
         )
         if not is_session:
             continue
-        if node.func.attr != "get":
-            problems.append(f"line {node.lineno}: the session sends {node.func.attr}, not GET")
         url = (
             node.args[0]
             if node.args
             else next((k.value for k in node.keywords if k.arg == "url"), None)
         )
+        if node.func.attr == "post":
+            posts += 1
+            if posts > 1:
+                problems.append(f"line {node.lineno}: a second POST of the session")
+            if url is None or not (batch_ok and _is_batch_url(url)):
+                problems.append(
+                    f"line {node.lineno}: a POST whose URL is not DOOR_URL + BATCH_PATH "
+                    f"({_BATCH_PATH!r})"
+                )
+        elif node.func.attr != "get":
+            problems.append(
+                f"line {node.lineno}: the session sends {node.func.attr}, not GET or the batch POST"
+            )
         if url is None or not _is_door_url(url):
             problems.append(f"line {node.lineno}: a session call whose URL is not DOOR_URL + path")
         redirects = next((k.value for k in node.keywords if k.arg == "allow_redirects"), None)
@@ -318,9 +364,11 @@ def test_the_client_never_touches_the_proxy_settings() -> None:
     assert proxy_problems(_client_source()) == []
 
 
-def test_the_client_has_one_host_and_sends_get_only() -> None:
+def test_the_client_has_one_host_and_sends_get_or_the_batch_post() -> None:
+    """GET, plus the one batch POST (SBX-3b, §12.5 decision 8)."""
     assert url_problems(_client_source()) == []
     assert D.DOOR_URL == _DOOR_URL
+    assert D.BATCH_PATH == _BATCH_PATH
 
 
 @pytest.mark.parametrize(
@@ -362,6 +410,20 @@ def test_the_proxy_scan_sees_each_case(source: str) -> None:
         "import requests\nDOOR_URL = 'http://metorite-api.sandbox'\nrequests.get('x')\n",
         "DOOR_URL = 'http://metorite-api.sandbox'\nself._session.get(host + p, allow_redirects=False)\n",
         "DOOR_URL = 'http://metorite-api.sandbox'\nself._session.post(DOOR_URL + p, allow_redirects=False)\n",
+        # The batch POST: one path constant, one POST, to DOOR_URL + BATCH_PATH only.
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/crm/leads'\n"
+        "self._session.post(DOOR_URL + BATCH_PATH, allow_redirects=False)\n",
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/sandbox/v1/batch'\n"
+        "self._session.post(DOOR_URL + BATCH_PATH + p, allow_redirects=False)\n",
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/sandbox/v1/batch'\n"
+        "self._session.post(DOOR_URL + BATCH_PATH, allow_redirects=False)\n"
+        "self._session.post(DOOR_URL + BATCH_PATH, allow_redirects=False)\n",
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/sandbox/v1/batch'\n"
+        "def f(BATCH_PATH):\n    self._session.post(DOOR_URL + BATCH_PATH, allow_redirects=False)\n",
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/sandbox/v1/batch'\n"
+        "self._session.post(DOOR_URL + BATCH_PATH)\n",
+        "DOOR_URL = 'http://metorite-api.sandbox'\nBATCH_PATH = '/sandbox/v1/batch'\n"
+        "self._session.put(DOOR_URL + BATCH_PATH, allow_redirects=False)\n",
         "DOOR_URL = 'http://metorite-api.sandbox'\nself._session.get(DOOR_URL + p)\n",
         "import urllib.request\nDOOR_URL = 'http://metorite-api.sandbox'\n",
         "import os\nDOOR_URL = os.environ.get('METORITE_API_TOKEN')\n",
@@ -369,6 +431,68 @@ def test_the_proxy_scan_sees_each_case(source: str) -> None:
 )
 def test_the_url_scan_sees_each_case(source: str) -> None:
     assert url_problems(source)
+
+
+def test_batch_posts_to_the_door_only(_token: list[float]) -> None:
+    """SBX-3b done-when 25 (SBX-F22): ``batch`` sends one POST, to
+    ``DOOR_URL + /sandbox/v1/batch`` only, with the four keys of each row and a
+    read timeout of the card wait plus 60 seconds. A bad row raises before any
+    request. A door code of a refusal comes back. A 503 is not retried.
+
+    Mutations caught: post to ``DOOR_URL + path`` of a row, drop the timeout,
+    or retry the POST."""
+    from acb_common.settings import Settings
+
+    rows = [
+        {"method": "patch", "path": "/projects/tasks/7f3c", "body": {"status": "done"}},
+        {"method": "POST", "path": "/crm/leads", "query": {"x": "1"}, "body": {"last_name": "R"}},
+    ]
+    answer = {"rows": [{"i": 0, "status": 200, "body": {"id": "7f3c"}},
+                       {"i": 1, "status": 403, "code": "sandbox_write_refused"}]}
+    door, fake = _door(_answers((200, answer, {})))
+    assert door.batch(rows) == answer["rows"]
+    (sent,) = fake.sent
+    assert sent.method == "POST"
+    assert sent.url == "http://metorite-api.sandbox/sandbox/v1/batch"
+    assert sent.headers["X-Sandbox-Capability"] == TOKEN
+    assert "Authorization" not in sent.headers
+    assert json.loads(sent.body or b"") == {"rows": [
+        {"method": "PATCH", "path": "/projects/tasks/7f3c", "query": {}, "body": {"status": "done"}},
+        {"method": "POST", "path": "/crm/leads", "query": {"x": "1"}, "body": {"last_name": "R"}},
+    ]}
+    wait = Settings.model_fields["sandbox_approval_timeout_seconds"].default
+    assert fake.kwargs[0]["timeout"] == D.BATCH_TIMEOUT_S == wait + 60 == 360
+
+    bad_rows: list[Any] = [
+        [],
+        [rows[0]] * (D.MAX_BATCH_ROWS + 1),
+        [{**rows[0], "method": "DELETE"}],
+        [{**rows[0], "method": "GET"}],
+        [{**rows[0], "label": "Approve me"}],
+        [{**rows[0], "path": "//evil.example/x"}],
+        [{**rows[0], "path": "/sandbox/v1/../x"}],
+        [{**rows[0], "body": ["x"]}],
+        [{**rows[0], "query": {"x": 1}}],
+        "rows",
+    ]
+    for bad in bad_rows:
+        with pytest.raises(ValueError):
+            door.batch(bad)
+    assert len(fake.sent) == 1, "a bad row sends nothing"
+
+    door, fake = _door(_answers((429, {"detail": "sandbox_batch_busy"}, {})))
+    with pytest.raises(D.DoorError) as caught:
+        door.batch(rows)
+    assert (caught.value.status, caught.value.code, caught.value.path) == (
+        429, "sandbox_batch_busy", "/sandbox/v1/batch")
+    door, fake = _door(_answers((503, {}, {"Retry-After": "1"}), (200, answer, {})))
+    with pytest.raises(D.DoorError):
+        door.batch(rows)
+    assert len(fake.sent) == 1 and _token == [], "a batch is never retried"
+    door, fake = _door(_answers((200, {"rows": "x"}, {})))
+    with pytest.raises(D.DoorError) as caught:
+        door.batch(rows)
+    assert caught.value.code == "bad_answer"
 
 
 def test_a_netrc_adds_no_authorization_and_the_env_proxy_still_applies(

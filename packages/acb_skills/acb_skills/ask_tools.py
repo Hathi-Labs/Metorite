@@ -2680,6 +2680,28 @@ class RowsAnswer:
 _CARD_ID_RE = _re.compile(r"[0-9a-f]{32}")
 
 
+#: The wait of a card when the caller sets no ``timeout_s``, in seconds.
+CARD_WAIT_S = 3600
+
+
+def card_wait_s(timeout_s: object) -> float:
+    """The wait of one card: :data:`CARD_WAIT_S` for ``None``, else *timeout_s*.
+
+    SBX-3b (``agent_sandbox.md`` §12.5 decision 8). The watcher of a held
+    batch passes the time left to the deadline of its batch. A value of 0 or
+    less gives 0, so the card times out at once. A bool, a value that is not a
+    number, NaN or an infinity raises ``ValueError``: a NaN wait never ends.
+    """
+    if timeout_s is None:
+        return float(CARD_WAIT_S)
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+        raise ValueError("timeout_s is a number of seconds")
+    wait = float(timeout_s)
+    if wait != wait or wait in (float("inf"), float("-inf")):
+        raise ValueError("timeout_s is a finite number of seconds")
+    return max(wait, 0.0)
+
+
 def _check_card_args(request_id: str | None, with_answer: bool, rows: Any) -> bool:
     """Check the two arguments of a held send card (§21), and give
     ``with_answer`` as a bool. A bad one is a programming error of the
@@ -2907,6 +2929,7 @@ async def request_confirmation(
     responder: str | None = None,
     edit: dict | None = None,
     earlier: dict | None = None,
+    timeout_s: float | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -2980,6 +3003,12 @@ async def request_confirmation(
             :func:`earlier_draft_choice` then says "delete". A card with
             rows, a reply form, an edit form or a held send id drops it.
             ``None`` is the card of before.
+        timeout_s: the wait of the card, in seconds (SBX-3b, ``agent_sandbox.md``
+            §12.5 decision 8). ``None`` keeps :data:`CARD_WAIT_S`. At the end
+            of the wait the card closes, and :func:`last_card_outcome` gives
+            :data:`CARD_TIMED_OUT`. A value of 0 or less closes the card at
+            once. A value that is not a finite number raises ``ValueError``
+            before any card shows.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -3043,6 +3072,8 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    #: SBX-3b: the wait of this card, in seconds.
+    _wait_s = card_wait_s(timeout_s)
     #: EAC-1: the edit form of a new task, or None for the card of before.
     _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
                             str(responder or "").strip().lower())
@@ -3250,7 +3281,7 @@ async def request_confirmation(
         _waiting = _WAITING_CARD.set((_rid, _card) if _card is not None else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
-            _result = await wait_user_future(_fut, 3600)
+            _result = await wait_user_future(_fut, _wait_s)
             _answer, _ticked = _verdict(_result, _rid)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"

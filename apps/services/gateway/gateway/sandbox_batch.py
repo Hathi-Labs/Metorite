@@ -51,6 +51,8 @@ from acb_auth import UserContext, agent_oauth, sandbox_capabilities
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.deps import get_current_user
 from acb_common import app_manifests, get_logger, get_settings, tenant_redis
+from acb_common.card_body import CardBody, CardWontFit, card_body
+from acb_common.tool_refusals import data
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -716,14 +718,232 @@ async def _hold_and_run(request: Request,
                         content={"rows": [entries[row.index] for row in rows]})
 
 
+# ── The text of a card (SBX-3b, decision 7) ────────────────────────────────
+#
+# The gateway builds each word of a card from the held record, and from the
+# code of this module. The batch has no free-text field, so no model text
+# frames the card. Each value that code in the sandbox chose shows fenced
+# («…», ``fenced=True``): a body key, a body value, a query key and value, a
+# target id of the path, and the stamp. The method, the template and the
+# names of its path parameters come from the gateway router, so they show as
+# they are. Fence: ``tests/unit/test_sandbox_held_card.py``.
+
+#: The first line of the context of a class B card (``projects_ai_chat.md``
+#: §5.3: the warning line first).
+CARD_WARNING = ("Code that a model wrote asks to make these changes as you. Read each "
+                "row. Only a ticked row runs, one by one, as you.")
+
+#: The warning of a class C card. Its line starts with the counts.
+CARD_WARNING_C = ("This is hard to undo. Code that a model wrote asks to do it as you. "
+                  "It runs only if you tick it.")
+
+#: The count words of each class C pair, for one row and for more. A class C
+#: card starts with its counts (``projects_ai_chat.md`` §5.2). Fence:
+#: ``test_sandbox_held_card.py::test_each_class_c_row_has_its_counts``.
+CLASS_C_COUNTS: Mapping[tuple[str, str], tuple[str, str]] = {
+    ("POST", "/crm/leads/{lead_id}/convert"): ("lead converts", "leads convert"),
+    ("POST", "/projects/tasks/{task_id}/archive"): ("task goes to the archive",
+                                                     "tasks go to the archive"),
+}
+
+#: The caps of a card, as ``ask_tools.request_confirmation`` and
+#: ``ask_tools.clean_card_rows`` clip them. A card that does not fit is not
+#: drawn (:class:`CardWontFit`), because a clipped card shows less than the
+#: write. Fence: ``test_sandbox_held_card.py::test_the_caps_are_the_caps_of_the_card``.
+CARD_TITLE_MAX = 120
+CARD_DETAIL_MAX = 500
+CARD_LABEL_MAX = 500
+CARD_HINT_MAX = 4000
+
+#: The row id that :class:`_Row` gives.
+_ROW_ID = re.compile(r"row-[0-9]{1,2}")
+
+#: The keys of a held row, as :func:`_hold` writes them. A row with any other
+#: key is not of the batch handler, and no card shows.
+HELD_ROW_KEYS: frozenset[str] = frozenset(
+    {"id", "i", "method", "path", "template", "query", "body"})
+
+
+@dataclass(slots=True, frozen=True)
+class _CardRow:
+    """One held row, checked against the router list, for its card text."""
+
+    row_id: str
+    method: str
+    template: str
+    targets: tuple[tuple[str, str], ...]
+    query: tuple[tuple[str, str], ...]
+    body: tuple[tuple[str, Any], ...]
+
+
+def _targets(template: str, path: str) -> tuple[tuple[str, str], ...]:
+    """Each path parameter of *template*, with its value in *path*. A path
+    that is not of the template raises ``ValueError``."""
+    want = template.split("/")
+    have = path.split("/")
+    if len(want) != len(have):
+        raise ValueError("the held path is not of its template")
+    out: list[tuple[str, str]] = []
+    for part, value in zip(want, have, strict=True):
+        if part.startswith("{") and part.endswith("}"):
+            if not value:
+                raise ValueError("the held path has an empty id")
+            out.append((part[1:-1], value))
+        elif part != value:
+            raise ValueError("the held path is not of its template")
+    return tuple(out)
+
+
+def _card_row(raw: object, cls: str) -> _CardRow:
+    """One row of a held record, checked. A row that the batch handler could
+    not have written raises ``ValueError``, and no card shows."""
+    if not isinstance(raw, Mapping) or set(raw) != HELD_ROW_KEYS:
+        raise ValueError("a held row has the keys of the batch handler")
+    row_id, method, template = raw.get("id"), raw.get("method"), raw.get("template")
+    path, query, body = raw.get("path"), raw.get("query"), raw.get("body")
+    if not isinstance(row_id, str) or not _ROW_ID.fullmatch(row_id):
+        raise ValueError("a held row has no row id")
+    if not isinstance(method, str) or not isinstance(template, str):
+        raise ValueError("a held row has no method or template")
+    if app_manifests.SANDBOX_WRITE_ROUTES.get((method, template)) != cls:
+        raise ValueError("a held row is not a write row of its class")
+    if not isinstance(path, str) or not _PATH.fullmatch(path):
+        raise ValueError("a held row has a bad path")
+    if not isinstance(query, Mapping) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in query.items()):
+        raise ValueError("a held row has a bad query")
+    if not isinstance(body, Mapping) or not all(isinstance(k, str) for k in body):
+        raise ValueError("a held row has a bad body")
+    return _CardRow(row_id=row_id, method=method, template=template,
+                    targets=_targets(template, path), query=tuple(query.items()),
+                    body=tuple(body.items()))
+
+
+def _shown(value: Any) -> str:
+    """A body value, fenced. Each value that is not a string shows as its JSON,
+    so ``0``, ``false`` and ``null`` keep their text."""
+    text = value if isinstance(value, str) else json.dumps(
+        value, ensure_ascii=False, sort_keys=True)
+    return str(data(text))
+
+
+def _ids(row: _CardRow) -> str:
+    """The target ids of the path, fenced: ``task_id «7f3c…»``."""
+    return " ".join(f"{name} {data(value)}" for name, value in row.targets)
+
+
+def _label(row: _CardRow) -> str:
+    """The label of a row: the method and the template, code text only. It
+    always fits in :data:`CARD_LABEL_MAX`, so a long id never cuts it."""
+    return f"{row.method} {row.template}"
+
+
+def _hint(row: _CardRow) -> str:
+    """The hint of a row: the target ids, then the body keys and the query
+    keys, each fenced. A path is at most 512 characters, so the ids always
+    fit. Keys that do not fit are counted, and the context shows each one."""
+    head = _ids(row)
+    names = [data(key) for key, _value in row.body]
+    names += [f"query {data(key)}" for key, _value in row.query]
+    if not names:
+        return f"{head} · no fields" if head else "No fields"
+    lead = f"{head} · fields " if head else "Fields "
+    shown: list[str] = []
+    for i, name in enumerate(names):
+        rest = len(names) - i - 1
+        tail = f", and {rest} more in the card text" if rest else ""
+        if len(lead + ", ".join([*shown, name]) + tail) > CARD_HINT_MAX:
+            break
+        shown.append(name)
+    left = len(names) - len(shown)
+    if not shown:
+        return f"{lead}{left} in the card text"
+    more = f", and {left} more in the card text" if left else ""
+    return lead + ", ".join(shown) + more
+
+
+def _counts(cls: str, rows: list[_CardRow]) -> str:
+    """The counts of a class C card, for example "1 lead converts"."""
+    one, many = CLASS_C_COUNTS[(rows[0].method, rows[0].template)]
+    return f"{len(rows)} {one if len(rows) == 1 else many}"
+
+
+def card_text(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The text of the card of one held record: ``title``, ``detail``,
+    ``context`` and ``rows`` (decision 7).
+
+    A pure function. It reads only the class, the stamp and the rows of
+    *record*. It never shows the member, the run, the thread, the held id, the
+    deadline or the token hash. The context starts with the warning line. A
+    class C card starts its title, its detail and its warning line with the
+    counts. The context is at most 4,000 characters (``card_body``). Only a
+    long text value of the body (``LONG_TEXT_KEYS``) may be cut, and the last
+    line then says so.
+
+    Raises ``ValueError`` for a record that the batch handler could not have
+    written, and :class:`CardWontFit` when the short lines do not fit on one
+    card. Either way no card shows, and the batch times out with nothing run.
+    """
+    cls = record.get("class")
+    raw_rows = record.get("rows")
+    if cls not in ("B", "C") or not isinstance(raw_rows, list) or not raw_rows:
+        raise ValueError("a held record has a class and rows")
+    if len(raw_rows) > MAX_ROWS or (cls == "C" and len(raw_rows) != 1):
+        raise ValueError("a held record has too many rows for its class")
+    rows = [_card_row(raw, str(cls)) for raw in raw_rows]
+    if len({row.row_id for row in rows}) != len(rows):
+        raise ValueError("a held record names a row twice")
+    stamp = record.get("stamp")
+    if not isinstance(stamp, str) or not ACTOR_VIA_PATTERN.fullmatch(stamp):
+        raise ValueError("a held record has no stamp")
+    app = data(stamp)
+
+    n = len(rows)
+    if cls == "C":
+        counts = _counts(cls, rows)
+        title = f"{counts}. Allow it?"
+        detail = f"{counts}. The sandbox app {app} asks to do this as you. It is hard to undo."
+        note = f"{counts}. {CARD_WARNING_C}"
+    else:
+        changes = "1 change" if n == 1 else f"{n} changes"
+        title = f"Let a sandbox app make {changes}?"
+        detail = (f"The sandbox app {app} asks to make {changes} as you. "
+                  "Only a ticked row runs.")
+        note = CARD_WARNING
+
+    lines: list[tuple[str, str]] = []
+    for number, row in enumerate(rows, start=1):
+        ids = _ids(row)
+        lines.append(("", f"{number}. {_label(row)}" + (f" {ids}" if ids else "")))
+        lines += [("", f"   query {data(key)} {data(value)}") for key, value in row.query]
+        lines += [(key, f"   {data(key)} {_shown(value)}") for key, value in row.body]
+        if not row.body:
+            lines.append(("", "   (no fields)"))
+    context: CardBody = card_body(note, lines)
+
+    card_rows: list[dict[str, Any]] = [{"id": row.row_id, "label": _label(row), "hint": _hint(row), "checked": True}
+                 for row in rows]
+    too_long = (len(title) > CARD_TITLE_MAX or len(detail) > CARD_DETAIL_MAX
+                or any(len(r["label"]) > CARD_LABEL_MAX or len(r["hint"]) > CARD_HINT_MAX
+                       for r in card_rows))
+    if too_long:
+        raise CardWontFit("This change does not fit on one card, so nothing was changed. "
+                          "Send fewer fields or shorter ids, and call the tool once more.")
+    return {"title": title, "detail": detail, "context": context, "rows": card_rows}
+
+
 __all__ = [
     "APPROVED",
+    "CARD_WARNING",
+    "CARD_WARNING_C",
+    "CLASS_C_COUNTS",
     "DECISION_NAMESPACE",
     "EXPIRED",
     "HELD_NAMESPACE",
     "REFUSED",
     "RUN_NAMESPACE",
     "batch_wait_s",
+    "card_text",
     "decide",
     "router",
     "stamp_of",
