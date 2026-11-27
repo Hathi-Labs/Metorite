@@ -14,7 +14,7 @@
 
 **SW-7b (a display label for each session) is built, 2026-11-11 (task 2858). migration 418.**
 
-**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.**
+**AMR-1 to AMR-3 (the lenses and the phone view of the Agents view, §3.12.8) are built and dark, 2026-11-26, behind `AGENT_LENSES_ORGS`.** **AMR-4 (the Agents view at scale, §3.12.9) is built and dark behind the same flag, 2026-11-26.** **AMR-5a (task 4098, only the cards that draw count toward the 40) is built, 2026-11-27.**
 
 **SW-104 (the machine and the model on each run) is built, 2026-11-21 (task 3625). migration 470.**
 

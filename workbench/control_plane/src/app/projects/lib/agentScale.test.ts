@@ -142,8 +142,15 @@ describe("the overview", () => {
   });
   it("counts the orchestrator that a find draws as context", () => {
     // 40 matching lanes under 40 orchestrators that do not match.
-    expect(usesOverview(orchs(40, "working", "working"), chips({ find: "Task of nobody" }), nameOf)).toBe(false);
-    expect(drawnCards(orchs(40, "working", "working"), chips({ find: "l" }), new Set(), nameOf)).toBeGreaterThan(40);
+    const m = buildLensModel(
+      mapOf(
+        Array.from({ length: 40 }, (_, i) => [session(`o${i}`), session(`zz${i}`)]).flat(),
+        [],
+        Array.from({ length: 40 }, (_, i) => ({ from: `o${i}`, to: `zz${i}` })),
+      ),
+    );
+    expect(drawnCards(m, chips({ find: "zz" }), new Set(), nameOf)).toBe(80);
+    expect(usesOverview(m, chips({ find: "zz" }), nameOf)).toBe(true);
   });
   /** Three orchestrators with 30 idle lanes each, and one working lane. */
   const folded = buildLensModel(
