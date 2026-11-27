@@ -1059,7 +1059,7 @@ in this section when its builder starts, and its own spec-auditor run.
 
 ### 7b.4 LBB-4: zero orphans at a stop (task 4042)
 
-**Status: not built.** Tier STANDARD (a hook and a box script, no server
+**Status: built (dark, `STOP_DISPOSITION_PRS` unset = off). Disposition 3 stays off until PR 2898 is on main.** Tier STANDARD (a hook and a box script, no server
 code). It needs no `guard-write` grant: `stop-children.mjs` already calls the
 hook, so `.claude/settings.json` does not change.
 
