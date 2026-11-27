@@ -6468,24 +6468,47 @@ rules below replace the height cap above and the tab order of WD-D3.*
    gives it at most 40% of the chat column. A phone gives it at most 50% of
    the visual viewport.
 4. **Expanded.** Expanded shows the whole card in the chat column above the
-   box, and its content scrolls. Review or Expand opens it. Collapse or Esc
-   closes it. Edits and ticks stay through each change.
-5. **The consent rule.** The footer shows Send, Approve or Create only when
-   the view holds the whole item. `mailWhole` and `cardWhole` in
-   `lib/waitingDock.ts` decide it. Else the first button is Review, which
-   opens Expanded. In Expanded, Send names its count ("Send to 5"). A hidden
-   commit is not in the page, so no key can reach it.
-6. **The order.** Questions come first, then approvals, oldest first. A new
-   item never takes the open tab. It adds a tab with a dot, and the live
-   region says so.
-7. **The actions never scroll (owner, 2026-11-27).** The footer stays in
+   box, and its content scrolls. Review or Expand opens it, and the focus
+   goes into the content, not onto a button. Collapse closes it.
+5. **The consent rule (narrowed 2026-11-27, metorite-78, WD-1 now HIGH).**
+   In Compact, an approval of any kind has no commit control in the page.
+   It shows Review, and a plain Discard or Reject. Send, Save draft, Approve,
+   Create and the earlier-draft choices exist only in Expanded, on the full
+   card. A question keeps Submit and Not now. In Expanded, Send names its
+   count ("Send to 5").
+   - *Reason.* A first rule guessed when Compact held the whole item. That
+     guess failed on attachments, long lines, cut recipients and hidden
+     detail. Each new card shape broke it, so the rule is now by structure.
+6. **One mounted card.** Compact and Expanded are ONE mounted card with a
+   mode. A mode change unmounts no form: Compact keeps the full form hidden
+   and inert. Collapse keeps each edit and untick, so the answer that goes
+   is the one that Expanded showed.
+7. **A fresh press.** A press or a key that started before Expanded opened
+   never commits. A held key (`repeat`) presses no commit button. A click in
+   the first 400 ms after Expanded opens does nothing, on every commit path.
+   A double click, a held Enter or Space on Review sends nothing.
+8. **The order.** Questions come first, then approvals, oldest first. Only
+   the first paint picks the open tab. After it, only the member, an Undo
+   or the answer of the open item moves it. A new item adds a tab with a
+   dot, and the live region says so.
+9. **Esc.** While Expanded is open, the first Esc anywhere in this chat
+   closes it, the message box too. That Esc does not stop the run. A second
+   Esc keeps its old meaning.
+10. **The actions never scroll (owner, 2026-11-27).** The footer stays in
    view inside each cap. A fade from theme tokens marks more content below.
    The fade takes no click, and it goes at the end. The dock is never less
    than 160 px tall, so the footer and a part of the content always show.
 
-Fences: `src/lib/waitingDock.test.ts` and `src/components/waitingDock.test.ts`.
-`e2e/chat-waiting-dock.spec.ts` checks a long email at 1280, 1440 and 390 px.
-It finds Review in Compact and "Send to 5" in Expanded, both in view.
+Fences: `src/components/waitingDock.test.ts` runs one table over every card
+shape of the gateway. Compact holds no commit in each. The shapes are a
+held new mail, a forward, a reply, a task with its form and a rows card.
+A long plain card, two earlier-draft cards and a redraft slot are in it too.
+
+`src/lib/waitingDock.test.ts` holds the fresh press.
+`e2e/chat-waiting-dock.spec.ts` posts what the screen showed after Review,
+edit, Collapse and Review. A double click, a held Enter or Space on Review
+sends nothing. It also checks Esc, the order, and Send in view at 1280,
+1440 and 390 px.
 
 #### Keyboard rules
 

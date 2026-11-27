@@ -50,7 +50,7 @@ describe("C3: a chat card holds no scroll box", () => {
   it("§24.11 (WD-1): the dock's body is its one scroll box, and it holds no other", () => {
     const dock = src("components/WaitingDock.tsx");
     expect(dock.match(/overflow-y-auto/g)?.length).toBe(1);
-    expect(dock).toMatch(/data-dock-body=""\s+className="overflow-y-auto/);
+    expect(dock).toMatch(/data-dock-body=""[^>]*?className="overflow-y-auto/);
     // The fold of the dock's queue adds no scroll box to the queue.
     expect(src("components/ConfirmationQueue.tsx")).not.toMatch(/overflow-(y-)?auto/);
   });

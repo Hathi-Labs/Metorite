@@ -3306,7 +3306,9 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
    Expand and Fold, never scrolls either. Only the content between them does. */
 [data-dock-body] [data-card-tabs] {
   position: sticky;
-  top: 0;
+  /* -1px: the transparent top edge of the row sits above the dock's top
+     edge once the row sticks, so no text shows through it. */
+  top: -1px;
   z-index: 2;
   background: var(--card);
   /* The row follows the card's own top corners (its radius token, glass or

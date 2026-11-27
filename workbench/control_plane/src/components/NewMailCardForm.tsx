@@ -40,7 +40,7 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import { personName } from "@/lib/cardTabs";
-import { mailWhole, peopleLine, previewLines, sendLabel, type DockMode } from "@/lib/waitingDock";
+import { FRESH_KEY_PROPS, peopleLine, previewLines, sendLabel, type DockMode } from "@/lib/waitingDock";
 import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, changedLinkLine, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
@@ -309,13 +309,14 @@ export default function NewMailCardForm({
     if (step === "ask") setAsking(true);
     else if (step === "decline") onDiscard();
   };
-  // The one action row of this card. The thread, the Compact view and the
-  // Expanded view of the dock (projects_ai_chat.md 24.11, D3) all draw this
-  // row, so each shares the card's state. `review` puts Review, which only
-  // opens the Expanded view, in the place of Send and Save draft: the member
-  // never sends a text or a person that the view did not show.
+  // The one action row of this card. In the dock (projects_ai_chat.md 24.11,
+  // the consent rule of 2026-11-27) the Compact view holds NO commit: only
+  // Review, which opens the Expanded view, and a plain Discard. Send, Save
+  // draft and the earlier-draft question exist only in the Expanded view.
+  const compact = dockMode === "compact";
+  const fresh = dockMode ? FRESH_KEY_PROPS : {};
   const actionRow = (review: boolean, sendText: string) =>
-      asking && onDiscardEarlier ? (
+      asking && onDiscardEarlier && !review ? (
         // Task 3978 (§18.13.1): Discard asks about the draft of this email
         // that the chat saved earlier, on this same card. Keep is the plain
         // Discard of before. A card that closes with no answer keeps it too.
@@ -329,11 +330,12 @@ export default function NewMailCardForm({
             setCameBack(true);
           }}
           disabled={disabled}
+          {...(dockMode ? { freshKeys: true } : {})}
         />
       ) : (
       <div className="flex flex-wrap items-center gap-2">
         {review ? (
-          <Button size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
+          <Button key="review" size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
             Review
           </Button>
         ) : (
@@ -345,6 +347,7 @@ export default function NewMailCardForm({
           disabled={disabled || !ok}
           aria-disabled={!armed || undefined}
           data-reply-send=""
+          {...fresh}
         >
           {sendText}
         </Button>
@@ -356,11 +359,15 @@ export default function NewMailCardForm({
           disabled={disabled || !ok}
           aria-disabled={!armed || undefined}
           data-reply-save=""
+          {...fresh}
         >
           Save draft
         </Button>
         </>
         )}
+        {/* A Discard that asks about an earlier draft is a choice on the
+            mail, so the Compact view leaves it to the Expanded view. */}
+        {!(review && form.earlier && onDiscardEarlier) && (
         <Button
           variant="ghost"
           size="sm"
@@ -372,48 +379,19 @@ export default function NewMailCardForm({
         >
           Discard
         </Button>
+        )}
       </div>
       );
   // The people that the email goes to, for "Send to 5" (D3).
   const goesTo = picked.to.length + picked.cc.length + (picked.bcc ?? []).length;
   // The Compact view of the dock (D2): one line of the people and the
-  // subject, and the first lines of the text. Send shows only when that view
-  // holds the whole email (`mailWhole`), else Review opens the Expanded view.
-  if (dockMode === "compact") {
-    const preview = previewLines(body);
-    const whole = mailWhole({
-      to: shown.to.length,
-      cc: shown.cc.length,
-      bcc: (shown.bcc ?? []).length,
-      bodyLines: lineCount(body),
-      files: files.length,
-      notices: form.notices.length,
-    });
-    const line = [peopleLine(shown, ticked, whole ? (a: string) => a : personName), subject.trim()]
-      .filter(Boolean)
-      .join(" · ");
-    return (
-      <div className="space-y-2" data-reply-card="" data-new-mail-card="" data-dock-compact="">
-        <div className="flex min-w-0 items-center gap-2">
-          <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={line} data-mail-line="">
-            {line}
-          </p>
-          {label && (
-            <span className="shrink-0" data-redraft-label="">
-              <Badge size="xs">{label}</Badge>
-            </span>
-          )}
-        </div>
-        <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground" data-mail-preview="">
-          {preview.lines.join("\n")}
-          {preview.more ? "…" : ""}
-        </p>
-        {actionRow(!whole, "Send")}
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
+  // subject, and the first lines of the text. The full form stays MOUNTED
+  // under it, hidden and inert, so no edit or untick is lost on a change of
+  // view, and the posted answer is the one that the Expanded view shows.
+  const preview = previewLines(body);
+  const line = [peopleLine(shown, ticked, personName), subject.trim()].filter(Boolean).join(" · ");
+  const fullBody = (
+    <>
       <div className="min-w-0">
         <div className="flex min-w-0 items-start gap-2">
           <p className="min-w-0 flex-1 break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
@@ -542,10 +520,42 @@ export default function NewMailCardForm({
         carriesEdits={carriesEdits}
       />
 
-      {actionRow(false, dockMode === "expanded" ? sendLabel(goesTo) : "Send")}
+    </>
+  );
+  return (
+    <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
+      {dockMode ? (
+        <>
+          {compact && (
+            <div className="space-y-2" data-dock-compact="">
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="min-w-0 flex-1 truncate text-xs font-medium text-foreground" title={line} data-mail-line="">
+                  {line}
+                </p>
+                {label && (
+                  <span className="shrink-0" data-redraft-label="">
+                    <Badge size="xs">{label}</Badge>
+                  </span>
+                )}
+              </div>
+              <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground" data-mail-preview="">
+                {preview.lines.join("\n")}
+                {preview.more ? "…" : ""}
+              </p>
+            </div>
+          )}
+          <div hidden={compact} inert={compact} className="space-y-2.5" data-dock-full="">
+            {fullBody}
+          </div>
+        </>
+      ) : (
+        fullBody
+      )}
+
+      {actionRow(compact, dockMode === "expanded" ? sendLabel(goesTo) : "Send")}
       {/* Task 3978: the question holds its own hint, so the line of the
           buttons that it hides ("Discard drops it.") goes too. */}
-      {!asking && <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>}
+      {!asking && !compact && <p className="text-[10px] text-muted-foreground">{newMailHint(form)}</p>}
     </div>
   );
 }

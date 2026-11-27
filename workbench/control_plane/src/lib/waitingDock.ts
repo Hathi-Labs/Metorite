@@ -246,22 +246,16 @@ export function previewLines(text: string): { lines: string[]; more: boolean } {
 }
 
 /**
- * D3: does the compact view show the WHOLE email? Only then may its footer
- * show Send. Each line of the body shows, each recipient shows by address
- * (at most two, To only), and the email has no file and no notice.
+ * The consent rule (projects_ai_chat.md 24.11, 2026-11-27): a commit needs a
+ * FRESH press. A held key (`repeat`) never presses a commit button: its
+ * default action, the click, does not run. The card's arming does the rest:
+ * a click in the first 400 ms after the Expanded view opens does nothing.
  */
-export function mailWhole(st: { to: number; cc: number; bcc: number; bodyLines: number; files: number; notices: number }): boolean {
-  return st.to > 0 && st.to <= 2 && st.cc === 0 && st.bcc === 0 && st.bodyLines <= PREVIEW_LINES && st.files === 0 && st.notices === 0;
-}
-
-/**
- * D3: does the compact view show the WHOLE approval card? Its title and one
- * meta line show. A card with rows, fields, text, notes or an edit form has
- * more, so its footer shows Review.
- */
-export function cardWhole(st: { rows: boolean; fields: number; text: boolean; notes: number; form: boolean }): boolean {
-  return !st.rows && st.fields === 0 && !st.text && st.notes === 0 && !st.form;
-}
+export const FRESH_KEY_PROPS = {
+  onKeyDown: (e: { repeat: boolean; preventDefault: () => void }) => {
+    if (e.repeat) e.preventDefault();
+  },
+};
 
 /** D3: the Send of an Expanded email names how many people get it. */
 export function sendLabel(people: number): string {

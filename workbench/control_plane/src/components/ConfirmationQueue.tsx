@@ -192,10 +192,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const uid = useId();
   // The cards the member has opened, by key: a tab not in it wears a dot.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
-  // The dock (D4): until the member works in the dock, the open tab is the
-  // first tab, the oldest question. After a tab press, a press or a focus
-  // in the dock, a new item never takes the open tab.
-  const [chosen, setChosen] = useState(false);
+
   // The keys of the last render, in state and not in a ref: a render that
   // React runs twice (StrictMode) must see the same change both times.
   const [prevKeys, setPrevKeys] = useState<readonly string[]>([]);
@@ -213,23 +210,18 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
     : cards;
   const next = reconcileShown(prevKeys, items, shown, questions ? new Set(questions.map((q) => q.key)) : NO_KEYS);
   if (next.keys !== prevKeys) setPrevKeys(next.keys);
-  if (next.shown !== shown) {
-    setShown(next.shown);
-    // A card that came back (an Undo) or a live card after a slot: the queue
-    // moved the view on purpose, so it stays there.
-    if (questions && !chosen) setChosen(true);
-  }
+  if (next.shown !== shown) setShown(next.shown);
   if (items.length === 0) return null;
-  const at = questions && !chosen ? 0 : pickShown(items, shown);
+  // D4: only the first paint picks the open tab (the first tab then). After
+  // it, only the member, an Undo or the answer of the open item moves it. A
+  // new item never takes the open tab.
+  const at = pickShown(items, shown);
   const item = items[at];
   if (shown.key !== item.key || shown.index !== at) {
     // Pin the card on screen (React's adjust-state-during-render pattern).
     setShown({ key: item.key, index: at });
   }
-  const go = (to: number) => {
-    setChosen(true);
-    setShown({ key: items[to].key, index: to });
-  };
+  const go = (to: number) => setShown({ key: items[to].key, index: to });
   // The dock always draws its header row (D1), so a card there has no pager.
   const tabbed = questions ? true : items.length > 1;
   // The one approval card that shows, with the tab row in its frame or none.
@@ -297,7 +289,6 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
         questions={questions}
         at={at}
         go={go}
-        onWork={() => { if (!chosen) setChosen(true); }}
         uid={uid}
         seen={seen}
         folded={folded}
@@ -328,7 +319,6 @@ function DockQueue({
   questions,
   at,
   go,
-  onWork,
   uid,
   seen,
   folded,
@@ -340,8 +330,6 @@ function DockQueue({
   questions: readonly DockQuestion[];
   at: number;
   go: (to: number) => void;
-  /** The member works in the dock: a press or a focus (D4). */
-  onWork: () => void;
   uid: string;
   seen: ReadonlySet<string>;
   folded: boolean;
@@ -379,7 +367,7 @@ function DockQueue({
     ? null
     : { tabs: row(controls), tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) } };
   return (
-    <div data-dock-queue="" data-dock-folded={folded ? "" : undefined} onPointerDown={onWork} onFocus={onWork}>
+    <div data-dock-queue="" data-dock-folded={folded ? "" : undefined}>
       {folded && (
         <div data-dock-fold-row="" className={`${CARD_FRAME_CLASS} glass:rounded-[16px] glass:border-primary/35 glass:p-3`}>
           {/* The open tab's label is the title of the open item. */}

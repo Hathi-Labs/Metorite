@@ -29,7 +29,7 @@ import ConfirmationQueue, { pickShown, reconcileShown, type DockQuestion } from 
 import ElicitationCard from "@/components/ElicitationCard";
 import WaitingDock, { WaitingDockLive, type DockRender } from "@/components/WaitingDock";
 import { questionTabLabel } from "@/lib/cardTabs";
-import type { PendingConfirmation } from "@/lib/confirmationQueue";
+import { EMPTY_CONFIRMATIONS, REVISED_ANSWER, confirmationReducer, type PendingConfirmation } from "@/lib/confirmationQueue";
 import type { DockMode } from "@/lib/waitingDock";
 
 const approval: PendingConfirmation = { key: "c1", title: "Create this task?", detail: "«Fix the extruder»" };
@@ -139,46 +139,150 @@ describe("the header row (D1)", () => {
   });
 });
 
-describe("Compact and Expanded (D2, D3)", () => {
-  it("Compact: an approval with more than its title shows Review, and no Approve", () => {
-    const html = dock({ cards: [fieldsCard], questions: [], count: 1, mode: "compact" });
-    expect(html).toContain("data-dock-review");
-    expect(html).not.toContain("data-confirmation-approve");
-    expect(html).not.toContain("data-card-field");
+// ── The consent rule over every card shape (24.11, 2026-11-27) ──────────────
+//
+// Each fixture is the RAW event value of a real gateway card, read through
+// the client's own reducer (`confirmationReducer`), as the chat reads it:
+// - the held new mail of `held_card.new_mail_form` (file_rows, ticked,
+//   classes, marks, max_body, notices, note);
+// - the held forward of `held_card._person_card` (a rows card);
+// - the reply card of `reply_card.py` (kind reply, original, reply_all);
+// - the `create_task` card with its edit form (EAC-2);
+// - a rows card of many tasks (WS-46 P13);
+// - a plain card with a long detail and fields;
+// - a plain card and a new mail that name an earlier draft (task 3978);
+// - the slot of a redraft (§18.11).
+const GW = {
+  newMail: {
+    title: "Send this new email?", detail: "From Work · jane@acme.test · Rates for May", request_id: "a".repeat(32),
+    reply: {
+      kind: "new", mailbox: "Work · jane@acme.test", subject: "Rates for May", body: "Hi Kim,\n\nThe rates are attached.\nOne.\nTwo.",
+      max_body: 20000,
+      recipients: { reply: { to: ["kim@contoso.test", "lena@contoso.test"], cc: ["geo@acme.test"], bcc: [] }, reply_all: { to: ["kim@contoso.test", "lena@contoso.test"], cc: ["geo@acme.test"], bcc: [] } },
+      ticked: { reply: { to: ["kim@contoso.test", "lena@contoso.test"], cc: ["geo@acme.test"], bcc: [] }, reply_all: { to: ["kim@contoso.test", "lena@contoso.test"], cc: ["geo@acme.test"], bcc: [] } },
+      classes: { "kim@contoso.test": "known", "lena@contoso.test": "known", "geo@acme.test": "new" },
+      marks: { "geo@acme.test": "New address" },
+      file_rows: [{ id: "f1", label: "rates-may.pdf", hint: "From the chat", checked: true }],
+      notices: ["geo@acme.test: a new address"],
+      note: "",
+    },
+  },
+  forward: {
+    title: "Forward this email?", detail: "Re: Quote · to 2 people", request_id: "b".repeat(32),
+    context: "Each recipient of this email:",
+    rows: [
+      { id: "r1", label: "To: kim@contoso.test", checked: true, kind: "to" },
+      { id: "r2", label: "Cc: geo@acme.test", checked: true, kind: "cc", cls: "new" },
+    ],
+  },
+  reply: {
+    title: "Reply to Kim <kim@contoso.test>?", detail: "From Work · jane@acme.test · Re: Quote", request_id: "c".repeat(32),
+    reply: {
+      message_id: "0b0b0b0b-0000-4000-8000-00000000000b",
+      notices: ["Reply goes to desk@contoso.test, not to the sender kim@contoso.test."],
+      mailbox: "Work · jane@acme.test", subject: "Re: Quote",
+      original: { from: "Kim <kim@contoso.test>", subject: "Quote", received: "2026-10-19T09:00:00Z", excerpt: "Can you confirm?" },
+      recipients: { reply: { to: ["kim@contoso.test"], cc: [] }, reply_all: { to: ["kim@contoso.test", "lee@contoso.test"], cc: ["ops@contoso.test"] } },
+      reply_all: false, body: "Hi Kim,\n\nYes.", note: "",
+    },
+  },
+  task: {
+    title: "Create this task?", detail: "«Ship the pack» · in Launch · status Doing", request_id: "d".repeat(32),
+    context: "Check each field, then approve.\nproject: «Launch»\nname: «Ship the pack»\ndue_at: 2026-12-01", fenced: true,
+    edit: { kind: "create_task", project_id: "11111111-1111-1111-1111-111111111111", values: {
+      due: "2026-12-01", start: "", status: "Doing", important: null, leveraged: false, description: "Ship the pack.", assignees: ["ann@acme.test"],
+    } },
+  },
+  rows: {
+    title: "Create 3 tasks in «Ops»?", detail: "one batch", request_id: "e".repeat(32),
+    rows: [{ id: "t1", label: "«Fix the extruder»", checked: true }, { id: "t2", label: "«Order filament»", checked: true }, { id: "t3", label: "«Call Rajendra»", checked: false }],
+  },
+  plainLong: {
+    title: "Archive this project?", request_id: "f".repeat(32),
+    detail: `«Launch» · ${"a very long detail that names every part of the project ".repeat(6)}`,
+    context: "owner: ann@acme.test\ntasks: 42\nnote: Archiving hides the project from each list.",
+  },
+  plainEarlier: {
+    title: "Edit this draft?", detail: "«Rates for May»", request_id: "g".repeat(32),
+    earlier: "The chat saved a draft «Rates for May» at 10:02.", earlier_effect: "Delete moves it to Trash.",
+  },
+};
+
+const GW_MAIL_EARLIER = {
+  ...GW.newMail,
+  request_id: "h".repeat(32),
+  reply: { ...GW.newMail.reply, earlier: "The chat saved a draft «Rates for May» at 10:02." },
+};
+
+/** The cards the chat holds for a list of raw events. */
+function cardsOf(values: unknown[], revised: string[] = []): PendingConfirmation[] {
+  let st = EMPTY_CONFIRMATIONS;
+  for (const v of values) st = confirmationReducer(st, { type: "requested", value: v });
+  for (const r of revised) st = confirmationReducer(st, { type: "resolved", requestId: r, answer: REVISED_ANSWER });
+  return st.cards;
+}
+
+/** A control that commits: Send, Save draft, Approve, or an earlier-draft choice. */
+const COMMIT = /data-reply-send|data-reply-save|data-confirmation-approve|data-earlier-keep|data-earlier-delete/;
+
+const SHAPES: [string, () => PendingConfirmation[]][] = [
+  ["held new mail (file_rows, notices)", () => cardsOf([GW.newMail])],
+  ["held forward (rows card)", () => cardsOf([GW.forward])],
+  ["reply card", () => cardsOf([GW.reply])],
+  ["create_task with its edit form", () => cardsOf([GW.task])],
+  ["rows card of many tasks", () => cardsOf([GW.rows])],
+  ["plain card with a long detail and fields", () => cardsOf([GW.plainLong])],
+  ["plain card that names an earlier draft", () => cardsOf([GW.plainEarlier])],
+  ["new mail that names an earlier draft", () => cardsOf([GW_MAIL_EARLIER])],
+];
+
+describe("the consent rule: Compact holds no commit, for every card shape (24.11)", () => {
+  for (const [name, make] of SHAPES) {
+    it(name, () => {
+      const cards = make();
+      expect(cards.length, "the reducer read the gateway's card").toBe(1);
+      const compact = dock({ cards, questions: [], count: 1, mode: "compact" });
+      expect(compact).not.toMatch(COMMIT);
+      expect(compact).toContain("data-dock-review");
+      const expanded = dock({ cards, questions: [], count: 1, mode: "expanded" });
+      expect(expanded).toMatch(/data-reply-send|data-confirmation-approve/);
+      expect(expanded).not.toContain("data-dock-review");
+    });
+  }
+
+  it("the slot of a redraft holds no commit and no Review", () => {
+    const cards = cardsOf([GW.newMail], [GW.newMail.request_id]);
+    expect(cards[0]?.redraft).toBeTruthy();
+    const html = dock({ cards, questions: [], count: 0, mode: "compact" });
+    expect(html).not.toMatch(COMMIT);
   });
 
-  it("Compact: an approval that is only its title shows Approve", () => {
-    const html = dock({ cards: [approval], questions: [], count: 1, mode: "compact" });
-    expect(html).toContain("data-confirmation-approve");
-    expect(html).not.toContain("data-dock-review");
+  it("a form stays mounted, hidden and inert, in Compact", () => {
+    for (const cards of [cardsOf([GW.newMail]), cardsOf([GW.reply]), cardsOf([GW.task])]) {
+      const html = dock({ cards, questions: [], count: 1, mode: "compact" });
+      expect(html).toMatch(/<div hidden="" inert="" [^>]*data-dock-full="">/);
+    }
   });
 
-  it("Compact: an email with a Cc row draws one line and three lines of text, and shows Review, not Send", () => {
-    const body = "Hi Kim,\nLine one.\nLine two.\nLine three.\nLine four.";
-    const html = dock({ cards: [mail("m1", ["geo@acme.test"], body)], questions: [], count: 1, mode: "compact" });
-    expect(html).toContain("To Kim, Lena · Cc 1 · Rates");
-    expect(html).toContain("Hi Kim,\nLine one.\nLine two.…");
-    expect(html).toContain("data-dock-review");
-    expect(html).not.toContain("data-reply-send");
-    expect(html).not.toContain('aria-label="Recipients"');
+  it("Expanded names the count on Send, for a new mail and a reply", () => {
+    expect(dock({ cards: cardsOf([GW.newMail]), questions: [], count: 1, mode: "expanded" })).toMatch(/data-reply-send=""[^>]*>[\s\S]*?Send to 3</);
+    // The reply card ticks each person of its one list: "Sends to 3 of 3".
+    expect(dock({ cards: cardsOf([GW.reply]), questions: [], count: 1, mode: "expanded" })).toMatch(/data-reply-send=""[^>]*>[\s\S]*?Send to 3</);
   });
 
-  it("Compact: a short email to two people, shown whole by address, shows Send", () => {
-    const html = dock({ cards: [mail("m2", [])], questions: [], count: 1, mode: "compact" });
-    expect(html).toContain("To kim@contoso.test, lena@contoso.test · Rates");
-    expect(html).toContain("data-reply-send");
-    expect(html).not.toContain("data-dock-review");
-  });
-
-  it("Expanded: the whole card, and Send names how many get the email", () => {
-    const html = dock({ cards: [mail("m3", ["geo@acme.test"])], questions: [], count: 1, mode: "expanded" });
-    expect(html).toContain('aria-label="Recipients"');
-    expect(html).toMatch(/data-reply-send=""[^>]*>[\s\S]*?Send to 3</);
-  });
-
-  it("a question shows whole in Compact, with its Submit", () => {
+  it("a question keeps Submit and Not now in Compact", () => {
     const html = dock({ cards: [], count: 1, mode: "compact" });
     expect(html).toContain("data-elicitation-submit");
+    expect(html).toContain(">Not now<");
+  });
+
+  it("outside the dock each card is as before: its commit, and no Review", () => {
+    for (const [, make] of SHAPES) {
+      const html = renderToStaticMarkup(createElement(ConfirmationQueue, { cards: make(), onAnswer: () => {} }));
+      expect(html).not.toContain("data-dock-review");
+      expect(html).not.toContain("data-dock-full");
+      expect(html).not.toMatch(/Send to \d/);
+    }
   });
 });
 
@@ -249,7 +353,7 @@ describe("the frame", () => {
   });
 
   it("the body is the one scroll box, with a cap", () => {
-    expect(dock({})).toMatch(/data-dock-body="" class="overflow-y-auto[^"]*" style="max-height:/);
+    expect(dock({})).toMatch(/data-dock-body="" tabindex="-1" class="overflow-y-auto[^"]*" style="max-height:/);
   });
 
   it("every control is a native button", () => {

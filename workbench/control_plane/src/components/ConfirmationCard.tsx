@@ -52,7 +52,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import TaskCardForm, { useTaskCardEdits } from "@/components/TaskCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { cardWhole, type DockMode } from "@/lib/waitingDock";
+import { FRESH_KEY_PROPS, type DockMode } from "@/lib/waitingDock";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
@@ -397,10 +397,15 @@ export default function ConfirmationCard({
   // EAC-2: a form that the card cannot answer for is no form (the card of before).
   const taskForm = edit && onEditAnswer ? edit : undefined;
   const task = useTaskCardEdits(taskForm, savedTaskEdits, onTaskEdits);
+  // The card arms ARM_MS after it mounts. In the dock it arms again after
+  // each change of view (24.11, the fresh press): a click that lands in the
+  // first 400 ms after Expanded opens, as the second click of a double click
+  // on Review, does nothing. Outside the dock `dockMode` never changes.
   useEffect(() => {
+    setArmed(false);
     const t = setTimeout(() => setArmed(true), ARM_MS);
     return () => clearTimeout(t);
-  }, []);
+  }, [dockMode]);
   // The rows come ticked as the member left them (`rowsView` in the queue).
   // The card holds no tick state and no tick logic (PR #691 review): a tick
   // goes up through `onToggle`, and Approve sends what the queue computed.
@@ -439,16 +444,19 @@ export default function ConfirmationCard({
     else onApprove();
   };
   const taskEdited = !!(taskForm && task.edits && !isUnchanged(taskForm.values, task.edits));
-  // D2 and D3: the Compact view of the dock shows the title and one meta
-  // line. It holds the whole card only when the card has nothing more.
+  // The consent rule of the dock (24.11, 2026-11-27): the Compact view shows
+  // the title and one meta line, and holds NO commit, only Review. The rest of
+  // the card stays MOUNTED, hidden and inert, so no edit or tick is lost.
   const compactView = dockMode === "compact";
-  const whole = cardWhole({
-    rows: hasRows,
-    fields: shownFields.length,
-    text: !!body.text,
-    notes: leadIn.length + afterNotes.length + body.trailing.length + (strangerWarning ? 1 : 0),
-    form: !!taskForm,
-  });
+  const dockHide = (node: ReactNode) =>
+    dockMode ? (
+      <div hidden={compactView} inert={compactView} data-dock-full="">
+        {node}
+      </div>
+    ) : (
+      node
+    );
+  const fresh = dockMode ? FRESH_KEY_PROPS : {};
   const isReply = reply !== undefined;
   const newMail = isNewMail(reply);
   return (
@@ -547,15 +555,7 @@ export default function ConfirmationCard({
           {...(dockMode ? { dockMode, onExpand } : {})}
         />
       )}
-      {/* D2: the Compact view of a reply shows its one line, and Review. */}
-      {!slot && isReply && !newMail && compactView && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
-            Review
-          </Button>
-        </div>
-      )}
-      {!slot && isReply && !newMail && !compactView && (
+      {!slot && isReply && !newMail && (
         <ReplyCardForm
           form={reply}
           detail={detail}
@@ -563,9 +563,10 @@ export default function ConfirmationCard({
           disabled={disabled}
           onAnswer={(answer) => onReply?.(answer)}
           onDiscard={rejectCard}
+          {...(dockMode ? { dockMode, onExpand } : {})}
         />
       )}
-      {!slot && !isReply && hasBody && !compactView && (
+      {!slot && !isReply && hasBody && dockHide(
         <div className="space-y-2">
           {strangerWarning && (
             <p className="flex items-start gap-1 break-words text-xs text-warning" role="status" data-assignee-warning="">
@@ -724,8 +725,8 @@ export default function ConfirmationCard({
         </div>
       )}
 
-      {/* D2: the Compact view of the dock draws no form. Its edits stay. */}
-      {!slot && taskForm && task.edits && (compactView ? null : (
+      {/* The Compact view of the dock hides the form, and keeps it mounted. */}
+      {!slot && taskForm && task.edits && (dockHide(
         <TaskCardForm
           form={taskForm}
           edits={task.edits}
@@ -736,7 +737,7 @@ export default function ConfirmationCard({
         />
       ))}
 
-      {!slot && !isReply && asking && earlier && onDiscardEarlier && (
+      {!slot && !isReply && asking && earlier && onDiscardEarlier && !compactView && (
         <EarlierDraftQuestion
           line={earlier.line}
           effect={earlier.effect}
@@ -747,28 +748,34 @@ export default function ConfirmationCard({
             setCameBack(true);
           }}
           disabled={disabled}
+          {...(dockMode ? { freshKeys: true } : {})}
         />
       )}
-      {!slot && !isReply && !(asking && asksEarlier) && (
+      {!slot && !isReply && !(asking && asksEarlier && !compactView) && (
       <div className="flex flex-wrap items-center gap-2">
-        {compactView && !whole ? (
-          // D3: the Compact view does not show the whole card, so its one
-          // button opens the Expanded view. Approve waits there.
-          <Button size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
+        {compactView ? (
+          // The consent rule: the Compact view holds no Approve. Review opens
+          // the Expanded view, and its own key keeps it a separate element.
+          <Button key="review" size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
             Review
           </Button>
         ) : (
         <Button
+          key="approve"
           size="sm"
           icon="Check"
           onClick={approve}
           disabled={disabled || !approvable}
           aria-disabled={!armed || undefined}
           data-confirmation-approve=""
+          {...fresh}
         >
           {error ? "Retry" : "Approve"}
         </Button>
         )}
+        {/* A Reject that asks about an earlier draft is a choice on the
+            draft, so the Compact view leaves it to the Expanded view. */}
+        {!(compactView && asksEarlier) && (
         <Button
           variant="secondary"
           size="sm"
@@ -781,6 +788,7 @@ export default function ConfirmationCard({
         >
           Reject
         </Button>
+        )}
         {error ? (
           <span role="alert" className="text-[10px] text-destructive" data-confirmation-error="">
             {error}

@@ -47,14 +47,28 @@ declare global {
     __answers: { request_id: string; answer: string }[];
     __sends: string[];
     __release: () => void;
+    __releaseQ: () => void;
+    __cancels: number;
     __kb: (px: number) => void;
   }
 }
 
 type Cards = "all" | "one";
 
-async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean }) {
-  await page.addInitScript(({ cards, gated, form, values, pid, mail, task, ask }) => {
+// The reply card of `reply_card.py` (kind reply), as the gateway sends it.
+const REPLY = "r".repeat(32);
+const REPLY_CARD = {
+  title: "Reply to Kim <kim@contoso.test>?", detail: "From Work · jane@acme.test · Re: Quote", request_id: REPLY,
+  reply: {
+    message_id: "0b0b0b0b-0000-4000-8000-00000000000b", notices: [], mailbox: "Work · jane@acme.test", subject: "Re: Quote",
+    original: { from: "Kim <kim@contoso.test>", subject: "Quote", received: "2026-10-19T09:00:00Z", excerpt: "Can you confirm?" },
+    recipients: { reply: { to: ["kim@contoso.test"], cc: [] }, reply_all: { to: ["kim@contoso.test", "lee@contoso.test"], cc: [] } },
+    reply_all: true, body: "Hi Kim,\n\nYes.", note: "",
+  },
+};
+
+async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean; lateQuestion?: boolean; withReply?: boolean }) {
+  await page.addInitScript(({ cards, gated, form, values, pid, mail, task, ask, lateQuestion, replyCard }) => {
     window.localStorage.clear();
     window.localStorage.setItem("cc-shell-nav", "1");
     const w = window as unknown as Window;
@@ -77,6 +91,10 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?:
     let release: () => void = () => {};
     const released = new Promise<void>((r) => { release = r; });
     w.__release = () => release();
+    let releaseQ: () => void = () => {};
+    const releasedQ = new Promise<void>((r) => { releaseQ = r; });
+    w.__releaseQ = () => releaseQ();
+    w.__cancels = 0;
     let live: ReadableStreamDefaultController<Uint8Array> | null = null;
     const enc = new TextEncoder();
     const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
@@ -112,7 +130,10 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?:
         if (url.includes("/room")) return json({ detail: "not a room" }, 404);
         return method === "GET" ? json([]) : json({ ok: true, saved: 1, unchanged: [] });
       }
-      if (url.includes("/api/agent/cancel")) return json({ cancelled: true });
+      if (url.includes("/api/agent/cancel")) {
+        w.__cancels += 1;
+        return json({ cancelled: true });
+      }
       if (url.includes("/api/agent/chat")) {
         const body = JSON.parse(String(init?.body ?? "{}"));
         if (body.reconnect) return json({}, 404);
@@ -139,6 +160,9 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?:
               context: "Check each field, then approve.\nproject: «Launch»\nname: «Ship the pack»\ndue_at: 2026-12-01",
               fenced: true, request_id: task, edit: { kind: "create_task", project_id: pid, values },
             } });
+            if (replyCard) send({ type: "custom", name: "confirmation_requested", value: replyCard });
+            // D4: a question that comes after the dock opened.
+            if (lateQuestion) await releasedQ;
             send({ type: "custom", name: "elicitation_requested", value: {
               request_id: ask,
               questions: [{
@@ -152,7 +176,10 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?:
       }
       return orig(input, init);
     };
-  }, { cards: opts.cards, gated: !!opts.gated, form: opts.long ? LONG_FORM : FORM, values: VALUES, pid: PID, mail: MAIL, task: TASK, ask: ASK });
+  }, {
+    cards: opts.cards, gated: !!opts.gated, form: opts.long ? LONG_FORM : FORM, values: VALUES, pid: PID, mail: MAIL, task: TASK, ask: ASK,
+    lateQuestion: !!opts.lateQuestion, replyCard: opts.withReply ? REPLY_CARD : null,
+  });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -170,7 +197,7 @@ const sends = (page: Page) => page.evaluate(() => window.__sends);
 const box = (page: Page) => page.getByRole("textbox", { name: /^Message / });
 const dock = (page: Page) => page.locator("[data-waiting-dock]");
 
-async function start(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean }) {
+async function start(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean; lateQuestion?: boolean; withReply?: boolean }) {
   await install(page, opts);
   await page.goto("/chat");
   const picker = page.getByRole("button", { name: /General-purpose/i }).first();
@@ -251,14 +278,139 @@ test.describe("the waiting dock (WD-1)", () => {
     });
   }
 
-  test("D3: a short email shows Send in Compact, with no scroll", async ({ page }) => {
+  test("the consent rule: a short email shows Review in Compact too, and no Send", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
     await page.locator('[role="tab"]').nth(1).click();
-    const send = page.locator("[data-dock-body] [data-reply-send]");
-    await expect(send).toBeVisible({ timeout: 20_000 });
-    await expect(send).toHaveText("Send");
-    await inView(page, send);
+    const review = page.locator("[data-dock-body] [data-dock-review]");
+    await expect(review).toBeVisible({ timeout: 20_000 });
+    await inView(page, review);
+    await expect(page.locator("[data-dock-body] [data-reply-send]")).toHaveCount(0);
+  });
+
+  for (const how of ["double click", "held Enter", "Space"] as const) {
+    test(`the fresh press: a ${how} on Review commits nothing`, async ({ page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await start(page, { cards: "all" });
+      await page.locator('[role="tab"]').nth(1).click();
+      const review = page.locator("[data-dock-body] [data-dock-review]");
+      await expect(review).toBeVisible({ timeout: 20_000 });
+      if (how === "double click") {
+        await review.dblclick();
+      } else if (how === "held Enter") {
+        await review.focus();
+        for (let i = 0; i < 12; i++) {
+          await page.keyboard.down("Enter");
+          await page.waitForTimeout(80);
+        }
+        await page.keyboard.up("Enter");
+      } else {
+        await review.focus();
+        await page.keyboard.press(" ");
+        await page.keyboard.press(" ");
+      }
+      await expect(page.locator("[data-dock-body] [data-reply-send]")).toHaveText("Send to 1");
+      // The focus is in the dock's content, never on a commit button.
+      expect(await page.evaluate(() => document.activeElement?.hasAttribute("data-dock-body"))).toBe(true);
+      await page.waitForTimeout(800);
+      expect(await answers(page)).toEqual([]);
+    });
+  }
+
+  test("the fresh press: a click on a commit in the first 400 ms after Expanded opens does nothing", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "one" });
+    await expect(page.locator("[data-dock-review]")).toBeVisible({ timeout: 20_000 });
+    // One mounted card (rule b): the same element before and after Expand.
+    const card = await page.evaluateHandle(() => document.querySelector("[data-dock-body] [data-confirmation-card]"));
+    await page.waitForTimeout(600); // long past the arming of the mount
+    await page.locator("[data-dock-review]").click();
+    expect(await page.evaluate((el) => el === document.querySelector("[data-dock-body] [data-confirmation-card]"), card)).toBe(true);
+    // At once: the card is not armed again yet.
+    await page.locator("[data-confirmation-approve]").waitFor({ state: "attached", timeout: 300 });
+    await page.evaluate(() => (document.querySelector("[data-confirmation-approve]") as HTMLElement).click());
+    await page.waitForTimeout(600);
+    expect(await answers(page)).toEqual([]);
+    // A fresh press after the wait commits.
+    await page.locator("[data-confirmation-approve]").click();
+    await expect.poll(async () => (await answers(page)).length).toBe(1);
+  });
+
+  test("Review, edit, Collapse, Review, commit: each card posts exactly what the screen showed", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all", withReply: true, long: true });
+    const tabs = page.locator('[data-dock-body] [role="tab"]');
+    await expect(tabs).toHaveCount(4, { timeout: 20_000 });
+    const reviewAgain = async () => {
+      await page.locator("[data-dock-body] [data-dock-review]").click();
+      await page.waitForTimeout(500); // the card arms again after Expanded opens
+    };
+    // The new mail: a new subject and an untick.
+    await tabs.nth(1).click();
+    await reviewAgain();
+    await page.getByRole("textbox", { name: "Subject" }).fill("Rates for June");
+    await page.locator('[data-reply-person="geo@acme.test"] input[type="checkbox"]').uncheck();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-mail-line]")).toContainText("Rates for June");
+    await reviewAgain();
+    await expect(page.getByRole("textbox", { name: "Subject" })).toHaveValue("Rates for June");
+    await expect(page.locator("[data-reply-send]")).toHaveText("Send to 4");
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(async () => (await answers(page)).length).toBe(1);
+    const mailAnswer = (await answers(page))[0];
+    expect(mailAnswer.request_id).toBe(MAIL);
+    expect(mailAnswer.answer).toContain("Rates for June");
+    expect(mailAnswer.answer).not.toContain("geo@acme.test");
+    // The reply: an edited text.
+    await tabs.filter({ hasText: /Reply/ }).first().click();
+    await reviewAgain();
+    await page.getByRole("textbox", { name: "Reply text" }).fill("Hi Kim,\n\nYes, Friday works.");
+    await page.keyboard.press("Escape");
+    await reviewAgain();
+    await expect(page.getByRole("textbox", { name: "Reply text" })).toHaveValue("Hi Kim,\n\nYes, Friday works.");
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(async () => (await answers(page)).length).toBe(2);
+    expect((await answers(page))[1].answer).toContain("Yes, Friday works.");
+    // The task: a new due date.
+    await tabs.filter({ hasText: /Task/ }).first().click();
+    await reviewAgain();
+    await page.locator("[data-task-edit-due]").fill("2027-01-15");
+    await page.keyboard.press("Escape");
+    await reviewAgain();
+    await expect(page.locator("[data-task-edit-due]")).toHaveValue("2027-01-15");
+    await page.locator("[data-confirmation-approve]").click();
+    await expect.poll(async () => (await answers(page)).length).toBe(3);
+    expect((await answers(page))[2].answer).toContain("2027-01-15");
+  });
+
+  test("Esc closes Expanded from the message box, and does not stop the run; a second Esc does", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all" });
+    await page.locator('[data-dock-body] [role="tab"]').nth(1).click();
+    await page.locator("[data-dock-body] [data-dock-review]").click();
+    await expect(page.locator("[data-dock-expand]")).toHaveAttribute("data-dock-expand", "on");
+    await box(page).focus();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-dock-expand]")).toHaveAttribute("data-dock-expand", "off");
+    await page.waitForTimeout(400);
+    expect(await page.evaluate(() => window.__cancels)).toBe(0);
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => window.__cancels)).toBeGreaterThan(0);
+  });
+
+  test("D4: a new question never takes the open tab", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all", lateQuestion: true });
+    const tabs = page.locator('[data-dock-body] [role="tab"]');
+    await expect(tabs).toHaveCount(2, { timeout: 20_000 });
+    const open = await tabs.evaluateAll((els) => els.findIndex((e) => e.getAttribute("aria-selected") === "true"));
+    const openTitle = await tabs.nth(open).getAttribute("title");
+    await page.evaluate(() => window.__releaseQ());
+    await expect(tabs).toHaveCount(3);
+    // The question is the first tab now, and the open tab is the same item.
+    const selected = page.locator('[data-dock-body] [role="tab"][aria-selected="true"]');
+    await expect(selected).toHaveAttribute("title", openTitle ?? "");
+    await expect(tabs.nth(0)).toHaveAttribute("data-unseen", "");
   });
 
   test("D3: a long email on a phone, keyboard down", async ({ browser }) => {
@@ -320,11 +472,12 @@ test.describe("the waiting dock (WD-1)", () => {
     expect(await answers(page)).toEqual([]);
   });
 
-  test("D4: the dock opens on the question, though the email came first, and a tab press holds", async ({ page }) => {
+  test("WD-D2: the question in the dock has no X, and its Not now stays; a tab press holds", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
     await expect(dock(page)).toBeVisible({ timeout: 20_000 });
     const tabs = page.locator('[data-dock-body] [role="tab"]');
+    await tabs.nth(0).click();
     await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
     await expect(page.locator("[data-dock-body] [data-elicitation-card]")).toBeVisible();
     // WD-D2: no X on the question in the dock. Not now stays.
@@ -339,11 +492,12 @@ test.describe("the waiting dock (WD-1)", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open", { timeout: 20_000 });
+    await page.locator('[data-dock-body] [role="tab"]').nth(1).click();
     await page.locator("[data-dock-fold]").click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
     const review = page.locator("[data-dock-unfold]");
-    // D4: the dock opens on its first tab, the question.
-    await expect(review).toHaveText("Answer");
+    // The email tab is open: the fold row's one button only opens the card.
+    await expect(review).toHaveText("Review");
     await review.click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
     await page.waitForTimeout(600);
@@ -354,8 +508,10 @@ test.describe("the waiting dock (WD-1)", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "one" });
     await expect(dock(page)).toBeVisible({ timeout: 20_000 });
+    // The consent rule: Approve is only in Expanded, after Review.
+    await page.locator("[data-dock-review]").click();
     const approve = page.locator("[data-confirmation-approve]");
-    await page.waitForTimeout(600); // the card arms after 400 ms
+    await page.waitForTimeout(600); // the card arms again after 400 ms
     await approve.click();
     await expect.poll(async () => (await answers(page)).length).toBe(1);
     await expect(dock(page)).toHaveCount(0, { timeout: 10_000 });

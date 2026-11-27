@@ -212,6 +212,31 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   useEffect(() => () => {
     if (graceRef.current) clearTimeout(graceRef.current);
   }, []);
+  // D2: Review opens the Expanded view, and the focus moves into the dock's
+  // content, never onto a button (24.11, the fresh press).
+  const expand = () => {
+    setExpanded(true);
+    requestAnimationFrame(() => bodyRef.current?.focus({ preventScroll: true }));
+  };
+  // Esc closes the Expanded view, however it was opened: the first Esc
+  // anywhere in this chat, the message box too. It does nothing else, so it
+  // never also stops the run. A second Esc keeps its old meaning. A listener
+  // on the window in the capture phase runs before any handler of the page.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const chat = rootRef.current?.closest("[data-dock-host]")?.parentElement;
+      const target = e.target as Node | null;
+      if (!chat || !target || !chat.contains(target)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      setExpanded(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [expanded]);
   // K7: the fold row of the keyboard opens the card only when the member
   // asks. A tap on its button opens the card and drops the keyboard.
   const unfold = () => {
@@ -228,7 +253,7 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
         variant="ghost"
         size="icon-xs"
         icon={expanded ? "Minimize2" : "Maximize2"}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => (expanded ? setExpanded(false) : expand())}
         aria-label={expanded ? "Collapse the card" : "Expand the card"}
         title={expanded ? "Collapse the card (Esc)" : "Expand the card"}
         aria-expanded={expanded}
@@ -256,24 +281,22 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
       onFocus={onFocusIn}
       onBlur={onFocusOut}
       onPointerDown={onPointerDown}
-      // D2: Esc closes the Expanded view. It does nothing else here.
-      onKeyDown={(e) => {
-        if (e.key !== "Escape" || !expanded) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setExpanded(false);
-      }}
+
       className="relative max-w-3xl mx-auto mb-2"
     >
       {/* The one scroll box of the dock: the open item over the cap (C3). */}
       <div
         ref={bodyRef}
         data-dock-body=""
-        className="overflow-y-auto overscroll-contain scrollbar-thin"
+        // The focus lands here after Review (not on a button), so a held key
+        // or a second press on Review reaches no commit. The card's radius
+        // clips what scrolls under the pinned header's corners.
+        tabIndex={-1}
+        className="overflow-y-auto overscroll-contain scrollbar-thin rounded-lg glass:rounded-[16px]"
         style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
         onScroll={read}
       >
-        {children({ folded, unfold, controls, mode: expanded ? "expanded" : "compact", expand: () => setExpanded(true) })}
+        {children({ folded, unfold, controls, mode: expanded ? "expanded" : "compact", expand })}
       </div>
       {/* The fade: theme tokens only, and it takes no click. */}
       {!folded && over && !atEnd && (

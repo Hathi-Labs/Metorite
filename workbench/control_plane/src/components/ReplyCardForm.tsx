@@ -38,6 +38,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import { FRESH_KEY_PROPS, previewLines, sendLabel, type DockMode } from "@/lib/waitingDock";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import {
@@ -81,6 +82,13 @@ interface ReplyCardFormProps {
   detail?: string;
   onAnswer: (answer: ReplyApproval) => void;
   onDiscard: () => void;
+  /**
+   * The waiting dock (projects_ai_chat.md 24.11): the Compact or the Expanded
+   * view of this same card. With none, the card is as before.
+   */
+  dockMode?: DockMode;
+  /** The dock's Expand: Review in the Compact view calls it. */
+  onExpand?: () => void;
   /** False for the first moments of a new card (`ARM_MS`): clicks do nothing. */
   armed: boolean;
   disabled?: boolean;
@@ -209,7 +217,7 @@ export function ReplyCardGone({
   );
 }
 
-export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
+export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false, dockMode, onExpand }: ReplyCardFormProps) {
   // §21.15: the form grows by each Bcc that the server took for this card.
   const [form, setForm] = useState<ReplyForm | null>(given);
   const [bccDraft, setBccDraft] = useState("");
@@ -304,8 +312,17 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
     setTicks((t) => (t.reply_all.includes(res.address.toLowerCase()) ? t : toggleTick(t, replyAll, res.address)));
     setBccDraft("");
   };
-  return (
-    <div className="space-y-2.5" data-reply-card="">
+  // The consent rule of the dock (24.11, 2026-11-27): the Compact view shows
+  // one line and the first lines of the text, and holds NO commit, only
+  // Review and a plain Discard. The full form stays MOUNTED under it, hidden
+  // and inert, so no edit or untick is lost on a change of view.
+  const compact = dockMode === "compact";
+  const fresh = dockMode ? FRESH_KEY_PROPS : {};
+  const goesTo = picked.to.length + picked.cc.length + (picked.bcc ?? []).length;
+  const preview = previewLines(body);
+  const line = [replySummary(form, replyAll, ticks), form.subject].filter(Boolean).join(" · ");
+  const fullBody = (
+    <>
       <div className="min-w-0">
         <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
           {replySummary(form, replyAll, ticks)}
@@ -445,7 +462,38 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
         {lines === 1 ? "1 line" : `${lines} lines`}. The whole text shows above.
       </p>
 
+    </>
+  );
+  return (
+    <div className="space-y-2.5" data-reply-card="">
+      {dockMode ? (
+        <>
+          {compact && (
+            <div className="space-y-2" data-dock-compact="">
+              <p className="min-w-0 truncate text-xs font-medium text-foreground" title={line} data-mail-line="">
+                {line}
+              </p>
+              <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground" data-mail-preview="">
+                {preview.lines.join("\n")}
+                {preview.more ? "…" : ""}
+              </p>
+            </div>
+          )}
+          <div hidden={compact} inert={compact} className="space-y-2.5" data-dock-full="">
+            {fullBody}
+          </div>
+        </>
+      ) : (
+        fullBody
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
+        {compact ? (
+          <Button key="review" size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
+            Review
+          </Button>
+        ) : (
+        <>
         <Button
           size="sm"
           icon="Send"
@@ -453,8 +501,9 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           disabled={disabled || !ok}
           aria-disabled={!armed || undefined}
           data-reply-send=""
+          {...fresh}
         >
-          Send
+          {dockMode === "expanded" ? sendLabel(goesTo) : "Send"}
         </Button>
         <Button
           variant="secondary"
@@ -464,9 +513,12 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           disabled={disabled || !ok}
           aria-disabled={!armed || undefined}
           data-reply-save=""
+          {...fresh}
         >
           {saveLabel(form)}
         </Button>
+        </>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -483,7 +535,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           Discard
         </Button>
       </div>
-      <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>
+      {!compact && <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>}
     </div>
   );
 }

@@ -24,8 +24,7 @@ import { personName } from "./cardTabs";
 
 import {
   MIN_DOCK_PX,
-  cardWhole,
-  mailWhole,
+  FRESH_KEY_PROPS,
   previewLines,
   sendLabel,
   PINNED_ACTIONS,
@@ -282,29 +281,33 @@ describe("audit rule 2: the fold row never approves, rejects or sends", () => {
   });
 });
 
-describe("D3: the commit shows only when the view holds the whole item", () => {
-  it("an email is whole in Compact only with at most two To people, no Cc, three lines, no file and no notice", () => {
-    const ok = { to: 2, cc: 0, bcc: 0, bodyLines: 3, files: 0, notices: 0 };
-    expect(mailWhole(ok)).toBe(true);
-    expect(mailWhole({ ...ok, to: 3 })).toBe(false);
-    expect(mailWhole({ ...ok, cc: 1 })).toBe(false);
-    expect(mailWhole({ ...ok, bcc: 1 })).toBe(false);
-    expect(mailWhole({ ...ok, bodyLines: 4 })).toBe(false);
-    expect(mailWhole({ ...ok, files: 1 })).toBe(false);
-    expect(mailWhole({ ...ok, notices: 1 })).toBe(false);
-    expect(mailWhole({ ...ok, to: 0 })).toBe(false);
+describe("the fresh press (24.11, 2026-11-27)", () => {
+  it("a held key presses no commit button: its default action does not run", () => {
+    let prevented = 0;
+    const ev = (repeat: boolean) => ({ repeat, preventDefault: () => { prevented++; } });
+    FRESH_KEY_PROPS.onKeyDown(ev(false));
+    expect(prevented).toBe(0);
+    FRESH_KEY_PROPS.onKeyDown(ev(true));
+    expect(prevented).toBe(1);
   });
 
-  it("an approval is whole in Compact only with nothing past its title and meta line", () => {
-    const ok = { rows: false, fields: 0, text: false, notes: 0, form: false };
-    expect(cardWhole(ok)).toBe(true);
-    expect(cardWhole({ ...ok, rows: true })).toBe(false);
-    expect(cardWhole({ ...ok, fields: 1 })).toBe(false);
-    expect(cardWhole({ ...ok, text: true })).toBe(false);
-    expect(cardWhole({ ...ok, notes: 1 })).toBe(false);
-    expect(cardWhole({ ...ok, form: true })).toBe(false);
+  it("each commit button of the dock takes the guard, and the card arms again on each change of view", () => {
+    const read = (f: string) => readFileSync(join(__dirname, "..", f), "utf-8");
+    const card = read("components/ConfirmationCard.tsx");
+    expect(card).toContain("}, [dockMode]);");
+    expect(card).toMatch(/data-confirmation-approve=""\s+\{\.\.\.fresh\}/);
+    for (const f of ["components/NewMailCardForm.tsx", "components/ReplyCardForm.tsx"]) {
+      const src = read(f);
+      expect(src).toMatch(/data-reply-send=""\s+\{\.\.\.fresh\}/);
+      expect(src).toMatch(/data-reply-save=""\s+\{\.\.\.fresh\}/);
+      // Review is its own element: a key that no commit button holds.
+      expect(src).toContain('<Button key="review"');
+    }
+    expect(read("components/EarlierDraftQuestion.tsx")).toContain('data-earlier-delete="" {...fresh}');
   });
+});
 
+describe("the previews", () => {
   it("the first three lines of a text, and whether more follow", () => {
     expect(previewLines("a\nb\nc\nd")).toEqual({ lines: ["a", "b", "c"], more: true });
     expect(previewLines("a\nb\n")).toEqual({ lines: ["a", "b"], more: false });
