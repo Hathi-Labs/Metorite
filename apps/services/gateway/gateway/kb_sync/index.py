@@ -23,7 +23,7 @@ is missing (D8).
 (a) ONE session reads the source row ``FOR SHARE`` and takes the run lock.
 (b) ONE short transaction deletes the documents of nodes that left scope (a
     gone node, or a folder that lost its include row). The trigger of
-    migration 310 takes their chunks.
+    migration 511 takes their chunks.
 (c) ONE short transaction reads the next :data:`MAX_FILES` pending files and,
     when there are any, makes the owner's ``me`` space.
 (d) For each file, in the order of the read, inside the budget:
@@ -196,7 +196,7 @@ PENDING_COUNT_SQL = _SCOPE_SQL + (
     "AND y.id NOT IN (SELECT id FROM scope)) AS pending"
 )
 
-#: The documents of nodes that left scope. The trigger of migration 310 takes
+#: The documents of nodes that left scope. The trigger of migration 511 takes
 #: their chunks, so a gone node leaves no chunk.
 _DELETE_STALE_SQL = _SCOPE_SQL + (
     "DELETE FROM kb_documents d USING kb_source_nodes n "

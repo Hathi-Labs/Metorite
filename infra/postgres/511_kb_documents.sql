@@ -1,5 +1,5 @@
 -- ============================================================================
--- 310_kb_documents.sql — the text of each indexed Drive document, and the
+-- 511_kb_documents.sql — the text of each indexed Drive document, and the
 -- folders a member chose to index.
 --
 -- What: two new tables, one function, one trigger, two indexes and one widened
@@ -57,9 +57,10 @@
 -- security and the explicit predicate agree.
 -- ⚠️ `text` holds the words of a company document. The cascade from
 -- kb_source_nodes removes it, so the member purge needs no new path.
--- The number is taken at build time (R1): 310 was free on main and on every
--- remote branch on 2026-10-26. Check it again at merge. The tests find this
--- file by CONTENT, never by number.
+-- The number is taken at build time (R1). The file was 310 on 2026-10-26,
+-- and the merge of main moved it to 511, above main's top (509), on
+-- 2026-11-27. Check it again at merge. The tests find this file by
+-- CONTENT, never by number.
 --
 -- Fences: tests/unit/test_kc_index_r8.py (FORCE RLS as a role that is not a
 -- superuser, not the owner and not BYPASSRLS, the widened CHECK, the trigger

@@ -53,7 +53,7 @@ KIND_CHANGES = "changes"
 KIND_RECONCILE = "reconcile"
 #: The access pass (KC-4a, migration 309): the readers of each node.
 KIND_ACCESS = "access"
-#: The index pass (KC-5a, migration 310): the text of the chosen folders.
+#: The index pass (KC-5a, migration 511): the text of the chosen folders.
 KIND_INDEX = "index"
 
 STATUS_RUNNING = "running"
