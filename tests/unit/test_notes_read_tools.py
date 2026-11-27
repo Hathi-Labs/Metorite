@@ -390,5 +390,5 @@ def test_the_13_reads_wait_for_task_3966_in_debt() -> None:
 
 def test_the_debt_of_notes_matches_the_ceiling() -> None:
     notes = [k for k in cp.DEBT if "/api/notes" in k]
-    assert len(notes) == cp.DEBT_CEILING["notes"] == 45
+    assert len(notes) == cp.DEBT_CEILING["notes"] == 41  # task 4117 paid four writes
     assert sum(k.startswith("GET ") for k in notes) == 13

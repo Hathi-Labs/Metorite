@@ -654,7 +654,8 @@ library over the route cap says "at least" and never says "last page". The
 pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
 `TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
 
-The 32 Notes write rows stay debt. Thirteen read rows wait for task 3966. Twelve
+After task 4117, 28 Notes write rows stay debt. Thirteen read rows wait for task
+3966. Twelve
 gateway routes read a meeting by its id with no owner check, or they refresh a
 bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
 `/context`, `/bot`, `/bot/diagnostics`, `/live/session`, `/live/roster`,
@@ -662,6 +663,35 @@ bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
 
 The thirteenth route is `/bot/identity`. Its status check starts a browser on
 the profile of the bot, and a bot join at the same time can fail.
+
+**PAR-4e-1 (task 4117) is BUILT, 2026-11-27, with no flag, in the dark pack
+`notes`.** Four write tools pay four Notes rows (45 to 41). Each writes only the
+rows of the member of the run.
+
+| Tool | Gateway route |
+|---|---|
+| `notes_update_settings` | `PUT /notes/settings` |
+| `notes_set_copilot_instructions` | `PUT /notes/copilot/instructions` |
+| `notes_add_glossary_term` | `POST /notes/glossary` |
+| `notes_delete_glossary_term` | `DELETE /notes/glossary/{}` |
+
+Each tool reads first and shows ONE card with the old and the new value. It
+writes only after the member approves, and it reads again before the write. A
+held chat holds off the four writes, because `org-admin` is in
+`egress.HELD_WRITE_OWNERS`.
+
+The settings route replaces the whole row. So the tool sends each field that the
+member did not name as it read it. The gateway answers a failed read with the
+defaults. So the tool writes nothing when every value that it read is a default.
+
+⚠️ **The settings write needs task 3966 (PR 2940).** On `main` of 2026-11-27 the
+settings read is not bound to the tenant. As the app role under row security, it
+answers with the defaults, and the tool writes nothing. With the bound read of
+PR 2940, the tool saves. A member who never changed a setting makes the first
+change in the Notes app. The other three writes do not need that change.
+
+Fences: `tests/unit/test_notes_write_tools.py` and
+`tests/unit/test_notes_write_tools_r8.py`.
 
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
@@ -675,9 +705,9 @@ took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
 to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 
 P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
-3963 took notes to 45.
+3963 took notes to 45, and task 4117 took it to 41.
 
-The total of `DEBT_CEILING` is 242. The "Today" column above does not show
+The total of `DEBT_CEILING` is 238. The "Today" column above does not show
 all of these changes. The crm row is different: it shows the changes of tasks
 3951, 3954 and 3953.
 

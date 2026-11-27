@@ -17,8 +17,9 @@ by its id with no owner check, or they refresh a bot and write rows. The route
 of the bot identity starts a browser on the bot profile. They stay in ``DEBT``
 and wait for task 3966.
 
-**Reads only.** No tool writes, joins a meeting, starts a bot or reaches a
-person. The module has no ``POST``, ``PUT``, ``PATCH`` or ``DELETE``. Each of
+**Reads only.** No tool of this module writes, joins a meeting, starts a bot or
+reaches a person. The four writes of the pack are in ``notes_write_tools``
+(task 4117). The module has no ``POST``, ``PUT``, ``PATCH`` or ``DELETE``. Each of
 the six routes is a plain read with no side effect.
 
 **The server decides each right.** Each tool calls the gateway over HTTP as the

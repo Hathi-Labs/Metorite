@@ -401,6 +401,12 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
     "notes_copilot_instructions": ("show my copilot instructions",),
+    # -- notes: four writes of the Note Taker setup (task 4117) --
+    "notes_update_settings": ("change my note taker settings",
+                              "turn off live transcription"),
+    "notes_set_copilot_instructions": ("replace my copilot instructions with: be brief",),
+    "notes_add_glossary_term": ("add Metorite to my notes glossary",),
+    "notes_delete_glossary_term": ("remove a term from my transcript glossary",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),

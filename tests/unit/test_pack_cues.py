@@ -99,7 +99,8 @@ WHEN = {
         "your tasks in it."),
     # Task 3963: the notes pack of the same owner.
     "notes": (
-        "Load for your meetings, a meeting transcript or the Note Taker settings."),
+        "Load for your meetings or a transcript, or to read or change Note Taker "
+        "settings, copilot instructions or glossary."),
 }
 
 

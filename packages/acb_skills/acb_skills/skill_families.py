@@ -1245,21 +1245,25 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     # Task 3963 (chat_parity.md section 6.4, P-4d): six reads of the Notes app,
     # the notes read tools. Each calls GET routes as the member. Each route checks
     # the owner of a meeting or reads the rows of the member only. Thirteen
-    # reads wait for task 3966. The pack follows the example of "people": owned by
+    # reads wait for task 3966. Task 4117 adds four writes of the member's own
+    # settings, copilot instructions and glossary, each after one card
+    # (notes_write_tools). The pack follows the example of "people": owned by
     # org-admin, which never runs as an agent, and NOT in FOLLOWS. A run loads it
     # where the owner lists it in the pack list of the box, or where the list is
-    # "*" (tool_packs.packs_on). Fence: test_notes_read_tools.py.
+    # "*" (tool_packs.packs_on). Fences: test_notes_read_tools.py and
+    # test_notes_write_tools.py.
     "notes": {
         "label": "Meeting notes",
         "summary": (
-            "Read your meetings, one meeting with its transcript, "
-            "the Note Taker settings, the templates, your glossary and your copilot "
-            "instructions."
+            "Read your meetings, their transcripts and your Note Taker setup, and "
+            "change your settings, copilot instructions and glossary after one card."
         ),
         "description": (
             "A tool pack: six reads of the Notes app, for the main assistant to "
             "load when a turn asks about your meetings or the Note Taker settings. "
-            "Each tool calls the routes as the member. No tool writes, joins a "
+            "Each tool calls the routes as the member. Four writes change only your "
+            "own Note Taker settings, your copilot instructions and your glossary. "
+            "Each write shows one card first. No tool changes a meeting, joins a "
             "meeting or starts a bot. A run loads a pack only where tool packs are "
             "on, so until then this switch has no effect."
         ),
@@ -1270,6 +1274,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "notes_templates",
             "notes_glossary",
             "notes_copilot_instructions",
+            "notes_update_settings",
+            "notes_set_copilot_instructions",
+            "notes_add_glossary_term",
+            "notes_delete_glossary_term",
         ),
         "owner": "org-admin",
         "core": False,
