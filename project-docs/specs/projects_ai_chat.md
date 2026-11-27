@@ -802,7 +802,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
-| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback. `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
+| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback (red with `LOG_FORMAT=json` only, and a warning today). `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -4060,6 +4060,15 @@ orchestrator, with its tools on, in the smoke session. The module is
 - Before the flip, the owner runs `journalctl -u acb-gateway -n 1` as acb.
   If acb cannot read it, add acb to the `systemd-journal` group. Without
   that, T4 cannot check the log.
+- T4 can be red only with `LOG_FORMAT=json` in the gateway environment.
+  The box used the console format on 2026-11-27. Then a Traceback spans
+  many journal lines, its line holds no thread id, and T4 only warns.
+- After the first turn, the owner checks that the cost rollup of the smoke
+  org shows `calls > 0`. A model with no price writes no calls. Then each
+  later turn of the month skips with a warning.
+- The cap needs about 7 turns a day times `SMOKE_CHAT_TURN_EST_USD` (0.25)
+  for a month, which is about 53 USD. A lower cap stops the turn early in
+  the month, with a warning on each deploy.
 - A retry of the smoke after an ssh drop can run up to 3 turns in one
   release. The count guard counts each one.
 - The turn takes at most 227 s of `SMOKE_TURN_S` (240 s).

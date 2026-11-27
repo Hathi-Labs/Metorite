@@ -48,6 +48,14 @@
 # ⚠️ BEFORE THE FLIP, run `journalctl -u acb-gateway -n 1` as acb. If acb
 # cannot read it, add acb to the systemd-journal group. Without that, T4
 # cannot check the log, and it gives a WARNING on each run.
+# ⚠️ T4 can be red ONLY with LOG_FORMAT=json in the gateway environment. With
+# the console format (the box default on 2026-11-27), a Traceback spans many
+# journal lines, so its line never holds the thread id, and T4 only warns.
+# ⚠️ After the first turn, check that the cost rollup of the smoke org shows
+# calls > 0. A model with no price writes no calls, and then each later turn
+# of the month skips with a WARNING.
+# ⚠️ Size the cap: about 7 turns a day x SMOKE_CHAT_TURN_EST_USD (0.25) is
+# about 53 USD a month. A lower cap stops the turn early in the month.
 #
 # `--turn-only` runs the turn alone: no sweep, no save check. A later
 # flag_flip.sh calls it after a flag flip. With the switch off, it checks
