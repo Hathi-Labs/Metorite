@@ -119,6 +119,68 @@ async def test_the_bulk_tool_refuses_focus_before_the_card() -> None:
     assert "one task at a time" in out
 
 
+_CLOCK = {"today": "2026-11-07", "timezone": "Asia/Kolkata", "stored": True}
+
+
+def _chat(monkeypatch: pytest.MonkeyPatch, clock: dict[str, Any]) -> list[str]:
+    """``set_my_overlay`` over a fake gateway. Returns the cards and writes."""
+    from skill_projects import writes
+
+    acts: list[str] = []
+
+    async def get(path: str, params: Any = None) -> Any:
+        return dict(clock) if path == "/projects/my/today" else {}
+
+    async def task(task_id: str) -> Any:
+        return "t", {"task_number": 7, "title": "Fix"}
+
+    async def confirm(**_card: Any) -> bool:
+        acts.append("card")
+        return True
+
+    async def patch(path: str, payload: dict[str, Any]) -> Any:
+        acts.append(f"patch {payload}")
+        return payload
+
+    for name, fake in (("get", get), ("_task", task), ("_confirm", confirm), ("patch", patch)):
+        monkeypatch.setattr(writes, name, fake)
+    return acts
+
+
+@pytest.mark.parametrize("word", ["yes", "no"])
+@pytest.mark.parametrize("said", [{}, {"today_rule": False}, {"today_rule": "true"}])
+async def test_the_chat_refuses_focus_before_the_card_with_the_flag_off(
+    monkeypatch: pytest.MonkeyPatch, word: str, said: dict[str, Any],
+) -> None:
+    """Review of PR 1819: no card for a mark that the route would refuse. Only
+    an explicit ``True`` of the clock read opens it."""
+    from skill_projects import writes
+
+    acts = _chat(monkeypatch, {**_CLOCK, **said})
+    out = await writes.set_my_overlay("t", todays_focus=word, context="@desk")
+    assert out == writes.TODAYS_FOCUS_OFF
+    assert acts == [], "no card and no write"
+
+
+@pytest.mark.parametrize(("word", "value"), [("yes", "2026-11-07"), ("no", None)])
+async def test_the_chat_marks_focus_with_the_flag_on(
+    monkeypatch: pytest.MonkeyPatch, word: str, value: str | None,
+) -> None:
+    from skill_projects import writes
+
+    acts = _chat(monkeypatch, {**_CLOCK, "today_rule": True})
+    await writes.set_my_overlay("t", todays_focus=word)
+    assert acts == ["card", f"patch {{'focus_on': {value!r}}}"]
+
+
+def test_the_chat_and_the_route_say_the_same_thing_with_the_flag_off() -> None:
+    from skill_projects import writes
+
+    first = "Today's focus is not on for your organization yet."
+    assert writes.TODAYS_FOCUS_OFF.startswith(first)
+    assert today_rule.FOCUS_OFF_MESSAGE.startswith(first)
+
+
 def test_the_count_reads_the_filter_of_the_set() -> None:
     """Items 2 and 3 of fix round 1, the text half: the count of the cap and
     the set read ONE filter, so a closed or an unseen task never counts."""

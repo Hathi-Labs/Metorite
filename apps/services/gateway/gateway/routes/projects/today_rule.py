@@ -109,8 +109,9 @@ def today_rule_allowed(organization_id: str | None) -> bool:
     """True when ``TODAY_RULE_ORGS`` holds the org, or holds ``*``. Default OFF.
 
     The one reader of the flag. ``mine.my_summary`` asks here for the count of
-    the Today chip and the ids of its list, and ``personal.check_focus_on``
-    asks before a mark or a clear. The org comes from the session,
+    the Today chip and the ids of its list, ``personal.check_focus_on`` asks
+    before a mark or a clear, and ``personal.my_today`` asks to tell the chat.
+    The org comes from the session,
     never from request input (R5). It reads ``get_settings()`` on each call,
     so a flag reload applies a change with no restart. A fault reads as off.
     """

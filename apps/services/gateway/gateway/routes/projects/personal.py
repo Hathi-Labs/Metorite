@@ -1761,6 +1761,11 @@ async def my_today(
     The set reads the same zone and the same date as ``today``. With no
     ``with_tasks`` the answer is the five keys above, and the read runs no
     extra statement, so the chat's clock read costs nothing more.
+
+    With ``TODAY_RULE_ORGS`` on for the session's org, the answer adds
+    ``today_rule: true``, as ``GET /projects/my/summary`` does. The chat reads
+    it before the card of a focus mark (``writes._focus_day``). With the flag
+    off, the key is absent.
     """
     # Imported here: `shell.state` reaches the projects routes through the feed.
     from gateway.routes.shell.state import DEFAULT_DAY_START, _hour
@@ -1783,6 +1788,7 @@ async def my_today(
         "stored": stored is not None,
         "valid": stored is None or zone == str(stored),
         "day_start_hour": _hour(hour, DEFAULT_DAY_START, 23),
+        **({"today_rule": True} if today_rule.today_rule_allowed(current_tenant()) else {}),
         **extra,
     }
 

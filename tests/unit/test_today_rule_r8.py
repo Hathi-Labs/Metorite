@@ -299,6 +299,16 @@ class TestTheTodayPredicateOnARealDatabase:
         assert got.status_code == 200
         assert set(got.json()) == {"today", "timezone", "stored", "valid", "day_start_hour"}
 
+    async def test_with_the_flag_on_the_clock_read_says_today_rule(self, w, monkeypatch):
+        """The chat reads this key before the card of a focus mark."""
+        monkeypatch.setattr(get_settings(), "today_rule_orgs", w.p.org_a)
+        async with h.session(w.p) as call:
+            got = await call(w.member, "GET", "/projects/my/today")
+        assert got.status_code == 200
+        assert got.json()["today_rule"] is True
+        assert set(got.json()) == {
+            "today", "timezone", "stored", "valid", "day_start_hour", "today_rule"}
+
     async def test_an_archived_or_parked_task_is_out(self, w):
         p = w.p
         archived = h.task(p, p.org_a, w.shared, by=OWNER, assignee=MEMBER, due_at=AT,

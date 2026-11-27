@@ -654,7 +654,9 @@ def _reminder_answers(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path == "/projects/my/today":
         today = W._today().isoformat()
-        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+        # WS-MDC CC-2: the org has today's focus, so `todays_focus` sends.
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True,
+                "today_rule": True}
     if not path.startswith("/projects/my/reminders"):
         return None
     body = call["json"] if isinstance(call["json"], dict) else {}

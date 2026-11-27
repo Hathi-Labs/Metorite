@@ -7558,11 +7558,35 @@ async def _overlay_values(args: dict[str, Any], mine: dict[str, Any]) -> dict[st
         values["expected_by"] = _expected_by(given["expected_by"])
     # WS-MDC CC-2 (D-MD-3): today's focus is the member's own today, from the
     # same read as every other day this tool guesses. The route holds the cap.
+    # The same read says if the org has today's focus, so an org without it
+    # gets a refusal here, before any card. The route refuses a clear too.
     todays_focus = _yes_no(given.get("todays_focus", ""), "todays_focus")
     if todays_focus is not None:
-        values["focus_on"] = (await _member_clock())[0].isoformat() if todays_focus else None
+        day = await _focus_day()
+        if day is None:
+            return TODAYS_FOCUS_OFF
+        values["focus_on"] = day.isoformat() if todays_focus else None
     refusal = _clear_into(values, given.get("clear", ""), _OVERLAY_CLEAR)
     return refusal or _block_refusal(values, mine) or values
+
+
+#: The answer while ``TODAY_RULE_ORGS`` does not hold the org. The tool makes
+#: no card. The words follow the route's 403 (``today_rule.FOCUS_OFF_MESSAGE``).
+TODAYS_FOCUS_OFF = (
+    "Today's focus is not on for your organization yet. Nothing was changed. Put a "
+    "block for the task on your calendar to plan it for today."
+)
+
+
+async def _focus_day() -> date | None:
+    """The member's today for a focus mark, or ``None`` when the org has no
+    today's focus. The tool never reads the flag. ``GET /projects/my/today``
+    says ``today_rule``, and only an explicit ``True`` counts, so an older
+    gateway means "off". A failed read is raised, and no card shows."""
+    row = await get("/projects/my/today")
+    if not isinstance(row, dict) or row.get("today_rule") is not True:
+        return None
+    return clock_of(row)[0] or _today()
 
 
 def _same_chase(person: dict[str, Any], mine: dict[str, Any]) -> bool:
