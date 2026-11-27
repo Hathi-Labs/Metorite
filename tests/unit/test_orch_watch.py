@@ -258,3 +258,38 @@ def test_the_last_record_reader(ow, tmp_path):
     assert mod.last_record(f) == "stop_hook_summary"
     f.write_text("not json\n")
     assert mod.last_record(f) == ""
+
+
+def _bot(home, text):
+    with open(home / "lanes" / "merge-bot.log", "a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_rule_b_a_back_line_in_merge_bot_log_is_an_event_with_its_own_position(ow):
+    mod, home = ow
+    agents = [_merge_fresh(home)]
+    _bot(home, "BACK 100 old\n")
+    _queue(home, "HOLD 200 old\n")
+    assert mod.run_pass(agents, now=NOW, child=_no_child) == []
+    _bot(home, "RESOLVED 2901 rules\nBACK 2902 head moved\nHOLD 2903 mode off\nRED 2904 x\n")
+    _queue(home, "HOLD\t2897\tmode off\nDONE\t2898\tabc\nRED\t2899\tmain red\n")
+    ev = mod.run_pass(agents, now=NOW, child=_no_child)
+    assert sorted((e[0], e[1]) for e in ev) == [
+        ("back", "2902"),
+        ("hold", "2897"),
+        ("red", "2899"),
+        ("red", "2904"),
+    ]
+    assert mod.run_pass(agents, now=NOW + 300, child=_no_child) == []
+    # A new line in one log only: the other log keeps its own place.
+    _bot(home, "BACK 2905 a red check\n")
+    assert [e[1] for e in mod.run_pass(agents, now=NOW + 600, child=_no_child)] == ["2905"]
+
+
+def test_rule_c_the_note_label_of_lane_merge_can_have_a_suffix(ow):
+    mod, _ = ow
+    assert mod.merger_note(["NOTE\tlane-merge-1126\t00:06 UTC: lane-merge alive"])
+    assert mod.merger_note(["NOTE\tlane-merge\t00:06 UTC: queue empty"])
+    assert not mod.merger_note(["NOTE\tlane-orch\t00:06 UTC: woke lane-merge"])
+    assert not mod.merger_note(["NOTE\tsignin-alarm\t00:06 UTC: lane-merge ok"])
+    assert not mod.merger_note(["HOLD\tlane-merge\tx"])

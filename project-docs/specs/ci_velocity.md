@@ -813,7 +813,8 @@ down, nothing watched the lanes. Now the box does it, in two parts.
 `metorite-orch-watch.timer` runs `orch_watch.py` every 5 minutes. One pass
 checks three rules. (a) A listed lane is idle for more than 30 minutes, or
 active for more than 60, and it is not on `~/lanes/orch_resting.txt`. (b) A
-new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`. (c) Lane-merge
+new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`, or a new
+`BACK` or `RED` line is in `~/lanes/merge-bot.log`. (c) Lane-merge
 wrote no NOTE line and no transcript record for 90 minutes.
 
 Each new event is one line in `~/lanes/orch-events.log`. A state file stops a
@@ -821,7 +822,7 @@ repeat while the condition stays the same.
 
 The lane keeper wakes `lane-orch` when that log has lines after the cursor of
 lane-orch. It wakes it one time for each new batch, and never while it is
-busy. `lanes/lane-orch.md` is its role. It never merges, deploys or flips a flag.
+busy. Only events wake lane-orch. The plain keeper wake leaves it out. `lanes/lane-orch.md` is its role. It never merges, deploys or flips a flag.
 
 To start it, the owner or lane-devx installs and enables the timer, and adds
 `lane-orch` to `keeper-lanes.txt` (`docs/home_box.md` §3.10).

@@ -41,7 +41,8 @@ no PC and no person. One pass:
    ``orch-events``). It resumes the newest session, or starts one from its
    start note. It wakes it at most once for each new batch: the line count of
    the last wake is ``_orch_batch`` in the state file. The 10-minute age and the
-   30-minute cap do not apply, because a new batch is new work.
+   30-minute cap do not apply, because a new batch is new work. Only events
+   wake lane-orch: the plain wake of points 3 to 8 leaves it out.
 
 Every wake and every skip with a reason goes to ``~/lanes/keeper.log``.
 The keeper stops only the ended session of a lane that it is about to resume.
@@ -178,7 +179,8 @@ def plan(
     wakes = []
     for name, a in sorted(newest_per_lane(agents).items()):
         # An empty `only_lanes` wakes nothing: the list file is the whole list.
-        if name in skip_lanes or name not in only_lanes or name in busy:
+        # CIV-ORCH: only events wake lane-orch, through plan_orch.
+        if name in skip_lanes or name not in only_lanes or name in busy or name == ORCH_LANE:
             continue
         age = ages.get(a["sessionId"])
         stale = a.get("status") == "idle" and age is not None and age >= STALE_S
@@ -207,7 +209,7 @@ def plan_fresh(
     have = set(newest_per_lane(agents))
     out = []
     for name in sorted(only_lanes):
-        if name in skip_lanes or name in have or name in busy:
+        if name in skip_lanes or name in have or name in busy or name == ORCH_LANE:
             continue
         if now - state.get(name, 0) < CAP_S:
             continue

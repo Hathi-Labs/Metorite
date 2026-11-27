@@ -515,13 +515,30 @@ def test_civ_orch_a_failed_wake_tries_again_and_a_lane_with_no_session_starts(ke
     assert mod.run_pass(agents, now=NOW) == []
     monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
     assert [w[2] for w in mod.run_pass(agents, now=NOW + 60)] == ["orch-events"]
-    # No session: the plain fresh start covers the batch, so no second start.
+    # No session: the start note starts it for the batch, one time.
     (home / "lanes" / "start").mkdir()
     (home / "lanes" / "start" / "lane-orch.txt").write_text("ORCH NOTE\n", encoding="utf-8")
     _orch(home, 2)
     calls: list = []
     monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
     wakes = mod.run_pass("[]", now=NOW + 99999)
-    assert [w[2] for w in wakes] == ["fresh start"]
-    assert len(calls) == 1
+    assert [w[2] for w in wakes] == ["orch-events"]
+    assert calls == [["claude", "--bg", "-n", "lane-orch", "--remote-control=lane-orch", "ORCH NOTE"]]
     assert mod.run_pass("[]", now=NOW + 99999 + 60) == []
+
+
+def test_civ_orch_only_events_wake_lane_orch(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-orch", "lane-a")
+    _transcript(home, "s-o", 5000)  # ended and old: the plain wake would take it
+    _transcript(home, "s-a", 5000)
+    (home / "lanes" / "start").mkdir()
+    (home / "lanes" / "start" / "lane-orch.txt").write_text("ORCH NOTE\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    _orch(home, 3, cursor=3)
+    agents = [_agent("lane-orch", "s-o", "done"), _agent("lane-a", "s-a", "done")]
+    assert [w[0] for w in mod.run_pass(json.dumps(agents), now=NOW)] == ["lane-a"]
+    # No session and no new event: no fresh start either.
+    assert mod.run_pass("[]", now=NOW + 99999) == []
+    assert _orch_calls(calls) == []

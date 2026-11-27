@@ -445,13 +445,15 @@ down. Now the box runs it (task 4058). Two parts do the work:
 
 - `metorite-orch-watch.timer` runs `scripts/home_server/orch_watch.py` every
   5 minutes. One pass writes one line to `~/lanes/orch-events.log` for each
-  new event. An event is an idle lane, a silent lane-merge, or a new `BACK`,
-  `HOLD` or `RED` line in `~/lanes/merge-queue.log`. The header of the script
+  new event. An event is an idle lane, a silent lane-merge, or a new queue
+  line. A queue line is `BACK`, `HOLD` or `RED` in `~/lanes/merge-queue.log`,
+  or `BACK` or `RED` in `~/lanes/merge-bot.log`. The header of the script
   holds the rules. It uses no model and reads no credential, so the memory
   floor of lane rule 11 does not apply.
 - The lane keeper (§3.7) wakes `lane-orch` when the log has lines after the
   cursor `~/.local/state/metorite/orch_events.cursor`. It wakes it one time
-  for each new batch. Its role is `scripts/home_server/lanes/lane-orch.md`.
+  for each new batch. Only events wake lane-orch. The plain 30-minute wake
+  leaves it out. Its role is `scripts/home_server/lanes/lane-orch.md`.
 
 | File on the box | What it does |
 |---|---|
@@ -459,6 +461,7 @@ down. Now the box runs it (task 4058). Two parts do the work:
 | `~/lanes/orch_resting.txt` | Lanes that rest on purpose. Each line starts with a lane name or a session id. The watch skips them. |
 | `~/.local/state/metorite/orch_watch.json` | The conditions that the watch reported, so it does not repeat one. |
 | `~/.local/state/metorite/orch_watch.pos` | The place in `merge-queue.log`. |
+| `~/.local/state/metorite/orch_watch_bot.pos` | The place in `merge-bot.log`. |
 | `~/.local/state/metorite/orch_events.cursor` | The count of event lines that lane-orch handled. |
 
 The timer ships DISABLED. After the merge, the owner or lane-devx does these

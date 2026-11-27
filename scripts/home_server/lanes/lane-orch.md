@@ -27,13 +27,13 @@ event. The fields have tabs between them:
 
 | Kind | Subject | What it means |
 |---|---|---|
-| `back`, `hold`, `red` | The pull request | A new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`. |
+| `back`, `hold`, `red` | The pull request | A new `BACK`, `HOLD` or `RED` line is in `~/lanes/merge-queue.log`, or a new `BACK` or `RED` line is in `~/lanes/merge-bot.log`. |
 | `idle` | The lane | The lane is idle for more than 30 minutes, or active for more than 60. |
 | `merger-silent` | `lane-merge` | Lane-merge wrote no NOTE line and no transcript record for 90 minutes. |
 
 The watch writes an event one time. It writes a new one only when the
 condition changes. The lane keeper wakes you when the log has lines after
-your cursor.
+your cursor. Only events wake you.
 
 ## Each wake
 

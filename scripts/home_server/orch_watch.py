@@ -14,13 +14,17 @@ minutes on the box, so it has no loop and no sleep.
   lane ``lane-orch`` itself are left out. The lanes come from
   ``~/lanes/keeper-lanes.txt`` and ``claude agents --json``, never from a
   hard-coded list.
-- (b) ``back``, ``hold`` or ``red``: a new ``BACK``, ``HOLD`` or ``RED`` line in
-  ``~/lanes/merge-queue.log`` since the last pass. A position file holds the
-  place. The first pass starts at the end of the log, so old lines make no
-  event.
+- (b) ``back``, ``hold`` or ``red``: a new line since the last pass in one of
+  two logs. Lane-merge writes ``HOLD``, ``RED`` and ``DONE`` lines to
+  ``~/lanes/merge-queue.log``: ``BACK``, ``HOLD`` and ``RED`` there are events.
+  The merge bot writes ``BACK``, ``RESOLVED`` and ``RENUMBERED`` lines to
+  ``~/lanes/merge-bot.log``: ``BACK`` and ``RED`` there are events. Each log has
+  its own position file. The first pass starts at the end of each log, so old
+  lines make no event.
 - (c) ``merger-silent``: no lane-merge activity for :data:`MERGER_MIN`
   minutes. Activity is a new NOTE line of lane-merge in the queue log, or a
-  write to the transcript of lane-merge.
+  write to the transcript of lane-merge. A NOTE line is of lane-merge when its
+  second field starts with ``lane-merge`` (``lane-merge``, ``lane-merge-1126``).
 
 **The output.** One line for each new event goes to ``~/lanes/orch-events.log``::
 
@@ -75,12 +79,20 @@ ORCH_LANE = "lane-orch"
 MERGE_LANE = "lane-merge"
 ENDED_RECORDS = ("turn_duration", "stop_hook_summary")
 QUEUE_RE = re.compile(r"^(BACK|HOLD|RED)\b\s*(.*)$")
+NOTE_RE = re.compile(r"^NOTE\s+lane-merge\S*(\s|$)")
+# The kinds that are events in each log (rule b).
+QUEUE_KINDS = frozenset({"BACK", "HOLD", "RED"})
+BOT_KINDS = frozenset({"BACK", "RED"})
 TOKEN_RE = re.compile(r"(gh[pousr]_|github_pat_|sk-|mtr_|Bearer\s+)\S+")
 DETAIL_MAX = 300
 
 
 def queue_log() -> Path:
     return LANES_DIR / "merge-queue.log"
+
+
+def bot_log() -> Path:
+    return LANES_DIR / "merge-bot.log"
 
 
 def events_log() -> Path:
@@ -93,6 +105,10 @@ def state_path() -> Path:
 
 def pos_path() -> Path:
     return STATE_DIR / "orch_watch.pos"
+
+
+def bot_pos_path() -> Path:
+    return STATE_DIR / "orch_watch_bot.pos"
 
 
 def scrub(text: str) -> str:
@@ -227,12 +243,14 @@ def read_queue(path: Path, pos: dict | None) -> tuple[list[str], dict]:
     return lines, {"inode": st.st_ino, "offset": offset + end}
 
 
-def queue_events(lines: list[str]) -> list[tuple[str, str, str]]:
-    """Rule (b). (kind, subject, detail) for each BACK, HOLD or RED line."""
+def queue_events(
+    lines: list[str], kinds: frozenset[str] = QUEUE_KINDS
+) -> list[tuple[str, str, str]]:
+    """Rule (b). (kind, subject, detail) for each line whose first word is in ``kinds``."""
     out = []
     for ln in lines:
         m = QUEUE_RE.match(ln)
-        if not m:
+        if not m or m.group(1) not in kinds:
             continue
         rest = m.group(2).split(None, 1)
         subject = rest[0] if rest else "-"
@@ -242,8 +260,8 @@ def queue_events(lines: list[str]) -> list[tuple[str, str, str]]:
 
 
 def merger_note(lines: list[str]) -> bool:
-    """True when a new line is a NOTE line of lane-merge."""
-    return any(ln.startswith("NOTE") and MERGE_LANE in ln[:60] for ln in lines)
+    """True when a new line is a NOTE line whose second field starts with lane-merge."""
+    return any(NOTE_RE.match(ln) for ln in lines)
 
 
 def merger_condition(
@@ -306,7 +324,8 @@ def run_pass(
     state = _load_json(state_path()) or {}
     active = state.get("active") if isinstance(state.get("active"), dict) else {}
     lines, pos = read_queue(queue_log(), _load_json(pos_path()))
-    events = list(queue_events(lines))
+    bot_lines, bot_pos = read_queue(bot_log(), _load_json(bot_pos_path()))
+    events = queue_events(lines, QUEUE_KINDS) + queue_events(bot_lines, BOT_KINDS)
     if agents is None:
         # No list of sessions: keep the conditions of (a) and (c) as they are.
         print("orch-watch: claude agents --json failed, rules a and c skipped", file=sys.stderr)
@@ -331,6 +350,7 @@ def run_pass(
     state["active"] = {k: sig for k, (sig, _, _) in conds.items()}
     _save_json(state_path(), state)
     _save_json(pos_path(), pos)
+    _save_json(bot_pos_path(), bot_pos)
     return events
 
 
