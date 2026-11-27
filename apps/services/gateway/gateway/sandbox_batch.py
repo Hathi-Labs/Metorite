@@ -95,12 +95,17 @@ APPROVED = "approved"
 REFUSED = "refused"
 EXPIRED = "expired"
 
-#: The two rows that can name an assignee. An ``agent:`` assignee starts an
-#: agent run (``routes/projects/agent_dispatch.py``), so the batch refuses it.
-AGENT_ASSIGNEE_ROWS: frozenset[tuple[str, str]] = frozenset({
-    ("POST", "/projects/tasks"),
-    ("PUT", "/projects/tasks/{task_id}/assignees"),
-})
+#: The assignee fields of the body model of each write row, by pair. An
+#: ``agent:`` assignee starts an agent run (``routes/projects/agent_dispatch.py``),
+#: so the batch refuses a row whose body names one in any of these fields.
+#: Fence: ``test_sandbox_door_writes.py::test_every_assignee_field_of_a_write_row_is_scanned``
+#: walks the body model of each row of ``SANDBOX_WRITE_ROUTES`` on the live
+#: router, and fails when a field that names an assignee is missing here.
+AGENT_ASSIGNEE_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
+    ("POST", "/projects/tasks"): ("assignees",),
+    ("POST", "/projects/tasks/{task_id}/move"): ("assignees",),
+    ("PUT", "/projects/tasks/{task_id}/assignees"): ("assignees",),
+}
 AGENT_PREFIX = "agent:"
 
 #: The host name of the in-process requests. It reaches nothing outside.
@@ -218,13 +223,20 @@ def _match_template(app: Any, method: str, path: str) -> str | None:
     return None
 
 
-def _names_an_agent(body: Mapping[str, Any]) -> bool:
-    """True when the body names an ``agent:`` assignee."""
-    assignees = body.get("assignees")
-    if not isinstance(assignees, list):
-        return False
-    return any(isinstance(one, str) and one.strip().lower().startswith(AGENT_PREFIX)
-               for one in assignees)
+def _is_agent(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower().startswith(AGENT_PREFIX)
+
+
+def _names_an_agent(pair: tuple[str, str], body: Mapping[str, Any]) -> bool:
+    """True when the body of a row of *pair* names an ``agent:`` assignee in
+    any assignee field of :data:`AGENT_ASSIGNEE_FIELDS`. A field holds one
+    value or a list of values."""
+    for name in AGENT_ASSIGNEE_FIELDS.get(pair, ()):
+        value = body.get(name)
+        values = value if isinstance(value, list) else [value]
+        if any(_is_agent(one) for one in values):
+            return True
+    return False
 
 
 def _check_row(app: Any, index: int, raw: object, write_scopes: Iterable[str]) -> _Row:
@@ -258,10 +270,10 @@ def _check_row(app: Any, index: int, raw: object, write_scopes: Iterable[str]) -
     needed = app_manifests.sandbox_write_scope(pair)
     if needed is None or not agent_oauth.scope_holds(write_scopes, needed):
         raise _Refused(403, sandbox_capabilities.SCOPE, index)
-    # No agent assignee: it would start an agent run.
-    if pair in AGENT_ASSIGNEE_ROWS and _names_an_agent(body):
-        raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
     assert template is not None
+    # No agent assignee in any assignee field: it would start an agent run.
+    if _names_an_agent((method, template), body):
+        raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
     return _Row(index=index, method=method, path=path, template=template,
                 query=dict(query), body=body, cls=cls)
 

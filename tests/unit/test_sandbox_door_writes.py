@@ -90,6 +90,7 @@ def _door(monkeypatch, armed, **cap_over) -> SimpleNamespace:
     route("POST", "/projects/tasks", 201)
     route("PATCH", "/projects/tasks/{task_id}")
     route("PUT", "/projects/tasks/{task_id}/assignees")
+    route("POST", "/projects/tasks/{task_id}/move")
     route("POST", "/projects/tasks/bulk")
     route("PUT", "/crm/leads/{record_id}/package-fields/{install_id}/{field_key}")
     door.app.include_router(sandbox_batch.router)
@@ -217,6 +218,10 @@ _REFUSALS = [
      [_GOOD, _row("PUT", f"/projects/tasks/{TASK}/assignees",
                   {"assignees": ["m@x.test", " Agent:Ops"]})], 422,
      sandbox_capabilities.BAD_BATCH, 1),
+    ("agent on move", {},
+     [_GOOD, _row("POST", f"/projects/tasks/{TASK}/move",
+                  {"project_id": TASK, "assignees": ["agent:ops"]})], 422,
+     sandbox_capabilities.BAD_BATCH, 1),
 ]
 
 
@@ -238,6 +243,61 @@ def test_the_batch_refuses_before_it_holds(monkeypatch, armed_tripwire, label, o
     assert door.ran == []
     assert not _any_hold(door.redis)
     assert not any(":sandbox_ticket:" in k for k in door.redis.values)
+
+
+def _assignee_paths(model: Any, prefix: str = "") -> set[str]:
+    """Each field of *model*, nested models included, whose name names an
+    assignee, as a dotted path."""
+    import typing
+
+    from pydantic import BaseModel
+
+    found: set[str] = set()
+    for name, info in getattr(model, "model_fields", {}).items():
+        path = prefix + name
+        if "assign" in name.lower():
+            found.add(path)
+        stack = [info.annotation]
+        while stack:
+            one = stack.pop()
+            if isinstance(one, type) and issubclass(one, BaseModel):
+                found |= _assignee_paths(one, path + ".")
+            else:
+                stack.extend(typing.get_args(one))
+    return found
+
+
+def test_every_assignee_field_of_a_write_row_is_scanned():
+    """The fence of the agent rule. It walks the body model of each row of
+    ``SANDBOX_WRITE_ROUTES`` on the live router. Each field that names an
+    assignee must be a top-level field in ``AGENT_ASSIGNEE_FIELDS`` of its
+    pair, so a new row or a new field cannot miss the refusal."""
+    from acb_common import app_manifests
+    from fastapi.routing import iter_route_contexts
+    from gateway.main import app
+
+    found: dict[tuple[str, str], set[str]] = {}
+    for context in iter_route_contexts(app.routes):
+        for method in getattr(context, "methods", None) or ():
+            pair = (method, getattr(context, "path", ""))
+            if pair not in app_manifests.SANDBOX_WRITE_ROUTES:
+                continue
+            field = getattr(context.original_route, "body_field", None)
+            paths: set[str] = set()
+            stack = [field.field_info.annotation] if field is not None else []
+            while stack:
+                one = stack.pop()
+                if hasattr(one, "model_fields"):
+                    paths |= _assignee_paths(one)
+                else:
+                    import typing
+                    stack.extend(typing.get_args(one))
+            if paths:
+                found[pair] = paths
+    expected = {pair: set(names) for pair, names in sandbox_batch.AGENT_ASSIGNEE_FIELDS.items()}
+    assert found == expected
+    assert set(found) == {("POST", "/projects/tasks"), ("POST", "/projects/tasks/{task_id}/move"),
+                          ("PUT", "/projects/tasks/{task_id}/assignees")}
 
 
 @pytest.mark.parametrize("raw", [b"not json", b"[]", b'{"rows": []}',

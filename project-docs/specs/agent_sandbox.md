@@ -3708,9 +3708,14 @@ with `/projects`.
   a cap, the answer is 422 `sandbox_batch_cap`.
 - **No agent assignee.** An assignee `agent:<name>` starts an agent run
   (`routes/projects/agent_dispatch.py`, after `pm.task.assigned` at
-  `routes/projects/tasks.py:1303` and `:2863`). So a row of
-  `POST /projects/tasks` or `PUT /projects/tasks/{task_id}/assignees` whose
-  body names an `agent:` assignee gets 422 `sandbox_bad_batch`.
+  `routes/projects/tasks.py:1303` and `:2863`). So any row whose body names
+  an `agent:` assignee gets 422 `sandbox_bad_batch`, and nothing is held.
+  Three rows have an assignee field (`assignees`): `POST /projects/tasks`,
+  `POST /projects/tasks/{task_id}/move` and
+  `PUT /projects/tasks/{task_id}/assignees`. `AGENT_ASSIGNEE_FIELDS` in
+  `gateway/sandbox_batch.py` lists them. Fence:
+  `test_sandbox_door_writes.py::test_every_assignee_field_of_a_write_row_is_scanned`.
+  It walks the body model of each write row on the live router.
 
 **The checks, before anything is held.** The batch is all or nothing here.
 The first failed row refuses the whole batch, and the answer names its
@@ -4063,9 +4068,8 @@ SBX-3a:
    - A class X row: 403 `sandbox_route_excluded`.
    - 26 rows, or a row of 65 KiB: 422 `sandbox_batch_cap`.
    - A DELETE row, or a fifth key in a row: 422 `sandbox_bad_batch`.
-   - A row of `POST /projects/tasks` or `PUT /projects/tasks/{task_id}/assignees`
-     that names an `agent:` assignee: 422 `sandbox_bad_batch`, and no agent
-     run starts.
+   - Any row whose body names an `agent:` assignee (create, move or set
+     assignees): 422 `sandbox_bad_batch`, and no agent run starts.
    `test_sandbox_door_writes.py::test_the_batch_refuses_before_it_holds`.
 6. A batch of two class B rows and one class C row writes two held records.
    Each card id is 32 hex digits.
@@ -4374,3 +4378,6 @@ here, and each needs its own check before anyone acts on it.
   `sandbox_approval_timeout_seconds` is in `settings.py`. The flag
   `sandbox_door_orgs` is in `flag_registry.py`, not beside it. The ticket
   functions are in `sandbox_capabilities.py`, because the door reads them.
+- 2026-11-27 — SBX-3a fix (task 3802). The batch refuses an `agent:`
+  assignee in any assignee field of a write row. The move row joins the
+  create and the set-assignees rows, and a fence walks each body model.
