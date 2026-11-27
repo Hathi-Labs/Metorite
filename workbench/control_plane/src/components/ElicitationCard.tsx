@@ -148,6 +148,23 @@ interface ElicitationCardProps {
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
+  /** The waiting dock's Expand and Fold controls, on the title row when no
+   *  tab row is drawn (§24.11). */
+  headerAside?: ReactNode;
+  /**
+   * The member's picks and typed text from a mount before this one (§24.11).
+   * In the dock, an answered card leaves at once, and a failed send puts it
+   * back as a new mount. The chat holds the draft, so nothing is lost.
+   */
+  initialDraft?: ElicitationDraft;
+  /** The card reports its picks and typed text after each change. */
+  onDraft?: (draft: ElicitationDraft) => void;
+}
+
+/** What the member picked and typed on a question card, by question header. */
+export interface ElicitationDraft {
+  answers: ElicitationAnswers;
+  freeformTexts: Record<string, string>;
 }
 
 export default function ElicitationCard({
@@ -163,9 +180,20 @@ export default function ElicitationCard({
   retryToken = 0,
   tabs,
   tabPanel,
+  headerAside,
+  initialDraft,
+  onDraft,
 }: ElicitationCardProps) {
-  const [answers, setAnswers] = useState<ElicitationAnswers>({});
-  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<ElicitationAnswers>(() => initialDraft?.answers ?? {});
+  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>(() => initialDraft?.freeformTexts ?? {});
+  // Report each change to the host, which keeps it across a new mount.
+  const draftTo = useRef(onDraft);
+  useEffect(() => {
+    draftTo.current = onDraft;
+  });
+  useEffect(() => {
+    draftTo.current?.({ answers, freeformTexts });
+  }, [answers, freeformTexts]);
   const uid = useId();
   const isAnswered = answered !== undefined;
   // Answered or declined: the card waits no more.
@@ -248,7 +276,15 @@ export default function ElicitationCard({
             <div className="min-w-0 flex-1">
               <RollupHeader aside={aside} />
             </div>
+            {headerAside}
             <NotNowClose onClick={handleDecline} disabled={disabled} />
+          </div>
+        ) : headerAside ? (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <RollupHeader aside={aside} />
+            </div>
+            {headerAside}
           </div>
         ) : (
           <RollupHeader aside={aside} />

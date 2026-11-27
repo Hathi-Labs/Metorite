@@ -48,7 +48,7 @@ import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/fe
 import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
 import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
-import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
+import ConfirmationQueue, { type ConfirmationAnswer, type DockSlot } from "@/components/ConfirmationQueue";
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
@@ -120,7 +120,7 @@ import { isStaleErrorRow } from "@/lib/chatRunFailed";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
-import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
+import type { ElicitationDraft, ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import {
   ASK_USER_HEADER,
   answerSummary,
@@ -2628,7 +2628,19 @@ export default function AgentChat({
       ? userInput.choices.map((c) => ({ label: c }))
       : null,
   }] : [];
-  const elicitationCard = (slot: { tabs?: React.ReactNode; tabPanel?: { id: string; labelledBy: string } } = {}) => elicitation && (
+  // The picks and typed text of each blocking question card, by request id.
+  // In the dock an answered card leaves at once, and a failed send puts it
+  // back as a new mount: it starts from here, so nothing the member did is
+  // lost (WD-1). A ref, so a keystroke does not draw the whole chat again.
+  const questionDraftsRef = useRef(new Map<string, ElicitationDraft>());
+  useEffect(() => { questionDraftsRef.current.clear(); }, [sessionId]);
+  const draftProps = (rid: string | undefined) => rid
+    ? {
+        initialDraft: questionDraftsRef.current.get(rid),
+        onDraft: (d: ElicitationDraft) => { questionDraftsRef.current.set(rid, d); },
+      }
+    : {};
+  const elicitationCard = (slot: DockSlot = {}) => elicitation && (
     <ElicitationCard
       key={elicitation.requestId ?? "questions"}
       id={`ask:${elicitation.requestId ?? "questions"}`}
@@ -2637,10 +2649,11 @@ export default function AgentChat({
       declined={elicitation.declined}
       onDecline={declineElicitation}
       onSubmit={answerElicitation}
+      {...draftProps(elicitation.requestId)}
       {...slot}
     />
   );
-  const userInputCard = (slot: { tabs?: React.ReactNode; tabPanel?: { id: string; labelledBy: string } } = {}) => userInput && (
+  const userInputCard = (slot: DockSlot = {}) => userInput && (
     <ElicitationCard
       key={userInput.requestId}
       id={`ask:${userInput.requestId}`}
@@ -2649,6 +2662,7 @@ export default function AgentChat({
       declined={userInput.declined}
       onDecline={declineUserInput}
       onSubmit={answerUserInput}
+      {...draftProps(userInput.requestId)}
       {...slot}
     />
   );
@@ -2706,7 +2720,7 @@ export default function AgentChat({
       if (!at || at === document.body || !!box?.form?.contains(at)) focusQuietly();
     }
   }, [dockOn, dockN, dockPicksOnly, phoneChrome, focusQuietly]);
-  const renderDockCards = (folded: boolean, unfold: () => void): React.ReactNode => (
+  const renderDockCards = (folded: boolean, unfold: () => void, controls: React.ReactNode): React.ReactNode => (
     <ConfirmationQueue
       cards={confirmations.cards}
       errors={confirmations.errors}
@@ -2718,6 +2732,7 @@ export default function AgentChat({
       onEdits={onFormEdits}
       folded={folded}
       onUnfold={unfold}
+      dockControls={controls}
       // The order of the tabs: the approvals, then `ask_questions`, then
       // `ask_user`. One card is one tab (audit rule 3).
       questions={[

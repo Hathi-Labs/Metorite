@@ -299,6 +299,9 @@ interface ConfirmationCardProps {
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
+  /** The waiting dock's Expand and Fold controls, on the title row when no
+   *  tab row is drawn (projects_ai_chat.md 24.11). */
+  headerAside?: ReactNode;
   /**
    * §18.11: the slot of a new-mail card that a chat message closed. The card
    * draws one status line and no buttons: "Updating the draft…", or "The
@@ -355,6 +358,7 @@ export default function ConfirmationCard({
   error,
   tabs,
   tabPanel,
+  headerAside,
   slot,
   onDraftChange,
   before,
@@ -471,6 +475,7 @@ export default function ConfirmationCard({
             />
           </div>
         )}
+        {headerAside}
       </div>
 
       <RollupBody className="space-y-2 pt-1.5">

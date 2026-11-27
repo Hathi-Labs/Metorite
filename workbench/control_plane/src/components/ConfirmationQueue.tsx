@@ -91,6 +91,18 @@ interface ConfirmationQueueProps {
   folded?: boolean;
   /** Open the folded dock. The fold row's one button calls it. */
   onUnfold?: () => void;
+  /** The dock's Expand and Fold controls. They sit in the tab row, or on the
+   *  title row of the one card when no tab row is drawn, so no row of their
+   *  own takes height. */
+  dockControls?: ReactNode;
+}
+
+/** What the queue hands a card in the dock: the tab row, the panel, and the
+ *  dock's controls for a card with no tab row. */
+export interface DockSlot {
+  tabs?: ReactNode;
+  tabPanel?: { id: string; labelledBy: string };
+  headerAside?: ReactNode;
 }
 
 /** A question card as a tab of the dock's one card (§24.11). */
@@ -102,7 +114,7 @@ export interface DockQuestion {
   /** The whole question, for the tooltip and the fold row. */
   title: string;
   /** Draw the card, with the tab row and the panel when it is the open tab. */
-  render: (slot: { tabs?: ReactNode; tabPanel?: { id: string; labelledBy: string } }) => ReactNode;
+  render: (slot: DockSlot) => ReactNode;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -166,7 +178,7 @@ export function reconcileShown(
   return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits, questions, folded = false, onUnfold }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits, questions, folded = false, onUnfold, dockControls }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -202,7 +214,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const go = (to: number) => setShown({ key: items[to].key, index: to });
   const tabbed = items.length > 1;
   // The one approval card that shows, with the tab row in its frame or none.
-  const approvalCard = (card: PendingConfirmation, slot: { tabs: ReactNode; tabPanel: { id: string; labelledBy: string } } | null) => {
+  const approvalCard = (card: PendingConfirmation, slot: DockSlot | null) => {
   const view = rowsView(card, ticks);
   const shownCard = (
     <ConfirmationCard
@@ -268,6 +280,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
         seen={seen}
         folded={folded}
         onUnfold={onUnfold}
+        controls={dockControls}
         approvalCard={at < cards.length ? (tabs) => approvalCard(cards[at], tabs) : null}
       />
     );
@@ -297,6 +310,7 @@ function DockQueue({
   seen,
   folded,
   onUnfold,
+  controls,
   approvalCard,
 }: {
   cards: PendingConfirmation[];
@@ -307,7 +321,8 @@ function DockQueue({
   seen: ReadonlySet<string>;
   folded: boolean;
   onUnfold?: () => void;
-  approvalCard: ((slot: { tabs: ReactNode; tabPanel: { id: string; labelledBy: string } } | null) => ReactNode) | null;
+  controls?: ReactNode;
+  approvalCard: ((slot: DockSlot | null) => ReactNode) | null;
 }) {
   const tabs: CardTab[] = [
     ...cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) })),
@@ -334,7 +349,12 @@ function DockQueue({
   // DOM id is drawn once.
   const row = (trailing?: ReactNode) =>
     tabbed ? <CardTabs uid={uid} index={at} onGo={go} tabs={tabs} words={words} trailing={trailing} /> : null;
-  const slot = !folded && tabbed ? { tabs: row(), tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) } } : null;
+  // Open: the controls ride in the tab row, or on the one card's title row.
+  const slot: DockSlot | null = folded
+    ? null
+    : tabbed
+      ? { tabs: row(controls), tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) } }
+      : { headerAside: controls };
   const active = tabs[at];
   return (
     <div data-dock-queue="" data-dock-folded={folded ? "" : undefined}>

@@ -9,8 +9,9 @@
  * the thread. The dock sits in the form, outside the scrolling thread, so it
  * never scrolls away. It holds:
  *
- * - a slim row with the Fold control and, when the card is over the cap, the
- *   Expand control. No control drops an item unanswered (WD-D2);
+ * - the Fold control and, when the card is over the cap, the Expand control.
+ *   They sit in the tab row, or on the title row of the one card, so they
+ *   take no row of their own. No control drops an item unanswered (WD-D2);
  * - the ONE scroll box of the dock: the body of the open item, under the cap
  *   (`lib/waitingDock.ts` `dockCap`). That is the one amendment to C3;
  * - beside it, `WaitingDockLive`: one polite live region, "N items wait for
@@ -40,7 +41,7 @@ export interface WaitingDockProps {
   /** The phone: the phone chrome, or a device with a soft keyboard. */
   phone: boolean;
   /** The cards. `folded` draws them as one row, and `unfold` opens them. */
-  children: (folded: boolean, unfold: () => void) => ReactNode;
+  children: (folded: boolean, unfold: () => void, controls: ReactNode) => ReactNode;
   /** Tests and the visual rig: start folded. */
   initialFolded?: boolean;
 }
@@ -141,6 +142,36 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
     if (kbUp && typeof document !== "undefined") (document.activeElement as HTMLElement | null)?.blur?.();
   };
 
+  // The Fold and Expand controls. They take no row of their own: the queue
+  // puts them in the tab row, or on the title row of the one card.
+  const controls = folded ? null : (
+    <span className="inline-flex shrink-0 items-center gap-0.5" data-dock-controls="">
+      {(over || expanded) && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          icon={expanded ? "Minimize2" : "Maximize2"}
+          onClick={() => setExpanded((v) => !v)}
+          aria-label={expanded ? "Make the card smaller" : "Expand the card"}
+          title={expanded ? "Make the card smaller" : "Expand the card"}
+          data-dock-expand={expanded ? "on" : "off"}
+        />
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        icon="ChevronDown"
+        onClick={() => setManual(true)}
+        aria-label="Fold the card to one row"
+        title="Fold the card to one row"
+        aria-expanded
+        data-dock-fold=""
+      />
+    </span>
+  );
+
   return (
     <section
       ref={rootRef}
@@ -150,33 +181,6 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
       onBlur={onFocusOut}
       className="max-w-3xl mx-auto mb-2"
     >
-      {!folded && (
-        <div className="flex items-center justify-end gap-1 pb-1" data-dock-controls="">
-          {(over || expanded) && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              icon={expanded ? "Minimize2" : "Maximize2"}
-              onClick={() => setExpanded((v) => !v)}
-              aria-label={expanded ? "Make the card smaller" : "Expand the card"}
-              title={expanded ? "Make the card smaller" : "Expand the card"}
-              data-dock-expand={expanded ? "on" : "off"}
-            />
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            icon="ChevronDown"
-            onClick={() => setManual(true)}
-            aria-label="Fold the card to one row"
-            title="Fold the card to one row"
-            aria-expanded
-            data-dock-fold=""
-          />
-        </div>
-      )}
       {/* The one scroll box of the dock: the open item over the cap (C3). */}
       <div
         ref={bodyRef}
@@ -184,7 +188,7 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
         className="overflow-y-auto overscroll-contain scrollbar-thin"
         style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
       >
-        {children(folded, unfold)}
+        {children(folded, unfold, controls)}
       </div>
     </section>
   );

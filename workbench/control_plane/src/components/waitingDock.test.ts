@@ -51,13 +51,14 @@ function dock(opts: { cards?: PendingConfirmation[]; questions?: DockQuestion[];
       count: opts.count ?? 2,
       phone: false,
       initialFolded: opts.folded,
-      children: (folded: boolean, unfold: () => void) =>
+      children: (folded: boolean, unfold: () => void, controls: unknown) =>
         createElement(ConfirmationQueue, {
           cards: opts.cards ?? [approval],
           onAnswer: () => {},
           questions: opts.questions ?? [question("ask:q1", "Which printer?")],
           folded,
           onUnfold: unfold,
+          dockControls: controls as never,
         }),
     }),
   );
@@ -184,5 +185,54 @@ describe("auto-advance and the shown tab across both kinds (audit rule 3)", () =
   it("an answered question hands the view to the next tab, as for an approval", () => {
     const items = [{ key: "c1" }, { key: "ask:q2" }];
     expect(pickShown(items, { key: "ask:q1", index: 1 })).toBe(1);
+  });
+});
+
+describe("the controls take no row of their own (space, coordinator round 1)", () => {
+  it("with tabs, Fold sits in the tab row", () => {
+    const html = dock({});
+    const row = html.slice(html.indexOf("data-card-tabs="), html.indexOf("data-card-tabs-probe"));
+    expect(row).toContain("data-card-tabs-trailing");
+    expect(row).toContain('aria-label="Fold the card to one row"');
+    // No row of controls above the card.
+    expect(html.indexOf("data-dock-controls")).toBeGreaterThan(html.indexOf("data-dock-body"));
+  });
+
+  it("with one item and no tab row, Fold sits on the card's title row", () => {
+    const one = dock({ cards: [], count: 1 });
+    expect(one).not.toContain("data-card-tabs=");
+    const card = one.slice(one.indexOf("data-elicitation-card"));
+    expect(card).toContain("data-dock-controls");
+    const approvalOnly = dock({ questions: [], count: 1 });
+    expect(approvalOnly.slice(approvalOnly.indexOf("data-confirmation-card"))).toContain("data-dock-controls");
+  });
+
+  it("folded, the row shows Review and no Fold control", () => {
+    const html = dock({ folded: true });
+    expect(html).not.toContain("data-dock-controls");
+  });
+});
+
+describe("a failed send keeps the question's picks and typed text", () => {
+  const q = [{ header: "Depot", question: "Which depot?", multiSelect: false, options: [{ label: "North" }, { label: "South" }] }];
+
+  it("a card that mounts again starts from the chat's draft", () => {
+    const html = renderToStaticMarkup(
+      createElement(ElicitationCard, {
+        questions: q,
+        onSubmit: () => {},
+        initialDraft: { answers: { Depot: { selected: ["South"] } }, freeformTexts: { Depot: "via the ring road" } },
+      }),
+    );
+    expect(html).toContain("via the ring road");
+    // The picked option draws selected, so Submit is on.
+    expect(html).toMatch(/aria-pressed="true"[^>]*>[\s\S]*?South/);
+  });
+
+  it("the chat holds the draft by request id, for both question cards", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf-8");
+    expect(chat).toContain("{...draftProps(elicitation.requestId)}");
+    expect(chat).toContain("{...draftProps(userInput.requestId)}");
+    expect(chat).toContain("questionDraftsRef.current.set(rid, d)");
   });
 });

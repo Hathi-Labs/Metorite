@@ -100,6 +100,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
   const outerRef = useRef<HTMLDivElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const trailRef = useRef<HTMLSpanElement>(null);
   // A row wider than its room fades at the edge where more tabs wait, so a
   // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
@@ -121,7 +122,9 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
     const list = listRef.current;
     if (outer && probe) {
       const cs = getComputedStyle(outer);
-      const r = Math.floor(outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+      // The trailing controls take their own width out of the room.
+      const trail = trailRef.current?.offsetWidth ?? 0;
+      const r = Math.floor(outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - trail);
       setRoom((x) => (x === r ? x : r));
       const n = LEVELS.map((l) => Math.ceil(probe.querySelector<HTMLElement>(`[data-probe="${l}"]`)?.offsetWidth ?? 0));
       setNeeds((x) => (x.length === n.length && x.every((v, i) => v === n[i]) ? x : n));
@@ -226,7 +229,11 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
           );
         })}
       </div>
-      {trailing}
+      {trailing && (
+        <span ref={trailRef} data-card-tabs-trailing="" className="flex shrink-0 items-center gap-0.5 pl-1">
+          {trailing}
+        </span>
+      )}
       {/* The probe: a hidden copy of the row at each level, only to read the
           width each needs. It is out of the flow, out of the accessibility
           tree and out of the tab order, and the level never changes it. */}
