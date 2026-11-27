@@ -32,6 +32,7 @@ from gateway.module_runs import module_runs_allowed
 from gateway.package_host.flags import package_host_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from gateway.routes.studio.flags import skill_offer_allowed, studio_allowed
+from gateway.waiting_dock_flag import waiting_dock_allowed
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -551,7 +552,7 @@ _SET_BY_MODE = {
 #: PUT drops these before it validates, and never stores them.
 READ_ONLY_ANSWER_KEYS: tuple[str, ...] = (
     "guide", "module_runs", "skill_offer", "chat_pin", "chat_topics",
-    "agent_lenses")
+    "agent_lenses", "waiting_dock")
 
 
 def _server_stamp() -> str:
@@ -616,8 +617,11 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
     true when ``CHAT_TOPICS_ORGS`` holds it (WS-CO CO-2b), and the chat list
     shows the topic groups and the chat shows the topic chip only then.
     ``agent_lenses`` is true when ``AGENT_LENSES_ORGS`` holds it (WS-MCP
-    AMR-1), and the Agents view draws its new lenses only then. None of the six
-    is a fact of the layout, so ``ShellPrefs`` refuses each in a body."""
+    AMR-1), and the Agents view draws its new lenses only then.
+    ``waiting_dock`` is true when ``WAITING_DOCK_ORGS`` holds it (WD-1,
+    ``projects_ai_chat.md`` §24.11), and the chat draws the waiting dock only
+    then. None of the seven is a fact of the layout, so ``ShellPrefs`` refuses
+    each in a body."""
     org = getattr(user, "organization_id", None)
     bound = str(org) if org else None
     return {
@@ -628,6 +632,7 @@ def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
         "chat_pin": pin_allowed(bound),
         "chat_topics": topics_allowed(bound),
         "agent_lenses": agent_lenses_allowed(bound),
+        "waiting_dock": waiting_dock_allowed(bound),
     }
 
 

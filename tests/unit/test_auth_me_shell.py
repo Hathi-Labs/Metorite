@@ -881,12 +881,64 @@ class TestTheAgentLensesFlag:
         self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _agent_lenses_orgs(monkeypatch, "*")
-        body = {"pins": ["/tasks"], "agent_lenses": False}
+        body = {"pins": ["/tasks"], "agent_lenses": False,
+                              "waiting_dock": False}
         res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
         assert res.json()["agent_lenses"] is True
         [(_, params)] = _writes(fake)
         assert "agent_lenses" not in json.loads(params["shell_prefs"])
+
+
+# ── The waiting dock flag (WD-1, `projects_ai_chat.md` §24.11) ──────────────
+
+
+def _waiting_dock_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "waiting_dock_orgs", raw, raising=False)
+
+
+class TestTheWaitingDockFlag:
+    """The chat draws the waiting dock only when the read says
+    `waiting_dock: true`. `gateway.waiting_dock_flag.waiting_dock_allowed` is
+    the one reader, and the org is the session's. Mutation: send
+    `agent_lenses_allowed(bound)` as `waiting_dock` -> red."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_waiting_dock_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _waiting_dock_orgs(monkeypatch, raw)
+        _agent_lenses_orgs(monkeypatch, "")
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["waiting_dock"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _waiting_dock_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["waiting_dock"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _waiting_dock_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "waiting_dock": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["waiting_dock"] is True
+        [(_, params)] = _writes(fake)
+        assert "waiting_dock" not in json.loads(params["shell_prefs"])
 
 
 # ── The write ──────────────────────────────────────────────────────────────
@@ -900,7 +952,8 @@ class TestTheWrite:
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
                               "skill_offer": False, "chat_pin": False,
                               "chat_topics": False,
-                              "agent_lenses": False}
+                              "agent_lenses": False,
+                              "waiting_dock": False}
         [(sql, params)] = _writes(fake)
         assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
         assert params == {"uid": "ana@alpha.example"}
@@ -946,7 +999,8 @@ class TestTheRead:
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
                               "skill_offer": False, "chat_pin": False,
                               "chat_topics": False,
-                              "agent_lenses": False}
+                              "agent_lenses": False,
+                              "waiting_dock": False}
 
     def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
         fake.fail = True
@@ -963,7 +1017,8 @@ class TestTheRead:
                         "buddy_hello_at": None, "guide": False, "module_runs": False,
                         "skill_offer": False, "chat_pin": False,
                         "chat_topics": False,
-                              "agent_lenses": False}
+                              "agent_lenses": False,
+                              "waiting_dock": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",

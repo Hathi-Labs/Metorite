@@ -97,6 +97,8 @@ onClear(() => {
   setChatTopics(false);
   // A new member: the Agents lenses are off until their own read says so (AMR-1).
   setAgentLenses(false);
+  // A new member: the waiting dock is off until their own read says so (WD-1).
+  setWaitingDock(false);
 });
 
 /** Tests only: start a new page. */
@@ -386,6 +388,55 @@ export function __setAgentLensesForTests(on: boolean): void {
   setAgentLenses(on);
 }
 
+// ── The waiting dock (WD-1, `projects_ai_chat.md` §24.11, D234) ────────────
+//
+// `waiting_dock` is a fact of the server, as `agent_lenses` is:
+// `WAITING_DOCK_ORGS` on the gateway holds the member's org. The chat draws
+// each card that waits on the member in a dock above the message box only
+// when it is true. The shell read is the one writer. Before the read answers,
+// after a failed read and after a member change, it reads as off.
+
+let waitingDockHere = false;
+const waitingDockListeners = new Set<() => void>();
+
+function setWaitingDock(on: boolean): void {
+  if (waitingDockHere === on) return;
+  waitingDockHere = on;
+  waitingDockListeners.forEach((l) => l());
+}
+
+/**
+ * The dock switch in an answer: true only when the gateway says
+ * `waiting_dock: true`. A missing field, as from an older gateway, is off.
+ */
+export function waitingDockOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { waiting_dock?: unknown }).waiting_dock === true;
+}
+
+/** What the last shell read of this page said about the waiting dock. */
+export function waitingDockAllowed(): boolean {
+  return waitingDockHere;
+}
+
+/** Live: whether the chat draws the waiting dock (WD-1). */
+export function useWaitingDockOn(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      waitingDockListeners.add(l);
+      return () => {
+        waitingDockListeners.delete(l);
+      };
+    },
+    waitingDockAllowed,
+    () => false,
+  );
+}
+
+/** Tests only: set what the shell read said about the waiting dock. */
+export function __setWaitingDockForTests(on: boolean): void {
+  setWaitingDock(on);
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
@@ -409,6 +460,8 @@ export async function readShellPrefs(): Promise<StoredShell> {
   setChatTopics(chatTopicsOn(body));
   // And it tells the Agents view of Projects whether it draws the lenses (AMR-1).
   setAgentLenses(agentLensesOn(body));
+  // And it tells the chat whether it draws the waiting dock (WD-1, §24.11).
+  setWaitingDock(waitingDockOn(body));
   return layout;
 }
 

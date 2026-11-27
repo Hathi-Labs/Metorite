@@ -1459,6 +1459,17 @@ class FlagRegistry(BaseSettings):
     # Fence: tests/unit/test_tool_turn_budget.py.
     tool_turn_budget_orgs: str = ""
 
+    # ── Chat: the waiting dock (WD-1, projects_ai_chat.md §24.11, D234) ─────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, each card that waits on the member draws in a dock
+    # above the message box, outside the thread. Off, the chat draws as before.
+    # The one reader is `gateway.waiting_dock_flag.waiting_dock_allowed`, and
+    # `GET /auth/me/shell` serves the answer as `waiting_dock`. A SIGHUP reload
+    # applies a change. A flip is OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_auth_me_shell.py.
+    waiting_dock_orgs: str = ""
+
     # ── Waiting: what waits on you (WS-AP AP-1a) ────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

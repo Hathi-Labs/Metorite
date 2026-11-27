@@ -802,6 +802,14 @@ and the default is empty. Its one reader is
 `orchestrator.tool_turn_budget.tool_turn_budget_on`. A flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`WAITING_DOCK_ORGS` draws each card that waits on the member in a dock above
+the message box of the chat (`projects_ai_chat.md` §24.11, WD-1). `*` lists
+every org, and the default is empty. Empty means the chat draws as before. Its
+one reader is `gateway.waiting_dock_flag.waiting_dock_allowed`, and each shell
+read asks it. `GET /auth/me/shell` serves the answer as `waiting_dock`, so a
+tab shows a change at its next shell read. A reload applies a change. The flip
+stays OWNER-GATE (`enforcement-flip`), after the owner preview.
+
 `WAITING_ORGS` opens `GET /shell/waiting` and `GET /shell/waiting/count`
 (`waiting_on_me.md` §7.3). Its one reader is
 `gateway.routes.shell.waiting.waiting_allowed`. A reload applies a change. The

@@ -391,6 +391,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # an org. The list reads held writes, chat questions, app requests and
     # decisions, so only the owner writes it.
     "WAITING_ORGS",
+    # WD-1 (projects_ai_chat.md §24.11): WAITING_DOCK_ORGS draws the waiting
+    # dock of the chat for an org. The owner previews it first, so only the
+    # owner writes it.
+    "WAITING_DOCK_ORGS",
     # WS-MCP SW-44: APP_OWNER_ROOT_ORGS names the app root of each org. A
     # tenant must not point the list of another org at a project, so only the
     # owner writes it.
