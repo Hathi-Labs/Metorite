@@ -140,6 +140,22 @@ export function newestApproval<T extends Pick<PendingConfirmation, "redraft">>(
 }
 
 /**
+ * The approval that the pointer row names (2026-11-28): the card that the
+ * queue in the thread shows now, its OPEN tab, and how many others wait. The
+ * queue reports the key of its open tab, so the row follows a change of tab.
+ * Before the first report, or when the open tab is a slot of a redraft, the
+ * row names the newest card that waits. Null when none waits.
+ */
+export function openApproval<T extends Pick<PendingConfirmation, "key" | "redraft">>(
+  cards: readonly T[],
+  openKey: string | null,
+): { card: T; more: number } | null {
+  const live = cards.filter((c) => !c.redraft);
+  const card = live.find((c) => c.key === openKey);
+  return card ? { card, more: live.length - 1 } : newestApproval(cards);
+}
+
+/**
  * The `scrollTop` of the thread after the pointer's Review (D9). A card that
  * fits shows whole, with the least movement. A card taller than the thread's
  * room shows its TOP, so the member reads it from the start.
@@ -317,6 +333,61 @@ export function pressIsFresh(st: PressLog & { armedAt: number; now: number }): b
 export function boxEnterBlocked(st: { dock: boolean; repeat: boolean; msSinceCommit: number }): boolean {
   return st.dock && (st.repeat || st.msSinceCommit < ARM_MS);
 }
+
+// ── The hold: nothing moves under the pointer (verifier F1, 2026-11-28) ───
+
+/**
+ * When an item leaves the dock, the dock keeps its height for at least this
+ * long, in ms. In the place of the item it shows an inert line. A second
+ * press of a double click then lands on that line, and never on the thread
+ * that would grow into the gap.
+ */
+export const HOLD_MS = 800;
+
+/** The dock collapses only this long after the last press in it, in ms. */
+export const QUIET_MS = 600;
+
+/** The collapse fades the inert line out over this time, in ms. Reduced
+ *  motion: no fade. */
+export const COLLAPSE_MS = 150;
+
+/** Why an item left the dock. */
+export type DockLeft = "sent" | "notnow" | "elsewhere";
+
+/** The words of the inert line in the place of an item that left. */
+export const LEFT_WORDS: Record<DockLeft, string> = {
+  sent: "Answer sent",
+  notnow: "Not now",
+  elsewhere: "Answered elsewhere",
+};
+
+/**
+ * Why a question card left the dock, from the state of the chat. The member
+ * answered it (with Submit or with typed words), or declined it with Not
+ * now. Any other end is "elsewhere": another tab answered it, the run ended,
+ * or a new card took its place. The pointer row of the approvals always
+ * leaves as "elsewhere", because the member never answers in that row.
+ */
+export function leftKind(card: { answered?: unknown; declined?: boolean } | null | undefined): DockLeft {
+  if (card?.declined) return "notnow";
+  return card && card.answered !== undefined ? "sent" : "elsewhere";
+}
+
+/**
+ * Rule 2 of the hold: the time in ms until the dock may collapse, or draw
+ * the next item. Zero when all three hold now: `HOLD_MS` passed since the
+ * item left, no pointer is down, and `QUIET_MS` passed since the last
+ * pointerdown or keydown in the dock. Null while a pointer is down, because
+ * only its release can end the wait.
+ */
+export function collapseWait(st: { now: number; leftAt: number; pointerDown: boolean; lastPressAt: number }): number | null {
+  if (st.pointerDown) return null;
+  return Math.max(0, st.leftAt + HOLD_MS - st.now, st.lastPressAt + QUIET_MS - st.now);
+}
+
+/** A pointer that went down this long ago with no release counts as up. A
+ *  lost `pointerup` never holds the dock for ever. */
+export const STUCK_PRESS_MS = 10_000;
 
 /** Two lines of the thread stay in view over the dock (F1): about 3rem. */
 export const TWO_LINES_PX = 48;

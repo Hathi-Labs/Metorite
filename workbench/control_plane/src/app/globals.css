@@ -3285,13 +3285,12 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
 /* WD-1 (projects_ai_chat.md 24.11 rule 10, owner 2026-11-27): in the waiting
    dock, the Submit row of the open question never scrolls. It is the card's
    OWN row, held at the foot of the dock's body with `position: sticky`. The
-   body scrolls above it. An approval never draws in the dock (D9). Outside
-   the dock nothing matches, so the thread draws each card as before. The
-   selector is `PINNED_ACTIONS` in lib/waitingDock.ts.
+   body scrolls above it. An approval never draws in the dock (D9), so no
+   selector of an approval stays here. Outside the dock nothing matches, so
+   the thread draws each card as before. The selector is `PINNED_ACTIONS` in
+   lib/waitingDock.ts.
    Fence: src/lib/waitingDock.test.ts. */
-[data-dock-body] :is(
-  div:has(> [data-elicitation-submit])
-) {
+[data-dock-body] div:has(> [data-elicitation-submit]) {
   position: sticky;
   bottom: 0;
   z-index: 1;

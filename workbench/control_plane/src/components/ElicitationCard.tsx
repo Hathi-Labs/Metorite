@@ -146,7 +146,7 @@ interface ElicitationCardProps {
    */
   retryToken?: number;
   /** The tab row of the waiting dock (§24.11 WD-D3), drawn inside the card
-   *  frame above its header, when two items or more wait. */
+   *  frame above its header, when two question cards wait (D9). */
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
@@ -161,8 +161,8 @@ interface ElicitationCardProps {
    * folded. Submit and Not now wait `ARM_MS` after it shows (round 7).
    */
   dockShown?: boolean;
-  /** The waiting dock's Expand and Fold controls, on the title row when no
-   *  tab row is drawn (§24.11). */
+  /** The waiting dock's Fold control, on the title row of the card
+   *  (§24.11). */
   headerAside?: ReactNode;
   /**
    * The member's picks and typed text from a mount before this one (§24.11).

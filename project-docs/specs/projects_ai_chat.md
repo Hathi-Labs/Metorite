@@ -6384,7 +6384,7 @@ The check at 390 × 844 is advisory, so review holds it.
 ### 24.11 The waiting dock (owner, 2026-11-27)
 
 **Status.** WD-1 BUILT DARK 2026-11-27 (task 4089, PR 2922), with the scope
-that D9 below cuts. No slice has built WD-2 or WD-3 yet. Specified 2026-11-27 (task 4088, D234), verified
+that D9 below cuts. The F1 round of 2026-11-28 added the hold below. No slice has built WD-2 or WD-3 yet. Specified 2026-11-27 (task 4088, D234), verified
 against code on 2026-11-27 at `79e0e12278`. Epic: task 4087. Each slice ships dark behind
 `WAITING_DOCK_ORGS`. With the flag off, §24.2 and §24.10 hold as written, and
 the chat behaves as before. The three slices are **AGENT-SAFE** to build. The
@@ -6420,14 +6420,16 @@ approval. A rule by structure is safer than an eighth round.
 **The pointer row.**
 
 - The dock shows one row while one approval or more waits: "Waits for you:",
-  the tab label of the newest card, "and N more" when more wait, and Review.
+  the tab label of a card, "and N more" when more wait, and Review.
+  *Amended 2026-11-28:* the row names the card that the queue in the thread
+  shows now, its open tab. The label follows a change of tab.
   A slot of a redraft does not wait on the member, so alone it shows no row.
 - Review scrolls the thread, so the card shows whole above the dock. A card
   taller than the room shows its top. The focus goes to the card's heading
   (`tabindex="-1"`), never to a button.
 - The row commits nothing. Enter or a click on it only scrolls. Review does
-  not change the open tab of the queue in the thread, so the card that it
-  shows is the open tab, which may not be the card that the row names.
+  not change the open tab of the queue in the thread. The card that it
+  shows is the open tab, and since 2026-11-28 the row names that card.
 - The count of the thread line and of the live region holds the approvals
   that wait. The thread line shows only while a question is in the dock.
 - `AskPin` draws no second pointer for an approval. A generative-UI ask
@@ -6445,11 +6447,51 @@ fresh press, a held key that presses nothing, the box that drops Enter for
 
 **The fences of D9.** `src/components/waitingDock.test.ts` fails when an
 approval component reads the dock, or when the chat passes a dock prop to
-the queue. It also holds the pointer row. `src/lib/waitingDock.test.ts` holds
+the queue. The one prop of the queue that main does not have is the optional
+`onShown`, which reports the open tab to the pointer row. It also holds the pointer row. `src/lib/waitingDock.test.ts` holds
 the scroll rule of Review (`pointerScrollTop`), the count and the reset of
 the scroll. `e2e/chat-waiting-dock.spec.ts` holds the browser half: the
 pointer with "and N more", Review, Enter on the pointer, a tall card, one
 mounted approval and the round-7 guards.
+
+#### Amendment 2026-11-28: nothing moves under the pointer (verifier F1)
+
+**The fault.** A double click on Submit or Not now in the dock removed the
+question at once. The dock got shorter, and the thread grew into the gap.
+The second press then hit an approval's Send or Approve in the thread. An
+answer from another tab or a run end just before a tap did the same.
+
+**The rule.** Nothing moves under the pointer. The fix is in the dock. No
+control of the thread gets a guard of its own.
+
+1. **Hold the height.** When an item leaves the dock for any reason, the dock
+   keeps its height. In the place of the item it shows an inert line: "Answer
+   sent", "Not now" or "Answered elsewhere". The line is no button, and it
+   holds no commit control. The pointer row holds its place in the same way.
+   A fold by hand keeps the height too, with an empty gap.
+2. **The collapse rule.** The dock collapses, or draws the next item, only
+   when all three are true. At least 800 ms passed since the item left. No
+   pointer is down. At least 600 ms passed since the last pointerdown or
+   keydown in the dock. The collapse fades the line out over 150 ms, and
+   then the height goes in one step. With reduced motion, nothing fades.
+3. **The next item.** A question that waits, or a card that a failed send
+   puts back, replaces the inert line only under rule 2. Its Submit then arms
+   after 400 ms on the screen (round 7). A double press on the Submit of the
+   first question never answers the second.
+4. **The pointer label.** The pointer row names the open tab of the queue in
+   the thread, and "and N more" counts the others. The queue reports its open
+   tab through `onShown`, so the chat keeps no second copy of the choice.
+5. **The fade.** The fade of the dock's body ends at the top of the pinned
+   Submit row, so it covers no part of that row.
+
+**Fences.** `src/lib/waitingDock.test.ts` holds the numbers of rule 2
+(`collapseWait`), the three lines (`LEFT_WORDS`) and the pointer label
+(`openApproval`). `e2e/chat-waiting-dock.spec.ts` holds 16 rows, at 390 and
+1280, with a mouse and a finger. The rows are a double press on Submit, a
+double press on Not now, a press 300 ms after a run end, and a double press on
+the first question while a second one waits. Each row watches the point of
+the press on each frame, and checks that no approval or message went. All 16
+rows failed before the fix.
 
 **The problem, in the owner's words (2026-11-27).**
 
@@ -6706,7 +6748,7 @@ chat draws and behaves as before this section.
 
 | Slice | Task | What it builds | Fence (R7) |
 |---|---|---|---|
-| **WD-1** (rung 1, STANDARD UI, dark) | 4089 | D9 cut: the dock for the two question cards as tabs of one card, and one pointer row for the approvals, which stay in the thread. Before D9: the dock for today's approvals and question cards as tabs of one card, the fold, the height caps, the thread line, K1 to K3, K6, K7 and the a11y line. Under the flag, `AskPin` never draws for an item of the dock. Every surface that draws `AgentChat` gets it. The flag and the shell key. | `src/lib/waitingDock.test.ts` (the dock draws only while an item waits, the fold, the cap math, K1, K2 and K6) and `src/components/waitingDock.test.ts` (the markup). Under the flag, `chatCardScroll.test.ts` C1 and C3, `pinnedDraft.test.ts` ("no card pins above the composer") and `askPin.test.ts` change: the dock is the one card path above the box, and it sits between the thread and the form, never inside the form. Its body is the one new scroll box, and `AskPin` draws no dock item (it still draws a generative-UI ask until WD-2). Each keeps its old assertions for the flag-off path. `tests/unit/test_auth_me_shell.py` and `tests/unit/test_flag_reload.py` hold the key and the reload. `e2e/chat-waiting-dock.spec.ts` holds the browser half: Enter in a card field and an option tap send nothing, one tap on Submit after typing sends, the fold row submits nothing, and K1, K2, K3 and K6. D9 adds the pointer with "and N more", Review that shows the card or its top and moves the focus to its heading, Enter on the pointer that commits nothing, one mounted approval in the thread, and the reset of the scroll on a change of tab. `src/components/waitingDock.test.ts` fails when an approval component reads the dock. Built dark 2026-11-27 (PR 2922), cut by D9. |
+| **WD-1** (rung 1, STANDARD UI, dark) | 4089 | D9 cut: the dock for the two question cards as tabs of one card, and one pointer row for the approvals, which stay in the thread. Before D9: the dock for today's approvals and question cards as tabs of one card, the fold, the height caps, the thread line, K1 to K3, K6, K7 and the a11y line. Under the flag, `AskPin` never draws for an item of the dock. Every surface that draws `AgentChat` gets it. The flag and the shell key. | `src/lib/waitingDock.test.ts` (the dock draws only while an item waits, the fold, the cap math, K1, K2 and K6) and `src/components/waitingDock.test.ts` (the markup). Under the flag, `chatCardScroll.test.ts` C1 and C3, `pinnedDraft.test.ts` ("no card pins above the composer") and `askPin.test.ts` change: the dock is the one card path above the box, and it sits between the thread and the form, never inside the form. Its body is the one new scroll box, and `AskPin` draws no dock item (it still draws a generative-UI ask until WD-2). Each keeps its old assertions for the flag-off path. `tests/unit/test_auth_me_shell.py` and `tests/unit/test_flag_reload.py` hold the key and the reload. `e2e/chat-waiting-dock.spec.ts` holds the browser half: Enter in a card field and an option tap send nothing, one tap on Submit after typing sends, the fold row submits nothing, and K1, K2, K3 and K6. D9 adds the pointer with "and N more", Review that shows the card or its top and moves the focus to its heading, Enter on the pointer that commits nothing, one mounted approval in the thread, and the reset of the scroll on a change of tab. `src/components/waitingDock.test.ts` fails when an approval component reads the dock. The F1 round (2026-11-28) adds the hold: `src/lib/waitingDock.test.ts` holds `collapseWait`, `LEFT_WORDS` and `openApproval`, and the e2e spec holds the 16 F1 rows and the foot of the fade. Built dark 2026-11-27 (PR 2922), cut by D9. |
 | **WD-2** (rung 2, STANDARD UI, dark) | 4090 | Each generative-UI ask draws as a tab and not in the bubble. A non-blocking ask waits until the member answers or declines it. K4 and K5. | `src/lib/waitingDock.test.ts` and `src/lib/askPin.test.ts`: each ask kind becomes a tab, a non-blocking ask survives a new message, and the K4 and K5 attributes. |
 | **WD-3** (rung 3, HIGH, dark) | 4091 | The fast path of C6 stays first. Else, while an item waits, one cheap call on the decide tier reads the text against the waiting items and returns `answers`, `change` or `open` for each, with a confidence. The card shows "Answered from your message" with Undo for 10 s. Low confidence asks one chip. The code drops an `answers` or approve result for an approval. In a room, only the member that a card waits on can answer or change it with text (the room rule of `orchestrator/pending_ask.py`). The model reads titles, kinds, options and field names, not outside body text. | `src/lib/typedAnswer.test.ts` (the fast path), `tests/unit/test_waiting_dock_typed_read.py` (a mutation of the approval guard turns it red, the room rule, each result kind and Undo), and a fixed eval of at least 30 typed replies with an eval spend under USD 0.50. The build names any file that differs. |
 

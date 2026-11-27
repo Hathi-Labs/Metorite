@@ -162,8 +162,9 @@ import {
   boxEnterBlocked,
   dockCount,
   dockQuestionCount,
-  dockShown,
-  newestApproval,
+  type DockLeft,
+  leftKind,
+  openApproval,
   picksOnly,
   pointerScrollTop,
   threadLine,
@@ -2662,6 +2663,11 @@ export default function AgentChat({
   // back as a new mount: it starts from here, so nothing the member did is
   // lost (WD-1). A ref, so a keystroke does not draw the whole chat again.
   const dockOn = useWaitingDockOn();
+  // The key of the card that the queue in the thread shows now, as the queue
+  // reports it. Only the pointer row reads it, so it is asked for only while
+  // the dock is on. The queue holds the state, and this is its last report.
+  const [queueShown, setQueueShown] = useState<string | null>(null);
+  const reportShown = dockOn ? setQueueShown : undefined;
   const questionDraftsRef = useRef(new Map<string, ElicitationDraft>());
   useEffect(() => { questionDraftsRef.current.clear(); }, [sessionId]);
   // Only with the dock on: with it off, the chat is the chat of before.
@@ -2714,7 +2720,13 @@ export default function AgentChat({
   const dockN = dockCount(dockSources);
   // The questions in the dock: only they move the focus or the fold.
   const dockQ = dockQuestionCount(dockSources);
-  const showDock = dockShown(dockOn, dockSources);
+  // F1 (2026-11-28): why each question card that waits no more left, so the
+  // dock's inert line in its place says "Answer sent" or "Not now". A card
+  // that is gone (a run end, another tab) left "elsewhere".
+  const dockLeft: Record<string, DockLeft> = {
+    ...(elicitation && !elicitationWaits ? { [`ask:${elicitation.requestId ?? "questions"}`]: leftKind(elicitation) } : {}),
+    ...(userInput && !userInputWaits ? { [`ask:${userInput.requestId}`]: leftKind(userInput) } : {}),
+  };
   // Every question that waits is picks only (K2): an arrival may drop the keyboard.
   const dockPicksOnly =
     (!elicitationWaits || picksOnly(elicitation?.questions ?? [])) &&
@@ -2812,8 +2824,10 @@ export default function AgentChat({
     if (!head.hasAttribute("tabindex")) head.setAttribute("tabindex", "-1");
     head.focus({ preventScroll: true });
   };
-  const newest = newestApproval(confirmations.cards);
-  const dockPointer = newest ? { label: tabLabel(newest.card), more: newest.more, onReview: reviewApproval } : null;
+  // The pointer row names the card that the queue in the thread shows now,
+  // its open tab (2026-11-28). The queue reports the key of that tab.
+  const opened = openApproval(confirmations.cards, queueShown);
+  const dockPointer = opened ? { label: tabLabel(opened.card), more: opened.more, onReview: reviewApproval } : null;
   const renderHitlCards = (): React.ReactNode => {
     // With the dock on (D9), a question card that waits draws in the dock
     // and not here. Each approval and each settled question draws here as
@@ -2841,6 +2855,7 @@ export default function AgentChat({
             carriesEdits={steerOpen}
             savedEdits={savedFormEdits}
             onEdits={onFormEdits}
+            onShown={reportShown}
           />
         )}
 
@@ -3311,11 +3326,18 @@ export default function AgentChat({
           OUTSIDE the form on purpose: a button of a card inside a form is a
           submit button, and Enter in a card field would send the message. */}
       {dockOn && (
-        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} ${showDock ? "pt-2" : ""}`}>
+        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"}`}>
           <WaitingDockLive count={dockN} />
-          {showDock && (
-            <WaitingDock questions={dockQuestions} pointer={dockPointer} phone={phoneChrome || touchKeyboard()} />
-          )}
+          {/* Mounted while the flag is on, so it can hold its height after
+              its last item leaves (F1). It draws nothing while empty. A new
+              session is a new dock: no line of the old one stays. */}
+          <WaitingDock
+            key={sessionId ?? "new"}
+            questions={dockQuestions}
+            pointer={dockPointer}
+            phone={phoneChrome || touchKeyboard()}
+            left={dockLeft}
+          />
         </div>
       )}
       <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 glass:border-transparent glass:bg-transparent ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>

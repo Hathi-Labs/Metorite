@@ -392,9 +392,11 @@ export function __setAgentLensesForTests(on: boolean): void {
 //
 // `waiting_dock` is a fact of the server, as `agent_lenses` is:
 // `WAITING_DOCK_ORGS` on the gateway holds the member's org. The chat draws
-// each card that waits on the member in a dock above the message box only
-// when it is true. The shell read is the one writer. Before the read answers,
-// after a failed read and after a member change, it reads as off.
+// each question card that waits on the member in a dock above the message
+// box only when it is true. An approval stays in the thread, and the dock
+// shows one pointer row for it (D9). The shell read is the one writer.
+// Before the read answers, after a failed read and after a member change, it
+// reads as off.
 
 let waitingDockHere = false;
 const waitingDockListeners = new Set<() => void>();

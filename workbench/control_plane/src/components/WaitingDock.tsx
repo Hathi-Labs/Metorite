@@ -10,8 +10,9 @@
  * scrolls away. It holds:
  *
  * - ONE pointer row while an approval waits (D9). An approval card always
- *   draws in the thread, as with the flag off. The row names the newest one,
- *   and its Review only scrolls the thread to that card. It commits nothing;
+ *   draws in the thread, as with the flag off. The row names the card that
+ *   the queue in the thread shows now (its open tab), and its Review only
+ *   scrolls the thread to that card. It commits nothing;
  * - the Fold control, on the title row of the open question. No control
  *   drops an item unanswered (WD-D2);
  * - the ONE scroll box of the dock: the body of the open question, under the
@@ -21,6 +22,16 @@
  *   you" when the count goes up. The chat mounts it while the flag is on, so
  *   the region exists before the first item arrives. The arrival of an item
  *   never takes the focus (`AgentChat` holds K1).
+ *
+ * NOTHING MOVES UNDER THE POINTER (verifier F1, 2026-11-28). When an item
+ * leaves (Submit, Not now, an answer from elsewhere, a run end) or the pointer
+ * row leaves, the dock keeps its height. In the place of the item it shows an
+ * inert line ("Answer sent", "Not now", "Answered elsewhere"). The line is no
+ * button. A fold by hand keeps the height too, with an empty gap. The dock
+ * collapses, or draws the next item, only under rule 2 (`collapseWait`):
+ * 800 ms since the item left, no pointer down, and 600 ms since the last
+ * press in the dock. The collapse fades the line out over 150 ms, then the
+ * height goes in one step (no motion of a layout property, UI gate G3).
  *
  * The fold is the dock's own, beside `RollupCard`, which never folds a card
  * that waits (audit rule 8). With the phone's keyboard up and no field of the
@@ -38,10 +49,15 @@ import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import CardTabs, { cardPanelId, cardTabId } from "@/components/ui/CardTabs";
 import { KIND_ICON } from "@/lib/cardTabs";
+import { prefersReducedMotion } from "@/lib/panelMotion";
 import { revealWithin } from "@/lib/scrollWithin";
 import {
+  COLLAPSE_MS,
+  LEFT_WORDS,
   PINNED_ACTIONS,
+  STUCK_PRESS_MS,
   arrivalUnfolds,
+  collapseWait,
   dockCap,
   dockFolded,
   isTextField,
@@ -50,6 +66,7 @@ import {
   POINTER_LEAD,
   pointerMore,
   UNFOLD_LABEL,
+  type DockLeft,
 } from "@/lib/waitingDock";
 
 /** What the dock hands a question card when it draws it. */
@@ -78,9 +95,9 @@ export interface DockQuestion {
   render: (slot: DockSlot) => ReactNode;
 }
 
-/** The pointer row: the newest approval that waits in the thread (D9). */
+/** The pointer row: the approval that the thread's queue shows now (D9). */
 export interface DockPointer {
-  /** The tab label of the newest approval that waits (`tabLabel`). */
+  /** The tab label of the approval that the queue shows (`tabLabel`). */
   label: string;
   /** How many other approvals wait. */
   more: number;
@@ -97,6 +114,63 @@ export interface WaitingDockProps {
   phone: boolean;
   /** Tests and the visual rig: start folded. */
   initialFolded?: boolean;
+  /**
+   * Why each question card that waits no more left, by its key: the member
+   * answered it ("sent") or declined it ("notnow"). A key that is not here
+   * left "elsewhere" (`leftKind`). The inert line reads it.
+   */
+  left?: Readonly<Record<string, DockLeft>>;
+}
+
+/** A place of the dock that holds its height after its item left. */
+interface HeldLine {
+  h: number;
+  words: string;
+  icon: string;
+}
+
+/**
+ * The hold (F1): while it is set, the dock never shrinks. `since` is the time
+ * the last item left. `body` and `pointer` are the inert lines in the places
+ * of what left. `bodyKept` and `pointerKept` say which part still draws as it
+ * did when the hold began. An item that arrives in the hold waits for rule 2.
+ */
+interface Hold {
+  since: number;
+  rootH: number;
+  body: HeldLine | null;
+  pointer: HeldLine | null;
+  bodyKept: boolean;
+  pointerKept: boolean;
+  collapsing: boolean;
+}
+
+/** The facts of the last commit, which a removal reads. */
+interface LastDraw {
+  keys: readonly string[];
+  openKey: string | null;
+  pointerRow: boolean;
+  bodyShown: boolean;
+  folded: boolean;
+  rootH: number;
+  bodyH: number;
+  pointerH: number;
+}
+
+const LEFT_ICON: Record<DockLeft, string> = { sent: "Check", notnow: "Clock", elsewhere: "CheckCheck" };
+
+/** The inert line in the place of an item that left. It is no button. */
+function Held({ line, collapsing, part }: { line: HeldLine; collapsing: boolean; part: "body" | "pointer" }) {
+  return (
+    <div
+      data-dock-held={part}
+      style={{ height: line.h }}
+      className={`flex min-w-0 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground glass:rounded-[16px] motion-safe:transition-opacity motion-safe:duration-150 ${collapsing ? "opacity-0" : "opacity-100"}`}
+    >
+      <Icon name={line.icon} size={13} className="shrink-0" />
+      <span className="truncate">{line.words}</span>
+    </div>
+  );
 }
 
 /**
@@ -128,9 +202,10 @@ function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: nu
 /** How long after a press ends the dock waits before it may fold (K3). */
 const PRESS_GRACE_MS = 500;
 
-export default function WaitingDock({ questions, pointer, phone, initialFolded = false }: WaitingDockProps) {
+export default function WaitingDock({ questions, pointer, phone, initialFolded = false, left }: WaitingDockProps) {
   const rootRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const pointerRef = useRef<HTMLDivElement>(null);
   const uid = useId();
   const [manual, setManual] = useState(initialFolded);
   const [fieldFocus, setFieldFocus] = useState(false);
@@ -140,7 +215,11 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
   // Rule 10: the fade at the foot of the body, above the pinned Submit row.
   // It shows while more of the body is below, and goes at the end.
   const [atEnd, setAtEnd] = useState(true);
-  const [pinH, setPinH] = useState(0);
+  // The fade's distance from the foot of the dock: the top of the pinned
+  // Submit row, read from the boxes. The fade then never covers the row.
+  const [fadeBottom, setFadeBottom] = useState(0);
+  // F1: the hold. Null while nothing has left.
+  const [hold, setHold] = useState<Hold | null>(null);
   const vp = useVisualViewport();
   const count = questions.length;
 
@@ -193,8 +272,9 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
       const end = body.scrollTop + body.clientHeight >= body.scrollHeight - 2;
       setAtEnd((x) => (x === end ? x : end));
       const pin = Array.from(body.querySelectorAll<HTMLElement>(PINNED_ACTIONS)).find((el) => el.offsetParent !== null);
-      const h = pin ? pin.offsetHeight : 0;
-      setPinH((x) => (x === h ? x : h));
+      const root = rootRef.current;
+      const h = pin && root ? Math.max(0, Math.ceil(root.getBoundingClientRect().bottom - pin.getBoundingClientRect().top)) : 0;
+      setFadeBottom((x) => (x === h ? x : h));
     }
   }, []);
   // Each render: the form, the column and the body may have changed. Each
@@ -227,6 +307,108 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
     };
   }, [read]);
 
+  // ── F1: the hold. Nothing moves under the pointer. ──────────────────────
+  // What draws now. In a hold, an item that arrived after the hold began
+  // waits for rule 2, so it never draws under a press of the item before it.
+  const pointerRow = !!pointer && (hold ? !hold.pointer && hold.pointerKept : true);
+  const bodyShown = count > 0 && (hold ? !hold.body && hold.bodyKept : true);
+  const empty = !hold && count === 0 && !pointer;
+  // The facts of the last commit. A removal reads them, because the commit
+  // that removes an item has already drawn the dock without it.
+  const lastRef = useRef<LastDraw>({
+    keys: [], openKey: null, pointerRow: false, bodyShown: false, folded: false, rootH: 0, bodyH: 0, pointerH: 0,
+  });
+  // The presses that the collapse rule reads: every pointer that is down,
+  // and the last pointerdown or keydown inside the dock.
+  const downRef = useRef(new Map<number, number>());
+  const lastPressRef = useRef(Number.NEGATIVE_INFINITY);
+  useEffect(() => {
+    const down = (e: PointerEvent) => { downRef.current.set(e.pointerId, performance.now()); };
+    const up = (e: PointerEvent) => { downRef.current.delete(e.pointerId); };
+    // A touch scroll ends in `pointercancel`, not `pointerup`.
+    const clear = () => downRef.current.clear();
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
+  const pointerDown = (now: number) => {
+    for (const at of downRef.current.values()) if (now - at < STUCK_PRESS_MS) return true;
+    return false;
+  };
+
+  // Each commit: find what left since the last one, and start or extend the
+  // hold BEFORE the paint. A set state in a layout effect draws again at
+  // once, so no frame shows the dock shorter.
+  useLayoutEffect(() => {
+    const last = lastRef.current;
+    const keys = questions.map((q) => q.key);
+    const gone = last.keys.filter((k) => !keys.includes(k));
+    const pointerGone = last.pointerRow && !pointer;
+    // The member's own fold, or K7 with the keyboard down. With the keyboard
+    // up, the keyboard itself moved everything, and a held height would
+    // cover the two lines of the thread (F1 of 2026-10-23).
+    const foldNow = folded && !last.folded && last.bodyShown && !kbUp;
+    const starts = gone.length > 0 || pointerGone || foldNow;
+    if (starts) {
+      const now = performance.now();
+      const goneKey = gone.includes(last.openKey ?? "") ? last.openKey! : gone[0];
+      const why: DockLeft = (goneKey && left?.[goneKey]) || "elsewhere";
+      setHold((h) => ({
+        since: now,
+        rootH: h ? h.rootH : last.rootH,
+        body: h?.body ?? (gone.length > 0 && last.bodyShown ? { h: last.bodyH, words: LEFT_WORDS[why], icon: LEFT_ICON[why] } : null),
+        pointer: h?.pointer ?? (pointerGone ? { h: last.pointerH, words: LEFT_WORDS.elsewhere, icon: LEFT_ICON.elsewhere } : null),
+        bodyKept: h ? h.bodyKept : last.bodyShown,
+        pointerKept: h ? h.pointerKept : last.pointerRow,
+        collapsing: false,
+      }));
+    }
+    const root = rootRef.current;
+    lastRef.current = {
+      keys,
+      openKey: open?.key ?? null,
+      pointerRow,
+      bodyShown,
+      folded,
+      // The heights of the commit that removes an item are already the
+      // shorter ones, so that commit keeps the old heights.
+      rootH: starts || hold || !root ? last.rootH : root.offsetHeight,
+      bodyH: !starts && bodyShown && bodyRef.current ? bodyRef.current.offsetHeight : last.bodyH,
+      pointerH: !starts && pointerRow && pointerRef.current ? pointerRef.current.offsetHeight : last.pointerH,
+    };
+  });
+
+  // Rule 2: collapse, or draw the next item, only when all three hold. The
+  // collapse fades the inert lines over `COLLAPSE_MS`, then the height goes
+  // in one step. A press in the fade puts the hold back.
+  useEffect(() => {
+    if (!hold) return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      const now = performance.now();
+      const wait = collapseWait({ now, leftAt: hold.since, pointerDown: pointerDown(now), lastPressAt: lastPressRef.current });
+      if (wait === 0) {
+        setHold((h) => (h !== hold ? h : h.collapsing ? null : { ...h, collapsing: true }));
+        return;
+      }
+      if (hold.collapsing) {
+        setHold((h) => (h !== hold ? h : { ...h, collapsing: false }));
+        return;
+      }
+      t = setTimeout(check, wait ?? 50);
+    };
+    t = setTimeout(check, hold.collapsing && !prefersReducedMotion() ? COLLAPSE_MS : 0);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `pointerDown` reads refs only
+  }, [hold]);
+
   // K3: a tap on a field of the card keeps the item open, and the field
   // stays in view inside the dock's body. Only the body scrolls.
   const onFocusIn = (e: React.FocusEvent<HTMLElement>) => {
@@ -255,6 +437,8 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
     }, PRESS_GRACE_MS);
   };
   const onPointerDown = () => {
+    // Rule 2 of the hold reads the last press in the dock.
+    lastPressRef.current = performance.now();
     if (graceRef.current) clearTimeout(graceRef.current);
     pressingRef.current = true;
     const end = () => {
@@ -264,6 +448,9 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
     };
     window.addEventListener("pointerup", end, true);
     window.addEventListener("pointercancel", end, true);
+  };
+  const onKeyDown = () => {
+    lastPressRef.current = performance.now();
   };
   useEffect(() => () => {
     if (graceRef.current) clearTimeout(graceRef.current);
@@ -313,22 +500,36 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
       />
     ) : null;
 
+  // The place under the pointer row, when a body follows it.
+  const pointerPlace = !!hold?.pointer || pointerRow;
+  const bodyPlace = !!hold?.body || bodyShown;
+  const gap = pointerPlace && bodyPlace ? "mt-2" : "";
   return (
     <section
       ref={rootRef}
-      data-waiting-dock={count === 0 ? "pointer" : folded ? "folded" : "open"}
+      hidden={empty}
+      data-waiting-dock={empty ? undefined : hold?.body ? "held" : count === 0 ? "pointer" : folded ? "folded" : "open"}
+      {...(hold ? { "data-dock-hold": hold.collapsing ? "collapsing" : "held" } : {})}
       aria-label="Waiting for you"
       onFocus={onFocusIn}
       onBlur={onFocusOut}
       onPointerDown={onPointerDown}
-      className="relative max-w-3xl mx-auto mb-2 space-y-2"
+      onKeyDown={onKeyDown}
+      className="relative mx-auto mb-2 flex max-w-3xl flex-col pt-2"
+      // F1: in a hold the dock never shrinks. The gap goes between the
+      // pointer row and the body, so each keeps its place.
+      style={hold ? { minHeight: hold.rootH } : undefined}
     >
-      {pointer && (
+      {hold?.pointer ? (
+        <Held line={hold.pointer} collapsing={hold.collapsing} part="pointer" />
+      ) : pointerRow && pointer ? (
         // D9: one row for the approvals, which wait in the thread. It names
-        // the newest, and Review only scrolls to it. It commits nothing.
+        // the card that the queue shows now, and Review only scrolls to it.
+        // It commits nothing.
         <div
+          ref={pointerRef}
           data-dock-pointer=""
-          className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-1 text-[11px] glass:rounded-[16px] glass:border-transparent glass:bg-primary/12 glass:px-4 glass:text-footnote"
+          className="flex min-w-0 shrink-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-1 text-[11px] glass:rounded-[16px] glass:border-transparent glass:bg-primary/12 glass:px-4 glass:text-footnote"
         >
           <Icon name="BellRing" size={13} className="shrink-0 text-primary" />
           <span className="shrink-0 font-medium text-foreground">{POINTER_LEAD}</span>
@@ -347,14 +548,24 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
             Review
           </Button>
         </div>
+      ) : null}
+      {/* The gap of a hold: empty and inert. It takes the height that left. */}
+      {hold && <div aria-hidden className="min-h-0 flex-1" data-dock-gap="" />}
+      {hold?.body && (
+        <div className={gap}>
+          <Held line={hold.body} collapsing={hold.collapsing} part="body" />
+        </div>
       )}
       {count > 0 && (
         <>
-          {/* The one scroll box of the dock: the open question over the cap (C3). */}
+          {/* The one scroll box of the dock: the open question over the cap (C3).
+              In a hold it stays mounted, hidden and inert, so no pick is lost. */}
           <div
             ref={bodyRef}
             data-dock-body=""
-            className="overflow-y-auto overscroll-contain scrollbar-thin rounded-lg glass:rounded-[16px]"
+            hidden={!bodyShown}
+            inert={!bodyShown}
+            className={`overflow-y-auto overscroll-contain scrollbar-thin shrink-0 rounded-lg glass:rounded-[16px] ${hold?.body ? "" : gap}`}
             style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
             onScroll={read}
           >
@@ -391,20 +602,23 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
                           }
                         : {}),
                       inDock: true,
-                      dockShown: isOpen && !folded,
+                      // Not on the screen in a hold: the arm drops, and it
+                      // starts again when the card draws (round 7, rule 3).
+                      dockShown: isOpen && !folded && bodyShown,
                     })}
                   </div>
                 );
               })}
             </div>
           </div>
-          {/* The fade: theme tokens only, and it takes no click. */}
-          {!folded && over && !atEnd && (
+          {/* The fade: theme tokens only, and it takes no click. Its foot is
+              the top of the pinned Submit row, so it covers no control there. */}
+          {bodyShown && !folded && over && !atEnd && (
             <div
               aria-hidden
               data-dock-fade=""
               className="pointer-events-none absolute inset-x-px z-[2] h-8 bg-gradient-to-t from-card to-transparent"
-              style={{ bottom: pinH }}
+              style={{ bottom: fadeBottom }}
             />
           )}
         </>

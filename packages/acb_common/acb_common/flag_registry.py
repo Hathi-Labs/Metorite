@@ -1507,8 +1507,10 @@ class FlagRegistry(BaseSettings):
     # ── Chat: the waiting dock (WD-1, projects_ai_chat.md §24.11, D234) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
-    # the default. On, each card that waits on the member draws in a dock
-    # above the message box, outside the thread. Off, the chat draws as before.
+    # the default. On, each question card that waits on the member draws in a
+    # dock above the message box, outside the thread. An approval stays in the
+    # thread, and the dock shows one pointer row for it (D9). Off, the chat
+    # draws as before.
     # The one reader is `gateway.waiting_dock_flag.waiting_dock_allowed`, and
     # `GET /auth/me/shell` serves the answer as `waiting_dock`. A SIGHUP reload
     # applies a change. A flip is OWNER-GATE (`enforcement-flip`).

@@ -24,7 +24,10 @@
  * - the fold row's button submits -> "audit rule 2";
  * - a press that began before the arm, or a held key, commits -> "the arm";
  * - a held Enter or an Enter just after a dock commit sends the box -> "the
- *   message box after a commit".
+ *   message box after a commit";
+ * - the pointer names a card other than the queue's open tab -> "the pointer";
+ * - the dock collapses before 800 ms, while a pointer is down, or within
+ *   600 ms of a press in it, or the inert line has other words -> "the hold".
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,6 +40,13 @@ import {
   POINTER_LEAD,
   UNFOLD_LABEL,
   boxEnterBlocked,
+  collapseWait,
+  COLLAPSE_MS,
+  HOLD_MS,
+  LEFT_WORDS,
+  leftKind,
+  openApproval,
+  QUIET_MS,
   pressIsFresh,
   PINNED_ACTIONS,
   TWO_LINES_PX,
@@ -117,6 +127,26 @@ describe("the pointer (D9)", () => {
     expect(newestApproval([])).toBeNull();
   });
 
+  it("names the queue's OPEN tab, and counts the others (2026-11-28)", () => {
+    const cards = [{ key: "a" }, { key: "b" }, { key: "c" }, { key: "s", redraft: "updating" as const }];
+    expect(openApproval(cards, "a")).toEqual({ card: { key: "a" }, more: 2 });
+    expect(openApproval(cards, "b")).toEqual({ card: { key: "b" }, more: 2 });
+    // No report yet, a key that left, or a slot open: the newest that waits.
+    expect(openApproval(cards, null)).toEqual({ card: { key: "c" }, more: 2 });
+    expect(openApproval(cards, "gone")).toEqual({ card: { key: "c" }, more: 2 });
+    expect(openApproval(cards, "s")).toEqual({ card: { key: "c" }, more: 2 });
+    expect(openApproval([{ key: "s", redraft: "updating" as const }], "s")).toBeNull();
+  });
+
+  it("the chat reads the open tab from the queue, only while the dock is on", () => {
+    const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+    expect(chat).toContain("const reportShown = dockOn ? setQueueShown : undefined;");
+    expect(chat).toContain("onShown={reportShown}");
+    expect(chat).toContain("openApproval(confirmations.cards, queueShown)");
+    const queue = readFileSync(join(__dirname, "..", "components/ConfirmationQueue.tsx"), "utf-8");
+    expect(queue).toMatch(/useEffect\(\(\) => \{\s*onShown\?\.\(shownNow\);\s*\}, \[onShown, shownNow\]\);/);
+  });
+
   it("Review shows a card that fits whole, with the least movement", () => {
     const port = { top: 100, bottom: 600 };
     // Below the room: its foot comes up to the foot of the room.
@@ -172,7 +202,7 @@ describe("the cap (audit rule 5)", () => {
 describe("rule 10: the Submit row never scrolls (owner, 2026-11-27)", () => {
   it("globals.css holds the question's own Submit row at the foot of the dock's body", () => {
     const css = readFileSync(join(__dirname, "..", "app/globals.css"), "utf-8").replace(/\s+/g, " ");
-    const rule = css.slice(css.indexOf("[data-dock-body] :is("));
+    const rule = css.slice(css.indexOf("[data-dock-body] div:has("));
     for (const sel of PINNED_ACTIONS.split(", ")) expect(rule).toContain(sel);
     expect(rule).toMatch(/position: sticky; bottom: 0;/);
     // Theme tokens only, never a literal colour.
@@ -365,9 +395,10 @@ describe("the fresh press (24.11, 2026-11-27)", () => {
     expect(card).toContain("useArmed(inDock ? `q:${dockShown !== false}` : \"\", inDock && dockShown !== false)");
     expect(card).toContain("onClickCapture={inDock ? arm.guard : undefined}");
     expect(card).toContain("{...(inDock ? FRESH_KEY_PROPS : {})}");
-    // The dock hands `dockShown` to each card: open tab and not folded.
+    // The dock hands `dockShown` to each card: open tab, not folded, and not
+    // under the inert line of a hold (F1).
     const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
-    expect(dock).toContain("dockShown: isOpen && !folded,");
+    expect(dock).toContain("dockShown: isOpen && !folded && bodyShown,");
   });
 
   it("the guard reads only the controls of a question (D9)", () => {
@@ -417,5 +448,63 @@ describe("the message box after a commit (round 7)", () => {
 
   it("with the flag off, the box is the box of main", () => {
     expect(boxEnterBlocked({ dock: false, repeat: true, msSinceCommit: 0 })).toBe(false);
+  });
+});
+
+describe("the hold: nothing moves under the pointer (verifier F1, 2026-11-28)", () => {
+  const base = { now: 10_000, leftAt: 10_000, pointerDown: false, lastPressAt: Number.NEGATIVE_INFINITY };
+
+  it("the numbers of rule 2", () => {
+    expect(HOLD_MS).toBe(800);
+    expect(QUIET_MS).toBe(600);
+    expect(COLLAPSE_MS).toBe(150);
+  });
+
+  it("holds 800 ms after the item left", () => {
+    expect(collapseWait(base)).toBe(800);
+    expect(collapseWait({ ...base, now: 10_799 })).toBe(1);
+    expect(collapseWait({ ...base, now: 10_800 })).toBe(0);
+  });
+
+  it("holds while a pointer is down, however long ago the item left", () => {
+    expect(collapseWait({ ...base, now: 20_000, pointerDown: true })).toBeNull();
+  });
+
+  it("holds 600 ms after the last press in the dock", () => {
+    // A second press of a double click 150 ms after the first.
+    expect(collapseWait({ ...base, now: 10_800, lastPressAt: 10_150 })).toBe(0);
+    expect(collapseWait({ ...base, now: 10_800, lastPressAt: 10_500 })).toBe(300);
+    expect(collapseWait({ ...base, now: 11_099, lastPressAt: 10_500 })).toBe(1);
+  });
+
+  it("the inert line says why the item left, in three words only", () => {
+    expect(LEFT_WORDS).toEqual({ sent: "Answer sent", notnow: "Not now", elsewhere: "Answered elsewhere" });
+    expect(leftKind({ answered: "North depot" })).toBe("sent");
+    expect(leftKind({ answered: "" })).toBe("sent");
+    expect(leftKind({ declined: true })).toBe("notnow");
+    expect(leftKind({})).toBe("elsewhere");
+    expect(leftKind(null)).toBe("elsewhere");
+  });
+
+  it("the dock holds its height, and its line is no button", () => {
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    expect(dock).toContain("style={hold ? { minHeight: hold.rootH } : undefined}");
+    const held = dock.slice(dock.indexOf("function Held("), dock.indexOf("export default function WaitingDock"));
+    expect(held).toContain("data-dock-held={part}");
+    expect(held).not.toMatch(/<button|<Button|onClick|role=/);
+    // The collapse fades by opacity only (UI gate G3), and stops for reduced motion.
+    expect(held).toContain("motion-safe:transition-opacity motion-safe:duration-150");
+    expect(dock).toContain("prefersReducedMotion()");
+    // An item that arrives in a hold draws only under rule 2.
+    expect(dock).toContain("const bodyShown = count > 0 && (hold ? !hold.body && hold.bodyKept : true);");
+    expect(dock).toContain("dockShown: isOpen && !folded && bodyShown,");
+  });
+
+  it("the chat keeps the dock mounted while the flag is on, so it can hold after its last item", () => {
+    const chat = readFileSync(join(__dirname, "..", "components/AgentChat.tsx"), "utf-8");
+    const host = chat.slice(chat.indexOf("<div ref={dockHostRef}"), chat.indexOf("<form onSubmit={handleSubmit}"));
+    expect(host).toContain("<WaitingDock");
+    expect(host).toContain("left={dockLeft}");
+    expect(host).not.toMatch(/showDock|\{\s*\w+ && \(\s*<WaitingDock/);
   });
 });

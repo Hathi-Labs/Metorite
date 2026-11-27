@@ -9,6 +9,7 @@
  * - an approval card, or a commit control of one, draws in the dock -> "the
  *   pointer" and "approvals carry no dock code";
  * - the pointer row names no card, or drops "and N more" -> "the pointer";
+ * - an empty dock draws its frame, or its inert line is a button -> "the hold";
  * - a slot of a redraft alone draws the pointer -> lib test "draws only";
  * - two questions draw as two cards, not as tabs of ONE card -> "two
  *   questions";
@@ -68,7 +69,7 @@ function dock(opts: { questions?: DockQuestion[]; pointer?: DockPointer | null; 
 const APPROVAL_COMMIT = /data-confirmation-approve|data-confirmation-card|data-reply-send|data-reply-save|data-earlier-keep|data-earlier-delete|>Approve<|>Reject<|>Send</;
 
 describe("the pointer (D9)", () => {
-  it("one row names the newest approval, with Review, and no card", () => {
+  it("one row names the approval the queue shows, with Review, and no card", () => {
     const html = dock({});
     expect(html.match(/data-dock-pointer=""/g)?.length).toBe(1);
     expect(html).toMatch(/data-dock-pointer=""[\s\S]*?Waits for you:[\s\S]*?Task: Fix the extruder/);
@@ -264,5 +265,19 @@ describe("a failed send keeps the question's picks and typed text", () => {
     expect(chat).toContain("{...draftProps(elicitation.requestId)}");
     expect(chat).toContain("{...draftProps(userInput.requestId)}");
     expect(chat).toContain("questionDraftsRef.current.set(rid, d)");
+  });
+});
+
+describe("the hold (F1, 2026-11-28)", () => {
+  it("an empty dock draws no frame: no item, no pointer and no hold", () => {
+    const html = dock({ questions: [], pointer: null });
+    expect(html).toMatch(/<section hidden=""/);
+    expect(html).not.toContain("data-waiting-dock=");
+  });
+
+  it("outside a hold no inert line draws, and the dock has no floor", () => {
+    const html = dock({});
+    expect(html).not.toContain("data-dock-held");
+    expect(html).not.toContain("min-height");
   });
 });

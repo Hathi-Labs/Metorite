@@ -284,7 +284,7 @@ test.describe("the waiting dock (WD-1, D9)", () => {
 
   // ── D9: the approvals stay in the thread, and one pointer names them ────
 
-  test("D9: approvals mount one card at a time in the thread, and the pointer names the newest 'and 2 more'", async ({ page }) => {
+  test("D9: approvals mount one card at a time in the thread, and the pointer names the open tab 'and 2 more'", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await start(page, { cards: "approvals" });
     await expect(pointer(page)).toBeVisible({ timeout: 20_000 });
@@ -294,14 +294,19 @@ test.describe("the waiting dock (WD-1, D9)", () => {
     await expect(page.locator("[data-waiting-dock] [data-confirmation-card]")).toHaveCount(0);
     const threadTabs = page.locator('[data-chat-ask] [data-confirmation-card] [role="tab"]');
     await expect(threadTabs).toHaveCount(3);
-    // The pointer names the newest card by its tab label.
-    const newest = (await threadTabs.nth(2).innerText()).trim();
-    await expect(page.locator("[data-dock-pointer-label]")).toContainText(newest);
+    // The pointer names the card the queue shows, its open tab (2026-11-28).
+    await expect(threadTabs.nth(0)).toHaveAttribute("aria-selected", "true");
+    const first = (await threadTabs.nth(0).innerText()).trim();
+    await expect(page.locator("[data-dock-pointer-label]")).toContainText(first);
     await expect(pointer(page)).toContainText("Waits for you:");
     await expect(pointer(page)).toContainText("and 2 more");
-    // A change of tab in the thread still mounts one card.
+    // A change of tab in the thread still mounts one card, and the pointer
+    // follows it.
     await threadTabs.nth(1).click();
     await expect(page.locator("[data-confirmation-card]")).toHaveCount(1);
+    const second = (await threadTabs.nth(1).innerText()).trim();
+    await expect(page.locator("[data-dock-pointer-label]")).toContainText(second);
+    await expect(pointer(page)).toContainText("and 2 more");
     await expect(page.locator("[data-confirmation-card] [data-reply-send]")).toHaveCount(1);
     // The dock holds the question and no approval tab.
     await expect(dockTabs(page)).toHaveCount(0);
@@ -432,6 +437,15 @@ test.describe("the waiting dock (WD-1, D9)", () => {
     await expect(page.locator("[data-dock-body] [data-card-tabs]")).toContainText("2 waiting");
     const body = page.locator("[data-dock-body]");
     expect(await body.evaluate((el) => el.scrollHeight > el.clientHeight + 20)).toBe(true);
+    // 4b: the fade covers no control. Its foot is at or above the top of the
+    // pinned Submit row.
+    await expect(page.locator("[data-dock-fade]")).toHaveCount(1);
+    const fade = (await page.locator("[data-dock-fade]").boundingBox())!;
+    const pinned = await page.evaluate(() => {
+      const s = document.querySelector("[data-dock-body] [data-dock-question]:not([hidden]) [data-elicitation-submit]")!;
+      return s.parentElement!.getBoundingClientRect().top;
+    });
+    expect(fade.y + fade.height).toBeLessThanOrEqual(pinned + 0.5);
     await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
     expect(await body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
     await dockTabs(page).nth(1).click();
@@ -741,16 +755,19 @@ async function lineUp(page: Page, sel: string, text = "") {
  */
 async function watchPoint(page: Page, x: number, y: number) {
   await page.evaluate(([px, py]) => {
-    const w = window as unknown as { __moved: string[]; __watch: boolean };
+    const w = window as unknown as { __moved: string[]; __held: string[]; __watch: boolean };
     const CONTROL = "button, a[href], input, textarea, select, [role='tab']";
     const first = document.elementFromPoint(px, py)?.closest(CONTROL) ?? null;
     w.__moved = [];
+    w.__held = [];
     w.__watch = true;
     const tick = () => {
       if (!w.__watch) return;
       const el = document.elementFromPoint(px, py);
       const same = !!first && !!el && first.contains(el);
-      if (el && !same && !el.closest("[data-dock-held]")) {
+      const held = el?.closest("[data-dock-held]");
+      if (held && !w.__held.includes(held.textContent ?? "")) w.__held.push(held.textContent ?? "");
+      if (el && !same && !held) {
         const d = (el.closest(CONTROL) ?? el).outerHTML.slice(0, 90);
         if (!w.__moved.includes(d)) w.__moved.push(d);
       }
@@ -767,6 +784,9 @@ async function moved(page: Page) {
     return w.__moved;
   });
 }
+
+/** The words of each inert line that the watch saw under the point. */
+const heldWords = (page: Page) => page.evaluate(() => (window as unknown as { __held: string[] }).__held);
 
 async function pressAt(page: Page, d: Device, x: number, y: number) {
   if (d.touch) await page.touchscreen.tap(x, y);
@@ -810,11 +830,15 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(550);
         expect(await moved(page)).toEqual([]);
+        expect(await heldWords(page)).toEqual(["Answer sent"]);
         await page.waitForTimeout(1000);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
         expect(w.approvals).toEqual([]);
         expect(w.sends).toEqual(["Plan the June run."]);
+        // Rule 2: after the hold, the line goes, and the pointer row stays.
+        await expect(page.locator("[data-dock-held]")).toHaveCount(0);
+        await expect(pointer(page)).toBeVisible();
       } finally {
         await ctx.close();
       }
@@ -837,6 +861,7 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(550);
         expect(await moved(page)).toEqual([]);
+        expect(await heldWords(page)).toEqual(["Not now"]);
         await page.waitForTimeout(1000);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
@@ -865,6 +890,7 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(400);
         expect(await moved(page)).toEqual([]);
+        expect(await heldWords(page)).toEqual(["Answered elsewhere"]);
         await page.waitForTimeout(1100);
         const w = await wire(page);
         expect(w.questions).toEqual([]);
@@ -894,11 +920,15 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(200);
         expect(await moved(page)).toEqual([]);
+        expect(await heldWords(page)).toEqual(["Answer sent"]);
         await page.waitForTimeout(1300);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
         expect(w.approvals).toEqual([]);
         expect(w.sends).toEqual(["Plan the June run."]);
+        // Rule 3: after the hold, Q2 draws in the place of the line.
+        await expect(page.locator("[data-dock-held]")).toHaveCount(0);
+        await expect(open(page, "[data-elicitation-submit]")).toBeVisible();
       } finally {
         await ctx.close();
       }
