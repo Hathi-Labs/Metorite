@@ -44,12 +44,13 @@ Fences (R7):
 - SBX-F21 ``tests/unit/test_sandbox_remote_backend.py`` — the runtime
   (SBX-8), the ``docker-remote`` backend and one org per remote box (SBX-15).
 - WS43-F9 ``tests/unit/test_sandbox_network_grant.py`` — the egress grant,
-  the revoke, the org network, the sweep and the dark default (WS-43g1).
+  the revoke, the network of each grant, the sweep and the dark default
+  (WS-43g1, WS-43g2a).
   WS43-F5 ``tests/unit/test_sandbox_egress_proxy.py`` fences the proxy itself.
 
 **Egress (WS-43g1, §7.3).** A container starts on ``--network none``. Only
 :meth:`SandboxBroker.grant_egress` moves it, after a member approved it, onto
-its organization's own ``--internal`` network, where the one proxy
+the ``--internal`` network of that one grant (WS-43g2a), where the one proxy
 (``sandbox/egress_proxy.py``) is its only way out. With
 ``sandbox_egress_enabled`` off (the default) a grant refuses, and the broker
 makes no proxy and no egress network. ``docker-remote`` gets no grant.
@@ -258,13 +259,20 @@ EGRESS_PROXY_NAME = "mtr-egress-proxy"
 EGRESS_PROXY_PORT = 3128
 #: The proxy runs as ``nobody`` (§7.3, "The proxy").
 EGRESS_PROXY_UID = 65534
-#: The network of one organization: this prefix and a digest of the org.
+#: The network of one grant: this prefix and a digest of the org, the
+#: container name and the grant key (WS-43g2a, task 4070).
 EGRESS_NET_PREFIX = "mtr-egress-"
 #: The Linux bridge of that network. ``host_firewall.sh`` matches
 #: ``mtr-eg-+``. An interface name holds at most 15 characters.
 EGRESS_BRIDGE_PREFIX = "mtr-eg-"
 #: ``proxy`` on the proxy container, ``1`` on each egress network.
 LABEL_EGRESS = "metorite.egress"
+#: The run of the grant that owns an egress network (WS-43g2a).
+LABEL_EGRESS_RUN = "metorite.egress.run"
+#: The door read of the proxy waits the card wait plus this (§7.3, "The door
+#: wait"). The proxy refuses a value below :data:`DOOR_READ_TIMEOUT_MIN_S`.
+DOOR_READ_TIMEOUT_EXTRA_S = 30
+DOOR_READ_TIMEOUT_MIN_S = 90
 #: The targets that may get a grant. ``projects`` and ``compute`` never do:
 #: a covered run sends nothing off the platform (H-236, §16.3).
 EGRESS_TARGETS = frozenset({"code_task", APP_BUILDER_TARGET})
@@ -1308,14 +1316,33 @@ def egress_door_upstream(settings: Any) -> str:
     return raw
 
 
-def egress_network_name(org: str) -> str:
-    """``mtr-egress-`` and 16 hex digits of the org. One network per org."""
-    return EGRESS_NET_PREFIX + _digest(org)
+def egress_network_name(org: str, container: str, key: str) -> str:
+    """``mtr-egress-`` and 16 hex digits of the org, the container and the key.
+
+    One network for each grant (WS-43g2a). *key* is :attr:`EgressGrant.key`,
+    the SHA-256 of the token, so the name holds no token.
+    """
+    return EGRESS_NET_PREFIX + _digest(org, container, key)
 
 
-def egress_bridge_name(org: str) -> str:
-    """``mtr-eg-`` and 8 hex digits: 15 characters, the Linux limit."""
-    return EGRESS_BRIDGE_PREFIX + _digest(org, length=8)
+def egress_bridge_name(org: str, container: str, key: str) -> str:
+    """``mtr-eg-`` and 8 hex digits of the same digest: 15 characters, the
+    Linux limit. Two live grants with the same 8 digits fail closed, because
+    ``docker network create`` refuses a bridge name that is in use."""
+    return EGRESS_BRIDGE_PREFIX + _digest(org, container, key, length=8)
+
+
+def door_read_timeout(settings: Any) -> int:
+    """The door read of the proxy: the card wait plus 30 s (§7.3, "The door wait").
+
+    SBX-3a (task 3802) adds ``sandbox_approval_timeout_seconds``. Until then
+    the default of 300 holds.
+    """
+    wait = getattr(settings, "sandbox_approval_timeout_seconds", 300)
+    try:
+        return int(wait) + DOOR_READ_TIMEOUT_EXTRA_S
+    except (TypeError, ValueError):
+        return 0  # below the floor, so the proxy never starts
 
 
 def egress_proxy_source() -> Path:
@@ -1406,12 +1433,15 @@ def write_egress_env_file(folder: Path, start_id: str, grant: EgressGrant) -> Pa
     return path
 
 
-def build_proxy_argv(*, image: str, bin_dir: Path, grants_dir: Path) -> list[str]:
+def build_proxy_argv(
+    *, image: str, bin_dir: Path, grants_dir: Path, door_read_timeout_s: int,
+) -> list[str]:
     """The ``docker run`` arguments of the proxy (§7.3, "The proxy").
 
     uid 65534, a read-only root, no capability, 128 MiB and 64 pids, on the
     default bridge. No ``-p``: only a container on an egress network reaches
     it. Both mounts are read-only: the script, and the grants dir.
+    *door_read_timeout_s* is the upstream read of the door (WS-43g2a).
     """
     return [
         "run", "-d", "--rm", "--name", EGRESS_PROXY_NAME,
@@ -1438,7 +1468,17 @@ def build_proxy_argv(*, image: str, bin_dir: Path, grants_dir: Path) -> list[str
         "python3", "-I", f"{EGRESS_BIN_TARGET}/egress_proxy.py",
         "--grants", f"{EGRESS_GRANTS_TARGET}/{EGRESS_GRANTS_FILE}",
         "--listen", f"0.0.0.0:{EGRESS_PROXY_PORT}",
+        "--door-read-timeout", str(door_read_timeout_s),
     ]
+
+
+def proxy_door_read_timeout(cmd: Sequence[str]) -> str | None:
+    """The ``--door-read-timeout`` value in the command of a running proxy."""
+    items = list(cmd)
+    for i, item in enumerate(items[:-1]):
+        if item == "--door-read-timeout":
+            return str(items[i + 1])
+    return None
 
 
 def _check_run_inputs(
@@ -1455,7 +1495,8 @@ def _check_run_inputs(
     """Refuse the inputs of :func:`build_run_argv` that no start may use."""
     if egress is not None and (
         binding.target not in EGRESS_TARGETS or workspace_tmpfs_mb is not None
-        or egress.org != binding.org or egress.network != egress_network_name(binding.org)
+        or egress.org != binding.org
+        or egress.network != egress_network_name(binding.org, binding.name, egress.key)
     ):
         raise SandboxRefused("This container cannot take an egress grant.")
     if uid == 0 or gid == 0:
@@ -1500,8 +1541,8 @@ def build_run_argv(
     backend (SBX-15): ``/workspace`` is a tmpfs of that size, owned by the
     container's user, and no bind mount may come with it.
 
-    *egress* (WS-43g1, §7.3) puts the container on its organization's own
-    ``--internal`` network in place of ``none``. The proxy settings with the
+    *egress* (WS-43g1, §7.3) puts the container on the ``--internal``
+    network of its own grant in place of ``none`` (WS-43g2a). The proxy settings with the
     grant token come from *egress_env_file* (``--env-file``), never from the
     argv. Every other flag and mount stays the same.
     """
@@ -2625,6 +2666,10 @@ class SandboxBroker:
         self._grants: dict[str, EgressGrant] = {}
         #: WS-43g1: one change at a time of the networks and the proxy.
         self._egress_lock = asyncio.Lock()
+        #: WS-43g2a: the network of each forgotten grant, to the container
+        #: that was on it. :meth:`_flush_networks` removes each one, so the
+        #: live egress networks are never more than the live grants (§7.3).
+        self._spent_networks: dict[str, str] = {}
         self._live: dict[str, SandboxHandle] = {}
         #: The ``compute`` containers (SBX-18). A separate registry, so the
         #: compute caps and the ``sandbox_max_*`` caps never share a count.
@@ -3723,6 +3768,8 @@ class SandboxBroker:
         except SandboxError as exc:
             async with self._registry_lock:
                 self._drop(handle)
+            # The drop spent the network of a live grant (WS-43g2a).
+            await asyncio.shield(self._flush_networks())
             raise SandboxUnavailable(
                 f"The sandbox restart failed, so the sandbox is gone: {exc} "
                 "Nothing runs on the host."
@@ -3823,7 +3870,16 @@ class SandboxBroker:
         return removed
 
     async def _remove(self, handle: SandboxHandle) -> None:
-        await self._remove_container(handle.container_id, handle.start_id)
+        """Remove the container of *handle*, then the network of each spent grant.
+
+        Every exit of a container comes through here: a restart, an eviction,
+        the reap, a release past its lifetime and a run-data delete. So a
+        dropped grant never leaves its network behind (WS-43g2a).
+        """
+        try:
+            await self._remove_container(handle.container_id, handle.start_id)
+        finally:
+            await asyncio.shield(self._flush_networks())
 
     async def _remove_all(self, handles: Iterable[SandboxHandle]) -> None:
         for handle in list(handles):
@@ -3888,86 +3944,171 @@ class SandboxBroker:
             return
         handle.egress = None
         self._grants.pop(grant.key, None)
+        # WS-43g2a: the network of the grant goes at the next flush. Each
+        # removal of a container flushes, so no exit path can skip it.
+        self._spend_network(grant.network, handle.container_id or handle.name)
         try:
             self._write_grants()
         except (OSError, SandboxError) as exc:
             _log.warning("sandbox_broker.egress_grants_write_failed", error=str(exc)[:300])
 
-    async def _ensure_egress_network(self, org: str) -> str:
-        """The org's own ``--internal`` network. It refuses a network of another kind."""
-        name = egress_network_name(org)
+    def _spend_network(self, name: str, container: str = "") -> None:
+        """Mark the network *name* for removal at the next flush. No await."""
+        if name:
+            self._spent_networks[name] = container or self._spent_networks.get(name, "")
+
+    async def _flush_networks(self) -> None:
+        """Remove the network of each spent grant. Best effort. Never raises."""
+        while self._spent_networks:
+            name, container = self._spent_networks.popitem()
+            try:
+                await self._release_network(name, container)
+            except Exception as exc:  # a flush must never fail its caller
+                _log.warning("sandbox_broker.egress_network_rm_failed", error=str(exc)[:300])
+
+    async def _ensure_egress_network(
+        self, grant: EgressGrant, container: str, attempt: list[str] | None = None,
+    ) -> str:
+        """The ``--internal`` network of *grant* alone (WS-43g2a).
+
+        It refuses a found network that is not internal, or whose org label
+        or run label is not the grant's. A failed create fails closed, so the
+        container stays on ``--network none``: no free address pool, or a
+        bridge name that another network holds.
+        """
+        name = grant.network
         found = await self._docker.run(
             ["network", "inspect", "--format",
-             '{{.Internal}}|{{index .Labels "' + LABEL_ORG + '"}}', name],
+             '{{.Internal}}|{{index .Labels "' + LABEL_ORG + '"}}|{{index .Labels "'
+             + LABEL_EGRESS_RUN + '"}}', name],
             timeout=_SMALL_TIMEOUT_SECONDS,
         )
         if found.rc == 0:
-            internal, _sep, owner = found.stdout.strip().partition("|")
-            if internal != "true" or owner != org:
+            internal, owner, run = [*found.stdout.strip().split("|", 2), "", ""][:3]
+            if internal != "true" or owner != grant.org or run != grant.run:
                 raise SandboxRefused(
-                    "The egress network of this organization is not its own internal "
+                    "The egress network of this grant is not its own internal "
                     "network, so no grant opens."
                 )
             return name
+        if attempt is not None:
+            # Set BEFORE the call: a client timeout can still make the network
+            # on the daemon, so the caller removes it on any later failure.
+            attempt.append(name)
         made = await self._docker.run(
             ["network", "create", "--driver", "bridge", "--internal",
-             "--label", f"{LABEL_EGRESS}=1", "--label", f"{LABEL_ORG}={org}",
-             "--opt", f"com.docker.network.bridge.name={egress_bridge_name(org)}",
+             "--label", f"{LABEL_EGRESS}=1", "--label", f"{LABEL_ORG}={grant.org}",
+             "--label", f"{LABEL_EGRESS_RUN}={grant.run}",
+             "--opt", "com.docker.network.bridge.name="
+             + egress_bridge_name(grant.org, container, grant.key),
              name],
             timeout=_SMALL_TIMEOUT_SECONDS,
         )
         if made.rc != 0:
-            _log.warning("sandbox_broker.egress_network_failed", org=org, error=made.stderr[-300:])
+            no_pool = "address pool" in made.stderr
+            _log.warning(
+                "sandbox_broker.egress_network_failed", org=grant.org,
+                reason="no_free_address_pool" if no_pool else "create_failed",
+                error=made.stderr[-300:],
+            )
+            if no_pool:
+                raise SandboxUnavailable(
+                    "No free address pool is left for an egress network, so no grant opens."
+                )
             raise SandboxUnavailable("The egress network did not start.")
         return name
 
     async def _ensure_proxy(self, image: str, network: str) -> None:
-        """Start the proxy once, and join it to *network*."""
+        """Start the proxy once, and join it to *network*.
+
+        A running proxy whose ``--door-read-timeout`` is not the value of the
+        settings goes, and a fresh one starts (WS-43g2a). The restart cuts
+        each open connection of the old proxy.
+        """
+        door_s = door_read_timeout(self._settings())
+        if door_s < DOOR_READ_TIMEOUT_MIN_S:
+            raise SandboxUnavailable(
+                "The door read timeout of the egress proxy is below "
+                f"{DOOR_READ_TIMEOUT_MIN_S} s, so no grant opens."
+            )
         state = await self._docker.run(
             ["container", "inspect", "--format",
-             '{{.State.Running}}|{{index .Config.Labels "' + LABEL_EGRESS + '"}}',
+             '{{.State.Running}}|{{index .Config.Labels "' + LABEL_EGRESS + '"}}|'
+             "{{json .Config.Cmd}}",
              EGRESS_PROXY_NAME],
             timeout=_SMALL_TIMEOUT_SECONDS,
         )
-        if not (state.rc == 0 and state.stdout.strip() == "true|proxy"):
+        running, label, raw_cmd = [*state.stdout.strip().split("|", 2), "", ""][:3]
+        try:
+            cmd = json.loads(raw_cmd) if raw_cmd else []
+        except ValueError:
+            cmd = []
+        current = (
+            state.rc == 0 and running == "true" and label == "proxy"
+            and isinstance(cmd, list) and proxy_door_read_timeout(cmd) == str(door_s)
+        )
+        if not current:
             if state.rc == 0:
                 await self._docker.run(
                     ["rm", "-f", EGRESS_PROXY_NAME], timeout=_SMALL_TIMEOUT_SECONDS,
                 )
             bin_dir, grants_dir = await asyncio.to_thread(self._prepare_egress_dirs)
             started = await self._docker.run(
-                build_proxy_argv(image=image, bin_dir=bin_dir, grants_dir=grants_dir),
+                build_proxy_argv(
+                    image=image, bin_dir=bin_dir, grants_dir=grants_dir,
+                    door_read_timeout_s=door_s,
+                ),
                 timeout=_RUN_TIMEOUT_SECONDS,
             )
             if started.rc != 0:
                 _log.warning("sandbox_broker.egress_proxy_failed", error=started.stderr[-300:])
                 raise SandboxUnavailable("The egress proxy did not start.")
             # A fresh proxy is on no egress network. Join it again to the
-            # network of every org that holds a live grant, or those
-            # containers lose their only way out.
+            # network of every live grant, or those containers lose their
+            # only way out.
             networks = sorted({g.network for g in self._grants.values()} | {network})
         else:
             networks = [network]
+        # Each live network gets its join. A failed join of ANOTHER grant's
+        # network is logged and the loop goes on, so one bad network never
+        # strands the later grants. Only the new grant's own join refuses.
+        failed_own = False
         for name in networks:
-            joined = await self._docker.run(
-                ["network", "connect", name, EGRESS_PROXY_NAME],
-                timeout=_SMALL_TIMEOUT_SECONDS,
-            )
-            if joined.rc != 0 and "already exists" not in joined.stderr:
-                _log.warning("sandbox_broker.egress_join_failed", error=joined.stderr[-300:])
-                raise SandboxUnavailable("The egress proxy did not join the network.")
-
-    async def _release_network(self, org: str) -> None:
-        """Remove the org's network when no grant of the org is left. Never raises."""
-        async with self._egress_lock:
-            if any(g.org == org for g in self._grants.values()):
-                return
-            name = egress_network_name(org)
             try:
-                await self._docker.run(
-                    ["network", "disconnect", "-f", name, EGRESS_PROXY_NAME],
+                joined = await self._docker.run(
+                    ["network", "connect", name, EGRESS_PROXY_NAME],
                     timeout=_SMALL_TIMEOUT_SECONDS,
                 )
+                ok = joined.rc == 0 or "already exists" in joined.stderr
+                error = joined.stderr[-300:]
+            except (SandboxError, OSError) as exc:
+                if name == network:
+                    raise
+                ok, error = False, str(exc)[:300]
+            if not ok:
+                _log.warning("sandbox_broker.egress_join_failed", network=name, error=error)
+                failed_own = failed_own or name == network
+        if failed_own:
+            raise SandboxUnavailable("The egress proxy did not join the network.")
+
+    async def _release_network(self, name: str, container: str = "") -> None:
+        """Disconnect the proxy, and *container* if named, from the network of
+        one grant, and remove the network.
+
+        Each forgotten grant does this for its own network, whatever the other
+        grants of the org (WS-43g2a). A network that a live grant still names
+        stays. Never raises.
+        """
+        async with self._egress_lock:
+            if any(g.network == name for g in self._grants.values()):
+                return
+            try:
+                for member in (EGRESS_PROXY_NAME, container):
+                    if member:
+                        await self._docker.run(
+                            ["network", "disconnect", "-f", name, member],
+                            timeout=_SMALL_TIMEOUT_SECONDS,
+                        )
                 gone = await self._docker.run(
                     ["network", "rm", name], timeout=_SMALL_TIMEOUT_SECONDS,
                 )
@@ -4004,10 +4145,12 @@ class SandboxBroker:
         on ``docker-remote``, for a target that never gets egress, for a host
         off the allowlist, or when the handle is not the bound run's.
 
-        It mints a token, writes the grant, makes the org's network and the
-        proxy, and RECREATES the container on that network through
-        :meth:`_restart`, so every mount of §7.1 rule 5 comes back. A failed
-        recreate ends the grant. WS-43g2 adds the card that calls this.
+        It mints a token, names the network of this grant from the org, the
+        container and the grant key, makes that network and the proxy, and
+        RECREATES the container on it through :meth:`_restart`, so every
+        mount of §7.1 rule 5 comes back. A failed recreate ends the grant. A
+        new grant on the same container removes the network of the old one
+        (WS-43g2a). WS-43g2b adds the card that calls this.
         """
         settings = self._settings()
         if not egress_enabled(settings):
@@ -4025,25 +4168,53 @@ class SandboxBroker:
             raise SandboxRefused("The sandbox_egress_grant_ttl_seconds setting is not valid.")
         image = pinned_image(settings)
         await self._wait_ready(handle)
+        token = secrets.token_urlsafe(32)
+        key = hashlib.sha256(token.encode("utf-8")).hexdigest()
         grant = EgressGrant(
-            token=secrets.token_urlsafe(32), org=handle.org, run=run, agent=handle.agent,
+            token=token, org=handle.org, run=run, agent=handle.agent,
             approver=approver, hosts=names, expires_at=self._wall() + ttl,
-            network=egress_network_name(handle.org),
+            network=egress_network_name(handle.org, handle.name, key),
         )
         async with handle.lock:
             self._require_live(handle)
-            async with self._egress_lock:
-                self._forget_grant(handle)
-                await self._ensure_egress_network(handle.org)
-                await self._ensure_proxy(image, grant.network)
-                handle.egress = grant
-                self._grants[grant.key] = grant
-                await asyncio.to_thread(self._write_grants)
+            old = handle.egress
+            #: The network name once ``network create`` was called for it.
+            #: A client timeout can still make it on the daemon, and the name
+            #: holds a fresh random key, so it is never another run's.
+            attempt: list[str] = []
+            try:
+                async with self._egress_lock:
+                    # The old grant's network is spent here, and the removal
+                    # of the old container in _restart removes it.
+                    self._forget_grant(handle)
+                    await self._ensure_egress_network(grant, handle.name, attempt)
+                    await self._ensure_proxy(image, grant.network)
+                    handle.egress = grant
+                    self._grants[grant.key] = grant
+                    await asyncio.to_thread(self._write_grants)
+            except BaseException:
+                # A found network that is not its own is never touched.
+                if handle.egress is grant:
+                    self._forget_grant(handle)
+                if attempt:
+                    self._spend_network(grant.network)
+                if old is not None and not handle.removed and self._live.get(handle.name) is handle:
+                    # A failed re-grant: the container is still on the old
+                    # network with a dead token. Put it back on none (§7.3).
+                    try:
+                        await asyncio.shield(self._restart(handle, "egress_regrant_failed"))
+                    except Exception as exc:  # the original failure is the answer
+                        _log.warning(
+                            "sandbox_broker.egress_regrant_restore_failed",
+                            name=handle.name, error=str(exc)[:300],
+                        )
+                await asyncio.shield(self._flush_networks())
+                raise
             try:
                 await self._restart(handle, "egress_grant")
             except BaseException:
                 self._forget_grant(handle)
-                await asyncio.shield(self._release_network(grant.org))
+                await asyncio.shield(self._flush_networks())
                 raise
         _log.info(
             "sandbox_broker.egress_granted", name=handle.name, org=handle.org, run=run,
@@ -4074,7 +4245,9 @@ class SandboxBroker:
             if not handle.removed and self._live.get(handle.name) is handle:
                 await self._restart(handle, f"egress_{why}")
         finally:
-            await self._release_network(grant.org)
+            # _restart removed the container and flushed. A handle that is
+            # already gone flushes here.
+            await asyncio.shield(self._flush_networks())
             _log.info(
                 "sandbox_broker.egress_revoked", name=handle.name, org=grant.org,
                 run=grant.run, why=why,
@@ -4107,6 +4280,8 @@ class SandboxBroker:
         and a shared remote daemon holds the networks of other deployments.
         """
         self._grants.clear()
+        # The label filter below removes every egress network, spent or not.
+        self._spent_networks.clear()
         for handle in self._registered_handles():
             handle.egress = None
         with contextlib.suppress(OSError, SandboxError):
