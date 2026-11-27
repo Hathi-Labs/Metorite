@@ -16,10 +16,7 @@ import type { PendingConfirmation } from "./confirmationQueue";
 /** What a card is, for its tab. */
 /** `new` is the one email card of a NEW mail (§18.10): a reply form with
  *  `kind: "new"`. Its tab reads "Email to …", never "Reply to …". */
-/** `question` is a question card in the waiting dock (§24.11 WD-D3): the
- *  `ask_questions` or `ask_user` card, one tab for each card. No approval
- *  is ever this kind (D9). */
-export type CardKind = "send" | "reply" | "new" | "task" | "reminder" | "other" | "question";
+export type CardKind = "send" | "reply" | "new" | "task" | "reminder" | "other";
 
 /** The icon of each kind: Lucide names, drawn by `<Icon name>`. */
 export const KIND_ICON: Record<CardKind, string> = {
@@ -29,7 +26,6 @@ export const KIND_ICON: Record<CardKind, string> = {
   task: "CheckSquare",
   reminder: "Bell",
   other: "ShieldCheck",
-  question: "MessageCircleQuestion",
 };
 
 /**
@@ -92,22 +88,14 @@ export function pickLevel(needs: readonly number[], room: number, prev: TabLevel
  * wait on the assistant. A row of slots only never reads "0 to approve": it
  * says that the drafts are being changed.
  */
-export function tabsCount(total: number, updating = 0, words: CountWords = "approve"): string {
+export function tabsCount(total: number, updating = 0): string {
   if (total === 0 && updating > 0) return updating === 1 ? "Updating 1 draft" : `Updating ${updating} drafts`;
-  return words === "waiting" ? `${total} waiting` : `${total} to approve`;
+  return `${total} to approve`;
 }
 
-/**
- * The words of the count. `approve` is today's "N to approve". `waiting` is
- * for the row of the two question cards of the waiting dock (§24.11 WD-D3):
- * a question is not approved, so the row says "N waiting".
- */
-export type CountWords = "approve" | "waiting";
-
 /** The accessible name of the tab row. */
-export function tabsLabel(total: number, noun = "approvals", updating = 0, words: CountWords = "approve"): string {
+export function tabsLabel(total: number, noun = "approvals", updating = 0): string {
   if (total === 0 && updating > 0) return `${tabsCount(0, updating)}. Use the arrow keys to see each one.`;
-  if (words === "waiting") return `${total} ${total === 1 ? "item waits" : "items wait"} for you. Use the arrow keys to see each one.`;
   return `${total} ${noun} to approve. Use the arrow keys to see each one.`;
 }
 
@@ -209,15 +197,4 @@ export function tabLabel(card: TabCard): string {
     default:
       return generic;
   }
-}
-
-/**
- * The tab label of a question card in the waiting dock (§24.11, audit rule
- * 3): "Question: " and the card's title, cut to `TAB_LABEL_MAX`. The tab's
- * tooltip holds the whole question.
- */
-export function questionTabLabel(title: string): string {
-  const word = "Question:";
-  const t = title.replace(/\s+/g, " ").trim();
-  return t ? `${word} ${cutLabel(t, TAB_LABEL_MAX - word.length - 1)}` : "Question";
 }

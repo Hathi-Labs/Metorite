@@ -20,7 +20,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
-import { pickLevel, tabKeyTarget, tabsCount, tabsLabel, type CountWords, type TabLevel } from "@/lib/cardTabs";
+import { pickLevel, tabKeyTarget, tabsCount, tabsLabel, type TabLevel } from "@/lib/cardTabs";
 
 /** One card's tab. */
 export interface CardTab {
@@ -54,9 +54,6 @@ export interface CardTabsProps {
   tabs: readonly CardTab[];
   /** The row's noun, plural: "approvals" by default. */
   noun?: string;
-  /** The count words: "N to approve" (the default) or "N waiting", for the
-   *  two question cards of the waiting dock (§24.11). */
-  words?: CountWords;
 }
 
 const COUNT_CLASS = "flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote";
@@ -89,7 +86,7 @@ function TabFace({ tab, active, level }: { tab: CardTab; active: boolean; level:
 
 const LEVELS = [0, 1, 2] as const;
 
-export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWords = "approve" }: CardTabsProps) {
+export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
   // The count says how many cards wait on the member. A slot that waits on a
   // new draft is a tab, and it is not one of them. A row of slots only says
@@ -169,7 +166,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
     requestAnimationFrame(() => document.getElementById(cardTabId(uid, to))?.focus());
   };
 
-  const words = tabsCount(waiting, updating, countWords);
+  const words = tabsCount(waiting, updating);
   const count = (l: number) =>
     l >= 2 ? (
       // Level 2: the count is its number in a small pill. The words stay
@@ -195,7 +192,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
       <div
         ref={listRef}
         role="tablist"
-        aria-label={tabsLabel(waiting, noun, updating, countWords)}
+        aria-label={tabsLabel(waiting, noun, updating)}
         onKeyDown={onKey}
         onScroll={measure}
         data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}

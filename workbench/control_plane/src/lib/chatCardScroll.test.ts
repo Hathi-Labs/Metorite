@@ -47,14 +47,6 @@ describe("C3: a chat card holds no scroll box", () => {
     });
   }
 
-  it("§24.11 (WD-1): the dock's body is its one scroll box, and it holds no other", () => {
-    const dock = src("components/WaitingDock.tsx");
-    expect(dock.match(/overflow-y-auto/g)?.length).toBe(1);
-    expect(dock).toMatch(/data-dock-body=""[^>]*?className=\{?["`]overflow-y-auto/);
-    // The fold of the dock's queue adds no scroll box to the queue.
-    expect(src("components/ConfirmationQueue.tsx")).not.toMatch(/overflow-(y-)?auto/);
-  });
-
   it("ShowMore cuts with a fade and opens in place, never with a scroll box", () => {
     const s = src("components/ui/ShowMore.tsx");
     expect(s).not.toMatch(/overflow-(y-)?auto/);
@@ -69,22 +61,6 @@ describe("C1: the composer form draws no card", () => {
   it("no waiting card and no draft pins above the box", () => {
     expect(form).not.toContain("renderHitlCards()");
     expect(form).not.toMatch(/<(Pinned\w*|Draft\w*Card|ConfirmationCard|ElicitationCard|ConfirmationQueue)\b/);
-  });
-
-  it("§24.11 (WD-1): with the flag on, the dock sits between the thread and the form, never inside it", () => {
-    // A button of a card inside the form is a submit button: Enter in a card
-    // field sent the message, and an option tap sent the box (verifier P0).
-    expect(form).not.toMatch(/<WaitingDock\b/);
-    const before = chat.slice(0, chat.indexOf("<form onSubmit={handleSubmit}"));
-    const host = before.slice(before.lastIndexOf("<div ref={dockHostRef}"));
-    expect(host).toMatch(/<WaitingDock\s[^>]*questions=\{dockQuestions\}\s+pointer=\{dockPointer\}/);
-    // Only with the flag on. F1 (2026-11-28): the dock stays mounted while
-    // the flag is on, so it can hold its height after its last item leaves.
-    expect(chat.slice(0, chat.indexOf("<div ref={dockHostRef}"))).toMatch(/\{dockOn && \(\s*$/);
-    // D9: the approvals draw in the thread with the flag on too. Only a
-    // question card that waits leaves the thread for the dock.
-    expect(chat).toContain("const askHere = !!elicitation && (!dockOn || !elicitationWaits);");
-    expect(chat).toContain("const userHere = !!userInput && (!dockOn || !userInputWaits);");
   });
 
   it("the Todos panel opens folded on a phone", () => {

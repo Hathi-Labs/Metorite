@@ -81,20 +81,4 @@ describe("no card pins above the composer (owner report, 2026-10-23)", () => {
     expect(form).not.toContain("renderHitlCards()");
     expect(form).not.toMatch(/Draft(Result)?Card|ConfirmationCard|ElicitationCard/);
   });
-
-  it("§24.11 (WD-1): with the flag on, only the dock pins above the composer", () => {
-    // The dock is the one card above the box, outside the form, and only with the flag on.
-    expect(form).not.toMatch(/<WaitingDock\b/);
-    expect(chat.match(/<WaitingDock\s/g)?.length).toBe(1);
-    expect(chat.search(/<WaitingDock\s/)).toBeLessThan(chat.indexOf("<form onSubmit={handleSubmit}"));
-    // Only with the flag on: the host of the dock is inside `{dockOn && (`.
-    expect(chat.slice(0, chat.indexOf("<div ref={dockHostRef}"))).toMatch(/\{dockOn && \(\s*$/);
-    // D9: with the flag on, an approval stays in the thread, and only a
-    // question that waits leaves it. The thread keeps one line for it.
-    expect(chat).toContain("{askHere && elicitationCard()}");
-    expect(chat).toContain("{userHere && userInputCard()}");
-    expect(chat).toContain("const lineHere = dockOn && dockQ > 0;");
-    // With the flag off, the cards still draw after the last message.
-    expect(chat).toContain("{msg.id === hitlAnchorId && renderHitlCards()}");
-  });
 });

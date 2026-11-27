@@ -52,7 +52,6 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
-import WaitingDock, { WaitingDockLive, type DockQuestion, type DockSlot } from "@/components/WaitingDock";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
 import {
@@ -124,7 +123,7 @@ import { isStaleErrorRow } from "@/lib/chatRunFailed";
 import { coverOutage, uncoverOutage } from "@/lib/shell/serviceHealth";
 import { ErrorCardView } from "@/components/ChatErrorCard";
 import ElicitationCard from "@/components/ElicitationCard";
-import type { ElicitationDraft, ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
+import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import {
   ASK_USER_HEADER,
   answerSummary,
@@ -156,21 +155,6 @@ import {
   takeLeftoverQueue,
 } from "@/lib/chatSteer";
 import { boxHadFocus, refocusAfterPress, refocusQuietly } from "@/lib/composerFocus";
-import { questionTabLabel, tabLabel } from "@/lib/cardTabs";
-import {
-  arrivalBlursBox,
-  boxEnterBlocked,
-  dockCount,
-  dockQuestionCount,
-  type DockLeft,
-  leftKind,
-  openApproval,
-  picksOnly,
-  pointerScrollTop,
-  threadLine,
-  userInputShape,
-} from "@/lib/waitingDock";
-import { msSinceDockCommit, trackPresses, whenKeysUp } from "@/lib/freshPress";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
 import { createHistoryHold, drainAssumesRun, type HistoryHold } from "@/lib/historyHold";
@@ -189,7 +173,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
-import { useSkillOfferOn, useWaitingDockOn } from "@/lib/shell/shellPrefs";
+import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
 import { offerSolo, promptBefore } from "@/lib/studio/skillOffer";
 import type { AskOutcome } from "@/lib/shell/assistant";
 import {
@@ -2269,14 +2253,7 @@ export default function AgentChat({
     }
     // Enter sends and Shift+Enter is a new line (owner, 2026-10-31). On a
     // touch keyboard Enter stays a new line (`enterSends`, lib/chatSteer.ts).
-    const sends = enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard());
-    // WD-1 round 7: with the dock on, a held Enter, or an Enter just after a
-    // commit in the dock, never sends the box. With the flag off, as before.
-    if (sends && boxEnterBlocked({ dock: dockOn, repeat: e.repeat, msSinceCommit: msSinceDockCommit() })) {
-      e.preventDefault();
-      return;
-    }
-    if (sends) {
+    if (enterSends({ ...e, isComposing: e.nativeEvent.isComposing }, touchKeyboard())) {
       e.preventDefault();
       handleSubmit(e as unknown as React.FormEvent);
       return;
@@ -2634,208 +2611,8 @@ export default function AgentChat({
     else return false;
     return true;
   };
-  // The two question cards, each in ONE place: the thread draws them with the
-  // dock off, and the dock draws them while they wait with it on (§24.11).
-  const declineElicitation = elicitation?.requestId ? () => {
-    const card = elicitation;
-    setElicitation({ ...card, declined: true });
-    noteCardAnswered(sessionId, card.requestId!, "", true);
-    postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
-  } : undefined;
-  const declineUserInput = () => {
-    if (!userInput) return;
-    const card = userInput;
-    setUserInput({ ...card, declined: true });
-    noteCardAnswered(sessionId, card.requestId, "", true);
-    postRespondInput(declineBody(card.requestId), () => setUserInput(card));
-  };
-  const userInputQuestions = userInput ? [{
-    header: ASK_USER_HEADER,
-    question: userInput.question,
-    multiSelect: false,
-    allowFreeformInput: userInput.allowFreeform,
-    options: userInput.choices.length > 0
-      ? userInput.choices.map((c) => ({ label: c }))
-      : null,
-  }] : [];
-  // The picks and typed text of each blocking question card, by request id.
-  // In the dock an answered card leaves at once, and a failed send puts it
-  // back as a new mount: it starts from here, so nothing the member did is
-  // lost (WD-1). A ref, so a keystroke does not draw the whole chat again.
-  const dockOn = useWaitingDockOn();
-  // The key of the card that the queue in the thread shows now, as the queue
-  // reports it. Only the pointer row reads it, so it is asked for only while
-  // the dock is on. The queue holds the state, and this is its last report.
-  const [queueShown, setQueueShown] = useState<string | null>(null);
-  const reportShown = dockOn ? setQueueShown : undefined;
-  const questionDraftsRef = useRef(new Map<string, ElicitationDraft>());
-  useEffect(() => { questionDraftsRef.current.clear(); }, [sessionId]);
-  // Only with the dock on: with it off, the chat is the chat of before.
-  const draftProps = (rid: string | undefined) => dockOn && rid
-    ? {
-        initialDraft: questionDraftsRef.current.get(rid),
-        onDraft: (d: ElicitationDraft) => { questionDraftsRef.current.set(rid, d); },
-      }
-    : {};
-  const elicitationCard = (slot: DockSlot = {}) => elicitation && (
-    <ElicitationCard
-      key={elicitation.requestId ?? "questions"}
-      id={`ask:${elicitation.requestId ?? "questions"}`}
-      questions={elicitation.questions}
-      answered={elicitation.answered}
-      declined={elicitation.declined}
-      onDecline={declineElicitation}
-      onSubmit={answerElicitation}
-      {...draftProps(elicitation.requestId)}
-      {...slot}
-    />
-  );
-  const userInputCard = (slot: DockSlot = {}) => userInput && (
-    <ElicitationCard
-      key={userInput.requestId}
-      id={`ask:${userInput.requestId}`}
-      questions={userInputQuestions}
-      answered={userInput.answered}
-      declined={userInput.declined}
-      onDecline={declineUserInput}
-      onSubmit={answerUserInput}
-      {...draftProps(userInput.requestId)}
-      {...slot}
-    />
-  );
-  // ── The waiting dock (WD-1, §24.11, D9) ──────────────────────────────
-  // With the flag on, each QUESTION card that waits draws in the dock above
-  // the box. Two of them are two tabs. An approval card never moves: it
-  // draws in the thread exactly as with the flag off, and the dock holds one
-  // pointer row that names it (D9). The thread keeps one line at the place
-  // of the dock's questions, and an answered question card keeps its folded
-  // line there (C5, F2). The state is the state of today: an answer, a
-  // decline or a run end takes an item out, as it took it out of the thread.
-  const dockSources = {
-    confirmations: confirmations.cards,
-    elicitation: elicitationWaits ? elicitation : null,
-    userInput: userInputWaits ? userInput : null,
-  };
-  // The count of all that waits: the thread line and the live region (D9).
-  const dockN = dockCount(dockSources);
-  // The questions in the dock: only they move the focus or the fold.
-  const dockQ = dockQuestionCount(dockSources);
-  // F1 (2026-11-28): why each question card that waits no more left, so the
-  // dock's inert line in its place says "Answer sent" or "Not now". A card
-  // that is gone (a run end, another tab) left "elsewhere".
-  const dockLeft: Record<string, DockLeft> = {
-    ...(elicitation && !elicitationWaits ? { [`ask:${elicitation.requestId ?? "questions"}`]: leftKind(elicitation) } : {}),
-    ...(userInput && !userInputWaits ? { [`ask:${userInput.requestId}`]: leftKind(userInput) } : {}),
-  };
-  // Every question that waits is picks only (K2): an arrival may drop the keyboard.
-  const dockPicksOnly =
-    (!elicitationWaits || picksOnly(elicitation?.questions ?? [])) &&
-    (!userInputWaits || !userInput || picksOnly(userInputShape(userInput)));
-  // K1: the last key in the box, so an arrival never moves the focus while
-  // the member types (a key in the last 3 s, or text in the box).
-  // Minus infinity: no key yet, so an arrival in the first 3 s may blur.
-  const lastKeyAtRef = useRef(Number.NEGATIVE_INFINITY);
-  // The dock's host, outside the form (K6 reads it).
-  const dockHostRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const box = inputRef.current;
-    // The press log of the dock's arm and of K6 (`lib/freshPress.ts`).
-    if (dockOn) trackPresses();
-    if (!dockOn || !box) return;
-    const onKey = () => { lastKeyAtRef.current = performance.now(); };
-    box.addEventListener("keydown", onKey);
-    return () => box.removeEventListener("keydown", onKey);
-  }, [dockOn]);
-  // K1, K2 and K6, on a change of the count of the dock's questions. An
-  // arrival of picks-only questions on a phone blurs an idle box, so the
-  // keyboard drops and the dock opens. It never focuses anything. When the
-  // last question leaves, the box takes the focus back on a desktop only
-  // (`focusQuietly`, `lib/composerFocus.ts`). An approval in the thread moves
-  // no focus, as with the flag off (D9).
-  const dockQRef = useRef(dockQ);
-  // K6 waits for the keys to come up (round 7): a held Enter on the last
-  // Submit never runs on into the box. A new arrival cancels the wait.
-  const k6WaitRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => k6WaitRef.current?.(), []);
-  useEffect(() => {
-    const prev = dockQRef.current;
-    dockQRef.current = dockQ;
-    if (!dockOn) return;
-    const box = inputRef.current;
-    if (dockQ > 0) {
-      k6WaitRef.current?.();
-      k6WaitRef.current = null;
-    }
-    if (dockQ > prev && box) {
-      const blur = arrivalBlursBox({
-        phone: phoneChrome || touchKeyboard(),
-        boxFocused: boxHadFocus(box),
-        boxText: box.value,
-        msSinceKey: performance.now() - lastKeyAtRef.current,
-        picksOnly: dockPicksOnly,
-      });
-      if (blur) box.blur();
-    } else if (dockQ === 0 && prev > 0) {
-      // Only when the focus is nowhere else: a member who types in another
-      // field of the page keeps it (an app rail beside its app).
-      k6WaitRef.current?.();
-      k6WaitRef.current = whenKeysUp(() => {
-        k6WaitRef.current = null;
-        const at = typeof document === "undefined" ? null : document.activeElement;
-        const form = inputRef.current?.form;
-        if (!at || at === document.body || !!form?.contains(at) || !!dockHostRef.current?.contains(at)) focusQuietly();
-      });
-    }
-  }, [dockOn, dockQ, dockPicksOnly, phoneChrome, focusQuietly]);
-  // The question cards of the dock, in tab order (audit rule 3): the
-  // `ask_questions` card, then the `ask_user` card. One card is one tab.
-  const dockQuestions: DockQuestion[] = [
-    ...(elicitationWaits && elicitation
-      ? [{
-          key: `ask:${elicitation.requestId ?? "questions"}`,
-          label: questionTabLabel(elicitation.questions[0]?.question || elicitation.questions[0]?.header || ""),
-          title: elicitation.questions.map((q) => q.question).join(" "),
-          render: elicitationCard,
-        }]
-      : []),
-    ...(userInputWaits && userInput
-      ? [{
-          key: `ask:${userInput.requestId}`,
-          label: questionTabLabel(userInput.question),
-          title: userInput.question,
-          render: userInputCard,
-        }]
-      : []),
-  ];
-  // D9: the pointer to the approvals, which wait in the thread. Its Review
-  // ONLY scrolls: the thread moves so the mounted card shows whole above the
-  // dock, or its top when it is taller than the room. It changes no tab, so
-  // the card the member has open stays mounted with each edit. The focus
-  // goes to the card's heading, never to a button, so a held key commits
-  // nothing.
-  const reviewApproval = () => {
-    const thread = threadRef.current;
-    const card = thread?.querySelector<HTMLElement>(`[data-chat-ask="${HITL_TARGET}"] [data-confirmation-card]`);
-    if (!thread || !card) return;
-    const top = thread.getBoundingClientRect().top + thread.clientTop;
-    const to = pointerScrollTop(thread.scrollTop, { top, bottom: top + thread.clientHeight }, card.getBoundingClientRect());
-    if (to !== thread.scrollTop) thread.scrollTo({ top: to });
-    const head = card.querySelector<HTMLElement>("[data-rollup-title]") ?? card;
-    if (!head.hasAttribute("tabindex")) head.setAttribute("tabindex", "-1");
-    head.focus({ preventScroll: true });
-  };
-  // The pointer row names the card that the queue in the thread shows now,
-  // its open tab (2026-11-28). The queue reports the key of that tab.
-  const opened = openApproval(confirmations.cards, queueShown);
-  const dockPointer = opened ? { label: tabLabel(opened.card), more: opened.more, onReview: reviewApproval } : null;
   const renderHitlCards = (): React.ReactNode => {
-    // With the dock on (D9), a question card that waits draws in the dock
-    // and not here. Each approval and each settled question draws here as
-    // with the flag off, in the same group and the same roll-up.
-    const askHere = !!elicitation && (!dockOn || !elicitationWaits);
-    const userHere = !!userInput && (!dockOn || !userInputWaits);
-    const lineHere = dockOn && dockQ > 0;
-    if (!hasConfirmations && !askHere && !userHere && !lineHere) return null;
+    if (!hasConfirmations && !elicitation && !userInput) return null;
     // One mark for the group: the pin above the composer scrolls here
     // while a card waits (`lib/askPin.ts`, spec §24 rule 1). It is a card of
     // the transcript too: its arrival rolls up the long cards above it, and
@@ -2855,37 +2632,55 @@ export default function AgentChat({
             carriesEdits={steerOpen}
             savedEdits={savedFormEdits}
             onEdits={onFormEdits}
-            onShown={reportShown}
           />
         )}
 
-        {/* A new question is a new card (review of #945, P1). The answered
-            card stays mounted, so with no key the next question took its
-            picks and its typed text. A retry keeps its id, and its picks.
-            Only a blocking card parks a run, so only it can be declined.
-            A decline that cannot pass now opens the card again. A 4xx
-            keeps it declined: no run waits, and nothing goes as a message. */}
-        {askHere && elicitationCard()}
+        {elicitation && (
+          <ElicitationCard
+            // A new question is a new card (review of #945, P1). The answered
+            // card stays mounted, so with no key the next question took its
+            // picks and its typed text. A retry keeps its id, and its picks.
+            key={elicitation.requestId ?? "questions"}
+            id={`ask:${elicitation.requestId ?? "questions"}`}
+            questions={elicitation.questions}
+            answered={elicitation.answered}
+            declined={elicitation.declined}
+            // Only a blocking card parks a run, so only it can be declined.
+            // A decline that cannot pass now opens the card again. A 4xx
+            // keeps it declined: no run waits, and nothing goes as a message.
+            onDecline={elicitation.requestId ? () => {
+              const card = elicitation;
+              setElicitation({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId!, "", true);
+              postRespondInput(declineBody(card.requestId!), () => setElicitation(card));
+            } : undefined}
+            onSubmit={answerElicitation}
+          />
+        )}
 
-        {userHere && userInputCard()}
-
-        {/* WD-D1: the place of the dock's questions keeps one line. It is
-            not a card. A press scrolls the thread to its foot, and no more. */}
-        {lineHere && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="none"
-            radius="keep"
-            layout="flex items-center"
-            onClick={scrollToBottom}
-            data-dock-thread-line=""
-            className="gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground"
-          >
-            <Icon name="BellRing" size={12} className="shrink-0 text-primary" />
-            {threadLine(dockN)}
-            <Icon name="ArrowDown" size={12} className="shrink-0" />
-          </Button>
+        {userInput && (
+          <ElicitationCard
+            key={userInput.requestId}
+            id={`ask:${userInput.requestId}`}
+            questions={[{
+              header: ASK_USER_HEADER,
+              question: userInput.question,
+              multiSelect: false,
+              allowFreeformInput: userInput.allowFreeform,
+              options: userInput.choices.length > 0
+                ? userInput.choices.map((c) => ({ label: c }))
+                : null,
+            }]}
+            answered={userInput.answered}
+            declined={userInput.declined}
+            onDecline={() => {
+              const card = userInput;
+              setUserInput({ ...card, declined: true });
+              noteCardAnswered(sessionId, card.requestId, "", true);
+              postRespondInput(declineBody(card.requestId), () => setUserInput(card));
+            }}
+            onSubmit={answerUserInput}
+          />
         )}
       </div>
       </RollupCard>
@@ -2930,11 +2725,6 @@ export default function AgentChat({
       : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
-  // With the dock on, the bar never names an item of the dock. It still serves
-  // a generative-UI ask, which waits in the thread until WD-2 (audit rule 1).
-  const genUiWaiting = dockOn
-    ? pendingAsk({ ...askSources, confirmations: [], elicitation: null, userInput: null })
-    : null;
   // A card that waits on the member is the run's "waiting for you"
   // (`lib/runStatus.ts`). The run state, not the card, decides the status.
   const cardWaits = !!waiting;
@@ -3322,24 +3112,6 @@ export default function AgentChat({
       </div>
 
       {/* ── Input area + VS Code-style bottom bar ─────────────────────── */}
-      {/* WD-1 (§24.11): the dock, between the thread and the form. It is
-          OUTSIDE the form on purpose: a button of a card inside a form is a
-          submit button, and Enter in a card field would send the message. */}
-      {dockOn && (
-        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"}`}>
-          <WaitingDockLive count={dockN} />
-          {/* Mounted while the flag is on, so it can hold its height after
-              its last item leaves (F1). It draws nothing while empty. A new
-              session is a new dock: no line of the old one stays. */}
-          <WaitingDock
-            key={sessionId ?? "new"}
-            questions={dockQuestions}
-            pointer={dockPointer}
-            phone={phoneChrome || touchKeyboard()}
-            left={dockLeft}
-          />
-        </div>
-      )}
       <form onSubmit={handleSubmit} className={`shrink-0 border-t border-border bg-card/40 glass:border-transparent glass:bg-transparent ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2 pb-safe-full`}>
         {/* VS Code-style Todos panel — latest assistant turn's todo list */}
         {(() => {
@@ -3353,9 +3125,8 @@ export default function AgentChat({
           }
           return null;
         })()}
-        {/* The element that waits on the member, while it is out of view.
-            With the dock on, only a generative-UI ask (WD-2 moves it). */}
-        {dockOn ? <AskPin ask={genUiWaiting} threadRef={threadRef} /> : <AskPin ask={waiting} threadRef={threadRef} />}
+        {/* The element that waits on the member, while it is out of view. */}
+        <AskPin ask={waiting} threadRef={threadRef} />
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the

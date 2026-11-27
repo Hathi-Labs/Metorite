@@ -62,7 +62,7 @@
  * and `e2e/genui-option-picker.spec.ts`.
  */
 
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import GenUiText from "@/components/GenUiText";
 import Icon from "@/components/Icon";
@@ -73,8 +73,6 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Textarea } from "@/components/ui/Input";
-import { useArmed } from "@/lib/freshPress";
-import { FRESH_KEY_PROPS } from "@/lib/waitingDock";
 import { cardExit, DECLINED_TITLE, declinedNoteFor } from "@/lib/declineAnswer";
 import { plainTitle } from "@/lib/fencedText";
 import {
@@ -145,39 +143,6 @@ interface ElicitationCardProps {
    * picks stay: the card does not remount.
    */
   retryToken?: number;
-  /** The tab row of the waiting dock (§24.11 WD-D3), drawn inside the card
-   *  frame above its header, when two question cards wait (D9). */
-  tabs?: ReactNode;
-  /** The tab panel: the card is the panel the tabs control. */
-  tabPanel?: { id: string; labelledBy: string };
-  /**
-   * The card is in the waiting dock (24.11 WD-D2): the dock has no close
-   * control that drops an item, so the X of the title row does not draw.
-   * "Not now" beside Submit stays.
-   */
-  inDock?: boolean;
-  /**
-   * The dock: the card is on the screen, its tab open and the dock not
-   * folded. Submit and Not now wait `ARM_MS` after it shows (round 7).
-   */
-  dockShown?: boolean;
-  /** The waiting dock's Fold control, on the title row of the card
-   *  (§24.11). */
-  headerAside?: ReactNode;
-  /**
-   * The member's picks and typed text from a mount before this one (§24.11).
-   * In the dock, an answered card leaves at once, and a failed send puts it
-   * back as a new mount. The chat holds the draft, so nothing is lost.
-   */
-  initialDraft?: ElicitationDraft;
-  /** The card reports its picks and typed text after each change. */
-  onDraft?: (draft: ElicitationDraft) => void;
-}
-
-/** What the member picked and typed on a question card, by question header. */
-export interface ElicitationDraft {
-  answers: ElicitationAnswers;
-  freeformTexts: Record<string, string>;
 }
 
 export default function ElicitationCard({
@@ -191,28 +156,10 @@ export default function ElicitationCard({
   hint = SUBMIT_HINT,
   title: openTitle,
   retryToken = 0,
-  tabs,
-  tabPanel,
-  inDock = false,
-  dockShown,
-  headerAside,
-  initialDraft,
-  onDraft,
 }: ElicitationCardProps) {
-  const [answers, setAnswers] = useState<ElicitationAnswers>(() => initialDraft?.answers ?? {});
-  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>(() => initialDraft?.freeformTexts ?? {});
-  // Report each change to the host, which keeps it across a new mount.
-  const draftTo = useRef(onDraft);
-  useEffect(() => {
-    draftTo.current = onDraft;
-  });
-  useEffect(() => {
-    draftTo.current?.({ answers, freeformTexts });
-  }, [answers, freeformTexts]);
+  const [answers, setAnswers] = useState<ElicitationAnswers>({});
+  const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const uid = useId();
-  // Round 7: in the dock, Submit and Not now take only a fresh press on a
-  // card that shows. Outside the dock the card is the card of before.
-  const arm = useArmed(inDock ? `q:${dockShown !== false}` : "", inDock && dockShown !== false);
   const isAnswered = answered !== undefined;
   // Answered or declined: the card waits no more.
   const closed = isAnswered || declined;
@@ -267,12 +214,8 @@ export default function ElicitationCard({
   const canDecline = !!onDecline && !closed;
   // Glass only (GL-4): a card that wants an answer is tinted, and a settled
   // card is a plain surface. Each has a solid icon tile in a system colour.
-  // A card with the dock's tab row (24.11) takes the padding of the approval
-  // card, p-4, which the row's edges expect, so the row stays inside the frame.
   const glassFrame = !closed
-    ? tabs
-      ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4"
-      : "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-3"
+    ? "glass:glass-card-tile glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-3"
     : `glass:glass-card-tile glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 ${
         declined ? "glass:[--tile:var(--system-gray)]" : "glass:[--tile:var(--system-green)]"
       }`;
@@ -289,25 +232,14 @@ export default function ElicitationCard({
       <section
         aria-label={title}
         data-elicitation-card={declined ? "declined" : isAnswered ? "answered" : "open"}
-        onClickCapture={inDock ? arm.guard : undefined}
         className={`${CARD_FRAME_CLASS} ${glassFrame}`}
-        {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       >
-        {tabs}
         {canDecline ? (
           <div className="flex min-w-0 items-center gap-1.5">
             <div className="min-w-0 flex-1">
               <RollupHeader aside={aside} />
             </div>
-            {headerAside}
-            {!inDock && <NotNowClose onClick={handleDecline} disabled={disabled} />}
-          </div>
-        ) : headerAside ? (
-          <div className="flex min-w-0 items-center gap-1.5">
-            <div className="min-w-0 flex-1">
-              <RollupHeader aside={aside} />
-            </div>
-            {headerAside}
+            <NotNowClose onClick={handleDecline} disabled={disabled} />
           </div>
         ) : (
           <RollupHeader aside={aside} />
@@ -419,7 +351,6 @@ export default function ElicitationCard({
                 disabled={locked || !canSubmit}
                 aria-describedby={blockedReason ? reasonId : undefined}
                 data-elicitation-submit=""
-                {...(inDock ? FRESH_KEY_PROPS : {})}
               >
                 Submit
               </Button>
