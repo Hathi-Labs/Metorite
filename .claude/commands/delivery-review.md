@@ -44,7 +44,7 @@ main. Name the area and the reverted pull requests in the task.
 
 1. Use only these tools. Use Bash for the one `scripts/delivery_metrics.py`
    command of step 1. Use Read and Write for the two `/tmp/delivery_*.json`
-   files. Use the Metorite tools that read tasks and create a task.
+   files. Use Read for `/tmp/lane_time_lost.md`. Use the Metorite tools that read tasks and create a task.
    The script makes all GitHub calls, and it only reads. The session makes no
    `gh` call.
 2. Never cancel or rerun a GitHub run. Never merge. Never push.
@@ -98,6 +98,14 @@ Call the MCP. The script cannot do it.
 - **Waits on the owner.** Call `list_agent_runs` with `needs_agent` false and
   status awaiting. Count them, and note the oldest.
 
+### 2b. Read the time lost by lane
+
+`delivery_review.sh` writes the table "Time lost by lane" to
+`/tmp/lane_time_lost.md` before the session starts. The lane keeper keeps the
+stop log `~/lanes/lane-stops.tsv` (CIV-LIVE, task 4060). The table gives the
+hours of each lane by cause, for the last 7 days, and a total. Read the file.
+It has no threshold, so it opens no fix task.
+
 ### 3. Compare with the thresholds
 
 Build one table. Use one row for each line of the Thresholds table above.
@@ -110,7 +118,8 @@ no data.
    `519d9f0d-8dde-4910-b733-b4fa2ed3c2b9`). Title it `Delivery review YYYY-MM-DD`
    with today's date. Set its parent to epic task 1628 (id
    `ed3027f8-bf27-4f56-9a40-2c89141606d0`).
-2. Put the comparison table and the deltas in its description.
+2. Put the comparison table and the deltas in its description. Then copy the
+   table of `/tmp/lane_time_lost.md` as it is.
 3. Add the full JSON of `/tmp/delivery_now.json` in a fenced `json` block at
    the end of the description. The next run reads it as its last week.
 4. For each item over its threshold, create ONE fix task. Title it

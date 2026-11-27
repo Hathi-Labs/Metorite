@@ -70,6 +70,11 @@ HIGH tier (the box path). The orchestrator watch runs on the box, and the lane
 keeper wakes `lane-orch` for each new batch of events. The timer ships
 disabled. §5 CIV-ORCH holds it.
 
+**CIV-LIVE is BUILT on 2026-11-27** (task 4060, branch `devx-lane-liveness`,
+stacked on CIV-ORCH). HIGH tier (the box path). The lane keeper names why a
+lane stopped, and it wakes a lane after a network error or a usage reset. The
+weekly review shows the time lost. §5 CIV-LIVE holds it.
+
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
 **Owning spec** for how much CI runs, and where. `engineering_practice.md` §7a
@@ -838,6 +843,32 @@ To start it, the owner or lane-devx installs and enables the timer, and adds
 `tests/unit/test_lane_keeper.py`. The first file tests each rule, the repeat,
 the resting list and the timer. The keeper tests check one wake for each batch.
 
+### CIV-LIVE: the lane keeper brings a lane back by itself (task 4060)
+
+**Status: BUILT 2026-11-27** (task 4060). HIGH tier, because it changes the
+box path. Stacked on CIV-ORCH.
+
+Owner, 2026-11-26: lanes stopped on usage limits, network drops, memory kills
+and sign-outs, and each one waited for a person. Now the keeper reads why the
+last turn of a lane ended. `stop_cause()` reads the transcript tail. The
+causes are `network`, `usage`, `signout`, `memory` and `normal`.
+
+- `network`: a wake after 2, 5, 15 and 30 minutes, for each lane. A good turn
+  resets the wait.
+- `usage`: no wake before the reset time plus 2 minutes, or 60 minutes with no
+  reset time.
+- `signout`: no wake, and one NOTE line in `~/lanes/merge-queue.log`.
+- `memory` and `normal`: the CIV-19 rules.
+
+The keeper writes `~/lanes/lane-stops.tsv`, one row for each stop of a fault
+cause. The weekly review (CIV-10) adds a table of the hours lost by lane and
+cause. `docs/home_box.md` §3.7 holds the operator view.
+
+**Files:** `scripts/home_server/lane_keeper.py`,
+`scripts/home_server/delivery_review.sh`, `.claude/commands/delivery-review.md`.
+**Fence:** the `test_civ_live_*` tests of `tests/unit/test_lane_keeper.py`, and
+`tests/unit/test_delivery_review.py`.
+
 ### CIV-10: the weekly delivery review (task 1643)
 
 **Status: BUILT 2026-11-07** (task 1643, branch `civ10-review`). STANDARD tier.
@@ -924,6 +955,7 @@ AGENT-SAFE. STANDARD tier, with an Opus diff review.
 | CIV-22 | 2288 | | |
 | CIV-19 | 2206 | | |
 | CIV-ORCH | 4058 | | |
+| CIV-LIVE | 4060 | | |
 
 The slices of §8 have their own table in §8.5.
 

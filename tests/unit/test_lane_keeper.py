@@ -563,3 +563,291 @@ def test_civ_orch_a_line_that_comes_while_lane_orch_works_wakes_it_again(keeper,
     assert [w[2] for w in mod.run_pass(ended, now=NOW + 600)] == ["orch-events"]
     assert "lines 3-3" in (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
     assert "write THAT count" in mod.ORCH_NOTE and "never a new `wc -l`" in mod.ORCH_NOTE
+
+
+# --- CIV-LIVE (task 4060): the stop cause, the backoff and the stop log --------
+# The records copy the shapes of real transcripts (2026-11), with every id,
+# path and token taken out.
+
+
+def _ts(t):
+    import datetime as dt
+
+    return dt.datetime.fromtimestamp(t, dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _prompt(text="Your turn ended."):
+    return {"type": "user", "message": {"role": "user", "content": text}, "timestamp": _ts(NOW - 3000)}
+
+
+def _tool_use(name="mcp__metorite__my_work"):
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": name, "input": {}}]},
+    }
+
+
+def _tool_result(text, error=False):
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": text, "is_error": error}],
+        },
+    }
+
+
+def _said(text="Done for now."):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def _api_error(text, error, at=NOW - 1200, **extra):
+    """A synthetic assistant record of Claude Code: the turn ended on an API error."""
+    return {
+        "type": "assistant",
+        "timestamp": _ts(at),
+        "message": {"model": "<synthetic>", "role": "assistant", "content": [{"type": "text", "text": text}]},
+        "error": error,
+        "isApiErrorMessage": True,
+        **extra,
+    }
+
+
+END = [
+    {"type": "system", "subtype": "stop_hook_summary", "hookCount": 1},
+    {"type": "system", "subtype": "turn_duration", "durationMs": 1000},
+]
+BOOKKEEPING = [{"type": "bridge-session"}, {"type": "cost-state"}, {"type": "last-prompt"}]
+WEEKLY_RESET = 1_800_003_600  # the resetsAt field of the record
+USAGE_WEEKLY = _api_error(
+    "You've hit your weekly limit · resets Nov 23, 11pm (UTC)",
+    "rate_limit",
+    apiError="usage_limit_reached",
+    apiErrorStatus=429,
+    apiErrorParams={"rate_limit_info": {"status": "rejected", "resetsAt": WEEKLY_RESET}},
+    quotaLimits={"status": "rejected", "resetsAt": WEEKLY_RESET, "rateLimitType": "seven_day"},
+)
+NETWORK_LOST = _api_error(
+    "API Error: Connection lost mid-response. The response above may be incomplete.",
+    "server_error",
+    apiError="connection_failed",
+    streamCutCause="stale_connection",
+)
+SIGNOUT_CLAUDE = _api_error(
+    "Please run /login · API Error: 403 Attention Required! | Cloudflare",
+    "authentication_failed",
+    apiErrorStatus=403,
+)
+
+
+def _tail(*recs):
+    # A real tail starts with half a record: the read cut it.
+    return 'ype":"user"}\n' + "\n".join(json.dumps(r) for r in recs) + "\n"
+
+
+def test_civ_live_stop_cause_reads_each_cause_from_a_real_tail(keeper):
+    mod, _ = keeper
+    sc = mod.stop_cause
+    # network: a lost connection, and an ENOTFOUND text with a 5xx status.
+    assert sc(_tail(_prompt(), NETWORK_LOST, *BOOKKEEPING)).cause == "network"
+    dns = _api_error("API Error: getaddrinfo ENOTFOUND api.anthropic.com", "unknown")
+    assert sc(_tail(_prompt(), dns)).cause == "network"
+    five = _api_error("API Error: 529 overloaded_error", "unknown", apiErrorStatus=529)
+    assert sc(_tail(_prompt(), five)).cause == "network"
+    # usage: the reset comes from the record field.
+    assert sc(_tail(_prompt(), USAGE_WEEKLY, *BOOKKEEPING)) == mod.Stop("usage", WEEKLY_RESET)
+    # signout: Claude, and the Metorite MCP in a tool result of the last turn.
+    assert sc(_tail(_prompt(), SIGNOUT_CLAUDE, *BOOKKEEPING)).cause == "signout"
+    mcp = _tool_result('MCP server "metorite" needs you to sign in again (run /mcp to re-authenticate)', True)
+    assert sc(_tail(_prompt(), _tool_use(), mcp, _said("The board is down."), *END)).cause == "signout"
+    # memory: the turn stopped inside a tool call, with no end record and no process.
+    mid = _tail(_prompt(), _tool_use("Bash"))
+    assert sc(mid, alive=False).cause == "memory"
+    assert sc(mid, alive=True).cause == "normal" and sc(mid).cause == "normal"
+    # normal: an end record, even with "fetch failed" in tool output and no process.
+    git = _tool_result("warning: git fetch failed, so origin/main may be stale")
+    assert sc(_tail(_prompt(), _tool_use("Bash"), git, _said(), *END, *BOOKKEEPING), alive=False).cause == "normal"
+    # A sign-in error of an earlier turn does not count, nor does an error before a new prompt.
+    old = _tail(_prompt(), _tool_use(), mcp, _said(), *END, _prompt(), _said(), *END)
+    assert sc(old).cause == "normal"
+    assert sc(_tail(USAGE_WEEKLY, _prompt("You have new orders."), _said(), *END)).cause == "normal"
+    assert sc("").cause == "normal"
+
+
+def test_civ_live_the_reset_time_comes_from_the_text_when_no_field_has_it(keeper):
+    mod, _ = keeper
+    import datetime as dt
+
+    at = dt.datetime(2026, 11, 18, 7, 20, tzinfo=dt.UTC).timestamp()
+    five_hour = _api_error("You've hit your 5-hour limit · resets 9:20am (UTC)", "rate_limit", at=at)
+    want = dt.datetime(2026, 11, 18, 9, 20, tzinfo=dt.UTC).timestamp()
+    assert mod.stop_cause(_tail(five_hour)) == mod.Stop("usage", want)
+    late = _api_error("You've hit your 5-hour limit · resets 1am (UTC)", "rate_limit", at=at)
+    nxt = dt.datetime(2026, 11, 19, 1, 0, tzinfo=dt.UTC).timestamp()
+    assert mod.stop_cause(_tail(late)).reset_at == nxt
+    weekly = _api_error("You've hit your weekly limit · resets Nov 23, 11pm (UTC)", "rate_limit", at=at)
+    assert mod.stop_cause(_tail(weekly)).reset_at == dt.datetime(2026, 11, 23, 23, tzinfo=dt.UTC).timestamp()
+    bare = _api_error("Rate limit reached.", "rate_limit", at=at)
+    assert mod.stop_cause(_tail(bare)) == mod.Stop("usage", None)
+
+
+def _write(home, sid, recs, age_s):
+    d = home / ".claude" / "projects" / "-p"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{sid}.jsonl"
+    f.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+    os.utime(f, (NOW - age_s, NOW - age_s))
+    return f
+
+
+def _log(home):
+    return (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+
+
+def _stops(home):
+    p = home / "lanes" / "lane-stops.tsv"
+    return [ln.split("\t") for ln in p.read_text(encoding="utf-8").splitlines()] if p.exists() else []
+
+
+def test_civ_live_network_backoff_is_2_5_15_30_minutes_and_resets_after_a_good_turn(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-n")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-n", "s-n", "blocked")])
+    net = [_prompt(), NETWORK_LOST]
+    t = NOW  # every pass runs at NOW: the backoff reads the transcript age only
+    # Step 1: 2 minutes. At 1 minute, a skip with the cause in the log.
+    _write(home, "s-n", net, 60)
+    assert mod.run_pass(agents, now=t) == []
+    assert "skip lane-n cause=network: network backoff 2 min" in _log(home)
+    _write(home, "s-n", net, 130)
+    assert [w[0] for w in mod.run_pass(agents, now=t)] == ["lane-n"]
+    assert "reason=blocked cause=network exit=0" in _log(home)
+    # Steps 2 to 4, then the last step holds. No 30-minute cap and no 10-minute age.
+    for step, wait in enumerate((300, 900, 1800, 1800), start=2):
+        _write(home, "s-n", net, wait - 30)
+        assert mod.run_pass(agents, now=t) == [], step
+        _write(home, "s-n", net, wait + 10)
+        assert len(mod.run_pass(agents, now=t)) == 1, step
+    # A turn that worked: the backoff is back at 2 minutes.
+    _write(home, "s-n", [_prompt(), _said(), *END], 700)
+    assert len(mod.run_pass(agents, now=t + 2000)) == 1
+    _write(home, "s-n", net, 130)
+    assert len(mod.run_pass(agents, now=t)) == 1
+
+
+def test_civ_live_no_usage_wake_before_the_reset_plus_two_minutes(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-u")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-u", "s-u", "blocked")])
+    _write(home, "s-u", [_prompt(), USAGE_WEEKLY, *BOOKKEEPING], 1200)
+    reset = WEEKLY_RESET
+    # The transcript is old and the cap is clear, but the limit holds.
+    assert mod.run_pass(agents, now=reset - 600) == []
+    assert mod.run_pass(agents, now=reset + 119) == []
+    assert "skip lane-u cause=usage: usage limit, no wake before" in _log(home)
+    assert calls == []
+    assert [w[0] for w in mod.run_pass(agents, now=reset + 121)] == ["lane-u"]
+    # With no reset time: 60 minutes after the last transcript write.
+    _lanes(home, "lane-v")
+    bare = _api_error("Rate limit reached.", "rate_limit")
+    v = json.dumps([_agent("lane-v", "s-v", "blocked")])
+    _write(home, "s-v", [_prompt(), bare], 3000)
+    assert mod.run_pass(v, now=NOW) == []
+    _write(home, "s-v", [_prompt(), bare], 3700)
+    assert [w[0] for w in mod.run_pass(v, now=NOW)] == ["lane-v"]
+
+
+def test_civ_live_an_account_change_wakes_a_usage_lane(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-u")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    agents = json.dumps([_agent("lane-u", "s-u", "blocked")])
+    _write(home, "s-u", [_prompt(), USAGE_WEEKLY], 1200)
+    _account(home, "a@x.io")
+    assert mod.run_pass(agents, now=NOW) == []
+    _account(home, "b@x.io")
+    assert [w[2] for w in mod.run_pass(agents, now=NOW + 60)] == ["account change"]
+
+
+def test_civ_live_a_signout_never_wakes_and_writes_one_note(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-s")
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-s", "s-s", "blocked")])
+    _write(home, "s-s", [_prompt(), SIGNOUT_CLAUDE, *BOOKKEEPING], 99999)
+    for i in range(4):
+        assert mod.run_pass(agents, now=NOW + i * 3600) == []
+    _account(home, "b@x.io")  # an account change does not wake it either
+    assert mod.run_pass(agents, now=NOW + 99999) == []
+    assert calls == []
+    notes = (home / "lanes" / "merge-queue.log").read_text(encoding="utf-8").splitlines()
+    assert notes == [
+        "NOTE\tlane-keeper\t"
+        + mod._hhmm(NOW)
+        + " UTC: lane-s stopped on a sign-out. See the sign-in alarm (docs/home_box.md §5.3)."
+    ]
+    assert "skip lane-s cause=signout: no wake on a sign-out" in _log(home)
+    # A sign-out of the Metorite MCP is the same cause, so still no second NOTE.
+    mcp = _tool_result('MCP server "metorite" needs authentication', True)
+    _write(home, "s-s", [_prompt(), _tool_use(), mcp, _said(), *END], 99999)
+    mod.run_pass(agents, now=NOW + 200000)
+    assert len((home / "lanes" / "merge-queue.log").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_civ_live_the_stop_log_opens_once_and_closes_when_the_lane_runs(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-n", "lane-m", "lane-ok")
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    monkeypatch.setattr(mod, "pid_alive", lambda pid: False)
+    _write(home, "s-n", [_prompt(), NETWORK_LOST], 60)
+    _write(home, "s-m", [_prompt(), _tool_use("Bash")], 60)  # killed inside a tool call
+    _write(home, "s-ok", [_prompt(), _said(), *END], 60)
+    ended = [
+        _agent("lane-n", "s-n", "blocked"),
+        _agent("lane-m", "s-m", "blocked"),
+        _agent("lane-ok", "s-ok", "done"),
+    ]
+    mod.run_pass(json.dumps(ended), now=NOW)
+    mod.run_pass(json.dumps(ended), now=NOW + 60)  # seen again: no second row
+    iso = mod._iso
+    assert _stops(home) == [[iso(NOW), "-", "lane-m", "memory"], [iso(NOW), "-", "lane-n", "network"]]
+    # lane-n runs again: its row closes. lane-m stays open.
+    running = [
+        _agent("lane-n", "s-n", "working", status="busy"),
+        _agent("lane-m", "s-m", "blocked"),
+        _agent("lane-ok", "s-ok", "done"),
+    ]
+    mod.run_pass(json.dumps(running), now=NOW + 600)
+    assert _stops(home) == [
+        [iso(NOW), "-", "lane-m", "memory"],
+        [iso(NOW), iso(NOW + 600), "lane-n", "network"],
+    ]
+    assert "stop-log close lane-n cause=network" in _log(home)
+    # It stops on the network again: a new row.
+    mod.run_pass(json.dumps(ended), now=NOW + 1200)
+    assert _stops(home)[-1] == [iso(NOW + 1200), "-", "lane-n", "network"]
+
+
+def test_civ_live_the_time_lost_table_sums_hours_by_cause(keeper):
+    mod, _ = keeper
+    iso = mod._iso
+    text = "\n".join(
+        [
+            f"{iso(NOW - 9 * 86400)}\t{iso(NOW - 8 * 86400)}\tlane-a\tnetwork",  # outside the window
+            f"{iso(NOW - 7 * 86400 - 3600)}\t{iso(NOW - 7 * 86400 + 3600)}\tlane-a\tnetwork",  # half inside
+            f"{iso(NOW - 3 * 86400)}\t{iso(NOW - 3 * 86400 + 7200)}\tlane-a\tusage",
+            f"{iso(NOW - 5400)}\t-\tlane-b\tsignout",  # open: counts until now
+            "a broken line",
+        ]
+    )
+    table = mod.time_lost(text, NOW)
+    assert "| Lane | network | usage | signout | memory | Total |" in table
+    assert "| lane-a | 1.0 | 2.0 | 0.0 | 0.0 | 3.0 |" in table
+    assert "| lane-b | 0.0 | 0.0 | 1.5 | 0.0 | 1.5 |" in table
+    assert "| Total | 1.0 | 2.0 | 1.5 | 0.0 | 4.5 |" in table
+    assert "No lane stopped" in mod.time_lost("", NOW)
