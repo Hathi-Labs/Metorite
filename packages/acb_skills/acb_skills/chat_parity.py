@@ -888,10 +888,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "POST /api/agent/artifacts/upload": (
         "download",
-        "The Upload button of the email rule editor (RulesTab.tsx) sends a file from the member's "
-        "own device, which only the browser can read. It is the file stream of a download, in the "
-        "other direction. The chat lists these files with list_artifacts, and a member gives the "
-        "chat a file with the paperclip of the composer.",
+        "The Upload button of the email rule editor (RulesTab.tsx) sends a file that the member "
+        "picks on their own device, and only the browser can read it. It is a file stream, as a "
+        "download is. The email assistant lists these files with its own list_artifacts.",
     ),
     "PATCH /api/agent/workspace/{}": (
         "chat",
@@ -901,9 +900,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "POST /api/artifacts/compile": (
         "download",
-        "The preview of a React file that an agent wrote. The chat card builds it to draw it "
-        "(SandboxedReact.tsx), and no member click sends it. No gateway route serves it. The "
-        "chat reads and writes the source itself.",
+        "The preview of a React file that an agent wrote. The card builds it to draw it "
+        "(SandboxedReact.tsx), and no member click sends it. The workbench runs the build, and "
+        "the gateway only counts the slot (artifact_compile.py). The chat writes the source "
+        "itself.",
     ),
     "POST /api/documents/pdf": (
         "download",

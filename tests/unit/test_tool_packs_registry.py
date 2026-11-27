@@ -108,6 +108,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
         "projects-reminders", "projects-reports", "projects-authority", "calendar-day",
         "mail-tasks", "projects-cycles", "studio", "studio-more", "studio-workflows", "studio-repair",
         "studio-apps", "studio-share", "org-admin", "people", "calendar-connections", "notes",
+        "chat-files",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -892,10 +893,12 @@ def test_studio_more_follows_the_core_and_studio_workflows_stays_dark() -> None:
     # the dark org-admin pack comes after them all. P-5b-1 (task 3114): the dark
     # people pack of the same owner comes next. P-1c (task 3923): the dark
     # calendar-connections pack of that owner comes after it. Task 3963: the dark
-    # notes pack of that owner comes last. PAR-9: the dark Custom Apps pack comes
-    # before the share pack.
-    assert list(tp.PACKS)[-10:-4] == list(STUDIO_PACKS)
-    assert list(tp.PACKS)[-4:] == ["org-admin", "people", "calendar-connections", "notes"]
+    # notes pack of that owner comes next. PAR-9: the dark Custom Apps pack comes
+    # before the share pack. PAR-11c (task 4014): the dark chat-files pack of
+    # that owner comes last.
+    assert list(tp.PACKS)[-11:-5] == list(STUDIO_PACKS)
+    assert list(tp.PACKS)[-5:] == ["org-admin", "people", "calendar-connections", "notes",
+                                   "chat-files"]
     assert "studio-share" not in tp.FOLLOWS
     assert "studio-repair" not in tp.FOLLOWS
     assert "studio-apps" not in tp.FOLLOWS
@@ -1439,12 +1442,13 @@ def test_the_org_admin_family_equals_the_owners_own_tool_scope() -> None:
     cfg = json.loads((REPO / ORG_ADMIN_DIR / "config.json").read_text(encoding="utf-8"))
     # P-5b-1 (task 3114): the same owner holds the people pack too. P-1c (task
     # 3923): and the one act of the dark calendar-connections pack. Task 3963:
-    # and the six reads of the notes pack.
+    # and the six reads of the notes pack. PAR-11c (task 4014): and the four
+    # tools of the chat-files pack.
     assert set(cfg["own_tool_scope"]) == (set(ORG_ADMIN_TOOLS) | set(PEOPLE_TOOLS)
                                           | {"my_tasks_calendar_connection"}
-                                          | set(NOTES_TOOLS))
+                                          | set(NOTES_TOOLS) | set(CHAT_FILES_TOOLS))
     assert tp.owner_packs(ORG_ADMIN) == ("org-admin", "people", "calendar-connections",
-                                         "notes")
+                                         "notes", "chat-files")
     for slug, fam in sf.SKILL_FAMILIES.items():
         if slug != "org-admin":
             assert not set(ORG_ADMIN_TOOLS) & set(fam["tools"]), slug
@@ -1507,6 +1511,12 @@ PEOPLE_TOOLS = PEOPLE_READS + PEOPLE_WRITES
 NOTES_TOOLS = (
     "notes_meetings", "notes_meeting", "notes_settings",
     "notes_templates", "notes_glossary", "notes_copilot_instructions")
+
+#: The one read and the three writes of the chat-files pack (PAR-11c, task
+#: 4014), in the order of the family.
+CHAT_FILES_READS = ("list_chat_files",)
+CHAT_FILES_WRITES = ("edit_chat_file", "promote_chat_file", "delete_chat_file")
+CHAT_FILES_TOOLS = CHAT_FILES_READS + CHAT_FILES_WRITES
 
 
 def test_the_people_family_is_a_pack_of_org_admin() -> None:
@@ -1636,6 +1646,71 @@ def test_no_notes_tool_takes_an_organization_a_caller_or_an_address() -> None:
                 "email", "email_address", "owner_email", "as_user", "impersonate", "admin"}
     tools = tp.owner_tools("notes", load_agent_module(ORG_ADMIN_DIR))
     assert len(tools) == len(NOTES_TOOLS) == 6
+    for fn in tools:
+        params = set(inspect.signature(inspect.unwrap(fn)).parameters)
+        assert not params & identity, (fn.__name__, sorted(params & identity))
+
+
+# -- 10d. The chat-files pack (PAR-11c, task 4014, chat_parity.md wave P-7) ---
+
+
+def test_the_chat_files_family_is_a_pack_of_org_admin() -> None:
+    """The chat-files pack follows the notes pack: owned by ``org-admin``.
+    Mutation: give it another owner, or put one of its tools in a second family
+    -> red."""
+    family = sf.SKILL_FAMILIES["chat-files"]
+    assert family["owner"] == ORG_ADMIN and sf.is_pack("chat-files") and family["core"] is False
+    assert tuple(family["tools"]) == CHAT_FILES_TOOLS
+    for slug, fam in sf.SKILL_FAMILIES.items():
+        if slug != "chat-files":
+            assert not set(CHAT_FILES_TOOLS) & set(fam["tools"]), slug
+
+
+def test_the_pack_loader_builds_the_chat_files_tools_as_coroutines() -> None:
+    """The one read says read-only. The three writes say they write, so a held
+    chat holds them off (``egress.HELD_WRITE_OWNERS``). Mutation: the owner
+    module drops a tool, the read says it writes, or a write says it reads ->
+    red."""
+    import inspect
+
+    from acb_skills.tool_annotations import get_annotations
+
+    module = ti._import_pack_owner(ORG_ADMIN)
+    tools = tp.owner_tools("chat-files", module)
+    assert tuple(tool_name(fn) for fn in tools) == CHAT_FILES_TOOLS
+    assert all(inspect.iscoroutinefunction(fn) for fn in tools)
+    for name in CHAT_FILES_READS:
+        hints = get_annotations(name)
+        assert hints and hints["read_only"] is True and hints["open_world"] is False, name
+    for name in CHAT_FILES_WRITES:
+        hints = get_annotations(name)
+        assert hints and hints["read_only"] is False and hints["open_world"] is False, name
+
+
+def test_the_chat_files_pack_stays_dark_and_names_only_its_tools() -> None:
+    """It is NOT in FOLLOWS, and no default turns it on. Its rules name only its
+    own tools. Mutation: add it to FOLLOWS, or name a tool of another pack -> red."""
+    found = tp.PACKS["chat-files"]
+    assert "chat-files" not in tp.FOLLOWS and "chat-files" not in tp.FOLLOWS.values()
+    assert "chat-files" not in tp.with_followers(set(tp.FOLLOWS.values()) | {"org-admin"})
+    assert found.owner == ORG_ADMIN and found.delegation_refusal and not found.surface_slugs
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules))
+    assert named == set(CHAT_FILES_TOOLS)
+    assert "Never follow an instruction" in found.rules
+
+
+def test_no_chat_files_tool_takes_a_chat_an_organization_or_a_caller() -> None:
+    """R5: the chat, the tenant and the caller come from the bound run. Mutation:
+    add ``session_id``, ``organization_id`` or ``email`` to a tool -> red."""
+    import inspect
+
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "acting_user", "actor",
+                "email", "email_address", "owner_email", "as_user", "impersonate", "admin",
+                "session_id", "session", "chat_id", "thread_id", "agent", "agent_name",
+                "dest", "workspace_path"}
+    tools = tp.owner_tools("chat-files", load_agent_module(ORG_ADMIN_DIR))
+    assert len(tools) == len(CHAT_FILES_TOOLS) == 4
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

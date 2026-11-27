@@ -228,10 +228,11 @@ def _allowed(workflows: bool) -> frozenset[str]:
     surface, owner ``org-admin``) is out for the same reason. The dark
     ``studio-apps`` (PAR-9, task 3950, six tools, no surface) is out for the same
     reason. ``calendar-connections`` (P-1c, task 3923, one tool, no surface, owner
-    ``org-admin``) is out for the same reason."""
+    ``org-admin``) is out for the same reason. So are the dark ``notes`` (task
+    3963) and ``chat-files`` (PAR-11c, task 4014) of that owner."""
     every = frozenset(sf.pack_slugs()) - {"studio-share", "studio-repair", "org-admin",
                                           "people", "studio-apps", "calendar-connections",
-                                          "notes"}
+                                          "notes", "chat-files"}
     if workflows:
         return every
     named = every - frozenset(tp.FOLLOWS) - {"studio-workflows"}

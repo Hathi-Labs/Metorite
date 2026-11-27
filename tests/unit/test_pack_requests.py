@@ -401,6 +401,11 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "notes_templates": ("list the meeting templates",),
     "notes_glossary": ("show my notes glossary",),
     "notes_copilot_instructions": ("show my copilot instructions",),
+    # -- chat-files: the Files panel of this chat (PAR-11c, task 4014) --
+    "list_chat_files": ("list the files of this chat", "show the file history of the report"),
+    "edit_chat_file": ("fix the typo in the chat files report",),
+    "promote_chat_file": ("move the upload into agent data",),
+    "delete_chat_file": ("delete the old draft from the files of this chat",),
     # -- studio-repair: the repair of a skill (TOF-3a F12c) --
     "studio_skill_repair": ("fix my skill, it failed", "the skill was wrong, repair the skill"),
     "studio_skill_undo": ("undo my skill to the version before",),
