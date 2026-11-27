@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
-from acb_common import get_settings, member_actions
+from acb_common import get_settings
 from acb_common.db import tenant_session
 from gateway.routes.email import act_features
 from sqlalchemy import text
