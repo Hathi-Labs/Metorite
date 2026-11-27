@@ -633,7 +633,15 @@ person.
 
 No result holds a secret key, a credential shape, a local path, a repo URL or
 a sprite. Each line of each text loses the value of a secret key, at any place
-in the line, as in `export API_KEY=value`. Agent names, descriptions, commit
+in the line, as in `export API_KEY=value`.
+
+The key rule is best effort on free text, such as diffs, run errors and
+descriptions. It removes the known credential shapes and the assignments of a
+secret-named key. It cannot remove a secret passed as an argument with no
+known shape. Only a reviewer who already sees the diff can reach the mutation
+diff.
+
+Agent names, descriptions, commit
 messages, diffs, config fields and run errors go in one untrusted frame. A
 diff pages by line.
 

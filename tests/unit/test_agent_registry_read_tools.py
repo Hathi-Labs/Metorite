@@ -593,6 +593,9 @@ async def test_no_secret_value_of_a_config_reaches_the_model(gw: Gateway,
     f'+    env = {{"DB_PASSWORD": "{V}"}}',
     f"+api\u200b_key = {V}",
     f"+run --password={V} now",
+    f'+os.environ["API_KEY"] = "{V}"',
+    f'+cfg["password"]="{V}"',
+    f"+cfg['db_password'] = '{V}'",
 ])
 def test_the_diff_rule_finds_an_assignment_anywhere_in_the_line(line: str) -> None:
     """Mutation: match the assignment only at the start of the line -> red."""
@@ -604,7 +607,9 @@ async def test_a_run_error_loses_the_value_of_a_secret_key(gw: Gateway) -> None:
     rule -> red."""
     gw.force["runs"] = (200, {"runs": [
         {"run_id": "r1", "agent": "sales", "status": "error",
-         "error_message": f"failed: DB_PASSWORD={V}\nthen export API_KEY={V}"}], "count": 1})
+         "error_message": (f"failed: DB_PASSWORD={V}\nthen export API_KEY={V}\n"
+                           f'os.environ["API_KEY"] = "{V}"; cfg["password"]="{V}"')}],
+        "count": 1})
     with _run():
         out = await ar.agent_registry_runs()
     assert out["ok"] is True and V not in _all_text(out)

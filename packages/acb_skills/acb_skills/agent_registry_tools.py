@@ -47,7 +47,11 @@ The rules:
 * **No secret reaches the model.** A key that names a secret is left out
   (``secret_shapes.is_secret_key``), after its hidden characters go. Each
   line of each text loses the value of a ``KEY=value`` or ``KEY: value`` of
-  a secret key, anywhere in the line (:func:`_scrub_line`). Each text loses each credential shape of
+  a secret key, anywhere in the line (:func:`_scrub_line`). The key rule is
+  best effort on free text (diffs, run errors, descriptions): it removes the
+  known credential shapes and the assignments of a secret-named key, and it
+  cannot remove a secret passed as an argument with no known shape. Only a
+  reviewer who already sees the diff can reach the mutation diff. Each text loses each credential shape of
   the one list (``secret_shapes``). A route error loses each link, key and
   path (``tool_refusals.scrub_text``). A local path, a sprite and a repo URL
   are not shown.
@@ -193,7 +197,7 @@ _SECRET_RX = (REDACTION_BEARER, *REDACTION_SHAPES, *(rx for _, rx in SECRET_SHAP
 #: The user and the password of a link (``https://user:pass@host``).
 _LINK_LOGIN = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,512}@")
 #: An assignment in a line of code or config: the key, then ``=`` or ``:``.
-_ASSIGNMENT = re.compile(r"(?<![\w.])([A-Za-z_][\w.-]{0,80})([\"']?\s{0,8}[:=]\s{0,8})(?=\S)")
+_ASSIGNMENT = re.compile(r"(?<![\w.])([A-Za-z_][\w.-]{0,80})([\"']?\]?\s{0,8}[:=]\s{0,8})(?=\S)")
 #: The first word of a value, for the plain-value test.
 _VALUE_WORD = re.compile(r"[^\s,;]{0,200}")
 #: A value that holds no secret: a number, a switch, null, or an empty text.
