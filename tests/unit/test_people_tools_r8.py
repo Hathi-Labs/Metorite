@@ -712,6 +712,8 @@ def test_e_reach_off_for_a_member_is_404_and_plain_words(reach_world) -> None:
     w = rw.w
     rw.allowed = lambda org, email: org == w.p.org_a
     out = rw.send(w.zed)
-    assert out == {"ok": False, "error": pt._REACH_OFF, "sent": False}, out
+    # A send that sent nothing says so in its words (task 3946, d0386b127).
+    assert out == {"ok": False, "error": "Reach is off for you. Nothing was sent.",
+                   "sent": False}, out
     assert rw.post(w.zed).status_code == 404
     assert rw.cards == [] and rw.provider.sends == [] and _outbox(w.p, w.zed) == []
