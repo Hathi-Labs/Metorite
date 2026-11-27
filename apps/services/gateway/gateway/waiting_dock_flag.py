@@ -1,12 +1,11 @@
 """The flag of the waiting dock of the chat (WD-1, ``projects_ai_chat.md``
 §24.11, D234).
 
-``WAITING_DOCK_ORGS`` draws each question card that waits on the member in a
-dock above the message box, outside the scrolling thread. An approval card
-stays in the thread, and the dock shows one pointer row for it (D9). It opens
-no data and changes no route: the shell read serves the answer as
-``waiting_dock``, and the chat draws the dock only then. Off, the chat draws as
-before.
+``WAITING_DOCK_ORGS`` draws one row above the message box that names what
+waits on the member (D10). Every card stays in the thread, and the row's Review
+only scrolls to it. It opens no data and changes no route: the shell read
+serves the answer as ``waiting_dock``, and the chat draws the row only then.
+Off, the chat draws as before.
 """
 
 from __future__ import annotations

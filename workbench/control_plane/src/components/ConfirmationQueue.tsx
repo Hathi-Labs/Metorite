@@ -24,7 +24,7 @@
  * The rules are `lib/redraftCard.ts`.
  */
 
-import { useId, useReducer, useState } from "react";
+import { useEffect, useId, useReducer, useState } from "react";
 
 import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
@@ -74,6 +74,10 @@ interface ConfirmationQueueProps {
   savedEdits?: (key: string) => FormEdit | undefined;
   /** A form reports the member's edits, by key. */
   onEdits?: (key: string, edits: FormEdit) => void;
+  /** Hears the key of the card the queue shows now, after each change of it.
+   *  Optional. The open tab is the queue's own state, so the row of the
+   *  waiting dock reads it here and keeps no copy (§24.11, D10). */
+  onShown?: (key: string | null) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -132,7 +136,7 @@ export function reconcileShown(
   return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits, onShown }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -153,6 +157,11 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const next = reconcileShown(prevKeys, cards, shown);
   if (next.keys !== prevKeys) setPrevKeys(next.keys);
   if (next.shown !== shown) setShown(next.shown);
+  // The card on screen, for `onShown`. Read after each commit, never in a render.
+  const shownNow = cards.length > 0 ? cards[pickShown(cards, shown)].key : null;
+  useEffect(() => {
+    onShown?.(shownNow);
+  }, [onShown, shownNow]);
   if (cards.length === 0) return null;
   const at = pickShown(cards, shown);
   const card = cards[at];

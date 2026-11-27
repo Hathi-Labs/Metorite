@@ -52,8 +52,10 @@ import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/Confirm
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
+import WaitingDock from "@/components/WaitingDock";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
+import { waitingRow } from "@/lib/waitingDock";
 import {
   genUiAnswersFromTurns,
   parseCardAnswerEnvelope,
@@ -173,7 +175,7 @@ import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFro
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
-import { useSkillOfferOn } from "@/lib/shell/shellPrefs";
+import { useSkillOfferOn, useWaitingDockOn } from "@/lib/shell/shellPrefs";
 import { offerSolo, promptBefore } from "@/lib/studio/skillOffer";
 import type { AskOutcome } from "@/lib/shell/assistant";
 import {
@@ -2632,6 +2634,7 @@ export default function AgentChat({
             carriesEdits={steerOpen}
             savedEdits={savedFormEdits}
             onEdits={onFormEdits}
+            onShown={reportShown}
           />
         )}
 
@@ -2725,6 +2728,13 @@ export default function AgentChat({
       : new Set([...answeredAsks, ...cardAskAnswers.keys()]),
   };
   const waiting = pendingAsk(askSources);
+  // WD-1 (§24.11, D10): with the flag on, one row above the box names what
+  // waits, in the place of the bar. Every card stays in the thread. The row
+  // names the open tab of the queue, which the queue reports (`onShown`).
+  const dockOn = useWaitingDockOn();
+  const [queueShown, setQueueShown] = useState<string | null>(null);
+  const reportShown = dockOn ? setQueueShown : undefined;
+  const dockRow = dockOn ? waitingRow(askSources, queueShown) : null;
   // A card that waits on the member is the run's "waiting for you"
   // (`lib/runStatus.ts`). The run state, not the card, decides the status.
   const cardWaits = !!waiting;
@@ -3125,8 +3135,13 @@ export default function AgentChat({
           }
           return null;
         })()}
-        {/* The element that waits on the member, while it is out of view. */}
-        <AskPin ask={waiting} threadRef={threadRef} />
+        {/* The element that waits on the member, while it is out of view.
+            With the flag on, the row of D10 takes its place (§24.11). */}
+        {dockOn ? (
+          <WaitingDock key={sessionId ?? "new"} row={dockRow} threadRef={threadRef} boxRef={inputRef} />
+        ) : (
+          <AskPin ask={waiting} threadRef={threadRef} />
+        )}
         {/* Live working indicator — always visible at bottom of output while
             agent is active. Mirrors Claude / GitHub Copilot style: status is
             always in view regardless of scroll position or whether the
