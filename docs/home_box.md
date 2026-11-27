@@ -500,6 +500,9 @@ ships. `docs/box_connect.md` holds the box-token steps. A lane does not load
 OWNER STEP about the project entry of `.mcp.json` (`docs/box_connect.md` §4)
 still applies.
 
+With a box token, the sign-in ends only through an org switch:
+`scripts/metorite_switch_org.sh` (`docs/box_connect.md` §7).
+
 ### 5.3 The sign-in alarm
 
 A timer checks the sign-in of §5.2 every 10 minutes on a dev machine. When

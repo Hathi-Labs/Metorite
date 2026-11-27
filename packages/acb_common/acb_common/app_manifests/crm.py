@@ -83,6 +83,12 @@ _OAUTH = (
     "chat does not sign in to a provider."
 )
 
+#: WS-PKG PKG-14a: the dark door of the extension values of a package.
+_PACKAGE_FIELDS = (
+    "WS-PKG PKG-14a: the dark door of the extension values of a package "
+    "(package_host.md §8.3). No chat tool reaches it yet. PKG-14b adds the "
+    "tool with the record sheet, and moves this row."
+)
 CRM = App(
     id="crm",
     name="CRM",
@@ -142,6 +148,19 @@ CRM = App(
         Route("POST", "/crm/organizations", "", "B", planned="CRM-M2c", off_door=_DOOR_WRITE),
         Route("GET", "/crm/export/organizations.csv", "", "A", planned="CRM-M2l", off_door=_EXPORT),
         Route("GET", "/crm/export/all.zip", "", "X", reason=_DOWNLOAD),
+        # ── package_fields.py (WS-PKG PKG-14a, dark behind PACKAGE_HOST_ORGS) ──
+        Route("GET", "/crm/leads/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/leads/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/deals/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/deals/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/contacts/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/contacts/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
+        Route("GET", "/crm/organizations/{record_id}/package-fields", "", "X", reason=_PACKAGE_FIELDS),
+        Route("PUT", "/crm/organizations/{record_id}/package-fields/{install_id}/{field_key}", "",
+              "X", reason=_PACKAGE_FIELDS),
         # ── owners ──
         Route("GET", "/crm/owners", "crm_list_owners", "A", off_door=_DOOR_READ, sandbox=True),
         # ── activities ──

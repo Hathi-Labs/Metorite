@@ -80,7 +80,8 @@ class FakePipeline:
 
 
 class FakeRedis:
-    """The two commands of the call cap, and a switch for an outage."""
+    """The two commands of the call cap and the refusal count, the read of
+    the counts, and a switch for an outage."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
@@ -92,6 +93,12 @@ class FakeRedis:
         assert transaction, "the INCR and its expiry go in one MULTI block"
         self.pipelines += 1
         return FakePipeline(self)
+
+    async def mget(self, keys: list[Any]) -> list[Any]:
+        """The read of ``door_counts`` (SBX-4b1). A missing key is None."""
+        if self.down:
+            raise ConnectionError("redis is down")
+        return [self.counts.get(str(k)) for k in keys]
 
 
 def make_app(monkeypatch: Any, *, tripwire: Any = None, big: bool = False) -> Any:

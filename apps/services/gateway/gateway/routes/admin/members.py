@@ -824,6 +824,13 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # her private chats. So the count is each row of the member.
     _PersonRows("tool_gaps", "tool_gaps",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # SBX-4b1 (agent_sandbox.md §7.3, §12.4 decision 10): the tool run rows
+    # of the member in THIS organization. A row holds her address. A Delete of
+    # a chat keeps the row (ON DELETE SET NULL), so no cascade takes it, and
+    # this entry deletes each row of hers. The clause names the bound org
+    # beside RLS. SBX-7 reviews this rule when credits land.
+    _PersonRows("user_tool_runs", "user_tool_runs",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
     # SBX-2 (agent_sandbox.md §12.2): the run capabilities of the member in
     # THIS organization. A row holds her address and a token hash. The table
     # is RLS-exempt, so the clause must name the bound org. The door already

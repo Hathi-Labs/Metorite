@@ -6,7 +6,9 @@
 
 **An owner must close the project route first. Section 4 names the two ways. The script finds this case and stops with exit code 7.**
 
-**Scripts:** `scripts/box_connect.sh` and the header helper `scripts/metorite_box_headers.sh`. **Fences:** `tests/unit/test_box_token_secret_rules.py` and `tests/unit/test_box_token_claude_client.py`.
+**The org switch (EA-19h, task 4034) BUILT 2026-11-26.** Section 7 holds the steps.
+
+**Scripts:** `scripts/box_connect.sh`, the header helper `scripts/metorite_box_headers.sh` and the org switch `scripts/metorite_switch_org.sh`. **Fences:** `tests/unit/test_box_token_secret_rules.py`, `tests/unit/test_box_token_claude_client.py` and `tests/unit/test_metorite_switch_org.py`.
 
 ## Why a box token
 
@@ -112,6 +114,60 @@ The script does not edit a settings file or `.mcp.json`. A local-scope entry win
 3. On the box, delete `~/.config/metorite/box.env` and `~/.local/bin/metorite-box-headers`.
 
 The revoke takes effect on the next call.
+
+## 7. Switch the organization of a machine
+
+A machine stays signed in. The only act that ends its sign-in is an org switch (owner directive, 2026-11-26). The script `scripts/metorite_switch_org.sh` does the switch, and it logs each one.
+
+The user entry runs the header helper on each connect. So a switch only puts a new token into `box.env`, and then the sessions start again. The script runs no `claude mcp` command.
+
+> ⚠️ **Run the switch from a plain shell, never from a Claude session.** With `--stop-lanes` it stops each live session, and a session that runs it stops itself. The script refuses when `CLAUDECODE` or a `CLAUDE_CODE_*` variable is set.
+
+Keep one token for each organization:
+
+1. Make a box token in each organization (§1).
+2. For each organization, run `bash scripts/metorite_switch_org.sh add <label>`, and paste the token at the hidden prompt.
+3. A label is 1 to 32 characters of `a-z`, `0-9` and `-`. It starts with a letter or a digit.
+4. The script writes `~/.config/metorite/orgs/<label>.env`, mode 0600. To replace a file, add `--replace`.
+5. To see the labels, run `bash scripts/metorite_switch_org.sh list`. A `*` marks the active one. It never shows a token.
+
+Switch the machine:
+
+1. Run `bash scripts/metorite_switch_org.sh to <label> --dry-run`. It shows the live sessions and changes nothing.
+2. Run `bash scripts/metorite_switch_org.sh to <label> --stop-lanes`.
+3. Start each stopped lane again as a fresh session, not as a resume (`docs/home_box.md` §3.3). The script prints the names.
+
+The switch does these steps. Every check runs before a session stops or a file changes.
+
+- It takes the lock `~/.config/metorite/.switch-org.lock`. A second `add` or `to` stops at once with exit code 12.
+- It refuses a label with no org file. It runs the helper on the org file, and refuses when the helper refuses it.
+- It refuses when the user entry does not name the helper and `box.env`. Then run `scripts/box_connect.sh` first.
+- It refuses an address other than `https://mcp.metorite.com`, or `http` or `https` to `127.0.0.1` or `localhost`. It also refuses an address with a user name. This is the rule of `mcpUrl()` in `.claude/hooks/session-handoff.mjs`. No token goes to another host.
+- It refuses a `box.env` or a `box.env.prev` that is a symlink or not a regular file. It refuses a `box.env` that is not mode 0600, is not yours, or has a second hard link.
+- It refuses when `box.env` holds a token that no org file holds, because the switch would lose that token. Run `add <label>` with that token first.
+- It counts the live sessions with `claude agents --json`. A session is live when it has a process. It refuses while a session is live, unless you add `--stop-lanes`. Then it runs `claude stop <id>` for each one, and waits until none is live.
+- It copies `box.env` to `box.env.prev`, and writes the new token into `box.env`. Both files have mode 0600.
+- It calls `initialize` and then `whoami` at the address of the entry, with the header of the helper. It follows no redirect. It shows the email and the organization id.
+- If `whoami` fails, it puts `box.env.prev` back, and the active org does not change. A `SIGINT`, `SIGTERM` or `SIGHUP` before the proof passes does the same.
+- It writes the label into `~/.config/metorite/active-org`. It adds one line to `~/.local/state/metorite/org-switch.log`. When `~/lanes/merge-queue.log` exists, it adds one `NOTE` line there too. When a log write fails, the script gives a warning, because the switch is complete.
+- It reads the live sessions again after the proof. A session that started during the switch, for example a wake of the lane keeper, can hold the old org until a restart. The script names each one in its output and in the `NOTE` line: "Started during the switch: <names>. They hold the old org until a restart." Stop each one, and start it again.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Switched, or `--dry-run` done |
+| 2 | A bad argument, a bad label, or an address in the entry that the rule refuses |
+| 3 | `add`: the token is empty or has the wrong shape |
+| 4 | `python3`, `claude` or `flock` is not on the path, or the checkout has no header helper |
+| 5 | `add`: the org file exists, and `--replace` is not set |
+| 6 | A write failed |
+| 7 | The user entry does not name the header helper, or the helper is not installed |
+| 8 | The label has no org file, or the helper refuses the org file |
+| 9 | A session is live and `--stop-lanes` is not set, the shell is a Claude session, or a read or a stop of the sessions failed |
+| 10 | `whoami` failed with the new token, or a signal came before the proof. The script put `box.env` back |
+| 11 | `box.env` or `box.env.prev` is not a safe file, or `box.env` holds a token that no org file holds |
+| 12 | Another `add` or `to` holds the lock |
+
+The script never shows, logs or passes a token in a command line.
 
 ## What a revoked token looks like
 
