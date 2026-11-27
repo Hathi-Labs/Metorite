@@ -725,8 +725,8 @@ const THREAD_COMMITS = ["[data-reply-send]", "[data-reply-save]", "[data-reply-d
  * returns the point to press, and the place of the thread control after the
  * scroll, as a check.
  */
-async function lineUp(page: Page, sel: string, text = "") {
-  return page.evaluate(([dockSel, commits, words]) => {
+async function lineUp(page: Page, sel: string, text = "", ownX = false) {
+  return page.evaluate(([dockSel, commits, words, mine]) => {
     const t = document.querySelector("[data-dock-host]")!.previousElementSibling as HTMLElement;
     const own = Array.from(document.querySelectorAll<HTMLElement>(`[data-dock-body] [data-dock-question]:not([hidden]) ${dockSel}`))
       .find((el) => (el.textContent ?? "").includes(words as string))!
@@ -737,56 +737,54 @@ async function lineUp(page: Page, sel: string, text = "") {
       .sort((a, b) => overlap(b.getBoundingClientRect()) - overlap(a.getBoundingClientRect()))[0];
     const r = pick.getBoundingClientRect();
     const y = own.top + own.height / 2;
-    const x = (Math.max(r.left, own.left) + Math.min(r.right, own.right)) / 2;
+    const x = mine ? own.left + own.width / 2 : (Math.max(r.left, own.left) + Math.min(r.right, own.right)) / 2;
     t.scrollTop += r.top + r.height / 2 - y;
     const after = pick.getBoundingClientRect();
     return {
       x, y, overlap: overlap(r), name: pick.textContent?.trim() ?? "",
       lined: after.top + after.height / 2, foot: t.scrollHeight - t.clientHeight - t.scrollTop,
     };
-  }, [sel, THREAD_COMMITS, text] as const);
+  }, [sel, THREAD_COMMITS, text, ownX] as const);
 }
 
 /**
- * Watch the point of a press, each frame. Nothing may move under the pointer
- * while the dock holds (800 ms). The point may show the control that was
- * there at the start, or the dock's inert line in its place
- * (`[data-dock-held]`), and nothing else. It records each other element.
+ * Watch the point of a press, each frame, for `ms` by the page's own clock.
+ * Nothing may move under the pointer while the dock holds (800 ms). The
+ * point may show the control that was there at the start, or the dock's
+ * inert line or gap in its place (`[data-dock-held]`, `[data-dock-gap]`),
+ * and nothing else. It records each other element, the words of each inert
+ * line, and how far the top of the dock's host moved.
  */
-async function watchPoint(page: Page, x: number, y: number) {
-  await page.evaluate(([px, py]) => {
-    const w = window as unknown as { __moved: string[]; __held: string[]; __watch: boolean };
+async function watchPoint(page: Page, x: number, y: number, ms: number) {
+  await page.evaluate(([px, py, span]) => {
+    const w = window as unknown as { __watch: { moved: string[]; held: string[]; shift: number } };
     const CONTROL = "button, a[href], input, textarea, select, [role='tab']";
     const first = document.elementFromPoint(px, py)?.closest(CONTROL) ?? null;
-    w.__moved = [];
-    w.__held = [];
-    w.__watch = true;
+    const host = document.querySelector<HTMLElement>("[data-dock-host]")!;
+    const top0 = host.getBoundingClientRect().top;
+    const until = performance.now() + span;
+    w.__watch = { moved: [], held: [], shift: 0 };
     const tick = () => {
-      if (!w.__watch) return;
+      if (performance.now() > until) return;
       const el = document.elementFromPoint(px, py);
       const same = !!first && !!el && first.contains(el);
       const held = el?.closest("[data-dock-held]");
-      if (held && !w.__held.includes(held.textContent ?? "")) w.__held.push(held.textContent ?? "");
-      if (el && !same && !held) {
+      const words = held?.textContent ?? "";
+      if (held && !w.__watch.held.includes(words)) w.__watch.held.push(words);
+      if (el && !same && !held && !el.closest("[data-dock-gap]")) {
         const d = (el.closest(CONTROL) ?? el).outerHTML.slice(0, 90);
-        if (!w.__moved.includes(d)) w.__moved.push(d);
+        if (!w.__watch.moved.includes(d)) w.__watch.moved.push(d);
       }
+      w.__watch.shift = Math.max(w.__watch.shift, Math.abs(host.getBoundingClientRect().top - top0));
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
-  }, [x, y]);
+  }, [x, y, ms]);
 }
 
-async function moved(page: Page) {
-  return page.evaluate(() => {
-    const w = window as unknown as { __moved: string[]; __watch: boolean };
-    w.__watch = false;
-    return w.__moved;
-  });
-}
-
-/** The words of each inert line that the watch saw under the point. */
-const heldWords = (page: Page) => page.evaluate(() => (window as unknown as { __held: string[] }).__held);
+/** What the watch saw. */
+const watched = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __watch: { moved: string[]; held: string[]; shift: number } }).__watch);
 
 async function pressAt(page: Page, d: Device, x: number, y: number) {
   if (d.touch) await page.touchscreen.tap(x, y);
@@ -824,13 +822,15 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         expect(at.overlap).toBeGreaterThan(4);
         expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
         expect(at.foot).toBeGreaterThan(0);
-        await watchPoint(page, at.x, at.y);
+        await watchPoint(page, at.x, at.y, 700);
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(150);
         await pressAt(page, d, at.x, at.y);
-        await page.waitForTimeout(550);
-        expect(await moved(page)).toEqual([]);
-        expect(await heldWords(page)).toEqual(["Answer sent"]);
+        await page.waitForTimeout(700);
+        const seen = await watched(page);
+        expect(seen.moved).toEqual([]);
+        expect(seen.held).toEqual(["Answer sent"]);
+        expect(seen.shift).toBeLessThan(1);
         await page.waitForTimeout(1000);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
@@ -855,13 +855,15 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         const at = await lineUp(page, "[data-not-now]");
         expect(at.overlap).toBeGreaterThan(4);
         expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
-        await watchPoint(page, at.x, at.y);
+        await watchPoint(page, at.x, at.y, 700);
         await pressAt(page, d, at.x, at.y);
         await page.waitForTimeout(150);
         await pressAt(page, d, at.x, at.y);
-        await page.waitForTimeout(550);
-        expect(await moved(page)).toEqual([]);
-        expect(await heldWords(page)).toEqual(["Not now"]);
+        await page.waitForTimeout(700);
+        const seen = await watched(page);
+        expect(seen.moved).toEqual([]);
+        expect(seen.held).toEqual(["Not now"]);
+        expect(seen.shift).toBeLessThan(1);
         await page.waitForTimeout(1000);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
@@ -884,13 +886,15 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         expect(at.overlap).toBeGreaterThan(4);
         expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
         // The run ends: the question leaves the dock with no press.
-        await watchPoint(page, at.x, at.y);
+        await watchPoint(page, at.x, at.y, 700);
         await page.evaluate(() => window.__push({ type: "done" }));
         await page.waitForTimeout(300);
         await pressAt(page, d, at.x, at.y);
-        await page.waitForTimeout(400);
-        expect(await moved(page)).toEqual([]);
-        expect(await heldWords(page)).toEqual(["Answered elsewhere"]);
+        await page.waitForTimeout(500);
+        const seen = await watched(page);
+        expect(seen.moved).toEqual([]);
+        expect(seen.held).toEqual(["Answered elsewhere"]);
+        expect(seen.shift).toBeLessThan(1);
         await page.waitForTimeout(1100);
         const w = await wire(page);
         expect(w.questions).toEqual([]);
@@ -913,14 +917,16 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         await open(page, "button:has-text('North depot')").click();
         await page.waitForTimeout(600);
         const at = await centreOf(page, "[data-elicitation-submit]");
-        await watchPoint(page, at.x, at.y);
+        await watchPoint(page, at.x, at.y, 700);
         await pressAt(page, d, at.x, at.y);
         // Past the 400 ms arm of Q2, inside the 800 ms hold.
         await page.waitForTimeout(500);
         await pressAt(page, d, at.x, at.y);
-        await page.waitForTimeout(200);
-        expect(await moved(page)).toEqual([]);
-        expect(await heldWords(page)).toEqual(["Answer sent"]);
+        await page.waitForTimeout(300);
+        const seen = await watched(page);
+        expect(seen.moved).toEqual([]);
+        expect(seen.held).toEqual(["Answer sent"]);
+        expect(seen.shift).toBeLessThan(1);
         await page.waitForTimeout(1300);
         const w = await wire(page);
         expect(w.questions).toEqual(["q".repeat(32)]);
@@ -929,6 +935,37 @@ test.describe("F1: nothing moves under the pointer (WD-1, 2026-11-28)", () => {
         // Rule 3: after the hold, Q2 draws in the place of the line.
         await expect(page.locator("[data-dock-held]")).toHaveCount(0);
         await expect(open(page, "[data-elicitation-submit]")).toBeVisible();
+      } finally {
+        await ctx.close();
+      }
+    });
+
+    test(`${d.name}: a double press on Fold keeps the height, and sends nothing of the thread`, async ({ browser }) => {
+      const { ctx, page } = await device(browser, d);
+      try {
+        await start(page, { cards: "approvals" });
+        await expect(threadCard(page)).toHaveCount(1, { timeout: 20_000 });
+        await page.locator('[data-chat-ask] [data-confirmation-card] [role="tab"]').nth(1).click();
+        await expect(page.locator(THREAD_SEND)).toHaveCount(1);
+        // Fold is a small icon at the right. The thread's Send row goes to its
+        // height, and the point stays on Fold: before the fix, the thread
+        // grew under it at once.
+        const at = await lineUp(page, "[data-dock-fold]", "", true);
+        expect(Math.abs(at.lined - at.y)).toBeLessThanOrEqual(2);
+        await watchPoint(page, at.x, at.y, 700);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(150);
+        await pressAt(page, d, at.x, at.y);
+        await page.waitForTimeout(700);
+        const seen = await watched(page);
+        expect(seen.moved).toEqual([]);
+        expect(seen.shift).toBeLessThan(1);
+        await page.waitForTimeout(800);
+        await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
+        const w = await wire(page);
+        expect(w.questions).toEqual([]);
+        expect(w.approvals).toEqual([]);
+        expect(w.sends).toEqual(["Plan the June run."]);
       } finally {
         await ctx.close();
       }

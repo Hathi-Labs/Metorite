@@ -128,31 +128,20 @@ export function pointerLine(label: string, more: number): string {
 }
 
 /**
- * The newest approval that waits, for the pointer row: the last card of the
- * queue that is not a slot, and how many others wait. Null when none waits.
- */
-export function newestApproval<T extends Pick<PendingConfirmation, "redraft">>(
-  cards: readonly T[],
-): { card: T; more: number } | null {
-  const live = cards.filter((c) => !c.redraft);
-  const card = live[live.length - 1];
-  return card ? { card, more: live.length - 1 } : null;
-}
-
-/**
  * The approval that the pointer row names (2026-11-28): the card that the
  * queue in the thread shows now, its OPEN tab, and how many others wait. The
  * queue reports the key of its open tab, so the row follows a change of tab.
  * Before the first report, or when the open tab is a slot of a redraft, the
- * row names the newest card that waits. Null when none waits.
+ * row names the first card that waits, which the queue opens then too. Null
+ * when none waits.
  */
 export function openApproval<T extends Pick<PendingConfirmation, "key" | "redraft">>(
   cards: readonly T[],
   openKey: string | null,
 ): { card: T; more: number } | null {
   const live = cards.filter((c) => !c.redraft);
-  const card = live.find((c) => c.key === openKey);
-  return card ? { card, more: live.length - 1 } : newestApproval(cards);
+  const card = live.find((c) => c.key === openKey) ?? live[0];
+  return card ? { card, more: live.length - 1 } : null;
 }
 
 /**

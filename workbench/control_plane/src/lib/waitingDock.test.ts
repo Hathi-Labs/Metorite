@@ -63,7 +63,6 @@ import {
   liveAfter,
   liveAnnouncement,
   liveWords,
-  newestApproval,
   picksOnly,
   pointerLine,
   pointerScrollTop,
@@ -117,25 +116,23 @@ describe("the count", () => {
 });
 
 describe("the pointer (D9)", () => {
-  it("names the newest approval that waits, and how many more", () => {
+  it("the words of the row", () => {
     expect(pointerLine("Task: Fix the extruder", 0)).toBe("Waits for you: Task: Fix the extruder");
     expect(pointerLine("Email to Kim", 2)).toBe("Waits for you: Email to Kim and 2 more");
     expect(POINTER_LEAD).toBe("Waits for you:");
-    const cards = [{ key: "a" }, { key: "b" }, { key: "s", redraft: "updating" as const }];
-    expect(newestApproval(cards)).toEqual({ card: { key: "b" }, more: 1 });
-    expect(newestApproval([{ key: "s", redraft: "updating" as const }])).toBeNull();
-    expect(newestApproval([])).toBeNull();
   });
 
   it("names the queue's OPEN tab, and counts the others (2026-11-28)", () => {
     const cards = [{ key: "a" }, { key: "b" }, { key: "c" }, { key: "s", redraft: "updating" as const }];
     expect(openApproval(cards, "a")).toEqual({ card: { key: "a" }, more: 2 });
     expect(openApproval(cards, "b")).toEqual({ card: { key: "b" }, more: 2 });
-    // No report yet, a key that left, or a slot open: the newest that waits.
-    expect(openApproval(cards, null)).toEqual({ card: { key: "c" }, more: 2 });
-    expect(openApproval(cards, "gone")).toEqual({ card: { key: "c" }, more: 2 });
-    expect(openApproval(cards, "s")).toEqual({ card: { key: "c" }, more: 2 });
+    // No report yet, a key that left, or a slot open: the first that waits,
+    // which the queue opens then too.
+    expect(openApproval(cards, null)).toEqual({ card: { key: "a" }, more: 2 });
+    expect(openApproval(cards, "gone")).toEqual({ card: { key: "a" }, more: 2 });
+    expect(openApproval(cards, "s")).toEqual({ card: { key: "a" }, more: 2 });
     expect(openApproval([{ key: "s", redraft: "updating" as const }], "s")).toBeNull();
+    expect(openApproval([], null)).toBeNull();
   });
 
   it("the chat reads the open tab from the queue, only while the dock is on", () => {

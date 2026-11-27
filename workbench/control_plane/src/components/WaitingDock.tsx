@@ -288,11 +288,34 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
   useLayoutEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
   }, [openKey]);
+  // F1: the facts of the last commit, which a removal reads, because the
+  // commit that removes an item has already drawn the dock without it.
+  const lastRef = useRef<LastDraw>({
+    keys: [], openKey: null, pointerRow: false, bodyShown: false, folded: false, rootH: 0, bodyH: 0, pointerH: 0,
+  });
+  const holdRef = useRef<Hold | null>(null);
+  // The heights of what draws now. Outside a hold only: in a hold the frame
+  // is held, and the body may be hidden. A pick or typed text can change the
+  // card's height with no render of the dock, so the resize observer calls
+  // it too.
+  const remember = useCallback(() => {
+    if (holdRef.current) return;
+    const last = lastRef.current;
+    const root = rootRef.current;
+    const body = bodyRef.current;
+    const row = pointerRef.current;
+    if (root && !root.hidden) last.rootH = root.offsetHeight;
+    if (body && !body.hidden) last.bodyH = body.offsetHeight;
+    if (row) last.pointerH = row.offsetHeight;
+  }, []);
   useEffect(() => {
     const root = rootRef.current;
     const a = around(root);
     if (!root || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => read());
+    const ro = new ResizeObserver(() => {
+      read();
+      remember();
+    });
     ro.observe(root);
     if (a) {
       ro.observe(a.form);
@@ -305,7 +328,7 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
       ro.disconnect();
       window.removeEventListener("resize", read);
     };
-  }, [read]);
+  }, [read, remember]);
 
   // ── F1: the hold. Nothing moves under the pointer. ──────────────────────
   // What draws now. In a hold, an item that arrived after the hold began
@@ -313,11 +336,6 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
   const pointerRow = !!pointer && (hold ? !hold.pointer && hold.pointerKept : true);
   const bodyShown = count > 0 && (hold ? !hold.body && hold.bodyKept : true);
   const empty = !hold && count === 0 && !pointer;
-  // The facts of the last commit. A removal reads them, because the commit
-  // that removes an item has already drawn the dock without it.
-  const lastRef = useRef<LastDraw>({
-    keys: [], openKey: null, pointerRow: false, bodyShown: false, folded: false, rootH: 0, bodyH: 0, pointerH: 0,
-  });
   // The presses that the collapse rule reads: every pointer that is down,
   // and the last pointerdown or keydown inside the dock.
   const downRef = useRef(new Map<number, number>());
@@ -370,19 +388,11 @@ export default function WaitingDock({ questions, pointer, phone, initialFolded =
         collapsing: false,
       }));
     }
-    const root = rootRef.current;
-    lastRef.current = {
-      keys,
-      openKey: open?.key ?? null,
-      pointerRow,
-      bodyShown,
-      folded,
-      // The heights of the commit that removes an item are already the
-      // shorter ones, so that commit keeps the old heights.
-      rootH: starts || hold || !root ? last.rootH : root.offsetHeight,
-      bodyH: !starts && bodyShown && bodyRef.current ? bodyRef.current.offsetHeight : last.bodyH,
-      pointerH: !starts && pointerRow && pointerRef.current ? pointerRef.current.offsetHeight : last.pointerH,
-    };
+    lastRef.current = { ...last, keys, openKey: open?.key ?? null, pointerRow, bodyShown, folded };
+    holdRef.current = hold;
+    // The heights of the commit that removes an item are already the
+    // shorter ones, so that commit keeps the old heights.
+    if (!starts) remember();
   });
 
   // Rule 2: collapse, or draw the next item, only when all three hold. The
