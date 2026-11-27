@@ -133,10 +133,14 @@ def test_the_flag_off_reads_no_fact_and_opens_no_session(monkeypatch) -> None:
     monkeypatch.setattr(db, "current_tenant", lambda: ORG)
     assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
     assert looked == [] and written == []
-    # No bound tenant: the org of the run decides, and off writes nothing.
+    # No bound tenant and the flag empty (the default): no fact read either.
     monkeypatch.setattr(db, "current_tenant", lambda: None)
     assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
-    assert written == []
+    assert looked == [] and written == []
+    # No bound tenant: the org of the run decides, and another org writes nothing.
+    _flag(monkeypatch, "other-org")
+    assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
+    assert looked == ["t1"] and written == []
     # No org at all writes nothing.
     _flag(monkeypatch, "*")
     written2, _ = _wire(monkeypatch, org=None)

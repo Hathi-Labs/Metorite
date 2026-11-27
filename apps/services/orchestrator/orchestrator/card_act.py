@@ -75,6 +75,16 @@ def act_of(outcome: Any) -> str | None:
     return ACT_OF_OUTCOME.get(str(outcome or ""))
 
 
+def _flag_names_an_org() -> bool:
+    """True when ``MEMBER_ACTIONS_ORGS`` holds any value. A fault reads as off."""
+    try:
+        from acb_common import get_settings
+
+        return bool(str(getattr(get_settings(), "member_actions_orgs", "") or "").strip(" ,"))
+    except Exception:
+        return False
+
+
 async def _facts(thread_id: str) -> tuple[str | None, str]:
     """The org and the run's own member of the run on *thread_id*, server side."""
     from orchestrator.pending_ask import _run_facts
@@ -100,6 +110,9 @@ async def record_card_act(thread_id: str, request_id: str | None, outcome: str,
         bound = current_tenant()
         if bound is not None and not member_actions.enabled_for(bound):
             # Off for the bound tenant: no Redis read and no session.
+            return False
+        if bound is None and not _flag_names_an_org():
+            # Off for every org (the default): no Redis read and no session.
             return False
 
         async def _write() -> bool:

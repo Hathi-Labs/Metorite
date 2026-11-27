@@ -44,6 +44,9 @@ def world(promoted, monkeypatch):  # noqa: F811
     import acb_common.db as db
 
     monkeypatch.setattr(db, "current_tenant", lambda: None)
+    # Each call opens a new engine scope, so each write connects cold. The
+    # bound of a warm write (3 s) is not what this file tests.
+    monkeypatch.setattr(card_act, "_TIMEOUT_S", 60.0)
     yield SimpleNamespace(p=promoted, monkeypatch=monkeypatch)
     with promoted.admin_engine.begin() as c:
         c.execute(text("DELETE FROM member_action WHERE member_email LIKE :t"), {"t": _LIKE})
