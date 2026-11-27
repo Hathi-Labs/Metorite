@@ -36,7 +36,7 @@
 
 **P9 (§3.10, §5.10, D183) was planned on 2026-11-06.** **Only the code part of SW-44 (item 4) is built, and it is dark (2026-11-07). SW-63 is built. SW-53 (GitHub per organization) is built and dark, 2026-11-07. Its backfill is not built.**
 
-**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is open.**
+**1045a (the `waiting` state, migration 403) is built, 2026-11-06. It also carries SW-4 item 2. The owner's change of 2026-11-07 is built: own sub-agents keep a run working, and `agent` is a wait on another agent. 1045b (linked events count as life, migration 421) is built, 2026-11-12. 1045c is built in the client, 2026-11-12: the look, the line and Release in the run panel. 1045d (PR 2746) sends `agent_stranded` on each task row, so the board card shows the strand.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1210,6 +1210,7 @@ The playbook (`orchestration_playbook.md` §7) runs beside this list. PB-1 first
 - **Scope.** A run with `stranded` set draws in the warning tone with "no word since 14:31". It offers Release to a person who may end the run. The data comes from the `stranded` field of the run wire.
 - **Done when.** A vitest maps a stranded run to its look in light and dark. `visual-review` passes.
 - **Fence.** `agentCardLook.test.ts`.
+- **Status.** Built in the client, 2026-11-12. `agentCardLook` maps a strand to the warning edge. `strandedLine` writes the line. The run panel shows it on its own row, with the existing Release at the end. 1045d (PR 2746) sends the task row field `agent_stranded`. Captures at 1440 px and 390 px exist, dark and light, with compact (2026-11-27). The `visual-review` verdict is open.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** 1045a. Real data needs SW-10b.
 
 #### 1054 · A verb for the nudge in the Projects bell

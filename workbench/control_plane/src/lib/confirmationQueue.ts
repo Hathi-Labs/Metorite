@@ -30,6 +30,7 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { ANSWERED_ONCE_TEXT } from "@/lib/respondInput";
 import { archiveUndoText, type ArchiveUndo, type ArchiveUndoState } from "@/lib/archiveUndo";
 import { CARD_OUTCOME_MEMBER_LINES } from "@/lib/cardOutcomes";
 import { unfenced } from "@/lib/fencedText";
@@ -880,13 +881,16 @@ export function confirmationReducer(
   }
 }
 
-/** The action for a card once its POST settled (`lib/respondInput.ts`). */
+/** The action for a card once its POST settled (`lib/respondInput.ts`).
+ *  `answered` (HRD-16): someone answered the card first. The card leaves,
+ *  and its line says so. Nothing sends again. */
 export function settleAnswer(
   card: PendingConfirmation,
-  outcome: "ok" | "drop" | "retry",
+  outcome: "ok" | "drop" | "retry" | "answered",
   reason?: string,
 ): ConfirmationAction {
   if (outcome === "retry") return { type: "restore", card, ...(reason ? { reason } : {}) };
+  if (outcome === "answered") return { type: "dropped", key: card.key, reason: reason || ANSWERED_ONCE_TEXT };
   if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }
