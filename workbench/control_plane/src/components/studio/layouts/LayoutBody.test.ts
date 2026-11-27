@@ -61,6 +61,15 @@ describe("LayoutBody", () => {
     expect(html.indexOf("data-scroll-cue")).toBeLessThan(html.indexOf('data-view="pipeline"'));
     expect(draw("table_workspace", { main: ["t"] })).not.toContain("data-scroll-cue");
   });
+  it("points the cue at the element that scrolls: the board, not the page", () => {
+    const read = (p: string) => readFileSync(join(process.cwd(), "src", p), "utf8");
+    const cue = read("components/studio/layouts/ScrollCue.tsx");
+    expect(cue).toContain(`BOARD_SCROLLER = '[aria-label="Board"]'`);
+    expect(cue).toContain("querySelector<HTMLElement>(BOARD_SCROLLER)");
+    expect(cue).not.toContain("data-page-scroller");
+    expect(read("components/studio/StudioBoard.tsx")).toContain('aria-label="Board"');
+    expect(read("components/board/Board.tsx")).toContain("overflow-x-auto");
+  });
   it("names a board, not a table, when the board region is empty", () => {
     expect(draw("board", { main: [] })).toContain("no board to show");
   });
