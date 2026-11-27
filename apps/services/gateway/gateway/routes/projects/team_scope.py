@@ -10,8 +10,10 @@ and each project beneath it, in the view of that team (rule 1). So the grant
 of a space covers its whole subtree.
 
 **The one value.** A read takes ``team``: the slug of one team of the caller,
-or the word ``all`` (:data:`ALL_TEAMS`). ``all`` is "All my teams", which is
-every space that the member may open (T-2), so it narrows nothing.
+or the word ``all``. ``all`` is "All my teams", which is every space that the
+member may open (T-2), so it narrows nothing. The word lives in ONE set,
+``admin.groups.RESERVED_GROUP_SLUGS`` (task 2886), which no group slug may
+take. :func:`_all_words` imports that set and keeps no copy of the word.
 
 * The one subject grammar (``core.validate_grant_subject``) checks the slug,
   as ``group:<slug>``. A value that it refuses is 422. A value with a
@@ -59,19 +61,29 @@ from gateway.routes.projects.core import (
 )
 from sqlalchemy import text
 
-#: The word of "All my teams" (``navigation_shell.md`` §4.2a). It narrows
-#: nothing: "All my teams" is every space that the member may open.
-ALL_TEAMS = "all"
-
 #: The 404 body of a slug that names no team of the caller. A group of another
 #: member answers the same words, so the answer is no oracle (R5).
 TEAM_NOT_FOUND = "Team not found"
 
-#: The 422 words of a value that is not a team slug.
-TEAM_SHAPE = (
-    "team takes the slug of one of your teams, such as team-a, "
-    f"or the word {ALL_TEAMS}."
-)
+
+def _all_words() -> frozenset[str]:
+    """The words of "All my teams" (``navigation_shell.md`` §4.2a).
+
+    ``admin.groups.RESERVED_GROUP_SLUGS`` is their one home (task 2886). No
+    group may take one of them, so a value never names a team and every team
+    at once. The import is inside the function, because a module-level import
+    makes an import cycle (``groups.py`` says so beside the set).
+    """
+    from gateway.routes.admin.groups import RESERVED_GROUP_SLUGS
+
+    return RESERVED_GROUP_SLUGS
+
+
+def team_shape() -> str:
+    """The 422 words of a value that is not a team slug."""
+    words = " or ".join(sorted(_all_words()))
+    return f"team takes the slug of one of your teams, such as team-a, or the word {words}."
+
 
 #: The projects that the grants of ONE group reach: each project with a grant
 #: of ``:team_subject``, and each project beneath it.
@@ -169,17 +181,17 @@ def parse_team(value: str) -> str | None:
     """The grant subject that *value* names, or ``None`` for ``all``.
 
     Pure. A value that the one subject grammar refuses, or that holds a
-    character that cannot print, is 422 (:data:`TEAM_SHAPE`).
+    character that cannot print, is 422 (:func:`team_shape`).
     """
     raw = str(value).strip()
-    if raw.lower() == ALL_TEAMS:
+    if raw.lower() in _all_words():
         return None
     if not raw or not raw.isprintable():
-        raise HTTPException(status_code=422, detail=TEAM_SHAPE)
+        raise HTTPException(status_code=422, detail=team_shape())
     try:
         return validate_grant_subject(f"group:{raw}")
     except HTTPException:
-        raise HTTPException(status_code=422, detail=TEAM_SHAPE) from None
+        raise HTTPException(status_code=422, detail=team_shape()) from None
 
 
 def check_team_value(user: Any, team: str | None) -> str | None:

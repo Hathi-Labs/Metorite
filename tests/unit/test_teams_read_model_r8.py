@@ -649,7 +649,7 @@ class TestTheValue:
         for value in ("", "%20", "%00", "a%0Ab", "team%09a"):
             got = await _as(live, A, path.format(t=value))
             assert got.status_code == 422, (path, value, got.status_code, got.text)
-            assert got.json() == {"detail": team_scope.TEAM_SHAPE}
+            assert got.json() == {"detail": team_scope.team_shape()}
 
     async def test_the_slug_is_matched_folded(self, live):
         upper = (await _ok(live, A, "/projects/tasks?team=TEAM-A&page_size=100")).json()
@@ -792,6 +792,21 @@ def test_the_value_takes_a_slug_or_all_through_the_one_grammar() -> None:
         with pytest.raises(HTTPException) as caught:
             team_scope.parse_team(bad)
         assert caught.value.status_code == 422, repr(bad)
+
+
+def test_the_word_of_all_teams_comes_from_the_one_set() -> None:
+    """Task 2886. ``groups.RESERVED_GROUP_SLUGS`` is the one home of ``all``.
+    The team scope imports the set, and its code holds no copy of the word."""
+    from gateway.routes.admin.groups import RESERVED_GROUP_SLUGS
+
+    assert team_scope._all_words() is RESERVED_GROUP_SLUGS
+    for word in RESERVED_GROUP_SLUGS:
+        assert team_scope.parse_team(word) is None
+        assert word in team_scope.team_shape()
+    source = Path(team_scope.__file__).read_text(encoding="utf-8")
+    code = re.sub(r'"""[\s\S]*?"""|#[^\n]*', "", source)
+    for word in RESERVED_GROUP_SLUGS:
+        assert f'"{word}"' not in code and f"'{word}'" not in code, word
 
 
 def test_the_team_clause_names_the_tenant_on_both_arms() -> None:
