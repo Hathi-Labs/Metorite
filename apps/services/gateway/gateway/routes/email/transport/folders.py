@@ -441,15 +441,21 @@ async def backfill_folder(
             # both system and user folders page correctly (Gmail label id, Graph
             # folder id, IMAP mailbox name).
             provider_folder = req.folder
+            matched = False
             try:
                 for f in await provider.list_folders():
                     if canonical_folder(f.name) == canon_req:
                         provider_folder = f.provider_folder_id
+                        matched = True
                         break
             except Exception:
                 pass
 
-            if row.provider == "imap" and canon_req in _IMAP_REKEY_FOLDERS:
+            # Task 4100: re-key only with the real mailbox name from LIST, and
+            # only on the first page (re-review P2). A failed LIST leaves the
+            # canonical key, which is no mailbox name on a case-sensitive server.
+            if (row.provider == "imap" and matched and not req.page_token
+                    and canon_req in _IMAP_REKEY_FOLDERS):
                 await _rekey_legacy_imap_rows(db, account_id, canon_req,
                                               provider_folder)
 

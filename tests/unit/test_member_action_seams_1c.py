@@ -117,4 +117,7 @@ def test_a_bulk_archive_records_named_ids_only() -> None:
     body = src.split("async def bulk_action", 1)[1].split("_RECONCILE_ATTEMPTS", 1)[0]
     assert 'if req.action == "archive" and req.message_ids:' in body
     assert "rows[:20]" in body
-    assert "RETURNING id, provider_message_id, account_id, from_address" in body
+    # Task 4100: the UPDATE joins its CTE, so each column names its table.
+    assert ("RETURNING email_messages.id, email_messages.provider_message_id,"
+            in body)
+    assert "email_messages.account_id, email_messages.from_address" in body

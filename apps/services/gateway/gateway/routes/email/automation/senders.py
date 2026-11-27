@@ -468,16 +468,19 @@ async def bulk_action(
         # BEFORE the UPDATE writes ``trash``. The folder gate of
         # ``_STORED_MESSAGE_ID_EXPR`` must still see a Drafts or Sent row. The
         # CTE and the UPDATE read one snapshot, so ``trash_mid`` is the old row.
+        # ``UPDATE ... FROM pre`` is one join, so a sweep of 50,000 rows stays
+        # linear (re-review P1).
         rows = (await db.execute(text(
             f"""WITH pre AS (
                     SELECT em.id, {_STORED_MESSAGE_ID_EXPR} AS trash_mid
                       FROM email_messages em WHERE {where_sql})
                 UPDATE email_messages SET {_BULK_DB_UPDATE[req.action]},
                        updated_at = now()
-                 WHERE id IN (SELECT pre.id FROM pre)
-             RETURNING id, provider_message_id, account_id, from_address,
-                       (SELECT pre.trash_mid FROM pre
-                         WHERE pre.id = email_messages.id) AS trash_mid"""
+                  FROM pre
+                 WHERE email_messages.id = pre.id
+             RETURNING email_messages.id, email_messages.provider_message_id,
+                       email_messages.account_id, email_messages.from_address,
+                       pre.trash_mid"""
         ), params)).fetchall()
         if not rows:
             return {"affected": 0}

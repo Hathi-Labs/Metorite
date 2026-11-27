@@ -128,6 +128,33 @@ async def test_a_folder_backfill_keeps_the_inbox_row(monkeypatch, folder):
         assert msg.folder == folder
 
 
+@pytest.mark.parametrize("listing", ["match", "raises", "no_match", "next_page"])
+async def test_the_rekey_runs_only_with_the_real_mailbox_name(monkeypatch, listing):
+    """Re-review P2: the old rows get ``<mailbox>:<uid>`` only when LIST
+    named the mailbox, and only on the first page. A failed LIST leaves the
+    canonical key ``sent``, which is no mailbox name on Dovecot."""
+    provider = _provider(_server())
+    if listing == "raises":
+        provider.list_folders = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("LIST failed"))
+    else:
+        names = ("INBOX",) if listing == "no_match" else ("INBOX", "Sent")
+        provider.list_folders = AsyncMock(return_value=[  # type: ignore[method-assign]
+            SimpleNamespace(name=n, provider_folder_id=n) for n in names])
+    _wire_backfill(monkeypatch, provider, {})
+    rekeys: list[tuple] = []
+
+    async def _spy(_db: Any, aid: str, canon: str, mailbox: str) -> None:
+        rekeys.append((aid, canon, mailbox))
+
+    monkeypatch.setattr(route, "_rekey_legacy_imap_rows", _spy)
+    token = "next" if listing == "next_page" else None
+    await route.backfill_folder(
+        BOX, route.BackfillRequest(folder="sent", max_pages=1, page_token=token),
+        user=USER)
+    assert rekeys == ([(BOX, "sent", "Sent")] if listing == "match" else [])
+
+
 async def test_the_drafts_row_keeps_its_own_message_id_apart_from_the_thread():
     server = _server()
     msgs, _ = await _provider(server).list_messages(
