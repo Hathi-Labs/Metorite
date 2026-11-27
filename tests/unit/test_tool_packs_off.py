@@ -340,3 +340,43 @@ def test_flag_on_the_same_connection_turn_holds_the_act(store, monkeypatch) -> N
     names = _tool_names(on["body"])
     assert set(CONNECTION_TOOLS) <= set(names), names
     assert "CALENDAR CONNECTION TOOLS." in on["body"]["messages"][0]["content"]
+
+
+#: PAR-11 part a (task 4012): words of the dark ``chat-threads`` pack.
+CHAT_LIST_WORDS = "Rename this chat to Budget and archive the chat about the offsite"
+CHAT_LIST_TOOLS = ("list_chats", "edit_chat", "delete_chat")
+
+
+def test_flag_off_the_chat_threads_pack_reaches_no_chat(store, monkeypatch) -> None:
+    """PAR-11 part a: the chat list tools ship dark. The real stream run of the
+    orchestrator, with words of the pack, holds none of its tools and reads no
+    pack state while ``TOOL_PACKS`` is empty. Mutation: put ``chat-threads`` in
+    ``FOLLOWS``, in a default list, or in the core tools of the orchestrator
+    -> a tool joins the request -> red."""
+    _flag(monkeypatch, False)
+    slug = "chat-threads"
+    assert slug in tp.PACKS and slug not in tp.FOLLOWS
+    assert tp.matched_layer(slug, CHAT_LIST_WORDS) is not None, "the words name the pack"
+    assert tp.packs_on(ORG) == frozenset()
+    off = _drive(monkeypatch, "run-par11-off-1", CHAT_LIST_WORDS)
+    kinds = [e.get("type") for e in off["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, off["events"]
+    names = _tool_names(off["body"])
+    assert names, "non-vacuity: the request holds tools"
+    assert not set(CHAT_LIST_TOOLS) & set(names)
+    assert "CHAT LIST TOOLS." not in off["body"]["messages"][0]["content"]
+    assert _pack_calls(store) == []
+
+
+def test_flag_on_the_same_chat_list_turn_holds_the_tools(store, monkeypatch) -> None:
+    """Non-vacuity of the case above: the owner's own line, ``chat-threads``,
+    turns the pack on for the same turn. Mutation: the pack builds no tool -> red."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "chat-threads", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    on = _drive(monkeypatch, "run-par11-on-1", CHAT_LIST_WORDS)
+    kinds = [e.get("type") for e in on["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, on["events"]
+    names = _tool_names(on["body"])
+    assert set(CHAT_LIST_TOOLS) <= set(names), names
+    assert "CHAT LIST TOOLS." in on["body"]["messages"][0]["content"]

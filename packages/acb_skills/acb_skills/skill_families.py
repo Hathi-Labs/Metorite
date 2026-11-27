@@ -1278,6 +1278,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # PAR-11 part a (chat_parity.md wave P-7, task 4012): the chat list of the
+    # member. List, rename, archive, restore, delete and move a chat, and make a
+    # topic. A delete always shows one card. The owner is org-admin, which never
+    # runs as an agent. It is NOT in FOLLOWS: only the owner's pack list turns it
+    # on (tool_packs.packs_on). Fence: test_chat_thread_tools.py.
+    "chat-threads": {
+        "label": "Chat list",
+        "summary": (
+            "List your chats and topics, rename, archive, restore, delete or move a chat, "
+            "or make a topic."
+        ),
+        "description": (
+            "A tool pack: the chat list of the member, for the main assistant to load when "
+            "a turn asks to list, rename, archive, restore, delete or move a chat, or to "
+            "make a topic. A delete always shows one card, and the route acts as the "
+            "member. A run loads a pack only where tool packs are on, so until then this "
+            "switch has no effect."
+        ),
+        "tools": (
+            "list_chats",
+            "edit_chat",
+            "delete_chat",
+        ),
+        "owner": "org-admin",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 
