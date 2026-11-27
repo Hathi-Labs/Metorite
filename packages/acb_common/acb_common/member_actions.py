@@ -29,6 +29,7 @@ a card marker, so that one yes is one row.
 **A job is not the member.** A job that calls a route seam as the member, for
 example the send-later sweep, runs inside :func:`job_acts`. The writer then
 records nothing, because the member did not press anything at that time.
+Fence: ``tests/unit/test_member_action_writer.py`` section f.
 
 **Tenancy (R5).** The caller opens ``acb_common.db.tenant_session(org)`` and
 passes the session. The INSERT writes no ``organization_id``: the column

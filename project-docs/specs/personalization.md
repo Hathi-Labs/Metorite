@@ -4295,6 +4295,7 @@ and label of one mail. A fence fails on a second writer.
   holds only the recipients that the mail server did not refuse.
 - The send-later sweep sends as a job, inside `member_actions.job_acts`. The
   writer records no row for it, because the member pressed nothing then.
+  Fence: `tests/unit/test_member_action_writer.py` (section f).
 - A bulk archive (`POST /email/messages/bulk`) records nothing.
 - The card answer in `ask_tools` is MM-1b (task 3614), not MM-1.
 
@@ -4307,9 +4308,10 @@ and label of one mail. A fence fails on a second writer.
 - An org switch can turn it off for each member (D-PZ-17).
 - A shared mailbox (WS-65) records no act until its spec says how.
 - It ships dark behind `MEMBER_ACTIONS_ORGS`. Before an org goes on, turn
-  on `JOB_QUEUE`, because the prune job deletes the old rows. Also put the
-  org in `ASSISTANT_PROFILE_ORGS`, with `ASSISTANT_PROFILE_ENABLED` on.
-  Without the profile, the member cannot see or turn off `learning`.
+  on `JOB_QUEUE`, because the prune job deletes the old rows. The profile
+  must also be on for the org: `ASSISTANT_PROFILE_ENABLED` on, and
+  `ASSISTANT_PROFILE_ORGS` empty or with the org in it. Without the profile,
+  the member cannot see or turn off `learning`.
 
 ### 19.5 Habits (MM-2)
 

@@ -572,9 +572,9 @@ empty. Empty writes no row.
 Its one reader is `acb_common.member_actions.enabled_for`, which the writer
 asks on each act, on the org of the session. A reload applies a change. Before
 you add an org, turn on `JOB_QUEUE`, because the prune job deletes the rows
-after 180 days. Also put the org in `ASSISTANT_PROFILE_ORGS` with
-`ASSISTANT_PROFILE_ENABLED` on. Without the profile, the member cannot see or
-turn off `learning`.
+after 180 days. The profile must also be on for the org:
+`ASSISTANT_PROFILE_ENABLED` on, and `ASSISTANT_PROFILE_ORGS` empty or with the
+org in it. Without the profile, the member cannot see or turn off `learning`.
 
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of
