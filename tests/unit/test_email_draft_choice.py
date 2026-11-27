@@ -477,9 +477,15 @@ async def test_an_imap_draft_trash_is_not_confirmed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_an_imap_store_that_is_not_ok_raises():
+    # Task 4025 moved the trash to INBOX with a Trash folder read from LIST.
+    # tests/unit/test_email_imap_trash.py holds the full fake server.
     server = MagicMock()
-    server.select.return_value = ("NO", [b""])
-    server.uid.return_value = ("NO", [b"no such message"])
+    server.list.return_value = ("OK", [b'(\\HasNoChildren) "/" Trash'])
+    server.capability.return_value = ("OK", [b"IMAP4rev1 UIDPLUS"])
+    server.select.return_value = ("OK", [b"1"])
+    server.uid.side_effect = lambda cmd, *_a: {
+        "SEARCH": ("OK", [b"42"]), "COPY": ("OK", [b""]),
+    }.get(cmd, ("NO", [b"no such message"]))
     imap = IMAPProvider({})
     imap._get_imap = AsyncMock(return_value=server)  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="STORE"):

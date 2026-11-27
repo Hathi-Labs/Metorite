@@ -99,6 +99,9 @@ All providers implement the `BaseEmailProvider` abstract interface:
 18. **The HTML hot window.** `html_tier.py` is the one owner of the window and of `EMAIL_HTML_FROM_PROVIDER` and `EMAIL_HTML_HOT_ONLY`. Fence: `test_email_html_tier.py`.
    - No other module reads the two flags or writes the number 90 next to `received_at`. Neither `html_tier.py` nor `import_window.py` imports the other.
    - A new writer of `body_html` uses the same rule and joins `ALLOWED_HTML_WRITERS`. `_html_to_text` is the one text maker, and it runs in linear time. Fence: `test_email_html_hot_only.py`.
+19. **The IMAP trash.** `_trash_inbox_uid` in `providers/imap.py` runs each trash command with INBOX selected. A UID names a mail in one folder only.
+   - It uses UID MOVE, or UID COPY with a STORE and a UID EXPUNGE of that one UID. It never sends a plain EXPUNGE, because that removes mail that another client flagged.
+   - It raises, and removes nothing, with no Trash folder, a UID that is not in INBOX, or a copy that is not OK. Fence: `test_email_imap_trash.py`.
 
 ## Inbound SMTP Server
 
