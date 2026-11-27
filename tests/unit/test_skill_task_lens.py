@@ -259,8 +259,9 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_suggest_title", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/suggest-title")]),
     ("my_tasks_enrich", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/enrich")]),
     # P-1b (task 3922): the draft of a task from a mail, three ways. The write
-    # shows a card first, and a run with no card channel sends nothing. Its
-    # three routes are checked in test_my_tasks_p1b_tools.py.
+    # reads the source mail for its card (task 3973), then shows the card. A run
+    # with no card channel writes nothing. Its three routes are checked in
+    # test_my_tasks_p1b_tools.py.
     ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID},
      [("POST", "/tasks/capture/from-email/preview")]),
     ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID, "ai": True},
@@ -269,7 +270,8 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
                                   "reply_body": "I will send the deck by Friday."},
      [("POST", "/tasks/capture/from-reply/detect")]),
     ("my_tasks_capture_from_mail", {"account_id": PID, "email_id": CID,
-                                    "title": "Send the deck"}, []),
+                                    "title": "Send the deck"},
+     [("POST", "/tasks/capture/from-email/preview")]),
     # P-1c (task 3923): the list read comes first. This recorder answers no
     # connection, so no card shows and no write goes. The writes and the cards
     # are fenced in test_my_tasks_p1c_tools.py.
