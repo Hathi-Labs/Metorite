@@ -256,7 +256,7 @@ async def test_forget_clears_every_summary_and_keeps_the_switch(db) -> None:
     assert all(s.text == "" and not s.follow_ups for s in mine)
     assert off == summaries.Stored(off=True), "a Delete must stay off after Forget"
     assert bobs.text == ANSWER.text and other.text == ANSWER.text
-    assert after["apps"]["chat"] == {"summaries": False}
+    assert after["apps"]["chat"] == {"summaries": False, "follow_up_suggestions": False}
 
 
 def _make_an_owner(ns) -> None:
@@ -328,12 +328,13 @@ async def test_the_switch_is_stored_and_read(db) -> None:
     async with tenant_engine_scope(_app_dsn(db)):
         with _tenant(db.org_a):
             assert (await ap.get_assistant_profile(user=_user(ALICE)))["apps"]["chat"] \
-                == {"summaries": True}
+                == {"summaries": True, "follow_up_suggestions": False}
             put = await ap.put_assistant_profile(
                 body={"key": "apps", "value": {"chat": {"summaries": False}}},
                 user=_user(ALICE), x_profile_via=None)
             got = await ap.get_assistant_profile(user=_user(ALICE))
-    assert put["apps"]["chat"] == {"summaries": False}
+    off = {"summaries": False, "follow_up_suggestions": False}
+    assert put["apps"]["chat"] == off
     assert app_prefs({"apps": {"chat": {"summaries": False}}}, "chat")["summaries"] is False
-    assert got["apps"]["chat"] == {"summaries": False}
+    assert got["apps"]["chat"] == off
     assert got["apps"]["brief"]["enabled"] is True, "the other app keeps its default"

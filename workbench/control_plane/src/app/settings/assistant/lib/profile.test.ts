@@ -1,5 +1,7 @@
 // The Assistant pane's pure rules (WS-63 PZ-7).
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearAll, peek, put, read, subscribe } from "@/lib/dataCache";
+import { FOLLOW_UPS_KEY } from "@/lib/followUpPref";
 import {
   CAPS,
   LANGUAGES,
@@ -20,6 +22,8 @@ import {
   deleteSummary,
   fetchSummaries,
   saveKeepSummaries,
+  saveFollowUps,
+  fetchProfileAndGate,
   summaryCount,
   summaryGate,
   errorText,
@@ -293,6 +297,59 @@ describe("fetchBlock", () => {
     await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
     vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
     await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+  });
+});
+
+describe("Follow-up suggestions (task 4002)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("writes the switch through the apps key, and caches the saved value", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    put(FOLLOW_UPS_KEY, false);
+    await saveFollowUps(true);
+    const [url, init] = (vi.mocked(fetch).mock.calls as unknown as [string, RequestInit][])[0];
+    expect(url).toBe("/api/auth/me/assistant-profile");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(String(init.body))).toEqual({
+      key: "apps",
+      value: { chat: { follow_up_suggestions: true } },
+    });
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(true);
+  });
+
+  it("wakes an open chat that never got an answer", async () => {
+    clearAll();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    const woke = vi.fn();
+    const off = subscribe(FOLLOW_UPS_KEY, woke);
+    await saveFollowUps(true);
+    off();
+    expect(woke).toHaveBeenCalled();
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(true);
+  });
+
+  it("drops the older answer of a read that is still out", async () => {
+    clearAll();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+    let answer: (on: boolean) => void = () => {};
+    const slow = read<boolean>(FOLLOW_UPS_KEY, () => new Promise<boolean>((r) => (answer = r)));
+    await saveFollowUps(false);
+    answer(true);
+    expect(await slow).toBe(false);
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(false);
+  });
+
+  it("keeps the cached answer when the save fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
+    put(FOLLOW_UPS_KEY, false);
+    await expect(saveFollowUps(true)).rejects.toBeInstanceOf(ProfileError);
+    expect(peek(FOLLOW_UPS_KEY)?.data).toBe(false);
+  });
+
+  it("reads the switch with the profile", async () => {
+    const answer = { apps: { chat: { follow_up_suggestions: true } } };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(answer), { status: 200 })));
+    expect((await fetchProfileAndGate()).followUps).toBe(true);
   });
 });
 

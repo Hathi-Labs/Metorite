@@ -84,6 +84,7 @@ import {
   resetInterview,
   saveAddress,
   saveCelebrations,
+  saveFollowUps,
   saveKeepSummaries,
   saveLearning,
   saveStyle,
@@ -135,6 +136,8 @@ export interface PaneHandlers {
   onCelebrations: (edit: Parameters<typeof mergeCelebrations>[1]) => Promise<boolean>;
   /** The switch "Keep chat summaries" (PZ-35). */
   onKeepSummaries: (value: boolean) => Promise<boolean>;
+  /** The switch "Show follow-up suggestions" (task 4002). */
+  onFollowUps: (value: boolean) => Promise<boolean>;
   /** Ask to delete the summary of one chat. A confirm dialog follows (PZ-35). */
   onDeleteSummary: (id: string) => void;
   /** Ask to delete every summary. A confirm dialog follows (PZ-35). */
@@ -186,6 +189,8 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   block?: BlockState;
   /** "Celebrations" (PZ-43). Without it, the section does not draw (the flag is off). */
   celebrations?: CelebrationsGate;
+  /** The member's "Show follow-up suggestions" (task 4002). Off unless true. */
+  followUps?: boolean;
   /** "Recent chats". Without it, the section does not draw (the flag is off). */
   summaries?: SummariesView;
   confirmDeleteSummaries?: boolean;
@@ -217,6 +222,7 @@ export const NO_HANDLERS: PaneHandlers = {
   onResetInterview: () => {},
   onCelebrations: noop,
   onKeepSummaries: noop,
+  onFollowUps: noop,
   onDeleteSummary: () => {},
   onDeleteAllSummaries: () => {},
   onRetrySummaries: () => {},
@@ -227,6 +233,7 @@ const JUMPS = [
   { id: "assistant-memory", label: "Memory" },
   { id: "assistant-address", label: "How I address you" },
   { id: "assistant-style", label: "How I answer" },
+  { id: "assistant-follow-ups", label: "Follow-ups" },
   { id: "assistant-facts", label: "What I remember" },
   { id: "assistant-interview", label: "Get to know me" },
   { id: "assistant-names", label: "Names for people" },
@@ -239,7 +246,10 @@ const JUMPS = [
 /** The jump links of the sections that draw. "Celebrations" and "Recent chats" come only with their flags. */
 function jumpsFor(v: { summaries?: unknown; celebrations?: unknown }) {
   const out: { id: string; label: string }[] = [...JUMPS];
-  if (v.celebrations) out.splice(3, 0, { id: "assistant-celebrations", label: "Celebrations" });
+  if (v.celebrations) {
+    const at = out.findIndex((j) => j.id === "assistant-facts");
+    out.splice(at, 0, { id: "assistant-celebrations", label: "Celebrations" });
+  }
   if (v.summaries) {
     const at = out.findIndex((j) => j.id === "assistant-download");
     out.splice(at, 0, { id: "assistant-summaries", label: "Recent chats" });
@@ -1344,6 +1354,33 @@ function AliasesSection({ p, v }: { p: Profile; v: AssistantPaneViewProps }) {
   );
 }
 
+/**
+ * "Follow-up suggestions" (task 4002): the pills under an answer of the chat.
+ * It is a setting of the chat, so the assistant never reads it.
+ */
+function FollowUpsSection({ v }: { v: AssistantPaneViewProps }) {
+  return (
+    <Section id="assistant-follow-ups" title="Follow-up suggestions">
+      <label className="flex items-start gap-2.5">
+        <Checkbox
+          checked={v.followUps === true}
+          disabled={v.busy.followUps}
+          onChange={(e) => v.onFollowUps(e.target.checked)}
+          aria-label="Show follow-up suggestions"
+        />
+        <span className="space-y-0.5">
+          <span className="block text-sm font-medium text-foreground">Show follow-up suggestions</span>
+          <span className="block text-xs text-muted-foreground">
+            The chat offers next messages under an answer, with the label Follow up. This is off
+            by default.
+          </span>
+        </span>
+      </label>
+      <RowError text={v.errors.followUps} />
+    </Section>
+  );
+}
+
 // ── The view ──────────────────────────────────────────────────────────────
 
 export function AssistantPaneView(v: AssistantPaneViewProps) {
@@ -1409,6 +1446,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       </Section>
       <AddressSection p={p} v={v} />
       <StyleSection p={p} v={v} />
+      <FollowUpsSection v={v} />
       {v.celebrations ? <CelebrationsSection p={p} gate={v.celebrations} v={v} /> : null}
       <FactsSection p={p} v={v} />
       <InterviewSection p={p} v={v} />
@@ -1519,6 +1557,8 @@ export default function AssistantPane() {
   // Recent chats (PZ-35). The gate is what the profile read says, and the list
   // loads only when the organization has the flag on.
   const [gate, setGate] = useState<SummaryGate>({ enabled: false, keep: true });
+  // Follow-up suggestions (task 4002): off until the member turns them on.
+  const [followUps, setFollowUps] = useState(false);
   // Celebrations (PZ-43): the flag of the organization and the festival list.
   const [celeb, setCeleb] = useState<CelebrationsGate>(celebrationsGate(null));
   const [summaries, setSummaries] = useState<SummariesList>({ status: "loading" });
@@ -1581,6 +1621,7 @@ export default function AssistantPane() {
       setProfile(read.profile);
       setGate(read.gate);
       setCeleb(read.celebrations);
+      setFollowUps(read.followUps);
       setStatus("ready");
     } catch (e) {
       setLoadError(e instanceof ProfileError ? e.message : errorText("", 502));
@@ -1693,6 +1734,11 @@ export default function AssistantPane() {
       run("celebrations", async () =>
         setProfile(await saveCelebrations(mergeCelebrations(base.celebrations, edit))),
       ),
+    onFollowUps: (value) =>
+      run("followUps", async () => {
+        await saveFollowUps(value);
+        setFollowUps(value);
+      }),
     onKeepSummaries: (value) =>
       run("summaries", async () => {
         await saveKeepSummaries(value);
@@ -1728,6 +1774,7 @@ export default function AssistantPane() {
       fallbackName={fallbackName}
       block={block}
       celebrations={celeb.enabled ? celeb : undefined}
+      followUps={followUps}
       summaries={gate.enabled ? { keep: gate.keep, list: summaries } : undefined}
       confirmDeleteSummaryId={confirmDeleteSummaryId}
       onCancelDeleteSummary={() => setConfirmDeleteSummaryId(null)}

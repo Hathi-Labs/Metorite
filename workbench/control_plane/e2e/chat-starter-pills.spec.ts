@@ -10,6 +10,10 @@ import { expect, test, type Page } from "@playwright/test";
  * fixed list shows. With the flag off, the fixed list shows and the chat
  * never reads the feed.
  *
+ * Task 4002: the whole "Follow up" segment is hidden until the member turns on
+ * `apps.chat.follow_up_suggestions`. While it is off, the chat sends no request
+ * to `/api/chat/suggestions`. The starter pills do not change.
+ *
  * No gateway runs here. `/api/shell/feed` is answered in the page, so the
  * feed is the one this spec writes, and the page counts each read. The
  * vitest twin is `src/lib/starterPills.test.ts`, and the source block in
@@ -54,10 +58,12 @@ interface InstallOptions {
    * message of a chat that a reminder opened (RM-4), with another id.
    */
   first?: "brief" | "reminder";
+  /** The member turned on "Show follow-up suggestions" (task 4002). Off by default. */
+  followUps?: boolean;
 }
 
 async function install(page: Page, opts: InstallOptions) {
-  await page.addInitScript(({ chatFirst, cards, first }) => {
+  await page.addInitScript(({ chatFirst, cards, first, followUps }) => {
     window.localStorage.clear();
     // The one assistant needs its flag and the full frame (`chatFlag.ts`).
     for (const k of ["cc-shell-chat", "cc-shell-bar", "cc-shell-nav"]) window.localStorage.setItem(k, "1");
@@ -68,6 +74,8 @@ async function install(page: Page, opts: InstallOptions) {
     const posts: Array<Record<string, unknown>> = [];
     w.__chatPosts = posts;
     w.__feedGets = 0;
+    w.__suggestionPosts = 0;
+    w.__profileGets = 0;
     const enc = new TextEncoder();
     const frame = (e: unknown) => enc.encode(`data: ${JSON.stringify(e)}\n\n`);
     const json = (body: unknown, status = 200) =>
@@ -86,6 +94,14 @@ async function install(page: Page, opts: InstallOptions) {
         });
       }
       if (url.includes("/api/chat/active-sessions")) return json([]);
+      // Before `/api/auth/me`, whose substring also matches this path.
+      if (url.includes("/api/auth/me/assistant-profile")) {
+        w.__profileGets = (w.__profileGets as number) + 1;
+        return json({
+          enabled: false,
+          apps: { chat: { summaries: true, follow_up_suggestions: followUps } },
+        });
+      }
       if (url.includes("/api/auth/me")) {
         return json({
           email: "dev@e2e.test", user_id: "dev", authenticated: true, is_active: true,
@@ -96,7 +112,10 @@ async function install(page: Page, opts: InstallOptions) {
         });
       }
       if (url.includes("/api/health")) return json({ gateway: "up", build: "e2e" });
-      if (url.includes("/api/chat/suggestions")) return json({ suggestions: [] });
+      if (url.includes("/api/chat/suggestions")) {
+        w.__suggestionPosts = (w.__suggestionPosts as number) + 1;
+        return json({ suggestions: [] });
+      }
       if (url.includes("/api/chat/sessions")) {
         const method = (init?.method ?? "GET").toUpperCase();
         if (url.includes("/room")) return json({ detail: "not a room" }, 404);
@@ -128,7 +147,10 @@ async function install(page: Page, opts: InstallOptions) {
       }
       return orig(input, init);
     };
-  }, { chatFirst: Boolean(opts.chatFirst), cards: opts.cards, first: opts.first });
+  }, {
+    chatFirst: Boolean(opts.chatFirst), cards: opts.cards, first: opts.first,
+    followUps: opts.followUps ?? false,
+  });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -144,6 +166,10 @@ const starters = (page: Page) =>
 const chatPosts = (page: Page) =>
   page.evaluate(() => (window as unknown as { __chatPosts: Array<{ message?: string }> }).__chatPosts.map((p) => p.message));
 const feedGets = (page: Page) => page.evaluate(() => (window as unknown as { __feedGets: number }).__feedGets);
+const suggestionPosts = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __suggestionPosts: number }).__suggestionPosts);
+const profileGets = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __profileGets: number }).__profileGets);
 
 async function openHome(page: Page, width: number, height: number, opts: InstallOptions) {
   await page.setViewportSize({ width, height });
@@ -229,7 +255,7 @@ test.describe("the starter pills are action prompts from the member's feed (WS-6
   });
 
   test("a phone chat that a reminder opened shows no starter pill and keeps its follow-ups", async ({ page }) => {
-    await openHome(page, 390, 844, { chatFirst: true, cards: THREE, first: "reminder" });
+    await openHome(page, 390, 844, { chatFirst: true, cards: THREE, first: "reminder", followUps: true });
     await openSheet(page);
     await expect(panel(page).getByText("Reminder: call the printer vendor.")).toBeVisible({ timeout: 30_000 });
     await expect(panel(page).getByText("Follow up", { exact: true })).toBeVisible({ timeout: 30_000 });
@@ -253,5 +279,34 @@ test.describe("the starter pills are action prompts from the member's feed (WS-6
     await page.waitForTimeout(500);
     await expect(starters(page)).toHaveText(FIXED);
     expect(await feedGets(page)).toBe(0);
+  });
+
+  /** A settled reply to a live message, so an answer is on screen after the setting is read. */
+  async function askAndRead(page: Page) {
+    await expect(panel(page).getByText("Reminder: call the printer vendor.")).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => profileGets(page), { timeout: 15_000 }).toBeGreaterThan(0);
+    await composer(page).fill("What next?");
+    await composer(page).press("Enter");
+    await expect(panel(page).getByText("Here is your day.").first()).toBeVisible({ timeout: 15_000 });
+  }
+
+  test("with no setting, no Follow up segment shows and the chat asks for none", async ({ page }) => {
+    await openHome(page, 390, 844, { chatFirst: true, cards: THREE, first: "reminder" });
+    await openSheet(page);
+    await askAndRead(page);
+    await page.waitForTimeout(800);
+    await expect(panel(page).getByText("Follow up", { exact: true })).toHaveCount(0);
+    for (const label of FIXED) await expect(panel(page).getByRole("button", { name: label, exact: true })).toHaveCount(0);
+    expect(await suggestionPosts(page)).toBe(0);
+  });
+
+  test("with the setting on, the segment shows and the chat asks for the pills", async ({ page }) => {
+    await openHome(page, 390, 844, { chatFirst: true, cards: THREE, first: "reminder", followUps: true });
+    await openSheet(page);
+    await askAndRead(page);
+    await expect(panel(page).getByText("Follow up", { exact: true })).toBeVisible({ timeout: 30_000 });
+    // The stub gives no pill, so the fixed list shows, as before the setting.
+    for (const label of FIXED) await expect(panel(page).getByRole("button", { name: label, exact: true })).toBeVisible();
+    await expect.poll(() => suggestionPosts(page), { timeout: 15_000 }).toBeGreaterThan(0);
   });
 });

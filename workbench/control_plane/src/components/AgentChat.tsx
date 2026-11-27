@@ -48,6 +48,7 @@ import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/fe
 import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
 import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
+import { requestFollowUps, useFollowUps } from "@/lib/followUpPref";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -1910,10 +1911,13 @@ export default function AgentChat({
   const missingMandatory = missingAgentIntegrations(statuses);
 
   // ── Smart follow-up suggestions (LLM-generated, contextual) ───────
+  // The whole segment is off until the member turns it on (task 4002,
+  // `lib/followUpPref.ts`). Off: no pill, and no request to the model.
+  const followUps = useFollowUps();
   const [smartSuggestions, setSmartSuggestions] = useState<string[]>([]);
   const lastSuggestedForRef = useRef<string>("");
   useEffect(() => {
-    if (isLoading) return;
+    if (!followUps || isLoading) return;
     const last = lastNonSteer(messages);
     if (last?.role !== "assistant" || !last.content.trim() || last.streaming) return;
     if (lastSuggestedForRef.current === last.id) return; // already fetched
@@ -1921,25 +1925,21 @@ export default function AgentChat({
     setSmartSuggestions([]); // clear stale suggestions while fetching
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     const ctrl = new AbortController();
-    fetch("/api/chat/suggestions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    requestFollowUps(
+      followUps,
+      {
         userMessage: lastUser?.content ?? "",
         assistantMessage: last.content.slice(0, 4000),
         agentName: currentAgentName,
-      }),
-      signal: ctrl.signal,
-    })
-      .then((r) => r.json())
-      .then((d: { suggestions?: string[] }) => {
-        if (Array.isArray(d.suggestions) && d.suggestions.length > 0) {
-          setSmartSuggestions(d.suggestions);
-        }
+      },
+      ctrl.signal,
+    )
+      .then((pills) => {
+        if (pills.length > 0) setSmartSuggestions(pills);
       })
       .catch(() => {});
     return () => ctrl.abort();
-  }, [messages, isLoading, currentAgentName]);
+  }, [followUps, messages, isLoading, currentAgentName]);
 
   // ── Smart auto-scroll + scroll-to-bottom button ─────────────────────
   const threadRef = useRef<HTMLDivElement>(null);
@@ -3065,7 +3065,7 @@ export default function AgentChat({
               align="start"
             />
           )}
-          {!isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
+          {followUps && !isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
             const last = lastNonSteer(messages);
             // No follow-ups under the hello: its chips are the next step (BUD-1).
             if (last && isHelloRow(last.id)) return null;

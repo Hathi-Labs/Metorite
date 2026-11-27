@@ -277,6 +277,7 @@ class TestThePut:
         ({"brief": {"enabled": 0}}, "true or false"),
         ({"brief": {"colour": "red"}}, "enabled, brief_time, closeout_time"),
         ({"brief": {}}, "at least one preference"),
+        ({"chat": {"follow_up_suggestions": "off"}}, "true or false"),
         ({"nobody": {"enabled": True}}, "the app is one of brief, chat"),
         ({"brief": {"enabled": True}, "other": {}}, "exactly one app"),
         ("brief", "exactly one app"),
