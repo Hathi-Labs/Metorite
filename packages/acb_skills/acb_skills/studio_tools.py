@@ -1309,6 +1309,54 @@ def layout_hint(description: str) -> str | None:
     return None
 
 
+#: The design step of Mira (STU-LOOK-3, ``studio_layouts.md`` section 11.5). Before she writes `pages`, she
+#: answers three questions about the member, and she picks the first screen from the table below. The layout of
+#: each row is a value of the closed enum (`LAYOUTS`), so a test refuses a row that the validator would refuse.
+DESIGN_QUESTIONS: tuple[str, ...] = (
+    "Who uses the app, and where? Field staff on a phone, an office clerk on a desktop, or a manager who wants numbers.",
+    "What is the first screen? Take it from `first_screens`. A table is not the first screen by default.",
+    "What does the sample data look like? It looks real: names, dates, amounts and statuses of a small business.",
+)
+DESIGN_SCREENS: tuple[tuple[str, str, str], ...] = (
+    ("Field staff: visits, jobs, a day to run", "dashboard",
+     "App Home is not built yet. Use a dashboard with the stat views, and name it the first page."),
+    ("A manager who wants to know how we are doing", "dashboard", "Stat views first, then one or two charts."),
+    ("A clerk who enters and edits many rows", "table_workspace", "The table is the first screen for this audience."),
+    ("A pipeline: hiring, sales, claims", "board", "One board view, grouped by a status field."),
+    ("Requests to handle", "work_queue", "A list of the open items, and the open item beside it."),
+    ("Requests to approve", "approval_queue", "The same shape as a work queue."),
+    ("One customer, patient or asset at a time", "list_detail", "A list, and the record beside it."),
+)
+DESIGN_SAMPLE_DATA: tuple[str, ...] = (
+    "Use names, dates, amounts and statuses of a small business.",
+    "Never write 'Test 1', 'Lorem' or a row that repeats one value.",
+    "Give each object at least 5 sample records and at least 3 different statuses.",
+    "Put dates in the last 30 days, with a few in the next 7.",
+)
+DESIGN_RUBRIC: tuple[str, ...] = (
+    "The first screen is not a bare table, unless the audience is a table audience.",
+    "The first thing to read is a sentence or a number for the member.",
+    "At most 4 numbers. Each has a label and, where it can, an icon.",
+    "One main action, in the same place on each page.",
+    "No text runs out of its box at 390 px. Nothing scrolls sideways except a table in its strip.",
+    "Each empty state has one sentence and one next action.",
+    "Icons come from the icon list. A record with an image shows it.",
+    "The sample data looks real.",
+)
+
+
+def _describe_design() -> dict[str, Any]:
+    """The design step: the questions, the first screen for each audience, the sample data rules and the look rubric."""
+    return {
+        "note": "Plan the look as well as the function. Ask the three questions before you write `pages`. "
+                "Tell the member who the app is for and what its first screen is, in one sentence. They may change it.",
+        "questions": list(DESIGN_QUESTIONS),
+        "first_screens": [{"audience": a, "layout": lay, "note": n} for a, lay, n in DESIGN_SCREENS],
+        "sample_data": list(DESIGN_SAMPLE_DATA),
+        "rubric": list(DESIGN_RUBRIC),
+    }
+
+
 def _describe_layouts() -> dict[str, Any]:
     """The page presets and their regions, from the model (STU-LY-8)."""
     return {
@@ -1364,6 +1412,7 @@ def _describe_frame() -> dict[str, Any]:
             "nav": "One rail row for each page. The app frame draws the rail.",
         },
         "layouts": _describe_layouts(),
+        "design": _describe_design(),
         "steps": FRAME_STEPS,
         "icons": list(NAV_ICONS),
         "example": FRAME_EXAMPLE,
