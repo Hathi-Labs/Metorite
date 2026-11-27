@@ -2821,6 +2821,23 @@ def _q_access(rid: str) -> str:
             "AND ac.v_text = CAST(:me AS text))")
 
 
+def _q_access_probe(rid: str) -> str:
+    """The row rule of :func:`_q_access` for a WALK, as a probe by record id (task 3375).
+
+    The plain EXISTS is flattened into a semi-join, and with no statistics the planner took
+    ``studio_record_hot_num_f8_idx`` for ``ac`` and joined it to the walk by a filter: 2,003
+    edges x 671 rows of ``ac`` for each of 3 passes, 267,466 buffers and 1.4 s for 2,000
+    nodes on the box. Here the lookup sits in a subquery with ``OFFSET 0``, so it stays one
+    probe for each record id, and the object test is ``IS NOT DISTINCT FROM`` so that the
+    primary key ``(organization_id, record_id, field_key)`` is the only index with a full
+    equality prefix. The rows are the same. :func:`_q_access` stays as it is for
+    ``build_query``: a list over a big object may prefer to start from the person field."""
+    return (f"EXISTS (SELECT 1 FROM (SELECT ac.record_id FROM studio_record_hot ac "
+            f"WHERE ac.{_OF_ORG} AND ac.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid) "
+            f"AND ac.record_id = {rid} AND ac.field_key = ANY(CAST(:akeys AS text[])) "
+            "AND ac.v_text = CAST(:me AS text) OFFSET 0) ap)")
+
+
 def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
              skip: int | None = None, only_hot: bool = False) -> str:
     """Each condition, with its index in *conditions*, so one statement holds
@@ -5018,8 +5035,8 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     at a record that the viewer cannot read, and the subtree below it is cut.
     The limit, the levels and the parent ids count only the records that the
     viewer reads."""
-    root_rule = " AND " + _q_access("r.id") if scoped else ""
-    step_rule = " AND " + _q_access("h.record_id") if scoped else ""
+    root_rule = " AND " + _q_access_probe("r.id") if scoped else ""
+    step_rule = " AND " + _q_access_probe("h.record_id") if scoped else ""
     return (
         "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
         "tree(id, parent, depth, path, key) AS ("

@@ -424,3 +424,15 @@ def test_a_signal_before_the_launch_still_stops_the_suite(tmp_path: Path) -> Non
     block = _REMOTE.split("  local suite_pid=", 1)[1]
     assert block.index("trap '") < block.index("setsid bash scripts/ci_pc/run_suite.sh")
     assert '[ "$stopping" = 1 ] && kill -TERM' in block  # the signal that came first
+
+
+def test_the_frontend_jobs_get_a_node_heap_that_tsc_needs():
+    """Task 1304: tsc died at the 2 GB default in the 4 GB container, so the
+    vitest step never ran. The heap must stay set, and stay inside the container."""
+    import re
+
+    m = re.search(r"-e NODE_OPTIONS=--max-old-space-size=(\d+)", _RUN_SUITE)
+    assert m, "run_suite.sh no longer sets a Node heap for the frontend jobs"
+    assert 2048 < int(m.group(1)) <= 3584  # above the default, inside --memory 4g
+    assert "frontend|operator-console" in _RUN_SUITE
+    assert '"${env[@]}"' in _RUN_SUITE  # and the docker run passes it

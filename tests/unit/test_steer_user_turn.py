@@ -86,9 +86,11 @@ DECLINE = re.compile(r"cancel|declin|reject|refus|not approved|wasn't approved",
 @pytest.fixture(autouse=True)
 def _clean():
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
     yield
     steer._PENDING_GUIDANCE.clear()
+    steer._SEEN_STEER_IDS.clear()
     steer._CLOSED.clear()
 
 

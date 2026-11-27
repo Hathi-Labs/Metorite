@@ -50,7 +50,10 @@ from gateway.routes.crm.core import (
     STATUS_TYPES,
     _tenant_session,
     actor,
+    clamp_stage_memberships,
+    fan_out_stage_values,
     insert_row,
+    lock_pipeline_creates,
     refuse_in_mirror_mode,
     router,
     update_row,
@@ -508,12 +511,26 @@ async def fetch_metadata(zoho: Any) -> Metadata:
 # ── Applying ────────────────────────────────────────────────────────────────
 
 async def apply_repair(db: Any, plan: RepairPlan) -> None:
-    """Write the plan. Statuses only — not one deal row is named here."""
+    """Write the plan. Statuses only — not one deal row is named here.
+
+    CRM-M3b: it takes the pipeline create lock FIRST, before a stage row and
+    its memberships (``core.lock_pipeline_creates``, the order of CRM-M4a).
+    A pipeline copy holds that lock while it locks each membership of its
+    source and then the stage row. Without the lock, the two can wait on each
+    other in a cycle (40P01), as the status PATCH could before repair 3."""
+    await lock_pipeline_creates(db)
     for status_id, values in plan.updates.items():
         # `touch=False` like every other statuses write: `crm_deal_statuses`
         # has no `updated_at`, and it is absent from ZOHO_TRACKED_TABLES, so
         # this cannot dirty anything even if it wanted to.
         await update_row(db, STATUS_TABLE, status_id, values, touch=False)
+        # CRM-M3b: the repaired win chance holds in every pipeline of the
+        # stage, because each reader takes the membership value first.
+        await fan_out_stage_values(db, status_id, values)
+        if "type" in values:
+            # CRM-M3b round 2: a new type gives NULL to each membership value
+            # that its clamp does not take, so NULL reads the repaired row.
+            await clamp_stage_memberships(db, status_id)
     for values in plan.creates:
         row = await insert_row(db, STATUS_TABLE, values)
         plan.types_after[str(row.id)] = str(values["type"])

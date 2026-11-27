@@ -976,6 +976,10 @@ class _DoorResult:
         """WS-53 CRM-Q33: the CRM half of the purge reads its cursor row."""
         return self.fetchone()
 
+    def mappings(self) -> "_DoorResult":
+        """ACC-1: the purge reads the integration access rules. No row, no rule."""
+        return self
+
     def scalar(self) -> Any:
         return self._scalar
 

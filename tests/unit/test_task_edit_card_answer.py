@@ -435,7 +435,7 @@ def test_no_module_reads_the_setting_but_its_one_reader() -> None:
             if "project_edit_card_orgs" in p.read_text(encoding="utf-8", errors="replace"):
                 hits.append(p.relative_to(ROOT).as_posix())
     assert sorted(hits) == [
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
         "packages/acb_skills/acb_skills/task_card.py",
     ]
 
