@@ -45,12 +45,20 @@ export interface WaitingDockProps {
   initialLive?: string;
 }
 
-/** The height of the chat column and of the composer, from the form. */
-function measure(root: HTMLElement | null): { chat: number; composer: number } | null {
+/**
+ * The heights the cap reads, from the form. `chat` is the room that the
+ * thread and the form share (the thread is the form's previous sibling), so a
+ * header row above the thread is not counted. `composer` is all of the form
+ * but the dock's body: the box, its rows, and the dock's own control row.
+ */
+function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: number; composer: number } | null {
   const form = root?.closest("form");
-  const column = form?.parentElement;
-  if (!root || !form || !column) return null;
-  return { chat: column.clientHeight, composer: Math.max(0, form.offsetHeight - root.offsetHeight) };
+  const thread = form?.previousElementSibling as HTMLElement | null | undefined;
+  if (!root || !body || !form || !thread) return null;
+  return {
+    chat: thread.clientHeight + form.offsetHeight,
+    composer: Math.max(0, form.offsetHeight - body.offsetHeight),
+  };
 }
 
 export default function WaitingDock({ count, phone, children, initialFolded = false, initialLive = "" }: WaitingDockProps) {
@@ -89,7 +97,7 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
     : null;
 
   const read = useCallback(() => {
-    const m = measure(rootRef.current);
+    const m = measure(rootRef.current, bodyRef.current);
     if (m) setSize((s) => (s && s.chat === m.chat && s.composer === m.composer ? s : m));
     if (typeof window !== "undefined") setLayout((l) => (l === window.innerHeight ? l : window.innerHeight));
     const body = bodyRef.current;
@@ -107,11 +115,13 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
     const root = rootRef.current;
     const form = root?.closest("form");
     const column = form?.parentElement;
+    const thread = form?.previousElementSibling;
     if (!root || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => read());
     ro.observe(root);
     if (form) ro.observe(form);
     if (column) ro.observe(column);
+    if (thread) ro.observe(thread);
     if (bodyRef.current) ro.observe(bodyRef.current);
     window.addEventListener("resize", read);
     return () => {
