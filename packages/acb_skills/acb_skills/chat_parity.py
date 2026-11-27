@@ -193,8 +193,10 @@ WAVES: dict[str, tuple[str, tuple[str, ...], tuple[int, ...]]] = {
     # P-5b (task 3114) splits into P-5b-1 (3114) and P-5b-2 to P-5b-6 (3943 to 3947).
     "P-5": ("People, Knowledge and Memory", ("people", "knowledge", "memory"),
             (3105, 3114, 3943, 3944, 3945, 3946, 3947)),
+    # Task 3970 (PAR-10 part a) built the reads and the avatar write of the Agent
+    # Registry. Task 4018 builds its writes.
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents"),
-            (3115, 3903, 3950)),
+            (3115, 3903, 3950, 3970, 4018)),
     "P-7": ("Chat threads and the shell", ("chat", "shell"), (3115, 3903)),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations"),
             (3102, 3925, 3107, 3935, 3936, 3108, 3109, 3932)),
@@ -247,6 +249,8 @@ TOOL_SOURCES: tuple[str, ...] = (
     "packages/acb_skills/acb_skills/people_tools.py",
     # Task 3963: the notes read tools send the Notes routes. They read only.
     "packages/acb_skills/acb_skills/notes_read_tools.py",
+    # Task 3970: the agent registry tools send the Agent Registry and office routes.
+    "packages/acb_skills/acb_skills/agent_registry_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
     "packages/acb_skills/acb_skills/studio_tools.py",
 )
@@ -433,6 +437,20 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/people/{}/work": "people_work",
     "GET /api/me/reach/status": "reach_preview",
     "GET /api/me/reach/preview": "reach_preview",
+    # ── Agent Registry ──
+    # Task 3970 (PAR-10 part a): the agent registry tools. Each sends the route of
+    # the UI as the member, so the gate of each route decides.
+    "GET /api/agent/config": "agent_registry_config",
+    "GET /api/agent/list": "agent_registry_list",
+    "GET /api/agent/mutations": "agent_registry_mutations",
+    "GET /api/agent/mutations/{}/diff": "agent_registry_mutations",
+    "GET /api/agent/{}/skills": "agent_registry_skills",
+    "GET /api/observability/activity/recent": "agent_registry_office",
+    "GET /api/observability/avatars": "agent_registry_office",
+    "GET /api/observability/cost": "agent_registry_office",
+    "GET /api/observability/roster": "agent_registry_office",
+    "GET /api/observability/runs": "agent_registry_runs",
+    "PUT /api/observability/avatars/{}": "agent_registry_set_avatar",
     # ── Chat ──
     # CO-11b (task 3563): Pin and Unpin of THIS chat. The tool takes no chat
     # id: it acts on the chat of the run, as the member of the run.
@@ -1153,26 +1171,17 @@ DEBT: dict[str, str] = {
     "POST /api/apps/{}/ai/complete": "P-6",
     "POST /api/apps/{}/tools/{}": "P-6",
     # ── Agent Registry ──
+    # Task 3970 (PAR-10 part a) paid the 10 reads and the avatar write. These 9
+    # writes of the registry and of the mutation queue wait for task 4018.
     "DELETE /api/agent/mutations/{}/delete": "P-6",
     "DELETE /api/agent/mutations/{}/dismiss": "P-6",
     "DELETE /api/agent/{}": "P-6",
-    "GET /api/agent/config": "P-6",
-    "GET /api/agent/list": "P-6",
-    "GET /api/agent/mutations": "P-6",
-    "GET /api/agent/mutations/{}/diff": "P-6",
-    "GET /api/agent/{}/skills": "P-6",
-    "GET /api/observability/activity/recent": "P-6",
-    "GET /api/observability/avatars": "P-6",
-    "GET /api/observability/cost": "P-6",
-    "GET /api/observability/roster": "P-6",
-    "GET /api/observability/runs": "P-6",
     "PATCH /api/agent/{}": "P-6",
     "POST /api/agent/mutations/{}/remutate": "P-6",
     "POST /api/agent/mutations/{}/{}": "P-6",
     "POST /api/agent/register": "P-6",
     "POST /api/agent/{}/pull": "P-6",
     "PUT /api/agent/{}/skills": "P-6",
-    "PUT /api/observability/avatars/{}": "P-6",
     # ── Chat ──
     "DELETE /api/agent/workspace/{}/file": "P-7",
     "DELETE /api/chat/sessions/{}": "P-7",
@@ -1314,7 +1323,7 @@ DEBT_CEILING: dict[str, int] = {
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
-    "agents": 20,
+    "agents": 9,  # Task 3970 (PAR-10 part a) paid the 10 reads of the Agent Registry and its office view and the avatar write with the seven tools of agent-registry (20 to 9). Paid by task 3970. The 9 writes of the registry and of the mutation queue wait for task 4018.
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.

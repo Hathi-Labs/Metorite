@@ -23,6 +23,11 @@ decisions.** §6 sets the order of the work now.
 an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
 Spec only, and nothing is built. The place of the converter waits for the owner.
 
+**PAR-10 part a (task 3970) is BUILT, 2026-11-26, dark.** The chat reads the
+Agent Registry and its office view, and gives an agent an avatar, with the pack
+`agent-registry`. The agents ceiling goes from 20 to 9. The 9 writes wait for
+task 4018. §6.2 holds the detail.
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -566,17 +571,55 @@ bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
 The thirteenth route is `/bot/identity`. Its status check starts a browser on
 the profile of the bot, and a bot join at the same time can fail.
 
-**Later than this reading (2026-11-25).** The table does not change after its
+**PAR-10 part a (task 3970) is BUILT, 2026-11-26, dark.** The new pack
+`agent-registry` holds seven tools. They pay the 10 reads of the Agent Registry
+and its office view, and the avatar write (20 to 9). The pack is owned by `org-admin`, as the
+pack `notes` is. The tools are `agent_registry_list`, `agent_registry_skills`,
+`agent_registry_config`, `agent_registry_mutations`, `agent_registry_office`,
+`agent_registry_runs` and `agent_registry_set_avatar`.
+
+Each tool sends the route of the UI as the verified member, so the gate of each
+route decides. The list shows only the agents that the member may run. The
+mutation queue and its diff need `agents:manage` and an org that may review.
+No tool takes an org or a member. A tool that names one agent finds it in the
+member's own list first.
+
+The routes take any member, and only the page checks its feature. So each
+tool that only a page reads checks that feature in `GET /auth/me` first, and
+fails closed. The skills, the config, the queue and the avatar write need
+`feature:agents`. The roster, the cost, the activity and the runs need
+`feature:observability`. The list and the avatars need no feature, because
+each app reads them.
+
+The chat does no more than the page. The config read sends a GitHub
+`owner/repo` slug only, and never a path on the server. The cost read leaves
+out the cost of each person. No result holds a secret key, a credential shape,
+a local path, a repo URL or a sprite. Agent names, descriptions, commit
+messages, diffs, config files and run errors go in one untrusted frame. A diff
+pages by line.
+
+The avatar write sends the body of the picker. It shows one card where
+`_must_ask` says so. It always shows the card when a custom picture goes,
+because the picker sends no picture. After the approve it reads the avatars
+again, and sends nothing when the avatar changed.
+
+The 9 writes of the registry and of the mutation queue stay debt for task 4018.
+The pack is not in `FOLLOWS`. A run loads it where the owner lists
+`agent-registry` in `TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+**Later than this reading (2026-11-26).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Twelve ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Thirteen ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
+
 PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
 and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
 60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
 calendar to 2. PAR-9 took apps to 2. Task 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 257. The "Today" column above does not show
+Task 3970 took agents to 9. The total of `DEBT_CEILING` is 246, the sum of its
+rows on 2026-11-26. The "Today" column above does not show
 all of these changes.
 
 ### 6.3 Rungs 0 to 3, slice by slice
@@ -923,6 +966,10 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
 - **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
+- **Rung 8, PAR-10 part a (task 3970).** It pays the 10 reads and the avatar
+  write of the Agent Registry with the dark pack `agent-registry`. Task 4018
+  takes the 9 writes. The demo needs the owner to add `agent-registry` to
+  `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
 - **Rung 7.** The two actions are a people lookup and the end of a CRM task.
@@ -1194,6 +1241,8 @@ he approves the merge.
     Custom Apps tools of PAR-9.
     Add `calendar-connections` before the demo of rung 4 (task 3904). It holds
     the act of P-1c.
+    Add `agent-registry` before the demo of rung 8 (task 3908). It holds the
+    seven tools of PAR-10 part a.
 2. **The previews.** Approve the preview of each new card: the invite, the
    Knowledge writes, and the Admin, Settings and Integrations writes. Approve
    too the stricter rule of PAR-4a: the chat gives no right that the caller

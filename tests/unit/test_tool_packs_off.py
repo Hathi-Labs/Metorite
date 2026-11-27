@@ -335,3 +335,43 @@ def test_flag_on_the_same_connection_turn_holds_the_act(store, monkeypatch) -> N
     names = _tool_names(on["body"])
     assert set(CONNECTION_TOOLS) <= set(names), names
     assert "CALENDAR CONNECTION TOOLS." in on["body"]["messages"][0]["content"]
+
+
+#: PAR-10 part a (task 3970): words of the dark ``agent-registry`` pack.
+REGISTRY_WORDS = "Show the agent registry and the agent run history of the sales agent"
+REGISTRY_TOOLS = ("agent_registry_list", "agent_registry_runs", "agent_registry_set_avatar")
+
+
+def test_flag_off_the_agent_registry_pack_reaches_no_chat(store, monkeypatch) -> None:
+    """PAR-10 part a: the Agent Registry tools ship dark. The real stream run of
+    the orchestrator, with words of the pack, holds none of its tools and reads
+    no pack state while ``TOOL_PACKS`` is empty. Mutation: put
+    ``agent-registry`` in ``FOLLOWS``, in a default list, or in the core tools of
+    the orchestrator -> a tool joins the request -> red."""
+    _flag(monkeypatch, False)
+    slug = "agent-registry"
+    assert slug in tp.PACKS and slug not in tp.FOLLOWS
+    assert tp.matched_layer(slug, REGISTRY_WORDS) is not None, "the words name the pack"
+    assert tp.packs_on(ORG) == frozenset()
+    off = _drive(monkeypatch, "run-par10-off-1", REGISTRY_WORDS)
+    kinds = [e.get("type") for e in off["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, off["events"]
+    names = _tool_names(off["body"])
+    assert names, "non-vacuity: the request holds tools"
+    assert not set(REGISTRY_TOOLS) & set(names)
+    assert "AGENT REGISTRY TOOLS." not in off["body"]["messages"][0]["content"]
+    assert _pack_calls(store) == []
+
+
+def test_flag_on_the_same_registry_turn_holds_the_tools(store, monkeypatch) -> None:
+    """Non-vacuity of the case above: the owner's own line, ``agent-registry``,
+    turns the pack on for the same turn. Mutation: the pack builds no tool -> red."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "agent-registry", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    on = _drive(monkeypatch, "run-par10-on-1", REGISTRY_WORDS)
+    kinds = [e.get("type") for e in on["events"]]
+    assert kinds[-1] == "RUN_FINISHED" and "RUN_ERROR" not in kinds, on["events"]
+    names = _tool_names(on["body"])
+    assert set(REGISTRY_TOOLS) <= set(names), names
+    assert "AGENT REGISTRY TOOLS." in on["body"]["messages"][0]["content"]

@@ -31,6 +31,8 @@ hand-off to this agent.
 - `revoke_agent_connection` revokes one agent connection. It shows one card first.
 - `disconnect_integration` disconnects one connection, removes one plugin or disconnects GitHub. It shows one card first.
 - `set_mcp_server` turns always confirm on, turns the read-only key off, or sets the description of one MCP server. It shows one card first. It never turns always confirm off or the read-only key on: a person does that on the Integrations page.
+- `agent_registry_list`, `agent_registry_skills`, `agent_registry_config`, `agent_registry_mutations`, `agent_registry_office` and `agent_registry_runs` read the Agent Registry and its office view. They change nothing.
+- `agent_registry_set_avatar` gives one agent a character of the avatar library. It shows one card where the chat needs it, and always when a custom picture goes.
 
 ## The rules
 
