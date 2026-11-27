@@ -229,11 +229,18 @@ _CALENDAR_DAY_NAMES: tuple[str, ...] = (
     "my_tasks_unschedule",
     "my_tasks_update_calendar_settings",
 )
+#: P-1b (task 3922): the two tools of the ``mail-tasks`` pack, built the same way.
+#: Fence: ``tests/unit/test_my_tasks_p1b_tools.py``.
+_MAIL_TASKS_NAMES: tuple[str, ...] = (
+    "my_tasks_capture_from_mail",
+    "my_tasks_draft_from_mail",
+)
 _CALENDAR_DAY_TOOLS: list[Any] = []
 try:
     import skill_my_tasks
 
-    _CALENDAR_DAY_TOOLS = [getattr(skill_my_tasks, name) for name in _CALENDAR_DAY_NAMES]
+    _CALENDAR_DAY_TOOLS = [getattr(skill_my_tasks, name)
+                           for name in (*_CALENDAR_DAY_NAMES, *_MAIL_TASKS_NAMES)]
 except ImportError:
     # skill-my-tasks is not installed: the pack is then empty, not broken.
     pass

@@ -70,6 +70,7 @@ import {
   archiveExpired,
   archiveRequestOf,
   canReleaseRun,
+  strandedLine,
   clientName,
   heldByLine,
   RELEASE_ADMIN_PERMISSION,
@@ -265,12 +266,17 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
       agent_member_email: run?.member_email ?? null,
       // SW-7b: the card line names the session too.
       agent_label: run?.agent_label ?? null,
+      // Task 1045c: the card drops or gains the strand with the panel. The
+      // polled run is newer than the row, so its strand wins.
+      agent_stranded: run?.stranded ?? null,
     };
     if (
       (task.agent_state ?? null) === next.agent_state &&
       (task.agent_client_via ?? null) === next.agent_client_via &&
       (task.agent_member_email ?? null) === next.agent_member_email &&
-      (task.agent_label ?? null) === next.agent_label
+      (task.agent_label ?? null) === next.agent_label &&
+      // The words, not the object: each poll gives a new stamp.
+      strandedLine(task.agent_stranded) === strandedLine(next.agent_stranded)
     ) {
       return;
     }
@@ -278,7 +284,7 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     // Only a change of the run's facts reports. The task object changes on
     // every merge, and listing it would report again for each one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, state, run?.client_via, run?.member_email, run?.agent_label]);
+  }, [enabled, state, run?.stranded, run?.client_via, run?.member_email, run?.agent_label]);
 
   // M1 (ORC-3): the panel sits above the task card's tabs, so its first read
   // must not move the Add row and the tab bar. Until the read answers, keep
@@ -383,6 +389,20 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
     assignees: task.assignees,
   });
   const canReply = REPLYABLE.has(run.status) && (!cardOpen || archiveStale);
+  // One control for both holder layouts. It ends the row that holds it.
+  const releaseControl = canRelease ? (
+    <Button
+      className="ml-auto shrink-0"
+      variant="ghost"
+      size="sm"
+      icon="LogOut"
+      data-agent-release=""
+      disabled={busy}
+      onClick={() => setConfirmRelease(true)}
+    >
+      {RELEASE_COPY.button}
+    </Button>
+  ) : null;
 
   /** One member write: `send` posts it. The panel guesses the state first. */
   async function write(
@@ -594,33 +614,37 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         ) : null}
       </div>
 
-      {/* EA-14a: who holds the task, and the Release control. */}
+      {/* EA-14a: who holds the task, and the Release control. The holder
+          wraps and never truncates. A strand takes a second row, and Release
+          sits at its end, so the narrow panel clips nothing (task 1045c). */}
       {holding ? (
-        <div className="flex min-w-0 items-center gap-2 text-xs" data-agent-held-by="">
-          <p className="min-w-0 flex-1 truncate text-muted-foreground" title={heldByLine(run, personLabels)}>
-            {heldByLine(run, personLabels)}
+        <div className="flex min-w-0 flex-col gap-1 text-xs" data-agent-held-by="">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <p className="min-w-0 break-words text-muted-foreground" data-agent-holder="">
+              {heldByLine(run, personLabels)}
+            </p>
             {runHolderFree(run) ? (
               <span
-                className="ml-1.5 rounded border border-border px-1 text-[10px] uppercase tracking-wide"
+                className="shrink-0 rounded border border-border px-1 text-[10px] uppercase tracking-wide text-muted-foreground"
                 data-agent-held-stale=""
                 title="No activity for a long time. The next claim can take this task."
               >
                 {STALE_HOLD_TEXT}
               </span>
             ) : null}
-          </p>
-          {canRelease ? (
-            <Button
-              className="shrink-0"
-              variant="ghost"
-              size="sm"
-              icon="LogOut"
-              data-agent-release=""
-              disabled={busy}
-              onClick={() => setConfirmRelease(true)}
-            >
-              {RELEASE_COPY.button}
-            </Button>
+            {run.stranded ? null : releaseControl}
+          </div>
+          {run.stranded ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <p
+                className="min-w-0 break-words text-warning"
+                data-agent-stranded=""
+                title="The run went quiet. Release it to give the task back."
+              >
+                {strandedLine(run.stranded)}
+              </p>
+              {releaseControl}
+            </div>
           ) : null}
         </div>
       ) : null}

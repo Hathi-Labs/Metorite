@@ -105,6 +105,9 @@ def open_edge(armed, monkeypatch):  # noqa: F811 — a fixture
     # CIV-14b fix round 1: `upload_task_image` shows only for an organization
     # of `mcp_image_upload_orgs`.
     monkeypatch.setattr(settings, "mcp_image_upload_orgs", "*")
+    # SW-27c1: `mark_number` shows only for an organization of
+    # `sequence_marks_orgs`.
+    monkeypatch.setattr(settings, "sequence_marks_orgs", "*")
     # EA-5: `get_company_context` shows only for an organization of
     # `agent_resources_orgs`.
     monkeypatch.setattr(settings, "agent_resources_orgs", "*")

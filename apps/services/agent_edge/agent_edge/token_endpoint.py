@@ -300,7 +300,11 @@ async def _check_refresh_scope(raw: str, requested: str) -> None:
         raise OAuthError("invalid_scope")
     found = await agent_tokens.lookup_token(raw, kind=agent_tokens.REFRESH)
     if found is None:
-        return  # the rotation decides, and it detects a reuse
+        # The rotation decides, and it detects a reuse. A spent token inside
+        # the grace window (MCP-G17f) gets no check here. Its new pair keeps
+        # the scope of the token row and names the granted scope, so it can
+        # never widen the grant.
+        return
     held = set(agent_oauth.granted_scope(found.scope, found.scopes).split(" "))
     if not set(tokens) <= held:
         raise OAuthError("invalid_scope")

@@ -18,6 +18,8 @@ the draft by the workflow helper, and the code modules.
 The share of a skill with the organization (WS-STU J2d) is one tool, in the
 third small pack of this owner, ``studio-share``. The repair of a skill and
 its undo (WS-TOF TOF-3a F12c) are two tools, in the pack ``studio-repair``.
+The acts of the Custom Apps of the App Workshop (PAR-9) are six tools of
+``acb_skills.custom_app_tools``, in the pack ``studio-apps``.
 
 It never runs as an agent. The name "studio-builder" is in no agent list: not
 the registry, the picker, a specialist tool or the registry block. Only the
@@ -34,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_settings
+from acb_skills.custom_app_tools import CUSTOM_APP_TOOLS
 from acb_skills.studio_tools import (
     STUDIO_PACKAGE_TOOLS,
     STUDIO_RECORD_TOOLS,
@@ -56,7 +59,7 @@ INSTRUCTIONS = (
 _TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS,
           *STUDIO_WORKFLOW_TOOLS, *STUDIO_WORKFLOW_WRITE_TOOLS, *STUDIO_WORKFLOW_ACT_TOOLS,
           *STUDIO_SHARE_TOOLS,
-          *STUDIO_REPAIR_TOOLS]
+          *STUDIO_REPAIR_TOOLS, *CUSTOM_APP_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:

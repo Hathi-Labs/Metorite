@@ -1469,13 +1469,24 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "defer": _pin("task_id until"),
     "move_task": _pin(
         "task_ids destination_project_id parent_task_id fields include_subtasks"),
+    # WS-MDC CC-2: `todays_focus` marks the member's own today's focus. It writes the
+    # member's overlay only, on the same card, and reaches nobody.
     "set_my_overlay": _pin(
         "task_id disposition context energy next_action estimate_mins two_minute "
         "block_start block_end flexible hard_date actual_start actual_end "
-        "deep_work waiting_on waiting_since expected_by clear"),
+        "deep_work waiting_on waiting_since expected_by todays_focus clear"),
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
+    # P-1b (task 3922): a task from a mail, in the member's own task list. It
+    # shows its exact fields on one card first (``skill_my_tasks.core``), with
+    # the mailbox line. In a held chat it refuses the AI path, because that
+    # card cannot show the fields. ``open_world=True``: the reply path labels
+    # the thread at the mail provider.
+    "my_tasks_capture_from_mail": _pin(
+        "account_id email_id thread_id title notes disposition next_action "
+        "assignee_name due_at defer_until context energy time_estimate_mins steps "
+        "reply_subject reply_to_message_id"),
     # The class B tools of projects-bulk.
     "create_tasks": _pin("project_id tasks"),
     "edit_comment": _pin("task_id comment_id body"),
@@ -1749,7 +1760,7 @@ def _held_write_pin(name: str) -> frozenset[str] | None:
 
 
 #: CAL-1a (task 1675). The writes of a pack that a held chat holds off, by pack
-#: slug. The pack is the ``calendar-day`` pack, and its twenty tools are the
+#: slug. The first pack is the ``calendar-day`` pack, and its twenty tools are the
 #: My Tasks planner tools, the two calendar settings tools, the four day rule
 #: tools, the read of the synced events (CE-15), and the three reads of P-1a
 #: (task 3112). The Tasks assistant holds
@@ -1782,6 +1793,14 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
         # apply replays. Mail that a held chat read could steer that apply.
         "my_tasks_close_my_day", "my_tasks_start_my_day",
     }),
+    # P-1c (task 3923): the one act of the dark ``calendar-connections`` pack,
+    # Sync now and the task switch. It shows a card, but it is
+    # ``open_world=True``, so :func:`is_egress_tool` drops it in a held chat
+    # also while ``HELD_CARD_WRITES_ORGS`` is empty. This entry drops it while
+    # that switch names the org, and it keeps the tool out of
+    # :func:`_owner_tool_names`, though its owner ``org-admin`` is in
+    # :data:`HELD_WRITE_OWNERS`. Fence: ``tests/unit/test_calendar_day_held.py``.
+    "calendar-connections": frozenset({"my_tasks_calendar_connection"}),
 }
 
 
