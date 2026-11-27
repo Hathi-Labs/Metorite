@@ -496,13 +496,18 @@ export default function MyTasksSpace({
   }, [setRows, ownStatuses]);
   // Fix round 2: the place of each task that the read still brings, or one
   // line when the read failed (`todaySetGap`, `TodaySetGap`).
+  // The read of the set takes no filter. With a filter on, the chip shows the
+  // rows that the server filtered, and it adds and awaits no row of the set.
+  const filtered = isFiltered(filters);
+  // The calendar draws its own window, so its gap reads those rows.
+  const canvasRows = calendarOn ? month.rows : list.rows;
   const gap = useMemo(
-    () => todaySetGap(list.rows, chip, todayIds, { data: todaySet.data, error: todaySet.error }),
-    [list.rows, chip, todayIds, todaySet.data, todaySet.error],
+    () => todaySetGap(canvasRows, chip, todayIds, { data: todaySet.data, error: todaySet.error }, filtered),
+    [canvasRows, chip, todayIds, todaySet.data, todaySet.error, filtered],
   );
   const shown = useMemo(
-    () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows),
-    [list.rows, chip, today, zone, todayIds, setRows],
+    () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows, filtered),
+    [list.rows, chip, today, zone, todayIds, setRows, filtered],
   );
   const statuses = useMemo(
     () => mineStatuses(setRows ? [...list.rows, ...setRows] : list.rows, known),
@@ -527,8 +532,8 @@ export default function MyTasksSpace({
     [statusSets, statuses],
   );
   const calendarRows = useMemo(
-    () => chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows),
-    [month.rows, chip, today, zone, todayIds, setRows],
+    () => chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows, filtered),
+    [month.rows, chip, today, zone, todayIds, setRows, filtered],
   );
 
   // A quick add files to the personal root, or nowhere: never "" (item 10).
@@ -657,7 +662,7 @@ export default function MyTasksSpace({
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
   // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
-  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered: isFiltered(filters) });
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered });
   const emptyChip = trulyEmpty ? (
     <EmptyState
       icon="ListChecks"
@@ -790,6 +795,9 @@ export default function MyTasksSpace({
             ) : (
               <SkeletonRows count={6} />
             )
+          ) : mode === "calendar" && gap.pending > 0 ? (
+            // The set read is on its way: no grid that lacks counted tasks.
+            <SkeletonBoard columns={7} />
           ) : mode === "calendar" ? (
             <CalendarView
               grid={grid}
@@ -826,6 +834,9 @@ export default function MyTasksSpace({
             />
           ) : !listLoaded ? (
             readError ? null : mode === "board" ? <SkeletonBoard columns={4} /> : <SkeletonRows count={8} />
+          ) : mode === "board" && gap.pending > 0 ? (
+            // The same for the board: no empty lanes while the set is on its way.
+            <SkeletonBoard columns={4} />
           ) : emptyChip ? (
             emptyChip
           ) : mode === "table" ? (

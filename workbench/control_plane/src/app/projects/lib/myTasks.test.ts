@@ -187,6 +187,16 @@ describe("each chip is the server's rule", () => {
     ]);
   });
 
+  it("a filtered Today chip shows the filtered list and adds no row of the set", () => {
+    const listed = { ...row({ due_at: TODAY }), id: "match" };
+    const other = { ...row({ disposition: "NEXT", is_mine: false }), id: "other" };
+    const ids = new Set(["match", "other"]);
+    const chip = (filtered: boolean) =>
+      chipRowsWithSet([listed], "today", TODAY, "UTC", ids, [listed, other], filtered).map((r) => r.id);
+    expect(chip(false)).toEqual(["match", "other"]);
+    expect(chip(true)).toEqual(["match"]);
+  });
+
   it("the Today chip lists the server set only when the summary sends it (WS-MDC CC-2)", () => {
     const rows = RULES.map(([name, r]) => ({ ...r, id: name }));
     const old = chipRows(rows, "today", TODAY, "UTC").map((r) => r.id);
@@ -564,8 +574,8 @@ describe("Today in the member's stored zone (item 8)", () => {
   it("the space passes the summary's zone to every chip filter", () => {
     const space = code("components/MyTasksSpace.tsx");
     expect(space).toContain("summary.data?.time_zone");
-    expect(space).toContain("chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows)");
-    expect(space).toContain("chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows)");
+    expect(space).toContain("chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows, filtered)");
+    expect(space).toContain("chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows, filtered)");
     expect(space).toContain('useMyTodaySet(Boolean(todayIds) && chip === "today")');
     expect(space).toContain("todayIdsOf(summary.data)");
   });

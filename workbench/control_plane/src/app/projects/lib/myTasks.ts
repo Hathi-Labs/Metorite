@@ -266,6 +266,10 @@ export function chipRows<T extends ChipRow>(
  * `GET /projects/my/today?with_tasks=true` (`setRows`). The count, the rows
  * and the set are then one set. Any other chip, and the flag off, is
  * `chipRows` as before.
+ *
+ * `filtered` (`grouping.isFiltered`) says that a filter of the bar is on. The
+ * read of the set takes no filter, so a filtered chip adds no row of it. The
+ * list that the server filtered is then what shows.
  */
 export function chipRowsWithSet<T extends ChipRow & { id: string }>(
   rows: readonly T[],
@@ -274,9 +278,10 @@ export function chipRowsWithSet<T extends ChipRow & { id: string }>(
   timeZone: string | undefined,
   todayIds: ReadonlySet<string> | null,
   setRows: readonly T[] | null | undefined,
+  filtered = false,
 ): T[] {
   const listed = chipRows(rows, chip, today, timeZone, todayIds);
-  if (chip !== "today" || !todayIds || !setRows) return listed;
+  if (chip !== "today" || filtered || !todayIds || !setRows) return listed;
   const held = new Set(rows.map((row) => row.id));
   const added = setRows.filter(
     (row) => !held.has(row.id) && todayIds.has(row.id) && inChip(row, chip, today, timeZone, todayIds),
@@ -303,17 +308,19 @@ export interface TodaySetGap {
  * hold, and only the read of the set brings them. While that read is on its
  * way, the chip reserves one place for each such id, so no row jumps in. When
  * it fails, the chip says so, because the count then names more tasks than
- * the rows. With the flag off, on another chip, or with the set read, there
- * is no gap.
+ * the rows. With the flag off, on another chip, with a filter on, or with the
+ * set read, there is no gap. A filtered chip adds no row of the set, so it
+ * waits for none.
  */
 export function todaySetGap(
   rows: readonly { id: string }[],
   chip: MyTasksChip,
   todayIds: ReadonlySet<string> | null,
   read: { data?: unknown; error?: string | null },
+  filtered = false,
 ): TodaySetGap {
   const none: TodaySetGap = { failed: false, pending: 0 };
-  if (chip !== "today" || !todayIds || read.data) return none;
+  if (chip !== "today" || filtered || !todayIds || read.data) return none;
   const held = new Set(rows.map((row) => row.id));
   const missing = [...todayIds].filter((id) => !held.has(id)).length;
   if (missing === 0) return none;

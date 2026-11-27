@@ -54,6 +54,12 @@ describe("the gap rule of the Today chip", () => {
     expect(todaySetGap([], "today", ids("x"), { error: null })).toEqual({ failed: false, pending: 1 });
   });
 
+  it("is no gap with a filter on, on its way or failed", () => {
+    const none = { failed: false, pending: 0 };
+    expect(todaySetGap(rows("a"), "today", ids("a", "b"), {}, true)).toEqual(none);
+    expect(todaySetGap(rows("a"), "today", ids("a", "b"), { error: "boom" }, true)).toEqual(none);
+  });
+
   it("says the read failed when the chip lacks rows that it counts", () => {
     expect(todaySetGap(rows("a"), "today", ids("a", "b"), { error: "Gateway error 502" })).toEqual({
       failed: true,
@@ -86,7 +92,26 @@ describe("the markup of the gap", () => {
   it("the space hands Retry the read of the set", () => {
     const space = fs.readFileSync(path.join(__dirname, "MyTasksSpace.tsx"), "utf8");
     expect(space).toContain("<TodaySetGap gap={gap} onRetry={todaySet.refresh} />");
-    expect(space).toContain("todaySetGap(list.rows, chip, todayIds, { data: todaySet.data, error: todaySet.error })");
+    expect(space).toContain(
+      "todaySetGap(canvasRows, chip, todayIds, { data: todaySet.data, error: todaySet.error }, filtered)",
+    );
+  });
+
+  it("the space asks the one filter predicate", () => {
+    const space = fs.readFileSync(path.join(__dirname, "MyTasksSpace.tsx"), "utf8");
+    expect(space).toContain("const filtered = isFiltered(filters);");
+    expect(space).toContain("const canvasRows = calendarOn ? month.rows : list.rows;");
+  });
+
+  it("the Board and the Calendar draw the skeleton while the set is on its way", () => {
+    const space = fs.readFileSync(path.join(__dirname, "MyTasksSpace.tsx"), "utf8").replace(/\r\n/g, "\n");
+    const waits = (mode: string) =>
+      new RegExp(`mode === "${mode}" && gap\\.pending > 0 \\? \\([^<]*<SkeletonBoard`);
+    expect(space).toMatch(waits("calendar"));
+    expect(space).toMatch(waits("board"));
+    // Each wait comes before the canvas that it stands in for.
+    expect(space.search(waits("calendar"))).toBeLessThan(space.indexOf("<CalendarView"));
+    expect(space.search(waits("board"))).toBeLessThan(space.indexOf("<TaskBoard"));
   });
 
   it("the pending read draws one row of the list's height for each missing task", () => {
