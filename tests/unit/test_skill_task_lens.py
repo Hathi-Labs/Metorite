@@ -272,6 +272,11 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_capture_from_mail", {"account_id": PID, "email_id": CID,
                                     "title": "Send the deck"},
      [("POST", "/tasks/capture/from-email/preview")]),
+    # Task 4015: the reply card reads the sent mail of the thread first. This
+    # recorder answers no mail, so no card shows and no write goes.
+    ("my_tasks_capture_from_mail", {"account_id": PID, "thread_id": "t-1",
+                                    "title": "Send the deck"},
+     [("POST", "/tasks/capture/from-reply/preview")]),
     # P-1c (task 3923): the list read comes first. This recorder answers no
     # connection, so no card shows and no write goes. The writes and the cards
     # are fenced in test_my_tasks_p1c_tools.py.
@@ -460,6 +465,9 @@ STORE_NEUTRAL: dict[str, str] = {
     "/tasks/capture/from-email/enhance": (
         "email_messages and people only. It drafts a task and reads or writes none "
         "(P-1b, task 3922)"),
+    "/tasks/capture/from-reply/preview": (
+        "email_accounts and email_messages only. It reads the sent mail that the "
+        "reply card shows, and reads or writes no task (task 4015)"),
 }
 
 SEAMS = ("item_source(", "agent_source(")

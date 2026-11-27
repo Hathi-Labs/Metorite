@@ -28,8 +28,14 @@ from uuid import uuid4
 from aiosmtpd.controller import Controller
 from aiosmtpd.smtp import SMTP, Envelope, Session
 
+from .addresses import (
+    first_raw_header,
+    parse_address_list,
+    parse_sender,
+    raw_header_values,
+)
 from .persist import upsert_message
-from .providers.base import Attachment, EmailAddress, EmailMessage
+from .providers.base import Attachment, EmailMessage
 
 logger = logging.getLogger(__name__)
 
@@ -56,44 +62,6 @@ def _decode_header_value(value: str) -> str:
         return result
     except Exception:
         return value
-
-
-def _parse_address(raw: str) -> EmailAddress | None:
-    """Parse an email address from a header value."""
-    if not raw:
-        return None
-    decoded = _decode_header_value(raw)
-    if "<" in decoded and ">" in decoded:
-        name = decoded.split("<")[0].strip().strip('"')
-        email = decoded.split("<")[1].split(">")[0].strip()
-        return EmailAddress(name=name, email=email)
-    return EmailAddress(name="", email=decoded.strip())
-
-
-def _parse_address_list(raw: str) -> list[EmailAddress]:
-    """Parse a comma-separated list of email addresses."""
-    if not raw:
-        return []
-    decoded = _decode_header_value(raw)
-    addresses: list[EmailAddress] = []
-    current: list[str] = []
-    in_quote = False
-    for ch in decoded:
-        if ch == '"':
-            in_quote = not in_quote
-            current.append(ch)
-        elif ch == "," and not in_quote:
-            addr = _parse_address("".join(current).strip())
-            if addr and addr.email:
-                addresses.append(addr)
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        addr = _parse_address("".join(current).strip())
-        if addr and addr.email:
-            addresses.append(addr)
-    return addresses
 
 
 def _parse_date(value: str) -> datetime | None:
@@ -153,11 +121,15 @@ class InboundHandler:
 
         # Headers
         subject = _decode_header_value(str(parsed.get("Subject", "(no subject)")))
-        from_addr = _parse_address(str(parsed.get("From", envelope.mail_from)))
-        to_raw = str(parsed.get("To", "")) or ", ".join(envelope.rcpt_tos)
-        to_addrs = _parse_address_list(to_raw)
-        cc_addrs = _parse_address_list(str(parsed.get("Cc", "")))
-        bcc_addrs = _parse_address_list(str(parsed.get("Bcc", "")))
+        # The address headers parse RAW, never the decoded value of the
+        # policy (task 4016). Each ``From`` header counts, so two senders give
+        # none. A mail with no ``From`` falls back to the envelope sender.
+        from_values = raw_header_values(parsed, "From")
+        from_addr = parse_sender(from_values or envelope.mail_from)
+        to_raw = first_raw_header(parsed, "To") or ", ".join(envelope.rcpt_tos)
+        to_addrs = parse_address_list(to_raw)
+        cc_addrs = parse_address_list(first_raw_header(parsed, "Cc"))
+        bcc_addrs = parse_address_list(first_raw_header(parsed, "Bcc"))
         thread_id = str(parsed.get("Message-ID", "")).strip() or None
         in_reply_to = str(parsed.get("In-Reply-To", "")).strip() or None
         # The server arrival time, never the Date header: a sender writes the

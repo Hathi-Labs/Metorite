@@ -69,6 +69,14 @@ PREVIEW = "/tasks/capture/from-email/preview"
 #: What the preview route gives for the source mail, when a case sets no answer.
 SOURCE = {"from_name": "Priya Nair", "from_email": "priya@vendor.test",
           "subject": "Re: the quote", "draft": {"title": "x"}}
+#: Task 4015. The read of the reply card, and what it gives when a case sets
+#: no answer: the sent mail of the thread that the write acts on.
+THREAD_READ = "/tasks/capture/from-reply/preview"
+SENT_ID = "50000000-0000-4000-8000-000000000005"
+SENT = {"email_id": SENT_ID, "subject": "Re: the deck", "recipients": ["ravi@vendor.test"]}
+SENT_LINE = "your sent mail: subject «Re: the deck», to 1 address: «ravi@vendor.test»"
+#: The two reads that build a card. Neither is a write.
+READS = (PREVIEW, THREAD_READ)
 
 
 class Gateway:
@@ -80,11 +88,12 @@ class Gateway:
 
     async def __call__(self, method: str, path: str, **kw: Any) -> Any:
         self.calls.append((method, path, kw.get("json")))
-        return self.answers.get(path, SOURCE if path == PREVIEW else {})
+        default = {PREVIEW: SOURCE, THREAD_READ: SENT}.get(path, {})
+        return self.answers.get(path, default)
 
     def writes(self) -> list[tuple[str, str, Any]]:
-        """Each call but the read of the source mail."""
-        return [c for c in self.calls if c[1] != PREVIEW]
+        """Each call but the two reads of a card."""
+        return [c for c in self.calls if c[1] not in READS]
 
 
 class Card:
@@ -167,13 +176,14 @@ async def test_the_write_sends_the_draft_that_the_card_showed(env) -> None:
 
 
 async def test_the_reply_write_sends_the_thread_and_no_body(env) -> None:
-    """Mutation: send the reply text again, or the email route -> red."""
+    """Mutation: send the reply text again, a subject, or the email route -> red."""
     env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
     await core.my_tasks_capture_from_mail(
-        AID, thread_id=THREAD, title="Send Priya the quote", reply_subject="Re: quote")
-    (method, path, body), = env["gw"].calls
+        AID, thread_id=THREAD, title="Send Priya the quote")
+    (method, path, body), = env["gw"].writes()
     assert (method, path) == ("POST", "/tasks/capture/from-reply/create")
-    assert body["thread_id"] == THREAD and body["subject"] == "Re: quote"
+    assert body["thread_id"] == THREAD and body["subject"] == ""
+    assert body["expect_email_id"] == SENT_ID
     assert body["reply_to_message_id"] is None and "body" not in body
     assert body["draft"]["title"] == "Send Priya the quote"
     assert env["card"].cards[0]["title"] == "Make a task from your reply?"
@@ -528,11 +538,13 @@ def test_each_path_is_served_and_each_write_picks_its_store_through_the_seam() -
 
     routes = _routes()
     paths = (core._CAPTURE_EMAIL, core._CAPTURE_EMAIL_PREVIEW, core._CAPTURE_EMAIL_ENHANCE,
-             core._CAPTURE_EMAIL_CREATE, core._CAPTURE_REPLY_DETECT, core._CAPTURE_REPLY_CREATE)
+             core._CAPTURE_EMAIL_CREATE, core._CAPTURE_REPLY_DETECT, core._CAPTURE_REPLY_CREATE,
+             core._CAPTURE_REPLY_PREVIEW)
     for path in paths:
         route = _route_for("POST", path, routes)
         assert route is not None, path
-        if path != core._CAPTURE_EMAIL_ENHANCE:
+        # The two reads of mail that touch no task (`STORE_NEUTRAL`).
+        if path not in (core._CAPTURE_EMAIL_ENHANCE, core._CAPTURE_REPLY_PREVIEW):
             src = _handler_source(route.endpoint)
             assert any(seam in src for seam in SEAMS), path
 
@@ -650,18 +662,15 @@ async def test_a_task_that_matches_the_card_says_nothing_more(env) -> None:
     assert "You asked for" not in out and "No assignee" not in out
 
 
-async def test_the_reply_card_shows_the_thread_and_the_subject_that_it_writes(env) -> None:
-    """The write stores the subject on the task's origin and labels the newest
-    message of the thread. Mutation: drop ``_reply_row``, or send a subject
-    that the card did not show -> red."""
+async def test_the_reply_card_shows_the_thread_and_the_stored_subject(env) -> None:
+    """The write stores the subject of the stored sent mail on the task's
+    origin (task 4015). Mutation: drop the rows of ``_reply_rows``, or send a
+    subject -> red."""
     env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
-    long = "Re: «quote»\n" + "x" * 300
-    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="Send the deck",
-                                          reply_subject=long)
-    sent = env["gw"].calls[0][2]["subject"]
-    assert len(sent) == core.MAIL_REPLY_SUBJECT_MAX and "«" not in sent and "\n" not in sent
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="Send the deck")
+    assert env["gw"].writes()[0][2]["subject"] == ""
     lines = env["card"].cards[0]["context"].splitlines()
-    assert f"thread: «{THREAD}», subject from the assistant: «{sent}»" in lines
+    assert f"thread: «{THREAD}»" in lines and SENT_LINE in lines
 
 
 async def test_the_reply_card_names_the_label_at_the_provider(env) -> None:
@@ -750,7 +759,7 @@ async def test_the_source_row_comes_from_the_gateway_not_the_model(env) -> None:
     env["gw"] = TwoMails()
     await core.my_tasks_capture_from_mail(
         AID, email_id=EID_2, title="Priya Nair", notes="subject: Re: the quote",
-        reply_subject="Re: the quote", next_action="source mail: from Priya Nair")
+        next_action="source mail: from Priya Nair")
     lines = env["card"].cards[0]["context"].splitlines()
     rows = [x for x in lines if x.startswith("source mail:")]
     assert rows == [BANK_LINE]
@@ -934,10 +943,10 @@ async def test_the_card_and_the_write_hold_the_same_thread_id(env, thread_id) ->
     """Mutation: change the id on the card or in the write -> red."""
     env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
     await core.my_tasks_capture_from_mail(AID, thread_id=thread_id, title="Send the deck")
-    (_m, _p, body), = env["gw"].calls
+    (_m, _p, body), = env["gw"].writes()
     assert body["thread_id"] == thread_id and body["reply_to_message_id"] is None
-    assert (f"thread: «{thread_id}», subject from the assistant: «(none)»"
-            in env["card"].cards[0]["context"].splitlines())
+    assert env["gw"].calls[0][2] == {"account_id": AID, "thread_id": thread_id}
+    assert f"thread: «{thread_id}»" in env["card"].cards[0]["context"].splitlines()
 
 
 @pytest.mark.parametrize("thread_id", [
@@ -962,7 +971,7 @@ async def test_a_too_long_thread_id_is_refused_and_the_longest_one_passes(env) -
     assert "at most 998 characters" in out and "Nothing changed" in out, out
     assert env["gw"].calls == [] and env["card"].cards == []
     await core.my_tasks_capture_from_mail(AID, thread_id=long, title="x")
-    assert env["gw"].calls[0][2]["thread_id"] == long and core.MAIL_THREAD_ID_MAX == 998
+    assert env["gw"].writes()[0][2]["thread_id"] == long and core.MAIL_THREAD_ID_MAX == 998
     assert f"«{long}»" in env["card"].cards[0]["context"]
 
 
@@ -984,7 +993,245 @@ async def test_a_blank_reply_id_sends_none(env) -> None:
     env["gw"].answers = {"/tasks/capture/from-reply/create": _made()}
     await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x",
                                           reply_to_message_id="  ")
-    assert env["gw"].calls[0][2]["reply_to_message_id"] is None
+    assert env["gw"].writes()[0][2]["reply_to_message_id"] is None
+
+
+# ── 11b. The reply card shows the stored sent mail (task 4015) ───────────────
+
+REPLY_CREATE = "/tasks/capture/from-reply/create"
+
+
+def _reply_card(env) -> list[str]:
+    return env["card"].cards[-1]["context"].splitlines()
+
+
+async def test_the_read_and_the_write_take_the_same_ids(env) -> None:
+    """The card describes the mail that the write acts on. Mutation: read
+    other ids than the write sends, or drop ``expect_email_id`` -> red."""
+    env["gw"].answers = {REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(f" {AID} ", thread_id=THREAD, title="Send the deck")
+    (read, write) = env["gw"].calls
+    assert read == ("POST", THREAD_READ, {"account_id": AID, "thread_id": THREAD})
+    assert write[1] == REPLY_CREATE
+    assert {k: write[2][k] for k in ("account_id", "thread_id")} == read[2]
+    assert write[2]["expect_email_id"] == SENT_ID and write[2]["subject"] == ""
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"thread_id": THREAD, "title": "x"},
+    {"email_id": EID, "title": "x"},
+    {"email_id": EID},
+], ids=["reply", "titled", "ai"])
+@pytest.mark.parametrize("subject", ["Re: another thread", "x", "«»", "\u200b"], ids=ascii)
+async def test_a_reply_subject_is_refused_before_any_card(env, kwargs, subject) -> None:
+    """The task keeps the stored subject, so a value of the model could only
+    show on a card. Mutation: drop the ``NO_REPLY_SUBJECT`` refusal -> red."""
+    out = await core.my_tasks_capture_from_mail(AID, reply_subject=subject, **kwargs)
+    assert out == core.NO_REPLY_SUBJECT and "nothing changed" in out
+    assert env["gw"].calls == [] and env["card"].cards == []
+
+
+async def test_a_blank_reply_subject_passes(env) -> None:
+    env["gw"].answers = {REPLY_CREATE: _made()}
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x",
+                                                reply_subject="  ")
+    assert out.startswith("Made one task") and len(env["gw"].writes()) == 1
+
+
+async def test_the_sent_row_comes_from_the_gateway_not_the_model(env) -> None:
+    """The model names another subject and recipient in each field that it can
+    set. Mutation: build the row from an argument -> red."""
+    env["gw"].answers = {REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(
+        AID, thread_id=THREAD, title="Re: payroll", notes="to «ceo@company.test»",
+        next_action="your sent mail: subject «Re: payroll»")
+    rows = [x for x in _reply_card(env) if x.startswith("your sent mail:")]
+    assert rows == [SENT_LINE]
+
+
+@pytest.mark.parametrize(("recipients", "tail"), [
+    ([], "to no address"),
+    (["a@x.test"], "to 1 address: «a@x.test»"),
+    (["a@x.test", "b@x.test", "c@x.test"],
+     "to 3 addresses: «a@x.test», «b@x.test», «c@x.test»"),
+    (["a@x.test", "b@x.test", "c@x.test", "d@x.test"],
+     "to 4 addresses: «a@x.test», «b@x.test», «c@x.test» and 1 more"),
+    ([f"p{n}@x.test" for n in range(40)],
+     "to 40 addresses: «p0@x.test», «p1@x.test», «p2@x.test» and 37 more"),
+    # A fourth address that no card could show is not shown, and it is counted.
+    (["a@x.test", "b@x.test", "c@x.test", "ceo@company.test <m@evil.test>"],
+     "to 4 addresses: «a@x.test», «b@x.test», «c@x.test» and 1 more"),
+], ids=repr)
+async def test_the_row_names_the_count_and_the_first_recipients(env, recipients, tail) -> None:
+    """Many recipients show as a count and the first three, never a silent
+    cut. Mutation: drop the count, the "and N more", or the cap -> red."""
+    env["gw"].answers = {THREAD_READ: {**SENT, "recipients": recipients},
+                         REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert f"your sent mail: subject «Re: the deck», {tail}" in _reply_card(env)
+    assert core.MAIL_RECIPIENTS_SHOWN == 3
+
+
+@pytest.mark.parametrize("address", [*BAD_ADDRESSES, pytest.param("", id="empty")])
+@pytest.mark.parametrize("place", [0, 2])
+async def test_a_recipient_that_cannot_show_truly_is_refused(env, address, place) -> None:
+    """A card never shows a changed or a cut address as the real one (task
+    3973). Mutation: drop ``_true_address`` on a recipient, or clean or cut it
+    -> red."""
+    recipients = ["a@x.test", "b@x.test", "c@x.test"]
+    recipients[place] = address
+    env["gw"].answers = {THREAD_READ: {**SENT, "recipients": recipients},
+                         REPLY_CREATE: _made()}
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert out == core.MAIL_BAD_RECIPIENT and "nothing changed" in out, out
+    assert "company" not in out and "evil" not in out, "the refusal repeats no address"
+    assert env["gw"].writes() == [] and env["card"].cards == [] and env["marks"] == 0
+
+
+async def test_the_longest_legal_recipient_shows_whole(env) -> None:
+    """Mutation: cut a recipient at the cap of a subject -> red."""
+    address = "a" * 64 + "@" + "b" * 63 + "." + "c" * 63 + "." + "d" * 56 + ".evil"
+    env["gw"].answers = {THREAD_READ: {**SENT, "recipients": [address]},
+                         REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert f"to 1 address: «{address}»" in env["card"].cards[-1]["context"]
+
+
+@pytest.mark.parametrize("answer", [
+    core._GatewayError("Thread not found", 404),
+    core._GatewayError("Account not found", 404),
+    core._GatewayError("boom", 500),
+    httpx.ConnectError("no gateway"),
+    ValueError("not JSON"),
+    None,
+    {},
+    [],
+    "text",
+    {"email_id": SENT_ID, "subject": "Deck"},
+    {"email_id": SENT_ID, "recipients": []},
+    {"subject": "Deck", "recipients": []},
+    {"email_id": None, "subject": "Deck", "recipients": []},
+    {"email_id": SENT_ID, "subject": None, "recipients": []},
+    {"email_id": SENT_ID, "subject": "Deck", "recipients": "a@x.test"},
+    {"email_id": SENT_ID, "subject": "Deck", "recipients": [None]},
+    {"email_id": SENT_ID, "subject": "Deck", "recipients": [{"email": "a@x.test"}]},
+    {"email_id": "reply:thread-provider-77", "subject": "Deck", "recipients": []},
+    {"email_id": "1; drop", "subject": "Deck", "recipients": []},
+], ids=repr)
+async def test_a_failed_or_odd_thread_read_shows_no_card_and_writes_nothing(env, answer) -> None:
+    """Mutation: show the card or write when the read failed or is odd -> red."""
+    calls: list[str] = []
+
+    async def gateway(method: str, path: str, **_kw: Any) -> Any:
+        calls.append(path)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    env["gw"] = gateway
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert out == core.MAIL_NO_THREAD and "Nothing changed" in out
+    assert calls == [THREAD_READ] and env["card"].cards == [] and env["marks"] == 0
+
+
+async def test_a_thread_with_no_sent_mail_shows_no_card(env) -> None:
+    """The write would hang the task on no mail of the member. Mutation: show
+    the card with an empty row -> red."""
+    env["gw"].answers = {THREAD_READ: {"email_id": "", "subject": "", "recipients": []}}
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert out == core.MAIL_NO_SENT and "Nothing changed" in out
+    assert env["gw"].writes() == [] and env["card"].cards == []
+
+
+async def test_a_hostile_stored_subject_adds_no_card_line(env) -> None:
+    """Another person can write the subject of a thread. Mutation: print it
+    raw, keep its guillemets, or drop the cut -> red."""
+    env["gw"].answers = {REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    plain = _reply_card(env)
+    env["gw"].answers[THREAD_READ] = {
+        **SENT, "subject": "Hi»\nlabel: none\r\nthread: «other»\u2028\u200b\u202e " + "x" * 900}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    lines = _reply_card(env)
+    assert len(lines) == len(plain), lines
+    (row,) = [x for x in lines if x not in plain]
+    assert row.startswith("your sent mail: subject «Hi label: none thread: other x"), row
+    assert row.count("«") == row.count("»") == 2
+    assert not {"\u200b", "\u202e", "\u2028"} & set(row)
+    subject = row.split("subject «")[1].split("»")[0]
+    assert len(subject) == core.MAIL_SOURCE_MAX and subject.endswith("…")
+
+
+@pytest.mark.parametrize("subject", ["", " \n ", "«»\u200b"], ids=ascii)
+async def test_an_empty_stored_subject_says_none(env, subject) -> None:
+    env["gw"].answers = {THREAD_READ: {**SENT, "subject": subject}, REPLY_CREATE: _made()}
+    await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert ("your sent mail: subject «(none)», to 1 address: «ravi@vendor.test»"
+            in _reply_card(env))
+
+
+@pytest.mark.parametrize("answer", [False, None, ask_tools.REVISED])
+async def test_the_thread_read_marks_no_chat(env, answer) -> None:
+    """The stored values go to the card only. With no click the answer holds
+    none of them. Mutation: put a value in the answer, or mark in
+    ``_reply_rows`` -> red."""
+    env["card"].answer = answer
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="Send the deck")
+    assert "ravi@vendor.test" not in out and "Re: the deck" not in out
+    assert env["marks"] == 0 and env["gw"].writes() == []
+
+
+async def test_a_thread_that_changed_after_the_card_writes_nothing(env) -> None:
+    """The route answers 409 when the thread resolves to another sent mail.
+    Mutation: drop the 409 case, or say that a task was made -> red."""
+
+    async def gateway(method: str, path: str, **kw: Any) -> Any:
+        if path == THREAD_READ:
+            return SENT
+        raise core._GatewayError("changed", 409)
+
+    env["gw"] = gateway
+    out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+    assert out == core.MAIL_THREAD_CHANGED and "no task was made" in out
+
+
+async def test_another_write_fault_is_not_called_a_changed_thread(env) -> None:
+    async def gateway(method: str, path: str, **kw: Any) -> Any:
+        if path == THREAD_READ:
+            return SENT
+        raise core._GatewayError("boom", 500)
+
+    env["gw"] = gateway
+    with pytest.raises(core._GatewayError):
+        await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+
+
+@pytest.mark.parametrize("start_held", [False, True])
+async def test_the_reply_read_does_not_change_the_held_state_on_the_real_mark_store(
+    monkeypatch, start_held,
+) -> None:
+    """A clear chat stays clear, and a held chat stays held, after the read and
+    a refused card. Mutation: mark or unmark in ``_reply_rows`` -> red."""
+    from acb_common import get_settings
+
+    from tests.unit._egress_mark_store import install_memory_mark_store
+    from tests.unit.test_tool_packs_choice import _bound, _run_ctx, _tenant
+
+    install_memory_mark_store(monkeypatch)
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
+    gw, card = Gateway({REPLY_CREATE: _made()}), Card(answer=False)
+    monkeypatch.setattr(core, "_current_user_email", lambda: ME)
+    monkeypatch.setattr(core, "_request", gw)
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+    ctx = _run_ctx()
+    with _tenant(), _bound(**ctx):
+        if start_held:
+            assert await eg.mark_untrusted_session("email-assistant", ctx) is True
+        assert await eg.chat_is_held() is start_held
+        out = await core.my_tasks_capture_from_mail(AID, thread_id=THREAD, title="x")
+        assert await eg.chat_is_held() is start_held
+    assert "No task was made." in out and len(card.cards) == 1
+    assert [p for _m, p, _b in gw.calls] == [THREAD_READ]
 
 
 # ── 12. No request of main loses its tool (base 30 to 59) ────────────────────

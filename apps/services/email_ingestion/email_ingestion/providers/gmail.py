@@ -21,8 +21,6 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timezone
 from email import encoders, message_from_bytes
 from email import policy as mail_policy
-from email.errors import HeaderParseError
-from email.header import decode_header, make_header
 from email.message import Message
 from email.mime.base import MIMEBase
 from email.mime.message import MIMEMessage
@@ -34,6 +32,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ..addresses import NO_SENDER, parse_address_list, parse_sender
 from ..persist import MAX_BODY_HTML_BYTES, MAX_BODY_TEXT_BYTES
 from .app_credentials import OAuthApp, token_fields
 from .base import (
@@ -254,35 +253,6 @@ def _gmail_message_id(headers: dict[str, str]) -> str | None:
     ``headers`` has lower-case keys (``_parse_headers``).
     """
     return headers.get("message-id", "").strip() or None
-
-
-def _decode_display_name(name: str) -> str:
-    """Decode the RFC 2047 encoded words of one display name.
-
-    A name that does not decode stays as it came.
-    """
-    if "=?" not in name:
-        return name
-    try:
-        return str(make_header(decode_header(name)))
-    except (LookupError, ValueError, HeaderParseError):
-        return name
-
-
-def _split_addresses(header: str) -> list[tuple[str, str]]:
-    """The ``(name, address)`` pairs of one raw address header.
-
-    ``getaddresses`` runs with ``strict=False``. Since the fix of
-    CVE-2023-27043 the strict parser refuses a whole header for one defect,
-    so ``a@x.org, b@x.org,`` gave no address at all. The lenient parser keeps
-    each real address. It also splits on ``;`` and keeps a quoted ``;``
-    inside its name. A Python with no ``strict`` keyword parses leniently
-    already (EM-G2 review round 1, P3b).
-    """
-    try:
-        return getaddresses([header], strict=False)
-    except TypeError:  # a Python from before the CVE-2023-27043 fix
-        return getaddresses([header])
 
 
 def _parse_list_unsubscribe(header: str) -> str | None:
@@ -3465,7 +3435,9 @@ class GmailProvider(BaseEmailProvider):
             folder=_gmail_folder_from_labels(label_ids),
             internet_message_id=_gmail_message_id(headers),
             labels=label_ids,
-            from_address=self._parse_from(headers.get("from", "")),
+            from_address=self._parse_from([
+                str(h.get("value", "")) for h in payload.get("headers") or []
+                if str(h.get("name", "")).lower() == "from"]),
             to_addresses=self._parse_address_list(headers.get("to", "")),
             cc_addresses=self._parse_address_list(headers.get("cc", "")),
             bcc_addresses=self._parse_address_list(headers.get("bcc", "")),
@@ -3515,53 +3487,25 @@ class GmailProvider(BaseEmailProvider):
         return result
 
     @staticmethod
-    def _extract_email(header: str) -> str:
-        """Extract email address from a header like 'Name <email>'."""
-        if "<" in header and ">" in header:
-            return header.split("<")[1].split(">")[0].strip()
-        return header.strip()
-
-    @staticmethod
     def _parse_address_list(header: str) -> list[EmailAddress]:
         """Each address of one address header (WS-17 EM-G2 item 6, GM-4).
 
-        ``_split_addresses`` splits the RAW header, so a quoted comma, as in
-        ``"Doe, John" <j@x.com>``, stays inside its name. The encoded words of
-        each name decode AFTER the split, because a decoded name can hold a
-        comma with no quotes.
-
-        An entry with no ``@`` is left out. A comma outside quotes, as in
-        ``Doe, John <j@x.com>``, splits off the fragment ``Doe``, and a
-        fragment must never become a recipient (review round 1, P2).
+        ``addresses.parse_address_list`` splits the RAW header, so a quoted
+        comma, as in ``"Doe, John" <j@x.com>``, stays inside its name. The
+        encoded words of each name decode AFTER the split, because a decoded
+        name can hold a comma with no quotes. A fragment with no address,
+        such as ``Doe`` of ``Doe, John <j@x.com>``, is left out (review
+        round 1, P2).
         """
-        if not header:
-            return []
-        addresses: list[EmailAddress] = []
-        for name, email in _split_addresses(header):
-            email = email.strip()
-            if "@" in email:
-                addresses.append(EmailAddress(
-                    name=_decode_display_name(name.strip()), email=email))
-        return addresses
+        return parse_address_list(header)
 
-    @classmethod
-    def _parse_from(cls, header: str) -> EmailAddress:
-        """The sender: the first address of ``From``.
+    @staticmethod
+    def _parse_from(values: str | list[str]) -> EmailAddress:
+        """The sender: the one address of ``From`` (task 4016).
 
-        A comma outside quotes, as in ``Doe, John <j@x.com>``, makes the
-        first entry the fragment ``Doe``, with no ``@`` (review round 1, P2).
-        Then the old reading holds: the address is the text inside the angle
-        brackets, and the name is the text before them. A header with no
-        angle brackets keeps its text as the address, so the sender never
-        goes blank.
+        *values* is the value of each ``From`` header. ``Doe, John <j@x.com>``
+        gives the name ``Doe, John`` at ``j@x.com`` (review round 1, P2). A
+        header that is malformed or ambiguous gives an empty address, never
+        the text of the display name or a guessed address.
         """
-        pairs = _split_addresses(header) if header else []
-        name, email = pairs[0] if pairs else ("", "")
-        if "@" in email:
-            return EmailAddress(
-                name=_decode_display_name(name.strip()), email=email.strip())
-        if "<" in header and ">" in header:
-            before = header.split("<", 1)[0].strip().strip('"').strip()
-            return EmailAddress(name=_decode_display_name(before),
-                                email=cls._extract_email(header))
-        return EmailAddress(name="", email=header.strip())
+        return parse_sender(values) or NO_SENDER

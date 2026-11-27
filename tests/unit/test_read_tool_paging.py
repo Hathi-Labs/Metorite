@@ -311,6 +311,9 @@ ALLOWED: dict[str, str] = {
     "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
         "The card says 'The card lists N of M matching drafts'. A draft that it does not "
         "list has no tick, so it stays in Drafts (task 3977).",
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py::_reply_rows::to[:MAIL_RECIPIENTS_SHOWN]":
+        "No recipient is lost in silence: the reply card names three addresses, gives the "
+        "count of all, and says 'and N more'. The write takes no recipient (task 4015).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -343,8 +346,9 @@ ALLOWED: dict[str, str] = {
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
 #: and cuts one text of the member to 120 characters (94).
 #: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
-#: draft pick card counts the drafts that it does not list (96).
-ALLOWED_CEILING = 96
+#: draft pick card counts the drafts that it does not list (96). Task 4015 added
+#: one: the reply card names three recipient addresses and counts the rest (97).
+ALLOWED_CEILING = 97
 
 
 def _stringy(node: ast.AST) -> bool:
