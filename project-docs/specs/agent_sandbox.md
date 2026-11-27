@@ -4116,8 +4116,9 @@ SBX-3b:
   parameter of `request_confirmation`, and `publish_card_rows` with the
   event `confirmation_row_results`.
 - Changed: `workbench/control_plane/src/lib/confirmationQueue.ts`
-  (`receiptText`), `src/components/ConfirmationReceipts.tsx` and
-  `src/components/AgentChat.tsx`. The result of each row on the receipt.
+  (`receiptText`) and `src/components/AgentChat.tsx`. The result of each row
+  on the receipt. `src/components/ConfirmationReceipts.tsx` does not change,
+  because it already draws `receiptText`.
 - Changed: `workbench/control_plane/src/hooks/useAgentChat.ts`
   (`HITL_CONTROL_EVENTS`) and `src/components/GenerativeUIPanel.tsx`
   (`PANEL_HIDDEN_EVENTS`). Each hides `confirmation_row_results`.
