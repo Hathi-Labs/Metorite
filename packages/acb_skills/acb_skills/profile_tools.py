@@ -1246,7 +1246,10 @@ def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]
             merged["language"] = prior.get("language", one)
         elif value.get("language_fixed") is True:
             rest = [t for t in held if str(t).lower() != one.lower()]
-            merged["languages"] = [one.lower(), *rest][:LANGUAGES_MAX]
+            ordered = [one.lower(), *rest]
+            while len(ordered) > LANGUAGES_MAX:
+                ordered.pop()  # a full list drops its last tag
+            merged["languages"] = ordered
         else:
             merged.pop("languages", None)
     elif "languages" in value and value["languages"] is None:
