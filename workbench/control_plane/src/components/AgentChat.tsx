@@ -2795,35 +2795,24 @@ export default function AgentChat({
         }]
       : []),
   ];
-  const newest = newestApproval(confirmations.cards);
   // D9: the pointer to the approvals, which wait in the thread. Its Review
-  // opens the tab of the card that the row names, as a press on that tab
-  // does. A tab answers nothing. Then it scrolls the thread so the card shows
-  // whole above the dock, or its top when it is taller than the room. The
-  // focus goes to the card's heading, never to a button, so a held key
-  // commits nothing.
+  // ONLY scrolls: the thread moves so the mounted card shows whole above the
+  // dock, or its top when it is taller than the room. It changes no tab, so
+  // the card the member has open stays mounted with each edit. The focus
+  // goes to the card's heading, never to a button, so a held key commits
+  // nothing.
   const reviewApproval = () => {
     const thread = threadRef.current;
-    const group = thread?.querySelector<HTMLElement>(`[data-chat-ask="${HITL_TARGET}"]`);
-    if (!thread || !group) return;
-    const reveal = () => {
-      const card = group.querySelector<HTMLElement>("[data-confirmation-card]");
-      if (!card) return;
-      const top = thread.getBoundingClientRect().top + thread.clientTop;
-      const to = pointerScrollTop(thread.scrollTop, { top, bottom: top + thread.clientHeight }, card.getBoundingClientRect());
-      if (to !== thread.scrollTop) thread.scrollTo({ top: to });
-      const head = card.querySelector<HTMLElement>("[data-rollup-title]") ?? card;
-      if (!head.hasAttribute("tabindex")) head.setAttribute("tabindex", "-1");
-      head.focus({ preventScroll: true });
-    };
-    const at = newest ? confirmations.cards.indexOf(newest.card) : -1;
-    const tab = at >= 0 ? group.querySelectorAll<HTMLElement>('[data-confirmation-card] [role="tab"]')[at] : undefined;
-    if (tab && tab.getAttribute("aria-selected") !== "true") {
-      tab.click();
-      // After the new card draws, and after the tab's own focus move.
-      requestAnimationFrame(() => requestAnimationFrame(reveal));
-    } else reveal();
+    const card = thread?.querySelector<HTMLElement>(`[data-chat-ask="${HITL_TARGET}"] [data-confirmation-card]`);
+    if (!thread || !card) return;
+    const top = thread.getBoundingClientRect().top + thread.clientTop;
+    const to = pointerScrollTop(thread.scrollTop, { top, bottom: top + thread.clientHeight }, card.getBoundingClientRect());
+    if (to !== thread.scrollTop) thread.scrollTo({ top: to });
+    const head = card.querySelector<HTMLElement>("[data-rollup-title]") ?? card;
+    if (!head.hasAttribute("tabindex")) head.setAttribute("tabindex", "-1");
+    head.focus({ preventScroll: true });
   };
+  const newest = newestApproval(confirmations.cards);
   const dockPointer = newest ? { label: tabLabel(newest.card), more: newest.more, onReview: reviewApproval } : null;
   const renderHitlCards = (): React.ReactNode => {
     // With the dock on (D9), a question card that waits draws in the dock

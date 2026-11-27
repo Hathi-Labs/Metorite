@@ -142,11 +142,8 @@ describe("the pointer (D9)", () => {
     expect(part).toContain('card.querySelector<HTMLElement>("[data-rollup-title]")');
     expect(part).toContain('head.setAttribute("tabindex", "-1")');
     expect(part).toContain("head.focus({ preventScroll: true })");
-    expect(part).not.toMatch(/scrollIntoView|onAnswer|answerConfirmation/);
-    // The one press it makes is on a tab of the queue, which answers nothing.
-    expect(part.match(/\.click\(/g)?.length).toBe(1);
-    expect(part).toContain(`'[data-confirmation-card] [role="tab"]'`);
-    expect(part).toContain("tab.click();");
+    // It only scrolls: no press, no tab change, no answer.
+    expect(part).not.toMatch(/scrollIntoView|onAnswer|answerConfirmation|\.click\(|role="tab"/);
   });
 });
 

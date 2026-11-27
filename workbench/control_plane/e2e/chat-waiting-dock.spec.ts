@@ -299,17 +299,22 @@ test.describe("the waiting dock (WD-1, D9)", () => {
     // The count of all that waits: 3 approvals and 1 question.
     await expect(page.locator("[data-dock-thread-line]")).toContainText("Waiting for you: 4 items, below");
     await expect(page.locator("[data-dock-live]")).toHaveText("4 items wait for you");
-    // Review opens the tab that the row names, and still one card is mounted.
-    await threadTabs.nth(0).click();
+    // Review only scrolls: the tab the member opened stays open, its edit
+    // stays, and still one card is mounted.
+    await page.getByRole("textbox", { name: "Subject" }).fill("Rates for June");
     await threadToTop(page);
     await review(page).click();
-    await expect(threadTabs.nth(2)).toHaveAttribute("aria-selected", "true");
+    await expect(threadTabs.nth(1)).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("textbox", { name: "Subject" })).toHaveValue("Rates for June");
     await expect(page.locator("[data-confirmation-card]")).toHaveCount(1);
     await page.waitForTimeout(400);
     const p = await cardPlace(page);
     expect(p.focusInCardHead).toBe(true);
-    expect(p.cardTop).toBeGreaterThanOrEqual(p.portTop - 1);
-    expect(p.cardBottom).toBeLessThanOrEqual(p.dockTop + 1);
+    if (p.cardH > p.portH) expect(Math.abs(p.cardTop - p.portTop)).toBeLessThanOrEqual(4);
+    else {
+      expect(p.cardTop).toBeGreaterThanOrEqual(p.portTop - 1);
+      expect(p.cardBottom).toBeLessThanOrEqual(p.dockTop + 1);
+    }
     expect(await answers(page)).toEqual([]);
   });
 

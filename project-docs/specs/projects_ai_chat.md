@@ -6425,9 +6425,9 @@ approval. A rule by structure is safer than an eighth round.
 - Review scrolls the thread, so the card shows whole above the dock. A card
   taller than the room shows its top. The focus goes to the card's heading
   (`tabindex="-1"`), never to a button.
-- The row commits nothing. Review opens the tab of the card that the row
-  names, as a press on that tab does, and then it scrolls. A tab answers
-  nothing. Enter or a click on the row does nothing else.
+- The row commits nothing. Enter or a click on it only scrolls. Review does
+  not change the open tab of the queue in the thread, so the card that it
+  shows is the open tab, which may not be the card that the row names.
 - The count of the thread line and of the live region holds the approvals
   that wait. The thread line shows only while a question is in the dock.
 - `AskPin` draws no second pointer for an approval. A generative-UI ask
