@@ -28,8 +28,8 @@ The order, for the run of *member* on *local_date*:
    no claim comes from a read that lost a source.
 7. One claim for each shown card (``gather.claims``), then at most 3 counts
    of the ``numbers`` section (``gather.number_claims``, BR-4c), only when a
-   line exists. Then ``gathered``, the
-   template lead (``plan.brief_lead``), and ``ready``. With the in-app
+   line exists. Then ``gathered``, the template lead (``plan.brief_lead``),
+   and ``ready``. With the in-app
    surface on (``flags.in_app``), the run then moves ``ready`` to
    ``delivered`` (guarded) and stamps ``delivered_at``. Off, it stays
    ``ready``. No card: ``empty``, no lead and no claims. The writes and
@@ -70,8 +70,9 @@ never opens the app still has ``delivered_at``. BR-2d compares
 
 **The phrase step** (BR-2a-2, ``core_brief.md`` §4.4). It runs only when
 ``flags.compose(org)`` is on, the run has ``phrase.MIN_CLAIMS`` claims or
-more (a count of ``numbers`` does not count), and ``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte
-for byte, and no call runs. On:
+more (a count of ``numbers`` does not count), and
+``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte for byte,
+and no call runs. On:
 
 7a. ONE session commits the claims, ``gathered``, the template lead, and
     ``phrasing`` with ``model_request_id`` (``store.mark_phrasing``, the

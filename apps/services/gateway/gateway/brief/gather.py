@@ -28,9 +28,10 @@ cards of the snapshot, in this order: threads that wait for a reply
 kind. A count claim has ``source_kind`` ``count``, a ``value`` and the
 ``value_path`` ``count``. Its ``source_ids`` hold the counted signal ids, at
 most 50. The first id is the first of those cards in the feed's order, and
-the ``source_id`` and ``href`` of the claim are those of that card. When the feed cut the source of a kind, the cards are a floor, and
-the line says "At least". A count with no usable card makes no claim. A
-count is NOT a line of the brief: :func:`line_claims` drops it.
+the ``source_id`` and ``href`` of the claim are those of that card. When
+the feed cut the source of a kind, the cards are a floor, and the line says
+"At least". A count with no usable card makes no claim. A count is NOT a
+line of the brief: :func:`line_claims` drops it.
 
 **The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
 with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
