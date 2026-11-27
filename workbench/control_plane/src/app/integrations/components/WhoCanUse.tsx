@@ -14,7 +14,7 @@
  * here draws.
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -407,7 +407,14 @@ export function WhoCanUseBody({
             <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
             <span className="min-w-0">{changedText(changed)}</span>
           </p>
-          <Button variant="secondary" size="sm" icon="RefreshCw" disabled={saving} onClick={onReload}>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="RefreshCw"
+            disabled={saving}
+            onClick={onReload}
+            data-notice=""
+          >
             Reload the rule
           </Button>
         </div>
@@ -424,6 +431,8 @@ export function WhoCanUseBody({
       {error ? (
         <p
           role="alert"
+          tabIndex={-1}
+          data-notice=""
           className="shrink-0 break-words border-t border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
         >
           {error}
@@ -476,7 +485,16 @@ export default function WhoCanUseDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const stopped = useRef(false);
   const { mode, groups, people } = draft;
+
+  // Save goes off while it runs, so a stopped save leaves the focus on the
+  // page body. Move it to "Reload the rule", or to the words that say why.
+  useEffect(() => {
+    if (saving || !stopped.current) return;
+    stopped.current = false;
+    bodyRef.current?.querySelector<HTMLElement>("[data-notice]")?.focus();
+  }, [saving]);
 
   // Adjusted during render, so no frame draws the old rule as the stored one.
   if (heard.item !== item) setHeard({ item, now: item });
@@ -527,6 +545,7 @@ export default function WhoCanUseDialog({
         onSaved(outcome.item);
         return;
       }
+      stopped.current = true;
       if (outcome.kind === "changed") {
         setHeard((h) => ({ ...h, now: outcome.current }));
         setDraft((d) => editDraft(d, {}));
