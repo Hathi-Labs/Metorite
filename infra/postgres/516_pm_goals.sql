@@ -1,5 +1,5 @@
 -- ============================================================================
--- 514_pm_goals.sql - the Goal type, and the link of an epic to its Goal
+-- 516_pm_goals.sql - the Goal type, and the link of an epic to its Goal
 -- (WS-39 WM-5, Metorite task 984)
 -- ============================================================================
 -- Spec: project-docs/specs/project_management_app.md §13.6a row WM-5 · D204.4
