@@ -1666,9 +1666,9 @@ A new `runtime` key names one of four kinds. No key means `none`. The builder pi
 **Run-time rules that do not bend.**
 
 - **No network at run time.** D130.2 says that a step that can read Metorite data never gets a host. So `runtime` has no `hosts` key. A call to an outside API goes through `integration:<action>` or an MCP tool, and the platform holds the credential.
-- **Input in, proposed writes out.** The code gets one JSON input through the door. It holds no database credential and no token. It returns proposed writes, and the platform applies them (§3.7).
+- **Input in, held writes out.** The code gets one JSON input through the door. It holds no database credential and no token. (Amended 2026-11-27, task 3802, answer `55b542fc`.) It sends each write as a row of the door batch, `POST /sandbox/v1/batch`. The door holds the rows for the member's card. The gateway runs each approved row as the member, one by one (`agent_sandbox.md` §12.5).
 - **A restricted field does not enter a sandbox** unless the logic names it and the reviewer approves that name.
-- **The limits are ceilings, and they are the broker's** (`settings.py:1418-1436`): 1 CPU, 1 GiB of memory, 300 s, 256 processes, 2 GiB of disk. New: at most 5 MiB of input, 5 MiB of output and 5,000 proposed writes.
+- **The limits are ceilings, and they are the broker's** (`settings.py:1418-1436`): 1 CPU, 1 GiB of memory, 300 s, 256 processes, 2 GiB of disk. New: at most 5 MiB of input and 5 MiB of output. Writes follow the door: at most 25 rows in a batch, and 600 door calls in a step (`agent_sandbox.md` §12.5).
 - **Cost.** A step costs at least 1 credit (D130.4). No sandbox meter exists yet, so sandbox runs stay off until one does.
 
 **⚠️ Where it runs today: nowhere.** BH-3 and SBX-9 are on the same box, and SBX-9 is an owner gate. The true off-box step is SBX-10, on a hosted microVM service. It needs an account (SBX-G3) and a data processing agreement before tenant data goes there (SBX-Q7). Each box has 2 vCPU, about 7 GB and no `/dev/kvm`. So plan each Stage 2 and Stage 3 template at kind `none`.
@@ -1859,7 +1859,7 @@ The owner accepted choice 3 of task 2326 on 2026-11-08. Before it, the rules sat
 | One call | No limit of its own. Each door call keeps the limits of the door | 30 s | 300 s (§19.3) |
 | Input of one call | 1 MiB for each door call | 1 MiB | 5 MiB (§19.3) |
 | Output of one call | 4 MiB for each door answer | 4 MiB | 5 MiB (§19.3) |
-| Proposed writes of one call | The class rules of the door (§3.2) | 5,000 | 5,000 (§19.3) |
+| Writes of one call | The class rules of the door (§3.2) | 25 rows in a batch | 25 rows in a batch, and 600 door calls in a step (`agent_sandbox.md` §12.5) |
 | Queue | 20 door calls a second for each frame | 16 calls for each runtime | None yet |
 | Warm runtimes | None | 1 for each org, and an idle runtime stops after 10 minutes | 1 container of this target for each org (`agent_sandbox.md` §5.6) |
 | Packages | The standard set only (§5.4) | 20 direct and 150 in all | §19.5 |
