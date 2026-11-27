@@ -21,6 +21,8 @@ The fences (R7), each with its mutation:
 * ``home-real-route``: each request reaches a real handler of the gateway, and
   the real body model takes the body. Mutation: send ``/shell/feed/states``
   -> 404 -> red. Mutation: add a key to the state item -> 422 -> red.
+* ``home-no-why-seen`` (LOOP-4b): the feed read returns no ``why_seen``.
+  Mutation: give the rows the whole card -> red.
 * ``home-frame``: text that other people wrote stays inside ONE frame block.
   Mutation: put the titles in the result outside the block -> red.
 * ``home-hidden``: a write refuses a hidden character with the one rule of
@@ -384,6 +386,21 @@ async def test_the_feed_read_says_how_many_cards_exist_and_how_to_see_the_rest(
     assert rest["shown"] == 10 and rest["more"] is False and rest["offset"] == 20
     assert big["shown"] == 30 and big["more"] is False and big["page"] == ""
     assert PLANTED in got["block"] and PLANTED not in _outside_block(got)
+
+
+async def test_the_feed_read_returns_no_why_seen(gw: Gateway) -> None:
+    """LOOP-4b done-when (i) (``proactive_loop.md`` §7.2 W2). The route of a
+    listed org sends ``why_seen`` on each card, and the tool reads that route.
+    It adds no such key to a row, and no sentence of it comes back. Mutation:
+    give the rows the whole card -> red."""
+    said = "It is in Now, because a time on it is close"
+    gw.cards = [_card(why_seen=[said])]
+    with _run():
+        got = await ht.home_read("feed")
+    assert gw.handlers() == ["shell_feed"] and got["count"] == 1
+    whole = json.dumps(got, ensure_ascii=False)
+    assert PLANTED in got["block"]  # non-vacuity: the card's text did come back
+    assert "why_seen" not in whole and said not in whole
 
 
 async def test_a_full_feed_says_that_home_holds_the_rest(gw: Gateway) -> None:
@@ -777,6 +794,9 @@ WAIT_FOR_OWNER = (
     "POST /api/shell/intent", "GET /api/push/public-key", "POST /api/push/subscriptions",
     "POST /api/push/subscriptions/status", "DELETE /api/push/subscriptions",
 )
+#: WS-AP AP-2a: the two reads of /waiting. The chat tool ``my_waits`` of AP-10
+#: (task 1860) pays both.
+WAIT_FOR_AP10 = ("GET /api/shell/waiting", "GET /api/shell/waiting/count")
 
 
 def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
@@ -784,10 +804,10 @@ def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
     for key, tool in PAID.items():
         assert cp.COVERED[key] == tool and key not in cp.DEBT, key
     shell_debt = [k for k in cp.DEBT if cp.app_of(k.split(" ", 1)[1]) == "shell"]
-    assert sorted(shell_debt) == sorted(WAIT_FOR_OWNER), shell_debt
-    for key in WAIT_FOR_OWNER:
+    assert sorted(shell_debt) == sorted((*WAIT_FOR_OWNER, *WAIT_FOR_AP10)), shell_debt
+    for key in (*WAIT_FOR_OWNER, *WAIT_FOR_AP10):
         assert cp.DEBT[key] == "P-7" and key not in cp.EXEMPT, key
-    assert cp.DEBT_CEILING["shell"] == 7
+    assert cp.DEBT_CEILING["shell"] == 9
     assert "packages/acb_skills/acb_skills/home_tools.py" in cp.TOOL_SOURCES
 
 

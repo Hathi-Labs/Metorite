@@ -1,0 +1,16 @@
+# The sign-in alarm of a dev machine (MCP-G17g, task 4033). A user unit.
+# metorite-signin-alarm.timer starts it every 10 minutes. It runs `claude mcp list`
+# and writes one NOTE line to ~/lanes/merge-queue.log when the metorite sign-in breaks.
+# Channel settings come from ~/.config/metorite/alarm.env (METORITE_ALARM_CHANNEL,
+# METORITE_ALARM_GH_USER, METORITE_ALARM_HOST). The default channel is `note`.
+# Install: bash scripts/home_server/mcp_signin_alarm.sh install
+# Logs:    journalctl --user -u metorite-signin-alarm.service
+[Unit]
+Description=Metorite sign-in alarm: note when the MCP sign-in breaks (MCP-G17g)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-%h/.config/metorite/alarm.env
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/mcp_signin_alarm.py
+TimeoutStartSec=150

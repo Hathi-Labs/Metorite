@@ -44,6 +44,7 @@ import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
 import { MessageActions, MessageReplyBar } from "./MessageActions";
+import { useMarkDone } from "./useMarkDone";
 import { showsReplyBar } from "../lib/messageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
@@ -98,6 +99,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
   const dropStaleDrafts = () => dropDrafts(staleDraftsRef.current);
   const [usualSender, setUsualSender] = useState<Record<string, string>>({});
   const { isMobile } = useViewMode();
+  const { enabled: canMarkDone, markDone } = useMarkDone();
   const [starred, setStarred] = useState(email?.isStarred ?? false);
   const [read, setRead] = useState(email?.isRead ?? true);
   const [flagged, setFlagged] = useState(email?.isFlagged ?? false);
@@ -364,6 +366,18 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const id = setInterval(tick, 20000);
     return () => clearInterval(id);
   }, [email?.threadId, mailboxId]);
+
+  // Mark done and its move back change the labels of the whole conversation
+  // (task 3995), so the open one reads again.
+  const markStamp = useEmailStore((s) => s.markStamp);
+  useEffect(() => {
+    if (!markStamp || !email?.threadId) return;
+    listThread(mailboxId ?? undefined, email.threadId)
+      .then((t) => setThread(mergeThread(t)))
+      .catch(() => {});
+    // Only a new mark reads here. A switch of mail has its own read below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markStamp]);
 
   // Task #124: the assistant wrote to the mailbox, so the open conversation
   // reads now (a draft it made shows at once), not at the next tick.
@@ -648,6 +662,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
   // `detail` resets only after the first render of a new mail, so it can still
   // hold the last mail. Read it only when it is this mail (EM-T10 item 5, C2).
   const view: Email = detail?.id === email.id ? detail : email;
+  // The chips of the open mail. With Mark done on, they come from the list row,
+  // which the store changes at once. `detail` is the copy of the open (§6.6).
+  const headerLabels = canMarkDone ? email.categories : view.categories;
   // "Loading message…" shows only while THIS mail has no body to draw. A mail
   // that has its body and waits for its file list draws the body at once.
   const loadingDetail = loadingDetailFor?.id === email.id && !view.bodyHtml && !view.bodyText;
@@ -1283,6 +1300,14 @@ export function EmailDetail({ email }: EmailDetailProps) {
             onClick={() => startReply("forward")}
             active={replyMode === "forward"}
           />
+          {canMarkDone && email.threadId && (
+            // An icon like its neighbours. Print moves into the menu below.
+            <TBtn
+              icon={themedIcon("Check")}
+              label="Mark done"
+              onClick={() => void markDone([email])}
+            />
+          )}
 
           <TBtn
             icon={themedIcon("ListChecks")}
@@ -1391,9 +1416,15 @@ export function EmailDetail({ email }: EmailDetailProps) {
             )}
           </div>
 
-          <Divider />
+          {/* With Mark done on, Print moves into the "..." menu, so the bar
+              stays one row at 390 px (task 3995). */}
+          {!canMarkDone && (
+            <>
+              <Divider />
 
-          <TBtn icon={themedIcon("Printer")} label="Print" onClick={() => window.print()} />
+              <TBtn icon={themedIcon("Printer")} label="Print" onClick={() => window.print()} />
+            </>
+          )}
         </div>
 
         {/* More menu */}
@@ -1432,6 +1463,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
                     label: "Download email",
                     run: () => downloadEml(),
                   },
+                  ...(canMarkDone
+                    ? [{ label: "Print", run: () => window.print() }]
+                    : []),
                 ].map((item) => (
                   <button
                     key={item.label}
@@ -1494,9 +1528,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
         )}
 
         {/* Categories / labels — rendered in their assigned colours */}
-        {view.categories && view.categories.length > 0 && (
+        {headerLabels && headerLabels.length > 0 && (
           <div className="flex flex-wrap gap-1 mb-4">
-            {view.categories.map((cat) => (
+            {headerLabels.map((cat) => (
               <LabelChip
                 key={cat}
                 name={cat}

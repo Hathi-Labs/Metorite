@@ -155,6 +155,17 @@ const PURGE_LABELS: Record<string, string> = {
   reminders: "private reminder",
   // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
   brief_runs: "daily brief",
+  // WS-MDC CC-5a: the member's focus sessions, with their minutes.
+  focus_sessions: "focus session",
+  member_actions: "act record",
+  // Each label is a singular noun that takes a plain "s". The fence
+  // `test_every_purge_count_has_a_label` holds the gateway's keys to this map.
+  goal_records: "personal goal",
+  calendar_entries: "calendar event",
+  calendar_attendances: "event attendance",
+  private_app_installs: "private app install",
+  shared_app_installs: "shared app install",
+  shared_private_app_installs: "privately shared app install",
   // WS-STU F1: the member's own AI Studio skills, with their versions.
   studio_skills: "AI Studio skill",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
@@ -174,6 +185,21 @@ const PURGE_LABELS: Record<string, string> = {
   agent_run_strands: "stranded agent run record",
   // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
   cycle_capacity: "cycle capacity record",
+  // The keys that came to the purge before its fence held them to this map.
+  chat_card_rows: "approved chat card record",
+  chat_join_rows: "chat join record",
+  failure_event_rows: "tool failure record",
+  studio_skill_runs: "AI Studio skill run",
+  studio_private_views: "private AI Studio saved view",
+  connection_asks: "connection request",
+  chat_topics: "private chat topic",
+  chat_pending_asks: "chat card question",
+  studio_shared_views: "shared AI Studio saved view",
+  studio_shared_skills: "shared AI Studio skill",
+  // SBX-1a, SBX-4b1 and SBX-2: the member's tool gaps, tool runs and sandbox tokens.
+  tool_gaps: "tool gap",
+  user_tool_runs: "tool run",
+  sandbox_capabilities: "sandbox run token",
 };
 
 function purgeLabel(key: string, n: number): string {

@@ -1,5 +1,13 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-27, the IMAP trash moves the right mail (task 4025, §18.13.3).** Merged in #2923. Task 4095 adds a check of the Message-ID, so a stale UID moves no mail. It is built on branch `imap4095`, not merged. No flag, because it fixes a data loss.
+>
+> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built with fix rounds 3 and 4, owner approved 2026-11-27. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
+>
+> **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Merged in #2878, dark behind `CHAT_DRAFT_CHOICE_ORGS`, and task 4026 closes the gaps before the flip (§18.13.2). A trash of a draft reads Drafts, and the answer names each draft that stays.
+>
+> **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Merged in #2893, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
+
 > **Dated 2026-11-17, a chat mail is Markdown (task 3605, §18.12).** Built, not merged. The send of a chat mail carries a text part and an HTML part. A draft keeps the text only.
 
 > **Dated 2026-11-11, `email_knowledge` (D105, WS-KS).** KS-12 (task 2726) moves email reading to the one read seam. It stops new writes to `email_knowledge`.
@@ -379,6 +387,235 @@ Rules the writer already enforces (do not weaken these when building on it):
 recent mail in a post-sync hook, so the directory fills without waiting for someone to click
 every sender. Deliberately deferred — it is a body-text scan over the whole mailbox, and the
 click-driven path already covers everyone the user cares about.
+
+### 6.6 Mark done: a Done that sticks (task 3995)
+
+**Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
+**Status:** 🔨 BUILT and merged dark (PR 2917, 2026-11-27). Fix round 5 (task 4057) is on
+branch `mt-d106ee54-mark-done-flip`, not merged.
+No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
+
+Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
+Fix round 3 closes F1 to F6 and V1: the lock order, a reopen, a reply before a move back,
+the reminder, and the bar on a phone. Fix round 4 closes N1, N4 and N5. These are a
+click during a learner correction, one provider for the sweep, and the row lock of
+the click. Fix round 5 closes F1 and F2. These are the sweep when the provider fails,
+and a write of the member during a learner correction.
+
+**One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
+A bulk act sends one call for each conversation, as a pair of `account_id` and
+`thread_id`. The chat tool `mark_thread_done` uses the same route. With the flag on,
+Done does these steps in the request:
+
+1. It reads the state before the act. The answer returns it as `previous`:
+   `{status, follow_up}`, or null when the thread was Done and had no open label.
+2. It writes status `DONE`, reason `Marked done by you`, and the newest stored
+   message. `last_message_at` becomes the **anchor**. The anchor is the newest
+   `received_at` of the mail that the automation has seen (D8, below).
+3. It tries to take the message rows of the thread with `NOWAIT`. When it gets
+   them, it removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local
+   rows, and it adds "Done" to the latest inbound message. A draft is no inbound
+   message, so no label goes on a draft (D3). When a writer holds a row, the
+   request does not wait, and the label job of step 5 does this step.
+4. It closes each open task that came from the thread, as before.
+5. A background job of the request sets the local labels when step 3 could not.
+   Then it makes the provider show them.
+
+**The hold.** A thread is held while its status is `DONE`, its reason is the mark,
+and no message from another person is newer than the anchor. The sender decides,
+not the folder, so a copy of the member's own mail in any folder keeps the hold
+(D7). The self set comes from `identity.py` (D-EM-27). `mark_done.held_sql` is the
+one definition. While a thread is held:
+
+- An automated status write keeps the status, the reason, the anchor and the time of
+  the classification. It still moves `last_message_id`, so the backfill does not
+  select the thread again. This covers the runner, the backfill and each write after
+  a reply of the member.
+- The label reconcile keeps only "Done".
+- The runner suppresses each rule match, and History says why. It asks no model for a
+  status.
+- The sync removes again a label that comes back. That label sets no status. This
+  also covers a label that the member adds in the mail program of the provider.
+  The learner asks the hold once before its corrections, and each correction keeps
+  a held row in its own write too (N1). So a click during an earlier correction
+  stays Done. The Fix of the member still ends the hold.
+- The same ask reads `classified_at` of each row (`mark_done.owned_and_seen`). Then
+  a member can write the row: a Mark done, a move back, a reopen, a dismiss or the
+  Fix. A correction does not replace such a write (F2). The guard is in the write
+  (`mark_done.member_wrote_since_sql`), and the thread then gets the labels of the
+  member. An automated write, such as the status of new inbound mail, stores
+  another reason. So the learner still works on that row.
+- The follow-up scan, an approval of a proposal and the repair of a failed run each
+  ask the hold for each thread (D1, D5). A held proposal or repair becomes
+  `SKIPPED`, and History says why.
+
+**The locks (fix round 3, F1 and F2).** The member's request must not wait for
+provider or model I/O, and it must not deadlock. Fix round 2 failed both. Mark done
+locked the status row and then the message rows. The follow-up scan and the rules
+runner locked a message row, held it across their I/O, and then wrote the status row.
+On a real database the two orders made a deadlock. A writer that held a row also
+made the click wait for its whole block, so its second ask of the hold could not
+see the click.
+
+We weighed three designs:
+
+- **No row across I/O.** No writer holds a row of a thread across its I/O. This
+  needs a rewrite of the actions of the runner, because each action writes its
+  local label in the same block as its provider call.
+- **One lock order, the status row first.** This stops the deadlock. The click
+  still waits for the I/O of each writer that holds the status row.
+- **A lock of the thread for each block.** A transaction lock lasts until the
+  commit, so it is held across the I/O too. A session lock does not end the row
+  locks of the block.
+
+We chose a mix, because no single design meets both rules at a small cost:
+
+1. **The request waits only for the status row.** It takes the message rows with
+   `FOR NO KEY UPDATE NOWAIT` (`mark_done._take_thread_rows`). A lock that never
+   waits is in no cycle, so the request cannot deadlock. The block writes no key
+   column, so the `FOR KEY SHARE` of a child-row insert does not stop it (N5).
+2. **A writer takes the status row last.** With the flag on, the rules runner,
+   Process past and the status backfill run the label reconcile first. Then they
+   write the status row, and the block commits
+   (`replyzero.project_and_reconcile`). The runner stamps its mail before the
+   status row too. The follow-up scan writes each row of a thread in a short
+   block of its own, and no short block is open across I/O. So the request waits
+   at most for one statement and a commit.
+3. **A label job never waits.** It takes the message rows with `NOWAIT`, and it
+   tries again after 0.2, 0.5, 1, 2, 4 and 8 seconds (`SETTLE_DELAYS`). The
+   writer that holds the rows asks the hold after its I/O, so the job then
+   leaves them to that writer and to the sweep.
+
+The approval of a proposal and the repair of a failed run write no status row, so
+they keep their blocks. A click during their I/O does not wait for them now. Their
+second ask then sees it (F5).
+
+A commit ends the `SET LOCAL` tenant of a block. So each short block is a new
+`_tenant_session()` with the tenant of the context, and no block calls `commit()`.
+
+**The races.** One mechanism closes each race, in three parts:
+
+1. **Ask again after the I/O.** After a provider call or a model call, an
+   automated writer asks the hold again. When the thread is held now, the writer
+   puts "Done" back at once, and it sends the whole state of the thread to the
+   provider (`mark_done.recheck_after_io`). The runner, its reconcile, the
+   follow-up scan, an approval and a repair do this (D1, D5, D6). So does a
+   correction of the label learner (N1). The scan drafts no nudge for a thread
+   that is held now.
+2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
+   finds each held thread with an open local label. It puts "Done" back here and
+   at the provider, with one provider for the sweep (N4). An import or a folder
+   load gives the learner no delta, so only the sweep heals its label (D9). The
+   sweep tries the provider once. When the provider refuses or fails, the sweep
+   still repairs the local labels of each thread (F1).
+3. **The provider shows the committed rows.** A label job reads the committed
+   local labels, sends each message that is not a draft its whole set, and reads
+   them again. While the read differs from what it sent, it sends again
+   (`mark_done.converge`). A writer commits before it sends, so the last read
+   sees each later write. So an older Done job cannot undo a move back (D2a), a
+   reopen or a dismiss (F3).
+
+A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
+move back end it too. A reply that the member sends does not end it.
+
+A reopen with the flag on writes the reason `Reopened by you` (F3). So it is a write
+of the member, as a move back is, and its label job pushes its labels. The chat tool
+`mark_thread_done` with `done=false` sends the same body.
+
+Only the act of the member stores the mark. An automated write that gives those words
+as its reason stores `Auto-classified`, because a model writes that reason over the
+mail text.
+
+**Move back.** The same route with `done=false` and `restore` writes the status of
+`restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`). The reason is `Moved back by you`,
+or `Moved back to Follow-up by you` with `follow_up`. It puts that label on the
+latest inbound message. With `follow_up` it puts "Follow-up" on the latest message
+that is not a draft. It opens no task that Done closed, and no cleanup label.
+
+The write asks the hold in its own `WHERE`. When new mail or another write changed
+the thread after Done, the answer is 409 and nothing changes (D4). A message of the
+member that is newer than the anchor gives 409 too, because the state of before is
+no longer true (F4). A new draft does not count. The app then drops the undo step
+and reads the rows again.
+
+An automated write on a held row keeps `follow_up_reminded_at` too (F6). It still
+moves `last_message_id`, and before this round that move set a new nudge.
+
+For 10 minutes after a move back, the label job may not have run yet (D2b). In
+that time the sync reads a conversation label that disagrees with the status as
+stale. It puts the labels of the move back again, and the learner ignores the label.
+
+**D8, the choice of the anchor.** Mail that the member may not have seen must not
+fall under the hold. The anchor leaves out inbound mail with no
+`rules_processed_at` that arrived and was stored after the last write of the
+status. Such mail ends the hold at once, so its own classification sets the status.
+We chose this over an anchor from the app, because the chat tool and a bulk act
+know no newest message. The cost: when the rules of that mail already ran with no
+status write, the thread stays Done with no hold.
+
+**The app.** `GET /email/reply-zero/mark-done` answers `{enabled}`. When it is on,
+the app shows these surfaces:
+
+- "Mark done" as the first item of the row menu, for one row and for a selection.
+- A "Done" button beside Reply all, Reply and Forward, on desktop and on a phone.
+- "Mark done" in the bar of a selection.
+- The key `d` for the open mail. `e` stays Archive.
+- A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
+  act had "Follow-up". Ctrl+Z runs the same step, on the one undo stack of the app.
+  The toast closes when the step ran, from either control.
+
+On a phone the "Done" button is an icon with the name "Mark done", as Reply and
+Forward are. With the flag on, Print moves from the bar of the pane into its "..."
+menu, so the bar has one row at 390 px (V1). The flag off keeps Print in the bar.
+Email claims the undo scope only with the flag on. The flag off leaves the history
+of another surface alone (D10).
+
+**Accepted limits.**
+
+- A message that arrives with a date before the anchor does not end the hold.
+- When the flag goes off, a held row is a plain `DONE` row again.
+- The label jobs of the hold write at the provider with Auto-run off too, because
+  the member asked for Done.
+- A reply of the member in a held conversation still pays one status call. The
+  result changes nothing.
+- The self set holds the address of each mailbox of the member. Mail from an alias
+  that no mailbox names ends the hold, as mail of another person does.
+- A label that lands between the last ask and the commit of a writer stays until the
+  next sync cycle, when the sweep removes it. The sweep reads the local labels only.
+- The request still waits for a writer that has written the status row and has not
+  committed. That writer does no I/O before its commit.
+- Two automated writers on one thread at once can still wait for the I/O of each
+  other, as before this feature. The member's request is not one of them.
+- The follow-up scan asks the hold just before its draft call. A Mark done that
+  lands during that one provider call still gets the nudge draft.
+- A label job sends each message of the thread that is not a draft its whole set of
+  conversation labels. That is one provider call for each message, and Outlook
+  reads the message first.
+- When a writer holds the rows at each try of a label job, the provider shows the
+  old labels until that writer asks again, or until the sweep.
+- A reopen with `done=false` and no `restore` reads the folder of the latest dated
+  message, as before. A nudge draft there makes it Needs Reply.
+- Known limits: the task-close path (`tasks/email_link.py`) still holds the status
+  row across provider I/O, as before this feature. Mark done on a long thread makes
+  one provider call for each message.
+- With the flag on, the follow-up scan uses two database connections for each job.
+- The learner guard compares with the rows of its one ask. A reopen or a Fix of the
+  member between the read of the sync and that ask can still lose to the learner.
+
+**Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
+the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
+D1 to D9, F1 to F6, N1, N4 and N5 on a real database. Its F1 and F2 tests run the real scan and
+the real rules job in one task and the click in another, at three points each. They
+assert that the click answers while the writer waits in its I/O, and that the
+database counted no deadlock. The others are
+`src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
+`src/app/email/components/markDoneMenu.test.ts` (the menu order).
+
+The N1 tests run the real learner. The click lands during a correction of another
+thread, and during a correction of the same thread. In the F2 tests, a move back, a
+reopen or a Fix lands during a correction of another thread. New inbound mail lands
+there in one more test. The F1 test runs the sweep with a refused and with a raising
+authenticate.
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 
@@ -21699,6 +21936,374 @@ text part and the HTML part of the mail.
 **Fence:** `tests/unit/test_email_markdown_mail.py`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_markdown_mail.py -q`
+
+### 18.13 The chat asks which draft (2026-11-26, task 3977)
+
+**Status:** MERGED in #2878 (task 3977). Task 4026 closes the gaps before the flag flip
+(§18.13.2), built on branch `cd4026`, not merged. No migration.
+
+**Dark.** `CHAT_DRAFT_CHOICE_ORGS` lists the organization ids, or `*`. Empty is off, the
+default. Off, the card and the answer of a trash are the ones of before. The one reader is
+`acb_skills.draft_choice.draft_choice_on`. A value on a box is an `enforcement-flip`.
+
+**The defect (rung 0).** Production, 2026-11-26. A thread held two drafts. The chat saved one,
+and the member made a second one with two files. The member asked to delete the draft in
+Drafts. The chat trashed its own draft only, and answered "The draft is deleted".
+
+**The rules.** They apply to `manage_inbox(action="trash")` with 20 ids or fewer.
+
+1. The tool reads the named ids in ONE call of `POST /email/messages/summaries`. That read
+   fetches no body. It drops an id that is no UUID or no message of the member. So a bad id
+   never stops a good one. A repeated id, in any form of the same UUID, is one message.
+2. An anchor is a named draft, or a named message in Trash that its own mailbox sent. A mail
+   from another sender is never an anchor. With no anchor, the trash of before runs.
+3. The tool reads the Drafts folder of each mailbox of the anchors. A draft matches when it
+   shares the thread, the To set or the subject of an anchor (`draft_choice.matching`). A
+   "Re:" head and the case do not count. The named drafts come first, before the cut of
+   20 rows.
+4. One matching draft that the call names keeps one Approve card, with the words of a draft.
+5. Any other case draws one row for each matching draft. Each draft row starts **unticked**,
+   and the member picks. A named message that is no draft stays ticked.
+6. A run with no rows card (WhatsApp, or no channel) keeps one card. It acts on the named
+   drafts and the other named mail, and it names the other matching drafts.
+7. Each card names each other message by its sender and subject. It names the mailbox of
+   each message, and each id that names no message. No two rows or lines read the same, also
+   after a cut. A named message already in Trash is listed, and nothing happens to it. The
+   plain card with no staying draft, or with a full Drafts page, ends with a line that says
+   so (§18.13.2). So the chat never draws it as a grid of rows.
+8. Each message moves through `DELETE /email/messages/{id}?report=true`, one call each. That
+   route discards a Gmail draft and keeps the new id of an Outlook draft. The card says which
+   of the two happens.
+9. The tool reads Drafts again after the act, with the first anchors only. The answer counts
+   a message only when the provider confirmed the trash. A draft counts only when it also
+   left Drafts. The answer names each message that it counts, and each matching draft that
+   stays. It says "none left" only for a whole page.
+10. The answer names each message that the provider did not confirm, that did not move, or
+    whose answer did not come back. A failed read after the act keeps the report of the act.
+11. The chat receipt takes its count from the head of the answer, and not from the call. A
+    head of "Trashed 0 message(s)" draws no trash receipt.
+
+**The report of the trash route.** `DELETE /email/messages/{id}` answers 204, as before.
+With `?report=true` it answers 200 and `{id, provider, reason, discarded}`. `provider` is
+`confirmed` only when the provider accepted the trash. It is `not_confirmed` when no provider
+loads, when it does not authenticate, or when its trash raises. `reason` is one fixed word.
+
+A failure after the provider accepted (the new id, or the saved tokens) keeps `confirmed`.
+The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a trash that
+the server did not confirm (§18.13.3). So an IMAP draft reads `not_confirmed`.
+
+**Known limits.**
+
+- The check reads the Metorite mirror. A draft that the sync did not bring yet does not show.
+- A trash that the provider did not confirm still reads as Trash in the mirror until the next
+  sync. The answer says so, and it does not count it.
+- A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
+- `bulk_manage_inbox` does not run this check.
+- The IMAP trash copied to Trash with the Trash folder open, so the copy took the wrong
+  message. Task 4025 fixes it (§18.13.3).
+
+**Fences.** `tests/unit/test_email_draft_choice.py` and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.1 Discard asks about the earlier draft (2026-11-26, task 3978)
+
+**Status:** MERGED in #2893 (task 3978). Task 3977 (§18.13) merged in #2878 before it. No
+migration. Dark behind
+`CHAT_DRAFT_CHOICE_ORGS`, the flag of §18.13.
+
+**The defect (rung 0).** Production, 2026-11-26. `draft_reply` saved a draft in Drafts. The
+member then declined the card "Save these changes to the draft?" of `edit_draft`. The member
+believed that the draft was rejected, and it stayed in Drafts.
+
+**The choice.** The task offered option (b): "when the member declines an edit card for a
+draft the chat made, ask in the same card 'Keep the earlier draft, or delete it?'. In both
+cases the answer must say plainly where the draft is." This build takes that option. No rule
+of §18.9, §18.10 or §18.11 forbids it. The act of the card still writes nothing. §18.9 item 7
+says that only the member's click trashes a draft, and that rule still applies.
+
+**The rules.**
+
+1. Two cards ask the ONE question, with one answer text and one component:
+   - the plain card of `edit_draft` ("Save these changes to the draft?") asks at Reject. It
+     needs `CHAT_DRAFT_CHOICE_ORGS` and `CHAT_CARD_REVISE_ORGS`.
+   - the new-mail form card asks at Discard. It also needs `EMAIL_EDIT_CARD_ORGS`, because only
+     that flag draws the form card.
+2. Only the one-draft record of task 3814 knows which draft the chat saved. `draft_reply` now
+   writes its reply draft into that record (`_note_reply_draft`), with the digest of the stored
+   draft and the mark `reply`. A reply draft is never the target of a save of a new mail
+   (`card_revise.plan_save`, `_known` and the redraft marker skip it). An approved edit keeps
+   the mark.
+3. The card of `edit_draft` asks only about a draft that the record holds and that is still
+   the chat's own text, with no file (`card_revise.target_state` is `ok`). The new-mail card
+   asks only about the draft that the one-draft rule names (`plan.replaces`). A draft that the
+   member made or changed is never asked about, and neither is a draft with a send in the
+   queue, or a draft whose queue the chat could not read. A failed read asks nothing.
+4. The tool puts two keys on the card: `earlier`, one line that names the draft, and
+   `earlier_effect`, what "Delete it" does at the provider of the mailbox
+   (`draft_choice.delete_effect`). Gmail: "Delete removes it from Gmail for good." Outlook:
+   "Delete moves it to Deleted Items in Outlook." Each other provider, and a mailbox list that
+   could not be read, has no effect, and the card then promises nothing about the delete.
+   `ask_tools.clean_earlier` is the one cleaner, and it drops any other effect text. The
+   effect is a field of its own, so no clip of the line or of the card body can cut it.
+5. Discard or Reject shows the question on the same card, in place of its buttons and of its
+   hint line, with "Keep it", "Delete it" and "Back". The focus moves to "Keep it". Keep sends
+   `REJECT`, the decline of before. Back sends nothing.
+6. Delete sends `REJECT {"earlier":"delete"}` (`ask_tools.DELETE_EARLIER_ANSWER`). The card
+   reads it as a decline, so the card sends and saves nothing. It holds the same Undo of five
+   seconds as a Reject.
+7. `ask_tools.earlier_draft_choice` says "delete" only for that exact answer, on a card that
+   carries `earlier`, from the run's own member. The member is the gateway's session member.
+8. Before the trash, the tool reads the state of the draft again (`card_revise.target_state`).
+   A draft that changed stays, and the answer says so, with its id. A state that the chat could
+   not check claims no folder: the record or the draft could not be read, the state read
+   failed, the draft left Drafts, or the flag went off while the card waited. The answer then
+   says that the chat deleted nothing, and asks the member to look in Drafts.
+9. The trash goes through `DELETE /email/chat-drafts/{id}`, a route of the gateway. The member
+   comes from the session, and the SQL of the route takes the draft only from a mailbox of
+   that member. The route reads the live draft at the provider first, with the full read of
+   the sync (`get_message`). It holds no database session across that read: one short session
+   reads the row and loads the provider, and a later one saves a rotated token. The live
+   draft must match the stored copy: the text (the fold of the reply card's Discard check), the
+   subject, the To, Cc and Bcc, and no file on either side. A mismatch, a failed read, a slow
+   read or a refused sign-in answers 409, and the route trashes nothing. The answer then says
+   that the draft was not deleted. A passed check runs the trash of
+   `DELETE /email/messages/{id}?report=true`. An older gateway has no such route, so the chat
+   never trashes with no check.
+9a. The answer comes from `draft_choice.report` (§18.13 rules 9 and 10). It counts a trash only
+    when the provider confirmed it and, in a second read of Drafts, the draft left Drafts. It
+    names each matching draft that stays, such as a draft that the member made. When that
+    second read fails, `settle` counts a draft on the provider's confirmation alone. The answer
+    then says that Metorite could not read Drafts after the act, and it does not say that no
+    draft is left.
+9b. After "Delete it", the answer starts with `ask_tools.card_declined_draft_text`. The lead
+    stays "Declined", so each chat card reads the act of the card as declined. What happened
+    says "nothing was sent or saved", and never "did not change". One act sentence then says
+    what became of the draft: "deleted from Gmail for good", "moved to Deleted Items in
+    Outlook", "left Drafts" for any other provider, "not deleted" with the reason, or "could
+    not confirm". The chat draws the member line "You said no, so nothing was sent or saved."
+    with that sentence (`memberLineOf`, `DECLINED_DRAFT`). The receipt adds "You asked to
+    delete the draft. The reply says what became of it." It claims no delete.
+10. Each other end of a card that carries the question keeps the draft. The answer says plainly
+    that it is still in Drafts, with its draft_id: Keep, a timeout, an answer of another member,
+    a WhatsApp park and a run with no card. The answer gives no reason, because the card binds
+    no responder, and a decline can be another member's. Each decline of the `edit_draft` card says where the draft is, also a
+    close by a chat message, and also for a draft that the chat did not make. That card never
+    offers to delete a draft that the chat did not make.
+10a. The record keeps the reply drafts of `draft_reply` under a cap of their own
+     (`card_revise.MAX_REPLY_DRAFTS`), apart from the 20 drafts of a new mail. So replies never
+     push the draft of a new mail out of the record.
+11. A late "Delete it" deletes nothing. When no run takes the answer (a restart, or a parked
+    card), the chat sends it as a new message. No tool waits for it, so nothing is trashed. The
+    chat draws it as "Rejected" (`cardAnswer.ts` `isRejectAnswer`), and the gateway agrees
+    (`chat_recovery.card_answer_agrees`). The drawn text never says that a draft was deleted.
+
+**Each surface.**
+
+- The web chat draws the question on both cards. A web client of before sends `REJECT`, so the
+  draft stays.
+- A held chat draws the held form card (`_held_card`, then `_held_form_card`), and it asks the
+  same question. The plain card of `edit_draft` asks there too.
+- A WhatsApp run and a run with no card channel draw no question. The draft stays, and the
+  answer says where it is.
+- A chat message that closes the card is a redraft (§18.11), not a decline. The draft stays,
+  and the answer of `edit_draft` says where it is.
+- Back, and Escape on the question, show the buttons again. The focus goes back to Reject or
+  Discard.
+
+**Flag off.** The card and its answer are the ones of before, byte for byte. `draft_reply`
+writes nothing into the record.
+
+**Known limits.**
+
+- The state check and the trash are two steps. An edit in the seconds between them is not
+  seen.
+- The `_new_draft` card ("Save this new email in Drafts?") and the reply card do not ask. The
+  reply card trashes its own draft at Discard already (§18.9 item 7).
+- A reply draft that `draft_reply` saved before the flag went on is not in the record, so its
+  card does not ask. The answer still says where the draft is.
+- The question before the card reads the stored copy only. A draft that the member edited at
+  the mailbox can still get the question. "Delete it" then reads the live draft, trashes
+  nothing, and says so (rule 9).
+- The live check compares the fields that the provider's full read gives. A provider that
+  does not return the Bcc of a draft makes the check refuse a draft with a Bcc, so that draft
+  is never deleted from the chat. The check and the trash are two calls, so an edit at the
+  mailbox in the moment between them is not seen.
+- An Outlook reply-all draft of `draft_reply` can hold fewer recipients at the mailbox than
+  the stored copy until the next sync. In that time "Delete it" deletes nothing and says so.
+- The new-mail card and the held form card say nothing about the earlier draft in these
+  cases: a close by a chat message (the answer is the redraft text of §18.11), and a card that
+  asks no question (a draft with a queued send, a queue that could not be read, or a draft
+  that the member changed). The card itself names those drafts (`_replace_lines`).
+
+**Fences.** `tests/unit/test_email_draft_decline.py` and
+`src/components/newMailCardEarlier.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_decline.py -q`
+
+#### 18.13.2 The gaps before the flag flip (2026-11-27, task 4026)
+
+**Status:** BUILT on branch `cd4026`, not merged. No migration. Each item stays dark behind
+`CHAT_DRAFT_CHOICE_ORGS`, except item 7, which is on the card of before.
+
+1. **The plain card of one draft is a list.** The line "To people: subject" is a `key: value`
+   line. So the chat drew a card of one draft as a grid (`parseCardBody` in
+   `ConfirmationCard.tsx`). The plain card now ends with one line that holds no ": ". The line
+   says that no other matching draft is in Drafts, or that the Drafts page was full
+   (`_plain_card_end`). When matching drafts stay and the page was not full, the card adds no
+   line. The header of the staying drafts then keeps the card a list.
+2. **A trash that counts 0 says "Not confirmed".** A head of "Trashed 0 message(s):" drew
+   "Inbox updated" with a check mark. The tool writes that head only for a trash that the
+   mailbox did not confirm, or for a lost answer. So the chat draws "Not confirmed", with no
+   check mark, and asks the member to check the mailbox (`noActionOf`, `UNCONFIRMED_NOTE`).
+   It never says that nothing changed.
+3. **Fences for the summaries fields and for the rule of Drafts.** A test reads
+   `POST /email/messages/summaries` through a session that answers only the columns that the
+   SQL names. So a column that leaves the SELECT fails it. A second test holds each case of
+   `draft_choice.settle`: a draft that is still in Drafts never counts.
+4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
+   and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
+5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
+   card and the held card, in dark, light, compact, comfortable, a changed accent and at
+   390 px. A later run drew the "Not confirmed" receipt in dark, light, compact, a changed
+   accent and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
+   under its "-" mark. At 390 px, the status line of the held card cuts "Waiting for your answer".
+6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
+   `message_parts` give the sender and the subject apart. `_short_label` cuts each part by
+   itself, before it joins them.
+7. **The bulk card counts each message that it cuts.** `request_confirmation` clips the
+   context of a card at 4000 characters, with no count. `_inbox_card_parts` now lists fewer
+   messages and counts the rest, so each message has a line or a count. A card that fits is
+   the card of before, byte for byte. This item has no flag.
+8. **No session across the provider.** `trash_chat_draft_live` reads the stored copy in one
+   short session. It reads the live draft with no session open, and it saves a rotated token
+   in a later session. No work was needed.
+9. **A real Gmail and Outlook mailbox.** This item is outside task 4026.
+10. **The R8 suite.** `tests/unit/test_email_draft_decline_r8.py` ran against the scratch
+    database of `scripts/dev_db.sh` on 2026-11-27, and 3 tests passed. The build of its template
+    database took 703 seconds on a shared box. So run it with `--timeout 2400`, because the
+    default limit of 600 seconds stops the build.
+
+**Fences.** `tests/unit/test_email_draft_choice.py` (the tests under "Task 4026") and
+`src/components/email/draftTrashReceipt.test.ts`.
+
+**Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.3 The IMAP trash moves the right mail (2026-11-27, task 4025)
+
+**Status:** MERGED in #2923 (task 4025). Task 4095, the check of the Message-ID below, is BUILT on
+branch `imap4095`, not merged. No migration and no flag, because each is a fix of a data loss
+(rung 0).
+
+**The defect.** `IMAPProvider.trash_message` ran UID COPY with the Trash folder selected. A UID
+names a mail in one folder only, so the copy read a Trash mail, not the INBOX mail. Then it
+flagged the INBOX UID `\Deleted` and sent a plain EXPUNGE. So the INBOX mail was lost, and a
+Trash mail could get a second copy.
+
+The plain EXPUNGE also removed each mail that another client had flagged `\Deleted`. The old
+code also deleted when no Trash folder existed or the copy failed.
+
+**The rule now** (`_trash_inbox_uid` in `providers/imap.py`):
+
+1. LIST finds the Trash folder. A folder with the SPECIAL-USE flag `\Trash` wins. Else the first
+   name of `TRASH_FOLDER_NAMES` that LIST shows wins. LIST selects no folder.
+2. The provider selects INBOX for each later command. A UID SEARCH confirms that the UID is in
+   INBOX.
+3. With MOVE, one UID MOVE runs. Without MOVE, UID COPY runs, then a STORE of `\Deleted` on that
+   UID. With UIDPLUS, a UID EXPUNGE of that UID follows.
+4. With neither MOVE nor UIDPLUS, the copy is in Trash and the original stays flagged
+   `\Deleted`. The next expunge of any client removes it. A plain EXPUNGE never runs, because
+   it removes mail that another client flagged.
+5. The name of the Trash folder goes in quotes, so `Deleted Items` works.
+6. The provider raises, and removes and flags nothing, in three cases. No Trash folder exists.
+   The UID is not in INBOX. The copy or the move is not OK.
+7. The trash route reads a raise as `not_confirmed` (§18.13). `bulk_apply` puts the UID in
+   `failed_out`. A rule action keeps its row as it was.
+8. It answers None. The copy in Trash has a new UID, but each IMAP id names a mail of INBOX.
+
+**Known limits.** These are not fixed here.
+
+- A STORE that fails after a good copy raises, and the copy stays in Trash. A retry of the bulk
+  path then puts a second copy in Trash. No mail is lost.
+- A mail that another client expunges between the SEARCH and the MOVE reads as trashed.
+- `modify_message` does not check the answer of its STORE, and the base `move_to_folder` is a
+  no-op for IMAP. Each says success with no change on the server. No mail is lost.
+- Each IMAP draft has the id `draft-<folder>`, so two drafts share one id. The draft clean-up of
+  `drafting.py` deletes its mirror row when the trash raises. The draft stays on the server.
+- A call that `asyncio.wait_for` stops leaves its thread on the shared connection. The next
+  call can then run on the same connection at the same time.
+
+**Fence.** `tests/unit/test_email_imap_trash.py`. Its fake server keeps a UID set for each folder
+and a selected folder. The test failed on the code of before (17 of 18 cases).
+
+**Verify with.** `uv run pytest tests/unit/test_email_imap_trash.py -q`
+
+**Task 4095: a stale UID after a change of UIDVALIDITY.** A server can rebuild INBOX. Then its
+UIDVALIDITY changes, and each mail gets a new UID. The sync then reads only the newest 100 UIDs,
+and the upsert keys on `(account_id, provider_message_id)`. So an older row keeps its old UID,
+and that UID can name another mail. The trash of before moved that other mail to Trash.
+
+The rule now:
+
+1. `IMAPProvider.trash_message` takes the stored Message-ID of the row as `message_id=`. It is
+   an optional keyword, so the base signature and Gmail and Outlook stay as they are.
+2. After the UID SEARCH, the provider reads the Message-ID at the UID with
+   `UID FETCH <uid> (BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`. The PEEK sets no flag. The read
+   keeps only the parts of the answer for that UID.
+3. The two values must match, or the trash raises, and nothing moves or gets a flag.
+4. Each caller calls the trash through `base.trash_checked`. It passes `message_id=` only to a
+   provider with `TRASH_CHECKS_MESSAGE_ID`, and only IMAP sets it. `bulk_apply` takes a
+   keyword `message_ids`, a map of provider id to the stored Message-ID.
+5. The gateway reads the stored value with `core._trash_message_id` (one row) or
+   `core._trash_message_ids` (one mailbox). It reads `internet_message_id`, and else
+   `thread_id`, because the IMAP sync keeps the Message-ID as the thread id. It reads only for
+   IMAP, so a Gmail or an Outlook trash makes no extra read.
+
+The decided cases:
+
+| Case | What the trash does | Why |
+|---|---|---|
+| The stored row has no Message-ID | It raises before any command | It cannot know which mail the UID names. It fails closed. |
+| A caller passes no `message_id` | It raises before any command | A caller that forgets fails closed. |
+| The mail at the UID has no Message-ID | It raises, and nothing moves | It cannot prove that the mail is the same. |
+| Header folding, white space, a comment after the id | They match | The compare key removes white space and keeps the first `<...>` id. |
+| Angle brackets on one side only | They match | The key drops the brackets. |
+| Another case of letters | No match, so it raises | Both values come from the same header bytes on one server. |
+| Two mails with one Message-ID | The mail at the UID moves | It is a copy of the same mail, and it goes to Trash. No mail is lost. |
+
+**The stored UIDVALIDITY is not a second check.** A row stores no UIDVALIDITY. The account cursor
+(`history_id`) holds only the current value, and the first sync after the change moves it. So a
+row cannot say under which UIDVALIDITY it was read. A value for each row needs a migration and a
+second mechanism. The check of the Message-ID covers each case without it.
+
+**The callers.**
+
+| Caller | What it passes |
+|---|---|
+| `messages.delete_message` | The stored value of the row, from `core._trash_message_id` |
+| `senders._bulk_reconcile_provider` | `message_ids` from `core._trash_message_ids`, for a trash only |
+| `actions._apply_rule_actions`, TRASH | The stored value of the row, from `core._trash_message_id` |
+| `drafting._cleanup_thread_drafts`, `_resolve_existing_thread_draft`, `trash_chat_draft` | The `thread_id` that selected the row |
+| `drafting.send_draft_endpoint`, the fallback send | `drow.thread_id` |
+| `drafting._update_provider_draft`, the fallback | Nothing, so an IMAP trash fails closed and the old draft stays |
+
+**Known limits of task 4095.** These are not fixed here.
+
+- A row of a mail with no Message-ID stores its In-Reply-To as the thread id. If its stale UID
+  names exactly that parent mail, the parent goes to Trash. This needs a mail with no
+  Message-ID, a rebuild of INBOX, and that one UID. The member can get the mail back from Trash.
+- `modify_message` writes flags on a UID with the same stale shape. No caller reaches it for
+  IMAP, because `apply_flags` is a no-op for IMAP.
+- `get_message`, `get_attachment` and `get_reply_to` read by UID too. `get_reply_to` checks the
+  Message-ID already. The other two read the mail of the same mailbox and change nothing.
+
+**Fence.** `tests/unit/test_email_imap_trash_uidvalidity.py`. The test failed on the code of
+before: the route moved the mail at the stale UID. `tests/unit/test_email_imap_trash_uidvalidity_r8.py`
+runs the two reads under FORCE RLS on a real Postgres.
+
+**Verify with.** `uv run pytest tests/unit/test_email_imap_trash_uidvalidity.py -q`, and with a
+database, `uv run pytest tests/unit/test_email_imap_trash_uidvalidity_r8.py -q -rs`
 
 ## 19. Send later (2026-10-21)
 

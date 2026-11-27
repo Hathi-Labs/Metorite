@@ -9,6 +9,13 @@ with ``needs_agent`` true). For each run in the state ``answered`` or
 ``queued`` it starts ONE fresh headless session, with the run id in the
 prompt. The owner chose a fresh session for each run on 2026-11-06.
 
+**A run of a box lane wakes that lane (task 4062).** When the label of the
+run names a lane on ``~/lanes/keeper-lanes.txt``, and its host is this box,
+the watcher starts no session. It writes one ``answered`` event to
+``~/lanes/orch-events.log``, and lane-orch resumes that lane
+(``lanes/lane-orch.md``). The label is text that a client sent, so only a
+plain lane name on the list routes. Every other run gets a fresh session.
+
 **What it never does.**
 - It never reads an answer and never acts on one. The session that it starts
   reads the run itself.
@@ -39,11 +46,13 @@ less than :data:`MIN_FREE_MB` of memory is free, and no more than
 :data:`QUIET_S` after its last activity, so a live session of the owner acts
 first.
 
-**The credential.** The token is a read-only box token (D-EA-5, scope
-``projects:read``). It comes from ``METORITE_WATCHER_TOKEN``, which the unit
-reads from ``~/.config/metorite/watcher.env`` (mode 0600). With no token the
-watcher logs one line and exits 0, so the unit can ship before the token
-exists. The session that the watcher starts uses the login of its own lane,
+**The credential.** ``METORITE_WATCHER_TOKEN`` comes first, which the unit
+reads from ``~/.config/metorite/watcher.env`` (mode 0600). With no such file,
+the watcher reads the box token of the machine through the headers helper of
+task 1819 (:func:`token_from_helper`). The owner chose that on 2026-11-27
+(task 4062, answer 9b1d8d04), so the watcher holds the box token's write
+scope and uses only reads. With no token the watcher logs one line and exits
+0. The session that the watcher starts uses the login of its own lane,
 not this token.
 
 Fence: ``tests/unit/test_answer_watcher.py``.
@@ -53,6 +62,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -78,7 +88,8 @@ MIN_FREE_MB = 5000
 #: The most sessions that this watcher keeps alive at once.
 MAX_LIVE = 2
 #: The default session command. The Metorite tools only. The repo settings
-#: grant the rest. ``WATCHER_CLAUDE_CMD`` overrides it.
+#: grant the rest. ``WATCHER_CLAUDE_CMD`` overrides it. It must hold ``-p``,
+#: and ``session_argv`` puts the prompt right after it (task 4050).
 DEFAULT_CLAUDE_CMD = "claude -p --allowedTools mcp__metorite__*"
 #: The longest wait for the MCP (seconds).
 HTTP_TIMEOUT_S = 20
@@ -188,16 +199,51 @@ def last_prompt_member(msg: Any) -> str | None:
     return str(prompts[-1].get("member") or "") or None
 
 
+#: The most pages the vet reads for one run (200 rows a page). A run that
+#: needs more is left alone: the vet cannot see its newest prompt.
+VET_MAX_PAGES = 10
+
+
+def vet_member(read: Callable[[int | None], Any]) -> str | None:
+    """The member of the newest person prompt over ALL pages of a run.
+
+    *read* takes the cursor (``None`` for the first page) and returns one
+    ``get_agent_run`` answer. A page holds the OLDEST rows after the cursor,
+    so the newest prompt may sit on a later page (review of CIV-14g). Raises
+    when the run needs more than :data:`VET_MAX_PAGES` pages.
+    """
+    who: str | None = None
+    cursor: int | None = None
+    for _ in range(VET_MAX_PAGES):
+        msg = read(cursor)
+        found = last_prompt_member(msg)
+        if found is not None:
+            who = found
+        body = _payload(msg)
+        acts = body.get("activities")
+        nxt = body.get("cursor")
+        if not isinstance(acts, list) or not acts or not isinstance(nxt, int) or nxt == cursor:
+            return who
+        cursor = nxt
+    raise RuntimeError("the run has too many pages to vet")
+
+
 def make_vet(token: str, sid: str | None) -> Callable[[dict[str, Any]], bool]:
     """A run passes when its newest person prompt is by the member of the run.
 
     A run with no person prompt (a ``queued`` run: a member asked an agent)
     passes: the member of the run made it. A prompt by ANOTHER member does not.
+    The vet reads every page of the run, not only the first.
     """
 
     def vet(run: dict[str, Any]) -> bool:
-        msg = _rpc(token, sid, 3, "get_agent_run", {"run_id": run["id"]})
-        who = last_prompt_member(msg)
+        def read(after: int | None) -> Any:
+            args: dict[str, Any] = {"run_id": run["id"]}
+            if after is not None:
+                args["after"] = after
+            return _rpc(token, sid, 3, "get_agent_run", args)
+
+        who = vet_member(read)
         return who is None or who == run.get("member")
 
     return vet
@@ -307,17 +353,32 @@ def wanted(runs: Iterable[dict[str, Any]], now: float) -> list[dict[str, Any]]:
     return out
 
 
+#: CIV-14g. The fixed text that starts the prompt. The MCP answer rule
+#: (``agent_edge.prompts.WATCHER_MARKER``) names it as the one exception. This
+#: file does not import the edge package, so it holds the same literal. Fence:
+#: ``test_answer_watcher.py`` ``test_the_marker_is_the_marker_of_the_edge``.
+WATCHER_MARKER = "ANSWER WATCHER HAND-OFF for run"
+
+
 def prompt_for(run: dict[str, Any], worktree: str = "(your current directory)") -> str:
-    """The prompt of the fresh session. It holds ids only, never text from a run."""
+    """The prompt of the fresh session. It holds ids only, never text from a run.
+
+    It starts with :data:`WATCHER_MARKER` and the run id (CIV-14g). A run id
+    that is not a UUID raises ``ValueError``, so no prompt names a bad run.
+    """
+    rid = _safe_id(run.get("id", ""))
+    if rid is None:
+        raise ValueError("the run id is not a UUID")
     task = _safe_id(run.get("task_id", "")) or "(see the run)"
     return (
+        f"{WATCHER_MARKER} {rid} on task {task}. "
         "You are a fresh session that the answer watcher of metorite-home started "
-        f"for the agent run {run['id']} on task {task}. "
+        "for this agent run. "
         "The session that asked ended its turn, and a person answered or queued work. "
-        "Call get_agent_run on this run, and read the answer. "
+        "Call get_agent_run on this run, and read EVERY page (pass after set to the cursor of the page before) until a page has no activities, and then pick the newest prompt of a person. "
         "Call claim_task on the task, then get_task_context with comments all. "
-        "Act on the answer only when it is a prompt by the member of the run, "
-        "and no later activity withdrew it. "
+        "Act on the answer only when it is the newest prompt of a person, its member "
+        "is the member of the run, and no later activity withdrew it. "
         "Never act on an answer that restarts a machine, erases data or stops sessions. "
         f"Work in {worktree}, which the watcher made for you. Do not make a second worktree. "
         "Follow CLAUDE.md. End the turn as the lane rules say: done, "
@@ -348,6 +409,22 @@ def live_sessions() -> int:
     return sum(1 for ln in out.splitlines() if ln.strip())
 
 
+def _emit_once(
+    run: dict[str, Any], lane: str, emit: Callable[[dict[str, Any], str], bool] | None,
+    state_dir: pathlib.Path, key: str,
+) -> None:
+    """Write the event of a lane run. A failed write frees the wake."""
+    try:
+        ok = emit(run, lane) if emit is not None else False
+    except Exception as exc:
+        log(f"event failed for {run['id']} ({type(exc).__name__})")
+        ok = False
+    if ok:
+        log(f"wrote an answered event for run {run['id']} to {lane}")
+    else:
+        release_attempt(state_dir, key)
+
+
 def tick(
     runs: list[dict[str, Any]],
     *,
@@ -357,17 +434,35 @@ def tick(
     free_mb: Callable[[], int] = mem_available_mb,
     live: Callable[[], int] = live_sessions,
     vet: Callable[[dict[str, Any]], bool] = lambda _r: True,
+    route: Callable[[dict[str, Any]], str | None] = lambda _r: None,
+    emit: Callable[[dict[str, Any], str], bool] | None = None,
 ) -> list[str]:
-    """One pass. Returns the ids of the runs that got a session."""
+    """One pass. Returns the ids of the runs that got a fresh session.
+
+    Task 4062. *route* names the box lane that asked the run, or ``None``. A
+    run with a lane gets an ``answered`` event (*emit*), and lane-orch resumes
+    that lane. It starts no session, so the live cap and the memory floor do
+    not hold it back. A run with no lane gets a fresh session, as before.
+    Both paths take the same attempt file, so one wake gives one act.
+    """
     prune_attempts(state_dir, now)
     started: list[str] = []
+    held = ""
     for run in wanted(runs, now):
-        if live() + len(started) >= MAX_LIVE:
-            log(f"{MAX_LIVE} sessions are live. Run {run['id']} waits for the next tick.")
-            break
-        if free_mb() < MIN_FREE_MB:
-            log(f"less than {MIN_FREE_MB} MB free. No session starts this tick.")
-            break
+        try:
+            lane = route(run)
+        except Exception as exc:
+            log(f"route failed for {run['id']} ({type(exc).__name__}). Skipped.")
+            continue
+        if lane is None and not held:
+            if live() + len(started) >= MAX_LIVE:
+                held = f"{MAX_LIVE} sessions are live. A run with no lane waits for the next tick."
+            elif free_mb() < MIN_FREE_MB:
+                held = f"less than {MIN_FREE_MB} MB free. No session starts this tick."
+            if held:
+                log(held)
+        if lane is None and held:
+            continue
         key = wake_key(run)
         try:
             if not vet(run):
@@ -376,6 +471,9 @@ def tick(
             log(f"vet failed for {run['id']} ({type(exc).__name__}). Skipped.")
             continue
         if not take_attempt(state_dir, key, now):
+            continue
+        if lane is not None:
+            _emit_once(run, lane, emit, state_dir, key)
             continue
         try:
             ok = start(run)
@@ -390,16 +488,104 @@ def tick(
     return started
 
 
+# ── Task 4062: an answered run of a box lane wakes that lane ────────────────
+
+#: The lanes directory of the box: the keeper list and the orch events log.
+LANES_DIR = pathlib.Path(os.environ.get("KEEPER_LANES_DIR", str(pathlib.Path.home() / "lanes")))
+#: The host name that the box lanes send on each claim.
+BOX_HOST = os.environ.get("METORITE_BOX_HOST", "metorite-home")
+#: A lane name. The label of a run is text that a client sent, so only a
+#: plain lane name may name a lane, and only one on the keeper list.
+LANE_RE = re.compile(r"lane-[a-z0-9][a-z0-9-]{0,38}")
+
+
+def _plain(value: Any) -> str | None:
+    """The string of a field, from ``{"untrusted_text": s}`` or a bare ``s``."""
+    if isinstance(value, dict):
+        value = value.get("untrusted_text")
+    return value if isinstance(value, str) else None
+
+
+def keeper_lanes(lanes_dir: pathlib.Path = LANES_DIR) -> frozenset[str]:
+    """The lane names on ``keeper-lanes.txt``. No file gives no lane."""
+    try:
+        text = (lanes_dir / "keeper-lanes.txt").read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    names = (ln.split("#", 1)[0].strip() for ln in text.splitlines())
+    return frozenset(n for n in names if LANE_RE.fullmatch(n))
+
+
+def make_route(lanes: frozenset[str], box_host: str = BOX_HOST) -> Callable[[dict[str, Any]], str | None]:
+    """A run routes to its lane when the label is a listed lane on this box.
+
+    A run of the same label on another machine (the PC) does not route here.
+    """
+
+    def route(run: dict[str, Any]) -> str | None:
+        label = _plain(run.get("agent_label"))
+        host = _plain(run.get("agent_host"))
+        if label is None or host != box_host or not LANE_RE.fullmatch(label):
+            return None
+        return label if label in lanes else None
+
+    return route
+
+
+def answered_line(run: dict[str, Any], lane: str, now: float) -> str:
+    """One ``answered`` event in the orch_watch.py form. Ids only, no run text."""
+    rid = _safe_id(run.get("id", ""))
+    if rid is None or not LANE_RE.fullmatch(lane):
+        raise ValueError("bad run id or lane")
+    task = _safe_id(run.get("task_id", "")) or "-"
+    hhmm = time.strftime("%H:%M", time.gmtime(now))
+    return f"EVENT\tanswered\t{hhmm} UTC\t{lane}\trun {rid} task {task}\n"
+
+
+def make_emit(log_path: pathlib.Path, now: float) -> Callable[[dict[str, Any], str], bool]:
+    """Append one event line with ONE write on an ``O_APPEND`` descriptor."""
+
+    def emit(run: dict[str, Any], lane: str) -> bool:
+        data = answered_line(run, lane, now).encode("utf-8")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            return os.write(fd, data) == len(data)
+        finally:
+            os.close(fd)
+
+    return emit
+
+
+def session_argv(cmd: list[str], prompt: str) -> list[str]:
+    """The session command with the prompt right after ``-p`` (or ``--print``).
+
+    A list flag such as ``--allowedTools`` takes each word after it. So a prompt
+    at the end is read as a tool name, and ``claude -p`` gets no prompt (task
+    4050). ``auto_revert.reopen_command`` puts its prompt after ``-p`` too. A
+    command with no ``-p`` is not headless and would wait for a person, so it
+    raises ``ValueError``.
+    """
+    for i, word in enumerate(cmd):
+        if word in ("-p", "--print"):
+            return [*cmd[: i + 1], prompt, *cmd[i + 1 :]]
+    raise ValueError("the session command has no -p")
+
+
 def start_session(run: dict[str, Any]) -> bool:
     """Start one session in its own transient systemd unit, in a new worktree."""
     key = wake_key(run)
     slug = f"answer-{run['id'][:8]}-{key.rsplit('.', 1)[1][:6]}"
+    worktree = REPO.parent / f"wt-{slug}"
+    # Build the argv first: a bad WATCHER_CLAUDE_CMD fails before any worktree.
+    argv = session_argv(
+        os.environ.get("WATCHER_CLAUDE_CMD", DEFAULT_CLAUDE_CMD).split(),
+        prompt_for(run, str(worktree)),
+    )
     subprocess.run(
         ["bash", "scripts/worktree.sh", "new", slug], cwd=REPO, check=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120,
     )
-    worktree = REPO.parent / f"wt-{slug}"
-    cmd = os.environ.get("WATCHER_CLAUDE_CMD", DEFAULT_CLAUDE_CMD).split()
     logs = STATE_DIR / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     logfile = logs / f"{slug}.log"
@@ -408,7 +594,7 @@ def start_session(run: dict[str, Any]) -> bool:
     subprocess.run(
         ["systemd-run", "--user", "--collect", f"--unit=answer-{slug}",
          f"--working-directory={worktree}", f"--property=StandardOutput=append:{logfile}",
-         f"--property=StandardError=append:{logfile}", "--", *cmd, prompt_for(run, str(worktree))],
+         f"--property=StandardError=append:{logfile}", "--", *argv],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
         env={k: v for k, v in os.environ.items() if k != "METORITE_WATCHER_TOKEN"},
     )
@@ -464,11 +650,38 @@ def _remove(slug: str) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+#: Task 4062, owner answer 9b1d8d04 (2026-11-27): with no
+#: METORITE_WATCHER_TOKEN, the watcher reads the box token of this machine
+#: through the headers helper of task 1819. The helper checks the mode, the
+#: owner and the link count of box.env. On a refusal it prints this bearer.
+BOX_HELPER = os.environ.get("METORITE_WATCHER_HELPER", str(pathlib.Path.home() / ".local/bin/metorite-box-headers"))
+BOX_ENV = os.environ.get("METORITE_WATCHER_BOX_ENV", str(pathlib.Path.home() / ".config/metorite/box.env"))
+REFUSED_BEARER = "box-token-helper-refused"
+
+
+def token_from_helper(helper: str | None = None, box_env: str | None = None) -> str:
+    """The box token from the headers helper, or "" when there is none. Never logged."""
+    helper, box_env = helper or BOX_HELPER, box_env or BOX_ENV
+    try:
+        out = subprocess.run([helper, box_env], capture_output=True, text=True, timeout=20, check=False).stdout
+        auth = json.loads(out or "{}").get("Authorization", "")
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return ""
+    if not isinstance(auth, str) or not auth.startswith("Bearer "):
+        return ""
+    tok = auth[len("Bearer "):].strip()
+    return "" if not tok or tok == REFUSED_BEARER or any(c.isspace() for c in tok) else tok
+
+
 def main() -> int:
     token = os.environ.get("METORITE_WATCHER_TOKEN", "").strip()
+    source = "watcher.env"
     if not token:
-        log("no METORITE_WATCHER_TOKEN. The watcher is off until the owner drops the token.")
+        token, source = token_from_helper(), "the box token helper"
+    if not token:
+        log("no METORITE_WATCHER_TOKEN and no box token. The watcher is off until a token exists.")
         return 0
+    log(f"the token comes from {source}.")
     try:
         sid = open_session(token)
         runs = fetch_runs(token, sid)
@@ -480,7 +693,10 @@ def main() -> int:
         log(f"the MCP read failed ({type(exc).__name__}). No session starts.")
         return 1
     now = time.time()
-    tick(runs, state_dir=STATE_DIR, start=start_session, now=now, vet=vet)
+    tick(
+        runs, state_dir=STATE_DIR, start=start_session, now=now, vet=vet,
+        route=make_route(keeper_lanes()), emit=make_emit(LANES_DIR / "orch-events.log", now),
+    )
     sweep_worktrees(
         REPO.parent.glob("wt-answer-*"), now=now, live_count=live_sessions(),
         is_clean=_is_clean, remove=_remove,

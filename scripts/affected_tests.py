@@ -540,6 +540,8 @@ FENCE_GUARD_TESTS = (
 # that name each flag, and does not go FULL (see `_flag_additions`).
 FLAG_FILES = (
     "packages/acb_common/acb_common/settings.py",
+    # CIV-33 slice 3 (PR 2380): every `*_orgs` and `*_modes` field lives here now.
+    "packages/acb_common/acb_common/flag_registry.py",
     "packages/acb_common/acb_common/env_guard.py",
 )
 # CIV-33c-3. The prefix `packages/acb_common/` was FULL from CIV-2, for "the DB
@@ -682,10 +684,10 @@ def gate_flag_texts(base: str, root: Path = ROOT, head: str = "HEAD") -> dict[st
     """Map each flag file, and tests/fences.json, to (text at the merge base,
     text at head)."""
     mb = _git_text(["merge-base", base, head], root).strip()
-    out = {
-        f: (_git_text(["show", f"{mb}:{f}"], root), _git_text(["show", f"{head}:{f}"], root))
-        for f in FLAG_FILES
-    }
+    # `_show_or_empty`: a branch whose merge base predates flag_registry.py (PR 2380)
+    # has no such file there, and `git show` would raise. The diff then shows the
+    # registry as a "new file", which `_added_lines` refuses, so the verdict is FULL.
+    out = {f: (_show_or_empty(mb, f, root), _show_or_empty(head, f, root)) for f in FLAG_FILES}
     out[FENCES_JSON] = (_show_or_empty(mb, FENCES_JSON, root), _show_or_empty(head, FENCES_JSON, root))
     return out
 
@@ -780,10 +782,12 @@ def _plain_field(st: ast.AnnAssign) -> bool:
 
 def _settings_fields(text: str) -> dict[str, tuple[int, int, bool]]:
     """Field name -> (first line, last line, plain) of each annotated assignment
-    that sits directly in the body of ``class Settings``. See `_plain_field`."""
+    that sits directly in the body of ``class Settings`` or ``class FlagRegistry``.
+    See `_plain_field`."""
     out: dict[str, tuple[int, int, bool]] = {}
     for node in ast.parse(text).body:
-        if isinstance(node, ast.ClassDef) and node.name == "Settings":
+        # `FlagRegistry` holds the per-org flags that `Settings` extends (PR 2380).
+        if isinstance(node, ast.ClassDef) and node.name in ("Settings", "FlagRegistry"):
             for st in node.body:
                 if isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
                     out[st.target.id] = (st.lineno, st.end_lineno or st.lineno, _plain_field(st))
@@ -864,7 +868,7 @@ def _flag_additions(
     """The needles of a flag-only diff, or None when the diff is anything else.
 
     A flag-only diff changes no file under packages/acb_common/ but the two of
-    FLAG_FILES. In settings.py each added line is a blank line, a comment, or part
+    FLAG_FILES. In settings.py and flag_registry.py each added line is a blank line, a comment, or part
     of a NEW field of ``class Settings`` (not ``model_config``, not a field of the
     base file). In env_guard.py each added line is a new string literal in a
     PLATFORM_ENV_* constant. A removed line, a new or deleted file, a line that
@@ -884,7 +888,7 @@ def _flag_additions(
         if path not in texts:
             return None
         base, head = texts[path]
-        found = (_check_settings if path.endswith("settings.py") else _check_guard)(
+        found = (_check_guard if path.endswith("env_guard.py") else _check_settings)(
             lines, base, head
         )
         if found is None:
@@ -900,7 +904,7 @@ def _flag_tests(needles: list[str], tests: dict[str, str]) -> set[str]:
         stem = t.rsplit("/", 1)[-1]
         named = any(n in body or n.lower() in body or n.upper() in body for n in needles)
         # `model_fields`: a test that walks every Settings field.
-        by_name = "settings" in stem or "env_guard" in stem
+        by_name = "settings" in stem or "env_guard" in stem or "flag_registry" in stem
         if by_name or "env_guard" in body or "model_fields" in body or named:
             picked.add(t)
     return picked

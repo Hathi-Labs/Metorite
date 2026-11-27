@@ -178,6 +178,7 @@ class TestTheFlag:
         settings, so a second reader cannot drift from this one."""
         allowed = {
             _ROOT / "packages/acb_common/acb_common/settings.py",
+            _ROOT / "packages/acb_common/acb_common/flag_registry.py",
             _ROOT / "apps/services/gateway/gateway/routes/email/automation/"
                     "insights_store.py",
         }

@@ -705,6 +705,62 @@ The runner never sets `TOOL_PACKS`, `TOOL_PACKS_ORGS` or
 The report in `docs/` for OA-8e also needs a run of the `general` and `miss`
 sets and a run with no packs. Those are not in this phase.
 
+## CSY-3: the connected-systems chats (scripted only)
+
+**Status.** Built on 2026-11-27. The owning spec is
+`project-docs/specs/chat_connected_systems.md`, §8.2, row CSY-3. The set is
+`mcp`, in `scenarios_mcp.py`. It has NO live arm. A live run costs money, and
+the owner has not opened one.
+
+The four chats ask where a question goes when an MCP server is attached:
+
+| Chat | The question | What the plan does |
+|---|---|---|
+| `csy_only_server` | Only the server holds the fact | It calls the server. |
+| `csy_metorite` | Metorite holds the answer | It reads Metorite and leaves the server out. |
+| `csy_miss` | Metorite finds nothing, and the server covers it | It tries Metorite, then the server. |
+| `csy_mail` | A mail question | The email pack wins, and the server stays out (OA-7b). |
+
+**The fake edge.** `mcp_fixture.py` fakes the server and nothing else. A real
+MCP server answers on `127.0.0.1` in a thread, with one read-only tool. The
+registry read, the grant, the URL check and the use counter are stand-ins. The
+real code does the rest: `_inject_mcp_servers`, `attach_mcp_tools`,
+`RunScopedMCPTool`, `McpPermissionGate` and `server_brief`. The harness guard
+still refuses every other `httpx` send.
+
+**The flags.** The fixture sets `MAF_MCP_ORGS` and `CONNECTED_SYSTEMS_ORGS`
+(CSY-1) for the eval org, in the eval process only. It holds
+`MCP_MAIL_PRECEDENCE_ORGS` (CSY-4) empty. It writes no flag on a box.
+
+**Redis.** A scripted run sends no command to the Redis that `redis_url`
+names. The routing harness holds each command in memory
+(`evals/routing/memory_redis.py`), for every set that uses it. The fixture
+holds the use counter in its own store.
+
+**The checks.** `connected_block`, `mcp_called`, `mcp_not_called`,
+`mcp_offered`, `server_after_metorite`, `no_mail_pack_with_mcp` and
+`mail_without_server`. `mcp_called` also needs the server's own log to show the
+query. `connected_block` reads the block of §3.2 in the request of
+`csy_only_server` and `csy_miss`. It needs the brief of the server, its tool
+and the standing rule.
+
+**What the scripted run proves today.** The server attaches by the real path,
+and the model sees its tool and the block. A call reaches the server and the result comes
+back. A mail chat holds no server beside the email pack. Each check fails on a
+broken plan.
+
+**What it does not prove.** It does not prove the model's choice. The plans
+are known-good. The block carries the rule "try each system before you say that
+something does not exist", and a scripted run cannot prove that the model obeys
+it. Demo 3396, or a small live arm with the owner's OK, proves the choice.
+
+Run it with `uv run python -m evals.one_assistant_measure.run --scripted
+--scenarios csy_only_server,csy_metorite,csy_miss,csy_mail`.
+`--live --scenarios csy_mail` stops with `NO-GO` before the Router or its key
+is read. A live run of all chats leaves the set out.
+
+The fence is `tests/unit/test_one_assistant_measure_mcp.py`.
+
 ## The fence
 
 `tests/unit/test_one_assistant_measure_oa8e.py` is the fence of OA-8e (R7). It
@@ -727,4 +783,4 @@ proves these facts:
 
 ## Known limit of the scripted run
 
-`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database or Redis (`identity_pool`, `stream_relay`). Those tries come from the product imports on `main` and not from this harness. A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).
+`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database (`identity_pool`). Those tries come from the product imports on `main` and not from this harness. The harness holds each Redis command in memory (`evals/routing/memory_redis.py`). A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).

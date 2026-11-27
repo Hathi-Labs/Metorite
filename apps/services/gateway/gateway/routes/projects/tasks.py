@@ -54,6 +54,13 @@ from gateway.routes.projects.checks import (
     check_patch_values,
     clean_check_text,
 )
+from gateway.routes.projects.claim_gate import check_claim_gate
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    holds_task,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     AGENT_TASK_SOURCE,
     ARCHIVED_PROJECT_REFUSAL,
@@ -126,7 +133,7 @@ from gateway.routes.projects.custom_fields import (
     apply_values,
     load_definitions,
 )
-from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.cycles import detach_moved_tasks, sprints_allowed
 from gateway.routes.projects.epic_contract import (
     EpicContractIn,
     clean_contract,
@@ -475,7 +482,16 @@ class MoveTask(BaseModel):
 
 
 class AssigneesIn(BaseModel):
+    """The body of ``PUT /tasks/{task_id}/assignees``.
+
+    LBB-2c (``engineering_practice.md`` §7b.10): an agent may send
+    ``agent_label``, the display name of its session, as ``ClaimIn`` takes it.
+    The claim gate of a self-add reads it. A person's body that names one is
+    422 (``agent_runs.agent_label_of``). The model ignores other keys, as
+    before."""
+
     assignees: list[str]
+    agent_label: str | None = Field(default=None, max_length=200)
 
 
 class TaskCreateIn(TaskIn):
@@ -574,6 +590,11 @@ DESCENDANTS_CTE = """WITH RECURSIVE walk AS (
 #: MCP-G19a. The page cap of a compact read. A plain read keeps
 #: ``MAX_PAGE_SIZE``.
 COMPACT_MAX_PAGE_SIZE = 500
+#: MCP-G19c. ``task_number`` is a BIGINT, so a larger number is a 422 and not
+#: a cast error in SQL.
+TASK_NUMBER_MAX = 9_223_372_036_854_775_807
+#: MCP-G19c. The longest ``type_name`` filter. The edge holds the same cap.
+MAX_TYPE_NAME = 100
 #: A compact read still selects ``t.*``: ``row_to_model`` builds a full
 #: ``TaskModel``, and a narrow SELECT leaves required fields (``source``) as
 #: None, which is a 500. The edge trims the row to the compact keys.
@@ -604,6 +625,42 @@ class TaskListResponse(ListResponse):
     status_counts: dict[str, int] | None = None
     #: status id -> its stage, for the lanes in ``status_counts``.
     status_categories: dict[str, str | None] | None = None
+
+
+#: WS-39 SP-3a (`project_management_app.md` §13.6 row SP-3a). The values of
+#: ``cycle`` on ``GET /projects/tasks``. ``none`` is the backlog of the
+#: Backlog canvas: each task that sits in no open (planned or active) cycle.
+CYCLE_FILTERS: tuple[str, ...] = ("none",)
+
+#: A task that sits in no open cycle, over the task alias ``t``. The partial
+#: unique index ``uq_pm_cycle_tasks_one_open`` (task_id WHERE cycle_open)
+#: serves it. A closed cycle is history, so its rows do not count.
+NO_OPEN_CYCLE_SQL = (
+    "NOT EXISTS (SELECT 1 FROM pm_cycle_tasks ct"
+    " WHERE ct.task_id = t.id AND ct.cycle_open)"
+)
+
+
+def cycle_filter_clauses(cycle: str | None, user: UserContext) -> list[str]:
+    """The WHERE clauses of ``cycle``, or none when it is absent.
+
+    The flag comes first: while ``PROJECTS_SPRINTS_ORGS`` does not hold the
+    session's org, the filter answers 404 as each cycle route does, so a dark
+    feature shows nothing (``cycles.sprints_allowed``, the one reader). Then an
+    unknown value is a 422, never a silent fall back to every task. Like
+    ``unheld``, it is NOT in ``build_task_filters``: who sits in a cycle
+    changes by the hour, so a saved view cannot pin it.
+    """
+    if cycle is None:
+        return []
+    if not sprints_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if cycle not in CYCLE_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown cycle filter. One of: {list(CYCLE_FILTERS)}.",
+        )
+    return [NO_OPEN_CYCLE_SQL]
 
 
 async def _task_scope(
@@ -772,9 +829,20 @@ async def list_tasks(
     updated_after: str | None = None,
     created_after: str | None = None,
     title_prefix: str | None = None,
+    # MCP-G19c. The type of a task, by id or by name, and its number. All
+    # optional. `build_task_filters` holds them.
+    # Plain defaults, not `Query(...)`: tests and other routes call this
+    # function directly, and a `Query` default is not a value.
+    type_id: str | None = None,
+    type_name: str | None = None,
+    task_number: int | None = None,
     # MCP-G19a. Small rows and a page of up to COMPACT_MAX_PAGE_SIZE: the row
     # query, the stage of each status, and nothing else. The agent door reads it.
     compact: bool = False,
+    # WS-39 SP-3a. `none`: only the tasks that sit in no open cycle, the
+    # backlog of the Backlog canvas (`cycle_filter_clauses`). Dark behind
+    # `PROJECTS_SPRINTS_ORGS`, like the cycle routes.
+    cycle: str | None = None,
 ) -> TaskListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -817,8 +885,18 @@ async def list_tasks(
     agent_clauses, agent_params = agent_filter_clauses(
         agent_focus, agent_worked, actor(user),
     )
+    # WS-39 SP-3a. ANDed beside the visibility clause, so it only narrows.
+    agent_clauses = [*agent_clauses, *cycle_filter_clauses(cycle, user)]
 
     mine = check_scope(scope)
+    if type_name is not None and len(type_name) > MAX_TYPE_NAME:
+        raise HTTPException(
+            status_code=422, detail=f"type_name is at most {MAX_TYPE_NAME} characters.",
+        )
+    if task_number is not None and not 1 <= task_number <= TASK_NUMBER_MAX:
+        raise HTTPException(
+            status_code=422, detail="task_number is not a valid task number.",
+        )
     if compact and page.page_size > COMPACT_MAX_PAGE_SIZE:
         raise HTTPException(
             status_code=422,
@@ -846,7 +924,8 @@ async def list_tasks(
                 watching=watching, top_level=top_level, has_parent=has_parent,
                 is_epic=is_epic, assigned=assigned, updated_before=updated_before,
                 updated_after=updated_after, created_after=created_after,
-                title_prefix=title_prefix,
+                title_prefix=title_prefix, type_id=type_id, type_name=type_name,
+                task_number=task_number,
             ),
         )
         total = (await db.execute(
@@ -903,6 +982,9 @@ async def list_tasks(
         if with_overlay:
             # WS-64 OP-11 — the caller's own overlay, one query for the page.
             await attach_my_overlay(db, vis, page_rows)
+        if compact:
+            # MCP-G19c. The name of the type of each row, in one read.
+            await attach_type_name(db, vis, page_rows)
         counts: dict[str, int] | None = None
         categories: dict[str, str | None] | None = None
         if with_status_counts:
@@ -1069,6 +1151,35 @@ async def attach_status_category(db: Any, vis: Any, rows: list[dict]) -> None:
     found = await status_categories_of(db, vis, ids)
     for row in rows:
         row["status_category"] = found.get(str(row.get("status_id") or ""))
+
+
+#: MCP-G19c. The name of each type on one page, in one read. The tenant is
+#: on the read beside RLS (R5).
+_TYPE_NAME_SQL = (
+    "SELECT ty.id, ty.name FROM pm_task_types ty"
+    " WHERE ty.id = ANY(CAST(:ids AS uuid[]))"
+    "   AND ty.organization_id = CAST(:vis_org AS uuid)"
+)
+
+
+async def attach_type_name(db: Any, vis: Any, rows: list[dict]) -> None:
+    """Stamp ``type_name`` on each row: the name of its type, or ``None``.
+
+    The member can see the task, so the member can see the name of its type.
+    A row with no type, or a type the read cannot find, keeps ``None``.
+    """
+    ids = sorted({str(r["type_id"]) for r in rows if r.get("type_id")})
+    found: dict[str, str] = {}
+    if ids:
+        found = {
+            str(r.id): r.name
+            for r in (await db.execute(
+                text(_TYPE_NAME_SQL),
+                {"ids": ids, "vis_org": vis.params.get("vis_org")},
+            )).fetchall()
+        }
+    for row in rows:
+        row["type_name"] = found.get(str(row.get("type_id") or ""))
 
 
 async def status_categories_of(
@@ -2692,8 +2803,25 @@ async def set_assignees(
     (``core.require_exact_version``, fix round 1), checked after the read of
     the current set. An absent header passes (D-PM-20), so the app's calls
     are unchanged. The writer is :func:`_write_assignees`.
+
+    SW-45 (review P1). An agent that adds its own member gets the scope
+    check of ``claim_task`` (``claim_scope.check_claim_scope``). Outside the
+    member's own apps, mode ``warn`` writes one timeline line and the answer
+    has ``warning`` and ``outside_apps``. Mode ``refuse`` answers 403
+    ``outside_apps`` and writes nothing. Only a task that already holds the
+    session member is not checked. Another assignee is not a pass.
+
+    LBB-2c (``engineering_practice.md`` §7b.10). An agent may send
+    ``agent_label``, and the claim gate of a self-add checks the PRs of that
+    label. With no label, the gate checks the PRs bound to no label, as
+    before. A person's body that names a label is 422, before any read.
     """
+    from gateway.routes.projects import agent_runs
+
     agent_call = getattr(user, "agent", None) is not None
+    # LBB-2c: the display label of the agent's session, as `claim_task` reads
+    # it. A person's is 422.
+    label = agent_runs.agent_label_of(user, payload.agent_label)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
@@ -2725,12 +2853,30 @@ async def set_assignees(
             # After the read of `current`: an assignment that this read saw
             # moved `updated_at` in the same commit, so it stales the token.
             await require_exact_version(db, task_id, if_match)
+        # SW-45 (review P1): an agent that adds its own member holds the task
+        # as a claim does. So the claim's ONE check runs here too, before any
+        # write, and `refuse` has no second door. Another assignee in
+        # `current` is not a pass: only the session member is.
+        me = actor(user).strip().lower()
+        self_add = agent_call and me in wanted and not holds_task(user, current)
+        scope_note = (
+            await check_claim_scope(db, user, task, current, vis)
+            if self_add
+            else None
+        )
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate, right after
+        # the scope check and before any write. LBB-2c (§7b.10): the label of
+        # the PUT picks the bucket. With none, the PRs bound to no label.
+        if self_add:
+            await check_claim_gate(db, user, task_id, vis, label)
         assigned = await _write_assignees(
             db, user, task_id=task_id, project_id=str(task.project_id),
             wanted=wanted, current=current,
         )
         added, removed, notified = (
             assigned.added, assigned.removed, assigned.notified)
+        if scope_note is not None and me in added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
     if added:
         await emit("pm.task.assigned", {
@@ -2751,7 +2897,7 @@ async def set_assignees(
         from gateway.routes.shell import cache as feed_cache
 
         await feed_cache.bump_org(task_org)
-    return {
+    result: dict[str, Any] = {
         "task_id": task_id,
         "assignees": sorted(wanted),
         # Named rather than swallowed: assigning somebody outside the project's
@@ -2760,6 +2906,10 @@ async def set_assignees(
         # fix it.
         "not_notified": notified["skipped"],
     }
+    # SW-45: the warning of a self-add outside the own apps, in mode `warn`.
+    if scope_note is not None:
+        apply_warning(result, scope_note)
+    return result
 
 
 # ── Claim (WS-55 EA-6b) ─────────────────────────────────────────────────────
@@ -2803,11 +2953,15 @@ async def _insert_claim_assignees(db: Any, task_id: str, wanted: list[str], *,
     return written
 
 
-def _refuse_claim(code: str, message: str) -> NoReturn:
+def _refuse_claim(code: str, message: str,
+                  prs: list[dict[str, Any]] | None = None) -> NoReturn:
     """Raise the 422 of a refused claim. Inside the transaction, so a
-    refusal after a write rolls that write back."""
-    raise HTTPException(status_code=422,
-                        detail={"error": code, "message": message})
+    refusal after a write rolls that write back. LBB-2: the claim gate
+    (``claim_gate.check_claim_gate``) adds *prs*, the PRs to land first."""
+    detail: dict[str, Any] = {"error": code, "message": message}
+    if prs is not None:
+        detail["prs"] = prs
+    raise HTTPException(status_code=422, detail=detail)
 
 
 class ClaimIn(BaseModel):
@@ -2879,7 +3033,10 @@ async def claim_task(
     WS-55 EA-6b (spec `external_agent_access.md` §9.2, EA3-34). ONE
     transaction, with ``If-Match`` and no body. The name says that the call
     can move the status, which ``assignees/self`` hid. A member may call it
-    too, and nothing here reads ``UserContext.agent``.
+    too. Only the SW-45 scope check (``claim_scope.check_claim_scope``) reads
+    ``UserContext.agent``: an agent claim of a task that does not hold the
+    session member, outside the member's own apps, warns or gets 403
+    ``outside_apps`` by ``AGENT_CLAIM_SCOPE_MODES``.
 
     * ``backlog`` or ``todo``: add the caller, keep every other assignee, and
       move the task to the first ``in_progress`` lane of its OWN status set
@@ -2948,6 +3105,15 @@ async def claim_task(
                 {"tid": task_id},
             )).fetchall()
         }
+        # SW-45: an agent claim of a task that does not hold the member,
+        # outside the member's own apps, warns or is refused
+        # (AGENT_CLAIM_SCOPE_MODES).
+        # Before any write, so a refusal writes nothing.
+        scope_note = await check_claim_scope(db, user, seen, current, vis)
+        # LBB-2 (engineering_practice.md §7b.2): the claim gate. An agent
+        # with an old open PR that no merger queued lands it first. Before
+        # any write, and before the run opens, so a refusal writes nothing.
+        await check_claim_gate(db, user, task_id, vis, label)
         wanted = sorted({me} - current)
         await assert_assignable_here(db, str(seen.project_id), set(wanted))
         # Final fix (review P2): `added` is the set that THIS insert wrote,
@@ -3029,6 +3195,10 @@ async def claim_task(
         # the row it crossed a member's PATCH, which writes the row and then
         # the editor's watcher key (fix round 3).
         await ensure_watchers(db, task_id, added, by=actor(user))
+        # SW-45: the ONE timeline line of a claim outside the own apps. Only a
+        # claim that wrote the key writes it, so a second claim adds none.
+        if scope_note is not None and added:
+            await record_outside_claim(db, user, task_id, scope_note)
 
         row = await load_visible_task(db, vis, task_id)
         result = row_to_dict(row, TaskModel)
@@ -3041,7 +3211,10 @@ async def claim_task(
         result["agent_run_id"] = run_id
         # SW-63: a task with open subtasks still claims. The result warns.
         await _warn_open_subtasks(db, vis, task_id, result)
-        # SW-107: a dropped dispatcher adds its fixed text after that warning.
+        # SW-45: the warning of a claim outside the own apps, after SW-63's.
+        if scope_note is not None:
+            apply_warning(result, scope_note)
+        # SW-107: a dropped dispatcher adds its fixed text after those warnings.
         agent_runs.warn_dispatch(result, dropped)
 
     if added:
