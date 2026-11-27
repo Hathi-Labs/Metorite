@@ -144,6 +144,7 @@ from acb_common.assistant_profile import (
     FACT_MAX,
     INTERVIEW_STATES,
     LANGUAGE_NAMES,
+    LANGUAGES_MAX,
     NO_ANSWER,
     NO_ANSWER_TEXT,
     NOT_YOUR_WORDS,
@@ -1228,6 +1229,34 @@ def _merge(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _merge_style(prior: dict[str, Any], value: dict[str, Any]) -> dict[str, Any]:
+    """:func:`_merge` for ``style``, with the language pair kept in step
+    (PZ-52). The member says ONE language to the chat, so a ``language`` that
+    differs from the first saved tag replaces the list with a list of one. An
+    ORDER about the answer language (``language_fixed``, task 3131) is not a
+    new list: the ordered language moves to the first place and the others
+    stay. A ``language`` set to null clears the list too. The gateway lets
+    ``languages`` win when a write holds both, so a stale list must go."""
+    merged = _merge(prior, value)
+    if "languages" not in value and "language" in value:
+        held, one = prior.get("languages"), value["language"]
+        if not (isinstance(one, str) and isinstance(held, list) and held):
+            merged.pop("languages", None)
+        elif str(held[0]).lower() == one.lower():
+            merged["language"] = prior.get("language", one)
+        elif value.get("language_fixed") is True:
+            rest = [t for t in held if str(t).lower() != one.lower()]
+            ordered = [one.lower(), *rest]
+            while len(ordered) > LANGUAGES_MAX:
+                ordered.pop()  # a full list drops its last tag
+            merged["languages"] = ordered
+        else:
+            merged.pop("languages", None)
+    elif "languages" in value and value["languages"] is None:
+        merged.pop("language", None)
+    return merged
+
+
 def _free_text(key: str, value: dict[str, Any], prior: dict[str, Any]) -> list[Any]:
     """The free text of a ``profile_set`` that the member must have said:
     ``address.name`` and each NEW style note. A choice field (length,
@@ -1278,6 +1307,25 @@ def _language_order_typed(language: str) -> bool:
     return named and any(w.casefold() in words for w in _ORDER_WORDS)
 
 
+def _drop_unordered_mark(prior: dict[str, Any], merged: dict[str, Any]) -> None:
+    """Drop ``language_fixed`` from *merged* when a write of ``languages``
+    puts a new language first that the member did not order (PZ-52). The old
+    first language keeps the mark. So does a first language that the typed
+    words name in an order (:func:`_language_order_typed`). An empty or a
+    null list has no first language. At a WhatsApp Confirm there are no
+    typed words, and the card still binds the exact value."""
+    def first(style: dict[str, Any]) -> str:
+        listed = style.get("languages")
+        if isinstance(listed, list):
+            return str(listed[0]) if listed else ""
+        return str(style.get("language") or "")
+
+    new = first(merged)
+    if new and (new.lower() == first(prior).lower() or _language_order_typed(new)):
+        return
+    merged.pop("language_fixed", None)
+
+
 @_write_tool
 async def profile_set(key: Literal["address", "style", "celebrations"], value: dict[str, Any],
                       sensitive: bool = False) -> str:
@@ -1317,14 +1365,23 @@ async def profile_set(key: Literal["address", "style", "celebrations"], value: d
     if key == "style" and value.get("language_fixed") is True and not _confirming():
         # Task 3131: the mark is an order of the member, so their own typed
         # words of this turn must hold it. A mail or a page cannot set it.
-        language = value.get("language") or prior.get("language") or ""
+        # PZ-52: a list in the same write wins at the gateway, so the words
+        # must name its first language.
+        listed = value.get("languages")
+        if isinstance(listed, list) and listed:
+            language = listed[0]
+        else:
+            language = value.get("language") or prior.get("language") or ""
         if not language or not _language_order_typed(str(language)):
             raise _Refused(LANGUAGE_FIXED_REFUSED, "not_your_words")
     free = _free_text(key, value, prior)
     # A style note goes into every later block, so only the typed words
     # ground it, never a card (PZ-32 repair, P2-6b). A name may ask a card.
     typed = _ground(*free, card=key == "address")
-    merged = _merge(prior, value)
+    merged = _merge_style(prior, value) if key == "style" else _merge(prior, value)
+    if (key == "style" and "languages" in value and "language_fixed" not in value
+            and prior.get("language_fixed") is True):
+        _drop_unordered_mark(prior, merged)
     if merged == prior:
         raise _Refused("Already set.", "duplicate")
     reasons = [*typed, *_reasons(free, sensitive)]

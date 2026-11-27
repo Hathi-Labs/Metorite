@@ -251,6 +251,11 @@ export interface AgentRun {
    */
   waiting?: AgentWaiting | null;
   /**
+   * Task 1045c. The open strand of the run (`stranded` of the runs wire,
+   * SW-10a), else null. The sweep nudged the member and no word came since.
+   */
+  stranded?: AgentStranded | null;
+  /**
    * SW-32 (task 1049). The checklist that the agent keeps on its run, or
    * null. Each `set_run_plan` call replaces the whole list. The text of a
    * step is the agent's own: draw it as text and nothing else.
@@ -292,6 +297,73 @@ export function planSummary(plan?: AgentPlanStep[] | null): AgentPlanSummary | n
     total: plan.length,
     step: current?.content.trim() || null,
   };
+}
+
+/** `stranded` of the runs wire (`_stranded_out` in the gateway). */
+export interface AgentStranded {
+  reason?: string | null;
+  nudged_at?: string | null;
+  recovered_at?: string | null;
+  /** Seconds since the last activity, when the gateway measured it. */
+  idle_s?: number | null;
+  /**
+   * Client only. The time of the last word, in ms since the epoch.
+   * `stampStrands` sets it once, when the reply arrives.
+   */
+  last_word_ms?: number | null;
+}
+
+/** The facts of a strand that a task row or the panel draws. */
+export type AgentStrandFacts = Pick<AgentStranded, "nudged_at" | "idle_s" | "last_word_ms">;
+
+/** The keys that carry a strand: the runs wire, and the task row (1045d). */
+const STRAND_KEYS: ReadonlySet<string> = new Set(["stranded", "agent_stranded"]);
+
+/**
+ * Task 1045c. `idle_s` is true only at the moment of the read. So fix the time
+ * of the last word when the reply arrives: `arrivedMs` minus `idle_s`. This
+ * walks a reply and writes `last_word_ms` on each strand, in place. The one
+ * request seam (`call` in `api.ts`) runs it, so a cached row keeps its time.
+ */
+export function stampStrands(body: unknown, arrivedMs: number): void {
+  if (Array.isArray(body)) {
+    for (const item of body) stampStrands(item, arrivedMs);
+    return;
+  }
+  if (!body || typeof body !== "object") return;
+  for (const [key, value] of Object.entries(body)) {
+    if (STRAND_KEYS.has(key) && value && typeof value === "object") {
+      const strand = value as AgentStranded;
+      if (typeof strand.idle_s === "number" && Number.isFinite(strand.idle_s)) {
+        strand.last_word_ms = arrivedMs - strand.idle_s * 1000;
+      }
+    } else {
+      stampStrands(value, arrivedMs);
+    }
+  }
+}
+
+/**
+ * Task 1045c. "No word since 14:31" for a stranded run. The time is the last
+ * word (`last_word_ms`, from `stampStrands`), else the time of the nudge. It
+ * never reads the clock, so the line does not move as the row ages. Local
+ * time, HH:MM. Null for no strand.
+ */
+export function strandedLine(
+  stranded: AgentStrandFacts | null | undefined,
+): string | null {
+  if (!stranded) return null;
+  let at: number | null = null;
+  if (typeof stranded.last_word_ms === "number" && Number.isFinite(stranded.last_word_ms)) {
+    at = stranded.last_word_ms;
+  } else if (stranded.nudged_at) {
+    const t = Date.parse(stranded.nudged_at);
+    at = Number.isNaN(t) ? null : t;
+  }
+  if (at === null) return "No word for a while";
+  const d = new Date(at);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `No word since ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**
@@ -606,6 +678,8 @@ export interface AgentPillFacts {
   labels?: ReadonlyMap<string, string>;
   /** Task 1045a. The wait of a `waiting` run: `agent_waiting` of the row. */
   waiting?: Pick<AgentWaiting, "on" | "until"> | null;
+  /** Task 1045c. `agent_stranded` of the row: the open strand of the run. */
+  stranded?: AgentStrandFacts | null;
   /** SW-32. The plan of the run, as `agent_plan` of the row. */
   plan?: AgentPlanSummary | null;
   /** The clock for the minutes of a wait. Tests pass it. */
@@ -1297,6 +1371,12 @@ export const AGENT_LANES: readonly { key: string; label: string }[] = [
   { key: "failed", label: "Failed" },
   { key: "none", label: "No agent" },
 ];
+
+/**
+ * AMR-4: the word of an ended state that the Agents view draws. It is not a
+ * lane of `AGENT_LANES`, so the "Agent work" board gets no new column.
+ */
+export const AGENT_ENDED_WORDS: Record<string, string> = { completed: "Done" };
 
 /** The lane key of a task row: its state, or `none`. An unknown state is `none`. */
 export function agentLaneKey(state?: string | null): string {

@@ -838,6 +838,57 @@ class TestTheChatTopicsFlag:
         assert "chat_topics" not in json.loads(params["shell_prefs"])
 
 
+# ── The Agents lenses flag (WS-MCP AMR-1, `agent_coordination.md` §5.12) ────
+
+
+def _agent_lenses_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agent_lenses_orgs", raw, raising=False)
+
+
+class TestTheAgentLensesFlag:
+    """The Agents view draws its new lenses only when the read says
+    `agent_lenses: true`. `gateway.agent_lenses_flag.agent_lenses_allowed` is
+    the one reader, and the org is the session's. Mutation: send
+    `topics_allowed(bound)` as `agent_lenses` -> red."""
+
+    @pytest.mark.parametrize(("raw", "org", "on"), [
+        ("*", "org-a", True),
+        ("org-b, ORG-A", "org-a", True),
+        ("org-b", "org-a", False),
+        ("", "org-a", False),
+        ("*", None, False),
+    ])
+    def test_the_read_says_agent_lenses_for_the_session_s_org(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+        raw: str, org: str | None, on: bool,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, raw)
+        _chat_topics_orgs(monkeypatch, "")
+        assert _client(_in_org(org)).get("/auth/me/shell").json()["agent_lenses"] is on
+
+    def test_the_org_comes_from_the_session_never_the_request(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, "org-b")
+        res = _client(_in_org("org-a")).get(
+            "/auth/me/shell?organization_id=org-b", headers={"X-Organization-Id": "org-b"},
+        )
+        assert res.json()["agent_lenses"] is False
+
+    def test_a_save_answers_with_the_flag_and_never_stores_it(
+        self, fake: _FakeDB, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _agent_lenses_orgs(monkeypatch, "*")
+        body = {"pins": ["/tasks"], "agent_lenses": False}
+        res = _client(_in_org("org-a")).put("/auth/me/shell", json=body)
+        assert res.status_code == 200, res.text
+        assert res.json()["agent_lenses"] is True
+        [(_, params)] = _writes(fake)
+        assert "agent_lenses" not in json.loads(params["shell_prefs"])
+
+
 # ── The write ──────────────────────────────────────────────────────────────
 
 
@@ -848,7 +899,8 @@ class TestTheWrite:
         assert res.status_code == 200
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
                               "skill_offer": False, "chat_pin": False,
-                              "chat_topics": False}
+                              "chat_topics": False,
+                              "agent_lenses": False}
         [(sql, params)] = _writes(fake)
         assert sql.startswith("UPDATE user_settings SET shell_prefs = NULL")
         assert params == {"uid": "ana@alpha.example"}
@@ -893,7 +945,8 @@ class TestTheRead:
         assert res.status_code == 200
         assert res.json() == {**me.EMPTY_SHELL, "guide": False, "module_runs": False,
                               "skill_offer": False, "chat_pin": False,
-                              "chat_topics": False}
+                              "chat_topics": False,
+                              "agent_lenses": False}
 
     def test_a_failed_read_is_503_never_the_empty_layout(self, fake: _FakeDB) -> None:
         fake.fail = True
@@ -909,7 +962,8 @@ class TestTheRead:
                         "chat_first_message_at": None, "tour_seen_at": None,
                         "buddy_hello_at": None, "guide": False, "module_runs": False,
                         "skill_offer": False, "chat_pin": False,
-                        "chat_topics": False}
+                        "chat_topics": False,
+                              "agent_lenses": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",

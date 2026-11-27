@@ -9,9 +9,21 @@
  * the gateway still checks the room under the session's own tenant.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { otherAccountOf, otherAccountRefusal, sendRespondInputResult } from "./respondInput";
+import {
+  ANSWERED_ONCE_TEXT,
+  answeredOnceOf,
+  otherAccountOf,
+  otherAccountRefusal,
+  resendsAnswer,
+  respondFailure,
+  sendRespondInputResult,
+} from "./respondInput";
 
 const BODY = { request_id: "a".repeat(32), answer: "APPROVE", was_freeform: false, thread_id: "t1" };
 
@@ -65,6 +77,59 @@ describe("the answer POST hears it", () => {
     expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
       outcome: "drop", resend: null, reason: "Nothing waits on this answer now. The run ended, or someone answered it.",
     });
+  });
+});
+
+// HRD-16, owner decision 2026-11-23: "Distinct 409 detail, client does not
+// resend". A run already took an answer for this card, so the second device
+// says "someone answered it" and sends nothing. Mutations caught: read every
+// 409 as a drop (the answer resends), or read a plain 409 as answered (a stale
+// card loses today's resend).
+describe("a repeat answer (HRD-16)", () => {
+  const answeredOnce = JSON.stringify({
+    detail: { error: "answered_once", message: "Someone already answered this card." },
+  });
+
+  it("a 409 answered_once is its own outcome, with no resend", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const fetchFn = vi.fn(async () => new Response(answeredOnce, { status: 409 }));
+    expect(await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch)).toEqual({
+      outcome: "answered", resend: null, reason: ANSWERED_ONCE_TEXT,
+    });
+    info.mockRestore();
+  });
+
+  it("only the 409 with that detail reads as answered", () => {
+    expect(respondFailure(409, answeredOnce)).toBe("answered");
+    expect(respondFailure(409, JSON.stringify({ detail: "No pending question" }))).toBe("drop");
+    expect(respondFailure(409)).toBe("drop");
+    expect(respondFailure(403, answeredOnce)).toBe("drop");
+    expect(answeredOnceOf("not json")).toBe(false);
+    expect(answeredOnceOf(JSON.stringify({ detail: { error: "run_restarted" } }))).toBe(false);
+  });
+
+  it("a run_restarted 409 still resends, as before", async () => {
+    const body = JSON.stringify({ detail: { error: "run_restarted", resumeMessage: "Q and A" } });
+    const fetchFn = vi.fn(async () => new Response(body, { status: 409 }));
+    const got = await sendRespondInputResult(BODY, fetchFn as unknown as typeof fetch);
+    expect(got.outcome).toBe("drop");
+    expect(got.resend).toBe("Q and A");
+  });
+
+  it("no card sends its answer again on answered, and a drop still does", () => {
+    expect(resendsAnswer("answered")).toBe(false);
+    expect(resendsAnswer("drop")).toBe(true);
+    for (const o of ["ok", "retry", "resent"] as const) expect(resendsAnswer(o)).toBe(false);
+  });
+
+  // Mutation caught: a card handler that tests `outcome === "drop"` or
+  // `!== "drop"` by itself again, past the one rule.
+  it("every card handler in the chat asks resendsAnswer before it sends", () => {
+    const here = fileURLToPath(new URL(".", import.meta.url));
+    const chat = readFileSync(join(here, "../components/AgentChat.tsx"), "utf8");
+    expect(chat).not.toMatch(/outcome\s*[!=]==\s*"drop"/);
+    expect(chat.match(/resendsAnswer\(outcome\)/g)?.length).toBe(4);
+    expect(chat).toContain('code: "answered_once"');
   });
 });
 

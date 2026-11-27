@@ -298,3 +298,21 @@ def match_skill_descriptions(
             best, top = [], hits
         best.append(str(skill_id))
     return (best[0], top) if len(best) == 1 else None
+
+
+# ── The shared stems of a need and a text (SBX-1a) ───────────────────────────
+# ``specs/agent_sandbox.md`` §6.1. The no-match path of ``find_tools`` ranks the
+# Studio library, the live tools of the run and the catalog rows with it. It
+# reads the same stems as :func:`match_skill_descriptions`, and it never
+# touches :func:`build_index` or :func:`rank`.
+
+
+def shared_stems(words: str, text: str) -> int:
+    """The number of distinct whole-word content stems that *words* and *text*
+    share. *words* gives its first :data:`TURN_STEMS_MAX` content stems, and
+    *text* the stems of its first :data:`DESC_MAX` characters. A prefix gives
+    no credit, and a stop word or "use" never counts.
+
+    Pure: no I/O, no clock and no random source. Only a count leaves the
+    function, never a word of either text."""
+    return len(_turn_stems(words) & _desc_stems(text))

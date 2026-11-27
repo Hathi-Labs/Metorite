@@ -19,6 +19,11 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
+an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
+Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
+(2026-11-26).
+
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
@@ -81,6 +86,34 @@ memory ceiling from 5 to 4. §6.4 holds the P-5b slices. Fences:
 **P-5b-6 (task 3947), built 2026-11-25.** The client code that created a person
 had no caller, so the slice deleted it. `POST /api/tasks/people` left the UI,
 and the people ceiling went from 13 to 12. The gateway route stays.
+
+**P-5b-2 (task 3943) is BUILT, 2026-11-25, and it ships dark.** The pack
+`people` holds five writes of the member's own record:
+`update_my_profile`, `set_my_skills`, `set_my_credentials`, `add_my_absence`
+and `remove_my_absence`. Each write sends a self route of `selfservice.py`
+(`/people/me`), so the server finds the row of the caller and no write takes
+a person id. Each write shows one card with the exact change: the old and new
+value, the row to add, or the row to remove. It saves only on Approve.
+
+Two limits of the card are known. A long old value shows cut, and the new
+value always shows whole. A credential that came from a CV loses that mark
+when `set_my_credentials` saves it, because the route takes no `source`.
+
+The object fields `working_hours`, `links` and `emergency_contact` merge. The
+tool lays the keys that the member gives over the stored object, and it keeps
+each other stored key. A key given as null leaves. The card shows the stored
+object and the merged object, and the PATCH sends the merged object. A list
+or an object shows as the exact JSON that the write sends, with each non-ASCII
+character escaped.
+
+The profile write and the two list writes read the row again after Approve.
+They save nothing when the row changed while the card waited. A shift name
+that matches no shift of the organization saves but changes nothing, so the
+answer says so after the save.
+
+No write sends `email` (OD1 B). P-5b-2 paid five people rows, so the people
+ceiling went from 12 to 7. Fences: `tests/unit/test_people_tools.py` and
+`tests/unit/test_people_tools_r8.py` (R8).
 
 **P-5b-1, a fact for the owner.** The owner may turn the pack on, and
 `packs_batch_on` may name an org. Then `reach_preview` can bring the subject of
@@ -476,6 +509,10 @@ chat, settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
+P-6 (Workflows) paid its first parity rows through `ai_studio.md` rows E13a
+(ceiling 24 to 22) and E13b (22 to 18). PAR-8a (§6.4) paid the other 18. E13c
+owns the arm of one trigger, and its chat tool is open (STB-6, task 2134).
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
 
@@ -524,7 +561,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | apps | 29 | 28 | P-6 | 3115, 3950 (PAR-9 built) |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
+| shell | 15 | 9 | P-7 | 3115, 3903 (PAR-8b built). WS-AP AP-2a added two reads, and slice AP-10 pays them |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
@@ -539,18 +576,46 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
 debt.
 
+**P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
+the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
+`notes_meetings`, `notes_meeting`, `notes_settings`, `notes_templates`,
+`notes_glossary` and `notes_copilot_instructions`. They are the new pack
+`notes`, owned by `org-admin` as the pack `people` is (OD4 A). Each tool sends
+GET routes only, as the member. None writes, joins a meeting, starts a bot or
+reaches a person.
+
+The meeting text is the member's own words. A result shows it as written, inside
+the untrusted frame. A provider error of a failed run is not shown. A
+library over the route cap says "at least" and never says "last page". The
+pack is not in `FOLLOWS`. A run loads it where the owner lists `notes` in
+`TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
+
+The 32 Notes write rows stay debt. Thirteen read rows wait for task 3966. Twelve
+gateway routes read a meeting by its id with no owner check, or they refresh a
+bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
+`/context`, `/bot`, `/bot/diagnostics`, `/live/session`, `/live/roster`,
+`/bots/active`, `/bots/status` and `/live/sessions`.
+
+The thirteenth route is `/bot/identity`. Its status check starts a browser on
+the profile of the bot, and a bot join at the same time can fail.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 
-Eleven ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
+Thirteen ceilings changed after 2026-11-22. PAR-2a, PAR-4a, PAR-4c and PAR-4d
 took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
-PAR-3 took knowledge to 15, and PAR-3b took it to 4. P-5b-1 took people to 13
-and memory to 4, and P-5b-6 took people to 12. Tasks 3951 and 3954 took crm to
-60, task 3960 took whatsapp to 13, P-1b took tasks to 1, and P-1c took
-calendar to 2. PAR-9 took apps to 2.
+PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
-The total of `DEBT_CEILING` is 263. The "Today" column above does not show
+P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
+took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3960 took whatsapp
+to 13. P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2.
+Task 3963 took notes to 45.
+
+The total of `DEBT_CEILING` is 252. The "Today" column above does not show
 all of these changes.
+
+ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
+waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -721,7 +786,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 17 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -916,8 +981,8 @@ data. The gate column names what the owner does before the slice is live.
 | Slice | Rows | Gate | State |
 |---|---|---|---|
 | P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
-| P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | `PATCH /api/people/{}` for my own row, and the self rows of skills, credentials, absences, avatar and resume | The owner approves the preview of the card | To do |
-| P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin side of the P-5b-2 rows | Waits for the owner (OD1 C, a later decision) | Waits |
+| P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | 5 people rows: `PATCH /api/people/{}`, `PUT /api/people/{}/skills`, `PUT /api/people/{}/credentials`, `POST /api/people/{}/absences`, `DELETE /api/people/{}/absences/{}`. The avatar and resume rows are file uploads, and they stay debt | Dark. The owner approves the preview of the card, then adds `people` to `TOOL_PACKS` | BUILT dark (task 3943), 2026-11-25 |
+| P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin half of the five P-5b-2 rows. `ADMIN_HALF_OPEN` in `chat_parity.py` names those five rows for task 3944 | Waits for the owner (OD1 C, a later decision) | Waits |
 | P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
 | P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | Built, 2026-11-25. `createPerson` and the create branch of `savePerson` are gone, so the people ceiling is 12. The gateway route stays. |
@@ -1033,6 +1098,112 @@ instruction.
    `.claude/commands/delivery-review.md` then adds the step.
 3. Whether a run prints examples at all, or the counts only.
 
+### 6.6 The documents rung (task 3979, spec only, 2026-11-26)
+
+**The report.** On 2026-11-26 a customer asked the production chat to edit an
+Excel file and to make a PDF of it. The chat could not do it.
+
+**The rung.** A member uploads a `.xlsx` or a `.docx` file in the chat. The
+member asks for a change and for a PDF. The chat edits a copy, converts it, and
+attaches the result to an email draft. No button of the UI does it, so it adds
+no row to the `DEBT` table (§1). The rung changes no ceiling.
+
+**Where it sits.** It is rung 9 of this ladder. That number is a name. The
+owner and the board set its order (D118), and a customer waits for it.
+
+#### What exists today (read from the code, 2026-11-26)
+
+| Step | Today |
+|---|---|
+| Read the file | Built. The shared reader reads the text of `.docx` and `.xlsx` (`email_app_master_plan.md` EM-T11 and EM-T11b) |
+| Make a new PDF | Built, from a spec only. `make_document` (`acb_skills/documents.py`) lays out a deck or a report. It converts no file |
+| Edit the file | Only `run_command` can do it, and it needs a healthy sandbox broker. The repo shows that production has none. The gateway unit hides the Docker socket (`box_hardening.md` BH-D5), and BH-3 and the image are open gates (WS43-G1 and WS43-G2) |
+| Convert the file to PDF | Not built. No image holds an office converter. `ai_studio.md` §19.4 leaves LibreOffice out for size |
+| Attach a file to a draft | Built. `draft_email` takes an `artifact:<agent>:<path>` ref of a chat file, and the server checks that the member can see it |
+
+#### The rules of the rung
+
+1. **No office file is opened for write or conversion in the gateway.** The file
+   is untrusted data. An isolated worker opens it.
+2. **The worker has no network and no secret** (`agent_sandbox.md` §5.4, and
+   the `--network none` of SBX-18). The gateway side of the broker sends the
+   bytes in, and it takes the result out. The code in the worker calls nothing.
+3. **The tools run fixed code.** The model sends a list of edits as data. It
+   sends no script. So the rung does not wait for the user tools of rung 6 of
+   D224 (`agent_sandbox.md` §0b).
+4. **The source file never changes.** Each result is a new file in the chat
+   folder, with its own card.
+5. **The answer names each loss.** A library can drop a part of a workbook, for
+   example a chart, a picture or a macro. The tool checks for these parts
+   before the edit. The answer names them. It never says "kept" for a part that
+   the result does not hold.
+6. **The answer claims only a file that exists.** It says that it made a PDF
+   only when the PDF is in the chat folder.
+7. **An attach sends nothing.** The draft keeps the card and the rules that it
+   has today.
+
+#### The slices
+
+**Flags and gates.** The scope seam of `agent_sandbox.md` §0c binds this rung.
+
+- DOC-1 adds the target `convert` to `MAF_CODING_TARGETS`. The proposed name is
+  `convert`. An entry for a target that the parser does not know turns every
+  target off, so no entry goes on a box before the code does.
+- The flip that runs code is `convert:<org>` in `MAF_CODING_SCOPE`. It is an
+  owner gate. The `enforcement-flip` grant does not open it.
+- `CHAT_DOCUMENT_ORGS` (proposed, default empty, off) is the hot kill switch
+  only. It opens nothing alone.
+- The image on the box is gate WS43-G2, and the broker unit is WS43-G1
+  (`maf_coding_engine.md` §12). The scope flip is gate WS43-G3. The gates of
+  the remote box are in `agent_sandbox.md` §13.
+
+| Order | Slice | Task | Tier | Needs | State |
+|---|---|---|---|---|---|
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | 4027 | HIGH | SBX-15a | Not built |
+| 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | 4028 | HIGH | DOC-1 | Not built |
+| 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | 4029 | HIGH | DOC-1 | Not built |
+| 4 | DOC-4: the result goes on an email draft in the same turn | 4030 | STANDARD | DOC-2 | Not built |
+| 5 | The demo of the rung, on production | 4031 | none | DOC-2 to DOC-4 | Not built |
+
+#### Acceptance
+
+- **DOC-1.** A `.docx` and a `.xlsx` fixture each give a PDF on a local stack.
+  A socket probe in the container fails. The container environment holds no
+  secret. A file past the size cap, a run past the time limit and an output of
+  another type are each refused, with plain words. A macro does not run. A
+  workbook with an external link fetches nothing.
+- **DOC-1, limits.** The slice sets a size cap, a page cap and a time limit, and
+  it records the size of the image. It uses the org lock of the remote box
+  (SBX-15a), so one org at a time runs there. Orgs still share the box in turn.
+  The open risk of an escape that stays on the box (§0c of that spec) applies,
+  and a worker that opens hostile files raises its weight.
+- **DOC-2.** The tool takes a file of the current chat only. A file of another
+  chat, member or organization answers "not found". A busy or absent worker
+  gives plain words, and no claim of a file.
+- **DOC-3.** The tool takes a list of edits, and refuses an unknown edit kind.
+  It writes a new file. A real workbook with a formula keeps the formula, and
+  the PDF of DOC-2 shows its new value. A part that the edit cannot keep is
+  named in the answer (rule 5).
+- **DOC-4.** "Change the total, make a PDF and put it on a draft to X" gives one
+  draft with the PDF attached. Nothing is sent. The member sees the file name on
+  the draft card.
+- **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
+  container tests with the marker `sandbox_docker`.
+
+#### Where the converter runs (DECIDED 2026-11-26, §7 item 14)
+
+**The owner chose option (a)** on task 3979: the sandbox worker
+`aroh-sandbox-1`, through the broker.
+
+| Option | What it means | Cost |
+|---|---|---|
+| **(a) Chosen.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
+| (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
+| (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
+
+The owner did not choose (b) or (c). This answer opens no gate. The gates of
+the rules above still bind each slice.
+
 ## 7. Decisions
 
 These decisions are local to this spec. They take no D-number of
@@ -1114,3 +1285,6 @@ he approves the merge.
     `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
     to the Metorite calendar when calendar write-out is on. It promises no
     delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
+14. **The documents rung (§6.6). ANSWERED 2026-11-26 (task 3979).** The
+    converter runs on the sandbox worker `aroh-sandbox-1`, through the broker,
+    which is option (a).

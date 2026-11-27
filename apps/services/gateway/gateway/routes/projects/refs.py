@@ -44,7 +44,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from acb_auth import UserContext, get_current_user
@@ -100,6 +100,10 @@ class RefIn(BaseModel):
 
     url: str = Field(min_length=1, max_length=4096)
     title: str | None = Field(default=None, max_length=MAX_TITLE)
+    #: LBB-2 (``engineering_practice.md`` §7b.2): the landing mark of a pull
+    #: request. ``queued``: a merger has it. ``parked``: it waits on purpose.
+    #: ``gone``: it is merged or closed. Absent: the add changes no mark.
+    landing: Literal["queued", "parked", "gone"] | None = None
 
 
 def _via() -> str:
@@ -586,8 +590,27 @@ async def _refresh_checks(rows: list[dict[str, Any]], *, now: datetime | None = 
     return started
 
 
+#: LBB-2: an add that sends ``landing``. A new row takes the mark at once. A
+#: row that already holds the reference takes the three columns, and no
+#: other column changes. ``landing_at`` moves at each send, so a lane that
+#: queues again renews the 24 hours of a ``queued`` mark.
+_INSERT_LANDING_SQL = (
+    "INSERT INTO pm_task_refs "
+    "(task_id, kind, provider, ref, url, title, via, created_by,"
+    " landing_state, landing_at, landing_by) "
+    "VALUES (CAST(:tid AS uuid), :kind, :provider, :ref, :url, :title, "
+    "        :via, :who, :landing, now(), :who) "
+    "ON CONFLICT (organization_id, task_id, kind, provider, ref) DO UPDATE"
+    " SET landing_state = EXCLUDED.landing_state,"
+    "     landing_at = EXCLUDED.landing_at,"
+    "     landing_by = EXCLUDED.landing_by "
+    f"RETURNING {_COLUMNS}, (xmax = 0) AS made"
+)
+
+
 async def insert_ref(
     db: Any, task_id: str, found: Classified, *, title: str | None, via: str, by: str,
+    landing: str | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     """Write one reference inside the caller's transaction: ``(row, made)``.
 
@@ -599,7 +622,16 @@ async def insert_ref(
 
     The caller has checked that the task is visible. This calls no network:
     a new row has no ``fetched_at``, so the next list reads GitHub.
+
+    LBB-2: with *landing*, a row that already holds the reference takes the
+    mark (:data:`_INSERT_LANDING_SQL`), and the change writes one ``link``
+    activity with ``ref_action`` ``landing``. A new row writes the ``added``
+    activity, with the mark in its meta. Without *landing* nothing changes:
+    a repeat of the same URL writes nothing, as before.
     """
+    if landing is not None:
+        return await _insert_landing(db, task_id, found, title=title, via=via, by=by,
+                                     landing=landing)
     made = (await db.execute(
         text(
             "INSERT INTO pm_task_refs "
@@ -638,6 +670,35 @@ async def insert_ref(
     return row, True
 
 
+async def _insert_landing(
+    db: Any, task_id: str, found: Classified, *, title: str | None, via: str, by: str,
+    landing: str,
+) -> tuple[dict[str, Any] | None, bool]:
+    """The add of :func:`insert_ref` that sends a landing mark (LBB-2)."""
+    got = (await db.execute(text(_INSERT_LANDING_SQL), {
+        "tid": task_id, "kind": found.kind, "provider": found.provider,
+        "ref": found.ref, "url": found.url, "title": title,
+        "via": via, "who": by, "landing": landing,
+    })).fetchone()
+    if got is None:  # cannot happen: DO UPDATE always returns the row
+        return None, False
+    row = _row(got)
+    made = bool(got.made)
+    meta = {"kind": found.kind, "provider": found.provider, "ref": found.ref,
+            "url": found.url, "ref_id": row["id"], "landing": landing}
+    if made:
+        await record_activity(
+            db, activity_type="link", created_by=by, task_id=task_id,
+            body=f"Added a reference: {found.label}",
+            meta={"ref_action": "added", **meta})
+    else:
+        await record_activity(
+            db, activity_type="link", created_by=by, task_id=task_id,
+            body=f"Marked a reference {landing}: {found.label}",
+            meta={"ref_action": "landing", **meta})
+    return row, made
+
+
 @router.post("/tasks/{task_id}/refs", status_code=201)
 async def add_ref(
     task_id: str, payload: RefIn, response: Response, refresh: bool = True,
@@ -662,6 +723,7 @@ async def add_ref(
         await assert_task_id_project_open(db, task_id)
         row, made = await insert_ref(
             db, task_id, found, title=title, via=_via(), by=actor(user),
+            landing=payload.landing,
         )
         if row is None:  # deleted between the two statements
             raise HTTPException(status_code=409, detail="Add the link again.")
