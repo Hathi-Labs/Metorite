@@ -19,24 +19,31 @@ same set of checked steps.
    not apply it.
 2. A flag in ``OWNER_ONLY_FLAGS`` (money, identity, a third party, a real
    person) needs ``--owner-approved <answer id>``, the id of the owner's
-   answer on the task.
+   answer on the task. The tool records the id and cannot check it. ``--off``
+   and ``--remove`` need no id, because closing a flag is the safe way.
 3. The new value must be empty, ``*``, or org ids. A ``*_MODES`` value is
    ``<org id or *>=<mode>`` pairs.
 4. The value must be the same in each env file that holds the key, so
    ``--add`` and ``--remove`` start from one known value.
-5. The gateway must report ``flag_reload: true`` on ``/version``. A gateway
+5. A key in an env file of a unit that the tool does not restart (the
+   consoles) is refused.
+6. The gateway must report ``flag_reload: true`` on ``/version``. A gateway
    with no reload handler ends on SIGHUP.
 
-**The flip.** It takes a lock, backs up each env file that it changes, and
-rewrites each one atomically, with the same mode. The root ``.env`` always
-holds the key. Another env file changes only when it already holds the key.
-It sends SIGHUP to the gateway main process only, and it waits for the
-``flags.reloaded`` line that names the key. It restarts acb-agent-edge only
-when the edge env file changed, and then checks the new process env.
+**The flip.** It takes the DEPLOY lock (``/opt/acb/acb-deploy.lock``), because a
+release writes ``.env`` too. It backs up each env file that it changes, and it
+writes each one IN PLACE, so the file keeps its inode: the gateway unit binds
+the inode of the root ``.env`` (``50-hardening.conf``). The root ``.env``
+always holds the key. A flag in :data:`EDGE_FLAGS` also goes into the edge env
+file, because the edge reads only that file. It sends SIGHUP to the gateway
+main process only, and it waits for the ``flags.reloaded`` line that names the
+key. It restarts acb-agent-edge when the edge env file changed, and then checks
+the new process env.
 
-**The record.** It appends one line to ``<app>/.flag_flips.log``, and it
-prints the evidence and the rollback commands. When the chat-turn smoke is on
-(``SMOKE_CHAT_TURN=1``, task 4061), it runs that smoke after the flip.
+**The record.** It appends one line to ``/opt/acb/acb-flag-flips.log``, outside
+the checkout, and it prints the evidence and the rollback commands. When the
+chat-turn smoke is on (``SMOKE_CHAT_TURN=1``, task 4061), it runs that smoke
+after the flip.
 
 Exit codes: 0 flipped (or no change), 2 refused before any write, 3 the flip
 is written but not proved, 4 the smoke failed after a proved flip.
@@ -62,14 +69,23 @@ from pathlib import Path
 
 APP_DIR = Path(os.environ.get("FLAG_FLIP_APP_DIR", "/opt/acb/app"))
 ROOT_ENV = ".env"
-#: The other env files of the box, each with the unit that reads it. A file
-#: changes only when it already holds the key.
-OTHER_ENVS = {
-    "apps/services/agent_edge/.env": "acb-agent-edge",
+EDGE_ENV = "apps/services/agent_edge/.env"
+#: The per-org flags that acb-agent-edge reads. The edge reads only its own
+#: env file, so a flip of one of these writes that file too and restarts the
+#: edge. Fence: test_flag_flip.py scans the edge source for registry names.
+EDGE_FLAGS = frozenset({
+    "AGENT_ACCESS_ORGS", "AGENT_PROTOCOL_ORGS", "AGENT_RESOURCES_ORGS",
+    "MCP_IMAGE_UPLOAD_ORGS", "PLAYBOOK_ORGS", "SEQUENCE_MARKS_ORGS",
+})
+#: The env files whose units this tool does not restart. A key in one of them
+#: is refused, so the tool never reports a flip that a unit does not apply.
+UNMANAGED_ENVS = {
     "apps/services/customer_console/.env": "acb-customer-console",
     "workbench/control_plane/.env.local": "acb-workbench",
     "workbench/operator_console/.env.local": "acb-operator-console",
 }
+#: How long a flip waits for a deploy that holds the deploy lock.
+LOCK_WAIT_S = float(os.environ.get("FLAG_FLIP_LOCK_WAIT_S", "120"))
 #: The units that read the root .env at start, besides the gateway. A flip
 #: reaches them at their next restart.
 ROOT_ENV_OTHERS = ("acb-whatsapp-bridge",)
@@ -82,7 +98,7 @@ SMOKE_TIMEOUT_S = 600
 ORG_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MODE_RE = re.compile(r"[a-z][a-z0-9_]{0,30}")
 KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
-ANSWER_RE = re.compile(r"[0-9a-fA-F-]{8,64}")
+ANSWER_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 class Refused(Exception):
@@ -190,22 +206,29 @@ def rewrite(path: Path, key: str, value: str) -> bytes:
     return "".join(out).encode("utf-8")
 
 
-def atomic_write(path: Path, data: bytes) -> None:
-    """Write *data* over *path* with one rename. The mode and owner stay."""
-    st = path.stat()
+def write_in_place(path: Path, data: bytes) -> None:
+    """Write *data* INTO *path*, so the file keeps its inode.
+
+    The gateway unit binds the inode that the root ``.env`` has at start
+    (``50-hardening.conf``). A rename leaves the gateway on a dead copy, so
+    this writes into the same file, as ``env_edit_in_place`` in
+    ``vps_apply.sh`` does. A full copy goes first to a temp file beside it. When
+    the read-back differs, the copy stays and the write fails.
+    """
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.flagflip.", dir=str(path.parent))
-    try:
-        os.fchmod(fd, st.st_mode & 0o7777)
-        with contextlib.suppress(PermissionError):  # the same user owns both
-            os.fchown(fd, st.st_uid, st.st_gid)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    with open(path, "r+b") as fh:
+        fh.seek(0)
+        fh.write(data)
+        fh.truncate()
+        fh.flush()
+        os.fsync(fh.fileno())
+    if path.read_bytes() != data:
+        raise RuntimeError(f"the write of {path} failed. The full copy is at {tmp}")
+    os.unlink(tmp)
 
 
 def backup(path: Path, stamp: str, task: str) -> Path:
@@ -316,26 +339,47 @@ def flip(a: argparse.Namespace) -> int:
     names, owner_only = registry()
     if key not in names:
         raise Refused(f"{key} is not in acb_common/flag_registry.py. This tool flips per-org flags only")
-    if key in owner_only and not (a.owner_approved and ANSWER_RE.fullmatch(a.owner_approved)):
+    # --off and --remove only close a flag, the fail-safe way, so they need no
+    # answer. The answer id is recorded, not checked: the box has no Metorite
+    # token.
+    closing = a.off or a.remove is not None
+    if key in owner_only and not closing and not (a.owner_approved and ANSWER_RE.fullmatch(a.owner_approved)):
         raise Refused(f"{key} is owner-only (money, identity or a third party). Pass --owner-approved <answer id>")
 
     app = APP_DIR
     root = app / ROOT_ENV
-    lock_fd = os.open(app / ".flag_flip.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    # The deploy lock: a release (vps_pull, vps_apply) also writes .env. While
+    # a flip holds it, the deploy timer finds it busy and retries.
+    lock = Path(os.environ.get("FLAG_FLIP_DEPLOY_LOCK", str(app.parent / "acb-deploy.lock")))
+    if not lock.exists():
+        lock.touch(mode=0o644)
+    lock_fd = os.open(lock, os.O_RDONLY)
     try:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise Refused("another flag flip holds the lock") from None
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Refused(f"a deploy or another flip holds {lock} after {LOCK_WAIT_S:.0f} s") from None
+                time.sleep(2)
         return _flip_locked(a, key, app, root)
     finally:
         os.close(lock_fd)
 
 
 def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
-    files = [root] + [app / rel for rel in OTHER_ENVS if (app / rel).is_file() and read_key(app / rel, key) is not None]
+    for rel, unit in UNMANAGED_ENVS.items():
+        if (app / rel).is_file() and read_key(app / rel, key) is not None:
+            raise Refused(f"{rel} holds {key}, and this tool does not restart {unit}")
+    edge = app / EDGE_ENV
+    edge_held = edge.is_file() and read_key(edge, key) is not None
+    if key in EDGE_FLAGS and not edge.is_file():
+        raise Refused(f"{key} is read by the edge, and {EDGE_ENV} is missing")
+    files = [root] + ([edge] if key in EDGE_FLAGS or edge_held else [])
     values = {str(f.relative_to(app)): read_key(f, key) for f in files}
-    seen = {v or "" for v in values.values()}
+    seen = {v or "" for f, v in zip(files, values.values(), strict=True) if v is not None or f == root}
     if len(seen) > 1:
         raise Refused(f"{key} differs between env files {values}. Fix it with --set")
     old_raw = seen.pop() if seen else ""
@@ -343,7 +387,7 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     operation = "off" if a.off else "set" if a.set is not None else "add" if a.add is not None else "remove"
     new = new_items(key, cur, operation, a.set if a.set is not None else a.add if a.add is not None else a.remove)
     new_raw = ",".join(new)
-    if new == cur and read_key(root, key) is not None:
+    if new == cur and all(read_key(f, key) is not None for f in files):
         print(f"flag_flip: {key} is already {old_raw!r}. No change.")
         return 0
     if not gateway_reloads():
@@ -358,9 +402,15 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
     t0 = time.time()
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(t0))
     baks = {f: backup(f, stamp, a.task) for f in files}
-    for f in files:
-        atomic_write(f, rewrite(f, key, new_raw))
-    edge_changed = any(str(f.relative_to(app)) == "apps/services/agent_edge/.env" for f in files)
+    edge_changed = edge in files
+    try:
+        for f in files:
+            write_in_place(f, rewrite(f, key, new_raw))
+    except (OSError, RuntimeError) as exc:
+        print(f"flag_flip: WRITE FAILED: {exc}", file=sys.stderr)
+        for f, bak in baks.items():
+            print(f"  restore: cat {bak} > {f}", file=sys.stderr)
+        return 3
 
     evidence: list[str] = []
     result = "proved"
@@ -377,7 +427,8 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         new_raw or "-", ",".join(str(f.relative_to(app)) for f in files), result.split(":")[0],
         a.owner_approved or "-",
     ])
-    with open(app / ".flag_flips.log", "a", encoding="utf-8") as fh:
+    audit_log = Path(os.environ.get("FLAG_FLIP_AUDIT_LOG", str(app.parent / "acb-flag-flips.log")))
+    with open(audit_log, "a", encoding="utf-8") as fh:
         fh.write(audit + "\n")
 
     for line in evidence:
@@ -386,7 +437,7 @@ def _flip_locked(a: argparse.Namespace, key: str, app: Path, root: Path) -> int:
         print(f"flag_flip: {', '.join(ROOT_ENV_OTHERS)} read the root .env at start. They apply it at their next restart.")
     print("flag_flip: rollback:")
     for f, bak in baks.items():
-        print(f"  cp -p {bak} {f}")
+        print(f"  cat {bak} > {f}")
     print(f"  sudo systemctl kill -s HUP --kill-whom=main {GATEWAY}" + (f" && sudo systemctl restart {EDGE}" if edge_changed else ""))
     if code:
         print(f"flag_flip: FLIP NOT PROVED: {result[len('not proved: '):]}", file=sys.stderr)

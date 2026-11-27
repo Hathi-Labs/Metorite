@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -78,6 +79,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setenv("FLAG_FLIP_RELOAD_WAIT_S", "2")
     monkeypatch.setattr(ff, "APP_DIR", app)
     monkeypatch.setattr(ff, "RELOAD_WAIT_S", 2.0)
+    monkeypatch.setattr(ff, "LOCK_WAIT_S", 2.0)
     monkeypatch.setattr(ff.time, "sleep", lambda _s: None)
 
     class Box:
@@ -108,10 +110,10 @@ def test_add_an_org_rewrites_one_line_and_keeps_every_other_byte(box, capsys):
     assert "restart acb-agent-edge" not in box.calls()  # the edge file does not hold the key
     baks = list(box.app.glob(".env.bak.*.flagflip-4086"))
     assert len(baks) == 1 and f"TOOL_PACKS_ORGS={ORG1}\n" in baks[0].read_text()
-    audit = (box.app / ".flag_flips.log").read_text().split("\t")
+    audit = (box.app.parent / "acb-flag-flips.log").read_text().split("\t")
     assert audit[1:5] == ["4086", "TOOL_PACKS_ORGS", ORG1, f"{ORG1},{ORG2}"]
     out = capsys.readouterr().out
-    assert "OK TOOL_PACKS_ORGS flipped and proved" in out and "cp -p" in out
+    assert "OK TOOL_PACKS_ORGS flipped and proved" in out and "cat " in out
 
 
 def test_a_name_outside_the_registry_is_refused_before_any_write(box):
@@ -129,8 +131,13 @@ def test_an_owner_only_flag_needs_the_owner_answer(box):
     assert box.root.read_bytes() == before
     box.reload_line("flags.reloaded applied=['AGENT_ACCESS_ORGS']")
     (box.fake / "environ").write_text(f"A=1\0AGENT_ACCESS_ORGS={ORG1}\0")
+    assert flip("AGENT_ACCESS_ORGS", "--set", ORG1, "--task", "1", "--owner-approved", "not-a-uuid") == 2
     assert flip("AGENT_ACCESS_ORGS", "--set", ORG1, "--task", "1", "--owner-approved",
                 "64887a7a-c190-44d1-a360-61e813b8f118", "--no-smoke") == 0
+    # Closing an owner-only flag is the safe way, and needs no answer.
+    box.reload_line("flags.reloaded applied=['AGENT_ACCESS_ORGS']")
+    (box.fake / "environ").write_text("A=1\0AGENT_ACCESS_ORGS=\0")
+    assert flip("AGENT_ACCESS_ORGS", "--off", "--task", "1", "--no-smoke") == 0
 
 
 @pytest.mark.parametrize("value", ["not-an-org", f"{ORG1},*", f"{ORG1},{ORG1}", f"{ORG1};rm -rf /", f"{ORG1}\nX=1"])
@@ -159,8 +166,8 @@ def test_no_reload_line_is_exit_3_with_the_rollback(box, capsys):
     box.reload_line("flags.reloaded applied=['CRM_ORGS']")  # names another key
     assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1", "--no-smoke") == 3
     err = capsys.readouterr()
-    assert "FLIP NOT PROVED" in err.err and "cp -p" in err.out
-    assert "\tnot proved\t" in (box.app / ".flag_flips.log").read_text()
+    assert "FLIP NOT PROVED" in err.err and "cat " in err.out
+    assert "\tnot proved\t" in (box.app.parent / "acb-flag-flips.log").read_text()
 
 
 def test_a_refused_reload_is_exit_3(box):
@@ -209,10 +216,16 @@ def test_star_rules(box):
 def test_a_second_flip_waits_for_the_lock(box):
     import fcntl
 
-    fd = os.open(box.app / ".flag_flip.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    lock = box.app.parent / "acb-deploy.lock"
+    lock.touch()
+    fd = os.open(lock, os.O_RDONLY)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    ff.LOCK_WAIT_S = 0.0
     try:
+        # The deploy lock: a release that holds it stops the flip.
+        before = box.root.read_bytes()
         assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 2
+        assert box.root.read_bytes() == before
     finally:
         os.close(fd)
 
@@ -260,3 +273,70 @@ def test_the_wrapper_runs_the_tool(tmp_path):
     res = subprocess.run(["bash", str(REPO / "scripts/flag_flip.sh"), "--help"],
                          env=env, capture_output=True, text=True, timeout=30, check=False)
     assert res.returncode == 0 and "--owner-approved" in res.stdout
+
+
+def test_the_flip_keeps_the_inode_of_each_env_file(box):
+    """The gateway binds the inode of the root .env (50-hardening.conf)."""
+    box.reload_line("flags.reloaded applied=['MCP_IMAGE_UPLOAD_ORGS']")
+    edge = box.app / EDGE
+    inodes = (box.root.stat().st_ino, edge.stat().st_ino)
+    (box.fake / "environ").write_text(f"X=1\0MCP_IMAGE_UPLOAD_ORGS={ORG1}\0")
+    assert flip("MCP_IMAGE_UPLOAD_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert (box.root.stat().st_ino, edge.stat().st_ino) == inodes
+    assert not list(box.app.rglob(".*.flagflip.*"))  # no temp copy is left
+
+
+def test_an_edge_flag_goes_into_the_edge_file_even_when_it_is_absent(box):
+    box.reload_line("flags.reloaded applied=['PLAYBOOK_ORGS']")
+    (box.fake / "environ").write_text(f"X=1\0PLAYBOOK_ORGS={ORG1}\0")
+    assert flip("PLAYBOOK_ORGS", "--add", ORG1, "--task", "1", "--no-smoke") == 0
+    assert f"PLAYBOOK_ORGS={ORG1}\n" in (box.app / EDGE).read_text()
+    assert f"PLAYBOOK_ORGS={ORG1}\n" in box.root.read_text()
+    assert "restart acb-agent-edge" in box.calls()
+
+
+def test_a_key_in_a_console_env_file_is_refused(box):
+    cc = box.app / "apps/services/customer_console"
+    cc.mkdir(parents=True)
+    (cc / ".env").write_text(f"TOOL_PACKS_ORGS={ORG1}\n")
+    before = box.root.read_bytes()
+    assert flip("TOOL_PACKS_ORGS", "--add", ORG2, "--task", "1") == 2
+    assert box.root.read_bytes() == before
+
+
+def test_edge_flags_holds_each_registry_flag_that_the_edge_reads():
+    from acb_common import flag_registry as fr
+
+    src = "\n".join(p.read_text(encoding="utf-8") for p in (REPO / "apps/services/agent_edge/agent_edge").rglob("*.py"))
+    read = {n.upper() for n in fr.FlagRegistry.model_fields if re.search(rf"\b{n}\b", src)}
+    assert read, "the scan found no flag: the edge path moved"
+    assert read <= ff.EDGE_FLAGS, f"the edge reads {sorted(read - ff.EDGE_FLAGS)}: add them to EDGE_FLAGS"
+    assert {n.lower() for n in ff.EDGE_FLAGS} <= set(fr.FlagRegistry.model_fields)
+
+
+OWNER_MARK = re.compile(
+    r"owner-only|owner only|only the owner|billed|credit|is the owner's|flip is the owner|does not cover"
+    r"|real person|vendor money|spends? model",
+    re.IGNORECASE,
+)
+
+
+def test_each_flag_whose_comment_marks_it_owner_only_is_listed():
+    """A comment that says the flip is the owner's puts its flag in OWNER_ONLY_FLAGS."""
+    from acb_common import flag_registry as fr
+
+    text = (REPO / "packages/acb_common/acb_common/flag_registry.py").read_text(encoding="utf-8")
+    block: list[str] = []
+    marked = set()
+    for line in text.splitlines():
+        if line.startswith("    #"):
+            block.append(line)
+            continue
+        m = re.match(r"    ([a-z0-9_]+_(?:orgs|modes)): ", line)
+        if m:
+            if OWNER_MARK.search(" ".join(block)):
+                marked.add(m.group(1))
+            block = []
+    assert len(marked) > 20, "the scan found too few: the comment form changed"
+    missing = marked - fr.OWNER_ONLY_FLAGS
+    assert not missing, f"add these to OWNER_ONLY_FLAGS: {sorted(missing)}"

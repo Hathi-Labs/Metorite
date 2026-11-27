@@ -1506,19 +1506,50 @@ class FlagRegistry(BaseSettings):
 #: Task 4086. The flags whose flip stays the owner's in every window
 #: (CLAUDE.md §3a rule 3): a flip moves money or credits, reaches a real person
 #: or a third party, or changes who may act as whom. `scripts/flag_flip.py`
-#: refuses each one without `--owner-approved <answer id>`. A new flag of that
-#: kind goes here, in its sorted place. Fence: tests/unit/test_flag_flip.py
-#: checks that each name is a field above.
+#: refuses each one without `--owner-approved <answer id>`. A comment above
+#: that says owner-only, "only the owner", billed, credits, "real person",
+#: "vendor money" or "does not cover" puts its flag here. Fence:
+#: tests/unit/test_flag_flip.py scans those comments and fails on a flag that
+#: is missing here.
 OWNER_ONLY_FLAGS: frozenset[str] = frozenset({
     "agent_access_orgs",
     "agent_change_access_orgs",
+    "app_owner_root_orgs",
+    "app_requests_orgs",
+    "assistant_chat_summary_orgs",
+    "chat_continue_orgs",
+    "chat_packs_batch_orgs",
+    "chat_paste_frame_orgs",
+    "chat_pin_tool_orgs",
+    "chat_voice_orgs",
     "crm_cutover_orgs",
+    "crm_decide_orgs",
+    "crm_digest_orgs",
+    "crm_module_reread_orgs",
+    "crm_note_search_orgs",
     "due_push_orgs",
     "github_app_orgs",
+    "headless_turn_orgs",
+    "held_class_c_orgs",
+    "home_tools_orgs",
+    "image_analysis_orgs",
     "integration_access_orgs",
+    "mcp_mail_precedence_orgs",
+    "module_run_orgs",
+    "my_day_decide_orgs",
     "outlook_all_mail_webhook_orgs",
     "proactive_kind_modes",
+    "project_rules_orgs",
+    "projects_decide_orgs",
+    "projects_sprints_orgs",
+    "projects_templates_orgs",
+    "provider_alert_orgs",
+    "spawn_subagents_orgs",
     "studio_residency_orgs",
+    "studio_skill_repair_orgs",
+    "studio_skill_tests_orgs",
+    "today_rule_orgs",
+    "tool_search_orgs",
     "whatsapp_assistant_orgs",
     "whatsapp_assistant_writes_orgs",
     "workflow_unattended_orgs",
