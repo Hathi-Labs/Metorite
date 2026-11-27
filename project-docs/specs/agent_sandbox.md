@@ -1997,7 +1997,7 @@ the A2 model.
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via`. **§12.5 holds the full slice** and the owner answers of 2026-11-27. Two PRs. **SBX-3a (task 3802), the write door:** the rule of `Route.sandbox_write` and the 29 write rows, the write scopes of `mint`, the held store in tenant Redis, `POST /sandbox/v1/batch` that holds and answers each row, the one-use ticket, the stamp and `sandbox_approval_timeout_seconds`. Tests only, no demo. **SBX-3b (task 4084), the card:** the batch card through the held-card seam, approve, refuse and timeout, and card text from the held wire only. HIGH. **Done when:** the list of §12.5 | SBX-2. SBX-3b needs SBX-3a | AGENT-SAFE. Dark |
 | **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
-| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name, WS-43g2 (task 4070) for the network of each run | AGENT-SAFE. Dark. No production container (task 3786) |
+| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887, and WS-43g2 (task 4070). HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name, WS-43g2 (task 4070) for the network of each run | AGENT-SAFE. Dark. No production container (task 3786) |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. (SBX-Q2, decided 2026-11-27, task 3986, answer `fd97a2bd`) The run step opens one host at a time, as the smoke round does: a reinstall runs with the package hosts only, and the run command runs with the door host only. (§12.5) `run_tool` mints the write scopes of `tool.json` and runs the held-card watcher of SBX-3b beside the run command. **Open decision of SBX-5:** one run command has 300 s (§5.6), the same as the default card wait of §12.5 decision 6. SBX-5 decides whether a run command gets more time. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
@@ -2498,7 +2498,7 @@ def door_orgs() -> frozenset[str]
   - A phase outside `PHASES`.
   - A read scope outside `SANDBOX_READ_SCOPES` (decision 7).
   - Any write scope. In SBX-2 `write_scopes` is always empty. SBX-3 opens it
-    for `build` and `run`, never for `smoke`.
+    for `run` only (§12.5 decision 6).
   - An `org` that is not a UUID, or an empty `member`, `run_id` or
     `thread_id`.
 - **R5e.** `org` and `member` come from the run binding, never from tool
@@ -3883,7 +3883,7 @@ recommendation of §12.2 decision 12.
 - One command of the run step has 300 seconds (§5.6), the same as the
   default wait. This is an open decision of SBX-5 (its §12 row).
 
-**7. The card (SBX-3b).** Two internal routes in `gateway/sandbox_batch.py`.
+**7. The card (SBX-3b).** Three internal routes in `gateway/sandbox_batch.py`.
 Each needs the internal bearer and the member (branch 1a), as the skills
 call the gateway. The door never reaches them, because they are not in
 `SANDBOX_ROUTES`.
@@ -3919,7 +3919,10 @@ command. The org and the member come from the run binding (R5).
   card that it shows, and asks for no new card.
 - It calls `request_confirmation(title, detail, context, rows=…,
   request_id=card_id, with_answer=True, non_interactive_default="deny",
-  fenced=True, responder=<the run's member>, timeout_s=<the wait>)`.
+  fenced=True, responder=<the run's member>, timeout_s=<seconds_left>)`.
+- `POST /sandbox/held/card` returns `seconds_left`, the time to the
+  deadline of the batch. The watcher passes that value as `timeout_s`, not
+  the full wait.
   `responder` follows WS-63 PZ-32, as the other callers of a card do.
 - A `RowsAnswer` goes to `POST /sandbox/held/act` unchanged. A refusal or
   `None` goes as `refused`.
@@ -3936,14 +3939,23 @@ command. The org and the member come from the run binding (R5).
     `refused`. A late Approve then finds the decision key set, and runs
     nothing.
 - **A result for each row (B1).** The batch handler writes the answer of
-  each row under `tenant_redis.key("sandbox_held_result", card_id)`. The
-  act waits for that key, up to the deadline of the batch plus 30 seconds,
-  and returns it.
-  - The watcher sends one new event, `confirmation_row_results`, keyed by
+  each row under `tenant_redis.key("sandbox_held_result", card_id)`.
+  - **The act does not wait.** It returns right after `decide`. The rows run
+    only after every card of the batch has a decision, and the watcher shows
+    one card at a time. So an act that waited would block the next card.
+  - A third route, `POST /sandbox/held/results`, takes a run id. It returns
+    the results of each card of that run that has them, and spends each
+    result once.
+  - The watcher reads it on each poll. After the run command ends, it keeps
+    polling for results until the deadline of the batch plus 30 seconds.
+  - For each card with results, the watcher sends one new event, `confirmation_row_results`, keyed by
     the card's `request_id`. It carries the status of each row, and no body.
   - A new `publish_card_rows` in `ask_tools.py` sends it. It copies
     `publish_card_undo` (`ask_tools.py:791`) and `confirmation_not_done`
     (`ask_tools.py:1639`).
+  - The client hides the event from the chat stream by name. It joins
+    `HITL_CONTROL_EVENTS` (`src/hooks/useAgentChat.ts:102`) and
+    `PANEL_HIDDEN_EVENTS` (`src/components/GenerativeUIPanel.tsx:98`).
   - The client shows the results through the one receipt seam:
     `ConfirmationReceipts.tsx` and `receiptText` in
     `src/lib/confirmationQueue.ts` (UXD-3). `ConfirmationCard.tsx` gets no
@@ -3998,7 +4010,7 @@ SBX-3a:
 SBX-3b:
 
 - Changed: `apps/services/gateway/gateway/sandbox_batch.py`. The two routes
-  of decision 7.
+  of decision 7, and `POST /sandbox/held/results` of decision 8.
 - New: `packages/acb_skills/acb_skills/sandbox_held.py`. `watch_held`.
 - Changed: `apps/services/orchestrator/sandbox/metorite_door.py`. `batch`.
 - Changed: `packages/acb_skills/acb_skills/ask_tools.py`. The `timeout_s`
@@ -4007,6 +4019,9 @@ SBX-3b:
 - Changed: `workbench/control_plane/src/lib/confirmationQueue.ts`
   (`receiptText`), `src/components/ConfirmationReceipts.tsx` and
   `src/components/AgentChat.tsx`. The result of each row on the receipt.
+- Changed: `workbench/control_plane/src/hooks/useAgentChat.ts`
+  (`HITL_CONTROL_EVENTS`) and `src/components/GenerativeUIPanel.tsx`
+  (`PANEL_HIDDEN_EVENTS`). Each hides `confirmation_row_results`.
 - New: `tests/unit/test_sandbox_held_card.py`. Changed:
   `tests/unit/test_sandbox_door_client.py`,
   `tests/unit/test_confirmation_rows.py` and
@@ -4115,6 +4130,11 @@ SBX-3b:
     member ticks one of two rows, and only that row lands as member M of org
     A, with `meta.via` set. Org B has no new row.
     `test_sandbox_held_card.py::test_r8_the_card_runs_only_the_ticked_row`.
+23b. A batch with one class B card and one class C card shows both cards.
+    The member approves both, and both rows land. Each card gets its
+    results. The act of the first card returns before the second card
+    shows.
+    `test_sandbox_held_card.py::test_two_cards_of_one_batch_both_show_and_land`.
 24. The receipt shows a result for each row, through `receiptText`.
     `src/lib/confirmationReceipts.test.ts` (vitest), and
     `test_sandbox_held_card.py::test_the_card_gets_a_result_for_each_row`.
@@ -4157,7 +4177,7 @@ A run with any skipped test fails the slice. R8 needs the database.
 
 | # | Test file | What it holds in SBX-3 |
 |---|---|---|
-| SBX-F3 | `tests/unit/test_sandbox_door_writes.py` (new) and `tests/unit/test_sandbox_held_card.py` (new, SBX-3b) | Done when 3, 5 to 10, 12, 14, 15 and 18 to 23 |
+| SBX-F3 | `tests/unit/test_sandbox_door_writes.py` (new) and `tests/unit/test_sandbox_held_card.py` (new, SBX-3b) | Done when 3, 5 to 10, 12, 14, 15, 18 to 23 and 23b |
 | — | `tests/unit/test_confirmation_rows.py` and `src/lib/confirmationReceipts.test.ts` | Done when 22 and 24 |
 | SBX-F2 | `tests/unit/test_sandbox_routes_coverage.py` | Done when 1 and 2 |
 | SBX-F1 | `tests/unit/test_sandbox_capability.py` | Done when 4 |
@@ -4338,3 +4358,7 @@ here, and each needs its own check before anyone acts on it.
   seconds goes to WS-43g2 (task 4070). The card uses the `timeout_s` of
   `request_confirmation` and the one receipt seam. §12.4 names the merge of
   PR 2896 and WS-43g2. `ai_studio.md` §19.3 follows the door batch.
+- 2026-11-27 — SBX-3 delta audit fixes (task 4084). The act returns after
+  `decide`, and `POST /sandbox/held/results` gives the results of each card
+  later. So a batch with two cards shows both. The card waits only the time
+  left to the deadline of the batch. The client hides the new event.
