@@ -529,6 +529,41 @@ async def test_the_config_leaves_out_each_secret(gw: Gateway, marks: list[int]) 
     assert marks
 
 
+async def test_a_wide_config_keeps_twenty_keys_and_says_how_many_went(gw: Gateway) -> None:
+    """A config with 5000 keys gives a small block. Mutation: drop the cap of
+    the keys -> red."""
+    gw.force["get_agent_config"] = (200, {f"k{i:05d}": f"value {i}" for i in range(5000)})
+    with _run():
+        out = await ar.agent_registry_config("acme/sales")
+    shown = json.loads(_block_text(out["config"]))
+    assert len(shown) == ar.MAX_KEYS + 1
+    assert shown[ar.MORE_KEY] == f"+{5000 - ar.MAX_KEYS} more keys"
+    assert len(out["config"]) < ar.MAX_BLOCK_CHARS + 1000
+
+
+async def test_a_deep_config_is_cut_with_a_clear_mark(gw: Gateway) -> None:
+    """A nested config of 20 x 20 x 20 long values is over the cap of the
+    block. Mutation: drop the cap of the text -> red."""
+    leaf = {f"c{i}": "x" * 250 for i in range(20)}
+    gw.force["get_agent_config"] = (200, {f"a{i}": {f"b{j}": dict(leaf) for j in range(20)}
+                                          for i in range(20)})
+    with _run():
+        out = await ar.agent_registry_config("acme/sales")
+    inside = _block_text(out["config"])
+    assert len(inside) <= ar.MAX_BLOCK_CHARS + len(ar.CUT_MARK) + 10
+    assert inside.endswith(ar.CUT_MARK.format(limit=ar.MAX_BLOCK_CHARS))
+
+
+async def test_a_huge_since_hours_is_clamped_to_what_the_route_takes(gw: Gateway) -> None:
+    """``make_interval`` takes a 32-bit integer. Mutation: pass the value as
+    it came -> red."""
+    with _run():
+        out = await ar.agent_registry_runs(since_hours=10**12)
+    assert out["ok"] is True
+    assert gw.routes()[0]["params"]["since_hours"] == str(ar.MAX_SINCE_HOURS)
+    assert ar.MAX_SINCE_HOURS < 2**31
+
+
 @pytest.mark.parametrize("repo", ["/etc", "C:\\agents\\x", "../../etc/passwd",
                                   "https://evil.test/acme/x", "acme/x/tree/main", "acme",
                                   "acme/x?ref=1"])

@@ -52,7 +52,9 @@ The rules:
   ``UntrustedFrame`` block, with no hidden character. A read with rows marks
   the chat as one that read outside text (``egress.mark_untrusted_answer``).
 * **Each read pages.** A list goes through ``acb_common.paging``. A diff
-  pages by line.
+  pages by line. Each object inside a value keeps 20 keys, and a marker says
+  how many went. A framed block holds at most :data:`MAX_BLOCK_CHARS`
+  characters, and a cut ends with :data:`CUT_MARK`.
 * **The card.** The avatar write shows ONE card where ``chat_pin_tools._must_ask``
   says so, and always when the agent has a custom picture that the write
   removes. Only an approve sends. After the approve the tool reads the avatars
@@ -139,6 +141,14 @@ MAX_ERROR_CHARS = 300
 #: The most items of one list inside a value, and the deepest nesting.
 MAX_LIST_ITEMS = 20
 MAX_DEPTH = 4
+#: The most keys of one object inside a value. The keys after it go, and one
+#: marker key says how many went.
+MAX_KEYS = MAX_LIST_ITEMS
+MORE_KEY = "(more)"
+#: The longest JSON text of one framed block. A longer text is cut, and the
+#: cut ends with :data:`CUT_MARK`, so the model never reads a cut as whole.
+MAX_BLOCK_CHARS = 20000
+CUT_MARK = "... [CUT: the result was longer than {limit} characters. Ask for less.]"
 #: The LIMIT caps of the routes: ``/agent/mutations`` and ``/observability/runs``
 #: clamp at 200, and ``/observability/activity/recent`` at 500.
 MUTATIONS_CAP = 200
@@ -149,6 +159,10 @@ MIN_DAYS = 1
 MAX_DAYS = 90
 #: The run statuses that the route filters by (``observability._RUN_STATUSES``).
 RUN_STATUSES = ("running", "completed", "error", "cancelled")
+#: The most hours of the run filter: one year. The route sends the value to
+#: ``make_interval(hours => :sh)``, whose argument is a 32-bit integer, so a
+#: larger value fails there and the page reads it as no runs.
+MAX_SINCE_HOURS = 24 * 366
 
 #: The name rule of an agent, a copy of ``observability._AGENT_NAME_RE``. The
 #: fence holds the two equal.
@@ -363,10 +377,14 @@ def _fold(value: Any, depth: int = 0) -> Any:
     if isinstance(value, str):
         return _line(value)
     if depth >= MAX_DEPTH:
-        return _line(json.dumps(value, ensure_ascii=False, default=str))
+        # Only the first part of a deep value is shown, so only that part is
+        # cleaned. The slice is longer than the line, so a cut secret is past it.
+        text = json.dumps(value, ensure_ascii=False, default=str)[:MAX_FIELD_CHARS * 4]
+        return _line(text)
     if isinstance(value, dict):
-        return {_line(k, 64): _fold(v, depth + 1) for k, v in value.items()
-                if not _empty(v) and not is_secret_field_key(k)}
+        kept = [(k, v) for k, v in value.items()
+                if not _empty(v) and not is_secret_field_key(k)]
+        return _capped(kept, lambda v: _fold(v, depth + 1))
     if isinstance(value, (list, tuple)):
         page = paged(list(value), 0, MAX_LIST_ITEMS, default=MAX_LIST_ITEMS,
                      maximum=MAX_LIST_ITEMS)
@@ -375,6 +393,17 @@ def _fold(value: Any, depth: int = 0) -> Any:
             out.append(f"(+{page.total - len(page.items)} more)")
         return out
     return _line(value)
+
+
+def _capped(pairs: list[tuple[Any, Any]], clean: Any) -> dict[str, Any]:
+    """The first :data:`MAX_KEYS` pairs as an object, each value through
+    *clean*. Only those values are cleaned. When more pairs exist, the key
+    :data:`MORE_KEY` says how many went."""
+    page = paged(pairs, 0, MAX_KEYS, default=MAX_KEYS, maximum=MAX_KEYS)
+    out = {_line(k, 64): clean(v) for k, v in page.items}
+    if page.total > len(page.items):
+        out[MORE_KEY] = f"+{page.total - len(page.items)} more keys"
+    return out
 
 
 def _pick(row: Any, fields: tuple[str, ...]) -> dict[str, Any]:
@@ -390,8 +419,15 @@ def _block(label: str, rows: Any) -> tuple[str, Any]:
     from acb_skills.untrusted import UntrustedFrame
 
     frame = UntrustedFrame.new()
-    text = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str)
+    text = _cap_text(json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str))
     return frame.wrap(label, text), frame
+
+
+def _cap_text(text: str) -> str:
+    """*text* cut at :data:`MAX_BLOCK_CHARS`, with :data:`CUT_MARK` at the end."""
+    if len(text) <= MAX_BLOCK_CHARS:
+        return text
+    return str(text)[:MAX_BLOCK_CHARS] + CUT_MARK.format(limit=MAX_BLOCK_CHARS)
 
 
 async def _mark_read() -> None:
@@ -569,10 +605,11 @@ def _repo_slug(raw: Any) -> str:
 
 def _clean_config(value: Any, depth: int = 0) -> Any:
     """A config file with each secret key left out and each text clean. Lists
-    page and nesting stops at :data:`MAX_DEPTH`."""
+    page, each object keeps :data:`MAX_KEYS` keys, and nesting stops at
+    :data:`MAX_DEPTH`."""
     if isinstance(value, dict) and depth < MAX_DEPTH:
-        return {_line(k, 64): _clean_config(v, depth + 1) for k, v in value.items()
-                if not is_secret_key(k)}
+        kept = [(k, v) for k, v in value.items() if not is_secret_key(k)]
+        return _capped(kept, lambda v: _clean_config(v, depth + 1))
     if isinstance(value, str):
         return _long(value, MAX_FIELD_CHARS)
     return _fold(value, depth)
@@ -869,7 +906,7 @@ async def agent_registry_runs(agent: str = "", status: str = "", since_hours: in
     except (TypeError, ValueError):
         hours = 0
     if hours > 0:
-        params["since_hours"] = hours
+        params["since_hours"] = min(hours, MAX_SINCE_HOURS)
     no_page = await _feature_refusal(member, OFFICE_FEATURE)
     if no_page is not None:
         return no_page
