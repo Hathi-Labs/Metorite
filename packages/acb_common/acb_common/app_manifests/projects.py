@@ -415,7 +415,7 @@ PROJECTS_DOOR = App(
         # SW-45: the MCP `my_work` reads the free tasks of the own apps.
         Route("GET", "/projects/my/own-app-free", "own_app_free", "A", off_door=TYPED),
         # LBB-2: the MCP `my_work` reads the open PRs to land of an agent label.
-        Route("GET", "/projects/agent-work/landing", "my_work", "A", off_door=TYPED),
+        Route("GET", "/projects/agent-work/landing", "", "X", reason="An agent session's read: the MCP my_work reads it with the session's agent label (LBB-2). A person's chat has no agent label and holds no PR of one."),
         Route("GET", "/projects/my/project", "my_work", "A", off_door=LATER, sandbox=True),
         Route("POST", "/projects/my/project", "", "X", reason=_MY_PROJECT),
         Route("POST", "/projects/my/tasks", "create_personal_task", "B", off_door=LATER),
