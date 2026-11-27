@@ -238,7 +238,8 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
      above the message box. It is the one card there, and only its body may
      scroll over its height cap. The dock has its own fold beside `RollupCard`. Every other card keeps the rules above, and
      with the flag off nothing changes. Keyboard rules K1 to K7 are in §24.11.
-     The dock slice (WD-1) names the fences that change.
+     A generative-UI ask stays in the
+     thread until WD-2. The dock slice (WD-1) names the fences that change.
    - A read draws inside its step in the trail, closed, and never after the
      answer.
    - A write's receipt draws compact after the text. An answer card is one
@@ -280,7 +281,8 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    (owner, 2026-10-10). `src/lib/cardRollup.ts` holds the rules. The newest
    card stays open, unless it is a receipt (`receipt` prop, owner 2026-10-29): a
    receipt of a write that worked opens folded. A card that waits on the member never
-   folds. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
+   folds. *Amended 2026-11-27 (D234):* the waiting dock has its
+   own fold, and the member may fold a waiting card there. A toggle by hand wins. A long card folds when it is not the newest. Wrap a new flow card in it, and do
    not add a second fold. The transcript follows its bottom on each change
    of size (`src/lib/stickToBottom.ts`). Fences: `cardRollup.test.ts`,
    `stickToBottom.test.ts` and `e2e/chat-card-rollup.spec.ts`.

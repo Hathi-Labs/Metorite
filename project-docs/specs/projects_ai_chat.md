@@ -6343,7 +6343,8 @@ pass. A card fails the first test, so it goes in the thread.
 - **C7 — A card that sends shows all that it sends.** Each recipient and the
   whole text are in the thread, with no box that hides the end. This
   carries the §21 rule of the email plan ("a send card never shows less
-  than it sends") to the screen.
+  than it sends") to the screen. *Amended 2026-11-27 (§24.11):* in the dock,
+  the whole text is in the card, which may scroll in the dock.
 - **C8 — The thread follows its foot only when the member is there.** A
   reader near the foot stays at the foot when a card grows
   (`stickToBottom.ts`). A reader who scrolled up keeps the place, and the
@@ -6354,6 +6355,8 @@ pass. A card fails the first test, so it goes in the thread.
 **How to check a new card.** Open it at 390 × 844 with the keyboard up.
 The member must see the card and at least two lines of the thread above it.
 The member must reach every control of the card with no inner scroll.
+*Amended 2026-11-27 (§24.11):* in the dock, the body of the active item may
+scroll over the height cap.
 
 **What this change built.**
 
@@ -6403,7 +6406,8 @@ chat). The owner said, in chat with metorite-78:
   scrolls behind it. In the thread, the place of the card keeps one line,
   "Waiting for you: N items, below". That line is not a card. This reverses
   the owner's own rule of 2026-10-23 for waiting elements only. It amends
-  §24.2 rule 1 and §24.10 (C1, C2, C6, C8 and the pin test).
+  §24.2 rule 1 and §24.10 (C1, C2, C6, C8 and the pin test). The owner made
+  both rules, so this is no re-litigation.
 - **WD-D2, always visible, may fold.** An item leaves the dock only when the
   member answers, declines or discards it. The member may fold the dock to one
   row: the tab row, the title of the active item and its primary action. The
@@ -6489,7 +6493,7 @@ from the text above or from the slice table, this rule wins.
 1. **The pin and the generative-UI ask.** In WD-1 an ask from a form, a picker
    or a plan stays in the message bubble. `AskPin` still draws for it. `AskPin`
    never draws for an item of the dock. The thread line counts dock items only.
-2. **The folded row never consents.** Its primary button only opens the card.
+2. **The folded row never consents.** Its main button only opens the card.
    For an approval it never approves, rejects or sends. This keeps D168.1 and
    C7: the member sees the whole card before the consent.
 3. **The tabs.** The order is the approvals (queue order), then the
@@ -6535,6 +6539,7 @@ from the text above or from the slice table, this rule wins.
 - **Demo, rung 1:** with the flag on for Hathi Labs, ask Mira to draft an email
   and ask one question. Scroll up. One card with two tabs stays above the box,
   and the phone keyboard stays down for Send.
+
 **Verify with:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest
 run`, and
 `uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_flag_reload.py`
