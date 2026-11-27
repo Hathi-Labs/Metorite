@@ -322,6 +322,17 @@ Its one reader is
 `gateway.retrieval.find.chat_search_named`, and each search asks it. A reload
 applies a change. The flip waits for the owner's preview (task 3225).
 
+`CHAT_SEND_ONCE_ORGS` turns on one run for each send
+(`chat_failure_modes.md` §6 row HRD-17a). For each listed org, a send that
+the browser sends again with the same `user_message_id` starts no second
+run. The repeat replays the first run, or it answers that the run is final.
+The same id with other words gets 409 `send_id_reused`.
+
+`*` lists every org, and the default is empty. Empty makes no Redis call for
+it. Its one reader is `orchestrator.send_once.send_once_on`. The run route
+asks it at each send, so a reload applies to the next send. A flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_TOPICS_ORGS` turns on the topics of the chat list
 (`chat_organization.md` §6, CO-2a). For each listed org, `/chat/topics`
 lists the company topics and the member's own topics. A member makes a
@@ -448,6 +459,17 @@ Its one reader is `gateway.routes.crm.flags.module_reread_allowed`. The re-read
 rule of the engine and the drift check ask it on each run. A reload applies a
 change. A full read spends Zoho API credits inside the budget of the sync run,
 so the flip is `enforcement-flip`.
+
+`EMAIL_MARK_DONE_ORGS` turns on "Mark done" in the Email app
+(`email_app_master_plan.md` §6.6, task 3995). For each listed org, a Done by
+hand writes a held status. No automated writer moves a held thread until a new
+inbound message arrives. `*` lists every org, and the default is empty. Empty
+keeps `POST /email/reply-zero/resolve` and each Reply Zero writer as before.
+
+Its one reader is
+`gateway.routes.email.automation.mark_done.mark_done_on`. Each request and
+each job asks it, so a reload applies to the next one. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
@@ -586,6 +608,19 @@ Its one reader is `acb_skills.egress.mcp_mail_precedence_on`, which
 `tool_packs.choose` and `_tool_injection._with_server_words` ask on each turn,
 on the run's org. A reload applies a change. Any value other than empty is
 owner-only (`work_plan.md` §6 D4), and the §3a window does not open it.
+
+`MEMBER_ACTIONS_ORGS` turns on the act record of each listed org
+(`personalization.md` §19.4, MM-1). The email send, reply, forward, mark done,
+archive, snooze and label of a member then write one row of `member_action`.
+A row holds no subject and no body. `*` lists every org, and the default is
+empty. Empty writes no row.
+
+Its one reader is `acb_common.member_actions.enabled_for`, which the writer
+asks on each act, on the org of the session. A reload applies a change. Before
+you add an org, turn on `JOB_QUEUE`, because the prune job deletes the rows
+after 180 days. The profile must also be on for the org:
+`ASSISTANT_PROFILE_ENABLED` on, and `ASSISTANT_PROFILE_ORGS` empty or with the
+org in it. Without the profile, the member cannot see or turn off `learning`.
 
 `MY_DAY_LEARN_ORGS` lets the My Day feed of each listed org learn from the
 member (`proactive_loop.md` §7.2, LOOP-4a). The feed reads the kind mutes of

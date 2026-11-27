@@ -565,6 +565,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.pending_ask_prune_skipped", error=type(exc).__name__)
     try:
+        # The retention of the act record registers its prune hook at import
+        # (WS-PZ MM-1, gateway/member_action_prune.py). Its own try, as above.
+        from gateway import member_action_prune as _member_action_prune  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.member_action_prune_skipped", error=type(exc).__name__)
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401

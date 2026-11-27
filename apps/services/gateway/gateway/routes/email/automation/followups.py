@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.assistant import (
     EMAIL_TASK_TIERS,
     _load_assistant_about,
@@ -88,10 +91,24 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
     tenant, and the scan route calls this inside its request. The block holds
     its session across the draft model call and ``create_draft``, as the code
     did before, and EM-T4 owns that I/O.
+
+    Task 3995, with ``EMAIL_MARK_DONE_ORGS`` on (§6.6 "The locks"): the
+    block of the scan only reads. Each write to a row of a thread runs in a
+    short block of its own (:func:`_write_block`), which commits after its
+    write. The body fetch of the nudge writes after its fetch. So the scan
+    never holds a row of a thread across a provider call or a model call, and
+    a Mark done never waits for it. After the I/O
+    the scan asks the hold again (``mark_done.recheck_in_own_block``). After
+    the block of the scan ends, ``mark_done.heal_held`` sweeps the held
+    threads of the mailbox (the ``finally`` clause). With the flag off the
+    scan is the scan of before, and the sweep reads nothing.
     """
     result: dict[str, int | bool] = {
         "configured": False, "scanned": 0, "labeled": 0, "drafted": 0,
     }
+    # One read of the flag for the whole scan, so one scan never mixes the
+    # two forms.
+    short = mark_done.mark_done_on()
     try:
         async with _tenant_session() as db:
             srow = (await db.execute(text(
@@ -171,11 +188,21 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
             me = await resolve_self(db, account_id)
 
             for r in rows:
-                mark = lambda: db.execute(text(  # noqa: E731
-                    "UPDATE email_thread_status SET follow_up_reminded_at = now() "
-                    "WHERE account_id = :aid AND thread_id = :tid"
-                ), {"aid": account_id, "tid": r.thread_id})
+                async def mark(tid: str = r.thread_id) -> None:
+                    async with _write_block(db, short) as w:
+                        await w.execute(text(
+                            "UPDATE email_thread_status SET "
+                            "follow_up_reminded_at = now() "
+                            "WHERE account_id = :aid AND thread_id = :tid"
+                        ), {"aid": account_id, "tid": tid})
                 if not r.provider_message_id:
+                    await mark()
+                    continue
+                # Task 3995 (D1): the rows were read once, and the scan holds
+                # its block across model calls. A Mark done that committed
+                # since then leaves the thread alone. Each ask is a statement
+                # of its own, so it reads that commit. No read with the flag off.
+                if await mark_done.thread_is_held(db, account_id, r.thread_id):
                     await mark()
                     continue
                 # Apply the "Follow-up" tag on BOTH surfaces. Mirror it locally
@@ -190,8 +217,8 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                     # the block stays aborted and the reminder stamp below is
                     # lost with it.
                     with contextlib.suppress(Exception):
-                        async with _savepoint(db):
-                            await db.execute(text(
+                        async with _write_block(db, short) as w, _savepoint(w):
+                            await w.execute(text(
                                 "UPDATE email_messages SET categories = CASE "
                                 "WHEN :lbl = ANY(categories) THEN categories "
                                 "ELSE array_append(categories, :lbl) END, "
@@ -202,6 +229,11 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                     await provider.set_labels(
                         r.provider_message_id, add=[_FOLLOW_UP_LABEL], remove=[])
                     labeled_ok = True
+                # Task 3995: the hold may have begun during the label I/O.
+                # Then "Done" goes back at once, and no nudge is drafted.
+                if await _recheck(db, provider, account_id, r.thread_id, short):
+                    await mark()
+                    continue
                 if labeled_ok:
                     result["labeled"] += 1
                 if auto_draft and r.status == "AWAITING":
@@ -222,9 +254,10 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                             hb = ""
                             if r.last_message_id:
                                 with contextlib.suppress(Exception):
-                                    async with _savepoint(db):
+                                    async with _write_block(db, short) as w, \
+                                            _savepoint(w):
                                         hb = await hydrate_message_body(
-                                            db, str(r.last_message_id),
+                                            w, str(r.last_message_id),
                                             acc.user_id)
                             email = {
                                 "subject": r.subject or "",
@@ -242,7 +275,12 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
                             )
                             # Confidence gate (defense-in-depth): don't persist
                             # a declined / empty draft as a real provider draft.
-                            if not _is_no_draft(body):
+                            # Task 3995: the model call took time. A thread
+                            # that the member marked done meanwhile gets no
+                            # nudge, and its labels go back to "Done".
+                            held_now = await _recheck(
+                                db, provider, account_id, r.thread_id, short)
+                            if not held_now and not _is_no_draft(body):
                                 # Signature-in-body: the nudge draft shows the
                                 # signature upstream too (idempotent).
                                 from gateway.routes.email.signature import (  # noqa: PLC0415
@@ -269,4 +307,36 @@ async def _maybe_send_follow_up_reminders(account_id: str) -> dict[str, int | bo
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.follow_up_failed", account_id=account_id,
                      error=str(exc)[:200])
+    finally:
+        # Each exit of the scan, an early return too, runs the sweep. The
+        # block above has ended, so the sweep reads its commit.
+        await mark_done.heal_held(account_id)
     return result
+
+
+@contextlib.asynccontextmanager
+async def _write_block(db: Any, short: bool) -> AsyncIterator[Any]:
+    """Where one write of the follow-up scan runs (task 3995).
+
+    With the flag off (*short* False) it is the block of the scan, as before.
+    With the flag on it is a short block of its own, which commits before the
+    scan does its next I/O. The block of the scan then holds no row of a
+    thread, so a short block never waits for it. Only one short block is
+    open at a time, so no short block waits for another of the same scan.
+    """
+    if not short:
+        yield db
+        return
+    async with _tenant_session() as w:
+        yield w
+
+
+async def _recheck(
+    db: Any, provider: Any, account_id: str, thread_id: str, short: bool,
+) -> set[str]:
+    """Ask the hold again after I/O. With the flag on, each settle is a short
+    block of its own (``mark_done.recheck_in_own_block``)."""
+    if short:
+        return await mark_done.recheck_in_own_block(
+            provider, account_id, [thread_id])
+    return await mark_done.recheck_after_io(db, provider, account_id, [thread_id])

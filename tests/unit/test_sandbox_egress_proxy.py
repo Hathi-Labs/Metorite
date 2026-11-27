@@ -1,8 +1,11 @@
-"""WS43-F5 — the egress proxy of the coding sandbox (WS-43g1, task 4009).
+"""WS43-F5 — the egress proxy of the coding sandbox (WS-43g1, task 4009, and
+WS-43g2a, task 4070).
 
 Spec ``project-docs/specs/maf_coding_engine.md`` §7.3 ("What the proxy
-refuses", "What the proxy logs", "The door forward"), done-when 1, 2 and 9 of
-WS-43g, and §10 WS43-F5.
+refuses", "What the proxy logs", "The door forward", "The door wait"),
+done-when 1, 2, 9 and 13 of WS-43g, and §10 WS43-F5. WS-43g2a: the door read
+waits ``--door-read-timeout``, every other host keeps 60 s, and the proxy
+refuses to start below 90 s.
 
 What breaks this fence: the proxy allows an address with
 ``is_global == False``, a NAT64, 6to4 or IPv4-mapped address, a host off the
@@ -914,3 +917,87 @@ def test_the_internal_error_line_names_the_grant_when_one_was_found(
         "org-a", "run-1", "member@example.com",
     )
     assert parsed["host"] == "pypi.org" and parsed["method"] == "GET"
+
+
+# ── WS-43g2a: the door wait (§7.3, task 4070) ────────────────────────────────
+
+
+class _Timed:
+    """An upstream socket that records the timeout in force at each read."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+        self.read_timeouts: list[float | None] = []
+
+    def recv(self, size: int) -> bytes:
+        self.read_timeouts.append(self._sock.gettimeout())
+        return self._sock.recv(size)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._sock, name)
+
+
+def _timed_proxy(proxy_env: dict[str, Any], **kwargs: Any) -> tuple[Any, list[_Timed]]:
+    timed: list[_Timed] = []
+
+    def connect(address: str, port: int) -> Any:
+        proxy_env["connects"].append((address, port))
+        timed.append(_Timed(proxy_env["upstream"].near))
+        return timed[-1]
+
+    proxy = ep.Proxy(
+        str(proxy_env["grants"]), resolve=proxy_env["resolver"], connect=connect,
+        clock=lambda: NOW, emit=proxy_env["lines"].append, **kwargs,
+    )
+    return proxy, timed
+
+
+def test_the_door_read_waits_the_approval_wait_plus_30(proxy_env: dict[str, Any]) -> None:
+    """Done-when 13: a held batch keeps the door request open for the card wait."""
+    assert ep.DOOR_READ_TIMEOUT_S == 330.0, "the card wait of 300 plus 30"
+    proxy_env["write"]([ep.DOOR_HOST], door="10.20.0.5:8000")
+    proxy_env["upstream"] = Upstream(_http_upstream(b'{"ok":true}'))
+    proxy, timed = _timed_proxy(proxy_env, door_read_timeout=630)
+    reply = _exchange(
+        proxy,
+        b"GET http://metorite-api.sandbox/crm/leads HTTP/1.1\r\n"
+        b"Host: metorite-api.sandbox\r\nX-Sandbox-Capability: msbx_abc\r\n" + _auth() + b"\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 200 OK")
+    (upstream,) = timed
+    assert upstream.read_timeouts and set(upstream.read_timeouts) == {630.0}
+    assert ep.Proxy(str(proxy_env["grants"])).door_read_timeout == ep.DOOR_READ_TIMEOUT_S
+
+
+def test_other_hosts_keep_the_60_second_read(proxy_env: dict[str, Any]) -> None:
+    """Done-when 13: only the door waits longer. A plain forward reads 60 s."""
+    assert ep.FORWARD_TIMEOUT_S == 60.0
+    proxy_env["write"](["pypi.org"])
+    proxy_env["upstream"] = Upstream(_http_upstream(b"ok"))
+    proxy, timed = _timed_proxy(proxy_env, door_read_timeout=630)
+    reply = _exchange(
+        proxy, b"GET http://pypi.org/simple/ HTTP/1.1\r\nHost: pypi.org\r\n" + _auth() + b"\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 200 OK")
+    (upstream,) = timed
+    assert upstream.read_timeouts and set(upstream.read_timeouts) == {ep.FORWARD_TIMEOUT_S}
+
+
+@pytest.mark.parametrize("value", ["89", "89.9", "0", "-5", "nan"])
+def test_a_door_read_timeout_under_90_refuses_to_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    """Done-when 13: a card wait below 60 s stops the proxy, so every grant
+    fails closed. ``main`` returns 2 and serves nothing."""
+    served: list[Any] = []
+    monkeypatch.setattr(ep, "serve", lambda *a: served.append(a))
+    printed: list[str] = []
+    monkeypatch.setattr(ep, "_print_line", printed.append)
+    grants = str(tmp_path / "grants.json")
+    assert ep.main(["--grants", grants, "--door-read-timeout", value]) == 2
+    assert served == []
+    assert "refused_to_start" in printed[0]
+    with pytest.raises(ValueError):
+        ep.Proxy(grants, door_read_timeout=float(value))
+    assert ep.main(["--grants", grants, "--door-read-timeout", "90"]) == 0
+    assert served == [(grants, f"0.0.0.0:{ep.LISTEN_PORT}", 90.0)]

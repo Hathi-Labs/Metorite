@@ -71,7 +71,9 @@ Shared settings, logging, the activity and cost feed, and utilities.
 - `crm.py` holds the CRM rows: one for each route of `gateway.routes.crm`, all `off_door` until MCP-P2a sets the door ops (CRM-M2a, D136.1). `acb_skills/chat_parity.py` decides each `/api/crm` action from these rows. Fence: `tests/unit/test_crm_ui_actions.py`. A new CRM route needs a row, and the count of `planned` rows only goes down.
 - `projects.py` holds `PROJECTS_DOOR`, the door table of Projects (MCP-G24, D208, `external_agent_access.md` §19.16). It has one row for each row of `skill_projects/manifest.py`, with the same class and tool, and it adds the door op or the `off_door` reason. A new Projects route needs a row in both files, until MCP-G24c makes one table (D208.2). The table is not in `APPS`, so the door serves none of its ops yet. Fence: `tests/unit/test_projects_door_coverage.py`.
 
-- `tenant_redis.TenantRedis.delete_unless(k, value)` is the ONE compare-and-delete of the wrapper. It runs a fixed Lua script on one typed key, so a caller gives no script. Do not add a general `eval`. `acb_skills.late_approve.drop_offer` is its caller (task 3467). Fence: `tests/unit/test_tenant_redis.py`.
+- `tenant_redis.TenantRedis` has three fixed-script commands, and no general `eval`. Each runs one fixed Lua script on one typed key, so a caller gives no script. Do not add a general `eval`. Fence: `tests/unit/test_tenant_redis.py`.
+  - `delete_unless(k, value)` deletes the key unless it holds the value. `acb_skills.late_approve.drop_offer` is its caller (task 3467).
+  - `delete_if(k, value)` deletes the key only when it holds the value. `replace_if(k, expected, value, seconds)` sets the key only when it holds `expected`. `orchestrator.send_once` is their caller (HRD-17a): a claim of a send moves or goes only when its own request still holds it.
 - `tenant_redis.TenantPipeline` has `incr` and `expireat` (API-3). The daily budget of an API connection runs both in ONE MULTI block, so no counter key lives without an end. Fence: `tests/unit/test_api_call_limits.py`.
 
 Each module below holds ONE rule. Do not copy its rule into a caller.

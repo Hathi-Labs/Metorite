@@ -6,6 +6,7 @@ import AppIcon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
 import { useEmailStore, isRealFolder, foldersInScope, checkedRows } from "../lib/emailStore";
 import { LabelMenu } from "./LabelMenu";
+import { useMarkDone } from "./useMarkDone";
 
 /**
  * EmailToolbar — the single action bar that spans the email-list + viewer
@@ -31,6 +32,7 @@ export function EmailToolbar() {
 
   const selectedEmail = emails.find((e) => e.id === selectedEmailId) ?? null;
   const captureEmailToTasks = useEmailStore((s) => s.captureEmailToTasks);
+  const { enabled: canMarkDone, markDone } = useMarkDone();
   const [showMove, setShowMove] = useState(false);
   const [showLabel, setShowLabel] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -52,6 +54,21 @@ export function EmailToolbar() {
           {checkedCount} selected
         </span>
         <div className="flex-1" />
+        {canMarkDone && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="Check"
+            className="flex-shrink-0"
+            onClick={() => {
+              const ids = checkedRows({ emails, selectedIds });
+              void markDone(emails.filter((e) => ids.includes(e.id)));
+              clearEmailSelection();
+            }}
+          >
+            Mark done
+          </Button>
+        )}
         <TBtn icon={themedIcon("MailOpen")} label="Mark read" onClick={() => bulkUpdateSelected({ isRead: true })} />
         <TBtn icon={themedIcon("Mail")} label="Mark unread" onClick={() => bulkUpdateSelected({ isRead: false })} />
         <TBtn icon={themedIcon("Flag")} label="Flag" onClick={() => bulkUpdateSelected({ isFlagged: true })} />
@@ -79,6 +96,18 @@ export function EmailToolbar() {
           <TBtn icon={themedIcon("ReplyAll")} label="Reply All" onClick={() => setViewerCommand("reply-all")} />
           <TBtn icon={themedIcon("Reply")} label="Reply" onClick={() => setViewerCommand("reply")} />
           <TBtn icon={themedIcon("Forward")} label="Forward" onClick={() => setViewerCommand("forward")} />
+          {canMarkDone && selectedEmail.threadId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="Check"
+              title="Mark done (d)"
+              className="flex-shrink-0"
+              onClick={() => void markDone([selectedEmail])}
+            >
+              Done
+            </Button>
+          )}
 
           <TBtn
             icon={themedIcon("ListChecks")}

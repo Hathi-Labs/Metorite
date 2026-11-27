@@ -26,6 +26,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -3070,6 +3071,80 @@ class _RunTiming:
         return {**self._marks, "total_ms": self._ms(), "outcome": self.outcome}
 
 
+def _send_once_id(
+    *, org: str | None, thread_id: str | None, member: str, room: Any,
+    raw_id: str, supersedes: str, continuation: bool, followup: bool,
+) -> str:
+    """The id that keys this send (HRD-17a), or ``""`` for the old path.
+
+    The checks run in this order, and the flag read is the first, so with
+    the flag off nothing else runs and no Redis call is made (R10). A send
+    keys only with an org and a member of the session, a thread, a room
+    (the reader's right to the room is checked above), and a valid id
+    (R7). An edit, a RESUME-2a continuation and a steer follow-up never key
+    (R8): each one is no repeat of an earlier send.
+    """
+    from orchestrator.send_once import send_id, send_once_on
+
+    if not send_once_on(org):
+        return ""
+    if not (thread_id and (member or "").strip() and room is not None):
+        return ""
+    if supersedes or continuation or followup:
+        return ""
+    return send_id(raw_id)
+
+
+def _send_once_answer(
+    thread_id: str, run_id: str, *, replay: bool, room: Any = None,
+) -> StreamingResponse:
+    """The answer to a repeat of a send (HRD-17a, R1 and R2). It starts no
+    run. ``X-Run-Id`` names the stored run, because the BFF binds its reader
+    to it (``lib/runBinding.ts``).
+
+    *replay*: the stream holds the stored run, so the ONE replay sends it,
+    live or final. Else the run is final and its stream is gone or holds a
+    newer run, so the answer is one ``RUN_FINISHED`` of the stored run, and
+    the client reads the saved row.
+
+    *room* is the ``RoomAccess`` of the stream door. The replay then follows
+    the RESUME-2d rule of `/reconnect` (:func:`_replay_ok`). A member who
+    may not see the whole run gets only the end frame with ``withheld: true``.
+    """
+    async def _events() -> AsyncIterator[str]:
+        if replay:
+            async for line in _replay_run_events(
+                thread_id, "0-0", expect_run_id=run_id, room=room,
+            ):
+                yield line
+        else:
+            yield "data: " + json.dumps(
+                {"type": "RUN_FINISHED", "runId": run_id, "threadId": thread_id},
+            ) + "\n\n"
+
+    _log.info("agent.send_once_repeat", thread_id=thread_id[:12],
+              run_id=run_id[:12], replay=replay)
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+            "X-Run-Id": run_id,
+        },
+    )
+
+
+def _send_once_refused(error: str, message: str, thread_id: str) -> HTTPException:
+    """The 409 of a send that the key refuses (HRD-17a, R6 and BUSY)."""
+    _log.info("agent.send_once_refused", error=error, thread_id=thread_id[:12])
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"error": error, "message": message, "threadId": thread_id},
+    )
+
+
 @router.post("/run/stream", summary="Stream a named agent run as AG-UI SSE events")
 async def run_agent_stream_endpoint(
     req: AgentRunRequest,
@@ -3251,6 +3326,51 @@ async def run_agent_stream_endpoint(
     from orchestrator.steer import TurnDecision as _FuDecision  # noqa: PLC0415
 
     _followup = bool(req.payload.pop("steer_followup", None)) and not _supersedes
+
+    # ── One send runs once (HRD-17a, chat_failure_modes.md §6) ──────────────
+    # After the room check and the edit guard, and before the route decision
+    # and the run cap. So a repeat starts no run, takes no cap slot, fires no
+    # room event, mints no row and saves no second user row. The org and the
+    # member are the session's. `orchestrator/send_once.py` holds the rules.
+    _send_claim: Any = None
+    _send_id = _send_once_id(
+        org=_room_org, thread_id=req.thread_id, member=actor_email, room=room,
+        raw_id=_new_user_id, supersedes=_supersedes,
+        continuation=_resume_launch is not None, followup=_followup,
+    )
+    if _send_id:
+        from orchestrator import send_once
+
+        _once = await send_once.begin(
+            str(_room_org), req.thread_id or "", actor_email, _send_id, _sent_words,
+        )
+        if _once.kind == send_once.NEW:
+            _send_claim = _once.claim
+        elif _once.kind in (send_once.REPLAY, send_once.FINISHED):
+            return _send_once_answer(
+                req.thread_id or "", _once.run_id,
+                replay=_once.kind == send_once.REPLAY, room=room,
+            )
+        elif _once.kind == send_once.REUSED:
+            raise _send_once_refused(
+                "send_id_reused",
+                "This message id was sent before with other words. "
+                "Send the new words as a new message.",
+                req.thread_id or "",
+            )
+        elif _once.kind == send_once.BUSY:
+            raise _send_once_refused(
+                "send_in_progress",
+                "This message is still starting. Wait a moment, then try again.",
+                req.thread_id or "",
+            )
+        # OPEN: Redis did not answer, so the send takes the old path (R10).
+
+    async def _release_send_claim() -> None:
+        # The send started no run, so its claim goes (HRD-17a).
+        if _send_claim is not None:
+            await _send_claim.release()
+
     if _resume_launch is not None:
         # RESUME-2a: `_resume_from_row` found the thread at rest and claimed
         # the row, so this run ENGAGEs. Its message stays empty: the
@@ -3309,6 +3429,7 @@ async def run_agent_stream_endpoint(
             thread_id=_cap_thread,
         )
         if not _admission.admitted:
+            await _release_send_claim()
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={
@@ -3347,9 +3468,13 @@ async def run_agent_stream_endpoint(
     # reaches it. Any other route drops it.
     if _card_draft is not None and _decision.route.name == "STEER":
         await _keep_card_draft(user, req.thread_id or "", _card_draft)
-    _steered = await _apply_turn_decision(
-        _decision, req, agent_name, actor_email, room,
-    )
+    try:
+        _steered = await _apply_turn_decision(
+            _decision, req, agent_name, actor_email, room,
+        )
+    except Exception:
+        await _release_send_claim()
+        raise
 
     async def _give_back_taken() -> None:
         # A refusal after ENGAGE starts no run: the steers it took go back.
@@ -3380,6 +3505,9 @@ async def run_agent_stream_endpoint(
         # recovery that steered) starts no run, so its reservation goes.
         if _decision.route.name == "ENGAGE":
             await _release_cap_slot()
+        # HRD-17a: a steer, a stop and a dropped turn start no run, so the
+        # claim goes. A repeat of a steer then steers again (PROPOSED).
+        await _release_send_claim()
         return _steered
 
     # A second follow-up, or a new run, took the steers between the gate and
@@ -3630,6 +3758,7 @@ async def run_agent_stream_endpoint(
         # The run will not start, so its cap reservation goes too.
         await _release_cap_slot()
         await _give_back_taken()
+        await _release_send_claim()
         raise
 
     # Edit, step 3: every refusal is behind us, so the old turn and its
@@ -3764,6 +3893,21 @@ async def run_agent_stream_endpoint(
         # which the fold reads too (`_run_record` above).
         "record": _run_record,
     }
+    if _send_claim is not None:
+        # HRD-17a (R4): the run notes its RUN_ERROR, and its end deletes the
+        # key after an error, a Stop or no start. The lines pass unchanged.
+        agent_gen = _send_claim.watch(agent_gen)
+
+        async def _persist_then_settle() -> None:
+            # The Stop mark is read FIRST: a new send of the thread clears it
+            # while the fold below runs.
+            _stopped = await _send_claim.was_stopped()
+            try:
+                await _persist_on_complete()
+            finally:
+                await _send_claim.settle_end(stopped=_stopped)
+
+        _detached["on_complete"] = _persist_then_settle
 
     if _resume_launch is not None:
         # RESUME-2a: no request reads a continuation run, so it starts with
@@ -3846,6 +3990,21 @@ async def run_agent_stream_endpoint(
 
     async def _serve_run(timing: _RunTiming):
         try:
+            # HRD-17a: the claim of this send moves to its run BEFORE the run
+            # starts, in ONE compare and set, inside this `try`, so the
+            # `finally` below covers a cancel during the move. When another
+            # request took the key (it read this claim as stale), this one
+            # starts nothing. The cap reservation stays: it is keyed by the
+            # thread, so it is the other request's too, and it lapses.
+            if _send_claim is not None and not await _send_claim.start(run_id):
+                await _give_back_taken()
+                timing.outcome = "send_taken"
+                yield "data: " + json.dumps({
+                    "type": "RUN_ERROR",
+                    "message": "This message is running in another request.",
+                    "code": "send_in_progress",
+                }) + "\n\n"
+                return
             async for evt in run_detached(
                 thread_id, agent_gen,
                 organization_id=_organization_id, **_detached,
@@ -3865,6 +4024,7 @@ async def run_agent_stream_endpoint(
             )
             await _release_cap_slot()
             await _give_back_taken()
+            await _release_send_claim()  # HRD-17a: no run started
             timing.outcome = "superseded"
             yield "data: " + json.dumps({
                 "type": "RUN_ERROR",
@@ -3891,8 +4051,20 @@ async def run_agent_stream_endpoint(
             # These lines are SSE text, so the marks stay empty. The outcome
             # says why, not "disconnected".
             timing.outcome = "direct"
+            # HRD-17a (R11): no relay holds this run, so no repeat can replay
+            # it. The key goes.
+            await _release_send_claim()
             async for line in agent_gen:
                 yield line
+        finally:
+            # HRD-17a: a cancel while `start_detached` ran (the client left)
+            # starts no drain, so no run end settles the key. With no drain
+            # and no pulled line, the run never began, and the key goes.
+            if _send_claim is not None and not _send_claim.pulled:
+                from orchestrator.stream_relay import get_detached_task as _task_of
+
+                if _task_of(thread_id) is None:
+                    _send_claim.release_soon()
 
     return StreamingResponse(
         _serve(),
@@ -4757,6 +4929,125 @@ async def respond_user_input(
     return {"ok": True, "declined": True} if req.declined else {"ok": True}
 
 
+def _another_run(evt: dict[str, Any], expect_run_id: str | None) -> bool:
+    """True when *evt* starts a run that is not *expect_run_id* (HRD-17a).
+
+    The idea of ``chat_fold``'s ``expect_run_id``: the stream is per thread,
+    so a newer run that reset it must never pass as the run asked for. With
+    no *expect_run_id* nothing is another run, so ``/reconnect`` is as
+    before.
+    """
+    if expect_run_id is None or evt.get("type") != "RUN_STARTED":
+        return False
+    return str(evt.get("runId") or "") != expect_run_id
+
+
+async def _replay_run_events(
+    thread_id: str, since: str = "0-0", *, expect_run_id: str | None = None,
+    room: Any = None,
+) -> AsyncIterator[str]:
+    """The SSE lines of the thread's run: the replay, then the live tail.
+
+    The ONE replay of a run (HRD-17a). ``GET /run/{thread_id}/reconnect``
+    calls it with no *expect_run_id*, and gets the lines of before, byte for
+    byte. A repeat of a send (``orchestrator.send_once``) calls it with the
+    stored run id. Then a ``RUN_STARTED`` of another run ends the replay with
+    a ``RUN_FINISHED`` of the stored run, so a newer run is never sent, and
+    the last ``RUN_FINISHED`` names the stored run. Each caller checks the
+    reader's right to the room first.
+
+    RESUME-2d (D-RES-10): `/reconnect` and a repeat of a send both pass the
+    ``RoomAccess`` of their guard as *room*, so both follow one rule. A
+    reader who may not see the whole run gets only the end frame with
+    ``withheld: true`` (:func:`_replay_ok`). With no *room* (no rooms layer)
+    the check passes, as ``_replay_ok`` does for ``None``.
+    """
+    import json as _json
+
+    from orchestrator.stream_relay import is_active  # noqa: PLC0415
+    from orchestrator.stream_relay import (replay_events, stream_exists,
+                                           subscribe_events)
+
+    _finished = _reconnect_end(thread_id, run_id=expect_run_id)
+
+    # Phase 1: Replay missed events.
+    # Local _stream_id values (e.g. "local-1718123456789-5#42") are minted
+    # by the executor for the initial SSE stream (before the Redis entry ID
+    # is known).  Redis XREAD doesn't understand them, so fall back to
+    # "0-0".  Streams are reset per run (mark_active(reset=True)), so a
+    # full replay covers exactly the current run, and the frontend clears
+    # its partial message before replay (deltas have no id-dedup, so
+    # re-appending would double text) — full replay is the SAFE default.
+    #
+    # P1-5 note: the trailing "#<n>" ordinal on a local cursor is a real
+    # per-thread emit count (stream is reset per run; events push in
+    # emission order), so a future client that PRESERVES its partial could
+    # resume by skipping the first <n> entries. That optimisation is gated
+    # on client-side delta de-duplication + a UI drive to prove no doubling
+    # (see core_loop_unification §D1 follow-ups); the plumbing is in place.
+    _since = since
+    if _since.startswith("local-"):
+        _since = "0-0"
+
+    # A dead run never holds a reconnect open (incident 2026-10-09). Its
+    # flag outlives its process, and Phase 2 below would then wait on it
+    # for up to an hour, with the chat showing "Reconnecting…". Close it
+    # first: the replay then carries its "interrupted" marker and ends.
+    try:
+        from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
+
+        if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
+            from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
+
+            await recover_dead_run(thread_id, why="reconnect")
+    except Exception:  # noqa: BLE001 — never block a replay on this check
+        _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
+
+    # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
+    # not see the whole run gets no event of it, only the end frame with
+    # `withheld: true`, so the chat does not attach to the run again.
+    if not await _replay_ok(thread_id, room):
+        _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
+        yield _reconnect_end(thread_id, withheld=True, run_id=expect_run_id)
+        return
+
+    # Track the replay cursor so Phase 2 subscribes from the exact spot —
+    # subscribing from "$" would silently drop any events pushed between
+    # replay end and subscribe start.
+    _cursor = _since
+    if await stream_exists(thread_id):
+        # Drain in batches until exhausted — a single 500-event read would
+        # silently truncate the tail of long, tool-heavy runs on reconnect.
+        while True:
+            missed = await replay_events(thread_id, since_id=_cursor, count=500)
+            if not missed:
+                break
+            for evt in missed:
+                if _another_run(evt, expect_run_id):
+                    yield _finished
+                    return
+                _eid = evt.get("_stream_id")
+                if _eid:
+                    _cursor = _eid
+                yield f"data: {_json.dumps(evt)}\n\n"
+            if len(missed) < 500:
+                break
+
+    # Phase 2: If agent is still active, subscribe to live events from
+    # the cursor (no gap with Phase 1).
+    if await is_active(thread_id):
+        async for evt in subscribe_events(thread_id, since_id=_cursor):
+            if _another_run(evt, expect_run_id):
+                yield _finished
+                return
+            yield f"data: {_json.dumps(evt)}\n\n"
+    else:
+        # Agent finished — emit RUN_FINISHED so the frontend translator
+        # (translateAndPersistStream) maps it to {"type":"done"} and the
+        # UI exits the reconnecting state.
+        yield _finished
+
+
 @router.get(
     "/run/{thread_id}/reconnect",
     summary="Reconnect to a running (or recently finished) agent stream",
@@ -4782,11 +5073,6 @@ async def reconnect_agent_stream(
     Falls back to an empty ``"done"`` event if the stream has expired.
     """
     import asyncio as _asyncio
-    import json as _json
-
-    from orchestrator.stream_relay import is_active  # noqa: PLC0415
-    from orchestrator.stream_relay import (replay_events, stream_exists,
-                                           subscribe_events)
 
     # Membership guard: the replayed stream contains the whole conversation —
     # text, tool args, reasoning — so it must never be readable by someone
@@ -4809,77 +5095,11 @@ async def reconnect_agent_stream(
         actor=actor[:20],
     )
 
-    async def _event_generator():
-        # Phase 1: Replay missed events.
-        # Local _stream_id values (e.g. "local-1718123456789-5#42") are minted
-        # by the executor for the initial SSE stream (before the Redis entry ID
-        # is known).  Redis XREAD doesn't understand them, so fall back to
-        # "0-0".  Streams are reset per run (mark_active(reset=True)), so a
-        # full replay covers exactly the current run, and the frontend clears
-        # its partial message before replay (deltas have no id-dedup, so
-        # re-appending would double text) — full replay is the SAFE default.
-        #
-        # P1-5 note: the trailing "#<n>" ordinal on a local cursor is a real
-        # per-thread emit count (stream is reset per run; events push in
-        # emission order), so a future client that PRESERVES its partial could
-        # resume by skipping the first <n> entries. That optimisation is gated
-        # on client-side delta de-duplication + a UI drive to prove no doubling
-        # (see core_loop_unification §D1 follow-ups); the plumbing is in place.
-        _since = since
-        if _since.startswith("local-"):
-            _since = "0-0"
-
-        # A dead run never holds a reconnect open (incident 2026-10-09). Its
-        # flag outlives its process, and Phase 2 below would then wait on it
-        # for up to an hour, with the chat showing "Reconnecting…". Close it
-        # first: the replay then carries its "interrupted" marker and ends.
-        try:
-            from orchestrator.run_liveness import run_liveness  # noqa: PLC0415
-
-            if await is_active(thread_id) and await run_liveness(thread_id) == "dead":
-                from gateway.chat_recovery import recover_dead_run  # noqa: PLC0415
-
-                await recover_dead_run(thread_id, why="reconnect")
-        except Exception:  # noqa: BLE001 — never block a replay on this check
-            _log.warning("agent.reconnect_liveness_failed", thread_id=thread_id[:12])
-
-        # RESUME-2d (D-RES-10): the whole run or none of it. A reader who may
-        # not see the whole run gets no event of it, only the end frame with
-        # `withheld: true`, so the chat does not attach to the run again.
-        if not await _replay_ok(thread_id, room):
-            _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
-            yield _reconnect_end(thread_id, withheld=True)
-            return
-
-        # Track the replay cursor so Phase 2 subscribes from the exact spot —
-        # subscribing from "$" would silently drop any events pushed between
-        # replay end and subscribe start.
-        _cursor = _since
-        if await stream_exists(thread_id):
-            # Drain in batches until exhausted — a single 500-event read would
-            # silently truncate the tail of long, tool-heavy runs on reconnect.
-            while True:
-                missed = await replay_events(thread_id, since_id=_cursor, count=500)
-                if not missed:
-                    break
-                for evt in missed:
-                    _eid = evt.get("_stream_id")
-                    if _eid:
-                        _cursor = _eid
-                    yield f"data: {_json.dumps(evt)}\n\n"
-                if len(missed) < 500:
-                    break
-
-        # Phase 2: If agent is still active, subscribe to live events from
-        # the cursor (no gap with Phase 1).
-        if await is_active(thread_id):
-            async for evt in subscribe_events(thread_id, since_id=_cursor):
-                yield f"data: {_json.dumps(evt)}\n\n"
-        else:
-            # Agent finished — emit RUN_FINISHED so the frontend translator
-            # (translateAndPersistStream) maps it to {"type":"done"} and the
-            # UI exits the reconnecting state.
-            yield _reconnect_end(thread_id)
+    async def _event_generator() -> AsyncIterator[str]:
+        # HRD-17a: the ONE replay, shared with the send-once repeat. The
+        # room carries the RESUME-2d rule into it.
+        async for line in _replay_run_events(thread_id, since, room=room):
+            yield line
 
     return StreamingResponse(
         _event_generator(),
@@ -4892,7 +5112,9 @@ async def reconnect_agent_stream(
     )
 
 
-def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
+def _reconnect_end(
+    thread_id: str, *, withheld: bool = False, run_id: str | None = None,
+) -> str:
     """The end frame of a reconnect: the frame when nothing is left to replay.
 
     The frontend translator maps it to ``{"type": "done"}``, and the chat
@@ -4900,10 +5122,15 @@ def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
     run gets the same frame with ``withheld: true``. The chat then does not
     attach to that run again while the server lists it
     (``runStatus.ts``, ``attach_withheld``). The frame with no marker keeps
-    its bytes."""
+    its bytes.
+
+    *run_id* (HRD-17a): a repeat of a send names its stored run in the frame.
+    With no *run_id* the frame names the thread, as before."""
     import json as _json
 
-    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": thread_id, "threadId": thread_id}
+    evt: dict[str, Any] = {
+        "type": "RUN_FINISHED", "runId": run_id or thread_id, "threadId": thread_id,
+    }
     if withheld:
         evt["withheld"] = True
     return f"data: {_json.dumps(evt)}\n\n"

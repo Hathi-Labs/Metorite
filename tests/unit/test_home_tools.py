@@ -794,6 +794,9 @@ WAIT_FOR_OWNER = (
     "POST /api/shell/intent", "GET /api/push/public-key", "POST /api/push/subscriptions",
     "POST /api/push/subscriptions/status", "DELETE /api/push/subscriptions",
 )
+#: WS-AP AP-2a: the two reads of /waiting. The chat tool ``my_waits`` of AP-10
+#: (task 1860) pays both.
+WAIT_FOR_AP10 = ("GET /api/shell/waiting", "GET /api/shell/waiting/count")
 
 
 def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
@@ -801,10 +804,10 @@ def test_the_shell_rows_are_paid_exempted_or_left_for_the_owner() -> None:
     for key, tool in PAID.items():
         assert cp.COVERED[key] == tool and key not in cp.DEBT, key
     shell_debt = [k for k in cp.DEBT if cp.app_of(k.split(" ", 1)[1]) == "shell"]
-    assert sorted(shell_debt) == sorted(WAIT_FOR_OWNER), shell_debt
-    for key in WAIT_FOR_OWNER:
+    assert sorted(shell_debt) == sorted((*WAIT_FOR_OWNER, *WAIT_FOR_AP10)), shell_debt
+    for key in (*WAIT_FOR_OWNER, *WAIT_FOR_AP10):
         assert cp.DEBT[key] == "P-7" and key not in cp.EXEMPT, key
-    assert cp.DEBT_CEILING["shell"] == 7
+    assert cp.DEBT_CEILING["shell"] == 9
     assert "packages/acb_skills/acb_skills/home_tools.py" in cp.TOOL_SOURCES
 
 

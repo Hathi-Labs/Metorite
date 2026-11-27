@@ -480,7 +480,7 @@ only. So 6a′ can reach production before 6b and 6e.
 |---|---|---|---|
 | **6a. The gap log on production** | The owner opens the gap view on production and sees real counts. No code runs | SBX-1a, SBX-1b | `enforcement-flip` of `user_tool_find_enabled`, under a dated grant |
 | **6a′. The compute run** | In the chat, a member asks for a calculation on rows that a tool returned. The chat runs pandas code in a sealed container and shows a CSV or PNG card. This is the first rung that runs code in production | SBX-8, SBX-15a, SBX-18, SBX-19 | SBX-G9 to SBX-G11, SBX-G13, WS43-G1 (BH-3, or the waiver), WS43-G2, WS43-G5, SBX-G6 |
-| **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (egress proxy, not built) | None |
+| **6b. The door and a tool (dev-stack preview)** | The chat builds a read-only tool. It reads two pages through the door, and passes its smoke test | SBX-2, SBX-13, SBX-4, WS-43g (WS-43g1 merged dark, WS-43g2a built dark and not merged) | None |
 | **6c. Keep and reuse, and a write behind a card (dev-stack preview)** | The chat saves the tool, and a new thread reuses it. A tool that writes shows a card first. (D233) On no match, the chat builds and answers in the same turn, with one progress line | SBX-3, SBX-5, SBX-20, SBX-21 (D233) | None |
 | **6d. Repair, review and metering (dev-stack preview)** | A failed tool gets one repair. A holder of `studio:publish` approves a version. The owner sees credits fall. A step with no `sandbox` price row is refused | SBX-12, SBX-6, SBX-7 | None |
 | **6e. The tools half of the remote backend (dev-stack preview)** | A build, a smoke test and a run of a tool go to a second local daemon under `runsc`. A second org waits while the first holds the box | SBX-15b, BH-3 (unconditional) | The install of BH-3 on the box is WS43-G1 |
@@ -525,7 +525,7 @@ reading.
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
 | WS43-G5 | Owner gate. Task 3912 installed `runsc` on `aroh-sandbox-1` (2026-11-23). Production use is not verified | `maf_coding_engine.md` line 1677. `docs/gcp_aroh.md` §4a |
-| WS-43g, the egress proxy | WS-43g1 built dark (task 4009, branch `mt-abaa42b0-ws43g1-egress`). WS-43g2 and WS-43g3 are not built | `maf_coding_engine.md` §11, WS-43g. `grant_egress()` and `sandbox/egress_proxy.py` exist. The live `request_network_access` and the firewall in CI do not |
+| WS-43g, the egress proxy | WS-43g1 merged dark (task 4009, PR 2887, `d2bffe963`, 2026-11-27). WS-43g2a (task 4070) is built dark, and it is not merged. WS-43g2b (task 4092) and WS-43g3 are not built. The owner answer (task 4009, answer `b5dbe733`, 2026-11-27): "Approve the merge. Build one network per run in WS-43g2." | `maf_coding_engine.md` §11, WS-43g. `grant_egress()` and `sandbox/egress_proxy.py` are on `main`. The network of each run, the live `request_network_access` and the firewall in CI are not |
 | `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
 | `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
 | `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
@@ -742,7 +742,7 @@ row is rebuilt.
 | The scope setting | `acb_common/settings.py:1040`, `maf_coding_scope` | A comma list of `<target>:<org>`. Targets in code: `code_task`, `app_builder` and `projects`. Empty turns every target off | Built. The default is empty |
 | `run_command` | `acb_skills/sandbox_tools.py:405` | Runs one command in the broker container. Only `ProjectsSandboxProvider` (`:644`) attaches it, for one run | Built, dark (WS-43d) |
 | User-written skills | `agent-data/skills/` through `acb_skills/tenant_file_store.py` | MAF `SkillsProvider` loads them in a covered run. A skill loads only for the member who wrote it (`tests/unit/test_sandbox_skill_privacy.py`) | Built, dark |
-| The egress proxy and the grant | `maf_coding_engine.md` §7.3, slice WS-43g | An approved per-host grant, an organization network and one proxy. `request_network_access` is a stub that answers "off" until WS-43g2 | **WS-43g1 built dark** (task 4009, branch `mt-abaa42b0-ws43g1-egress`). WS-43g2 and WS-43g3 not built |
+| The egress proxy and the grant | `maf_coding_engine.md` §7.3, slice WS-43g | An approved per-host grant, one network for each run (WS-43g2a) and one proxy. `request_network_access` is a stub that answers "off" until WS-43g2b | **WS-43g1 merged dark** (task 4009, PR 2887, `d2bffe963`). WS-43g2a (task 4070) built dark, not merged. WS-43g2b (task 4092) and WS-43g3 not built |
 | The sandbox image and its CI | `apps/services/orchestrator/Dockerfile.coding-sandbox`, `.github/workflows/sandbox-docker.yml` | A pinned image with pandas, PDF and Office libraries and no secret. The workflow runs `pytest -m sandbox_docker` on each pull request and fails on a skip | Built (WS-43b). Not on any box (WS43-G2) |
 | BH-2, the gateway unit sandbox | `deploy/hostinger/acb-gateway.service.d/50-hardening.conf:45` | systemd hardening of the gateway. It makes `/run/docker.sock` inaccessible to the gateway, so the broker cannot be healthy on production | Live (WS-49, #758) |
 | BH-3, the broker's own unit | `box_hardening.md` §5 BH-3 | A separate `acb-sandbox-broker.service` with its own user and a local socket | **Spec only**. Gate WS43-G1 |
@@ -845,7 +845,7 @@ an owner decision (CLAUDE.md §3a rule 3).
 | **Ops load** | High. Kind, PostgreSQL, S3, about 8 DaemonSets, btrfs, 50 GiB disk floors, a Rust build. Version 0.8.0, no tag, about 100 commits in 4 days | Low. An account and a key | Low. Install `runsc` and register the runtime (WS43-G5) | None more. Built and dark |
 | **Shares the gateway's 2 vCPU** | No | No | Yes | Yes |
 | **Cash cost (estimate)** | A bare-metal host. A small dedicated server is about EUR 40 to 70 a month. The SPACE EKS reference uses `m5d.metal`, about USD 4,000 a month on demand | Pro is USD 150 a month plus use. Use is USD 0.000014 per vCPU-second and USD 0.0000045 per GiB-second. A 60-second run at 1 vCPU and 1 GiB is about USD 0.0011 | USD 0 | USD 0 |
-| **Built here** | Nothing | Nothing | Named as later hardening (WS43-S1, gate WS43-G5) | WS-43b, WS-43c, WS-43d built. WS-43g1 built dark (task 4009). WS-43g2 and WS-43g3 not built |
+| **Built here** | Nothing | Nothing | Named as later hardening (WS43-S1, gate WS43-G5) | WS-43b, WS-43c, WS-43d built. WS-43g1 merged dark (task 4009, `d2bffe963`). WS-43g2a, WS-43g2b and WS-43g3 not built |
 
 The SPACE facts come from the repo on 2026-10-19: Apache-2.0, created
 2026-10-01, no release, no tag, 10 open issues and 88 open pull requests.
@@ -1579,7 +1579,7 @@ packages. `requirements.txt` beside it pins each one with a hash.
 any wheel that its lock pins with a hash, through the egress proxy (§5.5,
 §12.4 decision 6). SBX-5 owns the package rules of `ai_studio.md` §19.5,
 and no tool persists without them. B8 states those rules for Studio. The
-proxy is WS-43g1 (task 4009, PR 2887), not merged on 2026-11-26.
+proxy is WS-43g1 (task 4009, PR 2887), merged on 2026-11-27 (`d2bffe963`).
 
 **The door client (new).** One small Python module in the image,
 `metorite_door`. A tool imports it to call Metorite as the member.
@@ -1997,7 +1997,7 @@ the A2 model.
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
 | **SBX-3** (task 3802) | (2026-11-27) SBX-3a is built dark on its branch, not merged. SBX-3b is not built. Writes held for a card (§5.3), the batch card, `meta.via`. **§12.5 holds the full slice** and the owner answers of 2026-11-27. Two PRs. **SBX-3a (task 3802), the write door:** the rule of `Route.sandbox_write` and the 29 write rows, the write scopes of `mint`, the held store in tenant Redis, `POST /sandbox/v1/batch` that holds and answers each row, the one-use ticket, the stamp and `sandbox_approval_timeout_seconds`. Tests only, no demo. **SBX-3b (task 4084), the card:** the batch card through the held-card seam, approve, refuse and timeout, and card text from the held wire only. HIGH. **Done when:** the list of §12.5 | SBX-2. SBX-3b needs SBX-3a | AGENT-SAFE. Dark |
 | **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
-| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887, and WS-43g2 (task 4070). HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name, WS-43g2 (task 4070) for the network of each run | AGENT-SAFE. Dark. No production container (task 3786) |
+| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and for the merge of WS-43g2a (task 4070, built dark). PR 2887 merged (`d2bffe963`). HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887, merged `d2bffe963`) for the proxy and the door name, WS-43g2a (task 4070, built dark, not merged) for the network of each run | AGENT-SAFE. Dark. No production container (task 3786) |
 | **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. (SBX-Q2, decided 2026-11-27, task 3986, answer `fd97a2bd`) The run step opens one host at a time, as the smoke round does: a reinstall runs with the package hosts only, and the run command runs with the door host only. (§12.5) `run_tool` mints the write scopes of `tool.json` and runs the held-card watcher of SBX-3b beside the run command. **Open decision of SBX-5:** one run command has 300 s (§5.6), the same as the default card wait of §12.5 decision 6. SBX-5 decides whether a run command gets more time. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
@@ -2974,22 +2974,25 @@ merge commit names the Opus diff-reviewer review of the store digest.
 
 - Part (c) pins the literal `"user-tool"` until PR 2862 merges, and then
   uses `USER_TOOL_AGENT`.
-- The step engine (decisions 1 to 8) is not built. It waits for PR 2862,
-  PR 2887 and WS-43g2 (task 4070).
+- The step engine (decisions 1 to 8) is not built. It waits for PR 2862
+  and for the merge of WS-43g2a (task 4070). WS-43g2a is built dark, and
+  it is not merged. PR 2887 merged (`d2bffe963`).
 - SBX-4b2 waits for SBX-4b1.
 
 **Depends on.**
 
 - **SBX-4a** (task 3803, PR 2862, open): `TOOLS_TARGET`, `USER_TOOL_AGENT`
   and the refusal in `acquire()`.
-- **WS-43g1** (task 4009, PR 2887, open, built dark): `grant_egress`,
+- **WS-43g1** (task 4009, PR 2887, merged dark `d2bffe963`): `grant_egress`,
   `revoke_egress`, `check_grant_hosts`, the forward of `DOOR_HOST` and
   `sandbox_egress_door_upstream`. pip needs it to reach PyPI. `metorite_door`
   needs it to reach the door name.
-- **WS-43g2** (task 4070, not built): one egress network for each run
-  (decision 3). WS-43g2 also holds the live `request_network_access`, the
-  `timeout_s` parameter and the network card. `maf_coding_engine.md` owns
-  them.
+- **WS-43g2a** (task 4070, built dark, not merged): one egress network for each run
+  (decision 3), and the door read timeout of the proxy.
+  `maf_coding_engine.md` §7.3 and §11 own it.
+- **Not WS-43g2b** (task 4092). It holds the live `request_network_access`
+  and the network card. SBX-4b needs neither. SBX-3b (task 4084) owns the
+  `timeout_s` parameter of `request_confirmation`, and WS-43g2b uses it.
 - **SBX-1a, SBX-2 and SBX-13**, on `main`: the gap row, the capability and
   the door, and the door client.
 - **Not SBX-3.** SBX-4b holds no write. The smoke capability holds no write
@@ -3115,10 +3118,10 @@ binding.
 inter-container traffic (ICC) is on. So a `tools` container on that network
 sits next to the `code_task` containers of other members of the org.
 
-The owner chose one egress network for each run. WS-43g1 merges as it is,
-and WS-43g2 (task 4070) builds the network of each run. The `tools`
-container uses the network of its own run from WS-43g2. So the step engine
-of SBX-4b1 waits for WS-43g2 too.
+The owner chose one egress network for each run. WS-43g1 merged as it is
+(`d2bffe963`), and WS-43g2a (task 4070) builds the network of each run. The
+`tools` container uses the network of its own run from WS-43g2a. So the
+step engine of SBX-4b1 waits for WS-43g2a too.
 
 **4. The capability reaches the smoke command only.**
 
@@ -3755,13 +3758,16 @@ All the cards of one batch share one deadline. The route takes no
 `get_db` and no `tenant_session` dependency. Fence:
 `test_sandbox_door_writes.py::test_the_wait_holds_no_database_session`.
 
-- **The proxy cuts a held batch at 60 seconds today.** On PR 2887 the egress
+- **The proxy cuts a held batch at 60 seconds today.** On `main` the egress
   proxy reads with `FORWARD_TIMEOUT_S = 60.0` (`sandbox/egress_proxy.py:110`).
-- WS-43g2 (task 4070) owns the fix. It sets the read timeout of the door
-  host to the wait plus 30 seconds or more, with a test. A held batch
-  through the proxy waits for WS-43g2.
-- WS-43g2 also holds the live `request_network_access`, the `timeout_s`
-  parameter and the network card. `maf_coding_engine.md` owns them.
+- WS-43g2a (task 4070) owns the fix. The broker passes
+  `--door-read-timeout` with `sandbox_approval_timeout_seconds` plus 30, and
+  the proxy uses it for the door host only. `maf_coding_engine.md` §7.3, "The
+  door wait", holds it. A held batch through the proxy waits for WS-43g2a.
+- **One owner for each part.** SBX-3a (task 3802) owns
+  `sandbox_approval_timeout_seconds` (decision 6). SBX-3b (task 4084) owns
+  the `timeout_s` parameter of `request_confirmation` (done-when 22).
+  WS-43g2b (task 4092) uses both, for the network card.
 
 **No database session for the wait.** The batch route takes no
 `Depends(get_db)`. It reads `apps.slug` in a short session, and closes that
@@ -4389,6 +4395,16 @@ here, and each needs its own check before anyone acts on it.
   `decide`, and `POST /sandbox/held/results` gives the results of each card
   later. So a batch with two cards shows both. The card waits only the time
   left to the deadline of the batch. The client hides the new event.
+- 2026-11-27 — WS-43g2 spec (tasks 4070 and 4092). WS-43g1 merged dark
+  (`d2bffe963`, PR 2887). WS-43g2 splits in two. WS-43g2a (task 4070) is
+  the network of each run and the door read timeout. WS-43g2b (task 4092)
+  is the live tool and the card. SBX-3a owns `sandbox_approval_timeout_seconds`,
+  and SBX-3b owns `timeout_s`. WS-43g2b uses both. §0c, §2, §4.2, §6.9, §12.4,
+  §12.5 and the SBX-4b row follow. No code.
+- 2026-11-27 — WS-43g2a built dark (task 4070, branch `mt-8d60758e-ws43g2a`).
+  Each grant gets its own egress network, and a revoke removes only its own
+  network. A full address pool refuses the grant. The proxy reads the door
+  for the card wait plus 30 s. The SBX-4b rows follow. It is not merged.
 - 2026-11-27 — SBX-3a built dark on its branch (task 3802). It is not
   merged. The pins of the two digests change, and the Opus review and the
   independent verification are owed. The setting
