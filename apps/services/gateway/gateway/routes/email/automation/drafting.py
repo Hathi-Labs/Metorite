@@ -24,6 +24,7 @@ from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
     ProviderDidNotAnswer,
     ProviderMailTooLarge,
+    trash_checked,
 )
 from email_ingestion.providers.gmail import GmailDraftNotFound, GmailProvider
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -571,8 +572,8 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             if _fold(_live_draft_text(live)) not in wrote:
                 continue  # the member edited it: keep it
             try:
-                await asyncio.wait_for(
-                    provider.trash_message(r.provider_message_id),
+                await asyncio.wait_for(  # task 4095: the thread id is the IMAP Message-ID
+                    trash_checked(provider, r.provider_message_id, thread_id),
                     BODY_FETCH_TIMEOUT_S)
             except Exception:  # noqa: BLE001 — one stuck draft: no abort
                 pass
@@ -636,8 +637,8 @@ async def _resolve_existing_thread_draft(
                 _normalize_text(original):
             if not trash:
                 return "replace"
-            try:
-                await provider.trash_message(row.provider_message_id)
+            try:  # task 4095: the thread id is the IMAP Message-ID of the row
+                await trash_checked(provider, row.provider_message_id, thread_id)
             except Exception:  # noqa: BLE001 — a stuck draft shouldn't abort
                 pass
             await db.execute(text(
@@ -3473,6 +3474,8 @@ async def _update_provider_draft(
             attachments=attachments or None, exact_to=True,
         )
         try:
+            # Task 4095: no stored Message-ID here, so an IMAP trash raises
+            # (fail closed) and the old draft stays. No mail moves by mistake.
             await provider.trash_message(provider_message_id)
         except Exception:  # noqa: BLE001
             pass
@@ -3670,7 +3673,8 @@ async def trash_chat_draft(
         return False
     if not await _live_is_chat_text(provider, row.provider_message_id, wrote, sig):
         return False
-    await provider.trash_message(row.provider_message_id)
+    # Task 4095: the row matched ``thread_id``, the IMAP Message-ID of the row.
+    await trash_checked(provider, row.provider_message_id, thread_id)
     await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
     return True
 
@@ -4519,8 +4523,9 @@ async def send_draft_endpoint(
                     cc=cc or None, bcc=bcc or None,
                     reply_to_message_id=drow.thread_id or None,
                     thread_id=drow.thread_id or None)
-                try:
-                    await provider.trash_message(drow.provider_message_id)
+                try:  # task 4095: the thread id is the IMAP Message-ID
+                    await trash_checked(provider, drow.provider_message_id,
+                                        drow.thread_id)
                 except Exception:  # noqa: BLE001
                     pass
 

@@ -37,6 +37,7 @@ from gateway.routes.email.core import (
     _owned_accounts_sql,
     _savepoint,
     _tenant_session,
+    _trash_message_ids,
     provider_session,
     router,
 )
@@ -540,9 +541,14 @@ async def _bulk_reconcile_provider(
                            count=len(provider_msg_ids))
                 return
             pending = list(provider_msg_ids)
+            # Task 4095: the IMAP trash checks the stored Message-ID of each
+            # row. Other providers and actions pass nothing new.
+            stored = (await _trash_message_ids(db, sess.provider, account_id,
+                                               pending) if action == "trash" else None)
+            check = {} if stored is None else {"message_ids": stored}
             for attempt in range(_RECONCILE_ATTEMPTS):
                 failed: list[str] = []
-                rekeys = await sess.provider.bulk_apply(pending, action, failed)
+                rekeys = await sess.provider.bulk_apply(pending, action, failed, **check)
                 # Outlook's /move mints a NEW message id and invalidates the
                 # old one. Dropping these (as this job used to) leaves every
                 # bulk-archived Outlook message pointing at a dead id, so the
