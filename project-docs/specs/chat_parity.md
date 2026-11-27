@@ -145,6 +145,21 @@ option on 2026-11-26 (§7 item 11). §6.4 holds the P-1c block. Fences:
 `tests/unit/test_my_tasks_p1c_tools.py` and
 `tests/unit/test_calendar_connections_pack.py`.
 
+**P-5b-4 (task 3945) is BUILT, 2026-11-25, and it ships dark.** The tool
+`set_work_schedule` joins the pack `people`. It changes the work schedule of
+the company (`PUT /api/people/schedule`), which is the org policy and not the
+record of a person. The tool reads `GET /auth/me` first, so a member without
+`admin:members:manage` gets plain words and no card. It sends only the fields
+to change, onto the policy of now, because the route replaces the whole policy.
+It asks the route for a `dry_run`, and ONE card shows the impact that the server
+computed: the hours of the company week before and after, how many people
+move, and up to ten examples. The tool reads the schedule and the impact again
+after Approve, and it sends nothing when one of them moved. It refuses an
+unknown field, a value that the route would repair, and a text that the card
+cannot show. A change of a list names each entry that it removes or adds, and
+`changes={}` reads the schedule first. It paid one people row, so the
+people ceiling went from 7 to 6. Fence: `tests/unit/test_people_schedule_tool.py`.
+
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
 `org-admin` (`acb_skills/org_admin_tools.py`) holds four tools:
 `list_members`, `set_member_roles`, `set_member_status` and
@@ -671,13 +686,13 @@ took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
 P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
-took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
+took it to 7, and P-5b-4 took it to 6. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
 to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 
 P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 242. The "Today" column above does not show
+The total of `DEBT_CEILING` is 241. The "Today" column above does not show
 all of these changes. The crm row is different: it shows the changes of tasks
 3951, 3954 and 3953.
 
@@ -857,7 +872,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 10 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
@@ -1061,7 +1076,7 @@ data. The gate column names what the owner does before the slice is live.
 | P-5b-1 (task 3114): four reads. The directory, my row, the work of a person, the Reach preview | 6 people rows: `GET /api/people`, `GET /api/people/me`, `GET /api/people/me/work`, `GET /api/people/{}/work`, `GET /api/me/reach/status`, `GET /api/me/reach/preview`. 1 memory row: `POST /api/chat/memories` becomes an EXEMPT row of the kind `chat` (OD5 A) | Dark. The owner adds `people` to `TOOL_PACKS` | BUILT, 2026-11-25 |
 | P-5b-2 (task 3943): self writes of my own row, on one card each. Never `email` (OD1 B) | 5 people rows: `PATCH /api/people/{}`, `PUT /api/people/{}/skills`, `PUT /api/people/{}/credentials`, `POST /api/people/{}/absences`, `DELETE /api/people/{}/absences/{}`. The avatar and resume rows are file uploads, and they stay debt | Dark. The owner approves the preview of the card, then adds `people` to `TOOL_PACKS` | BUILT dark (task 3943), 2026-11-25 |
 | P-5b-3 (task 3944): admin writes of a person, on one card each. It waits for OD1 C | `PATCH /api/tasks/people/{}`, `POST /api/tasks/people/{}/resume`, and the admin half of the five P-5b-2 rows. `ADMIN_HALF_OPEN` in `chat_parity.py` names those five rows for task 3944 | Waits for the owner (OD1 C, a later decision) | Waits |
-| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | To do |
+| P-5b-4 (task 3945): the work schedule of the company, on one card | `PUT /api/people/schedule` | The owner approves the preview of the card | BUILT, 2026-11-25. Dark in the `people` pack |
 | P-5b-5 (task 3946): send my brief now, on one card each time (OD7 A) | `POST /api/me/reach/brief` | The owner approves the preview of the card | To do |
 | P-5b-6 (task 3947): delete the dead client code that creates a person (OD3 A) | `POST /api/tasks/people` leaves the UI, so its row goes | none | Built, 2026-11-25. `createPerson` and the create branch of `savePerson` are gone, so the people ceiling is 12. The gateway route stays. |
 | Mem0: the four rows of the memory store (OD2 A) | `GET /api/memory/{}`, `GET /api/memory/{}/status`, `POST /api/memory/{}/search`, `DELETE /api/memory/{}/{}` | Stay debt until KG-11 | Debt |

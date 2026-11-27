@@ -657,6 +657,12 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
+§13.6a row WM-5). Its one reader is
+`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
+org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
 edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
 `create_task` carries a form of its values, and the write takes the values

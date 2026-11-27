@@ -199,6 +199,7 @@ _READERS = {
     "APP_LEAD_RUNS_ORGS": ("gateway.routes.projects.filters", "app_lead_runs_allowed"),
     "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),
     "MEMBER_ACTIONS_ORGS": ("acb_common.member_actions", "enabled_for"),
+    "PROJECTS_GOALS_ORGS": ("gateway.routes.projects.core", "goals_allowed"),
     "STUDIO_DOOR_OPS_ORGS": ("gateway.routes.studio.flags", "door_ops_allowed"),
     "STUDIO_LOGIC_ORGS": ("gateway.routes.studio.flags", "logic_allowed"),
     "STUDIO_NUM_F8_ORGS": ("acb_common.studio_flags", "num_f8_allowed"),
