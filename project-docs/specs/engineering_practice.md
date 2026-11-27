@@ -1465,11 +1465,14 @@ holds, so it needs no migration and no backfill.
   NOTHING`, or an update of the three `landing` columns only. So a repeat of
   the same URL never moves the owner.
 - The GitHub App inserts references too. The webhook calls
-  `link_pull_request` (`gateway/routes/projects/github_autolink.py`) when a PR
-  opens on an `mt-` branch, and that calls `insert_ref` with `via =
-  'github'`. So the reference often exists before the lane adds it, and its
-  `created_at` is the time the PR opened. A lane opens its PR inside its run,
-  so the owner is that run. The lane's later add changes nothing.
+  `link_pull_request` (`gateway/routes/projects/github_autolink.py`) for a PR
+  on an `mt-` branch, at each event of `AUTOLINK_ACTIONS` (`webhook.py`):
+  opened, reopened, edited, synchronize and ready_for_review. That calls
+  `insert_ref` with `via = 'github'`. The first link sets `created_at`, and
+  that is most often the time the PR opened. A lane opens its PR inside its
+  run, so the owner is that run, and the lane's later add changes nothing.
+  When the first link comes on a later event, the owner is the run that holds
+  the task then. That can be a merger, as in case 6.
 - A release and a finish set `ended_at`. A run that waits or is in progress
   has `ended_at` NULL.
 
@@ -1509,6 +1512,8 @@ rule.
   takeover ends it.
 - **A tie in one transaction goes to the run.** Both columns default to
   `now()`, and the rule uses `<=`.
+- **A reopen widens the window.** A reopened run's window covers its idle gap
+  too. So a reference added in that gap binds to the reopened run.
 
 **What the gate cannot see.** Cases 3 and 4, and a dead lane, can leave an
 open PR that no live lane is bound to. The gate does not report it. It is a
@@ -1543,6 +1548,11 @@ URL and landing queued." It prints the real PR URL. The script calls no MCP.
     has.
 - `tests/unit/test_hand_over.py`: the last line holds no `<` and `>`
   placeholder, it names `search_tasks`, and it holds the real PR URL.
+- The mutation that names the rule: drop `n.created_at <= f.created_at` from
+  the owner read, and the case 1 test turns red.
+- The PR rewrites the two places that still state the newest-run rule: the
+  docstring of `claim_gate.py` and the mutation C2 at the top of
+  `tests/unit/test_claim_gate_r8.py`.
 - The flip order ("LBB-2b before the shadow flip") is advisory. No test can
   fence a flag flip. The flip list of §7b.2 carries it.
 
