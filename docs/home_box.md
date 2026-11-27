@@ -184,7 +184,8 @@ Its fence is `tests/unit/test_lane_keeper.py`.
 | `~/lanes/keeper-lanes.txt` | The only lanes that may wake, one name per line. Empty file: nothing wakes. |
 | `~/lanes/start/<lane>.txt` | The start note of a listed lane that has no session. With no file, the keeper starts nothing. |
 | `~/lanes/keeper.log` | Each wake and each skip, with its reason. |
-| `~/lanes/keeper-state.json` | The time of the last wake of each lane. |
+| `~/lanes/keeper-state.json` | The time of the last wake of each lane, the network backoff step, and the open stops. |
+| `~/lanes/lane-stops.tsv` | One row for each stop of a fault cause. See "Stop causes" below. |
 
 - To pause all waking, empty `keeper-lanes.txt`. Do not stop the timer.
 - The keeper never wakes `lane-chat` or `lane-bill`, because those lanes
@@ -202,6 +203,35 @@ Its fence is `tests/unit/test_lane_keeper.py`.
   starts or resumes a lane (task 2466, gap 7). Until that is fixed, start
   each lane yourself (§3.3). Use the keeper only to wake lanes that already
   run with those flags.
+
+#### Stop causes (CIV-LIVE)
+
+The keeper reads the end of the transcript of each lane and names why its last
+turn ended (task 4060). The keeper log shows the cause on each wake and skip
+line.
+
+| Cause | What the keeper sees | What the keeper does |
+|---|---|---|
+| `network` | An API error record of a lost connection or a 5xx status | Wakes it at the first keeper pass after 2, 5, 15, then 30 minutes. The timer runs every 10 minutes. A good turn sets the wait back to 2 minutes. |
+| `usage` | An API error record of a usage limit | No wake until the reset time plus 2 minutes. With no reset time, it waits 60 minutes. |
+| `signout` | A `/login` error of Claude, or a sign-in error of a Metorite tool in the last turn | No wake. One NOTE line goes to `~/lanes/merge-queue.log`, and it names the kind. For a Claude account, see §5.1: run `hub-add-accounts`, then start fresh lanes. For the Metorite MCP, see §5.2 and §5.3. |
+| `memory` | No end record, and the session has no process | The normal rules |
+| `normal` | Any other end | The normal rules |
+
+- The network wait takes the place of the 10-minute age and the 30-minute cap.
+- An account change wakes a `usage` lane. It never wakes a `signout` lane.
+- `lane-orch` keeps its event wake (§3.10). It gets no wake on a sign-out,
+  and no wake before a usage reset.
+- If the keeper cannot read the tail of a lane, it logs the error and uses
+  `normal` for that lane.
+- `~/lanes/lane-stops.tsv` has one row for each stop of a fault cause:
+  `<start>`, `<end or ->`, `<lane>` and `<cause>`, split by tabs. The times are
+  ISO UTC. A row opens when the keeper first sees the stop. It closes when the
+  lane runs again, or when the lane leaves the list. The keeper removes a
+  closed row after 30 days.
+- The weekly review (CIV-10) shows the hours by cause for each lane. To see
+  the table now, run
+  `python3 ~/.local/lib/metorite/lane_keeper.py --time-lost --days 7`.
 
 ### 3.8 The merge lane and its queue
 

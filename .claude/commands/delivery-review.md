@@ -98,6 +98,15 @@ Call the MCP. The script cannot do it.
 - **Waits on the owner.** Call `list_agent_runs` with `needs_agent` false and
   status awaiting. Count them, and note the oldest.
 
+### 2b. Read the time lost by lane
+
+`delivery_review.sh` puts the table "Time lost by lane" at the end of the
+system prompt of this session. The lane keeper keeps the stop log
+`~/lanes/lane-stops.tsv` (CIV-LIVE, task 4060). The table gives the hours of
+each lane by cause, for the last 7 days, and a total. It has no threshold, so
+it opens no fix task. If the table step failed, the prompt holds one line that
+says so. Copy that line.
+
 ### 3. Compare with the thresholds
 
 Build one table. Use one row for each line of the Thresholds table above.
@@ -110,7 +119,8 @@ no data.
    `519d9f0d-8dde-4910-b733-b4fa2ed3c2b9`). Title it `Delivery review YYYY-MM-DD`
    with today's date. Set its parent to epic task 1628 (id
    `ed3027f8-bf27-4f56-9a40-2c89141606d0`).
-2. Put the comparison table and the deltas in its description.
+2. Put the comparison table and the deltas in its description. Then copy the
+   table "Time lost by lane" from the system prompt as it is.
 3. Add the full JSON of `/tmp/delivery_now.json` in a fenced `json` block at
    the end of the description. The next run reads it as its last week.
 4. For each item over its threshold, create ONE fix task. Title it
