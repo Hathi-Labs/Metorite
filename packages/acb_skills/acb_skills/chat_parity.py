@@ -443,7 +443,6 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "GET /api/agent/config": "agent_registry_config",
     "GET /api/agent/list": "agent_registry_list",
     "GET /api/agent/mutations": "agent_registry_mutations",
-    "GET /api/agent/mutations/{}/diff": "agent_registry_mutations",
     "GET /api/agent/{}/skills": "agent_registry_skills",
     "GET /api/observability/activity/recent": "agent_registry_office",
     "GET /api/observability/avatars": "agent_registry_office",
@@ -1189,8 +1188,12 @@ DEBT: dict[str, str] = {
     "POST /api/apps/{}/ai/complete": "P-6",
     "POST /api/apps/{}/tools/{}": "P-6",
     # ── Agent Registry ──
-    # Task 3970 (PAR-10 part a) paid the 10 reads and the avatar write. These 9
-    # writes of the registry and of the mutation queue wait for task 4018.
+    # Task 3970 (PAR-10 part a) paid 9 reads and the avatar write. These 9
+    # writes of the registry and of the mutation queue, and the diff read,
+    # wait for task 4018.
+    # Task 4018: the chat shows no code diff. No pattern can prove that a diff
+    # holds no secret, so task 3970 left this row for task 4018.
+    "GET /api/agent/mutations/{}/diff": "P-6",
     "DELETE /api/agent/mutations/{}/delete": "P-6",
     "DELETE /api/agent/mutations/{}/dismiss": "P-6",
     "DELETE /api/agent/{}": "P-6",
@@ -1364,7 +1367,7 @@ DEBT_CEILING: dict[str, int] = {
     "memory": 4,  # P-5b-1 (task 3114, owner answer OD5 A) made the unmount save of the chat (POST /api/chat/memories) a chat exemption (5 to 4). The four Mem0 rows stay debt until KG-11 (OD2 A).
     "workflows": 0,  # STB-6a (task 3117) paid the list and the read of one workflow (24 to 22). STB-6b (task 3118) paid publish, rollback, disable and enable (22 to 18). PAR-8a (task 3903) paid the other 18 with seven tools of studio-workflows (18 to 0).
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
-    "agents": 9,  # Task 3970 (PAR-10 part a) paid the 10 reads of the Agent Registry and its office view and the avatar write with the seven tools of agent-registry (20 to 9). Paid by task 3970. The 9 writes of the registry and of the mutation queue wait for task 4018.
+    "agents": 10,  # Task 3970 (PAR-10 part a) paid 9 reads of the Agent Registry and its office view and the avatar write with the seven tools of agent-registry (20 to 10). Paid by task 3970. The 9 writes of the registry and of the mutation queue, and the diff read of a pending commit, wait for task 4018. The chat shows no code diff: no pattern can prove that a diff holds no secret.
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
     "shell": 9,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2). WS-AP AP-2a added GET /api/shell/waiting and its /count (7 to 9). The chat tool my_waits of AP-10 (task 1860) pays both. Paid by task 1860.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.

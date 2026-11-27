@@ -12,8 +12,8 @@ Seven tools do the same from the chat:
 * :func:`agent_registry_config` reads the ``config.json`` of an agent
   repository on GitHub, as the Add Agent form does (``GET /agent/config``).
 * :func:`agent_registry_mutations` reads the self-mutation queue
-  (``GET /agent/mutations``), or the diff of one pending commit
-  (``GET /agent/mutations/pending/{id}/diff``).
+  (``GET /agent/mutations``). It shows no diff: no pattern can prove that a
+  code diff holds no secret, so the diff stays on the page (task 4018).
 * :func:`agent_registry_office` reads the roster, the cost, the recent
   activity or the avatars (``GET /observability/...``).
 * :func:`agent_registry_runs` reads the run history (``GET /observability/runs``).
@@ -48,19 +48,18 @@ The rules:
   (``secret_shapes.is_secret_key``), after its hidden characters go. Each
   line of each text loses the value of a ``KEY=value`` or ``KEY: value`` of
   a secret key, anywhere in the line (:func:`_scrub_line`). The key rule is
-  best effort on free text (diffs, run errors, descriptions): it removes the
-  known credential shapes and the assignments of a secret-named key, and it
-  cannot remove a secret passed as an argument with no known shape. Only a
-  reviewer who already sees the diff can reach the mutation diff. Each text loses each credential shape of
+  best effort on free text (commit messages, run errors, descriptions): it
+  removes the known credential shapes, a PEM private key block and the
+  assignments of a secret-named key, and it cannot remove a secret passed as
+  an argument with no known shape. The chat shows no code diff. Each text loses each credential shape of
   the one list (``secret_shapes``). A route error loses each link, key and
   path (``tool_refusals.scrub_text``). A local path, a sprite and a repo URL
   are not shown.
 * **Text of other people is data.** Agent names, descriptions, commit
-  messages, diffs, run errors and config files come back in ONE
+  messages, run errors and config fields come back in ONE
   ``UntrustedFrame`` block, with no hidden character. A read with rows marks
   the chat as one that read outside text (``egress.mark_untrusted_answer``).
-* **Each read pages.** A list goes through ``acb_common.paging``. A diff
-  pages by line. Each object inside a value keeps 20 keys, and a marker says
+* **Each read pages.** A list goes through ``acb_common.paging``. Each object inside a value keeps 20 keys, and a marker says
   how many went. A framed block holds at most :data:`MAX_BLOCK_CHARS`
   characters, and a cut ends with :data:`CUT_MARK`.
 * **The card.** The avatar write shows ONE card where ``chat_pin_tools._must_ask``
@@ -79,7 +78,6 @@ from __future__ import annotations
 import json
 import re
 import textwrap
-import uuid
 from typing import Any
 from urllib.parse import quote
 
@@ -138,10 +136,6 @@ TIMEOUT_S = 15.0
 #: The rows of one page, by default and at most.
 DEFAULT_ROWS = 25
 MAX_ROWS = 50
-#: The lines of one diff page, by default and at most, and the longest line.
-DIFF_LINES = 200
-MAX_DIFF_LINES = 400
-MAX_DIFF_LINE_CHARS = 300
 #: The longest text of one value, of a commit message and of a route error.
 MAX_FIELD_CHARS = 300
 MAX_LONG_CHARS = 2000
@@ -197,7 +191,7 @@ _SECRET_RX = (REDACTION_BEARER, *REDACTION_SHAPES, *(rx for _, rx in SECRET_SHAP
 #: The user and the password of a link (``https://user:pass@host``).
 _LINK_LOGIN = re.compile(r"(://)[^/\s:@]{1,256}:[^/\s@]{1,512}@")
 #: An assignment in a line of code or config: the key, then ``=`` or ``:``.
-_ASSIGNMENT = re.compile(r"(?<![\w.])([A-Za-z_][\w.-]{0,80})([\"']?\]?\s{0,8}[:=]\s{0,8})(?=\S)")
+_ASSIGNMENT = re.compile(r"(?<![\w.])([A-Za-z_][\w.-]{0,80})([\"']?\]?\s{0,40}[:=]\s{0,8})(?=\S)")
 #: The first word of a value, for the plain-value test.
 _VALUE_WORD = re.compile(r"[^\s,;]{0,200}")
 #: A value that holds no secret: a number, a switch, null, or an empty text.
@@ -217,8 +211,6 @@ _NOT_LISTED = ("Your Agent Registry holds no agent with that name. Read agent_re
                "for the names. Nothing was done.")
 _BAD_REPO = ("Send a GitHub repository as owner/repo or as its github.com link. The tool "
              "reads no path on the server. Nothing was read.")
-_BAD_ID = ("Send the id of a pending commit as agent_registry_mutations shows it. Nothing "
-           "was read.")
 _BAD_VIEW = "view is one of: roster, cost, activity, avatars. Nothing was read."
 _BAD_STATUS = "status is one of: running, completed, error, cancelled. Nothing was read."
 _BAD_CHARACTER = ("Send the id of a character of the avatar library. Read the avatars for the "
@@ -232,7 +224,6 @@ _SIGNED_OUT = "Metorite could not confirm your account, so nothing was done."
 _NO_RIGHT = ("You do not hold the right that this needs in your organization, so nothing "
              "was done. Ask an admin of your organization.")
 _NO_ANSWER = "The Agent Registry did not answer. Nothing was done. Try again."
-_NOT_FOUND = "The Agent Registry holds no such item. Nothing was read."
 
 _LIST_NOTE = ("The block holds the agents that you may see. A person who registered an agent "
               "wrote its name and its description.")
@@ -241,8 +232,10 @@ _CONFIG_NOTE = ("The block holds only the fields of the Add Agent form from the 
                 "optional integrations. Its owner wrote them. No other field is shown.")
 _QUEUE_NOTE = ("The block holds the self-mutation queue. An agent wrote each commit message "
                "and each test summary.")
-_DIFF_NOTE = ("The block holds the diff that an agent wrote. Each credential shape is "
-              "removed.")
+#: The chat shows no diff: no pattern can prove that a code diff holds no
+#: secret. Task 4018 owns the diff row.
+_DIFF_ON_PAGE = ("The chat shows no diff of a pending commit. Read the diff on the Agent "
+                 "Registry page.")
 _OFFICE_NOTE = ("The block holds the office view of your organization. A person who "
                 "registered an agent wrote its name and its description.")
 _RUNS_NOTE = ("The block holds the run history of your organization. The errors come from "
@@ -322,6 +315,22 @@ def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return {"ok": False, "error": message, **extra}
 
 
+#: A PEM private key, from its BEGIN line to its END line, or to the end of
+#: the text when no END line follows. ``secret_shapes`` finds the BEGIN line
+#: only, so the body of the key needs this rule on the FULL text.
+_PEM_BLOCK = re.compile(
+    r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----.*?(?:-----END [A-Z ]{0,40}PRIVATE KEY-----|\Z)",
+    re.S)
+
+
+def _lines(value: Any) -> list[str]:
+    """The lines of *value*, after its hidden characters and each PEM private
+    key block go. Every free text splits here, so the PEM rule reads the
+    full text before any line split."""
+    text = strip_hidden(str(value if value is not None else ""))
+    return _PEM_BLOCK.sub(_REMOVED, text).splitlines()
+
+
 def _scrub(text: str) -> str:
     """*text* with each credential shape of the one list removed, the login of
     a link removed, and no hidden character."""
@@ -370,7 +379,7 @@ def _line(value: Any, width: int = MAX_FIELD_CHARS) -> str:
     """*value* as one clean line of at most *width* characters. Each line of
     it goes through :func:`_scrub_line`, then the cut comes last."""
     raw = str(value if value is not None else "")
-    text = one_line("\n".join(_scrub_line(x) for x in raw.splitlines()))
+    text = one_line("\n".join(_scrub_line(x) for x in _lines(raw)))
     if len(text) <= width:
         return text
     return textwrap.shorten(text, width=width, placeholder="...")
@@ -378,14 +387,14 @@ def _line(value: Any, width: int = MAX_FIELD_CHARS) -> str:
 
 def _long(value: Any, width: int = MAX_LONG_CHARS) -> str:
     """A long text with its line breaks, clean, cut at *width* characters."""
-    text = "\n".join(_scrub_line(x) for x in str(value or "").splitlines()).strip()
+    text = "\n".join(_scrub_line(x) for x in _lines(value or "")).strip()
     return _cut(text, width)
 
 
 def _error(value: Any) -> str:
     """The text of a run error: each link, key, address and path removed
     (``tool_refusals.scrub_text``), one line."""
-    text = "\n".join(_scrub_line(x) for x in str(value or "").splitlines())
+    text = "\n".join(_scrub_line(x) for x in _lines(value or ""))
     return scrub_text(text, limit=MAX_ERROR_CHARS)
 
 
@@ -498,7 +507,9 @@ def _fail(status: int, body: Any, member: str) -> dict[str, Any]:
     # A hidden character inside a key hides the key from the scrub of
     # ``safe_detail``. So each text of the body loses its hidden characters
     # first, and the detail takes the scrub of the shape list again after.
-    detail, _fields = safe_detail(status, _unhidden(body), member, limit=MAX_ERROR_CHARS)
+    # Each text of the body goes through the PEM rule and the key rule per
+    # line before ``safe_detail`` joins the lines.
+    detail, _fields = safe_detail(status, _texts_scrubbed(body), member, limit=MAX_ERROR_CHARS)
     detail = _scrub(detail)
     if status == 403:
         return _refusal(f"{_NO_RIGHT} {detail}".strip(), status=403)
@@ -524,14 +535,15 @@ async def _feature_refusal(member: str, feature: str) -> dict[str, Any] | None:
     return None
 
 
-def _unhidden(value: Any) -> Any:
-    """*value* with each text in it free of hidden characters."""
+def _texts_scrubbed(value: Any) -> Any:
+    """*value* with each text in it free of hidden characters and PEM blocks,
+    and with :func:`_scrub_line` on each of its lines."""
     if isinstance(value, str):
-        return strip_hidden(value)
+        return "\n".join(_scrub_line(x) for x in _lines(value))
     if isinstance(value, dict):
-        return {_unhidden(k): _unhidden(v) for k, v in value.items()}
+        return {strip_hidden(str(k)): _texts_scrubbed(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_unhidden(v) for v in value]
+        return [_texts_scrubbed(v) for v in value]
     return value
 
 
@@ -734,62 +746,21 @@ def _mutation_row(r: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
-def _commit_id(raw: Any) -> str:
-    text = str(raw or "").strip()
-    if len(text) != 36:
-        return ""
-    try:
-        return str(uuid.UUID(text))
-    except ValueError:
-        return ""
-
-
-async def _diff(member: str, raw_id: Any, line_offset: int) -> dict[str, Any]:
-    cid = _commit_id(raw_id)
-    if not cid:
-        return _refusal(_BAD_ID)
-    status, body = await _send("GET", f"/agent/mutations/pending/{_q(cid)}/diff", member)
-    if status == 404:
-        return _refusal(_NOT_FOUND, status=404)
-    if status != 200:
-        return _fail(status, body, member)
-    if not isinstance(body, dict):
-        return _refusal(_SHAPE)
-    lines = [_cut(_scrub_line(x), MAX_DIFF_LINE_CHARS)
-             for x in str(body.get("diff_text") or "").splitlines()]
-    page = paged(lines, line_offset, DIFF_LINES, default=DIFF_LINES, maximum=MAX_DIFF_LINES,
-                 noun="diff lines", param="line_offset")
-    shown = {**_pick(body, ("id", "agent_name", "commit_sha", "status")),
-             "commit_message": _long(body.get("commit_message"), MAX_FIELD_CHARS),
-             "test_summary": _long(body.get("test_summary"), MAX_FIELD_CHARS),
-             "diff": "\n".join(page.items)}
-    return await _framed("PENDING COMMIT DIFF", shown, "commit", _DIFF_NOTE,
-                         diff_lines=page.total, page=page.line)
-
-
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def agent_registry_mutations(mutation_id: str = "", offset: int = 0,
-                                   limit: int = DEFAULT_ROWS,
-                                   line_offset: int = 0) -> dict[str, Any]:
-    """Read the self-mutation queue of the agents, newest first, or the diff of one pending commit. It approves nothing.
+async def agent_registry_mutations(offset: int = 0,
+                                   limit: int = DEFAULT_ROWS) -> dict[str, Any]:
+    """Read the self-mutation queue of the agents, newest first. It shows no diff and approves nothing.
 
     Args:
-        mutation_id: the id of one pending commit, for its diff. Empty reads the queue.
         offset: the first row of the queue page.
         limit: the rows of one queue page.
-        line_offset: the first line of the diff page.
     """
     member, refused = _member_or_refusal()
     if refused:
         return _refusal(refused)
-    wants_diff = bool(str(mutation_id or "").strip())
-    if wants_diff and not _commit_id(mutation_id):
-        return _refusal(_BAD_ID)
     no_page = await _feature_refusal(member, REGISTRY_FEATURE)
     if no_page is not None:
         return no_page
-    if wants_diff:
-        return await _diff(member, mutation_id, line_offset)
     start, size, ask = prefix_limit(offset, limit, default=DEFAULT_ROWS, cap=MUTATIONS_CAP,
                                     maximum=MAX_ROWS)
     status, body = await _send("GET", MUTATIONS_PATH, member, params={"limit": ask})
@@ -800,7 +771,8 @@ async def agent_registry_mutations(mutation_id: str = "", offset: int = 0,
     rows = [r for r in body if isinstance(r, dict)]
     page = prefix_page(rows, start, size, cap=MUTATIONS_CAP, asked=ask, noun="mutations")
     return await _framed("MUTATION QUEUE", [_mutation_row(r) for r in page.items], "mutations",
-                         _QUEUE_NOTE, shown=len(page.items), page=page.line)
+                         _QUEUE_NOTE, shown=len(page.items), page=page.line,
+                         diff=_DIFF_ON_PAGE)
 
 
 # ── agent_registry_office ───────────────────────────────────────────────────

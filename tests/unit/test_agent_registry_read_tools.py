@@ -18,16 +18,18 @@ The fences (R7), each with its mutation:
 * each tool sends the route of its UI action, as the member.
 * a shared room, a WhatsApp run and a run with no verified member send
   nothing.
-* no secret reaches the model: a secret key of a config, a key in a diff, a
-  token in a run error, a local path, a repo URL and a sprite stay out.
+* no secret reaches the model: a field outside the Add Agent form, a
+  secret-named assignment, a PEM block, a token in a run error, a local path,
+  a repo URL and a sprite stay out. No tool reads the diff of a pending commit.
 * the config read sends a GitHub slug only, never a path on the server.
 * the text of other people stays inside ONE frame block, with no hidden
   character.
-* each list pages, and a diff pages by line.
+* each list pages.
 * the avatar write sends the body of the picker. It shows ONE card where
   ``_must_ask`` says so, and always when a custom picture goes. Only an
   approve sends, and a changed avatar after the card sends nothing.
-* the 11 rows are COVERED, the 9 writes stay DEBT, and the ceiling is 9.
+* the 10 rows are COVERED, the 9 writes and the diff read stay DEBT, and the
+  ceiling is 10.
 
 Run: ``uv run pytest tests/unit/test_agent_registry_read_tools.py -q``.
 """
@@ -74,11 +76,12 @@ PACK = "agent-registry"
 #: The headers that httpx adds to each request by itself.
 HTTPX_OWN = {"host", "accept", "accept-encoding", "connection", "user-agent", "content-length"}
 ROWS = ("GET /api/agent/config", "GET /api/agent/list", "GET /api/agent/mutations",
-        "GET /api/agent/mutations/{}/diff", "GET /api/agent/{}/skills",
+        "GET /api/agent/{}/skills",
         "GET /api/observability/activity/recent", "GET /api/observability/avatars",
         "GET /api/observability/cost", "GET /api/observability/roster",
         "GET /api/observability/runs", "PUT /api/observability/avatars/{}")
-WRITES = ("DELETE /api/agent/mutations/{}/delete", "DELETE /api/agent/mutations/{}/dismiss",
+#: The rows that stay DEBT for task 4018: the 9 writes and the diff read.
+WRITES = ("GET /api/agent/mutations/{}/diff", "DELETE /api/agent/mutations/{}/delete", "DELETE /api/agent/mutations/{}/dismiss",
           "DELETE /api/agent/{}", "PATCH /api/agent/{}",
           "POST /api/agent/mutations/{}/remutate", "POST /api/agent/mutations/{}/{}",
           "POST /api/agent/register", "POST /api/agent/{}/pull", "PUT /api/agent/{}/skills")
@@ -161,7 +164,7 @@ class Gateway:
     def _pick(names: set[str], path: str) -> str:
         """The handler of this path. ``/agent/{name}`` routes also match a
         static path, so the static handler wins, as FastAPI orders them."""
-        for want in ("get_me", "get_agent_config", "list_mutations", "get_pending_commit_diff",
+        for want in ("get_me", "get_agent_config", "list_mutations",
                      "get_agent_skills", "list_agents", "roster", "cost", "runs",
                      "activity_recent", "avatars", "put_avatar"):
             if want in names:
@@ -192,16 +195,6 @@ class Gateway:
                  "commit_sha": "abc123", "commit_message": f"Fix it {PLANTED}",
                  "test_summary": "3 passed", "status": "pending", "at": "2026-11-25",
                  "approve_url": f"/agent/mutations/pending/{CID}/approve"}])
-        if name == "get_pending_commit_diff":
-            lines = [f"+line {i}" for i in range(250)]
-            lines[3] = f'+OPENAI_API_KEY = "{OPENAI_KEY}"'
-            lines[4] = "+password: hunter2isnotsafe"
-            lines[5] = "+    max_tokens: 100"
-            lines[6] = f"+# {PLANTED}"
-            return httpx.Response(200, json={
-                "id": CID, "agent_name": "sales", "commit_sha": "abc123",
-                "commit_message": "Fix it", "diff_text": "\n".join(lines),
-                "test_summary": "3 passed", "status": "pending"})
         if name == "roster":
             return httpx.Response(200, json={"agents": [
                 {"kind": "agent", "name": "sales", "display_name": "", "description": PLANTED,
@@ -380,7 +373,6 @@ ROUTES = [
     (lambda: ar.agent_registry_config("https://github.com/acme/sales"),
      ["get_me", "get_agent_config"]),
     (lambda: ar.agent_registry_mutations(), ["get_me", "list_mutations"]),
-    (lambda: ar.agent_registry_mutations(CID), ["get_me", "get_pending_commit_diff"]),
     (lambda: ar.agent_registry_office("roster"), ["get_me", "roster"]),
     (lambda: ar.agent_registry_office("cost", days=14), ["get_me", "cost"]),
     (lambda: ar.agent_registry_office("activity"), ["get_me", "activity_recent"]),
@@ -390,7 +382,7 @@ ROUTES = [
 
 #: The feature that each tool needs, as its page needs it. An empty one: each app
 #: reads the route, so the tool needs no feature.
-FEATURE_OF = ["", "agents", "agents", "agents", "agents", "observability",
+FEATURE_OF = ["", "agents", "agents", "agents", "observability",
               "observability", "observability", "", "observability"]
 
 
@@ -593,11 +585,13 @@ async def test_no_secret_value_of_a_config_reaches_the_model(gw: Gateway,
     f'+    env = {{"DB_PASSWORD": "{V}"}}',
     f"+api\u200b_key = {V}",
     f"+run --password={V} now",
+    f"+API_KEY{' ' * 40}= {V}",
+    f"+password{' ' * 30}: {V}",
     f'+os.environ["API_KEY"] = "{V}"',
     f'+cfg["password"]="{V}"',
     f"+cfg['db_password'] = '{V}'",
 ])
-def test_the_diff_rule_finds_an_assignment_anywhere_in_the_line(line: str) -> None:
+def test_the_key_rule_finds_an_assignment_anywhere_in_the_line(line: str) -> None:
     """Mutation: match the assignment only at the start of the line -> red."""
     assert V not in ar._scrub_line(line)
 
@@ -682,30 +676,51 @@ async def test_the_config_reads_no_path_and_no_other_host(gw: Gateway, repo: str
     assert gw.calls == []
 
 
-async def test_the_diff_removes_each_key_and_pages_by_line(gw: Gateway) -> None:
-    """Mutation: drop the scrub, or show the whole diff on one page -> red."""
-    with _run():
-        out = await ar.agent_registry_mutations(CID)
-        rest = await ar.agent_registry_mutations(CID, line_offset=200)
-    text = _all_text(out)
-    assert OPENAI_KEY not in text and "hunter2isnotsafe" not in text
-    inside = json.loads(_block_text(out["commit"]))
-    lines = inside["diff"].splitlines()
-    assert len(lines) == 200 and out["diff_lines"] == 250
-    assert "line_offset=200" in out["page"]
-    assert lines[3] == '+OPENAI_API_KEY = "<secret removed>"'
-    assert "hunter2" not in lines[4] and "<secret removed>" in lines[4]
-    assert lines[5] == "+    max_tokens: 100", "a number is no secret, and the indent stays"
-    assert PLANTED in lines[6] and PLANTED not in _outside(out, "commit")
-    assert len(json.loads(_block_text(rest["commit"]))["diff"].splitlines()) == 50
+def test_no_tool_reads_the_diff_of_a_pending_commit() -> None:
+    """No pattern can prove that a code diff holds no secret. Mutation: add a
+    diff read, or a ``mutation_id`` argument -> red."""
+    src = (REPO / "packages/acb_skills/acb_skills/agent_registry_tools.py").read_text(
+        encoding="utf-8")
+    code = "\n".join(line for line in src.splitlines()
+                     if not line.lstrip().startswith(("#", "*", "(``")))
+    assert "/diff" not in code and "mutations/pending" not in code
+    assert set(inspect.signature(ar.agent_registry_mutations).parameters) == {"offset", "limit"}
 
 
-@pytest.mark.parametrize("bad", ["x", "not-a-uuid-but-36-characters-long-xx", "../" * 12])
-async def test_a_bad_commit_id_sends_no_request(gw: Gateway, bad: str) -> None:
+async def test_the_queue_says_where_the_diff_is(gw: Gateway) -> None:
     with _run():
-        out = await ar.agent_registry_mutations(bad)
-    assert out == {"ok": False, "error": ar._BAD_ID}
-    assert gw.calls == []
+        out = await ar.agent_registry_mutations()
+    assert "Agent Registry page" in out["diff"]
+    assert gw.handled() == ["get_me", "list_mutations"]
+
+
+PEM = ("-----BEGIN RSA PRIVATE KEY-----\nMIIEq7Zp2LmX9vKc4RtY8wNbAAAA\n"
+       "q7Zp2LmX9vKc4RtY8wNbBBBB\n-----END RSA PRIVATE KEY-----")
+
+
+@pytest.mark.parametrize("pem", [PEM, PEM.rsplit("\n", 1)[0]])
+async def test_a_pem_block_never_reaches_the_model(gw: Gateway, pem: str) -> None:
+    """The whole block goes, with or without its END line, in a run error, a
+    description and a route error. Mutation: scrub per line only -> red."""
+    gw.force["runs"] = (200, {"runs": [{"run_id": "r1", "status": "error",
+                                        "error_message": f"failed:\n{pem}\nafter"}]})
+    gw.force["get_agent_config"] = (200, {"description": f"key:\n{pem}"})
+    gw.force["list_mutations"] = (400, {"detail": f"bad\n{pem}"})
+    with _run():
+        runs = await ar.agent_registry_runs()
+        config = await ar.agent_registry_config("acme/sales")
+        failed = await ar.agent_registry_mutations()
+    for out in (runs, config, failed):
+        assert V not in _all_text(out) and "MIIE" not in _all_text(out), out
+    assert failed["ok"] is False
+
+
+async def test_a_route_error_takes_the_key_rule_on_each_line(gw: Gateway) -> None:
+    """Mutation: let ``safe_detail`` join the lines before the key rule -> red."""
+    gw.force["list_mutations"] = (400, {"detail": f"bad config\nDB_PASSWORD={V}"})
+    with _run():
+        out = await ar.agent_registry_mutations()
+    assert out["ok"] is False and V not in _all_text(out)
 
 
 async def test_the_queue_is_framed_and_holds_no_review_link(gw: Gateway) -> None:
@@ -897,7 +912,7 @@ def test_the_rows_of_the_agent_registry_have_their_decision() -> None:
         assert row not in cp.DEBT and row not in cp.EXEMPT, row
     assert sorted(k for k in cp.DEBT if cp.app_of(k.split(" ", 1)[1]) == "agents") == \
         sorted(WRITES)
-    assert cp.DEBT_CEILING["agents"] == len(WRITES) == 9
+    assert cp.DEBT_CEILING["agents"] == len(WRITES) == 10
     assert "Paid by task 3970" in (REPO / "packages/acb_skills/acb_skills/chat_parity.py"
                                    ).read_text(encoding="utf-8")
     assert {3970, 4018} <= set(cp.WAVES["P-6"][2])

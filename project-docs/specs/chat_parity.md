@@ -26,8 +26,8 @@ Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
 
 **PAR-10 part a (task 3970) is BUILT, 2026-11-26, dark.** The chat reads the
 Agent Registry and its office view, and gives an agent an avatar, with the pack
-`agent-registry`. The agents ceiling goes from 20 to 9. The 9 writes wait for
-task 4018. §6.2 holds the detail.
+`agent-registry`. The agents ceiling goes from 20 to 10. The 9 writes and the
+diff of a pending commit wait for task 4018. §6.2 holds the detail.
 
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
@@ -605,15 +605,15 @@ The thirteenth route is `/bot/identity`. Its status check starts a browser on
 the profile of the bot, and a bot join at the same time can fail.
 
 **PAR-10 part a (task 3970) is BUILT, 2026-11-26, dark.** The new pack
-`agent-registry` holds seven tools. They pay the 10 reads of the Agent Registry
-and its office view, and the avatar write (20 to 9). The pack is owned by `org-admin`, as the
+`agent-registry` holds seven tools. They pay 9 reads of the Agent Registry
+and its office view, and the avatar write (20 to 10). The pack is owned by `org-admin`, as the
 pack `notes` is. The tools are `agent_registry_list`, `agent_registry_skills`,
 `agent_registry_config`, `agent_registry_mutations`, `agent_registry_office`,
 `agent_registry_runs` and `agent_registry_set_avatar`.
 
 Each tool sends the route of the UI as the verified member, so the gate of each
 route decides. The list shows only the agents that the member may run. The
-mutation queue and its diff need `agents:manage` and an org that may review.
+mutation queue needs `agents:manage` and an org that may review.
 No tool takes an org or a member. A tool that names one agent finds it in the
 member's own list first.
 
@@ -635,22 +635,26 @@ No result holds a secret key, a credential shape, a local path, a repo URL or
 a sprite. Each line of each text loses the value of a secret key, at any place
 in the line, as in `export API_KEY=value`.
 
-The key rule is best effort on free text, such as diffs, run errors and
-descriptions. It removes the known credential shapes and the assignments of a
-secret-named key. It cannot remove a secret passed as an argument with no
-known shape. Only a reviewer who already sees the diff can reach the mutation
-diff.
+The key rule is best effort on free text, such as commit messages, run errors
+and descriptions. It removes the known credential shapes, a PEM private key
+block and the assignments of a secret-named key. It cannot remove a secret
+passed as an argument with no known shape.
 
-Agent names, descriptions, commit
-messages, diffs, config fields and run errors go in one untrusted frame. A
-diff pages by line.
+The chat shows no code diff of a pending commit. No pattern can prove that a
+diff holds no secret. So `GET /api/agent/mutations/{}/diff` stays debt for
+task 4018, and the queue read tells the member to read the diff on the Agent
+Registry page.
+
+Agent names, descriptions, commit messages, config fields and run errors go in
+one untrusted frame.
 
 The avatar write sends the body of the picker. It shows one card where
 `_must_ask` says so. It always shows the card when a custom picture goes,
 because the picker sends no picture. After the approve it reads the avatars
 again, and sends nothing when the avatar changed.
 
-The 9 writes of the registry and of the mutation queue stay debt for task 4018.
+The 9 writes of the registry and of the mutation queue, and the diff read, stay
+debt for task 4018.
 The pack is not in `FOLLOWS`. A run loads it where the owner lists
 `agent-registry` in `TOOL_PACKS`, or where `TOOL_PACKS` is `*`.
 
@@ -666,9 +670,9 @@ took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3960 took whatsapp
 to 13. P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2.
 Task 3963 took notes to 45.
 
-Task 3970 took agents to 9.
+Task 3970 took agents to 10.
 
-The total of `DEBT_CEILING` is 246, the sum of its rows on 2026-11-27. The
+The total of `DEBT_CEILING` is 247, the sum of its rows on 2026-11-27. The
 "Today" column above does not show
 all of these changes.
 
@@ -1019,9 +1023,9 @@ uv run ruff check tests/unit/test_my_tasks_p1c_tools.py tests/unit/test_calendar
 - **Rung 8, PAR-9 (task 3950).** It pays 26 Custom Apps rows with the dark
   pack `studio-apps`. Two rows wait for the owner's ruling on their kind. The
   demo needs the owner to add `studio-apps` to `TOOL_PACKS` (§7, item 1).
-- **Rung 8, PAR-10 part a (task 3970).** It pays the 10 reads and the avatar
+- **Rung 8, PAR-10 part a (task 3970).** It pays 9 reads and the avatar
   write of the Agent Registry with the dark pack `agent-registry`. Task 4018
-  takes the 9 writes. The demo needs the owner to add `agent-registry` to
+  takes the 9 writes and the diff read. The demo needs the owner to add `agent-registry` to
   `TOOL_PACKS` (§7, item 1).
 - **Rung 6.** The two actions are a WhatsApp message and the meeting notes.
   WhatsApp goes first, because Notes has no live page (`APP_PAGE`).
