@@ -43,8 +43,11 @@ to 20. §6.4 holds the decision of each row.
 The save card of `edit_chat_file` shows each character that the save writes.
 Its body starts with two lines that hold no `key: value` field. So the card of
 the web app reads no field in the body, and it draws the body as one text. A
-text with a lone carriage return, U+2028 or U+2029 gets no card. The shared fixture
-`tests/fixtures/chat_file_card_cases.json` pins the body and its drawing.
+text with a lone carriage return, U+2028 or U+2029 gets no card. The shared
+fixture `tests/fixtures/chat_file_card_cases.json` pins the body and its drawing.
+
+A promote card puts its warning and both paths in the body, so no clip cuts
+them. A card that a clip of `request_confirmation` would cut gets no card.
 
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five

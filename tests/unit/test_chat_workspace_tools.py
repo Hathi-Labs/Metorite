@@ -33,7 +33,9 @@ the write on a reject, read the memory id for the header, drop the shared-room
 check, drop the second read of the list after the approve, and show the file
 list with no frame. Fix round 1 (2026-11-27), each red here: send the new text
 as the card body with no head lines, set ``CONTENT_MAX`` to ``CARD_CLIP``, drop
-the false line break check, and strip a leading "/" of a path again.
+the false line break check, and strip a leading "/" of a path again. Fix round
+2: put the paths and the warning of a promote in the detail line again, and
+drop the fit check of a card.
 """
 
 from __future__ import annotations
@@ -457,8 +459,10 @@ async def test_a_promote_shows_one_card_and_sends_the_path_alone(
         out = await cwt.promote_chat_file("inputs/par11c-thread/spec.pdf")
     assert out["ok"] is True
     [(args, kwargs)] = approve.calls
-    assert "inputs/par11c-thread/spec.pdf" in args[1] and "agent-data/spec.pdf" in args[1]
-    assert "other members" in args[1]
+    assert args[2] == cwt._promote_text("inputs/par11c-thread/spec.pdf", "agent-data/spec.pdf",
+                                        False)
+    assert "inputs/par11c-thread/spec.pdf" in args[2] and "agent-data/spec.pdf" in args[2]
+    assert "other members" in args[2]
     assert kwargs["responder"] == MEMBER and kwargs["non_interactive_default"] == "deny"
     post = gateway.requests[-1]
     assert post.method == "POST" and post.url.raw_path.decode() == f"{BASE}/promote"
@@ -472,7 +476,75 @@ async def test_a_promote_card_says_it_replaces_a_file_of_the_same_name(
     gateway.tree.append(_row("agent-data/spec.pdf", 1, mime="application/pdf"))
     with _run():
         await cwt.promote_chat_file("inputs/par11c-thread/spec.pdf")
-    assert "replaces the file of the same name" in approve.calls[0][0][1]
+    assert "replaces the file of the same name" in approve.calls[0][0][2]
+
+
+#: The longest name of an upload: its path in inputs is MAX_PATH_CHARS long.
+LONG_NAME = "n" * (cwt.MAX_PATH_CHARS - len("inputs/") - len(".pdf")) + ".pdf"
+
+
+def test_the_clips_are_the_clips_of_the_card() -> None:
+    source = inspect.getsource(ask_tools.request_confirmation)
+    assert f".strip()[:{cwt.TITLE_CLIP}]" in source
+    assert f".strip()[:{cwt.DETAIL_CLIP}]" in source
+    assert f".strip()[:{CARD_CLIP}]" in source
+
+
+@pytest.mark.parametrize("taken", [False, True])
+async def test_a_promote_card_with_the_longest_paths_shows_both_and_the_warning(
+    gateway: _Gateway, approve: _Card, taken: bool,
+) -> None:
+    """Two paths of 400 characters and the warning do not fit in the detail
+    line. Mutation: put the paths and the warning in the detail again -> red."""
+    rel, dest = f"inputs/{LONG_NAME}", f"agent-data/{LONG_NAME}"
+    assert len(rel) == cwt.MAX_PATH_CHARS
+    gateway.tree.append(_row(rel, 7, mime="application/pdf"))
+    if taken:
+        gateway.tree.append(_row(dest, 3, mime="application/pdf"))
+    with _run():
+        out = await cwt.promote_chat_file(rel)
+    assert out["ok"] is True
+    [(args, _)] = approve.calls
+    title, detail, context = args
+    assert len(title) <= cwt.TITLE_CLIP and len(detail) <= cwt.DETAIL_CLIP
+    assert len(context.strip()) <= CARD_CLIP
+    lines = context.split("\n")
+    assert rel in lines and dest in lines
+    assert "the chats of other members read it too" in context
+    assert ("replaces the file of the same name" in context) is taken
+    # Two head lines with no colon: the card draws the body as one text.
+    assert not any(":" in line for line in lines[:2])
+
+
+async def test_a_delete_and_a_save_card_with_the_longest_path_fit(
+    gateway: _Gateway, approve: _Card,
+) -> None:
+    rel = "outputs/" + "d" * (cwt.MAX_PATH_CHARS - len("outputs/") - len(".md")) + ".md"
+    assert len(rel) == cwt.MAX_PATH_CHARS
+    gateway.tree.append(_row(rel, 10 ** 15))
+    with _run():
+        assert (await cwt.delete_chat_file(rel))["ok"] is True
+        assert (await cwt.edit_chat_file(rel, "x"))["ok"] is True
+    (deleted, _), (saved, _) = approve.calls
+    assert len(deleted[1]) <= cwt.DETAIL_CLIP and len(saved[1]) <= cwt.DETAIL_CLIP
+    assert rel in deleted[1] and deleted[1].startswith("This cannot be undone.")
+    assert rel in saved[1]
+
+
+@pytest.mark.parametrize("call", [
+    lambda: cwt.edit_chat_file("outputs/report.md", "x"),
+    lambda: cwt.promote_chat_file("inputs/par11c-thread/spec.pdf"),
+    lambda: cwt.delete_chat_file("outputs/report.md"),
+])
+async def test_a_card_that_a_clip_would_cut_is_not_shown(
+    gateway: _Gateway, approve: _Card, monkeypatch: pytest.MonkeyPatch, call: Any,
+) -> None:
+    """Fail closed. Mutation: drop the fit check -> a card shows -> red."""
+    monkeypatch.setattr(cwt, "DETAIL_CLIP", 20)
+    with _run():
+        out = await call()
+    assert out == {"ok": False, "error": cwt._NO_FIT}
+    assert gateway.writes() == [] and approve.calls == []
 
 
 async def test_a_delete_card_names_the_file_and_then_sends(

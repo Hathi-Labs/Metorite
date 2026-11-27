@@ -38,7 +38,9 @@ The rules:
   names the file. A write reads the list before its card, reads it again after
   the approve, and sends nothing when the file changed. A save shows the whole
   new text on its card, so a text that does not fit on one card gets plain
-  words and no card.
+  words and no card. A promote card puts its warning and both paths in the
+  body, because two long paths pass the clip of the detail line. A card that
+  a clip of ``request_confirmation`` would cut gets no card (:func:`_card_fits`).
 * **The card of a save shows the text as the save writes it.** The card of the
   web app reads a body of ``key: value`` lines as fields. It drops an id line,
   joins numbered keys and renames keys (``ConfirmationCard.parseCardBody``).
@@ -118,6 +120,10 @@ _HEAD_ROOM = 400
 #: on one card (``acb_common.card_body.CARD_CLIP``, the clip of
 #: ``ask_tools.request_confirmation``).
 CONTENT_MAX = CARD_CLIP - _HEAD_ROOM
+#: The clips of ``ask_tools.request_confirmation``: the title, the detail and
+#: the body. A card with a field over its clip gets no card (:func:`_card_fits`).
+TITLE_CLIP = 120
+DETAIL_CLIP = 500
 #: The characters that the card draws as no line break, though a file reads
 #: them as one: a carriage return that is not before a new line, U+2028 and
 #: U+2029.
@@ -158,6 +164,8 @@ _FALSE_BREAK_TEXT = ("The new text holds a carriage return that is not before a 
                     "Use a plain new line. Nothing changed.")
 _NOT_INPUT = ("Only an upload in inputs can move to Agent Data. Read the file list for the "
               "paths. Nothing changed.")
+_NO_FIT = ("The card cannot show the whole act, because the path is too long. Nothing "
+           "changed. Use the Files panel of the chat.")
 _CHANGED = ("The file changed after the card showed, so nothing was sent. Read the file list "
             "again, then ask again.")
 _GONE = "The file is not in the file list of this chat now. Nothing changed."
@@ -394,6 +402,30 @@ def _card_text(content: str, old_size: int) -> str:
     return f"{head}\n{counts}\n{content}"
 
 
+def _card_fits(title: str, detail: str, context: str = "") -> bool:
+    """True when no clip of ``request_confirmation`` cuts the card. A card
+    that a clip cuts does not show the whole act, so the tool shows none."""
+    return (len(title.strip()) <= TITLE_CLIP and len(detail.strip()) <= DETAIL_CLIP
+            and len(context.strip()) <= CARD_CLIP)
+
+
+def _promote_text(rel: str, dest: str, replaces: bool) -> str:
+    """The body of a promote card: the warning first, then the two paths whole.
+
+    The detail line has a clip of 500 characters, and two paths can be 800. So
+    the paths and the warning go in the body. No head line holds a colon, so
+    the card draws the body as one text (``parseCardBody``)."""
+    lines = [
+        "The upload leaves inputs and moves to Agent Data.",
+        "Agent Data is the lasting memory of this assistant, so later chats read it. In an "
+        "assistant that your organization shares, the chats of other members read it too.",
+    ]
+    if replaces:
+        lines.append("It replaces the file of the same name in Agent Data.")
+    lines += ["The upload now", rel, "The file after the move", dest]
+    return "\n".join(lines)
+
+
 async def _approved(title: str, detail: str, member: str, context: str = "") -> bool:
     """Show ONE card, bound to *member*, and wait. True only on an approve."""
     from acb_skills import ask_tools
@@ -526,8 +558,11 @@ async def edit_chat_file(path: str, content: str) -> dict[str, Any]:
     if len(card.strip()) > CARD_CLIP:
         # Fail closed: a card that the clip cuts does not show the whole text.
         return _refusal(_TOO_LONG.format(n=len(content), max=CONTENT_MAX))
+    title = "Save this file?"
     detail = f"{_line(rel, MAX_PATH_CHARS)}: the new text replaces all of the text."
-    if not await _approved("Save this file?", detail, member, context=card):
+    if not _card_fits(title, detail, card):
+        return _refusal(_NO_FIT)
+    if not await _approved(title, detail, member, context=card):
         return _not_done("edit")
     why = await _still(member, sid, rel, before)
     if why:
@@ -568,13 +603,12 @@ async def promote_chat_file(path: str) -> dict[str, Any]:
     dest = f"{AGENT_DATA_DIR}/{rel.rsplit('/', 1)[-1]}"
     taken = _find(rows, dest)
     before, dest_before = _snapshot(row), _snapshot(taken)
-    detail = (f"{_line(rel, MAX_PATH_CHARS)} moves to {_line(dest, MAX_PATH_CHARS)}, and "
-              "leaves inputs. Agent Data is the lasting memory of this assistant, so later "
-              "chats read it. In an assistant that your organization shares, the chats of "
-              "other members read it too.")
-    if taken is not None:
-        detail += " It replaces the file of the same name in Agent Data."
-    if not await _approved("Move this file to Agent Data?", detail, member):
+    title = "Move this file to Agent Data?"
+    detail = "Read the whole card. The upload moves to the lasting memory of this assistant."
+    body = _promote_text(rel, dest, taken is not None)
+    if not _card_fits(title, detail, body):
+        return _refusal(_NO_FIT)
+    if not await _approved(title, detail, member, context=body):
         return _not_done("promote")
     why = await _still(member, sid, rel, before, other=dest, other_before=dest_before)
     if why:
@@ -610,9 +644,12 @@ async def delete_chat_file(path: str) -> dict[str, Any]:
     if row is None:
         return _refusal(_NOT_IN_LIST)
     before = _snapshot(row)
-    detail = (f"{_line(rel, MAX_PATH_CHARS)} ({int(row.get('size') or 0)} bytes) leaves this "
-              "chat. This cannot be undone.")
-    if not await _approved("Delete this file?", detail, member):
+    title = "Delete this file?"
+    detail = (f"This cannot be undone. {_line(rel, MAX_PATH_CHARS)} "
+              f"({int(row.get('size') or 0)} bytes) leaves this chat.")
+    if not _card_fits(title, detail):
+        return _refusal(_NO_FIT)
+    if not await _approved(title, detail, member):
         return _not_done("delete")
     why = await _still(member, sid, rel, before)
     if why:
