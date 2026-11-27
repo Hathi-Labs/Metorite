@@ -521,7 +521,8 @@ def _held_run_sql(task_col: str) -> str:
     (SW-13c). The binds come from :func:`_session_hold_binds`."""
     return (
         "SELECT h.id FROM pm_agent_runs h"
-        f" WHERE h.task_id = {task_col} AND h.member_email = :hme"
+        f" WHERE h.task_id = {task_col} AND h.task_id IS NOT NULL"
+        "   AND h.member_email = :hme"
         "   AND h.status = ANY(:hopen) AND h.client_via = :hvia"
         "   AND h.connection_id = CAST(:hcid AS uuid)"
         "   AND (h.session_key IS NULL OR h.session_key = CAST(:hsk AS text))"
