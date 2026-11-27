@@ -19,6 +19,15 @@ the sidebar one admin right for the page: `admin:members:read`.
 **PAR-0 (task 3098, 2026-11-22): §6 holds the ladder of the epic, and §7 its
 decisions.** §6 sets the order of the work now.
 
+**P-4b (task 3961, the WhatsApp writes) is BUILT, 2026-11-26, in review, with
+no flag and no migration.** The WhatsApp agent gets seven tools, and each one
+writes on one card. They pay seven WhatsApp rows, so the WhatsApp ceiling goes
+from 13 to 6. §6.2 names the tools and the open row. Fence:
+`tests/unit/test_whatsapp_write_tools.py`.
+
+A WhatsApp read marks no chat (task 4010). So for injected WhatsApp text, the
+approval card is the only guard of these seven writes.
+
 **Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
 an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
 Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
@@ -29,7 +38,7 @@ Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
 tools. `crm_mapping_suggestions`, `crm_preview_suggestion` and
 `crm_analysis_status` read. `crm_decide_suggestion` and `crm_rerun_analysis`
 write, each on one card. They pay seven CRM rows, so the CRM ceiling goes from
-72 to 65. Fence: `tests/unit/test_crm_suggestion_tools.py`.
+67 to 60. Fence: `tests/unit/test_crm_suggestion_tools.py`.
 
 **P-1b (task 3922) is BUILT, 2026-11-25, with no flag.** The chat drafts a
 task from a mail, or from a reply that the member sent, and makes it after one
@@ -551,7 +560,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 60 | P-3 | 3678 (task 3951 paid 5, task 3954 paid 7) |
+| crm | 74 | 52 | P-3 | 3678 (task 3951 paid 5, task 3954 paid 7, task 3953 paid 8) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -573,8 +582,63 @@ WhatsApp agent pay the 12 WhatsApp GET rows of the debt (25 to 13). They are
 `list_whatsapp_categories`, `list_whatsapp_templates`,
 `list_whatsapp_saved_replies`, `whatsapp_rules_preview`, `list_whatsapp_calls`,
 `whatsapp_call_events`, `whatsapp_call_diagnostics`, `whatsapp_connection_info`
-and `whatsapp_link_status`. None sends a message. The WhatsApp write rows stay
-debt.
+and `whatsapp_link_status`. None sends a message. P-4b paid seven write rows after
+it.
+
+**P-4b (task 3961) is BUILT, 2026-11-26, with no flag.** Seven write tools of the
+WhatsApp agent pay seven rows (13 to 6). None sends a message, and no tool calls
+WhatsApp or a model.
+
+| Tool | Gateway route |
+|---|---|
+| `create_whatsapp_saved_reply` | `POST /whatsapp/saved-replies` |
+| `delete_whatsapp_saved_reply` | `DELETE /whatsapp/saved-replies/{}` |
+| `update_whatsapp_category` | `PATCH /whatsapp/categories/{}` |
+| `seed_whatsapp_categories` | `POST /whatsapp/accounts/{}/categories/bootstrap` |
+| `snooze_whatsapp_chat` | `POST /whatsapp/chats/{}/snooze` |
+| `unsnooze_whatsapp_chat` | `POST /whatsapp/chats/{}/unsnooze` |
+| `capture_whatsapp_task` | `POST /whatsapp/capture-task` |
+
+Each tool reads first and shows ONE card. It sends one write only after the
+member of the run approves it. A text that does not fit whole on one card gets a
+sentence and no card.
+
+The delete, the category change, the default categories and the task read their
+data again after Approve. The tool sends nothing when the data changed.
+
+**A WhatsApp read does not mark the chat.** So for text that a stranger puts in a
+WhatsApp message, the approval card is the only guard. Task 4010 is the
+follow-up.
+
+The hold of `egress.HELD_OFF_OWN_WRITES` drops the seven writes in two cases.
+One case is a chat that another read marked, such as an email read. The other
+case is a delegated no-egress run. A run under a covered run keeps the writes
+until a read marks the chat. In each case the reads and the drafts stay.
+
+The switch is `HELD_CARD_WRITES_ORGS`, as for each held chat. With the switch
+off, each write keeps its card. Fences:
+`tests/unit/test_whatsapp_write_tools.py` and
+`tests/unit/test_no_egress_tool_audit.py`.
+
+**P-4b, the facts for the owner.**
+
+- **The link code stays debt.** `POST /api/me/whatsapp-link/code` returns a
+  single-use code. The person who sends it from a phone links that phone to the
+  member (`whatsapp_assistant_channel.md` §5.2). So it is a credential, and no
+  tool sends it. No kind of §2 fits a route that makes a credential. Decide: a
+  ruling that `secret` covers it, or a HIGH slice.
+- **A category policy sends nothing today.** Only the rule preview reads the
+  three policies. The card says so, and says what `holding` permits later. A test
+  fails when a new reader appears.
+- **A task from a message** goes to the member's own inbox. The route sends the
+  event `pm.task.created`, so a workflow can start. The card says so.
+- **A snooze of a group chat** keeps its mention in Needs reply since task 4011
+  (merged 2026-11-27). So the card of a group chat carries no warning.
+- **The snooze card promises a wake only for a Cloud number.** The bridge push
+  routes bind no organization. So the step that sets the status of a chat cannot
+  write for them. This comes from the code, and no test ran it on a database.
+- **A full list of snoozed chats** (200) that does not hold the chat gives no
+  wake card. The tool says that it cannot confirm the snooze.
 
 **P-4d (task 3963) is BUILT in part, 2026-11-25.** Six notes read tools pay
 the 6 Notes GET rows that are owner-checked or per member (51 to 45). They are
@@ -607,12 +671,19 @@ took admin to 10. PAR-6a took integrations to 4, and P-2a took email to 5.
 PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
 P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
-took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3960 took whatsapp
-to 13. P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2.
-Task 3963 took notes to 45.
+took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
+to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 
-The total of `DEBT_CEILING` is 252. The "Today" column above does not show
-all of these changes.
+P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
+3963 took notes to 45.
+
+The total of `DEBT_CEILING` is 242. The "Today" column above does not show
+all of these changes. The crm row is different: it shows the changes of tasks
+3951, 3954 and 3953.
+
+The rows of the table add up to 412 in the P-0 column and to 370 in the
+"Today" column. The totals 427 and 424 above are readings of 2026-11-22, and
+they do not change.
 
 ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
 waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
@@ -786,7 +857,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 60 (72 before tasks 3951 and 3954) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the
