@@ -62,7 +62,6 @@ export default function WaitingPage() {
   // The ids of the QUESTIONS this page answered (never the run ids). They
   // leave at once, before the next read confirms it. A new question of the
   // same run has a new id, so it shows (`unanswered`).
-  // read confirms it.
   const [answered, setAnswered] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [answerErrors, setAnswerErrors] = useState<Record<string, string>>({});

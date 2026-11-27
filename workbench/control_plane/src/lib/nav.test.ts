@@ -160,9 +160,8 @@ describe("the launch allowlist (LS-1)", () => {
   });
 
   it("keeps Waiting a preview pane, first in Personal Center (WS-AP AP-2a)", () => {
-    // `waiting_on_me.md` §5.1. The pane stays `preview` while WAITING_ORGS is
-    // off in production. AP-2c moves it into LIVE_SET with launch_surface.md
-    // §2. Team `personal`, so `byTeam` never puts it in "Across teams".
+    // `waiting_on_me.md` §5.1. The pane stays `preview` until AP-2c, which
+    // moves it into LIVE_SET with launch_surface.md §2. Team `personal`, so `byTeam` never puts it in "Across teams".
     const personal = NAV_SECTIONS.find((s) => s.id === "personal")!;
     const pane = personal.items[0];
     expect(pane.href).toBe("/waiting");
