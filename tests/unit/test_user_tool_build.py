@@ -627,6 +627,83 @@ async def test_the_install_and_the_thread_limits(
     assert engine.broker.hosts is None, "the failed install was revoked"
 
 
+@pytest.mark.parametrize("fault", ["mint", "unsafe_path"])
+async def test_a_fault_in_a_round_still_writes_its_row(
+    engine: Any, fault: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P3-1 (done-when 27). A database error of ``mint``, or an unsafe
+    path in the clean step, fails the round with one fixed code. The round
+    still writes its ``smoke`` row, the caller gets no raw error, and no
+    grant or capability stays. Mutation: let the fault escape ``run_smoke``
+    -> red."""
+    from acb_auth import sandbox_capabilities
+    from acb_skills import safe_open
+    from sqlalchemy.exc import OperationalError
+
+    ute = engine.ute
+    passing(engine.broker)
+    if fault == "mint":
+        async def broken_mint(**kw: Any) -> Any:
+            raise OperationalError("INSERT", {}, Exception("the database is gone"))
+
+        monkeypatch.setattr(sandbox_capabilities, "mint", broken_mint)
+    async with ute.start_build({"crm:read"}) as build:
+        write_package(engine.tool_data / "pkg", package_files())
+        if fault == "unsafe_path":
+            def unsafe(*_a: Any, **_k: Any) -> bool:
+                raise safe_open.UnsafePath("a link in the way")
+
+            monkeypatch.setattr(safe_open, "remove_tree", unsafe)
+        result = await build.run_smoke()
+        monkeypatch.undo()
+    assert (result.outcome, result.error_class) == ("failed", ute.ROUND_FAULT)
+    smoke = [r for r in engine.stores.rows if r["phase"] == "smoke"]
+    assert [(r["outcome"], r["error_class"]) for r in smoke] == [("failed", ute.ROUND_FAULT)]
+    assert engine.broker.hosts is None and engine.stores.live == set()
+
+
+@pytest.mark.parametrize("slow", ["install", "check"])
+async def test_a_round_ends_by_the_build_deadline(
+    engine: Any, slow: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P3-2 (decision 8). With 0.3 s of the build left, a slow install
+    or a slow package check stops at the deadline. The round reads
+    ``timeout`` and no grant stays. Mutation: give the install its own 30 s
+    past the budget, or leave the clean and the check with no deadline ->
+    red."""
+    import time as _time
+
+    ute = engine.ute
+    passing(engine.broker)
+    plain = engine.broker.on_exec
+
+    async def run(command: str, env_file: Any) -> Any:
+        if "pip install" in command and slow == "install":
+            await asyncio.sleep(3)
+        return plain(command, env_file)
+
+    engine.broker.on_exec = run
+    if slow == "check":
+        real_check = ute.check_package
+
+        def slow_check(*a: Any, **k: Any) -> Any:
+            _time.sleep(2)
+            return real_check(*a, **k)
+
+        monkeypatch.setattr(ute, "check_package", slow_check)
+    async with ute.start_build({"crm:read"}) as build:
+        write_package(engine.tool_data / "pkg", package_files())
+        build.deadline = _time.monotonic() + 0.3
+        began = _time.monotonic()
+        result = await build.run_smoke()
+        took = _time.monotonic() - began
+    assert (result.outcome, result.error_class) == ("timeout", ute.BUILD_BUDGET)
+    assert took < 1.5, f"the round ran {took:.1f} s past a budget of 0.3 s"
+    assert engine.broker.hosts is None and engine.stores.mints == []
+    assert engine.stores.rows[-1]["phase"] == "build"
+    assert engine.stores.rows[-1]["outcome"] == "timeout"
+
+
 async def test_a_second_build_in_the_thread_gets_busy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

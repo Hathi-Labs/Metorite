@@ -300,3 +300,32 @@ async def test_the_smoke_token_reaches_the_command_by_env_file_only(
             await broker.exec(handle, "true", 5, env_file=bad)
     await broker.release_tool(handle)
     await broker.stop()
+
+
+async def test_a_refused_claim_leaves_no_orphan_container(
+    broker: sb.SandboxBroker, docker: FakeDocker, tools_on: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review P3-3. ``_make_tool_room`` stops the idle ``tools`` container of
+    the org, and ``_make_room`` then refuses. The stopped container is still
+    removed, so no container is left with no handle. Mutation: drop the
+    removal on the refusal path -> red."""
+    s = tools_on["settings"]
+    monkeypatch.setattr(s, "sandbox_max_per_org", 1)
+    monkeypatch.setattr(s, "sandbox_max_total", 1)
+    with bound_run(ORG, thread=_thread()):
+        idle = await broker.acquire_tool()
+    await broker.release_tool(idle)
+    monkeypatch.setattr(s, "sandbox_max_per_org", 2)
+    monkeypatch.setattr(s, "sandbox_max_total", 2)
+    with bound_run(ORG, agent="agent-x", thread=_thread()):
+        busy = await broker.acquire()  # leased, so never a victim
+    monkeypatch.setattr(s, "sandbox_max_per_org", 1)
+    monkeypatch.setattr(s, "sandbox_max_total", 1)
+    with bound_run(ORG, thread=_thread()), pytest.raises(sb.SandboxBusy):
+        await broker.acquire_tool()
+    await broker.settle()
+    assert idle.removed
+    assert idle.container_id in docker.removals(), "the dropped victim kept its container"
+    assert not busy.removed
+    await broker.stop()

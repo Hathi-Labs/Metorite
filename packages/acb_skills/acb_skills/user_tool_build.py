@@ -136,6 +136,7 @@ QUOTA = "smoke_quota"
 SCOPE_REFUSAL = "smoke_scope_refusal"
 COUNTS_UNREADABLE = "smoke_counts_unreadable"
 SANDBOX_FAILED = "sandbox_failed"
+ROUND_FAULT = "smoke_round_fault"
 # The fixed codes of a build row.
 NO_PASS = "build_no_pass"
 BUILD_BUDGET = "build_budget"
@@ -415,11 +416,23 @@ class ToolBuild:
         self.rounds += 1
         started, started_at = time.monotonic(), datetime.now(UTC)
         try:
-            result = await self._round()
+            # Each step of the round, the clean and the check too, ends by the
+            # deadline of the build (decision 8). A round that cannot fit
+            # fails closed with the outcome ``timeout``.
+            async with asyncio.timeout(max(self.remaining(), 0.0)):
+                result = await self._round()
         except asyncio.CancelledError:
             await asyncio.shield(self._record(
                 "smoke", "cancelled", None, None, 0, started, started_at))
             raise
+        except TimeoutError:
+            result = RoundResult(False, "timeout", BUILD_BUDGET)
+        except Exception as exc:
+            # A fault of a store or of the host (a database error of `mint`,
+            # an unsafe path) still writes the row of the round. The caller
+            # gets one fixed code, never the raw error.
+            _log.warning("user_tool_build.round_fault", error=type(exc).__name__)
+            result = RoundResult(False, "failed", ROUND_FAULT)
         wall_ms = int((time.monotonic() - started) * 1000)
         result = dataclasses.replace(result, wall_ms=wall_ms)
         self.api_reads += result.api_reads
@@ -475,7 +488,7 @@ class ToolBuild:
         if limit <= 0:
             return RoundResult(False, "timeout", INSTALL_TIMEOUT)
         try:
-            async with asyncio.timeout(limit + 30):
+            async with asyncio.timeout(min(limit + 30, max(self.remaining(), 0.0))):
                 await broker.grant_egress(self.handle, "user_tool_install", INSTALL_HOSTS)
                 ran = await broker.exec(self.handle, install_command(), limit)
         except TimeoutError:

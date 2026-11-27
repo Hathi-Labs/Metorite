@@ -3439,9 +3439,17 @@ class SandboxBroker:
                     raise SandboxBusy("This thread's sandbox is busy. Try again when it finishes.")
                 self._drop(held)
                 victims.append(held)
-            if binding.target == TOOLS_TARGET:
-                victims += self._make_tool_room(binding.org)
-            victims += self._make_room(binding.org)
+            try:
+                if binding.target == TOOLS_TARGET:
+                    victims += self._make_tool_room(binding.org)
+                victims += self._make_room(binding.org)
+            except SandboxBusy:
+                # A victim that left the registry before the refusal still
+                # holds its container. Remove it, as a start would (SBX-4b1
+                # review P3-3), so no container is left with no handle.
+                if victims:
+                    self._spawn_background(self._remove_all(list(victims)))
+                raise
             # `remote` is set here, under the lock, so a second acquire of the
             # thread joins this start, and the one-org check sees it in flight.
             handle = SandboxHandle(
