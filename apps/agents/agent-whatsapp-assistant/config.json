@@ -57,6 +57,13 @@
     "whatsapp_link_status",
     "draft_whatsapp_reply",
     "draft_waiting_on_nudge",
+    "create_whatsapp_saved_reply",
+    "delete_whatsapp_saved_reply",
+    "update_whatsapp_category",
+    "seed_whatsapp_categories",
+    "snooze_whatsapp_chat",
+    "unsnooze_whatsapp_chat",
+    "capture_whatsapp_task",
     "narrow_and_read"
   ]
 }
