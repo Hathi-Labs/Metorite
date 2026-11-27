@@ -8,7 +8,7 @@ routes that stay class X are a short, named list, and each has a reason.
 does not carry. This file refuses a route that moves to class X (or leaves it)
 without somebody editing this list.
 
-Two dicts hold the whole class X set, keyed ``"METHOD path"``:
+Three dicts hold the whole class X set, keyed ``"METHOD path"``:
 
 * :data:`STAYS_X` is where OP-6 ends. These routes are client plumbing, a
   second door to a read the chat has, another app's feature, or a door for
@@ -16,9 +16,11 @@ Two dicts hold the whole class X set, keyed ``"METHOD path"``:
 * :data:`PENDING_OP6` is the work that later slices of OP-6 still owe, each
   with the slice id. Every slice that ships deletes its lines here. The last
   slice leaves the dict empty, and then the pin is exactly :data:`STAYS_X`.
+* :data:`PENDING_TOOL` holds the routes of another workstream that ship
+  before their chat tools, each with the slice that adds the tools.
 
 R7 fence: the test fails on a route in the manifest that no dict names, on a
-route a dict names that is no longer class X, and on a route in both dicts.
+route a dict names that is no longer class X, and on a route in two dicts.
 Mutation: set one ``Route(..., "X")`` row to class B in ``manifest.py`` and
 the first test fails. Add a new class X row and the first test fails.
 """
@@ -85,12 +87,15 @@ STAYS_X: dict[str, str] = {
     # EA3-51, pinned by test_mcp_edge_coverage.py
     "POST /projects/tasks/{task_id}/agent-delete": "mcp-door",
     # SW-39 (task 3799): a child run is a sub-agent of an open run. Only a
-    # signed agent starts one, through its hook. SW-114 adds the edge tool.
+    # signed agent starts one, through its hook. SW-114 adds the edge tool
+    # `report_subagent` over the POST, and the chat still never reaches it.
     "GET /projects/agent-runs/{run_id}/children": "mcp-door",
     "POST /projects/agent-runs/{run_id}/children": "mcp-door",
-    # SW-27a (task 861): an agent reserves a number. SW-27b gives it the MCP
-    # tool. The chat has no need to reserve a number.
+    # SW-27a (task 861): an agent reserves a number through the MCP tool
+    # reserve_number (SW-27b, task 3893). The chat has no need to.
     "POST /projects/nodes/{project_id}/sequences/{name}/reserve": "mcp-door",
+    # SW-27c1 (task 3938): the agent of the run marks its number.
+    "POST /projects/reservations/{reservation_id}/mark": "mcp-door",
     # WS-64 OP-6e, D-OP-13 and EA3-40: only the run's member answers, on the card
     "POST /projects/agent-runs/{run_id}/archive-approval": "card-answer",
 }
@@ -106,17 +111,28 @@ PENDING_OP6: dict[str, str] = {}
 PENDING_TOOL: dict[str, str] = {
     # Empty since SP-12 (task 2295): the plan route of PJP-6a got its chat
     # tool, get_plan, and is class A.
+    # PKG-14a (task 1252) built the dark door of the extension values.
+    "GET /projects/tasks/{task_id}/package-fields": "PKG-14b",
+    "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": "PKG-14b",
+    # WS-MDC CC-5a ships the focus-session log, and CC-10 adds its tools
+    # (``my_day_command_centre.md`` §9.3). CC-10 deletes these lines.
+    "POST /projects/my/focus-sessions": "CC-10",
+    "PATCH /projects/my/focus-sessions/{session_id}": "CC-10",
+    "GET /projects/my/focus-sessions": "CC-10",
 }
 
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
 SLICES: frozenset[str] = frozenset()
+
+#: The slices that may own a route of :data:`PENDING_TOOL`.
+TOOL_SLICES: frozenset[str] = frozenset({"PKG-14b", "CC-10"})
 
 
 def _class_x() -> dict[str, str]:
     return {f"{r.method} {r.path}": r.reason for r in m.MANIFEST if r.cls == "X"}
 
 
-def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
+def test_the_class_x_routes_are_exactly_the_pinned_lists() -> None:
     now = set(_class_x())
     pinned = set(STAYS_X) | set(PENDING_OP6) | set(PENDING_TOOL)
     assert now - pinned == set(), (
@@ -132,8 +148,13 @@ def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
 def test_no_route_is_in_both_lists_and_every_value_is_known() -> None:
     assert set(STAYS_X) & set(PENDING_OP6) == set()
     assert set(STAYS_X) & set(PENDING_TOOL) == set()
+    assert set(PENDING_OP6) & set(PENDING_TOOL) == set()
     assert set(STAYS_X.values()) <= GROUPS
     assert set(PENDING_OP6.values()) <= SLICES
+    assert set(PENDING_TOOL.values()) <= TOOL_SLICES
+    # A pending route names its slice in its manifest reason.
+    for key, slice_id in PENDING_TOOL.items():
+        assert slice_id in _class_x()[key], (key, _class_x()[key])
     # Every group is used, so a group nobody needs leaves the list.
     assert set(STAYS_X.values()) == GROUPS
 
@@ -145,11 +166,14 @@ def test_the_counts_the_spec_states() -> None:
     the Overview of My tasks, a second door to a read the chat has: 29. Task
     3865 moved the task lanes read to class A, for the chat's status lookup: 28.
     SW-39 added the two child-run routes of an agent: 30. SW-27a (task 861)
-    added the sequence reserve door, for an agent: 31."""
-    assert len(STAYS_X) == 31
+    added the sequence reserve door, for an agent: 31. SW-27c1 (task 3938)
+    added the mark door, for an agent: 32. The two PKG-14a routes wait for a
+    chat tool (PKG-14b): 32 + 2 = 34. WS-MDC CC-5a added three routes that
+    wait for the tools of CC-10: 37."""
+    assert len(STAYS_X) == 32
     assert len(PENDING_OP6) == 0
-    assert len(PENDING_TOOL) == 0
-    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 31
+    assert len(PENDING_TOOL) == 5
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOL) == 37
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:

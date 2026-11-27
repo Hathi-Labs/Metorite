@@ -16,7 +16,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -50,6 +50,17 @@ class Settings:
     copy_interval_min: int = 30
     copy_max_age_days: int = 7
     log_dir: str = ""
+    # TLY-5 (integrations_console.md §3.8.13, "Keep Tally reachable"). Each one
+    # is off until the customer turns it on. The Windows module applies them:
+    # a Task Scheduler task that starts TallyPrime at sign-in, and a request
+    # to Windows that the machine does not sleep while the bridge runs.
+    start_tally_at_signin: bool = False
+    tally_exe: str = ""
+    keep_awake: bool = False
+    # TLY-2, link mode (integrations_console.md §3.8). The address of
+    # Metorite, such as https://metorite.example. Empty turns link mode off.
+    # It has no default, so the program holds no domain of ours (test 17).
+    link_url: str = ""
 
     def validate(self) -> Settings:
         """Refuse a setting that breaks a rule of the brief. Returns self."""
@@ -66,15 +77,44 @@ class Settings:
             raise SettingsError("CALL_DEADLINE_S must be above 0 and below 30.")
         if not 0 < self.tally_timeout_s <= self.call_deadline_s:
             raise SettingsError("TALLY_TIMEOUT_S must be above 0 and not above CALL_DEADLINE_S.")
+        if self.start_tally_at_signin and not self.tally_exe:
+            raise SettingsError("START_TALLY_AT_SIGNIN needs TALLY_EXE, the path of TallyPrime.")
+        if self.tally_exe:
+            _check_tally_exe(self.tally_exe)
         if not 5 <= self.copy_interval_min <= 1440:
             raise SettingsError("COPY_INTERVAL_MIN must be between 5 and 1440.")
         if not 1 <= self.copy_max_age_days <= 90:
             raise SettingsError("COPY_MAX_AGE_DAYS must be between 1 and 90.")
         if not 1 <= self.calls_per_minute <= 600:
             raise SettingsError("CALLS_PER_MINUTE must be between 1 and 600.")
+        if self.link_url:
+            link = urlsplit(self.link_url)
+            dev = link.scheme == "http" and link.hostname and _is_loopback(link.hostname)
+            if not (link.scheme == "https" or dev) or not link.hostname:
+                raise SettingsError("LINK_URL must be https:// (http:// only on a loopback test).")
+            if link.path not in ("", "/") or link.query or link.fragment or "@" in link.netloc:
+                raise SettingsError(
+                    "LINK_URL is a scheme and a host only, such as https://x.example."
+                )
         if self.public_host and ("/" in self.public_host or ":" in self.public_host):
             raise SettingsError("PUBLIC_HOST is a host name only, with no scheme, path or port.")
         return self
+
+
+def _check_tally_exe(path: str) -> None:
+    """TLY-2d: the setup page can set this path, and the sign-in task runs it
+    for each person who signs in. So it is TallyPrime only: a full path on a
+    drive letter (no network share), to a file named tally.exe."""
+    if not path.lower().endswith(".exe") or '"' in path:
+        raise SettingsError("TALLY_EXE must be the path of a program (.exe), with no quotes.")
+    exe = PureWindowsPath(path)
+    drive = exe.drive
+    on_a_letter = len(drive) == 2 and drive[0].isalpha() and drive[1] == ":"
+    if not on_a_letter or not exe.is_absolute() or exe.name.lower() != "tally.exe":
+        raise SettingsError(
+            "TALLY_EXE must be the full path of TallyPrime on a drive, such as "
+            "C:\\Program Files\\TallyPrime\\tally.exe."
+        )
 
 
 def _is_loopback(host: str) -> bool:
@@ -101,6 +141,10 @@ _NAMES: dict[str, tuple[str, type]] = {
     "COPY_DIR": ("copy_dir", str),
     "COPY_INTERVAL_MIN": ("copy_interval_min", int),
     "COPY_MAX_AGE_DAYS": ("copy_max_age_days", int),
+    "START_TALLY_AT_SIGNIN": ("start_tally_at_signin", bool),
+    "TALLY_EXE": ("tally_exe", str),
+    "KEEP_AWAKE": ("keep_awake", bool),
+    "LINK_URL": ("link_url", str),
     "LOG_DIR": ("log_dir", str),
 }
 
@@ -119,6 +163,8 @@ def settings_from_mapping(values: Mapping[str, str]) -> Settings:
         try:
             if kind is tuple:
                 kwargs[attr] = tuple(p.strip() for p in raw.split("|") if p.strip())
+            elif kind is bool:
+                kwargs[attr] = _on_off(raw)
             else:
                 kwargs[attr] = kind(raw)
         except ValueError as exc:
@@ -131,8 +177,24 @@ def settings_to_mapping(settings: Settings) -> dict[str, str]:
     out: dict[str, str] = {}
     for name, (attr, kind) in _NAMES.items():
         value = getattr(settings, attr)
-        out[name] = "|".join(value) if kind is tuple else str(value)
+        if kind is tuple:
+            out[name] = "|".join(value)
+        elif kind is bool:
+            out[name] = "true" if value else "false"
+        else:
+            out[name] = str(value)
     return out
+
+
+def _on_off(raw: str) -> bool:
+    """``true``/``false``, ``1``/``0``, ``yes``/``no`` or ``on``/``off``.
+    Anything else is refused, never read as true."""
+    text = raw.strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(raw)
 
 
 class SettingsStore(Protocol):

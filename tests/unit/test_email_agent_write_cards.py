@@ -545,6 +545,8 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
+    # P-2c (task 3919): a review approves or rejects one learned rule pattern.
+    ("forget_pattern", "action"): ["forget", "review"],
     ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
     ("voice_profile", "action"): ["view", "preview", "status", "build", "save",
                                   "delete", "sample", "approve_knowledge"],
@@ -1010,6 +1012,33 @@ async def test_a_forget_card_names_the_pattern(gw: Gateway, kind: str, shown: st
     await agents.forget_pattern("p1", kind=kind)
     [card] = gw.cards
     assert shown in card["detail"]
+
+
+@pytest.mark.parametrize(("approve", "title"), [
+    (True, "Approve this learned rule pattern?"),
+    (False, "Reject this learned rule pattern?"),
+])
+async def test_a_pattern_review_sends_one_pattern_after_its_card(
+    gw: Gateway, approve: bool, title: str,
+) -> None:
+    """P-2c (task 3919): ``action="review"`` asks one card that names the
+    pattern. Then it sends the request of the Rules tab for that pattern only.
+    A review with no card call, or a body with no id, turns this red."""
+    gw.answer = True
+    await agents.forget_pattern("p1", action="review", approve=approve)
+    [card] = gw.cards
+    assert card["title"] == title
+    assert 'from "bank.test": always match the rule "Bank"' in card["detail"]
+    assert gw.writes == [("POST", "/email/rules/patterns/review",
+                          {"account_id": BOX, "pattern_ids": ["p1"], "approve": approve})]
+
+
+async def test_a_pattern_review_with_no_yes_writes_nothing(gw: Gateway) -> None:
+    gw.answer = False
+    out = await agents.forget_pattern("p1", action="review", approve=False)
+    assert len(gw.cards) == 1 and gw.writes == [], out
+    out = await agents.forget_pattern("nope", action="review")
+    assert out.startswith("Nothing changed.") and len(gw.cards) == 1
 
 
 async def test_the_knowledge_card_shows_no_hidden_text(gw: Gateway) -> None:

@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from email_ingestion.llm_cap import LLMBudgetExhausted, llm_slot
+from email_ingestion.providers.base import trash_checked
 from gateway import outbound_guard
 from gateway.routes.email.automation.assistant import EMAIL_TASK_TIERS
 from gateway.routes.email.automation.drafting import (
@@ -41,6 +42,7 @@ from gateway.routes.email.core import (
     _persist_rotated_creds,
     _provider_for_message,
     _savepoint,
+    _trash_message_id,
 )
 from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL, is_message_gone
 from sqlalchemy import text
@@ -626,7 +628,9 @@ async def _apply_rule_actions(
                 await provider.move_to_folder(provider_msg_id, "archive")
                 await db.execute(text("UPDATE email_messages SET folder='archive', updated_at=now() WHERE id=:id"), {"id": message_id})
             elif t == "TRASH":
-                await provider.trash_message(provider_msg_id)
+                # Task 4095: the IMAP trash checks the stored Message-ID.
+                await trash_checked(provider, provider_msg_id,
+                                    await _trash_message_id(db, provider, message_id))
                 await db.execute(text("UPDATE email_messages SET folder='trash', updated_at=now() WHERE id=:id"), {"id": message_id})
             elif t == "MARK_SPAM":
                 await provider.move_to_folder(provider_msg_id, "junk")

@@ -19,6 +19,11 @@ the POST contract, and each case is written so a wrong build fails it:
   order, and a needs card goes to Later at worst, by its main or its folded
   kind. The affinity of the main kind lowers or lifts a card. The bell never
   changes. A failed read learns nothing, and the day value lives 26 hours.
+* **Why am I seeing this** (MD-9, LOOP-4b, §7.2 W1 and W2). Each card of the
+  answer of a listed org holds ``why_seen``, and its first sentence names the
+  group. An org off the list, a failed state read and a failed learned read
+  give no key. ``feed_cards`` gives none. ``Applied`` hands on what the join
+  learned and the acted cards. The sentences are ``test_feed_why.py``.
 """
 
 from __future__ import annotations
@@ -1349,3 +1354,139 @@ class TestTheLearnedPathFailsOpen:
 
         monkeypatch.setattr(state, "_read_rows", broken)
         assert _bound(lambda: loop.snapshot(ORG, user)).complete is False
+
+
+# ── Why am I seeing this (MD-9, LOOP-4b, ``proactive_loop.md`` §7.2) ─────────
+
+#: The start of the sentence of row 1 for each group of the answer.
+_ROW_1 = {"now": "It is in Now,", "needs_you": "It is in Needs you,",
+          "ready": "It is in Ready for you,", "fyi": "It is in For your information,",
+          "later": "It is in Later"}
+_LOWER = ('In today\'s count of the last 30 days, you marked this kind "Not useful" more '
+          'than you acted on it, so it ranks lower.')
+_NOT_LOWERED = ('In today\'s count, your "Not useful" marks on this kind outnumber your acts. '
+                'This card needs you, so they do not lower it.')
+
+
+def _keys(answer: dict) -> list[str]:
+    """The cards of the answer that hold ``why_seen``."""
+    return [c["signal_id"] for c in answer["cards"] if "why_seen" in c]
+
+
+class TestWhySeen:
+    """Done-when (a), (b), (c), (d) and (i) of LOOP-4b. Mutations, each killed
+    here: the key added with the org off, added after a failed state read,
+    added after a failed learned read, added by ``feed_cards``, written onto
+    the card of ``fr.cards``, and a join that hands on no acted card."""
+
+    def test_the_org_off_keeps_the_bytes_and_holds_no_key(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        fakes.capacity[ME] = 60
+        user = _in_org(*FULL)
+        _flag(monkeypatch, "")
+        off = run_feed(user)
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+        taught.counts[ME] = {"stale_next": {"shown": 5, "acted": 0, "not_useful": 3}}
+        for listed in ("", "org-other"):
+            _flag(monkeypatch, listed)
+            again = run_feed(user)
+            assert off["cards"] and _keys(again) == []
+            assert json.dumps(again, default=str) == json.dumps(off, default=str)
+
+    def test_each_card_of_a_listed_org_says_its_group_first(self, fakes, taught):  # noqa: F811
+        fakes.capacity[ME] = 60
+        taught.prefs[ME] = {"mutes": ["overdue"]}
+        got = run_feed(_in_org(*FULL))
+        assert got["cards"] and _keys(got) == [c["signal_id"] for c in got["cards"]]
+        for c in got["cards"]:
+            assert c["why_seen"][0].startswith(_ROW_1[c["group"]]), c["signal_id"]
+        assert card(got, "tasks:t-late")["why_seen"][0] == (
+            "It is in Later because you muted this kind. It needs you, so it stays in "
+            "the feed.")
+
+    def test_five_shown_and_three_not_useful_say_why_on_each_card(
+            self, fakes, taught):  # noqa: F811
+        fakes.capacity[ME] = 60
+        counts = {"shown": 5, "acted": 0, "not_useful": 3}
+        taught.counts[ME] = {"day_overbooked": counts, "overdue": counts}
+        got = run_feed(_in_org(*FULL))
+        day = card(got, _day_id(fakes))["why_seen"]
+        late = card(got, "tasks:t-late")["why_seen"]
+        assert _LOWER in day and _NOT_LOWERED not in day
+        assert _NOT_LOWERED in late and _LOWER not in late
+
+    def test_only_the_cards_of_the_answer_take_the_key(self, fakes, taught):  # noqa: F811
+        user = _in_org(*FULL)
+        run = _bound(lambda: feed.feed_cards(user))
+        assert run.cards and not [c for c in run.cards if "why_seen" in c]
+        small = _bound(lambda: feed.feed_answer(user, 1)).body
+        assert len(small["cards"]) == 1 and "why_seen" in small["cards"][0]
+
+    def test_the_answer_changes_no_card_of_the_run(
+            self, fakes, taught, monkeypatch):  # noqa: F811
+        seen: list[feed.FeedRun] = []
+        real = feed.feed_cards
+
+        async def _spy(*a, **k):
+            seen.append(await real(*a, **k))
+            return seen[-1]
+
+        monkeypatch.setattr(feed, "feed_cards", _spy)
+        got = run_feed(_in_org(*FULL))
+        assert _keys(got) and not [c for c in seen[0].cards if "why_seen" in c]
+
+    def test_the_visits_of_today_show_and_an_act_ends_them(
+            self, fakes, taught):  # noqa: F811
+        user = _in_org(*FULL)
+        late = card(run_feed(user), "tasks:t-late")
+        assert not [line for line in late["why_seen"] if line.startswith("You saw it")]
+        _post(user, [_item("tasks:t-late", late["state_fp"], "seen")])
+        seen = card(run_feed(user), "tasks:t-late")["why_seen"]
+        assert "You saw it 1 time today, so it ranks a little lower." in seen
+        _post(user, [_item("tasks:t-late", late["state_fp"], "acted")])
+        acted = card(run_feed(user), "tasks:t-late")
+        assert acted["visits"] >= 1  # non-vacuity: the visit is still there
+        assert not [line for line in acted["why_seen"] if line.startswith("You saw it")]
+
+    @pytest.mark.parametrize("fault", ["state", "prefs", "counts", "redis"])
+    def test_a_failed_read_gives_no_key(self, fakes, taught, monkeypatch, fault):  # noqa: F811
+        user = _in_org(*FULL)
+        assert _keys(run_feed(user))  # non-vacuity: the sound reads give the key
+        taught.redis.store.clear()  # so the next read counts again
+        if fault == "state":
+            async def broken(*a, **k):
+                raise RuntimeError("pool away")
+
+            monkeypatch.setattr(state, "_read_rows", broken)
+        elif fault == "redis":
+            taught.redis.fail = ConnectionError("redis is down")
+        else:
+            taught.fail[fault] = RuntimeError("the database is down")
+        got = run_feed(user)
+        assert got["cards"] and _keys(got) == []
+
+
+class TestAppliedHandsOnWhatTheJoinLearned:
+    """W2: ``Applied.taught`` and ``Applied.acted``. Mutations, each killed
+    here: no ``taught`` for a listed org, a ``taught`` for an org off the
+    list, and an ``acted`` set that holds a card in another state."""
+
+    def _run(self, monkeypatch, rows: dict, user) -> state.Applied:
+        async def _read(db, member, ids, **_k):
+            return rows
+
+        monkeypatch.setattr(state, "_read_rows", _read)
+        return _bound(lambda: feed.feed_cards(user)).joined
+
+    def test_a_listed_org(self, fakes, taught, monkeypatch):  # noqa: F811
+        taught.prefs[ME] = {"mutes": ["deal_quiet"]}
+        user = _in_org(*FULL)
+        late = card(run_feed(user), "tasks:t-late")
+        rows = {"tasks:t-late": _row(late, "acted"), "tasks:other": _row(late, "seen")}
+        joined = self._run(monkeypatch, rows, user)
+        assert joined.taught is not None and joined.taught.mutes == {"deal_quiet"}
+        assert joined.acted == {"tasks:t-late"}
+
+    def test_an_org_off_the_list(self, fakes, taught, monkeypatch):  # noqa: F811
+        _flag(monkeypatch, "")
+        assert self._run(monkeypatch, {}, _in_org(*FULL)).taught is None

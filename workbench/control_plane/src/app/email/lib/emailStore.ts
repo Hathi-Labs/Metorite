@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { Email, EmailAccount, EmailFolder, EMAIL_CATEGORIES, RunMessageResult } from "./types";
 import * as api from "./api";
+import {
+  doneCategories, inThread, leavesView, movedOn, nextSelection, requiredLabels, restoredCategories,
+  threadKey, threadsOf, type DoneRow, type MarkedThread, type ThreadRef,
+} from "./markDone";
 import type { EmailFolderRaw } from "./api";
 import {
   SearchFilter,
@@ -58,6 +62,11 @@ function demoEmailsFor(accountId: string | null, folder: string): Email[] {
  */
 /** How many messages to request per page (and per "Load more" click). */
 const PAGE_SIZE = 100;
+/** The calls of a bulk Mark done that run at one time. */
+const MARK_DONE_CONCURRENCY = 4;
+/** The conversations whose Mark done has no answer yet. A second press of the
+ *  key in that time sends nothing. */
+const _marking = new Set<string>();
 
 const CANONICAL_ALIASES: Record<string, string> = {
   inbox: "inbox",
@@ -297,6 +306,121 @@ function setListRows(set: (p: Partial<EmailState>) => void, part: Partial<EmailS
   } finally {
     _keepPatches = false;
   }
+}
+
+/** A row that left a filtered list, and its place in it. */
+export interface RemovedRow {
+  email: Email;
+  at: number;
+}
+
+/** A conversation that Mark done changed, with the rows that left the list and
+ *  the key of the view that they left. */
+export type MarkedConversation = MarkedThread & { removed: RemovedRow[]; view: string };
+
+/** The view on screen: mailbox, folder, label and search. */
+function viewOf(s: EmailState): string {
+  return JSON.stringify([listScope(s), s.selectedFolder, s.selectedLabel, searchViewKey(s)]);
+}
+
+/**
+ * Draw one conversation with the labels that `compute` gives, on every loaded
+ * row of it, before the gateway answers (task 3995). A row that loses a label
+ * that the view requires leaves the list. `readd` puts such rows back.
+ * `settle` drops the patches after a write that worked. `revert` undoes it all.
+ */
+function drawThread(
+  set: (p: Partial<EmailState>) => void,
+  get: () => EmailState,
+  ref: ThreadRef,
+  compute: (rows: DoneRow[]) => Map<string, string[]>,
+  readd: ReadonlyArray<RemovedRow> = [],
+) {
+  const state = get();
+  const rows = [...state.emails];
+  const added = new Set<string>();
+  for (const back of [...readd].sort((a, b) => a.at - b.at)) {
+    if (rows.some((e) => e.id === back.email.id)) continue;
+    rows.splice(Math.min(back.at, rows.length), 0, back.email);
+    added.add(back.email.id);
+  }
+  // A mail opened from outside the list is a loaded row too.
+  const openedBefore = state.selectedEmailOverride;
+  const opened = openedBefore && inThread(openedBefore, ref) ? openedBefore : null;
+  const found = rows.filter((e) => inThread(e, ref));
+  if (opened && !found.some((e) => e.id === opened.id)) found.push(opened);
+  const next = compute(found);
+  const required = requiredLabels(state);
+  const removed: RemovedRow[] = [];
+  const emails = rows.flatMap((email, at) => {
+    const categories = next.get(email.id);
+    if (!categories) return [email];
+    if (leavesView(required, email.categories, categories)) {
+      removed.push({ email, at });
+      return [];
+    }
+    return [{ ...email, categories }];
+  });
+  const prevPatches = new Map<string, MessagePatch | undefined>();
+  const mine = new Map<string, MessagePatch>();
+  const patches = { ...state.messagePatches };
+  for (const [id, categories] of next) {
+    prevPatches.set(id, patches[id]);
+    patches[id] = { ...patches[id], categories };
+    mine.set(id, patches[id]);
+  }
+  // The open mail left the list: open the one at its place.
+  const selected = state.selectedEmailId;
+  const gone = new Set(removed.map((r) => r.email.id));
+  const moved = selected && gone.has(selected) ? nextSelection(rows, gone, selected) : undefined;
+  setListRows(set, {
+    emails,
+    emailsTotal: Math.max(0, state.emailsTotal + added.size - removed.length),
+    messagePatches: patches,
+    ...(moved !== undefined ? { selectedEmailId: moved, selectedEmailOverride: null } : {}),
+    ...(moved === undefined && opened
+      ? { selectedEmailOverride: { ...opened, categories: next.get(opened.id) ?? opened.categories } }
+      : {}),
+  });
+
+  return {
+    removed,
+    settle: () => {
+      let now = get().messagePatches;
+      for (const [id, patch] of mine) now = dropPatch(now, id, patch);
+      set({ messagePatches: now });
+    },
+    revert: () => {
+      const now = get();
+      const before = new Map(state.emails.map((e) => [e.id, e]));
+      const back = now.emails
+        .filter((e) => !added.has(e.id))
+        .map((e) => (next.has(e.id) ? before.get(e.id) ?? e : e));
+      for (const r of removed) {
+        const old = before.get(r.email.id);
+        if (old && !back.some((e) => e.id === old.id)) back.splice(Math.min(r.at, back.length), 0, old);
+      }
+      let restored = now.messagePatches;
+      for (const [id, prev] of prevPatches) restored = restorePatch(restored, id, prev);
+      setListRows(set, {
+        emails: back,
+        emailsTotal: Math.max(0, now.emailsTotal - added.size + removed.length),
+        messagePatches: restored,
+        // Back to the mail that was open, unless the member opened another.
+        ...(moved !== undefined && now.selectedEmailId === moved
+          ? { selectedEmailId: selected, selectedEmailOverride: openedBefore }
+          : moved === undefined && opened && now.selectedEmailOverride?.id === opened.id
+            ? { selectedEmailOverride: openedBefore }
+            : {}),
+      });
+    },
+  };
+}
+
+/** After the calls: the counts and the open conversation read again. */
+function afterMark(set: (p: Partial<EmailState>) => void, get: () => EmailState) {
+  set({ markStamp: get().markStamp + 1 });
+  if (!DEMO) void get().softRefresh();
 }
 
 /** The patches with one entry put back as it was before a failed write. */
@@ -559,6 +683,20 @@ interface EmailState {
    *  the mailbox of a message that the caller holds and the list may not:
    *  a card of a thread (owner, 2026-10-10). */
   captureEmailToTasks: (emailId: string, accountId?: string) => void;
+
+  // ── Mark done (task 3995, `email_app_master_plan.md` §6.6) ──
+  /** True when the gateway offers Mark done to this organization. */
+  markDoneEnabled: boolean;
+  /** Counts each Mark done and move back. The facet counts and the open
+   *  conversation read again when it changes. */
+  markStamp: number;
+  fetchMarkDone: () => Promise<void>;
+  /** Mark the conversations of `rows` done, one call for each. */
+  markThreadsDone: (
+    rows: ReadonlyArray<{ accountId?: string; threadId?: string }>,
+  ) => Promise<{ marked: MarkedConversation[]; failed: number }>;
+  /** Move conversations back to what they were. Answers the count that failed. */
+  moveThreadsBack: (marked: ReadonlyArray<MarkedConversation>) => Promise<number>;
   closeTaskCapturePopup: () => void;
   /** Show the "Captured to Tasks" toast (called by the popup on confirm). */
   notifyTaskCaptured: (notice: NonNullable<EmailState["taskCaptureNotice"]>) => void;
@@ -1815,6 +1953,77 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   clearTaskCaptureNotice: () => set({ taskCaptureNotice: null }),
 
   messagePatches: {},
+
+  // ── Mark done (task 3995, §6.6) ──
+  markDoneEnabled: false,
+  markStamp: 0,
+
+  fetchMarkDone: async () => {
+    // Off until the gateway says on. A failed read keeps it off.
+    const enabled = await api.getMarkDoneEnabled().catch(() => false);
+    set({ markDoneEnabled: enabled });
+  },
+
+  markThreadsDone: async (rows) => {
+    const refs = threadsOf(rows, get().selectedAccountId)
+      .filter((ref) => !_marking.has(threadKey(ref)));
+    if (refs.length === 0) return { marked: [], failed: 0 };
+    for (const ref of refs) _marking.add(threadKey(ref));
+    // Every loaded row changes at once, before the first call. A failed call
+    // puts the rows of its own conversation back.
+    const view = viewOf(get());
+    const drawn = refs.map((ref) => ({ ref, change: drawThread(set, get, ref, doneCategories) }));
+    const results = await mapBounded(drawn, MARK_DONE_CONCURRENCY, async ({ ref, change }) => {
+      try {
+        const marked = { ...ref, removed: change.removed, view };
+        if (DEMO) return { ...marked, previous: null };
+        const { previous } = await api.resolveThread(ref.accountId, ref.threadId);
+        change.settle();
+        return { ...marked, previous };
+      } catch (err) {
+        change.revert();
+        set({ error: (err as Error)?.message || "Failed to mark the conversation done" });
+        return null;
+      } finally {
+        _marking.delete(threadKey(ref));
+      }
+    });
+    const marked = results.filter((r) => r !== null);
+    afterMark(set, get);
+    return { marked, failed: refs.length - marked.length };
+  },
+
+  moveThreadsBack: async (marked) => {
+    const drawn = marked.filter((m) => m.previous).map((m) => ({
+      m,
+      previous: m.previous!,
+      // A row that left comes back only to the view that it left.
+      change: drawThread(
+        set, get, m, (found) => restoredCategories(found, m.previous!),
+        m.view === viewOf(get()) ? m.removed : []),
+    }));
+    const moved = await mapBounded(
+      drawn,
+      MARK_DONE_CONCURRENCY,
+      async ({ m, previous, change }) => {
+        try {
+          if (!DEMO) {
+            await api.resolveThread(m.accountId, m.threadId, { done: false, restore: previous });
+          }
+          change.settle();
+          return true;
+        } catch (err) {
+          change.revert();
+          set({ error: (err as Error)?.message || "Failed to move the conversation back" });
+          // A conversation that changed after Done has nothing left to undo:
+          // the step leaves the stack, and the rows read again (afterMark).
+          return movedOn(err);
+        }
+      },
+    );
+    afterMark(set, get);
+    return moved.filter((ok) => !ok).length;
+  },
 
   updateEmail: async (id, updates) => {
     // Optimistic update. When an email is moved to a *different* folder than the

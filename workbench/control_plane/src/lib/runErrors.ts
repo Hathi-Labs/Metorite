@@ -43,6 +43,7 @@ export type RunErrorCode =
   | "answer_in_other_account"
   | "too_many_runs"
   | "ai_unavailable"
+  | "answered_once"
   | "unknown";
 
 export interface RunErrorWords {
@@ -185,6 +186,16 @@ export const RUN_ERROR_WORDS: Record<RunErrorCode, RunErrorWords> = {
     retry: true,
     tone: "notice",
     action: "Try again",
+  },
+  // HRD-16: a run already took an answer for this card, from another device
+  // or a double tap. The gateway refused the repeat with 409
+  // `answered_once`, and the chat sent nothing again. Nothing is lost, so the
+  // notice only informs (owner decision, 2026-11-23).
+  answered_once: {
+    title: "Someone already answered this",
+    body: "Your answer was not sent, because the question was already answered.",
+    retry: false,
+    tone: "notice",
   },
   unknown: {
     title: "Something went wrong",

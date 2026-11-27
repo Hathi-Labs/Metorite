@@ -88,7 +88,13 @@ from acb_common import app_manifests, bind_run_context, db_busy, get_logger, ten
 from acb_common.db import bind_tenant, clear_tenant
 from fastapi import Depends, Header, HTTPException, Request
 
-from acb_auth import agent_oauth, agent_signing, agent_tokens, app_requests
+from acb_auth import (
+    agent_oauth,
+    agent_signing,
+    agent_tokens,
+    app_requests,
+    sandbox_capabilities,
+)
 from acb_auth.access import (
     SERVICE_ACCESS,
     IdentityUnavailable,
@@ -99,7 +105,7 @@ from acb_auth.access import (
     role_read_failed,
 )
 from acb_auth.permissions import NO_ACCESS
-from acb_auth.roles import AgentScope, UserContext, UserRole, _coerce_role
+from acb_auth.roles import AgentScope, SandboxScope, UserContext, UserRole, _coerce_role
 
 _log = get_logger("acb_auth.deps")
 
@@ -1142,6 +1148,342 @@ async def _agent_user(request: Request) -> UserContext:
     )
 
 
+# ---------------------------------------------------------------------------
+# The sandbox sibling of branch 0 (SBX-2, agent_sandbox.md §12.2)
+# ---------------------------------------------------------------------------
+
+#: The body of each 401 of the sandbox door. It is the text of the default
+#: deny, so the 401 cases are alike and a stranger learns nothing.
+SANDBOX_UNAUTHENTICATED_DETAIL = "Authentication required"
+
+#: Refusals that anybody on the network can cause with no live capability.
+#: They log at info. A refusal after a live row logs at warning.
+_SANDBOX_UNSIGNED_REFUSALS = frozenset({"disabled", "headers", "credential", "capability"})
+
+
+def _refuse_sandbox(
+    status: int, code: str, capability: sandbox_capabilities.Capability | None,
+    method: str, template: str | None,
+) -> HTTPException:
+    """Log one refusal of the sandbox door and give its exception (decision
+    8). A 401 has the text of the default deny. Every other refusal has its
+    fixed code. The line holds ids only: no token, hash or header value."""
+    sandbox_capabilities.log_door_call(
+        status=status, code=code, method=method, template=template,
+        org=capability.organization_id if capability is not None else "",
+        run_id=capability.run_id if capability is not None else "",
+        phase=capability.phase if capability is not None else "",
+        warn=code not in _SANDBOX_UNSIGNED_REFUSALS,
+    )
+    detail = SANDBOX_UNAUTHENTICATED_DETAIL if status == 401 else code
+    return HTTPException(status_code=status, detail=detail)
+
+
+async def _read_capability(
+    raw: str, method: str, template: str | None,
+) -> sandbox_capabilities.Capability | None:
+    """Step 3 of the sandbox door: the live row of the header value.
+
+    ``None`` for no live row and for any other failed read, which is a
+    refusal. A database outage (``db_busy.is_db_outage``) raises the ONE 503
+    of :func:`_identity_unavailable` instead. The log names the class of the
+    error only, because a database error can print its bound values, and
+    one of them is the hash.
+    """
+    try:
+        return await sandbox_capabilities.lookup(raw)
+    except Exception as exc:
+        if db_busy.is_db_outage(exc):
+            db_busy.mark()
+            sandbox_capabilities.log_door_call(
+                status=503, code="unavailable", method=method, template=template, warn=True)
+            raise _identity_unavailable() from None
+        _log.warning("sandbox.capability_read_failed", error=type(exc).__name__)
+        return None
+
+
+async def _claim_sandbox_call(
+    capability: sandbox_capabilities.Capability, method: str, template: str | None,
+) -> int:
+    """Step 9 of the sandbox door: count one call of the capability, in the
+    tenant Redis wrapper bound to the ROW's organization. The count after
+    this call (``call_n``).
+
+    The key is the token hash under ``sandbox_door_calls``. Its life is the
+    time to ``expires_at`` from the database clock, plus 60 seconds, set in
+    the MULTI block of the INCR, so no counter lives without an end. Every
+    failure of the store raises the 503 (fail closed), never a 401 or a 500.
+    Call 601 and later raise the 429 with ``Retry-After``.
+    """
+    org, run_id, phase = capability.organization_id, capability.run_id, capability.phase
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(capability.organization_id):
+            counter = tenant_redis.key(
+                sandbox_capabilities.CALLS_NAMESPACE, capability.token_sha256)
+            pipe = client.pipeline(transaction=True)
+            pipe.incr(counter)
+            pipe.expire(counter, capability.seconds_left + sandbox_capabilities.CALLS_GRACE_S)
+            replies = await pipe.execute()
+            count = int(replies[0])
+    except Exception as exc:
+        _log.warning("sandbox.door_redis_unavailable", error=type(exc).__name__)
+        sandbox_capabilities.log_door_call(
+            status=503, code="unavailable", method=method, template=template, warn=True,
+            org=org, run_id=run_id, phase=phase)
+        raise HTTPException(
+            status_code=503, detail=DOOR_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from None
+    if count > sandbox_capabilities.CALL_CAP:
+        sandbox_capabilities.log_door_call(
+            status=429, code=sandbox_capabilities.CALL_CAP_CODE, method=method,
+            template=template, call_n=count, warn=True, org=org, run_id=run_id, phase=phase)
+        raise HTTPException(
+            status_code=429, detail=sandbox_capabilities.CALL_CAP_CODE,
+            headers={"Retry-After": str(max(capability.seconds_left, 1))},
+        )
+    return count
+
+
+def _sandbox_gate(
+    capability: sandbox_capabilities.Capability, method: str, template: str | None,
+    query: bytes | str, *, ticketed: bool = False,
+) -> None:
+    """Steps 5 to 8 of the sandbox door, after a live row. Each refusal
+    raises its fixed code (decision 8). It sees the method, the matched
+    template and the raw query, never the request.
+
+    SBX-3a (§12.5 decision 4). Step 5 admits two more cases. The batch pair
+    (``app_manifests.SANDBOX_BATCH_PAIR``) skips steps 6 to 8, because the
+    batch handler checks each of its rows. A request with a live ticket
+    (*ticketed*) passes step 5. Its step 6 is ``SANDBOX_WRITE_ROUTES``, and
+    its step 7 is the write scope of the pair's app.
+    """
+    # 5. Reads only, the batch pair, or one approved write.
+    if not ticketed and (method, template) == app_manifests.SANDBOX_BATCH_PAIR:
+        return
+    if method != "GET" and not ticketed:
+        raise _refuse_sandbox(403, sandbox_capabilities.READ_ONLY, capability, method,
+                              template)
+    # 6. The pair is on the allowlist of the manifests.
+    if ticketed:
+        needed = app_manifests.sandbox_write_scope((method, template))
+        held = capability.write_scopes
+    else:
+        needed = app_manifests.sandbox_scope((method, template))
+        held = capability.read_scopes
+    if needed is None:
+        if app_manifests.sandbox_excluded((method, template)):
+            raise _refuse_sandbox(403, sandbox_capabilities.ROUTE_EXCLUDED, capability,
+                                  method, template)
+        raise _refuse_sandbox(404, sandbox_capabilities.ROUTE_UNKNOWN, capability, method,
+                              template)
+    # 7. The read scope, or for a ticket the write scope, of the pair's app.
+    if not agent_oauth.scope_holds(held, needed):
+        raise _refuse_sandbox(403, sandbox_capabilities.SCOPE, capability, method, template)
+    # 8. The query, with no repeated key, and the page cap.
+    pairs = agent_signing.query_pairs(query)
+    if pairs is None:
+        raise _refuse_sandbox(422, sandbox_capabilities.BAD_QUERY, capability, method,
+                              template)
+    if not sandbox_capabilities.page_within_cap(pairs):
+        raise _refuse_sandbox(422, sandbox_capabilities.PAGE_CAP_CODE, capability, method,
+                              template)
+
+
+async def _take_sandbox_ticket(
+    capability: sandbox_capabilities.Capability, ticket: str, method: str,
+    template: str | None, path: object, query: bytes | str, body: bytes | None,
+) -> str:
+    """Step 4b of the sandbox door (SBX-3a, §12.5 decision 4): take the
+    ticket once, and give its stamp.
+
+    ``GETDEL`` in the tenant Redis wrapper bound to the ROW's organization.
+    A miss, a second use, a ticket of another capability and a ticket of
+    another wire (method, path, query or body hash) raise 403
+    ``sandbox_ticket``. A fault of the store raises the 503, as the call cap
+    does. No tenant is bound yet, so a refusal leaves none. The line holds
+    no ticket, no hash and no body.
+    """
+    org, run_id, phase = capability.organization_id, capability.run_id, capability.phase
+    try:
+        stamp = await sandbox_capabilities.take_ticket(
+            capability, ticket, method=method, path=path, query=query, body=body)
+    except Exception as exc:
+        _log.warning("sandbox.door_redis_unavailable", error=type(exc).__name__)
+        sandbox_capabilities.log_door_call(
+            status=503, code="unavailable", method=method, template=template, warn=True,
+            org=org, run_id=run_id, phase=phase)
+        raise HTTPException(
+            status_code=503, detail=DOOR_UNAVAILABLE_DETAIL,
+            headers={"Retry-After": "2"},
+        ) from None
+    if stamp is None:
+        raise _refuse_sandbox(403, sandbox_capabilities.TICKET, capability, method, template)
+    return stamp
+
+
+def _is_sandbox_request(request: Request) -> bool:
+    """True when the sandbox sibling owns this request (§12.2 decision 3).
+
+    Any header whose name starts with ``X-Sandbox-``, in any case. Every
+    name of a repeated header counts, so a second header cannot hide the
+    first.
+    """
+    for name in request.headers:  # noqa: SIM110 - the scan reads this loop shape
+        if name.lower().startswith("x-sandbox-"):
+            return True
+    return False
+
+
+async def _sandbox_user(request: Request) -> UserContext:
+    """The sandbox sibling of branch 0 (SBX-2, ``agent_sandbox.md`` §12.2).
+
+    It decides each request that triggers it, and it NEVER falls through to
+    branch 0, 1a, 1b or 2. The member and the organization come ONLY from
+    the row of ``sandbox_capabilities``. Each refusal RAISES its
+    ``HTTPException``: it never returns the anonymous context, so a request
+    with a capability never reaches a template of the ``public`` list of
+    :func:`require_authenticated`.
+
+    The steps, in order. No step before step 10 binds a tenant, so a refused
+    request leaves no tenant bound.
+
+    1. ``SANDBOX_DOOR_ORGS`` is not empty, else 401 with no database read and
+       no Redis call.
+    2. One ``X-Sandbox-Capability`` in its shape, at most one
+       ``X-Sandbox-Ticket`` in its shape (SBX-3a), no other ``X-Sandbox-``
+       header, and no second credential: no ``Authorization``,
+       ``X-User-Email``, ``X-User-Role``, ``X-Actor-Via`` or ``X-Agent-``
+       header. A GET carries no ticket. Else 401.
+    3. A live row (:func:`_read_capability`). Else 401, or the 503 of an
+       outage.
+    4. The flag names the row's organization, or holds ``*``. Else 401.
+    4b. SBX-3a: with a ticket, the body through :func:`_signed_body` (the one
+       body reader), and the ticket taken once
+       (:func:`_take_sandbox_ticket`). Else 403 ``sandbox_ticket``.
+    5. The method is GET, or the pair is the batch pair, or a ticket was
+       taken. Else 403 ``sandbox_read_only``. The batch pair skips steps 6
+       to 8.
+    6. The pair is in ``SANDBOX_ROUTES``, or with a ticket in
+       ``SANDBOX_WRITE_ROUTES``. A class X row of ``SANDBOX_APPS`` gets 403
+       ``sandbox_route_excluded``, and any other pair 404
+       ``sandbox_route_unknown``.
+    7. The row's read scopes, or with a ticket its write scopes, hold the
+       scope of the pair's app. Else 403 ``sandbox_scope``.
+    8. The query parses with no repeated key, else 422 ``sandbox_bad_query``.
+       Each page key holds 100 or less, else 422 ``sandbox_page_cap``.
+    9. The call cap (:func:`_claim_sandbox_call`): 429 past 600, 503 when
+       Redis is down.
+    10. The member of the ROW resolves. The resolved organization must equal
+        the row's, and the access must be active. Else ``clear_tenant()`` and
+        401, or the 503 of an outage.
+    11. The member's ``UserContext`` with ``sandbox`` set. ``agent`` stays
+        ``None``. No ``_bind_session_member``: no row of ``SANDBOX_ROUTES``
+        calls a model. The stamp of the scope comes only from the ticket.
+    """
+    method = request.method.upper()
+    template = _matched_template(request)
+
+    # 1. The flag, before any read.
+    orgs = sandbox_capabilities.door_orgs()
+    if not orgs:
+        raise _refuse_sandbox(401, "disabled", None, method, template)
+
+    # 2. One capability and at most one ticket, in their shapes, and no
+    # second credential.
+    marks = 0
+    for name in request.headers:
+        if name.lower().startswith("x-sandbox-"):
+            marks += 1
+        if name.lower().startswith(agent_signing.AGENT_HEADER_PREFIX):
+            raise _refuse_sandbox(401, "credential", None, method, template)
+    raw = _one_header(request, "x-sandbox-capability")
+    ticket = _one_header(request, "x-sandbox-ticket")
+    wanted = 1 if ticket is None else 2
+    if marks != wanted or raw is None or not sandbox_capabilities.well_formed(raw):
+        raise _refuse_sandbox(401, "headers", None, method, template)
+    # A ticket is for one write. A GET with one reads no body and is refused.
+    if ticket is not None and (method == "GET"
+                               or not sandbox_capabilities.ticket_well_formed(ticket)):
+        raise _refuse_sandbox(401, "headers", None, method, template)
+    if (
+        "authorization" in request.headers
+        or "x-user-email" in request.headers
+        or "x-user-role" in request.headers
+        or "x-actor-via" in request.headers
+    ):
+        raise _refuse_sandbox(401, "credential", None, method, template)
+
+    # 3. The live row, by the hash of the header value. No tenant is bound.
+    capability = await _read_capability(raw, method, template)
+    if capability is None:
+        raise _refuse_sandbox(401, "capability", None, method, template)
+
+    # 4. The flag names the ROW's organization.
+    if "*" not in orgs and capability.organization_id not in orgs:
+        raise _refuse_sandbox(401, "org", capability, method, template)
+
+    # 4b. SBX-3a: one approved write. The ticket binds the body hash, and the
+    # body comes from the one body reader.
+    stamp = ""
+    if ticket is not None:
+        body = await _signed_body(request)
+        stamp = await _take_sandbox_ticket(
+            capability, ticket, method, template, request.scope.get("path"),
+            request.scope.get("query_string") or b"", body)
+
+    # 5 to 8. Reads only, the allowlist, the scope, the query.
+    _sandbox_gate(capability, method, template, request.scope.get("query_string") or b"",
+                  ticketed=ticket is not None)
+
+    # 9. The call cap, in the ROW's organization. Fails closed.
+    call_n = await _claim_sandbox_call(capability, method, template)
+
+    # 10. The member of the ROW, never of a header. Resolved as a request.
+    try:
+        resolved = await _with_resolved_access(
+            UserContext(email=capability.member_email, role=UserRole.EMPLOYEE)
+        )
+    except HTTPException:
+        # The 503 of an identity read that timed out. No tenant stays bound.
+        clear_tenant()
+        raise
+    if (
+        resolved.organization_id != capability.organization_id
+        or not resolved.access.is_active
+    ):
+        # `_with_resolved_access` may have bound the member's tenant. A refused
+        # request keeps none.
+        clear_tenant()
+        if identity_read_failed() or role_read_failed():
+            # The database refused a read: an outage, not "no seat".
+            db_busy.mark()
+            sandbox_capabilities.log_door_call(
+                status=503, code="unavailable", method=method, template=template,
+                org=capability.organization_id, run_id=capability.run_id,
+                phase=capability.phase, warn=True)
+            raise _identity_unavailable()
+        raise _refuse_sandbox(401, "seat", capability, method, template)
+
+    # 11. Admitted. The middleware caps the answer and writes the log line.
+    sandbox_capabilities.admit(capability, method, template, call_n)
+    return dataclasses.replace(
+        resolved,
+        sandbox=SandboxScope(
+            run_id=capability.run_id,
+            thread_id=capability.thread_id,
+            phase=capability.phase,
+            app_id=capability.app_id,
+            version=capability.version,
+            read_scopes=capability.read_scopes,
+            write_scopes=capability.write_scopes,
+            stamp=stamp,
+        ),
+    )
+
+
 async def get_current_user(
     x_user_email: Annotated[str | None, Header(alias="X-User-Email")] = None,
     x_user_role: Annotated[str | None, Header(alias="X-User-Role")] = None,
@@ -1151,6 +1493,10 @@ async def get_current_user(
     """Resolve identity from SSO-injected headers or an internal Bearer token.
 
     Priority:
+    00. A sandbox call (SBX-2, :func:`_sandbox_user`): any ``X-Sandbox-``
+       header → the capability row's member, with ``UserContext.sandbox``
+       set, or an ``HTTPException``. It runs before branch 0 and never falls
+       through. It is the one branch that raises.
     0. A signed request of an outside agent (WS-55 EA-3a, :func:`_agent_user`)
        → that connection's member, with ``UserContext.agent`` set, or the
        anonymous context. Branch 0 never falls through to 1 or 2.
@@ -1168,10 +1514,15 @@ async def get_current_user(
     branch 0 then does not run. Branch 0 reads the method, the path, the
     query and its own four headers. It reads no host header.
 
-    Never raises — missing/wrong headers resolve to the lowest-privilege role
-    and an empty permission set. Enforcement is done by require_role() /
+    Never raises outside the sandbox sibling — missing/wrong headers resolve
+    to the lowest-privilege role and an empty permission set. Enforcement is done by require_role() /
     require_permission().
     """
+    # 00. A sandbox call (SBX-2, agent_sandbox.md §12.2). It runs FIRST and
+    # decides each request that triggers it. Each refusal raises.
+    if request is not None and _is_sandbox_request(request):
+        return await _sandbox_user(request)
+
     # 0. A signed outside-agent request (spec §10.1). Decided here, always.
     if request is not None and _is_agent_request(request):
         return await _agent_user(request)

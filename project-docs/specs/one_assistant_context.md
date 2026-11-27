@@ -12,7 +12,7 @@ A wins when each `case:<k>` chat passes both repeats of A and the tune gain on `
 
 Task 2874 adds seven chats of the owner chat of 2026-11-11, with their checks, in `evals/one_assistant_measure`. The switch `--mirror-prod` sets the chat flags of production in the eval process only. Scripted only, no live run, no spend.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-6a is BUILT, dark behind `HELD_CLASS_C_ORGS` (2026-11-07, task 1690). WT-1b, WT-4, WT-5 and WT-6b are not built.
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-2 is BUILT, dark (task 1686). WT-3 is BUILT (2026-11-07, task 1687). WT-6a is BUILT, dark behind `HELD_CLASS_C_ORGS` (2026-11-07, task 1690). WT-4 is BUILT (2026-11-07, task 1688, "WT-4 as built" in §9.4). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). WT-1b, WT-5 and WT-6b are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -35,6 +35,8 @@ OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
 
 OA-9b hardening is BUILT (2026-10-28, "As built, OA-9b hardening" in §4.5). It closes the seven faults of the Opus review. The flag flip stays OWNER-GATE.
+
+Task 2492 NARROWS the pack mark (2026-11-09, "Each call" in "As built, OA-7b"). Only a pack call whose answer can bring outside text marks the chat. A new `send_email` leaves the chat clear. `send_draft`, `schedule_send` and `manage_inbox` mark, because their answer can quote a draft or a mail. The map is `tool_packs.PACK_OUTSIDE_TEXT`, and the fence is `tests/unit/test_pack_outside_text.py`.
 
 OA-9c is BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-29, "As built, OA-9c" in §4.5). A child can hold the read tools of a pack that the main assistant holds. No email tool says `read_only=True`, so an email pack gives a child no tool yet. The flag flip stays OWNER-GATE.
 
@@ -748,7 +750,9 @@ dropped names and the skipped names. A slug that is no pack gives None.
   forward or a new mail goes to the held card.
 - **Each call.** `_pack_call` puts `tool_packs.owner_scope` outside the
   permission gate. It marks the chat before the tool body, through the
-  executor's `_mark_untrusted_session`. It closes the profile writes after
+  executor's `_mark_untrusted_session`. Task 2492: it marks only for a call
+  that `tool_packs.marks_chat` names, which reads `PACK_OUTSIDE_TEXT`. A read,
+  a search and a thread mark. A send that reads nothing does not. It closes the profile writes after
   the call, also after a raise. It writes the email working set through
   `_email_working_set_for` and `_record_email_working_set`.
 - **The held set.** A held pack drops each tool that `_is_egress` or
@@ -1614,6 +1618,7 @@ It does not settle each case where layer (a′), the persona, the loader plan an
 6. **The add.** It calls `context.add_tools(subset)` (`agent_framework/_middleware.py:469-504`). The next request of the same run carries the full schemas.
 7. **The answer.** It gives one line for each found tool: its name and the first line of its description. Then it gives the rules block of each owning pack, once in a run (below). With no match, it says so and names `load_skill_tools`.
    - (D225, 2026-11-15) SBX-1 extends the no-match answer. `find_tools` then also checks the library and the catalog actions, and writes a `tool_gaps` row (`agent_sandbox.md` §6.1). D187 planned that as a second tool, `find_tool`, and SBX-1 does not build it.
+   - (SBX-1a, 2026-11-26) The extension is the hook `on_gap` of `FindTools`, made by `orchestrator.tool_gap_path.make_gap_hook` behind `user_tool_find_enabled`. With no hook, the no-match answer stays `FIND_NONE` (`agent_sandbox.md` §12.1 decision 2).
 
 **The rules block and the hold note go with the tools.** D117 item 2 makes a pack of its tools and a rules block, so a found tool needs both.
 - Today the rules block reaches the model on three paths. `persona_for` adds it for each pack in `loaded` (`tool_packs.py:2543`, `:2609`). The `LOADED` answer of `load_skill_tools` carries it (`:2936`, `:3670`). Layer (c) puts it in the instructions of the turn (`load_early`, `:3596-3598`, the text at `:3630`).
@@ -3093,7 +3098,7 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. WT-6a BUILT, dark (2026-11-07, task 1690). The rest is design
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). WT-2 BUILT, dark (2026-11-05, task 1686). WT-3 BUILT (2026-11-07, task 1687). The plain text is live for every org. The tap form is dark. WT-6a BUILT, dark (2026-11-07, task 1690). WT-4 BUILT (2026-11-07, task 1688). It has no flag of its own and goes live with `TOOL_PACKS` (owner approval 2026-11-27, task 1688). The rest is design
 (2026-11-04).
 
 Task 1648. The review below is checked against
@@ -3197,7 +3202,7 @@ separate HIGH design, and it is out of scope here.
 | WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. Since 2026-11-17, slice HRD-14d of `chat_failure_modes.md` §4.7b owns the stored-mail match. | HIGH | AGENT-SAFE, dark |
 | WT-2 | 🔨 **BUILT, dark (2026-11-05, task 1686).** The tap: a `Continue in a fresh chat` pill. The server marks a held turn with the event `chat_continue_offer`. Only an org on `CHAT_CONTINUE_ORGS` gets it. The dock opens the new chat and fills the composer, and never sends. WT-1 fix: a failed room lookup answers 503. Fences: `test_continue_offer.py`, `chatContinue.test.ts`. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | 🔨 **BUILT (2026-11-07, task 1687): no hold text says "new chat".** The `_CONTINUE` form of each `NO_WRITES` text names the pill "Continue in a fresh chat". `egress.py` takes that form only after `offer_continue()` sent the event of the pill. Else the plain form names the app and offers no tap. The persona hold note is built before the run queue exists, so it always takes the plain form. The `_CONTINUE` form reaches the model through a refused held write. Fences: `test_no_new_chat_copy.py`, `test_continue_offer.py`, `test_held_card_writes.py`. ⚠️ Before the WT-5 flip: only the dock draws the pill, so a member on `/chat` or an app rail reads a tap with no pill. | HIGH | AGENT-SAFE |
-| WT-4 | The switch line (not held): when this turn loads a pack that the sticky set of the last turn did not hold, the run sends one `chat_pack_switched` event with the pack label, and the chat shows "Switched to Projects". It reads `begin_turn` and `packs_on`, and adds no second matcher. **No suggestion chip** (see WT-4 below). Dark under `TOOL_PACKS`. Needs PR 1743 for the event seam (`offer_continue` pattern). | STANDARD | AGENT-SAFE, dark |
+| WT-4 | The switch line (not held): when this turn loads a pack that the sticky set of the last turn did not hold, the run sends one `chat_pack_switched` event with the pack label, and the chat shows "Switched to Projects". It reads `begin_turn` and `packs_on`, and adds no second matcher. **No suggestion chip** (see WT-4 below). No flag of its own: it follows `TOOL_PACKS`, which production sets, so it is live (owner approval 2026-11-27). Needs PR 1743 for the event seam (`offer_continue` pattern). | STANDARD | AGENT-SAFE, live with `TOOL_PACKS` |
 | WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. ⚠️ Before the `CHAT_CONTINUE_ORGS` flip: only the assistant dock draws the pill (`AssistantDock.tsx`). `/chat`, the Tasks and Projects rails, the email chat and the app editor do not. Either each host draws the pill, or the owner accepts the gap. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
 | WT-6a | 🔨 **BUILT, dark (2026-11-07, task 1690).** `egress.HELD_CLASS_C_TOOLS` and its reader `held_class_c_on`. Flag `HELD_CLASS_C_ORGS` in `settings.py` and `env_guard.py`, empty. `ask_tools.publish_card_undo` sends `confirmation_undo`. The two unarchive routes take an optional `If-Match`. The client is `src/lib/archiveUndo.ts`. No migration. Class C archive with an Undo receipt. `archive_task` and `archive_project` join the held set behind a NEW flag `HELD_CLASS_C_ORGS`, default empty. The chat receipt line (`ConfirmationReceipts`) offers Undo. Undo calls the existing unarchive route under the member's own session, as a `lib/undo.ts` command in the style of `taskUndo.ts` (If-Match, 412 means changed since). | HIGH | AGENT-SAFE, dark. The flip is OWNER-GATE (`work_plan.md` §6 D4) |
 | WT-6b | The person-class tick (email plan §21.4) for the report recipient tools, which add a person to a list for mail later. The `nudge_task` tick is dropped: its person is always an org member who waits on the task, so the class is always `org` and the tick decides nothing. | HIGH | AGENT-SAFE, dark |
@@ -3237,6 +3242,16 @@ answer is 404, and the verification commands of §9.6 pass.
 - `TOOL_PACKS` off sends nothing. The same pack as the last turn sends nothing.
 - The slice only READS the mark (`session_mark_state` or `_pack_held`). It never writes, clears or re-keys it. An edit to the mark code moves the slice to HIGH.
 - **The chip.** Layer (a) already switches with no tap, so a chip that asks first is a second decision path. WT-4 builds no chip. A chip for a load that layer (a) did not do needs an owner decision first (open question on task 1688).
+
+**WT-4 as built (2026-11-07, task 1688).**
+
+- `tool_packs.pack_switch_label(turn, slugs)` is the pure signal. It compares the sticky set of `begin_turn` with the packs that layer (a) loaded. It returns the `SKILL_FAMILIES` label of the first new pack, or None.
+- It counts only packs that `packs_on` allows. It gives None on the first turn and after a failed sticky read.
+- A follower pack (Calendar day planner) gives way to its parent. So Calendar reads "Switched to Projects".
+- `executor._pack_switch_event` reads the hold with `_pack_held`, and it fails closed. A held chat and a Redis fault send nothing. It never writes the mark.
+- The event rides `_ProfileMarkHold.add`. It leaves with the first output, so a turn with no answer sends none.
+- The client twin is `src/lib/packSwitch.ts`. `PackSwitchMark` draws the line beside the mailbox mark.
+- Open: a pack that the model loads mid-turn with `load_skill_tools` (layer (b)) draws no line. A later slice can add it.
 
 ### 9.5 Fences (R7)
 

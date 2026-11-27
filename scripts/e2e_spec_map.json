@@ -155,7 +155,8 @@
       ],
       "specs": [
         "shell-presets.spec.ts", "rail-rows.spec.ts", "untrusted-html.spec.ts",
-        "agent-questions-doors.spec.ts", "app-title-bar.spec.ts", "studio-app-rail.spec.ts"
+        "agent-questions-doors.spec.ts", "app-title-bar.spec.ts", "studio-app-rail.spec.ts",
+        "workflow-card-height.spec.ts"
       ]
     }
   }
