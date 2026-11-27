@@ -312,7 +312,8 @@ export default function NewMailCardForm({
   if (asking && dockMode === "compact") setAsking(false);
   const tellAsking = useRef(onAsking);
   useEffect(() => { tellAsking.current = onAsking; }, [onAsking]);
-  useEffect(() => { tellAsking.current?.(asking); }, [asking]);
+  // Before the paint, so the card's arm drops before any press can land.
+  useLayoutEffect(() => { tellAsking.current?.(asking); }, [asking]);
   const discard = () => {
     const step = declineStep(armed, form.earlier, onDiscardEarlier);
     if (step === "ask") setAsking(true);

@@ -54,7 +54,7 @@ declare global {
   }
 }
 
-type Cards = "all" | "one" | "earlier";
+type Cards = "all" | "one" | "earlier" | "earlierMail";
 
 // The plain card of `edit_draft` that names a draft of the chat (task 3978).
 const EARLIER = "e".repeat(32);
@@ -151,6 +151,13 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?:
             send({ type: "message_start", messageId: "m-1" });
             send({ type: "delta", messageId: "m-1", content: "Here is what I need from you." });
             if (gated) await released;
+            if (cards === "earlierMail") {
+              send({ type: "custom", name: "confirmation_requested", value: {
+                title: "Send this new email?", detail: "From Work · Rates for May", request_id: mail,
+                reply: { ...form, earlier: "To kim@contoso.test: Rates for May" },
+              } });
+              return;
+            }
             if (cards === "earlier") {
               send({ type: "custom", name: "confirmation_requested", value: {
                 title: "Save these changes to the draft?", detail: "To kim@contoso.test · Rates for May",
@@ -599,8 +606,10 @@ test.describe("the waiting dock (WD-1)", () => {
   test("F1: a new arrival unfolds the dock, and a click at once commits nothing", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all", lateQuestion: true });
-    await page.locator('[data-dock-body] [role="tab"]').nth(1).click({ timeout: 20_000 });
+    // Before the question arrives, the email is the first tab.
+    await page.locator('[data-dock-body] [role="tab"]').nth(0).click({ timeout: 20_000 });
     await open(page, "[data-dock-review]").click();
+    await expect(open(page, "[data-reply-send]")).toBeVisible();
     await page.waitForTimeout(600);
     await page.locator("[data-dock-fold]").click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
@@ -657,6 +666,64 @@ test.describe("the waiting dock (WD-1)", () => {
     await clickNow(page, "[data-elicitation-submit]");
     await page.waitForTimeout(600);
     expect(await answers(page)).toEqual([]);
+  });
+
+  for (const how of ["click", "ArrowRight"] as const) {
+    test(`F1: a change of tab by ${how} arms the new card again`, async ({ page }) => {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await start(page, { cards: "all" });
+      const tabs = page.locator('[data-dock-body] [role="tab"]');
+      await expect(tabs).toHaveCount(3, { timeout: 20_000 });
+      await tabs.nth(1).click();
+      await open(page, "[data-dock-review]").click();
+      await page.waitForTimeout(600);
+      if (how === "click") await tabs.nth(2).click();
+      else {
+        await tabs.nth(1).focus();
+        await page.keyboard.press("ArrowRight");
+      }
+      await expect(tabs.nth(2)).toHaveAttribute("aria-selected", "true");
+      await clickNow(page, "[data-confirmation-approve]");
+      await page.waitForTimeout(600);
+      expect(await answers(page)).toEqual([]);
+    });
+  }
+
+  test("F2: the new mail's Keep it and Delete it wait 400 ms too", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "earlierMail" });
+    await open(page, "[data-dock-review]").click({ timeout: 20_000 });
+    await page.waitForTimeout(600);
+    await open(page, "[data-reply-discard]").click();
+    await expect(open(page, "[data-earlier-keep]")).toBeVisible();
+    await clickNow(page, "[data-earlier-keep]");
+    await clickNow(page, "[data-earlier-delete]");
+    await page.waitForTimeout(300);
+    await expect(open(page, "[data-earlier-keep]")).toBeVisible();
+    // Collapse drops the question: Review shows, and no Keep it.
+    await page.locator("[data-dock-expand]").click();
+    await open(page, "[data-dock-review]").dblclick();
+    await page.waitForTimeout(300);
+    await expect(open(page, "[data-earlier-question]")).toHaveCount(0);
+    await expect(open(page, "[data-reply-send]")).toBeVisible();
+  });
+
+  test("K6: a letter typed with Shift never stops the box from taking the focus back", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "one" });
+    await expect(open(page, "[data-dock-review]")).toBeVisible({ timeout: 20_000 });
+    // Shift comes up first: the keyup of the letter names "p", not "P".
+    await box(page).focus();
+    await page.keyboard.down("Shift");
+    await page.keyboard.down("KeyP");
+    await page.keyboard.up("Shift");
+    await page.keyboard.up("KeyP");
+    await open(page, "[data-dock-review]").click();
+    await page.waitForTimeout(600);
+    await open(page, "[data-confirmation-approve]").click();
+    await expect.poll(async () => (await answers(page)).length).toBe(1);
+    await expect(dock(page)).toHaveCount(0, { timeout: 10_000 });
+    await expect(box(page)).toBeFocused({ timeout: 1_000 });
   });
 
   test("F2: Keep it and Delete it wait 400 ms; Esc in the question is Back; Collapse drops the question", async ({ page }) => {

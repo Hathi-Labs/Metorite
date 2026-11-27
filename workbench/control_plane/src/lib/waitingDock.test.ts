@@ -301,7 +301,7 @@ describe("the fresh press (24.11, 2026-11-27)", () => {
     const read = (f: string) => readFileSync(join(__dirname, "..", f), "utf-8");
     const card = read("components/ConfirmationCard.tsx");
     // Round 7: the arm is keyed on what the member sees, not on the view alone.
-    expect(card).toContain("useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}` : \"\", dockShown !== false)");
+    expect(card).toContain("useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}:${slot ?? \"\"}` : \"\", dockShown !== false)");
     expect(card).toContain("onClickCapture={dockMode ? arm.guard : undefined}");
     expect(card).toMatch(/data-confirmation-reject=""\s+\{\.\.\.fresh\}/);
     expect(card).toMatch(/data-confirmation-approve=""\s+\{\.\.\.fresh\}/);

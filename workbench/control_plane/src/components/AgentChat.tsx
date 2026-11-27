@@ -2703,11 +2703,11 @@ export default function AgentChat({
   const dockHostRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const box = inputRef.current;
+    // The press log of the dock's arm and of K6 (`lib/freshPress.ts`).
+    if (dockOn) trackPresses();
     if (!dockOn || !box) return;
     const onKey = () => { lastKeyAtRef.current = performance.now(); };
     box.addEventListener("keydown", onKey);
-    // The press log of the dock's arm and of K6 (`lib/freshPress.ts`).
-    trackPresses();
     return () => box.removeEventListener("keydown", onKey);
   }, [dockOn]);
   // K1, K2 and K6, on a change of the count. An arrival of picks-only items

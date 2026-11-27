@@ -415,7 +415,8 @@ export default function ConfirmationCard({
   // is on the screen, and the earlier-draft question. Each change arms it
   // again, and the guard drops a press that began before the arm. Outside
   // the dock the key never changes, so the card is the card of before.
-  const arm = useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}` : "", dockShown !== false);
+  // A slot that opens again in place shows its buttons: that arms it too.
+  const arm = useArmed(dockMode ? `${dockMode}:${dockShown !== false}:${asking || formAsking}:${slot ?? ""}` : "", dockShown !== false);
   const armed = arm.armed;
   // The rows come ticked as the member left them (`rowsView` in the queue).
   // The card holds no tick state and no tick logic (PR #691 review): a tick

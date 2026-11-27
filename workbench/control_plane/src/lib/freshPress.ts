@@ -59,6 +59,11 @@ const log: PressLog & { down: Set<string>; commitAt: number } = {
 const waiting = new Set<() => void>();
 let installed = false;
 
+/** The keys that can press a button. K6 waits only for these to come up. */
+const PRESS_CODES = new Set(["Enter", "NumpadEnter", "Space"]);
+/** K6 waits at most this long for a keyup that may never come. */
+export const KEYS_UP_DEADLINE_MS = 2000;
+
 function flushKeysUp() {
   if (log.down.size > 0) return;
   const fns = Array.from(waiting);
@@ -72,13 +77,16 @@ function install() {
   const now = () => performance.now();
   window.addEventListener("pointerdown", () => { log.pointerDownAt = now(); }, true);
   window.addEventListener("pointerup", () => { log.pointerUpAt = now(); }, true);
+  // By `code`, and only the keys that press: a letter typed with Shift
+  // comes up as another `key`, and macOS drops a keyup under Cmd.
   window.addEventListener("keydown", (e) => {
-    log.down.add(e.key);
+    if (PRESS_CODES.has(e.code)) log.down.add(e.code);
     if (e.repeat) log.repeatAt = now();
     else if (e.key === "Enter" || e.key === " ") log.keyDownAt = now();
   }, true);
   window.addEventListener("keyup", (e) => {
-    log.down.delete(e.key);
+    log.down.delete(e.code);
+    if (e.key === "Meta") log.down.clear();
     if (e.key === "Enter" || e.key === " ") log.keyUpAt = now();
     flushKeysUp();
   }, true);
@@ -89,14 +97,16 @@ function install() {
   });
 }
 
-/** Start the press log. The chat calls it while the dock is on. */
+/** Start the press log. The chat calls it while the dock is on, so with the
+ *  flag off the page has no listener of this file. */
 export function trackPresses(): void {
   install();
 }
 
 /**
- * Run `fn` when no key is down: at once, or at the next keyup that leaves
- * none down (K6, round 7). It returns a cancel.
+ * Run `fn` when no key that presses is down: at once, at the next keyup that
+ * leaves none down, or after `KEYS_UP_DEADLINE_MS` (K6, round 7). It
+ * returns a cancel.
  */
 export function whenKeysUp(fn: () => void): () => void {
   install();
@@ -104,8 +114,24 @@ export function whenKeysUp(fn: () => void): () => void {
     fn();
     return () => {};
   }
-  waiting.add(fn);
-  return () => { waiting.delete(fn); };
+  let done = false;
+  const once = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(t);
+    waiting.delete(once);
+    fn();
+  };
+  const t = setTimeout(() => {
+    log.down.clear();
+    once();
+  }, KEYS_UP_DEADLINE_MS);
+  waiting.add(once);
+  return () => {
+    done = true;
+    clearTimeout(t);
+    waiting.delete(once);
+  };
 }
 
 /** Milliseconds since the dock last let a commit through. */
@@ -123,7 +149,6 @@ export function useArmed(key: string, live = true): { armed: boolean; guard: (e:
   // The key moved: the arm drops in this render, before any paint.
   if (st.key !== key) setSt({ key, at: null });
   useEffect(() => {
-    install();
     if (!live) return;
     const t = setTimeout(() => setSt((s) => (s.key === key ? { key, at: performance.now() } : s)), ARM_MS);
     return () => clearTimeout(t);
