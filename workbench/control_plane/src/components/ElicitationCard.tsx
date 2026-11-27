@@ -148,6 +148,12 @@ interface ElicitationCardProps {
   tabs?: ReactNode;
   /** The tab panel: the card is the panel the tabs control. */
   tabPanel?: { id: string; labelledBy: string };
+  /**
+   * The card is in the waiting dock (24.11 WD-D2): the dock has no close
+   * control that drops an item, so the X of the title row does not draw.
+   * "Not now" beside Submit stays.
+   */
+  inDock?: boolean;
   /** The waiting dock's Expand and Fold controls, on the title row when no
    *  tab row is drawn (§24.11). */
   headerAside?: ReactNode;
@@ -180,6 +186,7 @@ export default function ElicitationCard({
   retryToken = 0,
   tabs,
   tabPanel,
+  inDock = false,
   headerAside,
   initialDraft,
   onDraft,
@@ -281,7 +288,7 @@ export default function ElicitationCard({
               <RollupHeader aside={aside} />
             </div>
             {headerAside}
-            <NotNowClose onClick={handleDecline} disabled={disabled} />
+            {!inDock && <NotNowClose onClick={handleDecline} disabled={disabled} />}
           </div>
         ) : headerAside ? (
           <div className="flex min-w-0 items-center gap-1.5">

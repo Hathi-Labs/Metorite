@@ -320,6 +320,21 @@ test.describe("the waiting dock (WD-1)", () => {
     expect(await answers(page)).toEqual([]);
   });
 
+  test("D4: the dock opens on the question, though the email came first, and a tab press holds", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all" });
+    await expect(dock(page)).toBeVisible({ timeout: 20_000 });
+    const tabs = page.locator('[data-dock-body] [role="tab"]');
+    await expect(tabs.nth(0)).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("[data-dock-body] [data-elicitation-card]")).toBeVisible();
+    // WD-D2: no X on the question in the dock. Not now stays.
+    await expect(page.locator("[data-dock-body] [data-not-now-close]")).toHaveCount(0);
+    await expect(page.locator("[data-dock-body] [data-elicitation-card]").getByRole("button", { name: "Not now" })).toBeVisible();
+    // The member picks the email: it stays the open tab.
+    await tabs.nth(1).click();
+    await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
+  });
+
   test("the fold row opens the card and approves nothing", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
@@ -327,8 +342,8 @@ test.describe("the waiting dock (WD-1)", () => {
     await page.locator("[data-dock-fold]").click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
     const review = page.locator("[data-dock-unfold]");
-    // D4: the email came first, and a later question takes no active tab.
-    await expect(review).toHaveText("Review");
+    // D4: the dock opens on its first tab, the question.
+    await expect(review).toHaveText("Answer");
     await review.click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
     await page.waitForTimeout(600);

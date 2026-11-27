@@ -207,6 +207,25 @@ describe("the fold row (WD-D2, audit rule 2)", () => {
   });
 });
 
+describe("WD-D2: no X on a question in the dock", () => {
+  it("the dock's question draws Not now and no X", () => {
+    const html = dock({ cards: [], count: 1 });
+    expect(html).not.toContain("data-not-now-close");
+    expect(html).toContain(">Not now<");
+  });
+
+  it("outside the dock the question keeps its X", () => {
+    const html = renderToStaticMarkup(
+      createElement(ElicitationCard, {
+        questions: [{ header: "Pick", question: "Which?", multiSelect: false, options: [{ label: "Yes" }] }],
+        onSubmit: () => {},
+        onDecline: () => {},
+      }),
+    );
+    expect(html).toContain("data-not-now-close");
+  });
+});
+
 describe("the frame", () => {
   it("a fold control and no close control that drops an item", () => {
     const html = dock({});
