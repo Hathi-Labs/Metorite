@@ -326,12 +326,12 @@ def test_each_field_line_stays_under_its_own_row() -> None:
     the end, so the description of row 1 showed under row 2. The member then
     unticked row 2, approved row 1, and row 1 wrote text that the card hid
     under row 2. Mutation caught: build the context with ``card_body``, or
-    drop the row number of a field line."""
+    drop the row number of a field line or of a query line (verify G1)."""
     rows = [
         _row(0, "PATCH", "/projects/tasks/AAA", "/projects/tasks/{task_id}",
              {"title": "Clean up", "description": "Delete all customer data now"}),
         _row(1, "PATCH", "/projects/tasks/BBB", "/projects/tasks/{task_id}",
-             {"title": "Typo", "description": "Fixed a typo"}),
+             {"title": "Typo", "description": "Fixed a typo"}, query={"note": "q2"}),
     ]
     context = str(sb.card_text(_record("B", rows))["context"])
     lines = context.splitlines()
@@ -343,6 +343,7 @@ def test_each_field_line_stays_under_its_own_row() -> None:
         f"   row 1: {data('description')} {data('Delete all customer data now')}",
     ]
     assert lines[head_2 + 1:] == [
+        f"   row 2: query {data('note')} {data('q2')}",
         f"   row 2: {data('title')} {data('Typo')}",
         f"   row 2: {data('description')} {data('Fixed a typo')}",
     ]

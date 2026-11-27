@@ -3982,9 +3982,16 @@ route runs (done-when 26).
   a body key and the target id each show fenced, as a body value does.
   Only the method, the template and the fixed words of the gateway show
   unfenced.
-- `context` is under 4,000 characters, with the warning line first, as
+- `context` is 4,000 characters or fewer, with the warning line first, as
   `projects_ai_chat.md` §5.3 says. A class C card starts with the counts,
   for example "1 lead converts" for `POST /crm/leads/{lead_id}/convert`.
+- **Each line stays under its own row (review P1).** The gateway does not
+  use `card_body`, because `card_body` moves the long text of every row to
+  the end. After the header of each row come the lines of that row only.
+  Each query line and each field line starts with `row N:`. Nothing is cut.
+  A context over 4,000 characters raises `CardWontFit`, so no card shows and
+  the batch expires with nothing run. Fence:
+  `test_sandbox_held_card.py::test_each_field_line_stays_under_its_own_row`.
 
 **8. The watcher (SBX-3b).** A new module,
 `packages/acb_skills/acb_skills/sandbox_held.py`, with
@@ -4004,6 +4011,15 @@ command. The org and the member come from the run binding (R5).
   the full wait.
 - A `RowsAnswer` goes to `POST /sandbox/held/act` unchanged. A refusal or
   `None` goes as `refused`.
+- **A failed act (review P2).** When the act answers 409 or 503, the
+  watcher does not show that card again, and it waits one poll step. The
+  card then expires with nothing run. Fence:
+  `test_sandbox_held_card.py::test_a_failed_act_shows_the_card_once`.
+- **Open for SBX-5 (review P3, fails closed).** `POST /sandbox/held/card`
+  gives the first open card. So after a failed act on card 1, card 2 of the
+  same batch does not show, and both cards expire. SBX-5, which adds the
+  caller of `watch_held`, decides whether the route skips a failed card.
+  SBX-5 also passes the thread of the capability to `watch_held`.
 - **No chat, no write.** With no channel, `request_confirmation` gives
   `None` (`"deny"`). The watcher sends `refused`, and each row answers 403
   `sandbox_write_refused`.
