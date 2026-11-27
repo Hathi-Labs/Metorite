@@ -549,3 +549,14 @@ async def test_a_second_call_while_a_card_is_open_is_refused(net) -> None:
     finally:
         executor._active_run_queue.reset(token)
     assert net.docker.calls == []
+
+
+def test_the_projects_track_never_attaches_request_network_access() -> None:
+    import inspect
+
+    assert "request_network_access" not in inspect.getsource(st._add_tools)
+
+
+def test_covers_still_refuses_every_code_task_and_app_builder_agent(sandbox) -> None:  # noqa: F811
+    for agent in ("agent-x", "app-builder", "metorite"):
+        assert sb.covers(agent, ORG_A) is False
