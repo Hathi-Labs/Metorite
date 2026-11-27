@@ -15,11 +15,12 @@
   mint, and `SANDBOX_DOOR_ORGS` is empty. SBX-13 is built and merged
   (2026-11-26, §12.3, `0dc23db0f`). SBX-4a (task 3803, PR 2862) is open. §12.4
   holds the spec of SBX-4b (task 3986). Parts (a), (b) and (c) of SBX-4b1 are
-  built dark on branch `mt-d0a57ed5-sbx4b1-abc` (2026-11-26, task 3986):
-  the door refusal counter, `user_tool_runs` (migration 506) and the reserved
-  agent names. The step engine of SBX-4b1 is not built. No other build slice
-  of this spec is on `main` (read 2026-11-26 at `3064753ee`). The SBX-1 audit (2026-11-26, §12.1)
-  splits SBX-1 into SBX-1a and SBX-1b.
+  built dark and merged (2026-11-27, task 3986, `ae5b37cde`): the door
+  refusal counter, `user_tool_runs` (migration 506) and the reserved agent
+  names. The step engine of SBX-4b1 is not built. §12.5 holds the spec of
+  SBX-3 (task 3802), with the owner answers of 2026-11-27. No other build
+  slice of this spec is on `main` (read 2026-11-27 at `98d393683`). The SBX-1
+  audit (2026-11-26, §12.1) splits SBX-1 into SBX-1a and SBX-1b.
   **D233** (2026-11-26, §0d) unpauses AI Studio, and adds the build in the same
   chat turn (SBX-20, SBX-21).
 - **Verified against code on 2026-10-19** at `main` `daad004f9`. The anchors
@@ -508,7 +509,7 @@ reading.
 |---|---|---|
 | SBX-1 | SBX-1a built dark and merged (2026-11-26, task 3800, `2c3f6ae0c`). SBX-1b built dark and merged (2026-11-26, task 3984, `ab2928139`), behind the 404 of the route | §12 rows SBX-1a and SBX-1b |
 | SBX-2 | Built, dark behind `SANDBOX_DOOR_ORGS` (task 3801, merged 2026-11-26, `209884bac`). Migration 503 | `SANDBOX_ROUTES` in `acb_common/app_manifests`. `acb_auth/sandbox_capabilities.py`. `tests/unit/test_sandbox_capability.py` |
-| SBX-3 | Not built | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
+| SBX-3 | Not built. §12.5 holds its spec (2026-11-27): SBX-3a (task 3802) and SBX-3b | Needs SBX-2. `git log --grep SBX-3` finds no build commit |
 | SBX-4 | Not built. PR 2862 (SBX-4a, an inert target) was open on 2026-11-26. §12.4 specifies SBX-4b | `MAF_CODING_TARGETS` holds no `tools` (`sandbox_broker.py:126`) |
 | SBX-5 | Not built | `git log --grep SBX-5` finds the spec commit only. Its input B7 is built |
 | SBX-6 | Not built | Its inputs are partly built, see PKG-11 and J2 below |
@@ -1066,10 +1067,13 @@ wait for that call.
   the member's browser. So each permission check, each 404 for a row the
   member cannot see, and FORCE RLS at the `get_db()` seam apply unchanged.
   The door adds no SQL and no second permission model.
-- **The stamp.** Each request carries `X-Actor-Via: sandbox:<tool slug>:v<n>`
-  (the recommendation of §12.2 decision 12, SBX-3 confirms), set by the door from the capability row. `record_activity` copies it into
-  `meta.via` (D-PM-36). The timeline then reads "by Priya, through the tool
-  `quote-pdf` v3".
+- **The stamp.** Each write of a tool carries the stamp
+  `sandbox:<tool slug>:v<n>`. This form is decided (§12.5 decision 5,
+  2026-11-27). The door takes it from `UserContext.sandbox`, never from a
+  header. A Projects write copies it into `meta.via` through
+  `record_activity` (D-PM-36). The timeline then reads "by Priya, through
+  the tool `quote-pdf` v3". A CRM record write keeps no stamp (§12.5
+  decision 5).
 - **Limits.** 600 requests per step and 4 MB per response, both new. A page
   holds at most 100 rows, as on the MCP door. Past a limit, the door answers
   429.
@@ -1079,7 +1083,7 @@ wait for that call.
 | Route class (`projects_ai_chat.md` §5.2) | What the door does |
 |---|---|
 | **A**, a read | Runs at once |
-| **B**, a write the app can undo | Holds the request. The member's chat shows the confirmation card. On approval, the gateway runs the request as the member. On a refusal or a timeout, the code gets 403 |
+| **B**, a write the app can undo | Holds the request. The member's chat shows the confirmation card. On approval, the gateway runs the request as the member, through the route's own handler. On a refusal or a timeout, the code gets 403 |
 | **C**, a write that is hard to undo | As B, one card for each request, with the counts first |
 | **X**, excluded | 403 always. Deletes, grants, member and role writes, billing, sign-in, connector connect and disconnect, and admin routes |
 
@@ -1087,17 +1091,19 @@ wait for that call.
   card from the request it holds: the method, the route, the target row and
   each changed field. A model cannot describe a write as something else
   ("the card stopped matching the wire", WS-26d-write).
-- **A batch.** The code may send many writes to `POST /sandbox/v1/batch`.
-  The member sees one card with one row each, through
-  `request_confirmation(rows=…)`, as `create_tasks` does.
+- **A batch.** (Decided 2026-11-27, task 3802, answer `55b542fc`.) Each
+  write is a row of `POST /sandbox/v1/batch`. The member sees one card with
+  one row for each class B row, through `request_confirmation(rows=…)`. The
+  approved rows run one by one, not in one transaction. The card shows a
+  result for each row. §12.5 holds the rules.
 - **No person, no write.** The card passes `non_interactive_default="deny"`.
   A run with no chat gets 403 for every write.
 - **The smoke step writes nothing.** Its capability holds no write scope. A
-  write there answers 403 with `smoke_is_read_only`, and the smoke report
-  counts the writes the code would have made.
+  write there answers 403 with `sandbox_read_only`, the code of SBX-2. The
+  smoke report counts the writes that the code would have made.
 - **The card times out** after `sandbox_approval_timeout_seconds` (default
-  300). WS-43g specifies that setting, and SBX-3 adds it if WS-43g has not.
-  The wait counts against the step's time budget.
+  300). SBX-3a adds that setting, because no code holds it yet. The wait
+  counts against the step's time budget (§12.5 decision 6).
 
 ### 5.4 Rule 4 — no secret enters the sandbox
 
@@ -1123,11 +1129,11 @@ code cannot change it.
 | `run` | The door, and the package hosts for a reinstall from the tool's own lock with hashes | The smoke and run steps |
 | `web:<hosts>` | Each host the member approved on a card, by exact name | A step that needs a third-party host |
 
-- (SBX-4b, §12.4 decision 3) **The smoke test opens one host at a time.**
-  The install runs with the two PyPI hosts only. The smoke command runs with
-  the door only. This is the recommendation, and the owner confirms it
-  (SBX-Q2 residual, task 3986). PyPI publishes its download counts, so a
-  package host is a channel while a capability is live.
+- (SBX-4b, §12.4 decision 3) **A step opens one host at a time.** The
+  install runs with the two PyPI hosts only. The smoke command, and the run
+  command of SBX-5, run with the door only. Decided 2026-11-27 (task 3986,
+  answer `fd97a2bd`, SBX-Q2 residual). PyPI publishes its download counts, so
+  a package host is a channel while a capability is live.
 - **The default is `run`** for a stored tool, and `build` for a build.
   Nothing else is open. A host off the profile answers 403 at the proxy.
 - **The proxy rules of WS-43g stand:**
@@ -1385,10 +1391,13 @@ fails, and the gap row reads `build_failed`. The gateway stores nothing.
 - (D187) A `tool_id` is the id of the package, `apps.id`. A later run reads
   the files of the version that the caller runs (§7.2, §8.2). It writes them
   into a fresh run-data dir.
-- (D187) The writes that §5.3 holds for a card are the proposed writes of
-  the B4 and B5 contract (`ai_studio.md` §3.7). The platform applies each
-  one only after the member approves it.
-- Writes go through cards (§5.3).
+- (Amended 2026-11-27, task 3802, answer `55b542fc`.) The door holds each
+  write of the code for a card (§5.3). After the member approves the card,
+  the gateway runs each approved row as the member, through the route's own
+  handler and checks. The rows run one by one, not in one transaction. The
+  card shows a result for each row. This replaces the D187 text that applied
+  proposed writes in one transaction (`ai_studio.md` §3.7). §12.5 holds the
+  rules.
 - The result is the files in `outputs/` and a JSON summary. The chat shows
   the files as artifact cards, as S8 does (`projects_ai_chat.md` §14). The
   summary goes back to the model inside the untrusted frame.
@@ -1834,9 +1843,12 @@ Each act writes one audit row in the transaction of the act, through the
 seam that owns the act. A version and a rollback write `app_audit` through
 `packages_store.py`. A share, an approval, a pin, a pause and an archive
 write the record of J2 and PKG-11. The row holds the actor, the package, the
-version and the reason. Each write that a tool makes carries the stamp
-`sandbox:<slug>:v<n>` in `meta.via` (§5.2). This form is the recommendation
-of §12.2 decision 12, and SBX-3 confirms it.
+version and the reason.
+
+Each Projects write that a tool makes carries the stamp
+`sandbox:<slug>:v<n>` in `meta.via` (§5.2). This form is decided (§12.5
+decision 5, 2026-11-27). A CRM record write keeps no stamp, because its rows
+have no `via` field.
 
 ---
 
@@ -1916,9 +1928,9 @@ tenancy and outward writes also get mutation testing
 
 | # | Test file | What breaks it |
 |---|---|---|
-| SBX-F1 | `tests/unit/test_sandbox_capability.py` | A capability takes its org or member from input, works after its step ends or after 15 minutes, works for another org, or holds a write scope in the smoke step. Its R8 half runs on a real database: a door read for a row of another org returns no row |
-| SBX-F2 | `tests/unit/test_sandbox_routes_coverage.py` | A route in `SANDBOX_ROUTES` has no class, a class X route is on the list, or a new gateway route is neither on the list nor in its exclusion list |
-| SBX-F3 | `tests/unit/test_sandbox_door_writes.py` | A class B or C request runs with no card, a run with no chat gets a write, the card text comes from the model and not from the held request, a refused card lets the write run, or a write lands without `meta.via = sandbox:…` |
+| SBX-F1 | `tests/unit/test_sandbox_capability.py` | A capability takes its org or member from input, works after its step ends or after 15 minutes, works for another org, or holds a write scope in the smoke step. (SBX-3) Or it holds a write scope outside `SANDBOX_WRITE_SCOPES`, or a write scope with no package and version. Its R8 half runs on a real database: a door read for a row of another org returns no row |
+| SBX-F2 | `tests/unit/test_sandbox_routes_coverage.py` | A route in `SANDBOX_ROUTES` has no class, a class X route is on the list, or a row joins with no `sandbox=True` on its own line (§12.2 decision 11). (SBX-3, §12.5 decision 3) A row of `SANDBOX_WRITE_ROUTES` is not class B or C, is a GET or a DELETE, or is not one of the 30 rows of §12.5. A row joins the write door only with `sandbox_write=True` on its own line |
+| SBX-F3 | `tests/unit/test_sandbox_door_writes.py`, and `tests/unit/test_sandbox_held_card.py` (SBX-3b) | A class B or C request runs with no card, a run with no chat gets a write, the card text comes from the model and not from the held request, a refused card lets the write run, or a Projects write lands without `meta.via = sandbox:…`. (SBX-3) A timed-out card lets the write run, an unticked row runs, or a late answer runs a row. Its R8 half runs on a real database (§12.5 done-when 12 and 23) |
 | SBX-F4 | `tests/unit/test_sandbox_no_secrets.py` | The container's environment or file system holds a provider token of the org, `GATEWAY_INTERNAL_TOKEN`, the Router key, the session secret, the signing key or a database URL. It has a `sandbox_docker` half |
 | SBX-F5 | `tests/unit/test_sandbox_egress_profiles.py` | A host off the profile passes, a step with a read scope gets a `web:` profile while SBX-Q2 has its default, a marked session gets one, or the code changes its own profile |
 | SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | The door's identity step skips a branch 0 step, reads the member from a header, falls through to branch 1a, or a refused request leaves a tenant bound. Its source is pinned by digest, as branch 0's is |
@@ -1983,10 +1995,10 @@ the A2 model.
 | **SBX-1a** (task 3800) | (D187) (D225) `tool_gaps` (§7.4). The no-match path of `find_tools` with the library check and the compose check (§6.1), not a second tool. The gap log line of §9.1, and the route `GET /studio/tool-gaps` for an approver. No code runs anywhere. §12.1 holds the full slice and the eleven audit decisions. `user_tool_runs` moved to SBX-4 (decision 9) | SBX-0b | AGENT-SAFE. HIGH tier: a FORCE RLS table and the chat tool seam. Dark behind `user_tool_find_enabled`. 🔨 **BUILT dark** (2026-11-26, branch `mt-8f625471-sbx1-tool-gaps`): migration 504, the hook, the store, the library search and the route. The flip is the `enforcement-flip` of rung 6a |
 | **SBX-1b** (task 3984) | A read-only "Tool gaps" section on `/studio`, for a holder of `studio:publish`. It reads `GET /studio/tool-gaps` through the `/api/studio/[[...path]]` proxy. It shows the counts by outcome and by category, and the newest rows. Frontend only, with no new route | SBX-1a | AGENT-SAFE. STANDARD. Dark. 🔨 **BUILT dark** (2026-11-26, branch `sbx1b-gap-view`): `app/studio/components/ToolGaps.tsx`. A 404 or a 403 draws nothing. The panel draws a skeleton or an error line only in a browser that saw a 200 before, so a dark org never sees it |
 | **SBX-2** (task 3801) | The run capability (§5.1), the door with reads only (§5.2), `SANDBOX_ROUTES` and its coverage fence. 🔨 **BUILT dark** (2026-11-26, branch `mt-37f6b3b8-sbx2-door`, §12.2): migration 503, `acb_auth/sandbox_capabilities.py`, the sibling of branch 0, `gateway/sandbox_door.py` and the 68 rows. Fences SBX-F1, SBX-F2, SBX-F6 and SBX-F29. The digest pin names the Opus diff-reviewer review and the independent verification of `external_agent_access.md` §10.1 (2026-11-26). §12.2 holds the full slice | SBX-1, SBX-Q6 | AGENT-SAFE. Dark |
-| **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via` | SBX-2 | AGENT-SAFE. Dark |
+| **SBX-3** (task 3802) | Writes held for a card (§5.3), the batch card, `meta.via`. **§12.5 holds the full slice** and the owner answers of 2026-11-27. Two PRs. **SBX-3a (task 3802), the write door:** the rule of `Route.sandbox_write` and the 30 write rows, the write scopes of `mint`, the held store in tenant Redis, `POST /sandbox/v1/batch` that holds and answers each row, the one-use ticket, the stamp and `sandbox_approval_timeout_seconds`. Tests only, no demo. **SBX-3b (task TBD), the card:** the batch card through the held-card seam, approve, refuse and timeout, and card text from the held wire only. HIGH. **Done when:** the list of §12.5 | SBX-2. SBX-3b needs SBX-3a | AGENT-SAFE. Dark |
 | **SBX-4a** (task 3803) | (D227) **The `tools` target, inert** (§0c item 4). `TOOLS_TARGET` and the broker agent name `user-tool` join `MAF_CODING_TARGETS`, so a `tools:` entry of `MAF_CODING_SCOPE` parses and every other target stays on. `acquire()` refuses the target, and `docker-remote` refuses it too, because `REMOTE_TARGETS` still holds `code_task` only. A `tools` agent is never covered, so the D85 seam keeps its host shell withheld. 🔨 **Built dark on PR 2862, not merged** (2026-11-26). **Done when:** SBX-F24 (part) in `tests/unit/test_sandbox_scope_all_orgs.py`, `tests/unit/test_sandbox_broker_tools.py`, and the SBX-F11 test `test_the_tools_target_never_falls_back_to_the_host` pass, and each fails before the change | None | AGENT-SAFE. Dark |
-| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name | AGENT-SAFE. Dark. No production container (task 3786) |
-| **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
+| **SBX-4b** (tasks 3986 and 4049) | `build_tool`, the build session and the smoke test (§6.2, §6.3), on the Docker backend. (§12.1 decision 9) The table `user_tool_runs` (§7.3). The gap id in the answer of the no-match path. The reserved agent names `user-tool` and `compute`. **§12.4 holds the full slice.** Two PRs: SBX-4b1 (task 3986), the step engine with a fixture package, and SBX-4b2 (task 4049), the chat tool and the build session. Parts (a) to (c) of SBX-4b1 can start now. The step engine waits for PR 2862 and PR 2887. HIGH. **Done when:** the list of §12.4. 🔨 **Parts (a), (b) and (c) BUILT dark** (2026-11-26, task 3986, branch `mt-d0a57ed5-sbx4b1-abc`): the door refusal counter and `door_counts`, `user_tool_runs` (migration 506) with its store, and the reserved names. Done-when 1 to 7 pass. Merged 2026-11-27 (`ae5b37cde`, PR 2896). The step engine (decisions 1 to 8) and done-when 8 to 27 are not built | SBX-4a, SBX-1a (a gap id, SBX-F8), SBX-2, SBX-13 (D187), WS-43g1 (task 4009, PR 2887) for the proxy and the door name | AGENT-SAFE. Dark. No production container (task 3786) |
+| **SBX-5** (task 3804) | (D187) `run_tool`, persist on success as a Studio package, and reuse (§6.4 to §6.6). The `app_versions.files` columns, the CHECK and the trigger (§7.2). `publish_version` writes the files, and `rollback` copies them. (SBX-4b) SBX-5 is the single owner of the package rules of `ai_studio.md` §19.5 (age, advisory, licence and layer), and it closes the residual of §12.4 decision 9. (SBX-Q2, decided 2026-11-27, task 3986, answer `fd97a2bd`) The run step opens one host at a time, as the smoke round does: a reinstall runs with the package hosts only, and the run command runs with the door host only. (§12.5) `run_tool` mints the write scopes of `tool.json` and runs the held-card watcher of SBX-3b beside the run command. **Done when** (part): a tool whose lock breaks a §19.5 rule does not persist, and a test proves it | SBX-3, SBX-4, `ai_studio.md` B7 | AGENT-SAFE. Dark |
 | **SBX-6** (task 3805) | (D187) (D227) The setting `user_tool_disabled_orgs`, which takes `*` (§0c, Gap A). The review controls through the package host: share, approve with `studio:publish`, pin, pause, archive and audit (§8) | SBX-5, `package_host.md` PKG-11, `ai_studio.md` J2 | AGENT-SAFE. Dark |
 | **SBX-7** (task 3806) | Metering (§10). (D227) A step is refused when the `sandbox` price row is missing (SBX-F16) | SBX-5, SBX-Q4 | AGENT-SAFE. Dark |
 | **SBX-8** (task 3807) | `sandbox_runtime=runsc` in the broker, and a measured cost of gVisor on a local stack. 🔨 **BUILT dark** (2026-11-19, branch `mt-97db21a4-sbx15-remote-runsc`): the setting `sandbox_runtime`, default `runc`. `runsc` adds `--runtime=runsc` to `docker run`, and an unknown value refuses each start. Fences: WS43-F2 and SBX-F21. **Not measured:** no local daemon has `runsc`, so the cost of gVisor waits for a box with it | the broker (D227), not SBX-4 | AGENT-SAFE. The install on a box is WS43-G5, **OWNER-GATE** |
@@ -2974,9 +2986,10 @@ until PR 2862 merges, and then uses `USER_TOOL_AGENT`. The step engine
   needs it to reach the door name.
 - **SBX-1a, SBX-2 and SBX-13**, on `main`: the gap row, the capability and
   the door, and the door client.
-- **Not SBX-3.** SBX-3 is NO-GO until the owner picks a design. So SBX-4b
-  holds no write. The smoke capability holds no write scope. The package
-  check refuses a `tool.json` with a write scope.
+- **Not SBX-3.** SBX-4b holds no write. The smoke capability holds no write
+  scope. The package check refuses a `tool.json` with a write scope. (The
+  owner picked the SBX-3 design on 2026-11-27, §12.5. The smoke step still
+  writes nothing.)
 
 **Why not a half with no network.** A half with image packages only and no
 door misses the demo of rung 6b. That demo reads two pages through the door
@@ -3072,11 +3085,12 @@ smoke test then moves through two grants:
 3. `revoke_egress`. The container goes back to `--network none`. This step
    also runs on a failure and on a cancel.
 
-- **The recommendation, owner confirms (SBX-Q2 residual).** No package host
-  is open while a capability is live. PyPI publishes its download counts as
-  a public dataset. So a package name that the code asks for can carry data
-  out. The owner answers on task 3986. Until then, SBX-4b builds the
-  narrow grant of step 2.
+- **Decided 2026-11-27 (task 3986, answer `fd97a2bd`, SBX-Q2 residual).**
+  Only the door is reachable while a capability is live. The install runs
+  first, and then the door host only, for each smoke round and each run.
+  PyPI publishes its download counts as a public dataset. So a package name
+  that the code asks for can carry data out. SBX-4b builds the narrow grant
+  of step 2.
 - `EGRESS_TARGETS` (PR 2887) gains `TOOLS_TARGET`. `projects` and `compute`
   stay out.
 - `check_grant_hosts` (PR 2887) refuses the door name while
@@ -3090,11 +3104,15 @@ refuses it. SBX-4b1 changes `_grant_inputs`: for a `tools` handle it compares
 with `read_tool_binding()`. The org and the member still come from the run
 binding.
 
-**The network depends on task 4009.** WS-43g1 puts each org on one egress
-network, and inter-container traffic (ICC) is on. So a `tools` container
-sits next to the `code_task` containers of other members of the org. The
-recommendation: no inter-container traffic on the `tools` path. The owner
-decides on task 4009, and this spec does not.
+**The network: one for each run (decided 2026-11-27, task 4009, answer
+`b5dbe733`).** WS-43g1 puts each org on one egress network, and
+inter-container traffic (ICC) is on. So a `tools` container on that network
+sits next to the `code_task` containers of other members of the org.
+
+The owner chose one egress network for each run. WS-43g1 merges as it is,
+and WS-43g2 (task 4070) builds the network of each run. The `tools`
+container uses the network of its own run from WS-43g2. So the step engine
+of SBX-4b1 waits for WS-43g2 too.
 
 **4. The capability reaches the smoke command only.**
 
@@ -3523,6 +3541,556 @@ says.
 These fences are on tenancy, a capability and code that runs. So they also
 get mutation testing (`engineering_practice.md` §4).
 
+### 12.5 SBX-3 — writes held for a card
+
+**Board.** SBX-3a is Metorite task 3802. SBX-3b: task TBD. Risk tier HIGH.
+The slice changes the identity step of `get_current_user`, opens writes to
+code that a model wrote, and runs those writes as the member.
+
+The anchors below were read on 2026-11-27 at `main` `98d393683`. Re-verify
+each anchor at dispatch. The Opus spec-auditor gave NO-GO on 2026-11-26, and
+asked for decisions B1 to B8. The owner answered B1 and B2. This section
+decides B3 to B8.
+
+**The owner answers (2026-11-27, binding).**
+
+| Id | Task, answer | The decision |
+|---|---|---|
+| B1 | Task 3802, answer `55b542fc` | §5.3 holds. The door holds each HTTP write. After the member approves the card, the gateway runs it as the member, through the route's own handler and checks. The approved rows run one by one, not in one transaction. The card shows a result for each row. §6.4 and `ai_studio.md` §3.7 follow it |
+| B2 | Task 3802, answer `55b542fc` | Reuse the held-send card seam of email (`routes/email/automation/held_card.py`). The gateway mints a 32-hex `request_id`, and `request_confirmation(request_id=…)` (`acb_skills/ask_tools.py`) raises the card. The held rows live in Redis through the tenant prefix wrapper, with the TTL `sandbox_approval_timeout_seconds` (default 300). No migration |
+| SBX-Q2 residual | Task 3986, answer `fd97a2bd` | Only the door is reachable while a capability is live. The install runs first, and then the door host only, for each smoke round and each run (§5.5, §12.4 decision 3, the SBX-5 row) |
+| WS-43g network | Task 4009, answer `b5dbe733` | WS-43g1 merges. WS-43g2 (task 4070) builds one egress network for each run. The `tools` container uses that network (§12.4 decision 3) |
+
+**The split.** Two pull requests. Each has its own proof.
+
+- **SBX-3a (task 3802), the write door.** Decisions 3 to 6. They are the
+  manifest rule and the write rows, the write scopes of `mint` and the held
+  store. They are also the batch route, the ticket, the stamp and the
+  timeout setting. A
+  store function decides a card in the tests. Tests only, with no demo.
+- **SBX-3b (task TBD), the card.** Decisions 7 and 8: the card of a held
+  batch through the held-card seam, the approve, the refusal and the
+  timeout. The card text comes from the held wire only.
+
+**Can the gateway raise a card by itself? No.** `request_confirmation`
+draws the card through the event emitter of the running chat turn. It then
+waits on a future in the orchestrator process (`_pending_user_input`). The
+email assistant raises the held-send card from its own tool call, with the
+id that the gateway minted. So only a tool call of the turn can raise a card.
+
+- SBX-3b builds the watcher that the tool call runs. Its first caller with
+  a write scope is `run_tool` of SBX-5. The smoke step of SBX-4b writes
+  nothing.
+- So SBX-3b proves the card with tests and a fake emitter. The owner sees a
+  write card on the dev stack in the demo of rung 6c, after SBX-5.
+
+**Depends on.** SBX-2 (merged, `209884bac`). SBX-3b depends on SBX-3a. SBX-3
+needs no part of SBX-4b. SBX-5 depends on SBX-3.
+
+**Scope.** As the split says, on the dev stack, dark. No flag flips. Only
+tests mint a capability.
+
+**Not in SBX-3.**
+
+- No `usage_event`, no credit check and no price. Task 3806 asks the owner
+  which credential writes the sandbox usage row. SBX-3 touches neither the
+  question nor the meter.
+- No broker mint. The one caller of `mint` stays the step engine of SBX-4
+  (SBX-F1 scans it). Task 3786 (BH-3 and the escape risk) stays open, and
+  SBX-3 changes nothing that it covers.
+- No flip. `SANDBOX_DOOR_ORGS` stays empty on every box.
+- No migration. The held rows live in tenant Redis. The CHECK of
+  `sandbox_capabilities` already refuses a write scope in the smoke phase.
+- No DELETE through the door, no grant, no setting of an app and no send to
+  a person (decision 3).
+- No `run_tool`. SBX-5 runs the watcher of SBX-3b beside the run command.
+- No email, calendar or connector write. SBX-2b, SBX-2c and SBX-2d own the
+  reads first.
+
+#### The decisions
+
+**3. The write rows (B3).** `Route` (`app_manifests/base.py:172`) gets a
+second field, `sandbox_write: bool = False`. `Route.sandbox` stays the read
+field, and its rule at `base.py:217` does not change.
+
+- `__post_init__` refuses `sandbox_write=True` on these rows:
+  - a row of class A or X,
+  - a GET or a DELETE,
+  - a row with `sends=True`,
+  - a row that also sets `sandbox=True`.
+- `SANDBOX_WRITE_ROUTES` (`app_manifests/__init__.py`) maps each
+  `(method, path)` with `sandbox_write=True` in `SANDBOX_APPS` to its class.
+- `SANDBOX_WRITE_SCOPES` is the write scope of each app of `SANDBOX_APPS`:
+  `crm:write` and `projects:write`.
+- **The default is off.** A row joins only by an edit to its own line, as
+  for reads. A DELETE never joins, because §5.3 puts deletes in class X for
+  the door, also where the manifest says class C.
+- Class X stays 403 `sandbox_route_excluded`.
+
+**The CRM rows that SBX-3 opens (16).** Each changes one record of the
+member's CRM, with the route's own checks.
+
+| Family | Rows | Class |
+|---|---|---|
+| Create | `POST /crm/leads`, `/crm/deals`, `/crm/contacts`, `/crm/organizations` | B |
+| Change | `PATCH /crm/<kind>/{record_id}` for the four kinds | B |
+| Log an activity | `POST /crm/<kind>/{record_id}/activities` for the four kinds | B |
+| Activities | `PATCH /crm/activities/{activity_id}` | B |
+| Modules | `PATCH /crm/modules/{module}/records/{record_id}` | B |
+| Deal contacts | `POST /crm/deals/{deal_id}/contacts` | B |
+| Convert | `POST /crm/leads/{lead_id}/convert` | C |
+
+**The Projects rows that SBX-3 opens (14).** Each changes a task or a
+project update, through the visibility seam of Projects. Each path starts
+with `/projects`.
+
+| Rows | Class |
+|---|---|
+| `POST /tasks`, `PATCH /tasks/{task_id}`, `POST /tasks/{task_id}/move`, `PUT /tasks/{task_id}/assignees` | B |
+| `POST /tasks/{task_id}/comments`, `POST /tasks/{task_id}/complete`, `POST /tasks/{task_id}/defer` | B |
+| `POST /tasks/{task_id}/links`, `PUT /tasks/{task_id}/recurrence`, `POST /nodes/{project_id}/updates` | B |
+| `POST /my/tasks`, `PATCH /tasks/{task_id}/personal` | B |
+| `POST /tasks/bulk`, `POST /tasks/{task_id}/archive` | C |
+
+**The class B and C rows that stay off, and why.**
+
+| Rows | Why |
+|---|---|
+| Each DELETE of CRM and Projects | §5.3 puts deletes in class X for the door |
+| Grants, authorities, statuses, types, fields, tags, views, cycles and templates of Projects | The shape and the access of a project. A person changes them in the app |
+| `statuses`, `lost-reasons`, `fields`, `field-sections`, `field-layout`, `field-rules`, `catalogue`, `settings`, `views`, `pipelines` and `conversion-mapping` of CRM | The setup of the CRM, for an admin. Statuses, lost reasons, settings and pipelines write `crm_change_log`, and its `via` has no sandbox value |
+| `connection/disconnect`, `cutover`, `import/zoho`, `sync`, `reset`, `mapping`, `analysis/rerun` of CRM | Connection and sync acts. A tool needs none of them |
+| `questions`, `rules` and `mapping/suggestions` of CRM | The state of the CRM assistant, not record data |
+| `agent-runs`, `archive-request`, `asks`, `nudge`, `decisions`, `watch`, `intake`, `notifications/read` and `my/reminders` of Projects | Agent runs, a message to a person, or the member's own inbox. A later slice may open one with a reason |
+| `reports` and their recipients and schedule, and `attachments` of Projects | A report can mail a person. An attachment is a file upload |
+| `POST /projects/tasks/move/preview`, `POST /projects/plan/preview`, and each GET of class B or C | A preview or a GET. They are not writes of the door |
+| `POST /crm/change-history/{change_id}/undo`, `POST /projects/activities/{activity_id}/revert`, `POST /projects/tasks/{task_id}/merge` | An undo, a revert or a merge acts on other rows. A person does it in the app |
+
+**4. The batch (B4).** Each write of the code is a row of
+`POST /sandbox/v1/batch`. That is the one path in.
+
+- A direct write is a non-GET on a route of an app. It keeps 403
+  `sandbox_read_only`, the code of SBX-2, in every phase.
+  The answer text names the batch route.
+- So step 5 of the door (`deps.py`, `_sandbox_gate`) keeps its rule. It
+  admits two more cases: the batch pair, and a row with a live ticket.
+
+**The body.**
+
+```json
+{"rows": [
+  {"method": "PATCH", "path": "/projects/tasks/7f3c…", "query": {}, "body": {"status": "done"}},
+  {"method": "POST", "path": "/crm/leads", "query": {}, "body": {"last_name": "Rao"}}
+]}
+```
+
+- 1 to 25 rows. Each row has exactly the four keys. Any other key gets 422
+  `sandbox_bad_batch`, so the model can put no label on the card.
+- `method` is POST, PUT or PATCH. `path` is the path of one route, with no
+  query, no `..` and no `//`. `query` is a flat object of strings. `body` is
+  a JSON object.
+- Each row is at most 64 KiB as JSON, and the body is at most 512 KiB. Past
+  a cap, the answer is 422 `sandbox_batch_cap`.
+
+**The checks, before anything is held.** The batch is all or nothing here.
+The first failed row refuses the whole batch, and the answer names its
+index.
+
+1. The capability is not in the `smoke` phase. Else 403 `sandbox_read_only`.
+2. The capability holds a write scope. Else 403 `sandbox_scope`.
+3. The gateway router matches the path of each row to one template, as
+   `_matched_template` (`deps.py:1704`) does for a request.
+4. Each pair is in `SANDBOX_WRITE_ROUTES`. A class X pair gets 403
+   `sandbox_route_excluded`. Any other pair gets 404 `sandbox_route_unknown`.
+5. The write scopes hold the write scope of the pair's app. Else 403
+   `sandbox_scope`.
+
+**The cards.** The class B rows of one batch share one card, with one row
+each. Each class C row gets a card of its own, with the counts first
+(`projects_ai_chat.md` §5.2). The cards keep the order of the rows.
+
+**The wait.** The batch call stays open until each card has an answer or
+times out (decision 6). One open call is simpler for the code than a poll.
+The egress proxy of WS-43g1 must keep a request open that long. The builder
+reads its timeout on `main` at dispatch.
+
+**The answer.** 200, with one entry for each row, in the order of the rows:
+
+```json
+{"rows": [
+  {"i": 0, "status": 200, "body": {"id": "7f3c…", "status": "done"}},
+  {"i": 1, "status": 403, "code": "sandbox_write_refused"}
+]}
+```
+
+| Case of one row | `status` | `code` |
+|---|---|---|
+| Approved, and the route answered | The route's own status | The route's own body in `body` |
+| Not ticked, or the card refused | 403 | `sandbox_write_refused` |
+| The card timed out | 403 | `sandbox_approval_timeout` |
+| The capability expired or was revoked before the row ran | 401 | `sandbox_not_run` |
+
+- **One by one (B1).** The approved rows run in card order, each in its own
+  request. A failed row does not stop the next one. No row sees another
+  row's answer. A row that needs the id of a new record goes in a later
+  batch.
+- The answer of the batch obeys the 4 MB cap of SBX-2. The batch call and
+  each row that runs count against the call cap of 600.
+
+**How a row runs as the member (B1).** The batch handler holds the
+capability header of its own request. For each approved row, it sends one
+request to the gateway app in the same process
+(`httpx.ASGITransport(app=request.app)`).
+
+- That request carries the same `X-Sandbox-Capability` and one new header,
+  `X-Sandbox-Ticket: <32 hex>`. The sibling of branch 0 runs every step
+  again. So the flag, the live row, the member's access, the route's own
+  checks and FORCE RLS all apply.
+- **The ticket.** The batch handler mints it after the approval, one for
+  each approved row. It lives in tenant Redis, under the namespace
+  `sandbox_ticket`, for 30 seconds. It holds the token hash, the method, the
+  path, the query, the SHA-256 of the body, the stamp and the held id.
+- **The sibling takes the ticket once** (`GETDEL`), after step 4, in the
+  scope of the row's organization. It compares each value with the request.
+  A miss, a second use, another capability or another wire gets 403
+  `sandbox_ticket`, and no tenant stays bound.
+- With a ticket, step 5 admits the non-GET. Step 6 checks the pair in
+  `SANDBOX_WRITE_ROUTES`. Step 7 checks the write scope.
+- The one-credential rule of §12.2 decision 3 allows exactly one
+  `X-Sandbox-Ticket` beside the capability. Each other `X-Sandbox-` header
+  still gets 401.
+- Each row runs in its own task, with a copy of the context. So the inner
+  request cannot clear the tenant of the batch request.
+- The code never sees a ticket. The answer of the batch holds none.
+- `_is_sandbox_request` and `_sandbox_user` change. So the one digest pin of
+  `test_tenant_request_binding.py` changes, in a commit that names the Opus
+  diff-reviewer review and the independent verification
+  (`external_agent_access.md` §10.1).
+
+**The held store (B2).** One module,
+`apps/services/gateway/gateway/sandbox_batch.py`, copies the record calls of
+`held_card.py` (`write_record` at `:623`, `take_record` at `:650`).
+
+- One record for each card, under the namespace `sandbox_held`. The key is
+  `tenant_redis.key("sandbox_held", card_id)`, inside `organization_scope`
+  of the capability row's organization. The card id is `uuid4().hex`, 32
+  hex digits, so `request_confirmation` takes it as `request_id`.
+- The record holds the member, the run, the thread, the token hash, the
+  held id of the batch, the class, the stamp and the rows. Each row holds
+  its index, the method, the path, the template, the query and the body.
+  It never holds the raw token.
+- A list `sandbox_held_run:<run_id>` in the same scope names the open cards
+  of a run, for the watcher of SBX-3b.
+- **The decision key.** `sandbox_held_decision:<card_id>`, written once with
+  `SET NX`. Its value is `approved` with the ticked ids, `refused` or
+  `expired`. The first writer wins. So an answer after the timeout runs
+  nothing, and a timeout after an answer changes nothing.
+- The batch handler reads the decision key every 0.5 seconds. At the
+  timeout it writes `expired` with `SET NX`, and reads the key once more.
+- SBX-3a adds the store function `decide(card_id, ticked)`. The act of
+  SBX-3b calls it, and the SBX-3a tests call it.
+- The TTL of each key is the wait of decision 6 plus 60 seconds.
+- A Redis fault answers 503, as `write_record` does. Nothing is held, and
+  nothing runs.
+
+**5. The stamp (B5).** The form is `sandbox:<slug>:v<n>`. It matches
+`ACTOR_VIA_PATTERN` (`agent_oauth.py:1049`). This replaces the
+recommendation of §12.2 decision 12.
+
+- **Where it comes from.** The batch handler runs with the member's tenant
+  bound. It reads `apps.slug` for `UserContext.sandbox.app_id` under RLS,
+  and builds the stamp with the version. It keeps the stamp in the held
+  record and in each ticket.
+- When the stamp does not match the pattern, for a long slug, the handler
+  uses `sandbox:app-<first 8 hex of the app id>:v<n>`.
+- `SandboxScope` (`acb_auth/roles.py:81`) gains `write_scopes` and `stamp:
+  str = ""`. The sibling sets `stamp` only from a live ticket. A header
+  never sets it.
+- **Projects.** `capture_actor_via` (`routes/projects/core.py:88`) reads only
+  the header today. It gains the cached `get_current_user` dependency. When
+  `user.sandbox` is set, it binds `user.sandbox.stamp`, and it ignores the
+  header. Each other request keeps the header rule. `record_activity` then
+  copies the stamp into `meta.via`, with no change.
+- **CRM.** `change_log.via_of` (`routes/crm/change_log.py:222`) returns
+  `chat` only for a `chat:` stamp with the internal bearer. The CHECK of
+  `crm_change_log.via` (`341_crm_change_log.sql:107`) allows no sandbox
+  value. None of the 16 CRM rows of decision 3 writes `crm_change_log`. So a
+  CRM row records the member as its actor, and no stamp. SBX-3 does not
+  change `via_of`.
+- **The provenance of a CRM write** is the log line `sandbox.door.write` and
+  the audit line of the act. A CRM row that writes `crm_change_log` joins
+  the door only with a later migration that adds a sandbox `via`.
+
+**6. The mint, the smoke rule and the timeout (B6).**
+
+- `mint` (`acb_auth/sandbox_capabilities.py:220`) takes write scopes. The
+  phases `build` and `run` may hold them. `mint` raises `ValueError` for
+  each of these:
+  - a write scope outside `SANDBOX_WRITE_SCOPES`,
+  - a write scope in the `smoke` phase,
+  - a write scope with no `app_id` or no `version`.
+- §12.4 decision 4 mints no capability in the build phase. So in practice
+  only the run step of SBX-5 holds a write scope.
+- **The smoke rule.** A smoke capability holds no write scope (the CHECK of
+  migration 503 and `mint`). A direct write answers 403 `sandbox_read_only`
+  in every phase. The batch route answers 403 `sandbox_read_only` to a
+  smoke capability. No new code name: SBX-3 does not add
+  `smoke_is_read_only`.
+- **The setting.** `sandbox_approval_timeout_seconds: int = 300` in
+  `settings.py`, beside `sandbox_door_orgs`.
+- **The wait and the step budget.** The wait of a batch is the setting, or
+  the time left on the capability less 30 seconds, whichever is less. So the
+  batch always answers before the step ends. The wait counts against the
+  step's time budget (§5.6). The step engine does not stop its clock.
+- One command of the run step has 300 seconds (§5.6), the same as the
+  default wait. SBX-5 decides whether a run command gets more time.
+
+**7. The card (SBX-3b).** Two internal routes in `gateway/sandbox_batch.py`.
+Each needs the internal bearer and the member (branch 1a), as the skills
+call the gateway. The door never reaches them, because they are not in
+`SANDBOX_ROUTES`.
+
+- `POST /sandbox/held/card` takes a run id. It returns the next open card
+  of that run of the member: the card id, `title`, `detail`, `context` and
+  `rows`. It reads only the held record.
+- `POST /sandbox/held/act` takes the card id, the answer and the card
+  thread. It copies `held_card_act` (`held_card.py:1873`):
+  1. It takes the answer once with `reply_card.take_reply_answer`. A miss, a
+     second answer, another member or another thread runs nothing (409).
+  2. It checks the ticked ids against the RECORDED ids with
+     `ask_tools.ticked_rows`. A forged id runs nothing (409).
+  3. It calls `decide(card_id, ticked)`.
+- A refusal needs no answer record. `POST /sandbox/held/act` with `refused`
+  calls `decide(card_id, None)`. A refusal can only stop a write.
+- **The card text comes from the wire.** The gateway builds the title, the
+  detail and each row label from the held method, template, target id and
+  body keys. A body value shows as a fenced value («…», `fenced=True`). The
+  batch has no free-text field, so no model text frames the card.
+- `context` is under 4,000 characters, with the warning line first, as
+  `projects_ai_chat.md` §5.3 says. A class C card starts with the counts,
+  for example the number of tasks of `POST /projects/tasks/bulk`.
+
+**8. The watcher (SBX-3b).** A new module,
+`packages/acb_skills/acb_skills/sandbox_held.py`, with
+`watch_held(run_id, thread_id)`. A tool call of the turn runs it beside the
+command. The org and the member come from the run binding (R5).
+
+- It asks `POST /sandbox/held/card` for each open card.
+- It calls `request_confirmation(title, detail, context, rows=…,
+  request_id=card_id, with_answer=True, non_interactive_default="deny",
+  fenced=True)`.
+- A `RowsAnswer` goes to `POST /sandbox/held/act` unchanged. A refusal or
+  `None` goes as `refused`.
+- **No chat, no write.** With no channel, `request_confirmation` gives
+  `None` (`"deny"`). The watcher sends `refused`, and each row answers 403
+  `sandbox_write_refused`.
+- **The timeout.** `request_confirmation` takes no timeout on `main`. The
+  watcher wraps it in `asyncio.wait_for` with the wait of decision 6. At the
+  timeout it closes the card as expired. A late Approve then finds the
+  decision key set, and runs nothing.
+- **A result for each row (B1).** After the act, the watcher reads the
+  answer of each row, and the card shows it under its row. The builder
+  re-verifies how `ConfirmationCard.tsx` draws a resolved card, and adds the
+  result line there.
+- `metorite_door` (`apps/services/orchestrator/sandbox/metorite_door.py`)
+  gains `batch(rows)`. It posts to the door name only (SBX-F22).
+
+**9. The log lines.** Through `acb_common.get_logger`.
+
+- `sandbox.door.write`: org, run, phase, the held id and the count of rows
+  by class. It also holds the event (`held`, `approved`, `refused` or
+  `expired`) and the count of rows that ran, by status. It holds no body, no
+  path value, no token and no hash.
+- The act writes one audit line of counts, as `_audit` of `held_card.py`
+  does.
+
+#### Files (re-verify at dispatch)
+
+SBX-3a:
+
+- Changed: `packages/acb_common/acb_common/app_manifests/base.py`.
+  `Route.sandbox_write` and its rule in `__post_init__`.
+- Changed: `app_manifests/crm.py` and `app_manifests/projects.py`.
+  `sandbox_write=True` on the 30 rows of decision 3.
+- Changed: `app_manifests/__init__.py`. `SANDBOX_WRITE_ROUTES`,
+  `SANDBOX_WRITE_SCOPES` and the batch pair.
+- Changed: `packages/acb_auth/acb_auth/sandbox_capabilities.py`. The write
+  scope rules of `mint`, and the codes of decision 4.
+- Changed: `packages/acb_auth/acb_auth/roles.py`. `SandboxScope.write_scopes`
+  and `SandboxScope.stamp`.
+- Changed: `packages/acb_auth/acb_auth/deps.py`. The batch pair and the
+  ticket in `_sandbox_user` and `_sandbox_gate`.
+- New: `apps/services/gateway/gateway/sandbox_batch.py`. The batch route,
+  the held store, `decide` and the run of each row. Changed:
+  `gateway/main.py`, which installs its router.
+- Changed: `apps/services/gateway/gateway/routes/projects/core.py`.
+  `capture_actor_via`.
+- Changed: `packages/acb_common/acb_common/settings.py`.
+  `sandbox_approval_timeout_seconds`.
+- Changed tests: `tests/unit/test_tenant_request_binding.py` (the digest),
+  `tests/unit/test_sandbox_routes_coverage.py`,
+  `tests/unit/test_sandbox_capability.py`,
+  `tests/unit/test_sandbox_door_identity.py`,
+  `tests/unit/test_sandbox_door_log_lines.py` and
+  `tests/unit/test_projects_actor_via.py`. New:
+  `tests/unit/test_sandbox_door_writes.py`.
+
+SBX-3b:
+
+- Changed: `apps/services/gateway/gateway/sandbox_batch.py`. The two routes
+  of decision 7.
+- New: `packages/acb_skills/acb_skills/sandbox_held.py`. `watch_held`.
+- Changed: `apps/services/orchestrator/sandbox/metorite_door.py`. `batch`.
+- Changed: `workbench/control_plane/src/components/ConfirmationCard.tsx`.
+  The result line of each row.
+- New: `tests/unit/test_sandbox_held_card.py`. Changed:
+  `tests/unit/test_sandbox_door_client.py`.
+
+#### Done when
+
+Each item names its test. The builder sees each test fail first.
+
+SBX-3a:
+
+1. `Route(sandbox_write=True)` raises `ValueError` on class A or X, on a GET
+   or a DELETE, with `sends=True`, or with `sandbox=True`.
+   `test_sandbox_routes_coverage.py::test_a_write_row_is_class_b_or_c_and_no_delete`.
+2. `SANDBOX_WRITE_ROUTES` holds exactly the 30 rows of decision 3, 16 of
+   CRM and 14 of Projects. The live router serves each one, and its class is
+   the class of the manifest.
+   `test_sandbox_routes_coverage.py::test_the_write_rows_are_the_thirty_of_sbx3`.
+3. A direct POST to `/projects/tasks` with a live run capability that holds
+   `projects:write` gets 403 `sandbox_read_only`. A spy shows that the route
+   did not run. (SBX-F3: no write runs with no card.)
+   `test_sandbox_door_writes.py::test_a_direct_write_never_runs`.
+4. `mint` raises `ValueError` for three write scopes: one in the smoke
+   phase, `knowledge:write`, and one with no `app_id` or `version`.
+   `test_sandbox_capability.py::test_mint_refuses_a_bad_write_scope`.
+5. The batch route refuses each case below before it holds anything. The
+   held store stays empty.
+   - A smoke capability: 403 `sandbox_read_only`.
+   - No write scope: 403 `sandbox_scope`.
+   - A row off the list: 404 `sandbox_route_unknown`, with its index.
+   - A class X row: 403 `sandbox_route_excluded`.
+   - 26 rows, or a row of 65 KiB: 422 `sandbox_batch_cap`.
+   - A DELETE row, or a fifth key in a row: 422 `sandbox_bad_batch`.
+   `test_sandbox_door_writes.py::test_the_batch_refuses_before_it_holds`.
+6. A batch of two class B rows and one class C row writes two held records.
+   Each card id is 32 hex digits.
+   `test_sandbox_door_writes.py::test_class_b_shares_a_card_and_class_c_gets_its_own`.
+7. With no decision, each row answers 403 `sandbox_approval_timeout` after
+   the wait, and no route runs. A `decide` after the timeout runs nothing.
+   (SBX-F3: a timed-out card.)
+   `test_sandbox_door_writes.py::test_a_held_batch_times_out_and_lands_nothing`.
+8. `decide(card_id, None)` makes each row answer 403
+   `sandbox_write_refused`, and no route runs. (SBX-F3: a refused card.)
+   `test_sandbox_door_writes.py::test_a_refused_card_runs_nothing`.
+9. With two of three rows ticked, the two rows run in card order, and the
+   third answers 403 `sandbox_write_refused`. A row whose route answers 404
+   does not stop the next row.
+   `test_sandbox_door_writes.py::test_the_ticked_rows_run_one_by_one`.
+10. The held record and the ticket live under the prefix of the row's org.
+    In the scope of org B, a read finds neither.
+    `test_sandbox_door_writes.py::test_the_held_rows_are_tenant_scoped`.
+11. A ticket admits one write once. A second use, a ticket of another
+    capability, another body, or a ticket with no capability gets 403
+    `sandbox_ticket` or 401, and no tenant stays bound. A second
+    `X-Sandbox-Ticket` gets 401.
+    `test_sandbox_door_identity.py::test_a_ticket_admits_one_write_once`.
+12. R8, on a real database as the NOBYPASSRLS role: a capability of member
+    M of org A holds `projects:write` and `crm:write`. The CRM of org A is
+    native, so no Zoho call runs. A batch that `decide` approves changes a
+    task and a lead. The task row and the lead row change, with M
+    as the actor. The task activity holds `meta.via =
+    sandbox:<slug>:v1`. Org B has no new row. A refused, a timed-out and an
+    unticked row each change nothing.
+    `test_sandbox_door_writes.py::test_r8_an_approved_write_lands_as_the_member`.
+13. `capture_actor_via` binds `user.sandbox.stamp` for a request with a
+    sandbox scope, and the header rule for each other request.
+    `test_projects_actor_via.py::test_a_sandbox_write_stamps_from_the_scope`.
+14. The stamp matches `ACTOR_VIA_PATTERN`. A slug that makes it too long
+    gives the `app-<8 hex>` form.
+    `test_sandbox_door_writes.py::test_the_stamp_form`.
+15. `sandbox_approval_timeout_seconds` is 300 by default. A capability with
+    100 seconds left waits 70 seconds.
+    `test_sandbox_door_writes.py::test_the_wait_ends_before_the_step`.
+16. The line `sandbox.door.write` holds no body, no path value, no token and
+    no hash. `test_sandbox_door_log_lines.py::test_the_write_line_holds_no_body`.
+17. The branch-0 digest changes in a commit that names the review:
+    `test_tenant_request_binding.py::test_branch_zero_digest_is_pinned`.
+
+SBX-3b:
+
+18. The card text holds only what the held record holds. A body whose value
+    is an instruction shows it as a fenced value. (SBX-F3: the card text
+    does not come from the model.)
+    `test_sandbox_held_card.py::test_the_card_text_comes_from_the_wire`.
+19. A class C card starts with its counts.
+    `test_sandbox_held_card.py::test_a_class_c_card_leads_with_the_counts`.
+20. With no channel, the watcher sends `refused`, and nothing lands.
+    (SBX-F3: a run with no chat gets no write.)
+    `test_sandbox_held_card.py::test_a_run_with_no_chat_writes_nothing`.
+21. The act takes the answer once. A forged row id, a second act, another
+    member or another thread runs nothing (409).
+    `test_sandbox_held_card.py::test_the_act_takes_the_answer_once`.
+22. A late Approve after the timeout runs nothing, and the card shows
+    expired. `test_sandbox_held_card.py::test_a_late_answer_runs_nothing`.
+23. R8, end to end with a fake emitter: the watcher raises the card, the
+    member ticks one of two rows, and only that row lands as member M of org
+    A, with `meta.via` set. Org B has no new row.
+    `test_sandbox_held_card.py::test_r8_the_card_runs_only_the_ticked_row`.
+24. The card shows a result for each row. `vitest` of
+    `ConfirmationCard.test.tsx`, and
+    `test_sandbox_held_card.py::test_the_card_gets_a_result_for_each_row`.
+25. `metorite_door.batch` posts to the door name only.
+    `test_sandbox_door_client.py::test_batch_posts_to_the_door_only`.
+
+The owner preview of a write card is part of the demo of rung 6c, after
+SBX-5. It is not a test.
+
+#### Verification commands
+
+SBX-3a:
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_sandbox_door_writes.py tests/unit/test_sandbox_capability.py tests/unit/test_sandbox_routes_coverage.py tests/unit/test_sandbox_door_identity.py tests/unit/test_sandbox_door_log_lines.py tests/unit/test_projects_actor_via.py tests/unit/test_tenant_request_binding.py tests/unit/test_crm_ui_actions.py tests/unit/test_projects_door_coverage.py -q -rs
+uv run ruff check packages/acb_auth packages/acb_common/acb_common/app_manifests apps/services/gateway/gateway/sandbox_batch.py apps/services/gateway/gateway/routes/projects/core.py
+uv run mypy packages/acb_auth/acb_auth/sandbox_capabilities.py packages/acb_auth/acb_auth/deps.py apps/services/gateway/gateway/sandbox_batch.py
+bash scripts/premerge.sh
+```
+
+SBX-3b:
+
+```bash
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+timeout 900 uv run pytest tests/unit/test_sandbox_held_card.py tests/unit/test_sandbox_door_writes.py tests/unit/test_sandbox_door_client.py tests/unit/test_held_send_card_record.py -q -rs
+cd workbench/control_plane && timeout 600 npx vitest run src/components/ConfirmationCard && cd ../..
+uv run ruff check packages/acb_skills/acb_skills/sandbox_held.py apps/services/gateway/gateway/sandbox_batch.py apps/services/orchestrator/sandbox/metorite_door.py
+uv run mypy packages/acb_skills/acb_skills/sandbox_held.py apps/services/gateway/gateway/sandbox_batch.py
+bash scripts/premerge.sh
+```
+
+A run with any skipped test fails the slice. R8 needs the database.
+
+#### Fences
+
+| # | Test file | What it holds in SBX-3 |
+|---|---|---|
+| SBX-F3 | `tests/unit/test_sandbox_door_writes.py` (new) and `tests/unit/test_sandbox_held_card.py` (new, SBX-3b) | Done when 3, 5 to 10, 12, 14, 15 and 18 to 23 |
+| SBX-F2 | `tests/unit/test_sandbox_routes_coverage.py` | Done when 1 and 2 |
+| SBX-F1 | `tests/unit/test_sandbox_capability.py` | Done when 4 |
+| SBX-F6 | `tests/unit/test_sandbox_door_identity.py` | Done when 11 |
+| SBX-F29 | `tests/unit/test_sandbox_door_log_lines.py` | Done when 16 |
+| SBX-F22 | `tests/unit/test_sandbox_door_client.py` | Done when 25 |
+| — | `tests/unit/test_projects_actor_via.py` | Done when 13 |
+| — | `tests/unit/test_tenant_request_binding.py` | Done when 17 |
+
+These fences are on auth, tenancy and outward writes. So they also get
+mutation testing (`engineering_practice.md` §4).
+
 ---
 
 ## 13. Owner gates
@@ -3677,3 +4245,11 @@ here, and each needs its own check before anyone acts on it.
   Migration 506 adds `user_tool_runs` with FORCE RLS, its one store and its
   member purge entry. `register_agent` refuses `user-tool` and `compute`. The
   store digest changed, and its pin waits for a named Opus review.
+- 2026-11-27 — SBX-3 spec (task 3802). §12.5 specifies the writes held for a
+  card. It records four owner answers. B1 and B2 are task 3802, answer
+  `55b542fc`. The SBX-Q2 residual is task 3986, answer `fd97a2bd`. The
+  network of each run is task 4009, answer `b5dbe733`. It decides B3 to B8.
+  SBX-3 splits into SBX-3a (task 3802) and SBX-3b (task TBD). §5.2, §5.3,
+  §5.5, §6.4, §8.4, §11 and §12.4 follow. The header, the §0c row and the
+  rows SBX-3, SBX-4b and SBX-5 follow too. `ai_studio.md` §3.7 follows B1.
+  No code.
