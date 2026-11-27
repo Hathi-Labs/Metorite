@@ -841,6 +841,13 @@ P-1 does not take all 14. The table names the owner of each row.
     thread at the mail provider, so the card says so and the tool says
     `open_world=True`. The reply card also shows the thread and the subject
     that the task keeps.
+  - Task 3973: each card of a mail names the sender, the address and the
+    subject that `/preview` gives for the ids of the write. A failed read
+    writes nothing. The reply path refuses a thread id that a card cannot
+    show as it came, or one over 998 characters. The tool refuses
+    `reply_to_message_id`. The reply card says that the assistant gave the
+    subject. The tool shows no card and writes nothing when a card cannot show
+    the sender address as it is.
   - Accepted in review: `open_world=True` takes the write out of a covered
     run (H-236), so a covered run makes no task from a mail.
   - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
