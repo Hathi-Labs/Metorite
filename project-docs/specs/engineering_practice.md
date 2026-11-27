@@ -1057,6 +1057,97 @@ in this section when its builder starts, and its own spec-auditor run.
 **Out of scope.** Closing a PR (the owner closes, from the close list of task
 4019). A change to `TOOL_PACKS`. Any flag flip by a builder.
 
+### 7b.5 LBB-3: the landing sweeper (task 4043)
+
+**Status: not built.** Tier HIGH: it pushes merge commits to PR branches
+through GitHub, and it hands PRs to the mergers. The build is AGENT-SAFE.
+Turning it on is gate `deploy` (a box timer and its mode).
+
+**What runs.** `scripts/home_server/landing_sweeper.py` (Python standard
+library, plus the `gh` and `git` commands). The units
+`scripts/home_server/metorite-landing-sweeper.service` and `.timer` run it
+every 2 hours. The service reads `LANDING_SWEEPER_MODE` from the file
+`~/.config/metorite/landing-sweeper.env`. A missing file means `off`.
+
+**The mode.**
+- `off` (the default): the script exits 0 and calls nothing.
+- `dry`: it reads, and it writes each action that it would take to
+  `~/lanes/landing-sweeper.log` with the word `DRY` first. It writes nothing
+  else.
+- `on`: it takes the actions and logs each one.
+
+**What it reads.** One call:
+`gh pr list --state open --limit 300 --json number,author,headRefName,headRefOid,baseRefName,isDraft,isCrossRepository,mergeable,mergeStateStatus,title,body,createdAt`.
+Then, for each PR that is not skipped by the first three rules below, the
+date of its last commit: `gh pr view N --json commits` (the `committedDate` of
+the last one).
+
+**Skips** (each logged as `SKIP N <reason>`): the author is `ishaanpilar`, the
+head branch starts with `ishaan-`, a draft, a base other than `main`, a fork
+(`isCrossRepository`), or a last commit less than 24 hours old.
+
+**Actions, at most one for each PR in a run, in this order.**
+1. **Update.** `mergeStateStatus` is `BEHIND` and `mergeable` is `MERGEABLE`:
+   `gh api -X PUT repos/<repo>/pulls/N/update-branch -f expected_head_sha=<headRefOid>`.
+   GitHub makes a merge commit (never a rebase, never a force-push), and
+   pr-check starts on the new head. At most 10 updates in one run, so the
+   runner slots of the org stay free.
+2. **Hand over.** `mergeStateStatus` is `CLEAN` (the head holds main and the
+   required checks pass), and the body has a line `VERIFY: PASS <sha>`, and
+   the PR's own diff at its head has the same `git patch-id --stable` as its
+   own diff at `<sha>`. The sweeper computes both in its own clone,
+   `~/lanes/sweeper-src`, after `git fetch origin main pull/N/head <sha>`. The
+   own diff of a commit C is `git diff $(git merge-base origin/main C) C`.
+   - The tier comes from a body line `Tier: <LOW|STANDARD|HIGH>`, else from the
+     title (`HIGH`, `STANDARD` or `LOW` in parentheses). With neither, the tier
+     is HIGH.
+   - The task number comes from the title (`task NNNN`), else from the body
+     (`task NNNN`). With none, the action is 3 (`LAND`, reason `no task`).
+   - LOW or STANDARD: `bash scripts/hand_over.sh N <task> <tier> "landing sweeper: verify <sha>"`.
+   - HIGH: one line appended to `~/lanes/merge-queue.tsv`:
+     `REQUEUE<TAB>N<TAB><task><TAB>landing-sweeper<TAB><tier>, verify <sha>, CI green <head>`.
+     The box merger lane reads it.
+3. **Land.** `mergeable` is `CONFLICTING`, or a required check of the head
+   failed, and the PR is older than 48 hours (`createdAt`): one line appended
+   to `~/lanes/landing.tsv`: `LAND<TAB>N<TAB><head><TAB><reason><TAB><UTC time>`.
+   lane-land files a "Land PR N" task, tag `landing`, for each new line.
+
+**Once for each head.** The sweeper keeps a state file for each action,
+`~/.cache/metorite-landing-sweeper/<N>-<head>-<action>`. An action that has
+its file is not taken again. A new head starts fresh.
+
+**Fails safe.** A `gh` or `git` call that fails skips that PR, logs
+`ERROR N <step>`, and goes on. An answer that does not parse skips the whole
+run with exit 0. The script never closes a PR, never comments, and never
+merges.
+
+**Done when** (each with a test in `tests/unit/test_landing_sweeper.py`, with
+a fake `gh` that records each call and a temp git repo for the patch-ids):
+1. `off`: no `gh` call at all.
+2. `dry`: the log holds one `DRY` line for each action, and no write call runs.
+3. `on`: update-branch runs only for a PR that is `BEHIND` and `MERGEABLE` and
+   not skipped. It sends `expected_head_sha`, and it stops at 10.
+4. A hand-over needs `CLEAN`, a `VERIFY: PASS <sha>` line and equal patch-ids.
+   A different patch-id gives no hand-over. The tier routes LOW and STANDARD
+   to `hand_over.sh`, and HIGH or no tier to a `REQUEUE` line. No task gives
+   a `LAND` line.
+5. A `LAND` line is written once for each head, and only after 48 hours.
+6. Each skip rule holds.
+7. The timer runs every 2 hours. The service reads the env file, and it holds
+   no secret.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_landing_sweeper.py tests/unit/test_hand_over.py \
+  tests/unit/test_lane_handover.py
+```
+
+**Rollout (not in the build).** Install the units on the box, then
+`LANDING_SWEEPER_MODE=dry` for one day, and read the log. Then `on`. Each
+step is gate `deploy`.
+
 ## 8. What to fix before customer #1 — in order
 
 This list names them so that nobody finds them again from zero. Each belongs
