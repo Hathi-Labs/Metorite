@@ -66,6 +66,9 @@
     "crm_change_history",
     "crm_create_pipeline",
     "crm_edit_status",
-    "crm_edit_lost_reason"
+    "crm_edit_lost_reason",
+    "crm_delete_status",
+    "crm_delete_lost_reason",
+    "crm_order_statuses"
   ]
 }

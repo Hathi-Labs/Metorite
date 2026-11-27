@@ -21,8 +21,8 @@ it does not raise one. So: annotate *and* confirm.
 Three structural guards carry the rest, and all three live in the request path
 rather than in the system prompt, because every argument here is LLM-filled from
 a context full of counterparty-authored CRM text: ``_ALLOWED_METHODS`` bounds
-the VERB (``GET``/``POST``/``PATCH`` — never ``DELETE``, never ``PUT``, because
-no tool here removes or replaces a record), ``_entity_slug`` + ``_record_uuid``
+the VERB (``GET``/``POST``/``PATCH``, and a ``DELETE`` or a ``PUT`` only on a
+path of the fixed ``_LISTED_WRITES``, task 3994), ``_entity_slug`` + ``_record_uuid``
 bound the PATH, and the tools take NAMES where a person speaks names — a stage,
 a lost reason — resolving them to ids against the CRM's own vocabulary instead
 of asking the model to hold a UUID. Neither is a tidiness check: an unvalidated
@@ -176,12 +176,56 @@ ACTOR_VIA = "chat:crm-assistant"
 #:
 #: WS-26d-write widened this from ``{"GET"}`` — deliberately, and by exactly
 #: two entries, together with the confirmation gate the read half said had to
-#: come with them. ``DELETE`` and ``PUT`` are still absent and that absence is
-#: load-bearing, not an oversight: **no tool here removes or replaces a CRM
-#: record**, so a tool added later that reaches for one raises instead of
-#: destroying data — which is the whole reason this check survived the
-#: widening instead of being deleted along with the doctrine it used to carry.
+#: come with them. ``DELETE`` and ``PUT`` are still absent from this set, and
+#: that absence is load-bearing: a tool added later that reaches for one
+#: raises instead of destroying data. The one exception is task 3994: a
+#: ``DELETE`` or a ``PUT`` passes on the fixed paths of :data:`_LISTED_WRITES`
+#: (three rows of the set-up), and on no other path.
 _ALLOWED_METHODS: frozenset[str] = frozenset({"GET", "POST", "PATCH"})
+
+
+#: The canonical UUID that :func:`_record_uuid` returns: lower case, with
+#: hyphens, 36 characters. No other spelling passes the list below. Each
+#: pattern spells it out, because the path fence of ``test_crm_agent.py``
+#: refuses a ``/crm`` string that interpolates a name. A test holds each
+#: pattern to this value.
+_UUID_SEGMENT = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+#: The ONLY ``DELETE`` and ``PUT`` requests this agent may send (task 3994).
+#: Owner answer 47891971 on task 3994, 2026-11-26: "Allow DELETE and PUT on
+#: listed paths only". Each entry is a verb and a pattern that must match the
+#: WHOLE path: a kind of ``deal`` or ``lead``, a canonical UUID, no query, no
+#: dot segment, no encoded slash and no extra segment. A later slice adds its
+#: own entry here, with its line in ``apps/AGENTS.md`` and its tests. Fence:
+#: ``test_crm_agent.py::test_the_listed_writes_are_exactly_the_three_pairs``.
+_LISTED_WRITES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # crm_delete_status: a deal stage or a lead status.
+    ("DELETE", re.compile(r"/crm/statuses/(?:deal|lead)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")),
+    # crm_delete_lost_reason: a lost reason.
+    ("DELETE", re.compile(r"/crm/lost-reasons/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")),
+    # crm_order_statuses: the order of every stage or lead status of a kind.
+    ("PUT", re.compile(r"/crm/statuses/(?:deal|lead)/order")),
+)
+
+#: The verbs that only :data:`_LISTED_WRITES` lets through.
+_LISTED_METHODS: frozenset[str] = frozenset({"DELETE", "PUT"})
+
+
+def _is_listed_write(method: str, path: Any, kwargs: dict[str, Any]) -> bool:
+    """True only when ``(method, path)`` is an entry of :data:`_LISTED_WRITES`.
+
+    It fails closed: a path that is no ``str``, a query in ``params``, or any
+    error gives False. ``fullmatch`` anchors both ends, so a tail, a ``?`` or
+    a ``#`` cannot pass."""
+    try:
+        if not isinstance(path, str) or kwargs.get("params"):
+            return False
+        return any(
+            verb == method and pattern.fullmatch(path) is not None
+            for verb, pattern in _LISTED_WRITES
+        )
+    except Exception:  # the guard fails closed
+        return False
 
 
 #: The `detail.code` values the gateway answers with (409) when a write meets a
@@ -288,25 +332,31 @@ async def _request(
 
     Refuses any verb outside :data:`_ALLOWED_METHODS` before the request is
     built, so the verb doctrine cannot be broken by a caller passing a
-    different method — including one this module grows later.
+    different method — including one this module grows later. A ``DELETE`` or
+    a ``PUT`` passes only when its whole path is an entry of
+    :data:`_LISTED_WRITES` (task 3994). Every other one raises here, before
+    any header or client exists.
 
     *if_match* (HRD-10c) adds the ``If-Match`` header. Empty adds nothing, so
     the headers are the headers of before.
     """
-    if method.upper() not in _ALLOWED_METHODS:
+    verb = str(method or "").upper()
+    if verb not in _ALLOWED_METHODS and not (
+        verb in _LISTED_METHODS and _is_listed_write(verb, path, kwargs)
+    ):
         raise RuntimeError(
-            f"crm-assistant does not issue {method.upper()} {path}: its verbs "
-            f"are {sorted(_ALLOWED_METHODS)}. Deleting or replacing a CRM "
-            "record is not something this agent can do."
+            f"crm-assistant does not issue {verb} {path}: its verbs are "
+            f"{sorted(_ALLOWED_METHODS)}, and a DELETE or a PUT only on the "
+            "paths of _LISTED_WRITES. It deletes or replaces no other CRM row."
         )
     headers = _headers()
     if if_match:
         headers["If-Match"] = if_match
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
-            method, f"{_gateway_url()}{path}", headers=headers, **kwargs
+            verb, f"{_gateway_url()}{path}", headers=headers, **kwargs
         )
-        _raise_if_error(resp, method, path)
+        _raise_if_error(resp, verb, path)
         return resp
 
 
@@ -314,11 +364,11 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     return (await _request("GET", path, params=params or {})).json()
 
 
-# The two write verbs, and only the two. Each goes through ``_request``, so
-# widening :data:`_ALLOWED_METHODS` is still the only way a verb reaches the
-# wire — a helper that built its own client would be a second transport with a
-# second set of rules. There is deliberately no ``_delete``/``_put``: a helper
-# nobody needs is a helper somebody will find.
+# The write verbs. Each goes through ``_request``, so :data:`_ALLOWED_METHODS`
+# and :data:`_LISTED_WRITES` are still the only way a verb reaches the wire — a
+# helper that built its own client would be a second transport with a second
+# set of rules. ``_delete`` and ``_put`` exist because three tools use them
+# (task 3994), and ``_request`` still refuses each path off the list.
 
 async def _post(path: str, payload: dict[str, Any] | None = None) -> Any:
     return (await _request("POST", path, json=payload or {})).json()
@@ -326,6 +376,14 @@ async def _post(path: str, payload: dict[str, Any] | None = None) -> Any:
 
 async def _patch(path: str, payload: dict[str, Any], *, if_match: str = "") -> Any:
     return (await _request("PATCH", path, json=payload, if_match=if_match)).json()
+
+
+async def _delete(path: str) -> Any:
+    return (await _request("DELETE", path)).json()
+
+
+async def _put(path: str, payload: dict[str, Any]) -> Any:
+    return (await _request("PUT", path, json=payload)).json()
 
 
 # ── The four record types ────────────────────────────────────────────────────
@@ -2418,9 +2476,9 @@ async def crm_update_task(
 # gets the route's 403 as text. Each write asks on one card first, as each
 # write of this agent does. The tools take NAMES and resolve them here.
 #
-# Not here: the DELETE of a stage and of a lost reason, and the PUT of the
-# stage order. `_ALLOWED_METHODS` has no DELETE and no PUT (apps/AGENTS.md),
-# so those three rows of the manifest stay planned in CRM-M2e.
+# Task 3994 adds the DELETE of a stage and of a lost reason, and the PUT of the
+# stage order, as three separate tools below. Each path is an entry of
+# `_LISTED_WRITES`, and a held chat drops all three (D169).
 
 #: The words for a status kind, as a person says them, to the route segment.
 _STATUS_KIND_ALIASES: dict[str, str] = {
@@ -2450,23 +2508,24 @@ _REASON_NOTE = (
     "a change, with Undo."
 )
 
-#: The answer when the member asks to delete. The chat cannot (apps/AGENTS.md).
+#: The answer when the member asks this tool to delete. The delete is its own
+#: tool, with its own card (task 3994).
 _NO_DELETE = (
-    "The chat cannot delete a {noun}. Hide it with hidden=true, so that no "
-    "picker offers it, or delete it in CRM settings. Nothing was changed."
+    "This tool does not delete. Use {tool} to delete a {noun}, and it shows its "
+    "own card first. Nothing was changed."
 )
 
 #: The answer of a reset outside Mirror mode. Only a Zoho mirror has an order
 #: to reset to, and the route answers 422.
 _NO_ZOHO_ORDER = (
     "This CRM does not mirror Zoho, so the {nouns} have no Zoho order to go "
-    "back to. Nothing was changed. Change the order in CRM settings."
+    "back to. Nothing was changed. Use crm_order_statuses to set the order."
 )
 
 #: The advice after a 409 of Mirror mode on the set-up (CRM-C3).
 _SETUP_MIRROR = (
-    "In Mirror mode Zoho owns the set-up. Here you can hide a row, or reset "
-    "the stage order to Zoho."
+    "In Mirror mode Zoho owns the set-up. Here you can hide a row, set the "
+    "stage order, or reset the stage order to Zoho."
 )
 
 
@@ -2587,7 +2646,7 @@ def _status_args(
     """The type of a status as the route spells it, the win chance as a
     number, and the words of a refusal before any request, or ``""``."""
     if act in ("delete", "remove"):
-        return None, None, _NO_DELETE.format(noun=noun)
+        return None, None, _NO_DELETE.format(tool="crm_delete_status", noun=noun)
     if act not in ("add", "change", "reset_order"):
         return None, None, (
             f"'{action}' is not an action of this tool. Use action='add', "
@@ -2726,8 +2785,8 @@ async def crm_edit_status(
       Zoho. It needs no name.
 
     Give the stage by NAME, as it reads on the board. get_pipeline lists the
-    deal stages. The chat cannot delete a stage or set the whole order. For
-    those, send the member to CRM settings."""
+    deal stages. To delete a stage, use crm_delete_status. To set the whole
+    order, use crm_order_statuses."""
     slug = _status_kind(kind)
     noun = "deal stage" if slug == "deal" else "lead status"
     act = "_".join(str(action or "").lower().split())
@@ -2842,11 +2901,11 @@ async def crm_edit_lost_reason(
     reason called ``label``). For a change, send ``new_label`` to rename it,
     or ``hidden`` (true takes it out of the picker, false shows it again).
 
-    Give the reason by its label. The chat cannot delete a lost reason. For
-    that, send the member to CRM settings."""
+    Give the reason by its label. To delete a lost reason, use
+    crm_delete_lost_reason."""
     act = " ".join(str(action or "").lower().split())
     if act in ("delete", "remove"):
-        return _NO_DELETE.format(noun="lost reason")
+        return _NO_DELETE.format(tool="crm_delete_lost_reason", noun="lost reason")
     if act not in ("add", "change"):
         return (
             f"'{action}' is not an action of this tool. Use action='add' or "
@@ -2889,6 +2948,272 @@ async def crm_edit_lost_reason(
     )
 
 
+# ── Delete a stage or a lost reason, and set the stage order (task 3994) ─────
+#
+# Owner answer 47891971 on task 3994 (2026-11-26): "Allow DELETE and PUT on
+# listed paths only". Each tool is its own tool, so the pins of the two edit
+# tools on `egress.HELD_CARD_WRITE_TOOLS` stay as they are. None of the three
+# is on that list: a delete is class C (D169), and the order acts on every row
+# of a kind. So a held chat drops all three (`is_held_off_write`).
+#
+# None of the three routes writes a Change history row. The cards and the
+# answers say so, and nothing here adds an audit write.
+
+#: The list route of the records of each status kind. The status of each
+#: record points at a row of that kind.
+_RECORDS_OF_KIND: dict[str, str] = {"deal": "/crm/deals", "lead": "/crm/leads"}
+
+#: The first line of the card of the delete of a stage or a lead status.
+_DELETE_STATUS_NOTE = (
+    "This deletes a row of the set-up of the whole CRM. Change history keeps "
+    "no row of a delete, so it has no Undo. The CRM refuses the delete while "
+    "a record sits in it or a pipeline holds it, and then nothing changes."
+)
+
+#: The first line of the card of the delete of a lost reason.
+_DELETE_REASON_NOTE = (
+    "This deletes a lost reason of the whole CRM. Change history keeps no row "
+    "of a delete, so it has no Undo."
+)
+
+#: The first line of the card of a new order.
+_ORDER_NOTE = (
+    "This sets the order of every row of this kind in the whole CRM. No record "
+    "changes. Change history keeps no row of an order, so it has no Undo."
+)
+
+#: The answer when Mirror mode refuses a delete before any card. The route
+#: answers 409 ``mirror_mode_settings`` for each delete in Mirror mode.
+_NO_MIRROR_DELETE = (
+    "In Mirror mode Zoho owns the {nouns}, so the CRM refuses to delete one "
+    "here. Nothing was changed. Hide it with {tool} and hidden=true, so that "
+    "no picker offers it, or delete it in Zoho."
+)
+
+
+async def _is_mirror() -> bool:
+    """True when the CRM of this org mirrors Zoho (``GET /crm/mode``)."""
+    mode = await _get("/crm/mode")
+    return isinstance(mode, dict) and mode.get("mode") == "mirror"
+
+
+async def _records_in(slug: str, status_id: str) -> int:
+    """The records that sit in one status, as the list route counts them.
+
+    The list of the kind, with ``include_converted`` for a lead, counts each
+    row whose ``status_id`` is this status. That is the count with which the
+    delete route refuses (``admin.status_in_use``)."""
+    record = _record_uuid(status_id)
+    params: dict[str, Any] = {"status_id": record, "page_size": 1}
+    if slug == "lead":
+        params["include_converted"] = "true"
+    answer = await _get(_RECORDS_OF_KIND[slug], params=params)
+    total = answer.get("total") if isinstance(answer, dict) else None
+    return int(total) if isinstance(total, int) and not isinstance(total, bool) else 0
+
+
+def _record_words(slug: str, count: int) -> str:
+    """"1 deal", "3 leads"."""
+    word = "deal" if slug == "deal" else "lead"
+    return f"{count} {word}" + ("" if count == 1 else "s")
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+async def crm_delete_status(kind: str, name: str) -> str:
+    """Delete a deal stage or a lead status of the CRM. Only a CRM admin can,
+    and the person you act for approves it on a card first. A held chat does
+    not offer this tool.
+
+    ``kind`` is "deal" for a deal stage or "lead" for a lead status. ``name``
+    is the stage as it reads on the board. The CRM refuses the delete while a
+    deal or a lead sits in it, or while a pipeline holds it. Move those
+    records first. A stage can also be hidden with crm_edit_status
+    (hidden=true), so that no picker offers it. There is no Undo."""
+    slug = _status_kind(kind)
+    noun = "deal stage" if slug == "deal" else "lead status"
+    wanted = " ".join(str(name or "").split())
+    if not wanted:
+        return f"Which {noun} is meant? Give its name. Nothing was changed."
+    if await _is_mirror():
+        return _NO_MIRROR_DELETE.format(nouns=_plural(noun), tool="crm_edit_status")
+    rows = await _get(f"/crm/statuses/{slug}")
+    target, refusal = _one_name(rows, "name", wanted, noun)
+    if target is None:
+        return refusal
+    title = str(target.get("name") or wanted)
+    held = await _records_in(slug, str(target.get("id") or ""))
+    if held:
+        return (
+            f"The {noun} {title} still holds {_record_words(slug, held)}, so the "
+            f"CRM cannot delete it. Nothing was changed. Move them to another "
+            f"{noun} first, or hide it with crm_edit_status and hidden=true."
+        )
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card, nothing is
+        # written, and the model reads the message as a user turn.
+        close_on_steer=True,
+        title=f"Delete the {noun} {title}?",
+        detail=f"{title} · delete",
+        context=await _held_fields_block({
+            "kind": noun, "name": title,
+            "field Records": f"no {'deal' if slug == 'deal' else 'lead'} sits in it now",
+            "field Pipelines": "it leaves each pipeline that lists it",
+        }, note=_DELETE_STATUS_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=f"The {noun} {title} was not deleted.")
+    record = _record_uuid(str(target.get("id") or ""))
+    try:
+        await _delete(f"/crm/statuses/{slug}/{record}")
+    except _MirrorBlocked as blocked:
+        return _setup_blocked(blocked)
+    return (
+        f"Deleted the {noun} {title}. Change history keeps no row of a delete, "
+        "so it has no Undo."
+    )
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+async def crm_delete_lost_reason(label: str) -> str:
+    """Delete a lost reason of the CRM. Only a CRM admin can, and the person
+    you act for approves it on a card first. A held chat does not offer this
+    tool.
+
+    ``label`` is the reason as a member picks it. A deal or a lead that gives
+    this reason keeps its lost note, and shows no lost reason after the
+    delete. A reason can also be hidden with crm_edit_lost_reason
+    (hidden=true), so that no picker offers it. There is no Undo."""
+    wanted = " ".join(str(label or "").split())
+    if not wanted:
+        return "Which lost reason is meant? Give its label. Nothing was changed."
+    if await _is_mirror():
+        return _NO_MIRROR_DELETE.format(
+            nouns="lost reasons", tool="crm_edit_lost_reason")
+    rows = await _get("/crm/lost-reasons")
+    target, refusal = _one_name(rows, "label", wanted, "lost reason")
+    if target is None:
+        return refusal
+    title = str(target.get("label") or wanted)
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=f"Delete the lost reason {title}?",
+        detail=f"{title} · delete",
+        context=await _held_fields_block({
+            "name": title,
+            "field Records": (
+                "each deal or lead that gives this reason keeps its lost note, "
+                "and shows no lost reason"
+            ),
+        }, note=_DELETE_REASON_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=f"The lost reason {title} was not deleted.")
+    record = _record_uuid(str(target.get("id") or ""))
+    try:
+        await _delete(f"/crm/lost-reasons/{record}")
+    except _MirrorBlocked as blocked:
+        return _setup_blocked(blocked)
+    return (
+        f"Deleted the lost reason {title}. Each deal or lead that gave it keeps "
+        "its lost note. Change history keeps no row of a delete, so it has no Undo."
+    )
+
+
+def _order_plan(
+    rows: Any, names: Any, noun: str,
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """The rows in the new order, or the words of a refusal before any card.
+
+    *names* must name every row of the kind once, because the route sets the
+    order of all of them in one write and refuses a list with a row too few or
+    too many."""
+    every = [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)]
+    if isinstance(names, str) or not isinstance(names, (list, tuple)):
+        return None, (
+            f"Give names as a list of every {noun}, in the new order. "
+            "Nothing was changed."
+        )
+    ordered: list[dict[str, Any]] = []
+    for raw in names:
+        wanted = " ".join(str(raw or "").split())
+        if not wanted:
+            return None, "A name in the list is empty. Nothing was changed."
+        target, refusal = _one_name(every, "name", wanted, noun)
+        if target is None:
+            return None, refusal
+        if any(r.get("id") == target.get("id") for r in ordered):
+            return None, (
+                f"The list names the {noun} {target.get('name')} two times. "
+                f"Name each {noun} once. Nothing was changed."
+            )
+        ordered.append(target)
+    missing = [r for r in every if not any(o.get("id") == r.get("id") for o in ordered)]
+    if missing:
+        return None, (
+            f"The list leaves out {_quoted_names(missing, 'name')}. Name every "
+            f"{noun} once, in the new order. Nothing was changed."
+        )
+    if [r.get("id") for r in ordered] == [r.get("id") for r in every]:
+        return None, f"The {_plural(noun)} are in that order already, so nothing was changed."
+    return ordered, ""
+
+
+def _order_line(rows: list[dict[str, Any]]) -> str:
+    return " → ".join(str(r.get("name") or "") for r in rows)
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+async def crm_order_statuses(kind: str, names: list[str]) -> str:
+    """Set the order of every deal stage or lead status of the CRM. Only a
+    CRM admin can, and the person you act for approves it on a card first. A
+    held chat does not offer this tool.
+
+    ``kind`` is "deal" for the deal stages or "lead" for the lead statuses.
+    ``names`` is every stage of that kind, each once, in the new order, by
+    the name that reads on the board. Hidden stages count too. In a CRM that
+    mirrors Zoho, this sets the order of Metorite only, and Zoho keeps its
+    own order. To go back to the Zoho order, use crm_edit_status with
+    action="reset_order"."""
+    slug = _status_kind(kind)
+    noun = "deal stage" if slug == "deal" else "lead status"
+    rows = await _get(f"/crm/statuses/{slug}")
+    ordered, refusal = _order_plan(rows, names, noun)
+    if ordered is None:
+        return refusal
+    mirror = await _is_mirror()
+    card: dict[str, Any] = {
+        "kind": _plural(noun),
+        "field Order now": _order_line(
+            [r for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)]),
+        "field New order": _order_line(ordered),
+    }
+    if mirror:
+        card["field Zoho"] = "Zoho keeps its own order"
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=f"Set the order of the {_plural(noun)}?",
+        detail=f"{len(ordered)} {_plural(noun)} · new order",
+        context=await _held_fields_block(card, note=_ORDER_NOTE),
+    )
+    if not answer:
+        return _not_written(
+            answer, unchanged=f"The order of the {_plural(noun)} did not change.")
+    ids = [_record_uuid(str(r.get("id") or "")) for r in ordered]
+    try:
+        await _put(f"/crm/statuses/{slug}/order", {"ids": ids})
+    except _MirrorBlocked as blocked:
+        return _setup_blocked(blocked)
+    return (
+        f"The {_plural(noun)} are in the new order: {_order_line(ordered)}. "
+        "Change history keeps no row of an order, so it has no Undo."
+    )
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 _TOOLS = [
@@ -2908,6 +3233,11 @@ _TOOLS = [
     # reason, and reset the Zoho order of the stages, each on one card.
     crm_edit_status,
     crm_edit_lost_reason,
+    # Task 3994 (CRM-M2e): delete a stage or a lost reason, and set the stage
+    # order, each on one card. A held chat drops all three.
+    crm_delete_status,
+    crm_delete_lost_reason,
+    crm_order_statuses,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,
@@ -2965,9 +3295,9 @@ def build_agents() -> list[Any]:
     targets OpenAI's *Responses* API, which the gateway's ``v1_compat`` shim
     does not implement. Imported lazily so the module still loads where the
     optional deps differ."""
+    from acb_llm.attribution import attributed_openai
     from agent_framework import Agent
     from agent_framework.openai import OpenAIChatCompletionClient
-    from acb_llm.attribution import attributed_openai
 
     prov = _llm_provider()
     client = OpenAIChatCompletionClient(

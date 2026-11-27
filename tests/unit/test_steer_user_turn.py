@@ -446,8 +446,9 @@ def test_every_crm_card_answers_a_steer_apart_from_its_decline():
              and any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_confirmation"
                      for n in ast.walk(fn))]
     # 11: 7 before, crm_edit_status and crm_edit_lost_reason of CRM-M2e (task 3951),
-    # and crm_decide_suggestion and crm_rerun_analysis (task 3954).
-    assert len(cards) == 11, [fn.name for fn in cards]
+    # and crm_decide_suggestion and crm_rerun_analysis (task 3954). 14: task 3994
+    # added crm_delete_status, crm_delete_lost_reason and crm_order_statuses.
+    assert len(cards) == 14, [fn.name for fn in cards]
     for fn in cards:
         declines = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                     and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)

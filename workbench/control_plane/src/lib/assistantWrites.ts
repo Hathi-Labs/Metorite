@@ -79,6 +79,8 @@ const CRM_WRITES: ReadonlySet<string> = new Set([
   "crm_decide_suggestion", "crm_rerun_analysis",
   "crm_update_record", "crm_update_task", "crm_create_pipeline",
   "crm_edit_status", "crm_edit_lost_reason",
+  // Task 3994: a delete of a stage or a lost reason, and a new stage order.
+  "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses",
 ]);
 
 /** Knowledge write tools: a proposal lands in the review queue. */

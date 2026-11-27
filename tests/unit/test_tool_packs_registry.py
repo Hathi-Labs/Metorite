@@ -604,13 +604,16 @@ def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     # crm_create_pipeline of CRM-M3a, the two set-up writes of CRM-M2e (task
     # 3951), and the five tools of the suggestions and the AI analysis (P-3,
     # task 3954). The owner chooses the pack of a tool, so those seven are in
-    # no pack yet: with the 12 shared reads, 19 tools are in no pack.
-    assert len(scope) == 32, "non-vacuity: the owner declares 32 tools"
+    # no pack yet: with the 12 shared reads, 19 tools are in no pack. Task 3994
+    # added the two deletes and the order of the set-up, in no pack: 35 and 22.
+    assert len(scope) == 35, "non-vacuity: the owner declares 35 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
     assert scope - set(family["tools"]) >= {"crm_edit_status", "crm_edit_lost_reason"}
-    assert len(scope - set(family["tools"])) == 19
+    assert scope - set(family["tools"]) >= {
+        "crm_delete_status", "crm_delete_lost_reason", "crm_order_statuses"}
+    assert len(scope - set(family["tools"])) == 22
     assert "crm_change_history" in family["tools"]
     assert "crm_change_history" not in _orchestrator_scope()
 

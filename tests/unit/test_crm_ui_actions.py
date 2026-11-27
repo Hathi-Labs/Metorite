@@ -59,7 +59,8 @@ SPEC = REPO_ROOT / "project-docs" / "specs" / "crm_conversational.md"
 #: same change. CRM-M2a set it from the count of the router (2026-11-08).
 #: Task 3951 (CRM-M2e) paid five rows of the stages and lost reasons (90 to 85).
 #: Task 3954 (P-3) paid seven rows of the suggestions and the analysis (85 to 78).
-PLANNED_CEILING = 78
+#: Task 3994 (CRM-M2e) paid the two DELETE rows and the PUT of the order (78 to 75).
+PLANNED_CEILING = 75
 
 #: The directory of the CRM client files, relative to ``src``.
 CLIENT_DIR = "app/crm/lib/"

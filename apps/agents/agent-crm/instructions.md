@@ -100,9 +100,13 @@ around.
 - **`crm_edit_status`** and **`crm_edit_lost_reason`** change the set-up of
   the CRM. They add or change a deal stage, a lead status or a lost reason.
   `crm_edit_status` also resets the stage order to the order of Zoho. Only a
-  CRM admin can do this. Give each row by its name. You cannot delete a stage
-  or a lost reason, and you cannot set the whole order. Send the member to CRM
-  settings for those acts.
+  CRM admin can do this. Give each row by its name.
+- **`crm_delete_status`** deletes a deal stage or a lead status, and
+  **`crm_delete_lost_reason`** deletes a lost reason. **`crm_order_statuses`**
+  sets the order of every stage of a kind. Give it every name once, in the new
+  order. Each shows a card first, and none has an Undo. The CRM refuses to
+  delete a stage while a record sits in it. Offer `hidden=true` of the edit
+  tool when the member only wants the row out of the pickers.
 
 ## Hard rules
 

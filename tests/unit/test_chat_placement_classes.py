@@ -126,8 +126,9 @@ def test_a_crm_read_is_evidence_and_a_crm_write_is_a_write() -> None:
     # 18: 8 before, crm_create_pipeline of CRM-M3a, crm_update_record and
     # crm_update_task of CRM-M2b, and the two writes of CRM-M2e (task 3951).
     # Each is a write. P-3 (task 3954) added three reads and two writes of the
-    # suggestions and the AI analysis.
-    assert len(hints) == 18
+    # suggestions and the AI analysis. Task 3994 added three writes: the two
+    # deletes and the order of the set-up (21).
+    assert len(hints) == 21
     wrong = []
     for name, hint in sorted(hints.items()):
         want = "evidence" if "read_only=True" in hint else "write"

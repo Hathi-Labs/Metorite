@@ -159,23 +159,23 @@ CRM = App(
         Route("GET", "/crm/statuses/{kind}", "crm_aggregate", "A",
               also=("crm_list_records",), off_door=_DOOR_READ),
         # CRM-M2e (task 3951): add, change and reset the order on one card.
-        # The PUT of the order and the DELETE stay planned: the agent sends no
-        # PUT and no DELETE (apps/AGENTS.md, `_ALLOWED_METHODS`).
+        # Task 3994: the PUT of the order and the DELETE, each its own tool on
+        # one card, on a path of `_LISTED_WRITES` (apps/AGENTS.md).
         Route("POST", "/crm/statuses/{kind}", "crm_edit_status", "B", off_door=_SETUP),
-        Route("PUT", "/crm/statuses/{kind}/order", "", "B", planned="CRM-M2e", off_door=_SETUP),
+        Route("PUT", "/crm/statuses/{kind}/order", "crm_order_statuses", "B", off_door=_SETUP),
         Route("POST", "/crm/statuses/{kind}/order/reset", "crm_edit_status", "B",
               off_door=_SETUP),
         Route("PATCH", "/crm/statuses/{kind}/{status_id}", "crm_edit_status", "B",
               off_door=_SETUP),
-        Route("DELETE", "/crm/statuses/{kind}/{status_id}", "", "C",
-              planned="CRM-M2e", off_door=_SETUP),
+        Route("DELETE", "/crm/statuses/{kind}/{status_id}", "crm_delete_status", "C",
+              off_door=_SETUP),
         # ── lost-reasons ──
         Route("GET", "/crm/lost-reasons", "update_deal_status", "A", off_door=_DOOR_READ),
         Route("POST", "/crm/lost-reasons", "crm_edit_lost_reason", "B", off_door=_SETUP),
         Route("PATCH", "/crm/lost-reasons/{reason_id}", "crm_edit_lost_reason", "B",
               off_door=_SETUP),
-        Route("DELETE", "/crm/lost-reasons/{reason_id}", "", "C",
-              planned="CRM-M2e", off_door=_SETUP),
+        Route("DELETE", "/crm/lost-reasons/{reason_id}", "crm_delete_lost_reason", "C",
+              off_door=_SETUP),
         # ── fields ──
         Route("GET", "/crm/fields-search", "crm_list_fields", "A", off_door=_DOOR_READ),
         Route("GET", "/crm/fields/{entity}", "crm_list_fields", "A", off_door=_DOOR_READ),
