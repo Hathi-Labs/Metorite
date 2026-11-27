@@ -438,3 +438,90 @@ def test_task_2466_a_listed_lane_with_no_session_starts_fresh_from_its_note(keep
     assert len(calls) == 1
     log_text = (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
     assert "no start note" in log_text and "start lane-chat" not in log_text
+
+
+# --- CIV-ORCH (task 4058): wake lane-orch for a new batch of events -----------
+
+
+def _orch(home, events, cursor=None):
+    (home / "lanes" / "orch-events.log").write_text(
+        "".join(f"EVENT\tidle\t10:00 UTC\tlane-a\tidle {i} min\n" for i in range(events)),
+        encoding="utf-8",
+    )
+    c = home / ".local" / "state" / "metorite" / "orch_events.cursor"
+    if cursor is not None:
+        c.parent.mkdir(parents=True, exist_ok=True)
+        c.write_text(f"{cursor}\n", encoding="utf-8")
+
+
+def _orch_calls(calls):
+    return [c for c in calls if "lane-orch" in c]
+
+
+def test_civ_orch_one_wake_per_batch_of_events(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-orch")
+    _transcript(home, "s-o", 60)  # fresh: the normal wake leaves it alone
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    agents = json.dumps([_agent("lane-orch", "s-o", "done")])
+    _orch(home, 2, cursor=0)
+    wakes = mod.run_pass(agents, now=NOW)
+    assert wakes == [("lane-orch", "s-o", "orch-events")]
+    resume = _orch_calls(calls)[0]
+    assert resume[:4] == ["claude", "--bg", "--resume", "s-o"] and resume[-1] == mod.ORCH_NOTE
+    log_text = (home / "lanes" / "keeper.log").read_text(encoding="utf-8")
+    assert "reason=orch-events (orch-events lines 1-2)" in log_text
+    # Same batch, lane-orch ended again and moved no cursor: no second wake.
+    assert mod.run_pass(agents, now=NOW + 300) == []
+    # A new batch: one more wake, with no 30-minute cap.
+    _orch(home, 3)
+    assert [w[2] for w in mod.run_pass(agents, now=NOW + 600)] == ["orch-events"]
+    assert len(_orch_calls(calls)) == 2
+
+
+def test_civ_orch_no_wake_when_the_lane_runs_or_no_event_is_new(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-orch")
+    _transcript(home, "s-o", 60)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    # No event past the cursor.
+    _orch(home, 4, cursor=4)
+    assert mod.run_pass(json.dumps([_agent("lane-orch", "s-o", "done")]), now=NOW) == []
+    # No log at all.
+    (home / "lanes" / "orch-events.log").unlink()
+    assert mod.run_pass(json.dumps([_agent("lane-orch", "s-o", "done")]), now=NOW) == []
+    # New events, but lane-orch has a busy session.
+    _orch(home, 6, cursor=4)
+    busy = [_agent("lane-orch", "s-o", "working", status="busy")]
+    assert mod.run_pass(json.dumps(busy), now=NOW) == []
+    # New events, but lane-orch is inside a turn (state working, a fresh transcript).
+    inside = [_agent("lane-orch", "s-o", "working", status="idle")]
+    assert mod.run_pass(json.dumps(inside), now=NOW) == []
+    # New events, but lane-orch is not listed.
+    _lanes(home, "lane-a")
+    assert mod.run_pass(json.dumps([_agent("lane-orch", "s-o", "done")]), now=NOW) == []
+    assert _orch_calls(calls) == []
+
+
+def test_civ_orch_a_failed_wake_tries_again_and_a_lane_with_no_session_starts(keeper, monkeypatch):
+    mod, home = keeper
+    _lanes(home, "lane-orch")
+    _transcript(home, "s-o", 60)
+    _orch(home, 1)
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([], rc=1))
+    agents = json.dumps([_agent("lane-orch", "s-o", "done")])
+    assert mod.run_pass(agents, now=NOW) == []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run([]))
+    assert [w[2] for w in mod.run_pass(agents, now=NOW + 60)] == ["orch-events"]
+    # No session: the plain fresh start covers the batch, so no second start.
+    (home / "lanes" / "start").mkdir()
+    (home / "lanes" / "start" / "lane-orch.txt").write_text("ORCH NOTE\n", encoding="utf-8")
+    _orch(home, 2)
+    calls: list = []
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run(calls))
+    wakes = mod.run_pass("[]", now=NOW + 99999)
+    assert [w[2] for w in wakes] == ["fresh start"]
+    assert len(calls) == 1
+    assert mod.run_pass("[]", now=NOW + 99999 + 60) == []

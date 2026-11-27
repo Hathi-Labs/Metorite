@@ -32,6 +32,17 @@ no PC and no person. One pass:
    ``~/lanes/start/<lane>.txt`` (reason ``fresh start``, task 2466). With no such
    file it logs and starts nothing. The 30-minute cap applies.
 
+9. CIV-ORCH (task 4058). ``orch_watch.py`` writes events to
+   ``~/lanes/orch-events.log``. lane-orch moves its cursor
+   (``~/.local/state/metorite/orch_events.cursor``, a count of lines) past the
+   lines it handled. When the log has more lines than the cursor, and
+   ``lane-orch`` is listed and not running (no busy session, and no session
+   inside a turn, as in point 3), the keeper wakes it (reason
+   ``orch-events``). It resumes the newest session, or starts one from its
+   start note. It wakes it at most once for each new batch: the line count of
+   the last wake is ``_orch_batch`` in the state file. The 10-minute age and the
+   30-minute cap do not apply, because a new batch is new work.
+
 Every wake and every skip with a reason goes to ``~/lanes/keeper.log``.
 The keeper stops only the ended session of a lane that it is about to resume.
 It starts a new session only for a listed lane that has none and has a start note.
@@ -65,6 +76,18 @@ NOTE = (
     "When you hold an open owner question and have no other free work, check it "
     "with get_agent_run, and stop only if it is still open. Do not end the turn "
     "after a hand-over."
+)
+# CIV-ORCH (task 4058): the lane that reads ~/lanes/orch-events.log.
+ORCH_LANE = "lane-orch"
+ORCH_CURSOR = Path(
+    os.environ.get(
+        "KEEPER_ORCH_CURSOR", HOME / ".local" / "state" / "metorite" / "orch_events.cursor"
+    )
+)
+ORCH_NOTE = (
+    "New events wait in ~/lanes/orch-events.log. Read the lines after your cursor "
+    "(~/.local/state/metorite/orch_events.cursor), act on each one as lane-orch.md "
+    "says, then move the cursor. Never merge, deploy or flip a flag."
 )
 
 
@@ -246,7 +269,7 @@ def log(line: str) -> None:
         f.write(f"{stamp}Z {line}\n")
 
 
-def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
+def _wake(name: str, sid: str, agent: dict, note: str = NOTE) -> tuple[int, str]:
     """Stop the ended session when it still has a process, then resume it under the
     lane's name. Returns (exit code, a short reason). Never raises."""
     # Claude refuses to resume from an untrusted directory such as the home
@@ -266,7 +289,7 @@ def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
             if r.returncode:
                 return r.returncode, f" stop failed: {r.stderr.strip()[:100]!r}"
         r = subprocess.run(
-            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", NOTE],
+            ["claude", "--bg", "--resume", sid, "-n", name, f"--remote-control={name}", note],
             capture_output=True,
             text=True,
             timeout=120,
@@ -275,6 +298,80 @@ def _wake(name: str, sid: str, agent: dict) -> tuple[int, str]:
     except (subprocess.TimeoutExpired, OSError) as exc:
         return 1, f" {type(exc).__name__}"
     return r.returncode, (f" {r.stderr.strip()[:120]!r}" if r.returncode and r.stderr else "")
+
+
+def _count_lines(path: Path) -> int:
+    try:
+        with open(path, "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return 0
+
+
+def _cursor(path: Path) -> int:
+    """The line count that lane-orch handled. A missing or damaged file reads 0."""
+    try:
+        return int(path.read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def plan_orch(
+    *, lanes: set[str], skip_lanes: set[str], busy: set[str], total: int, cursor: int, batch: int
+) -> bool:
+    """True when lane-orch must wake for a new batch of events. Pure."""
+    if ORCH_LANE not in lanes or ORCH_LANE in skip_lanes or ORCH_LANE in busy:
+        return False
+    return total > max(cursor, batch)
+
+
+def _orch_wake(
+    agents: list[dict],
+    state: dict,
+    now: float,
+    wakes: list[tuple[str, str, str]],
+    *,
+    lanes: set[str],
+    skip_lanes: set[str],
+    busy: set[str],
+    notes: dict[str, str],
+) -> None:
+    """CIV-ORCH: wake lane-orch once for each new batch of events."""
+    total = _count_lines(LANES_DIR / "orch-events.log")
+    cursor = _cursor(ORCH_CURSOR)
+    batch = state.get("_orch_batch", 0)
+    batch = batch if isinstance(batch, int) else 0
+    if not plan_orch(
+        lanes=lanes, skip_lanes=skip_lanes, busy=busy, total=total, cursor=cursor, batch=batch
+    ):
+        return
+    why_new = f"orch-events lines {max(cursor, batch) + 1}-{total}"
+    if state.get(ORCH_LANE) == now:  # a wake or a start of this pass that worked
+        state["_orch_batch"] = total
+        log(f"skip {ORCH_LANE}: woken in this pass, {why_new}")
+        return
+    a = newest_per_lane(agents).get(ORCH_LANE)
+    if a and a.get("state") not in ENDED:
+        # Inside a turn (a `sleep`, say): it is running. Same rule as plan().
+        age = transcript_age(a["sessionId"], now, HOME / ".claude" / "projects")
+        if not (a.get("status") == "idle" and age is not None and age >= STALE_S):
+            log(f"skip {ORCH_LANE}: its session is inside a turn ({why_new})")
+            return
+    if a:
+        sid = a["sessionId"]
+        rc, why = _wake(ORCH_LANE, sid, a, note=ORCH_NOTE)
+        log(f"wake {ORCH_LANE} session={sid[:8]} reason=orch-events ({why_new}) exit={rc}{why}")
+    elif ORCH_LANE in notes:
+        sid = ""
+        rc, why = _start(ORCH_LANE, notes[ORCH_LANE])
+        log(f"start {ORCH_LANE} reason=orch-events ({why_new}) exit={rc}{why}")
+    else:
+        log(f"no session of {ORCH_LANE} and no start note, so no wake ({why_new})")
+        return
+    if rc == 0:
+        state[ORCH_LANE] = now
+        state["_orch_batch"] = total
+        wakes.append((ORCH_LANE, sid, "orch-events"))
 
 
 def run_pass(
@@ -355,6 +452,9 @@ def run_pass(
         if rc == 0:
             state[name] = now
             wakes.append((name, "", "fresh start"))
+    _orch_wake(
+        agents, state, now, wakes, lanes=lanes, skip_lanes=skip_lanes, busy=busy, notes=notes
+    )
     if not failed_forced:
         state["_account"] = email
     LANES_DIR.mkdir(parents=True, exist_ok=True)

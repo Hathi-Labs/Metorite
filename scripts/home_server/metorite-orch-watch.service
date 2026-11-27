@@ -1,0 +1,18 @@
+# The orchestrator watch of the home box (CIV-ORCH, task 4058). A user unit of `dev`.
+# metorite-orch-watch.timer starts it every 5 minutes. One pass of the event rules:
+# an idle lane, a new BACK, HOLD or RED line in ~/lanes/merge-queue.log, and a
+# silent lane-merge. Each new event is one line in ~/lanes/orch-events.log.
+# The lane keeper wakes lane-orch when that log has lines past its cursor.
+# It reads no credential. State: ~/.local/state/metorite/orch_watch.json.
+# Install: bash scripts/home_server/orch_watch.sh install
+# Logs:    journalctl --user -u metorite-orch-watch.service
+[Unit]
+Description=Metorite orchestrator watch: write lane events for lane-orch (CIV-ORCH)
+
+[Service]
+Type=oneshot
+# A trusted project directory, like the lane keeper. `claude agents` runs from here.
+WorkingDirectory=%h/Metorite
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/.local/lib/metorite/orch_watch.py
+TimeoutStartSec=120
