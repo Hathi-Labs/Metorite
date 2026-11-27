@@ -366,6 +366,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # for an org. A tenant must not open it for another org, so only the
     # owner writes it.
     "PROJECTS_TEMPLATES_ORGS",
+    # WS-39 WM-5: PROJECTS_GOALS_ORGS opens the Goals of Projects for an org.
+    # A tenant must not open it for another org, so only the owner writes it.
+    "PROJECTS_GOALS_ORGS",
     # WS-39 T-1: TEAMS_ORGS opens the team scope of Projects for an org. A
     # tenant must not open it for another org, so only the owner writes it.
     "TEAMS_ORGS",
