@@ -525,7 +525,7 @@ reading.
 | WS43-G2 | Owner gate. Image code built, box build not verified | WS-43b and WS-43y1a are on `main` |
 | WS43-G4 | Owner gate. Not verified | `maf_coding_engine.md` line 827 |
 | WS43-G5 | Owner gate. Task 3912 installed `runsc` on `aroh-sandbox-1` (2026-11-23). Production use is not verified | `maf_coding_engine.md` line 1677. `docs/gcp_aroh.md` §4a |
-| WS-43g, the egress proxy | WS-43g1 merged dark (task 4009, PR 2887, `d2bffe963`, 2026-11-27). WS-43g2a (task 4070), WS-43g2b (task 4092) and WS-43g3 are not built. The owner answer: "Task 4009, answer b5dbe733, 2026-11-27: one egress network for each run, built in WS-43g2" | `maf_coding_engine.md` §11, WS-43g. `grant_egress()` and `sandbox/egress_proxy.py` are on `main`. The network of each run, the live `request_network_access` and the firewall in CI are not |
+| WS-43g, the egress proxy | WS-43g1 merged dark (task 4009, PR 2887, `d2bffe963`, 2026-11-27). WS-43g2a (task 4070), WS-43g2b (task 4092) and WS-43g3 are not built. The owner answer (task 4009, answer `b5dbe733`, 2026-11-27): "Approve the merge. Build one network per run in WS-43g2." | `maf_coding_engine.md` §11, WS-43g. `grant_egress()` and `sandbox/egress_proxy.py` are on `main`. The network of each run, the live `request_network_access` and the firewall in CI are not |
 | `ai_studio.md` B7 | Built, dark (2026-11-13, task 1414) | `ai_studio.md` line 977 |
 | `package_host.md` PKG-11 | Partly built | 11a and 11b-2 built dark. 11b-1 is "not built for now" (path A) |
 | `ai_studio.md` J2 | Partly built | J2a, J2b-1, J2b-2, J2b-4a, J2b-5 built dark. J2, J2b, J2b-3, J2b-4, J2b-4b open (`ai_studio.md` lines 1277 to 1288) |
