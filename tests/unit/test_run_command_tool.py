@@ -255,10 +255,11 @@ class _Chat:
 
 async def _ask(
     chat: _Chat | None, reason: Any = "pip install pandas-stubs",
-    hosts: Any = ("pypi.org",), **bind: Any,
+    hosts: Any = ("pypi.org",), *, then: Any = None, **bind: Any,
 ) -> str:
     """Call the tool in a bound ``code_task`` run. With *chat*, the turn has an
-    emitter, and the chat answers each card as ``chat.responder``."""
+    emitter, and the chat answers each card as ``chat.responder``. *then* is
+    awaited after the call, inside the same bound run."""
     import asyncio
 
     from orchestrator import executor
@@ -289,7 +290,11 @@ async def _ask(
                         )
                 elif event.get("name") == "confirmation_resolved":
                     chat.closed.append(value)
-            return await asyncio.wait_for(call, timeout=10)
+            out = await asyncio.wait_for(call, timeout=10)
+            if then is not None:
+                # Still inside the bound run, as the executor's ``finally``.
+                await then()
+            return out
     finally:
         executor._active_run_queue.reset(token)
 
@@ -560,3 +565,69 @@ def test_the_projects_track_never_attaches_request_network_access() -> None:
 def test_covers_still_refuses_every_code_task_and_app_builder_agent(sandbox) -> None:  # noqa: F811
     for agent in ("agent-x", "app-builder", "metorite"):
         assert sb.covers(agent, ORG_A) is False
+
+
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+async def test_the_open_card_marker_clears_on_an_error_and_a_cancel(
+    net, monkeypatch, failure: str,
+) -> None:
+    """Review P3-3, verify F1: the open-card marker clears on EVERY way out of
+    the card, a raise and a cancel too. Else the run could never ask again."""
+    import asyncio
+    import importlib
+
+    at = importlib.import_module("acb_skills.ask_tools")
+    real = at.request_confirmation
+    calls: list[str] = []
+    never = asyncio.Event()
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        calls.append(failure)
+        if len(calls) > 1:
+            return await real(*args, **kwargs)
+        if failure == "error":
+            raise RuntimeError("the card broke")
+        await never.wait()
+        return False
+
+    monkeypatch.setattr(at, "request_confirmation", broken)
+    with bound_run(ORG_A, agent=CODE_AGENT, thread=new_thread(), member=MEMBER):
+        first = asyncio.ensure_future(st.request_network_access("pip", ["pypi.org"]))
+        if failure == "error":
+            with pytest.raises(RuntimeError):
+                await asyncio.wait_for(first, timeout=5)
+        else:
+            while not calls:
+                await asyncio.sleep(0.01)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        assert not st._OPEN_NETWORK_CARDS, "the marker of the card stayed"
+    # The next call of the same run is not refused: it reaches the card.
+    chat = _Chat("REJECT")
+    monkeypatch.setattr(at, "request_confirmation", real)
+    out = await _ask(chat)
+    assert out.startswith("Network access was not approved (declined)"), out
+    assert len(chat.cards) == 1
+    assert net.docker.calls == []
+
+
+async def test_a_grant_from_an_approved_card_ends_with_the_run(net) -> None:
+    """Done-when 7, the card half: a grant that an approved card opened ends
+    at the run's end. No grant stays, the network of the grant is gone, and
+    the container is back on ``--network none``."""
+    handles: list[Any] = []
+
+    async def end_the_run() -> None:
+        (handle,) = net.broker._live.values()
+        assert handle.egress is not None, "the card opened no grant"
+        handles.append(handle)
+        assert await net.broker.end_run() is True
+
+    out = await _ask(_Chat("APPROVE"), then=end_the_run)
+    assert out.startswith("Network access is open to: pypi.org."), out
+    (handle,) = handles
+    assert handle.egress is None
+    assert net.broker._grants == {}
+    assert net.docker.networks == {}, "the network of the grant stayed"
+    assert flag_values(net.docker.sandbox_runs()[-1], "--network") == ["none"]

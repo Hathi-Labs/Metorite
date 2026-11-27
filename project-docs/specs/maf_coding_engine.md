@@ -2876,10 +2876,9 @@ uv run python -m evals.coding_engine.run --engine maf --tier tier-balanced --tas
 7. At the run's end, `revoke_egress()` leaves no grant, and the container is
    back on `--network none`.
    `test_sandbox_network_grant.py::test_the_runs_end_leaves_no_grant`.
-   - The card half moved to WS-43g3. It says that a grant from an approved
-     card ends with the run.
-   - The tests of done-when 6 prove the card text and the wait. They do not
-     prove the end of a run after an approved card.
+   - The card half: a grant that an approved card opened ends with the run.
+     `test_run_command_tool.py::test_a_grant_from_an_approved_card_ends_with_the_run`
+     proves it on the egress fake Docker of WS43-F9.
 8. With the firewall script applied in CI, a sandbox cannot connect to the
    bridge gateway address on port 8080.
 9. The proxy forwards only the exact name `metorite-api.sandbox`, to the
@@ -2936,7 +2935,7 @@ WS-43g to an agent-safe first slice. It ships dark.
   - Each flag flip and each act on a box.
 - Fences: WS43-F5 and WS43-F9 are new. WS43-F2 gains the egress flags.
 - Done-when 1, 2, 3 and 9 hold for WS-43g1. Done-when 7 holds for the grant
-  and the network. Its card half moved to WS-43g3.
+  and the network. WS-43g2b holds its card half.
 
 **The owner answer (closed 2026-11-27).** Task 4009, answer `b5dbe733`,
 2026-11-27: "Approve the merge. Build one network per run in WS-43g2." Review round
@@ -3038,18 +3037,20 @@ timeout.** The broker and the proxy only. No card, and no change to a tool.
   - Tests: `tests/unit/test_run_command_tool.py`,
     `tests/unit/test_maf_code_session.py` and
     `tests/unit/test_delegation_no_egress.py`.
-- Done when: 3 (the live tool with egress off), 4, the refusal of 5, 6 and
-  14. The answer of another member is a refusal (5).
+- Done when: 3 (the live tool with egress off), 4, the refusal of 5, 6, the
+  card half of 7 and 14. The answer of another member is a refusal (5).
+- The open-card marker of a run clears on each way out of the card, a raise
+  and a cancel too.
+  `test_run_command_tool.py::test_the_open_card_marker_clears_on_an_error_and_a_cancel`.
 - Depends on: WS-43g2a (merged), SBX-3a (task 3802, merged) for the setting,
   and SBX-3b (task 4084, merged `be49e45e9`) for `timeout_s`.
 
-**WS-43g3: the firewall in CI, and the halves that need Docker with
-outbound network.** Not built.
+**WS-43g3: the firewall in CI, and the half that needs Docker with outbound
+network.** Not built.
 
 - The firewall script applied in CI (done-when 8).
 - The pip half of 5: pip installs a package through the proxy. It is a
   `sandbox_docker` test with outbound network.
-- The card half of 7: a grant that an approved card opened ends with the run.
 
 **Verification.**
 
