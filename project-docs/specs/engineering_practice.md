@@ -1060,7 +1060,7 @@ in this section when its builder starts, and its own spec-auditor run.
 
 ### 7b.5 LBB-3: the landing sweeper (task 4043)
 
-**Status: not built.** The audit of 2026-11-27 found that the sweeper's
+**Status: LBB-3a built (dry only).** LBB-3b is not built. The audit of 2026-11-27 found that the sweeper's
 actions are unsafe until two decisions are taken, so LBB-3 has two parts.
 - **LBB-3a (this build): a dry report.** The sweeper reads every open PR and
   writes what it WOULD do to its own file. It calls no GitHub write, writes
