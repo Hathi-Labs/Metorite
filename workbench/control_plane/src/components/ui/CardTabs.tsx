@@ -58,6 +58,8 @@ export interface CardTabsProps {
   words?: CountWords;
   /** The waiting dock's fold row puts its one button after the tabs (§24.11). */
   trailing?: ReactNode;
+  /** The dock draws the row for one card too, as its header (D1). */
+  always?: boolean;
 }
 
 const COUNT_CLASS = "flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote";
@@ -90,7 +92,7 @@ function TabFace({ tab, active, level }: { tab: CardTab; active: boolean; level:
 
 const LEVELS = [0, 1, 2] as const;
 
-export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWords = "approve", trailing }: CardTabsProps) {
+export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWords = "approve", trailing, always = false }: CardTabsProps) {
   const total = tabs.length;
   // The count says how many cards wait on the member. A slot that waits on a
   // new draft is a tab, and it is not one of them. A row of slots only says
@@ -161,7 +163,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun, words: countWor
     ro.observe(outer);
     return () => ro.disconnect();
   });
-  if (total < 2) return null;
+  if (total < (always ? 1 : 2)) return null;
 
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const to = tabKeyTarget(e.key, index, total);

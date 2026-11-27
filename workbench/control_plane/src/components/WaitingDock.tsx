@@ -33,7 +33,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useVisualViewport } from "@/app/tasks/lib/useVisualViewport";
 import Button from "@/components/ui/Button";
 import { revealWithin } from "@/lib/scrollWithin";
-import { arrivalUnfolds, dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
+import { PINNED_ACTIONS, type DockMode, arrivalUnfolds, dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
 
 export interface WaitingDockProps {
   /** How many items wait on the member (`dockCount`). */
@@ -41,7 +41,7 @@ export interface WaitingDockProps {
   /** The phone: the phone chrome, or a device with a soft keyboard. */
   phone: boolean;
   /** The cards. `folded` draws them as one row, and `unfold` opens them. */
-  children: (folded: boolean, unfold: () => void, controls: ReactNode) => ReactNode;
+  children: (dock: DockRender) => ReactNode;
   /** Tests and the visual rig: start folded. */
   initialFolded?: boolean;
 }
@@ -75,6 +75,20 @@ function measure(root: HTMLElement | null, body: HTMLElement | null): { chat: nu
 /** How long after a press ends the dock waits before it may fold (K3). */
 const PRESS_GRACE_MS = 500;
 
+/** What the dock hands the queue on each render. */
+export interface DockRender {
+  /** Folded to one row (WD-D2). */
+  folded: boolean;
+  /** Open the folded dock. */
+  unfold: () => void;
+  /** The header's Expand and Fold controls (D1). */
+  controls: ReactNode;
+  /** The view of the open card (D2). */
+  mode: DockMode;
+  /** Open the Expanded view (D3: a card's Review). */
+  expand: () => void;
+}
+
 export default function WaitingDock({ count, phone, children, initialFolded = false }: WaitingDockProps) {
   const rootRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -84,12 +98,18 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   const [size, setSize] = useState<{ chat: number; composer: number } | null>(null);
   const [layout, setLayout] = useState(0);
   const [over, setOver] = useState(false);
+  // Rule 9: the fade at the foot of the body, above the pinned action row.
+  // It shows while more of the body is below, and goes at the end.
+  const [atEnd, setAtEnd] = useState(true);
+  const [pinH, setPinH] = useState(0);
   const vp = useVisualViewport();
   // K2: a new item opens the dock to its cap, also after a fold by hand.
   const [seenCount, setSeenCount] = useState(count);
   if (seenCount !== count) {
     setSeenCount(count);
     if (arrivalUnfolds(seenCount, count)) setManual(false);
+    // An item left (answered or gone): the next one opens Compact again.
+    else if (count < seenCount) setExpanded(false);
   }
   // K3: a press inside the dock. iOS gives a tapped button no focus, so the
   // field's blur has no related target. While a press runs, and a moment
@@ -120,6 +140,11 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
     if (body) {
       const o = body.scrollHeight > body.clientHeight + 1;
       setOver((x) => (x === o ? x : o));
+      const end = body.scrollTop + body.clientHeight >= body.scrollHeight - 2;
+      setAtEnd((x) => (x === end ? x : end));
+      const pin = Array.from(body.querySelectorAll<HTMLElement>(PINNED_ACTIONS)).find((el) => el.offsetParent !== null);
+      const h = pin ? pin.offsetHeight : 0;
+      setPinH((x) => (x === h ? x : h));
     }
   }, []);
   // Each render: the form, the column and the body may have changed. Each
@@ -198,18 +223,17 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   // puts them in the tab row, or on the title row of the one card.
   const controls = folded ? null : (
     <span className="inline-flex shrink-0 items-center gap-0.5" data-dock-controls="">
-      {(over || expanded) && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          icon={expanded ? "Minimize2" : "Maximize2"}
-          onClick={() => setExpanded((v) => !v)}
-          aria-label={expanded ? "Make the card smaller" : "Expand the card"}
-          title={expanded ? "Make the card smaller" : "Expand the card"}
-          data-dock-expand={expanded ? "on" : "off"}
-        />
-      )}
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        icon={expanded ? "Minimize2" : "Maximize2"}
+        onClick={() => setExpanded((v) => !v)}
+        aria-label={expanded ? "Collapse the card" : "Expand the card"}
+        title={expanded ? "Collapse the card (Esc)" : "Expand the card"}
+        aria-expanded={expanded}
+        data-dock-expand={expanded ? "on" : "off"}
+      />
       <Button
         type="button"
         variant="ghost"
@@ -232,7 +256,14 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
       onFocus={onFocusIn}
       onBlur={onFocusOut}
       onPointerDown={onPointerDown}
-      className="max-w-3xl mx-auto mb-2"
+      // D2: Esc closes the Expanded view. It does nothing else here.
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || !expanded) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setExpanded(false);
+      }}
+      className="relative max-w-3xl mx-auto mb-2"
     >
       {/* The one scroll box of the dock: the open item over the cap (C3). */}
       <div
@@ -240,9 +271,19 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
         data-dock-body=""
         className="overflow-y-auto overscroll-contain scrollbar-thin"
         style={folded ? undefined : { maxHeight: cap === null ? "50vh" : `${cap}px` }}
+        onScroll={read}
       >
-        {children(folded, unfold, controls)}
+        {children({ folded, unfold, controls, mode: expanded ? "expanded" : "compact", expand: () => setExpanded(true) })}
       </div>
+      {/* The fade: theme tokens only, and it takes no click. */}
+      {!folded && over && !atEnd && (
+        <div
+          aria-hidden
+          data-dock-fade=""
+          className="pointer-events-none absolute inset-x-px z-[2] h-8 bg-gradient-to-t from-card to-transparent"
+          style={{ bottom: pinH }}
+        />
+      )}
     </section>
   );
 }

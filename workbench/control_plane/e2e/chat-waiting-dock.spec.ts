@@ -27,6 +27,16 @@ const FORM = {
   body: "Hi Kim,\n\nThe rates are attached.", recipients: { reply: PEOPLE, reply_all: PEOPLE },
   files: [], notices: [], note: "",
 };
+// A long email to five people: the card is far taller than the dock's cap.
+const LONG_FORM = {
+  ...FORM,
+  recipients: {
+    reply: { to: ["kim@contoso.test", "Ravi Kumar <ravi@contoso.test>", "lena@contoso.test"], cc: ["geo@acme.test", "ops@acme.test"] },
+    reply_all: { to: ["kim@contoso.test", "Ravi Kumar <ravi@contoso.test>", "lena@contoso.test"], cc: ["geo@acme.test", "ops@acme.test"] },
+  },
+  body: ["Hi Kim,", "", ...Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the May rates, with the detail of each change.`), "", "Best,", "Jane"].join("\n"),
+};
+
 const VALUES = {
   due: "2026-12-01", start: "", status: "Doing", important: null, leveraged: false,
   description: "Ship the pack.", assignees: ["ann@acme.test"],
@@ -43,7 +53,7 @@ declare global {
 
 type Cards = "all" | "one";
 
-async function install(page: Page, opts: { cards: Cards; gated?: boolean }) {
+async function install(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean }) {
   await page.addInitScript(({ cards, gated, form, values, pid, mail, task, ask }) => {
     window.localStorage.clear();
     window.localStorage.setItem("cc-shell-nav", "1");
@@ -142,7 +152,7 @@ async function install(page: Page, opts: { cards: Cards; gated?: boolean }) {
       }
       return orig(input, init);
     };
-  }, { cards: opts.cards, gated: !!opts.gated, form: FORM, values: VALUES, pid: PID, mail: MAIL, task: TASK, ask: ASK });
+  }, { cards: opts.cards, gated: !!opts.gated, form: opts.long ? LONG_FORM : FORM, values: VALUES, pid: PID, mail: MAIL, task: TASK, ask: ASK });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
@@ -160,7 +170,7 @@ const sends = (page: Page) => page.evaluate(() => window.__sends);
 const box = (page: Page) => page.getByRole("textbox", { name: /^Message / });
 const dock = (page: Page) => page.locator("[data-waiting-dock]");
 
-async function start(page: Page, opts: { cards: Cards; gated?: boolean }) {
+async function start(page: Page, opts: { cards: Cards; gated?: boolean; long?: boolean }) {
   await install(page, opts);
   await page.goto("/chat");
   const picker = page.getByRole("button", { name: /General-purpose/i }).first();
@@ -180,8 +190,86 @@ async function phone(browser: Browser) {
   return { ctx, page: await ctx.newPage() };
 }
 
+/** A box lies whole in the viewport, above the message box, and inside the
+ *  dock's body. */
+async function inView(page: Page, button: ReturnType<Page["locator"]>) {
+  const vp = page.viewportSize()!;
+  const s = (await button.boundingBox())!;
+  const b = (await page.locator("[data-dock-body]").boundingBox())!;
+  const c = (await box(page).boundingBox())!;
+  expect(s.y).toBeGreaterThanOrEqual(Math.max(0, b.y) - 1);
+  expect(s.y + s.height).toBeLessThanOrEqual(b.y + b.height + 1);
+  expect(s.y + s.height).toBeLessThanOrEqual(c.y);
+  expect(s.y + s.height).toBeLessThanOrEqual(vp.height);
+}
+
+/**
+ * D3 and rule 9: a long email in Compact shows Review, never Send. Review
+ * opens Expanded, where "Send to 5" shows pinned with no scroll. The fade
+ * shows while more is below and goes at the end, and Send does not move.
+ */
+async function longEmailFlow(page: Page) {
+  const body = page.locator("[data-dock-body]");
+  await page.locator('[role="tab"]').nth(1).click();
+  const review = body.locator("[data-dock-review]");
+  await expect(review).toBeVisible({ timeout: 20_000 });
+  // A hidden commit is no commit: no Send exists to reach by keyboard.
+  await expect(body.locator("[data-reply-send]")).toHaveCount(0);
+  await expect(body.locator("[data-mail-line]")).toHaveText("To Kim, Ravi Kumar, Lena · Cc 2 · Rates for May");
+  await inView(page, review);
+  await review.click();
+  const send = body.locator("[data-reply-send]");
+  await expect(send).toHaveText("Send to 5");
+  expect(await body.evaluate((el) => el.scrollTop)).toBe(0);
+  await inView(page, send);
+  await expect(page.locator("[data-dock-fade]")).toBeVisible();
+  const s = (await send.boundingBox())!;
+  await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect(page.locator("[data-dock-fade]")).toHaveCount(0);
+  await inView(page, send);
+  const after = (await send.boundingBox())!;
+  // The row stays at the foot. At the very end it may rise by the lines under it.
+  expect(after.y).toBeLessThanOrEqual(s.y + 1);
+}
+
 test.describe("the waiting dock (WD-1)", () => {
   test.describe.configure({ timeout: 180_000 });
+
+  for (const size of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
+    test(`D3: a long email at ${size.width} shows Review in Compact and "Send to 5" pinned in Expanded`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await start(page, { cards: "all", long: true });
+      await longEmailFlow(page);
+      // An untick in Expanded holds through Collapse (Esc) and Expand.
+      await page.locator('[data-reply-person="geo@acme.test"] input[type="checkbox"]').uncheck();
+      await expect(page.locator("[data-reply-send]")).toHaveText("Send to 4");
+      await page.keyboard.press("Escape");
+      await expect(page.locator("[data-mail-line]")).toHaveText("To Kim, Ravi Kumar, Lena · Cc 1 · 1 left out · Rates for May");
+      await page.locator("[data-dock-review]").click();
+      await expect(page.locator("[data-reply-send]")).toHaveText("Send to 4");
+      expect(await answers(page)).toEqual([]);
+    });
+  }
+
+  test("D3: a short email shows Send in Compact, with no scroll", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all" });
+    await page.locator('[role="tab"]').nth(1).click();
+    const send = page.locator("[data-dock-body] [data-reply-send]");
+    await expect(send).toBeVisible({ timeout: 20_000 });
+    await expect(send).toHaveText("Send");
+    await inView(page, send);
+  });
+
+  test("D3: a long email on a phone, keyboard down", async ({ browser }) => {
+    const { ctx, page } = await phone(browser);
+    try {
+      await start(page, { cards: "all", long: true });
+      await longEmailFlow(page);
+    } finally {
+      await ctx.close();
+    }
+  });
 
   test("the dock is outside the form: Enter in a card field and an option tap send nothing", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -189,13 +277,15 @@ test.describe("the waiting dock (WD-1)", () => {
     await expect(dock(page)).toBeVisible({ timeout: 20_000 });
     expect(await dock(page).evaluate((el) => !!el.closest("form"))).toBe(false);
 
-    // The new-mail card: Enter in its Subject.
+    // The new-mail card, Expanded: Enter in its Subject.
+    await page.locator('[role="tab"]').nth(1).click();
+    await page.locator("[data-dock-expand]").click();
     await page.getByRole("textbox", { name: "Subject" }).press("Enter");
     // The task card: Enter in its due date.
-    await page.locator('[role="tab"]').nth(1).click();
+    await page.locator('[role="tab"]').nth(2).click();
     await page.locator("[data-task-edit-due]").press("Enter");
     // The question: Enter in its own answer field.
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator('[role="tab"]').nth(0).click();
     await page.getByRole("textbox", { name: "Your own answer" }).press("Enter");
     await page.waitForTimeout(800);
     expect(await answers(page)).toEqual([]);
@@ -214,7 +304,7 @@ test.describe("the waiting dock (WD-1)", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open", { timeout: 20_000 });
-    await page.locator('[role="tab"]').nth(2).click();
+    await page.locator('[role="tab"]').nth(0).click();
     const own = page.getByRole("textbox", { name: "Your own answer" });
     // Keyboard: from the field to Fold, then Enter.
     await own.click();
@@ -237,6 +327,7 @@ test.describe("the waiting dock (WD-1)", () => {
     await page.locator("[data-dock-fold]").click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
     const review = page.locator("[data-dock-unfold]");
+    // D4: the email came first, and a later question takes no active tab.
     await expect(review).toHaveText("Review");
     await review.click();
     await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
@@ -267,7 +358,7 @@ test.describe("the waiting dock (WD-1)", () => {
       await expect(box(page)).not.toBeFocused();
 
       // K3: a tap on the question's own field, then the keyboard comes up.
-      await page.locator('[role="tab"]').nth(2).tap();
+      await page.locator('[role="tab"]').nth(0).tap();
       const own = page.getByRole("textbox", { name: "Your own answer" });
       await own.tap();
       await page.evaluate(() => window.__kb(400));

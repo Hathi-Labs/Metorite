@@ -3281,3 +3281,32 @@ html[data-look="glass"] main .h-full.bg-background:not(aside):not([class*="glass
     font-size: var(--text-footnote);
   }
 }
+
+/* WD-1 (projects_ai_chat.md 24.11 rule 9, owner 2026-11-27): in the waiting
+   dock, the action row of the open card never scrolls. It is the card's OWN
+   row (one consent, one state), held at the foot of the dock's body with
+   `position: sticky`. The body scrolls above it. Outside the dock nothing
+   matches, so the thread draws each card as before. The selector list is
+   `PINNED_ACTIONS` in lib/waitingDock.ts. Fence: src/lib/waitingDock.test.ts. */
+[data-dock-body] :is(
+  div:has(> [data-confirmation-approve]),
+  div:has(> [data-reply-send]),
+  div:has(> [data-dock-review]),
+  div:has(> [data-elicitation-submit]),
+  [data-earlier-question]
+) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--card);
+  padding-block: 0.375rem;
+}
+
+/* D1 (owner delegation, 2026-11-27): the dock's header, the count, the tabs,
+   Expand and Fold, never scrolls either. Only the content between them does. */
+[data-dock-body] [data-card-tabs] {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--card);
+}

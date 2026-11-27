@@ -20,8 +20,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { personName } from "./cardTabs";
+
 import {
+  MIN_DOCK_PX,
+  cardWhole,
+  mailWhole,
+  previewLines,
+  sendLabel,
+  PINNED_ACTIONS,
   TWO_LINES_PX,
+  peopleLine,
   arrivalBlursBox,
   dockCap,
   dockCount,
@@ -76,14 +85,14 @@ describe("the count", () => {
 describe("the cap (audit rule 5)", () => {
   const base = { chat: 800, viewport: 844, composer: 120, keyboardUp: false, cardFieldFocus: false, expanded: false };
 
-  it("a desktop: 50% of the chat", () => {
-    expect(dockCap({ ...base, phone: false })).toBe(400);
+  it("Compact, a desktop: 40% of the chat column (D2)", () => {
+    expect(dockCap({ ...base, phone: false })).toBe(320);
   });
 
-  it("a phone with the keyboard down: 60% of the visual viewport, under the room of the thread lines", () => {
-    expect(dockCap({ ...base, phone: true, chat: 1000, viewport: 600 })).toBe(360);
+  it("Compact, a phone with the keyboard down: 50% of the visual viewport, under the room of the thread lines (D2)", () => {
+    expect(dockCap({ ...base, phone: true, chat: 1000, viewport: 600 })).toBe(300);
     // A short chat column: two thread lines stay in view (F1).
-    expect(dockCap({ ...base, phone: true, chat: 500, viewport: 844 })).toBe(500 - 120 - TWO_LINES_PX);
+    expect(dockCap({ ...base, phone: true, chat: 450, viewport: 844 })).toBe(450 - 120 - TWO_LINES_PX);
   });
 
   it("a phone with the keyboard up and a field in focus: the viewport less the composer and two lines", () => {
@@ -96,8 +105,35 @@ describe("the cap (audit rule 5)", () => {
     expect(cap + 120).toBeLessThan(800);
   });
 
-  it("never below zero", () => {
-    expect(dockCap({ ...base, phone: true, viewport: 100, keyboardUp: true, cardFieldFocus: true })).toBe(0);
+  it("never below the floor: the action row and a part of the body always show (rule 9)", () => {
+    expect(dockCap({ ...base, phone: true, viewport: 100, keyboardUp: true, cardFieldFocus: true })).toBe(MIN_DOCK_PX);
+  });
+});
+
+describe("rule 9: the actions never scroll (owner, 2026-11-27)", () => {
+  it("globals.css holds the card's own action rows at the foot of the dock's body", () => {
+    const css = readFileSync(join(__dirname, "..", "app/globals.css"), "utf-8").replace(/\s+/g, " ");
+    const rule = css.slice(css.indexOf("[data-dock-body] :is("));
+    for (const sel of PINNED_ACTIONS.split(", ")) expect(rule).toContain(sel);
+    expect(rule).toMatch(/position: sticky; bottom: 0;/);
+    // Theme tokens only, never a literal colour.
+    expect(rule.slice(0, rule.indexOf("}"))).toContain("background: var(--card)");
+  });
+
+  it("the dock draws no copy of a button: the fade takes no click and reads the tokens", () => {
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    expect(dock).toContain("pointer-events-none");
+    expect(dock).toContain("from-card to-transparent");
+    expect(dock).not.toMatch(/data-confirmation-approve|data-reply-send|data-elicitation-submit/);
+  });
+
+  it("the people line: the To names that go, each other row as a count, and who is left out", () => {
+    const rows = { to: ["kim@contoso.test", "Ravi Kumar <ravi@contoso.test>", "lena@contoso.test"], cc: ["geo@acme.test", "ops@acme.test"] };
+    const all = new Set(["kim@contoso.test", "ravi kumar <ravi@contoso.test>", "lena@contoso.test", "geo@acme.test", "ops@acme.test"]);
+    expect(peopleLine(rows, all, personName)).toBe("To Kim, Ravi Kumar, Lena · Cc 2");
+    const less = new Set(["kim@contoso.test", "ravi kumar <ravi@contoso.test>", "lena@contoso.test", "ops@acme.test"]);
+    expect(peopleLine(rows, less, personName)).toBe("To Kim, Ravi Kumar, Lena · Cc 1 · 1 left out");
+    expect(peopleLine({ to: ["kim@contoso.test"], cc: [] }, new Set(), personName)).toBe("To nobody · 1 left out");
   });
 });
 
@@ -243,5 +279,35 @@ describe("audit rule 2: the fold row never approves, rejects or sends", () => {
     const fold = q.slice(q.indexOf("function DockQueue"), q.indexOf("<div hidden={folded}>"));
     expect(fold).toContain("onClick={onUnfold}");
     expect(fold).not.toMatch(/onAnswer|onApprove|onReject|onReply|onSubmit/);
+  });
+});
+
+describe("D3: the commit shows only when the view holds the whole item", () => {
+  it("an email is whole in Compact only with at most two To people, no Cc, three lines, no file and no notice", () => {
+    const ok = { to: 2, cc: 0, bcc: 0, bodyLines: 3, files: 0, notices: 0 };
+    expect(mailWhole(ok)).toBe(true);
+    expect(mailWhole({ ...ok, to: 3 })).toBe(false);
+    expect(mailWhole({ ...ok, cc: 1 })).toBe(false);
+    expect(mailWhole({ ...ok, bcc: 1 })).toBe(false);
+    expect(mailWhole({ ...ok, bodyLines: 4 })).toBe(false);
+    expect(mailWhole({ ...ok, files: 1 })).toBe(false);
+    expect(mailWhole({ ...ok, notices: 1 })).toBe(false);
+    expect(mailWhole({ ...ok, to: 0 })).toBe(false);
+  });
+
+  it("an approval is whole in Compact only with nothing past its title and meta line", () => {
+    const ok = { rows: false, fields: 0, text: false, notes: 0, form: false };
+    expect(cardWhole(ok)).toBe(true);
+    expect(cardWhole({ ...ok, rows: true })).toBe(false);
+    expect(cardWhole({ ...ok, fields: 1 })).toBe(false);
+    expect(cardWhole({ ...ok, text: true })).toBe(false);
+    expect(cardWhole({ ...ok, notes: 1 })).toBe(false);
+    expect(cardWhole({ ...ok, form: true })).toBe(false);
+  });
+
+  it("the first three lines of a text, and whether more follow", () => {
+    expect(previewLines("a\nb\nc\nd")).toEqual({ lines: ["a", "b", "c"], more: true });
+    expect(previewLines("a\nb\n")).toEqual({ lines: ["a", "b"], more: false });
+    expect(sendLabel(5)).toBe("Send to 5");
   });
 });

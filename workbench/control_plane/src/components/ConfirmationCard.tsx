@@ -52,6 +52,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import TaskCardForm, { useTaskCardEdits } from "@/components/TaskCardForm";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
+import { cardWhole, type DockMode } from "@/lib/waitingDock";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
@@ -303,6 +304,13 @@ interface ConfirmationCardProps {
    *  tab row is drawn (projects_ai_chat.md 24.11). */
   headerAside?: ReactNode;
   /**
+   * The waiting dock (projects_ai_chat.md 24.11, D2): the Compact or the
+   * Expanded view of this same card. With none, the card is as before.
+   */
+  dockMode?: DockMode;
+  /** The dock's Expand: Review in the Compact view calls it. */
+  onExpand?: () => void;
+  /**
    * §18.11: the slot of a new-mail card that a chat message closed. The card
    * draws one status line and no buttons: "Updating the draft…", or "The
    * draft did not change." once the run ended with no new card.
@@ -359,6 +367,8 @@ export default function ConfirmationCard({
   tabs,
   tabPanel,
   headerAside,
+  dockMode,
+  onExpand,
   slot,
   onDraftChange,
   before,
@@ -429,6 +439,16 @@ export default function ConfirmationCard({
     else onApprove();
   };
   const taskEdited = !!(taskForm && task.edits && !isUnchanged(taskForm.values, task.edits));
+  // D2 and D3: the Compact view of the dock shows the title and one meta
+  // line. It holds the whole card only when the card has nothing more.
+  const compactView = dockMode === "compact";
+  const whole = cardWhole({
+    rows: hasRows,
+    fields: shownFields.length,
+    text: !!body.text,
+    notes: leadIn.length + afterNotes.length + body.trailing.length + (strangerWarning ? 1 : 0),
+    form: !!taskForm,
+  });
   const isReply = reply !== undefined;
   const newMail = isNewMail(reply);
   return (
@@ -524,9 +544,18 @@ export default function ConfirmationCard({
           carriesEdits={carriesEdits}
           savedEdits={savedEdits}
           onEdits={onEdits}
+          {...(dockMode ? { dockMode, onExpand } : {})}
         />
       )}
-      {!slot && isReply && !newMail && (
+      {/* D2: the Compact view of a reply shows its one line, and Review. */}
+      {!slot && isReply && !newMail && compactView && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
+            Review
+          </Button>
+        </div>
+      )}
+      {!slot && isReply && !newMail && !compactView && (
         <ReplyCardForm
           form={reply}
           detail={detail}
@@ -536,7 +565,7 @@ export default function ConfirmationCard({
           onDiscard={rejectCard}
         />
       )}
-      {!slot && !isReply && hasBody && (
+      {!slot && !isReply && hasBody && !compactView && (
         <div className="space-y-2">
           {strangerWarning && (
             <p className="flex items-start gap-1 break-words text-xs text-warning" role="status" data-assignee-warning="">
@@ -695,7 +724,8 @@ export default function ConfirmationCard({
         </div>
       )}
 
-      {!slot && taskForm && task.edits && (
+      {/* D2: the Compact view of the dock draws no form. Its edits stay. */}
+      {!slot && taskForm && task.edits && (compactView ? null : (
         <TaskCardForm
           form={taskForm}
           edits={task.edits}
@@ -704,7 +734,7 @@ export default function ConfirmationCard({
           onTyped={task.setTyped}
           disabled={disabled}
         />
-      )}
+      ))}
 
       {!slot && !isReply && asking && earlier && onDiscardEarlier && (
         <EarlierDraftQuestion
@@ -721,6 +751,13 @@ export default function ConfirmationCard({
       )}
       {!slot && !isReply && !(asking && asksEarlier) && (
       <div className="flex flex-wrap items-center gap-2">
+        {compactView && !whole ? (
+          // D3: the Compact view does not show the whole card, so its one
+          // button opens the Expanded view. Approve waits there.
+          <Button size="sm" icon="Maximize2" onClick={onExpand} data-dock-review="">
+            Review
+          </Button>
+        ) : (
         <Button
           size="sm"
           icon="Check"
@@ -731,6 +768,7 @@ export default function ConfirmationCard({
         >
           {error ? "Retry" : "Approve"}
         </Button>
+        )}
         <Button
           variant="secondary"
           size="sm"

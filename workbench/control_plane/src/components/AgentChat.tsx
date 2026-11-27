@@ -52,7 +52,7 @@ import ConfirmationQueue, { type ConfirmationAnswer, type DockSlot } from "@/com
 import { DELETE_EARLIER_ANSWER } from "@/lib/replyCard";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
 import AskPin from "@/components/AskPin";
-import WaitingDock, { WaitingDockLive } from "@/components/WaitingDock";
+import WaitingDock, { WaitingDockLive, type DockRender } from "@/components/WaitingDock";
 import { scrollToEnd } from "@/lib/scrollWithin";
 import { HITL_TARGET, pendingAsk, waitingTargets } from "@/lib/askPin";
 import {
@@ -2726,7 +2726,7 @@ export default function AgentChat({
       if (!at || at === document.body || !!box?.form?.contains(at) || !!dockHostRef.current?.contains(at)) focusQuietly();
     }
   }, [dockOn, dockN, dockPicksOnly, phoneChrome, focusQuietly]);
-  const renderDockCards = (folded: boolean, unfold: () => void, controls: React.ReactNode): React.ReactNode => (
+  const renderDockCards = ({ folded, unfold, controls, mode, expand }: DockRender): React.ReactNode => (
     <ConfirmationQueue
       cards={confirmations.cards}
       errors={confirmations.errors}
@@ -2739,6 +2739,8 @@ export default function AgentChat({
       folded={folded}
       onUnfold={unfold}
       dockControls={controls}
+      dockMode={mode}
+      onExpand={expand}
       // The order of the tabs: the approvals, then `ask_questions`, then
       // `ask_user`. One card is one tab (audit rule 3).
       questions={[

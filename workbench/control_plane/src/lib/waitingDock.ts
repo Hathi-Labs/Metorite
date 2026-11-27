@@ -196,6 +196,78 @@ export function isTextField(el: { tagName?: string; type?: string; isContentEdit
 
 // ── The height cap (audit rule 5) ─────────────────────────────────────────
 
+/**
+ * Rule 9 (owner, 2026-11-27): the action rows that never scroll in the dock.
+ * Each is the card's own row, so the dock draws no copy of a button. The same
+ * list is the rule in `globals.css`.
+ */
+export const PINNED_ACTIONS =
+  "div:has(> [data-confirmation-approve]), div:has(> [data-reply-send]), div:has(> [data-dock-review]), div:has(> [data-elicitation-submit]), [data-earlier-question]";
+
+/** The least height of the dock, so the action row and a part of the body
+ *  always show, even on a very small screen. */
+export const MIN_DOCK_PX = 160;
+
+/**
+ * The one line of the people of a send card in the dock (rule 9): the To
+ * names that go, the count of each other row that goes, and the count of the
+ * people left out. "To Kim, Ravi Kumar, Lena · Cc 2", "To Kim · 1 left out".
+ */
+export function peopleLine(
+  rows: { to: readonly string[]; cc: readonly string[]; bcc?: readonly string[] },
+  ticked: ReadonlySet<string>,
+  name: (addr: string) => string,
+): string {
+  const on = (a: string) => ticked.has(a) || ticked.has(a.toLowerCase());
+  const to = rows.to.filter(on).map(name);
+  const cc = rows.cc.filter(on).length;
+  const bcc = (rows.bcc ?? []).filter(on).length;
+  const all = rows.to.length + rows.cc.length + (rows.bcc ?? []).length;
+  const goes = rows.to.filter(on).length + cc + bcc;
+  const parts = [to.length > 0 ? `To ${to.join(", ")}` : "To nobody"];
+  if (cc > 0) parts.push(`Cc ${cc}`);
+  if (bcc > 0) parts.push(`Bcc ${bcc}`);
+  if (all > goes) parts.push(`${all - goes} left out`);
+  return parts.join(" · ");
+}
+
+// ── Compact and Expanded (D2, D3, owner delegation of 2026-11-27) ─────────
+
+/** The mode of the open card in the dock: the same card, drawn two ways. */
+export type DockMode = "compact" | "expanded";
+
+/** The body lines that the compact view of an email shows. */
+export const PREVIEW_LINES = 3;
+
+/** The first `PREVIEW_LINES` lines of a text, and whether more follow. */
+export function previewLines(text: string): { lines: string[]; more: boolean } {
+  const all = text.replace(/\s+$/, "").split(/\r?\n/);
+  return { lines: all.slice(0, PREVIEW_LINES), more: all.length > PREVIEW_LINES };
+}
+
+/**
+ * D3: does the compact view show the WHOLE email? Only then may its footer
+ * show Send. Each line of the body shows, each recipient shows by address
+ * (at most two, To only), and the email has no file and no notice.
+ */
+export function mailWhole(st: { to: number; cc: number; bcc: number; bodyLines: number; files: number; notices: number }): boolean {
+  return st.to > 0 && st.to <= 2 && st.cc === 0 && st.bcc === 0 && st.bodyLines <= PREVIEW_LINES && st.files === 0 && st.notices === 0;
+}
+
+/**
+ * D3: does the compact view show the WHOLE approval card? Its title and one
+ * meta line show. A card with rows, fields, text, notes or an edit form has
+ * more, so its footer shows Review.
+ */
+export function cardWhole(st: { rows: boolean; fields: number; text: boolean; notes: number; form: boolean }): boolean {
+  return !st.rows && st.fields === 0 && !st.text && st.notes === 0 && !st.form;
+}
+
+/** D3: the Send of an Expanded email names how many people get it. */
+export function sendLabel(people: number): string {
+  return `Send to ${people}`;
+}
+
 /** Two lines of the thread stay in view over the dock (F1): about 3rem. */
 export const TWO_LINES_PX = 48;
 
@@ -217,23 +289,25 @@ export interface CapInput {
 
 /**
  * The most height the dock may take, in px. The cap counts the dock only.
+ * The dock is as tall as its content, up to the cap (D2, 2026-11-27).
  *
- * - A desktop: 50% of the chat height.
- * - A phone with the keyboard down: 60% of the visual viewport.
+ * - Compact, a desktop: 40% of the chat column.
+ * - Compact, a phone: 50% of the visual viewport.
  * - A phone with the keyboard up and a field of the card in focus: the
  *   visual viewport less the composer less two lines of the thread.
- * - Expand: the chat height less the composer less two lines of the thread.
- *   It never covers the composer.
+ * - Expanded: the chat column less the composer less two lines of the
+ *   thread. It never covers the composer.
  * - No cap is over that room, so two lines of the thread always show (F1).
  */
 export function dockCap(st: CapInput): number {
   const room = (h: number) => Math.max(0, Math.floor(h - st.composer - TWO_LINES_PX));
   const vp = st.viewport ?? st.chat;
   let base: number;
-  if (!st.phone) base = Math.floor(st.chat * 0.5);
-  else if (st.keyboardUp && st.cardFieldFocus) base = room(vp);
-  else base = Math.floor(vp * 0.6);
-  // No cap ever covers two lines of the thread (F1).
+  if (st.phone && st.keyboardUp && st.cardFieldFocus) base = room(vp);
+  else if (!st.phone) base = Math.floor(st.chat * 0.4);
+  else base = Math.floor(vp * 0.5);
+  // No cap ever covers two lines of the thread (F1). A very small screen
+  // still keeps the action row and a part of the body (`MIN_DOCK_PX`).
   const most = room(st.chat);
-  return st.expanded ? most : Math.min(base, most);
+  return Math.max(MIN_DOCK_PX, st.expanded ? most : Math.min(base, most));
 }
