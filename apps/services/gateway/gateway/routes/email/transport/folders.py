@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from email_ingestion import import_window
@@ -338,6 +339,41 @@ async def set_label_color(
             )
 
 
+#: Task 4100 (review P1): the canonical folders whose old IMAP rows the
+#: backfill re-keys. Before task 4100 the backfill stored a Sent or Drafts mail
+#: under its bare UID, and the folder as the lower-case canonical key. Only the
+#: backfill writes these two exact values: the INBOX sync writes ``DRAFTS`` in
+#: upper case, and ``MOVE_REFUSED_FOLDERS`` stops a local move into them. Other
+#: folders are not safe to re-key: a local trash or archive of an INBOX row
+#: writes ``trash`` or ``archive`` and keeps the INBOX UID.
+_IMAP_REKEY_FOLDERS = ("sent", "drafts")
+
+_REKEY_LEGACY_IMAP_SQL = text(
+    """UPDATE email_messages SET provider_message_id = :mailbox || ':' || provider_message_id,
+              updated_at = now()
+        WHERE account_id = CAST(:aid AS uuid)
+          AND folder = :canon
+          AND provider_message_id ~ '^[0-9]+$'
+          AND NOT EXISTS (
+              SELECT 1 FROM email_messages e
+               WHERE e.account_id = CAST(:aid AS uuid)
+                 AND e.provider_message_id
+                     = :mailbox || ':' || email_messages.provider_message_id)""")
+
+
+async def _rekey_legacy_imap_rows(db: Any, account_id: str, canon: str,
+                                  mailbox: str) -> None:
+    """Give each old bare-UID IMAP row of ``canon`` its new id (task 4100).
+
+    The new id is ``<mailbox>:<uid>`` (``imap.imap_message_id``). So the
+    backfill that runs next updates the old row, and the mail never shows
+    twice. A row whose new id already exists stays as it is."""
+    if not mailbox or mailbox.upper() == "INBOX":
+        return
+    await db.execute(_REKEY_LEGACY_IMAP_SQL,
+                     {"aid": account_id, "canon": canon, "mailbox": mailbox})
+
+
 @router.post("/accounts/{account_id}/backfill")
 async def backfill_folder(
     account_id: str,
@@ -412,6 +448,10 @@ async def backfill_folder(
                         break
             except Exception:
                 pass
+
+            if row.provider == "imap" and canon_req in _IMAP_REKEY_FOLDERS:
+                await _rekey_legacy_imap_rows(db, account_id, canon_req,
+                                              provider_folder)
 
             ceiling = import_window.ceiling()
             token = req.page_token

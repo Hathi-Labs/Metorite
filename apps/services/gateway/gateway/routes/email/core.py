@@ -272,6 +272,24 @@ async def _trash_message_id(db: Any, provider: Any, message_id: str) -> str | No
     return (getattr(row, "message_id", None) or None) if row else None
 
 
+async def _stored_message_id_before_trash(db: Any, message_id: str) -> str | None:
+    """The stored Message-ID of row ``message_id``, read BEFORE a write that
+    sets its folder to ``trash`` (task 4100, review P2).
+
+    ``_STORED_MESSAGE_ID_EXPR`` gates on the folder, so a read after that
+    write sees ``trash`` and loses the gate of a Drafts or Sent row. The
+    caller keeps this value and uses it only for a provider whose trash
+    checks it (``trash_checks_message_id``). An id that is no uuid gives
+    None, and the read sends nothing to the database."""
+    try:
+        UUID(str(message_id))
+    except ValueError:
+        return None
+    row = (await db.execute(text(_STORED_MESSAGE_ID_SQL),
+                            {"id": message_id})).fetchone()
+    return (getattr(row, "message_id", None) or None) if row else None
+
+
 async def _trash_message_ids(
     db: Any, provider: Any, account_id: str, provider_message_ids: list[str],
 ) -> dict[str, str | None] | None:
