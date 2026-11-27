@@ -366,9 +366,13 @@ function share(open: readonly Draft[], options: PlanOptions): Map<string, { show
   const window = latest && options.window?.person === latest.person ? options.window : null;
   const kept = !latest ? 0 : window ? roomFor(latest, window.state) : Math.min(WINDOW_ROOM, latest.cards);
   const own = () => (latest ? cards.get(latest.person)!.size : 0);
-  // Read before any urgent card: the selection takes none of the kept room,
-  // and each urgent card of the opened person counts toward it.
-  const selection = own();
+  // Read before any urgent card, so each urgent card of the opened person
+  // counts toward the room. The selection counts only when it is one of the
+  // agents that the room is for: of the open state node, or with none, urgent.
+  const chosen = latest?.ranked.find((s) => s.id === options.pin);
+  const wanted = chosen !== undefined &&
+    (window ? latest!.rankOf(chosen) === window.state : URGENT.includes(latest!.rankOf(chosen)));
+  const selection = wanted ? 0 : own();
   if (latest) for (const s of latest.ranked) if (URGENT.includes(latest.rankOf(s))) take(latest, s, CARDS_MAX);
   for (const state of URGENT) {
     for (const d of bySize) {

@@ -453,7 +453,7 @@ describe("urgency wins after a click too (decision G3)", () => {
     const view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
     const g = layoutGraph(m, options({ mode: "all", ...view }));
     expect([n(g, "ben-failed"), n(g, "ana-failed"), n(g, "ana-working")]).toEqual([28, 12, 0]);
-    // With a selection among them, one slot more goes to the selection only.
+    // An urgent selection is one of the agents that the room is for.
     const pinned = layoutGraph(m, options({ mode: "all", pin: "ana-failed-0", ...view }));
     expect(n(pinned, "ben-failed")).toBe(28);
   });
@@ -525,6 +525,30 @@ describe("no state node is dead", () => {
     const g = clickDone(m);
     expect(cards(g)).toContain("lane");
     expect(cards(g)).toHaveLength(CARDS_MAX);
+  });
+  it("keeps the room of a click when an urgent agent of that person is selected", () => {
+    const m = buildLensModel(
+      mapOf(
+        [
+          ...Array.from({ length: 40 }, (_, i) => session(`b${i}`, { person: "ben@x.test", state: "failed" })),
+          session("p", { state: "failed" }),
+          session("boss"),
+          session("lane", { state: "done" }),
+          ...Array.from({ length: 20 }, (_, i) => session(`w${i}`)),
+        ],
+        [],
+        [{ from: "boss", to: "lane" }],
+      ),
+    );
+    let view = foldView(NEW_VIEW, "p:ana@x.test", true, "ana@x.test");
+    const at = { mode: "all" as const, pin: "p" };
+    const bucket = kind(layoutGraph(m, options({ ...at, ...view })), "bucket").find(
+      (b) => b.state === "done" && b.person === "ana@x.test",
+    )!;
+    view = bucketView(view, "ana@x.test", "done", bucket.next);
+    const drawn = cards(layoutGraph(m, options({ ...at, ...view })));
+    expect(drawn).toEqual(expect.arrayContaining(["p", "lane"]));
+    expect(drawn).toHaveLength(CARDS_MAX);
   });
   it("keeps the room of the click beside the selected agent of that person", () => {
     const m = buildLensModel(
