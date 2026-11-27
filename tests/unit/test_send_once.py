@@ -1193,6 +1193,34 @@ def test_route_a_newer_run_in_the_stream_is_never_replayed(route) -> None:
     assert len(route.runs) == 1
 
 
+def test_route_a_repeat_follows_the_replay_rule_of_reconnect(route, monkeypatch) -> None:
+    """RESUME-2d: a repeat replays under the rule of `/reconnect`.
+
+    The repeat passes the room of the stream door to the ONE replay. A
+    member who may not see the whole run (removed and added again in a
+    shared room) gets only the end frame of the stored run, with
+    ``withheld: true``, and no event of the run.
+    """
+    from gateway.routes import agent
+
+    _, headers, _ = _post(_send())
+    first_run = headers["x-run-id"]
+    seen: list[Any] = []
+
+    async def _withhold(thread_id: str, room: Any) -> bool:
+        seen.append(room)
+        return False
+
+    monkeypatch.setattr(agent, "_replay_ok", _withhold)
+    code, headers, text = _post(_send())
+    assert code == 200 and headers["x-run-id"] == first_run
+    assert _sse(text) == [{"type": "RUN_FINISHED", "runId": first_run,
+                           "threadId": THREAD, "withheld": True}]
+    assert "the answer" not in text
+    assert len(seen) == 1 and seen[0] is not None and seen[0].email == ALICE
+    assert len(route.runs) == 1
+
+
 def test_route_another_member_with_the_same_id_runs(route) -> None:
     _post(_send())
     code, _h, _t = _post(_send(), email=BOB)
@@ -1551,6 +1579,8 @@ def test_reconnect_reads_the_one_replay() -> None:
     assert whole.count("subscribe_events(thread_id, since_id=_cursor)") == 1
     # RESUME-2d: the one replay keeps the withheld check of main.
     assert whole.count("await _replay_ok(thread_id, room)") == 1
+    # The repeat of a send passes the room of the stream door too.
+    assert "replay=_once.kind == send_once.REPLAY, room=room," in whole
 
 
 def test_the_replay_of_a_send_stops_at_a_newer_run(replay) -> None:

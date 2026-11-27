@@ -3095,7 +3095,9 @@ def _send_once_id(
     return send_id(raw_id)
 
 
-def _send_once_answer(thread_id: str, run_id: str, *, replay: bool) -> StreamingResponse:
+def _send_once_answer(
+    thread_id: str, run_id: str, *, replay: bool, room: Any = None,
+) -> StreamingResponse:
     """The answer to a repeat of a send (HRD-17a, R1 and R2). It starts no
     run. ``X-Run-Id`` names the stored run, because the BFF binds its reader
     to it (``lib/runBinding.ts``).
@@ -3104,10 +3106,16 @@ def _send_once_answer(thread_id: str, run_id: str, *, replay: bool) -> Streaming
     live or final. Else the run is final and its stream is gone or holds a
     newer run, so the answer is one ``RUN_FINISHED`` of the stored run, and
     the client reads the saved row.
+
+    *room* is the ``RoomAccess`` of the stream door. The replay then follows
+    the RESUME-2d rule of `/reconnect` (:func:`_replay_ok`). A member who
+    may not see the whole run gets only the end frame with ``withheld: true``.
     """
     async def _events() -> AsyncIterator[str]:
         if replay:
-            async for line in _replay_run_events(thread_id, "0-0", expect_run_id=run_id):
+            async for line in _replay_run_events(
+                thread_id, "0-0", expect_run_id=run_id, room=room,
+            ):
                 yield line
         else:
             yield "data: " + json.dumps(
@@ -3341,7 +3349,7 @@ async def run_agent_stream_endpoint(
         elif _once.kind in (send_once.REPLAY, send_once.FINISHED):
             return _send_once_answer(
                 req.thread_id or "", _once.run_id,
-                replay=_once.kind == send_once.REPLAY,
+                replay=_once.kind == send_once.REPLAY, room=room,
             )
         elif _once.kind == send_once.REUSED:
             raise _send_once_refused(
@@ -4860,17 +4868,6 @@ async def respond_user_input(
             "(the run may have already finished).",
         )
     if not delivered:
-        # HRD-16: a double tap or a retry of an answer that a run already
-        # took. It resends nothing, so the answer acts once.
-        from orchestrator.answer_once import was_answered  # noqa: PLC0415
-
-        if await was_answered(_org_id, req.thread_id, req.request_id):
-            _log.info("agent.user_input_repeat", request_id=req.request_id[:12])
-            # The plain 409, so the second device reads "not applied: someone
-            # answered it" and never a false success (chat_run_continuity.md
-            # scenario 6). It skips the restart path, so nothing acts twice.
-            raise _plain_409()
-    if not delivered:
         # ── A card answer across a restart (incident 2026-10-09) ─────────────
         # The run that asked may have died with its process. Then a bare 409
         # drops the answer. Instead, close the dead run and hand the answer
@@ -4959,10 +4956,11 @@ async def _replay_run_events(
     the last ``RUN_FINISHED`` names the stored run. Each caller checks the
     reader's right to the room first.
 
-    RESUME-2d (D-RES-10): `/reconnect` passes the ``RoomAccess`` of its guard
-    as *room*. A reader who may not see the whole run then gets only the end
-    frame with ``withheld: true`` (:func:`_replay_ok`). With no *room* the
-    check passes, as ``_replay_ok`` does for ``None``.
+    RESUME-2d (D-RES-10): `/reconnect` and a repeat of a send both pass the
+    ``RoomAccess`` of their guard as *room*, so both follow one rule. A
+    reader who may not see the whole run gets only the end frame with
+    ``withheld: true`` (:func:`_replay_ok`). With no *room* (no rooms layer)
+    the check passes, as ``_replay_ok`` does for ``None``.
     """
     import json as _json
 
@@ -4970,9 +4968,7 @@ async def _replay_run_events(
     from orchestrator.stream_relay import (replay_events, stream_exists,
                                            subscribe_events)
 
-    _finished = (
-        f"data: {_json.dumps({'type': 'RUN_FINISHED', 'runId': expect_run_id or thread_id, 'threadId': thread_id})}\n\n"
-    )
+    _finished = _reconnect_end(thread_id, run_id=expect_run_id)
 
     # Phase 1: Replay missed events.
     # Local _stream_id values (e.g. "local-1718123456789-5#42") are minted
@@ -5012,7 +5008,7 @@ async def _replay_run_events(
     # `withheld: true`, so the chat does not attach to the run again.
     if not await _replay_ok(thread_id, room):
         _log.info("agent.reconnect_replay_withheld", thread_id=thread_id[:12])
-        yield _reconnect_end(thread_id, withheld=True)
+        yield _reconnect_end(thread_id, withheld=True, run_id=expect_run_id)
         return
 
     # Track the replay cursor so Phase 2 subscribes from the exact spot —
@@ -5116,7 +5112,9 @@ async def reconnect_agent_stream(
     )
 
 
-def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
+def _reconnect_end(
+    thread_id: str, *, withheld: bool = False, run_id: str | None = None,
+) -> str:
     """The end frame of a reconnect: the frame when nothing is left to replay.
 
     The frontend translator maps it to ``{"type": "done"}``, and the chat
@@ -5124,10 +5122,15 @@ def _reconnect_end(thread_id: str, *, withheld: bool = False) -> str:
     run gets the same frame with ``withheld: true``. The chat then does not
     attach to that run again while the server lists it
     (``runStatus.ts``, ``attach_withheld``). The frame with no marker keeps
-    its bytes."""
+    its bytes.
+
+    *run_id* (HRD-17a): a repeat of a send names its stored run in the frame.
+    With no *run_id* the frame names the thread, as before."""
     import json as _json
 
-    evt: dict[str, Any] = {"type": "RUN_FINISHED", "runId": thread_id, "threadId": thread_id}
+    evt: dict[str, Any] = {
+        "type": "RUN_FINISHED", "runId": run_id or thread_id, "threadId": thread_id,
+    }
     if withheld:
         evt["withheld"] = True
     return f"data: {_json.dumps(evt)}\n\n"
