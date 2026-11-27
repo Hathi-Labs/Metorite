@@ -22,7 +22,9 @@ once, and a steer seen twice counts once. A repeat answer gets the 409
 answered mark holds the responder, from the session and never from the body.
 A repeat of the same member gets `by_you` true and reads "You already answered
 this". The words stay out of the composer, so a send cannot act twice. Only
-another member's answer gives the words back. A run on another event loop
+another member's answer gives the words back.**
+
+**Task 4036 also closes the park race. A run on another event loop
 says whether it took the answer. When the park ended the wait first, the
 route sets no mark, and the answer takes the late path. Fence:
 `tests/unit/test_card_answer_once.py` and `src/lib/respondInput.test.ts`.**
