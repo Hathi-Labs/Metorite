@@ -16,6 +16,13 @@ This file proves the edge with a fake gateway:
 * ``my_work`` sends ``agent_label`` to the read of the gate;
 * ``add_task_reference`` sends ``landing`` in the body.
 
+LBB-2c (§7b.10, task 4064):
+
+* ``set_assignees`` sends ``agent_label`` in the PUT body, and sends no key
+  when the agent sent none;
+* the text of ``add_task_reference`` says that an unmarked PR blocks a claim
+  only where the claim gate is on.
+
 Mutations (R7). ``T`` is ``apps/services/agent_edge/agent_edge/tools.py``.
 
 * N1. ``T`` ``_CLAIM_CODED`` drops ``CLAIM_LAND_YOUR_PR``.
@@ -30,6 +37,8 @@ Mutations (R7). ``T`` is ``apps/services/agent_edge/agent_edge/tools.py``.
   ``test_the_land_rows_stop_at_five``.
 * N6. ``T`` ``_add_task_reference`` drops ``landing``.
   ``test_add_task_reference_sends_landing_in_the_body``.
+* N7. ``T`` ``_set_assignees`` drops ``agent_label`` from the body.
+  ``test_set_assignees_sends_the_label_in_the_body``.
 """
 # ruff: noqa: F811 (a pytest fixture is imported, then named as an argument)
 from __future__ import annotations
@@ -187,6 +196,35 @@ class TestTheThreeDoors:
         assert _text(result) == f"{HEAD} {LAND_TEXT}"
         assert "GATEWAY SECRET" not in json.dumps(result)
 
+    async def test_set_assignees_sends_the_label_in_the_body(self, edge):
+        """LBB-2c (§7b.10, item 2): the label of the session goes in the PUT
+        body, so the claim gate of a self-add checks the PRs of that label."""
+        edge.gateway.answers[("PUT", ASSIGN_PATH)] = (200, {"assignees": [MEMBER]})
+        result = await _tool("set_assignees", {**_self_add(), "agent_label": "lane-land"})
+        assert result["isError"] is False, result
+        [put] = edge.gateway.writes()
+        assert (put.method, put.path) == ("PUT", ASSIGN_PATH)
+        assert json.loads(put.body) == {"assignees": [MEMBER], "agent_label": "lane-land"}
+
+    async def test_set_assignees_with_no_label_sends_no_key(self, edge):
+        edge.gateway.answers[("PUT", ASSIGN_PATH)] = (200, {"assignees": [MEMBER]})
+        result = await _tool("set_assignees", _self_add())
+        assert result["isError"] is False, result
+        [put] = edge.gateway.writes()
+        assert json.loads(put.body) == {"assignees": [MEMBER]}
+
+    async def test_a_label_with_a_control_character_is_refused_with_no_write(self, edge):
+        result = await _tool("set_assignees", {**_self_add(), "agent_label": "lane\nland"})
+        assert result["isError"] is True, result
+        assert edge.gateway.writes() == []
+
+    def test_set_assignees_takes_the_label_as_claim_task_does(self):
+        tool = tools.TOOLS["set_assignees"]
+        assert tool.input_schema["properties"]["agent_label"] is tools._LABEL_INPUT
+        assert "agent_label" not in tool.input_schema["required"]
+        assert tool.params["agent_label"] == "agent_label"
+        assert "send agent_label as you send it on claim_task" in tool.description
+
     async def test_another_422_of_the_start_keeps_its_old_text(self, edge, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
         edge.gateway.answers[("POST", START_PATH)] = (422, {"detail": "GATEWAY SECRET"})
@@ -328,3 +366,10 @@ class TestAddTaskReference:
             claim_gate.LANDING_STATES)
         assert "landing" not in tool.input_schema["required"]
         assert tool.params["landing"] == "landing"
+
+    def test_the_text_says_the_gate_blocks_only_where_it_is_on(self):
+        """LBB-2c (§7b.10, item 3): with ``CLAIM_GATE_ORGS`` off, no PR blocks
+        a claim, so the text names the condition."""
+        words = tools.TOOLS["add_task_reference"].description
+        assert ("an open PR older than 48 hours with no mark can block your next"
+                " claim where the claim gate is on.") in words

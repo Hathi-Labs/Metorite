@@ -49,10 +49,13 @@ from urllib.parse import unquote, urlencode
 import httpx
 from acb_auth import UserContext, agent_oauth, sandbox_capabilities
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
-from acb_auth.deps import get_current_user
+from acb_auth.deps import get_current_user, require_internal_auth
 from acb_common import app_manifests, get_logger, get_settings, tenant_redis
+from acb_common.card_body import CARD_CLIP, CardBody, CardWontFit
+from acb_common.tool_refusals import data
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from gateway.db import current_tenant, tenant_session
 
@@ -89,6 +92,12 @@ POLL_S = 0.5
 HELD_NAMESPACE = "sandbox_held"
 RUN_NAMESPACE = "sandbox_held_run"
 DECISION_NAMESPACE = "sandbox_held_decision"
+#: The results of the rows of one card, for the watcher (SBX-3b decision 8).
+RESULT_NAMESPACE = "sandbox_held_result"
+
+#: A result lives this many seconds past the deadline of its batch, so the
+#: watcher can read it for 30 seconds after the deadline (decision 8).
+RESULT_GRACE_S = 90
 
 #: The values of a decision.
 APPROVED = "approved"
@@ -703,6 +712,7 @@ async def _hold_and_run(request: Request,
         entries[row.index] = await _run_row(request.app, capability, raw_capability, row,
                                             stamp, held_id, end)
 
+    await _write_results(org, cards, entries, record)
     ran_rows = {row.index for row in approved}
     for card in cards:
         ran: dict[int, int] = {}
@@ -716,14 +726,509 @@ async def _hold_and_run(request: Request,
                         content={"rows": [entries[row.index] for row in rows]})
 
 
+async def _write_results(org: str, cards: list[_Card], entries: Mapping[int, Mapping[str, Any]],
+                         record: Mapping[str, Any]) -> None:
+    """Write the result of each row of each card, for the watcher (decision 8).
+
+    One key for each card, under :data:`RESULT_NAMESPACE`, with the ``owner``
+    and the ``run`` of the held record. A result holds the row id, the status
+    and the door code of each row, and no body. The TTL is the deadline of
+    the batch plus :data:`RESULT_GRACE_S`. A fault loses the results only: the
+    answer of the batch does not change."""
+    ttl = max(1, int(float(record.get("deadline") or 0) - time.time()) + RESULT_GRACE_S)
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            for card in cards:
+                rows = []
+                for row in card.rows:
+                    entry = entries[row.index]
+                    one: dict[str, Any] = {"id": row.row_id, "i": row.index,
+                                           "status": int(entry["status"])}
+                    if isinstance(entry.get("code"), str):
+                        one["code"] = entry["code"]
+                    rows.append(one)
+                value = {"owner": record.get("owner"), "run": record.get("run"), "rows": rows}
+                await client.set(_key(RESULT_NAMESPACE, card.card_id), json.dumps(value),
+                                 ex=ttl)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("sandbox.held_result_write_failed", error=type(exc).__name__)
+
+
+# ── The text of a card (SBX-3b, decision 7) ────────────────────────────────
+#
+# The gateway builds each word of a card from the held record, and from the
+# code of this module. The batch has no free-text field, so no model text
+# frames the card. Each value that code in the sandbox chose shows fenced
+# («…», ``fenced=True``): a body key, a body value, a query key and value, a
+# target id of the path, and the stamp. The method, the template and the
+# names of its path parameters come from the gateway router, so they show as
+# they are. Fence: ``tests/unit/test_sandbox_held_card.py``.
+
+#: The first line of the context of a class B card (``projects_ai_chat.md``
+#: §5.3: the warning line first).
+CARD_WARNING = ("Code that a model wrote asks to make these changes as you. Read each "
+                "row. Only a ticked row runs, one by one, as you.")
+
+#: The warning of a class C card. Its line starts with the counts.
+CARD_WARNING_C = ("This is hard to undo. Code that a model wrote asks to do it as you. "
+                  "It runs only if you tick it.")
+
+#: The count words of each class C pair, for one row and for more. A class C
+#: card starts with its counts (``projects_ai_chat.md`` §5.2). Fence:
+#: ``test_sandbox_held_card.py::test_each_class_c_row_has_its_counts``.
+CLASS_C_COUNTS: Mapping[tuple[str, str], tuple[str, str]] = {
+    ("POST", "/crm/leads/{lead_id}/convert"): ("lead converts", "leads convert"),
+    ("POST", "/projects/tasks/{task_id}/archive"): ("task goes to the archive",
+                                                     "tasks go to the archive"),
+}
+
+#: The caps of a card, as ``ask_tools.request_confirmation`` and
+#: ``ask_tools.clean_card_rows`` clip them. A card that does not fit is not
+#: drawn (:class:`CardWontFit`), because a clipped card shows less than the
+#: write. Fence: ``test_sandbox_held_card.py::test_the_caps_are_the_caps_of_the_card``.
+CARD_TITLE_MAX = 120
+CARD_DETAIL_MAX = 500
+CARD_LABEL_MAX = 500
+CARD_HINT_MAX = 4000
+
+#: The row id that :class:`_Row` gives.
+_ROW_ID = re.compile(r"row-[0-9]{1,2}")
+
+#: The keys of a held row, as :func:`_hold` writes them. A row with any other
+#: key is not of the batch handler, and no card shows.
+HELD_ROW_KEYS: frozenset[str] = frozenset(
+    {"id", "i", "method", "path", "template", "query", "body"})
+
+
+@dataclass(slots=True, frozen=True)
+class _CardRow:
+    """One held row, checked against the router list, for its card text."""
+
+    row_id: str
+    method: str
+    template: str
+    targets: tuple[tuple[str, str], ...]
+    query: tuple[tuple[str, str], ...]
+    body: tuple[tuple[str, Any], ...]
+
+
+def _targets(template: str, path: str) -> tuple[tuple[str, str], ...]:
+    """Each path parameter of *template*, with its value in *path*. A path
+    that is not of the template raises ``ValueError``."""
+    want = template.split("/")
+    have = path.split("/")
+    if len(want) != len(have):
+        raise ValueError("the held path is not of its template")
+    out: list[tuple[str, str]] = []
+    for part, value in zip(want, have, strict=True):
+        if part.startswith("{") and part.endswith("}"):
+            if not value:
+                raise ValueError("the held path has an empty id")
+            out.append((part[1:-1], value))
+        elif part != value:
+            raise ValueError("the held path is not of its template")
+    return tuple(out)
+
+
+def _card_row(raw: object, cls: str) -> _CardRow:
+    """One row of a held record, checked. A row that the batch handler could
+    not have written raises ``ValueError``, and no card shows."""
+    if not isinstance(raw, Mapping) or set(raw) != HELD_ROW_KEYS:
+        raise ValueError("a held row has the keys of the batch handler")
+    row_id, method, template = raw.get("id"), raw.get("method"), raw.get("template")
+    path, query, body = raw.get("path"), raw.get("query"), raw.get("body")
+    if not isinstance(row_id, str) or not _ROW_ID.fullmatch(row_id):
+        raise ValueError("a held row has no row id")
+    if not isinstance(method, str) or not isinstance(template, str):
+        raise ValueError("a held row has no method or template")
+    if app_manifests.SANDBOX_WRITE_ROUTES.get((method, template)) != cls:
+        raise ValueError("a held row is not a write row of its class")
+    if not isinstance(path, str) or not _PATH.fullmatch(path):
+        raise ValueError("a held row has a bad path")
+    if not isinstance(query, Mapping) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in query.items()):
+        raise ValueError("a held row has a bad query")
+    if not isinstance(body, Mapping) or not all(isinstance(k, str) for k in body):
+        raise ValueError("a held row has a bad body")
+    return _CardRow(row_id=row_id, method=method, template=template,
+                    targets=_targets(template, path), query=tuple(query.items()),
+                    body=tuple(body.items()))
+
+
+def _shown(value: Any) -> str:
+    """A body value, fenced. Each value that is not a string shows as its JSON,
+    so ``0``, ``false`` and ``null`` keep their text."""
+    text = value if isinstance(value, str) else json.dumps(
+        value, ensure_ascii=False, sort_keys=True)
+    return str(data(text))
+
+
+def _ids(row: _CardRow) -> str:
+    """The target ids of the path, fenced: ``task_id «7f3c…»``."""
+    return " ".join(f"{name} {data(value)}" for name, value in row.targets)
+
+
+def _label(row: _CardRow) -> str:
+    """The label of a row: the method and the template, code text only. It
+    always fits in :data:`CARD_LABEL_MAX`, so a long id never cuts it."""
+    return f"{row.method} {row.template}"
+
+
+def _hint(row: _CardRow) -> str:
+    """The hint of a row: the target ids, then the body keys and the query
+    keys, each fenced. A path is at most 512 characters, so the ids always
+    fit. Keys that do not fit are counted, and the context shows each one."""
+    head = _ids(row)
+    names = [data(key) for key, _value in row.body]
+    names += [f"query {data(key)}" for key, _value in row.query]
+    if not names:
+        return f"{head} · no fields" if head else "No fields"
+    lead = f"{head} · fields " if head else "Fields "
+    shown: list[str] = []
+    for i, name in enumerate(names):
+        rest = len(names) - i - 1
+        tail = f", and {rest} more in the card text" if rest else ""
+        if len(lead + ", ".join([*shown, name]) + tail) > CARD_HINT_MAX:
+            break
+        shown.append(name)
+    left = len(names) - len(shown)
+    if not shown:
+        return f"{lead}{left} in the card text"
+    more = f", and {left} more in the card text" if left else ""
+    return lead + ", ".join(shown) + more
+
+
+def _counts(cls: str, rows: list[_CardRow]) -> str:
+    """The counts of a class C card, for example "1 lead converts"."""
+    one, many = CLASS_C_COUNTS[(rows[0].method, rows[0].template)]
+    return f"{len(rows)} {one if len(rows) == 1 else many}"
+
+
+def card_text(record: Mapping[str, Any]) -> dict[str, Any]:
+    """The text of the card of one held record: ``title``, ``detail``,
+    ``context`` and ``rows`` (decision 7).
+
+    A pure function. It reads only the class, the stamp and the rows of
+    *record*. It never shows the member, the run, the thread, the held id, the
+    deadline or the token hash. The context starts with the warning line. A
+    class C card starts its title, its detail and its warning line with the
+    counts. Each line of a field names its row, and stays under that row, in
+    row order. The context is at most :data:`CARD_CLIP` characters, and no
+    text is cut: a card shows each value whole, or it shows nothing.
+
+    Raises ``ValueError`` for a record that the batch handler could not have
+    written, and :class:`CardWontFit` when the card does not fit whole.
+    Either way no card shows, and the batch times out with nothing run.
+    """
+    cls = record.get("class")
+    raw_rows = record.get("rows")
+    if cls not in ("B", "C") or not isinstance(raw_rows, list) or not raw_rows:
+        raise ValueError("a held record has a class and rows")
+    if len(raw_rows) > MAX_ROWS or (cls == "C" and len(raw_rows) != 1):
+        raise ValueError("a held record has too many rows for its class")
+    rows = [_card_row(raw, str(cls)) for raw in raw_rows]
+    if len({row.row_id for row in rows}) != len(rows):
+        raise ValueError("a held record names a row twice")
+    stamp = record.get("stamp")
+    if not isinstance(stamp, str) or not ACTOR_VIA_PATTERN.fullmatch(stamp):
+        raise ValueError("a held record has no stamp")
+    app = data(stamp)
+
+    n = len(rows)
+    if cls == "C":
+        counts = _counts(cls, rows)
+        title = f"{counts}. Allow it?"
+        detail = f"{counts}. The sandbox app {app} asks to do this as you. It is hard to undo."
+        note = f"{counts}. {CARD_WARNING_C}"
+    else:
+        changes = "1 change" if n == 1 else f"{n} changes"
+        title = f"Let a sandbox app make {changes}?"
+        detail = (f"The sandbox app {app} asks to make {changes} as you. "
+                  "Only a ticked row runs.")
+        note = CARD_WARNING
+
+    # Each line stays under its own row and names it, in row order (review
+    # P1). ``card_body`` moves the long text of every row to the end, so the
+    # text of row 1 showed under row 2, and an unticked row hid a write.
+    # Nothing is cut: a card that does not fit whole is not drawn.
+    lines: list[str] = [note]
+    for number, row in enumerate(rows, start=1):
+        ids = _ids(row)
+        lines.append(f"{number}. {_label(row)}" + (f" {ids}" if ids else ""))
+        lines += [f"   row {number}: query {data(key)} {data(value)}" for key, value in row.query]
+        lines += [f"   row {number}: {data(key)} {_shown(value)}" for key, value in row.body]
+        if not row.body:
+            lines.append(f"   row {number}: (no fields)")
+    text = "\n".join(lines)
+    if len(text) > CARD_CLIP:
+        raise CardWontFit("This change does not fit on one card, so nothing was changed. "
+                          "Send fewer or shorter fields, or split the batch, and call the "
+                          "tool once more.")
+    context = CardBody(text)
+
+    card_rows: list[dict[str, Any]] = [{"id": row.row_id, "label": _label(row), "hint": _hint(row), "checked": True}
+                 for row in rows]
+    too_long = (len(title) > CARD_TITLE_MAX or len(detail) > CARD_DETAIL_MAX
+                or any(len(r["label"]) > CARD_LABEL_MAX or len(r["hint"]) > CARD_HINT_MAX
+                       for r in card_rows))
+    if too_long:
+        raise CardWontFit("This change does not fit on one card, so nothing was changed. "
+                          "Send fewer fields or shorter ids, and call the tool once more.")
+    return {"title": title, "detail": detail, "context": context, "rows": card_rows}
+
+
+# ── The three held routes (SBX-3b, decisions 7 and 8) ──────────────────────
+#
+# Internal routes: each needs the internal bearer (``require_internal_auth``)
+# and the member (``get_current_user``), as the skills call the gateway. The
+# door never reaches them, because they are not in ``SANDBOX_ROUTES``. Each
+# answers 404 for an org that is not in ``SANDBOX_DOOR_ORGS``. The org and
+# the member come from the session (R5), never from the body.
+
+#: The shape of a run id in a body.
+_RUN_ID = r"^[A-Za-z0-9._:-]{1,200}$"
+#: The longest answer of a held card: ``ask_tools.MAX_ROWS_ANSWER`` with room.
+_ANSWER_MAX = 8000
+#: How long the act waits for the record of the answer, which respond-input
+#: writes just after the run takes the answer (as ``held_card.ANSWER_WAIT_S``).
+ANSWER_WAIT_S = 3.0
+
+
+class HeldCardAsk(BaseModel):
+    """The ask for the next open card of a run, or for its results."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(pattern=_RUN_ID)
+
+
+class HeldActRequest(BaseModel):
+    """The member's answer to one held card, as the watcher hands it on.
+
+    ``answer`` is the exact text that the member's browser posted, for an
+    approval. ``refused`` is True for a refusal, a timeout or no answer, and
+    a refusal takes no answer text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    card_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    card_thread_id: str = Field(min_length=1, max_length=200)
+    answer: str = Field(default="", max_length=_ANSWER_MAX)
+    refused: bool = False
+
+
+def _held_gate(user: UserContext) -> tuple[str, str]:
+    """The org and the member of a held route, or 404.
+
+    A sandbox call, a call with no member and an org that is not in the door
+    flag each get 404. The flag check is the check of the door (``deps.py``
+    step 4)."""
+    if user.sandbox is not None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    org = str(user.organization_id or "").strip()
+    member = str(user.email or "").strip().lower()
+    if not org or not member:
+        raise HTTPException(status_code=404, detail="Not Found")
+    orgs = sandbox_capabilities.door_orgs()
+    if "*" not in orgs and org.lower() not in orgs:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return org, member
+
+
+def _text(raw: object) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) else ""
+
+
+def _record_of(raw: object) -> dict[str, Any] | None:
+    try:
+        value = json.loads(_text(raw))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def _open_cards(org: str, member: str, run_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """The open cards of a run of the member, in the order of the run list.
+
+    A card is open when its held record exists, it has no decision key, its
+    ``owner`` is the member and its ``run`` is the run. Reads only."""
+    client = tenant_redis.get_tenant_redis()
+    out: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    with tenant_redis.organization_scope(org):
+        ids = await client.lrange(_key(RUN_NAMESPACE, run_id), 0, -1)
+        for raw_id in ids or []:
+            card_id = _text(raw_id)
+            if not re.fullmatch(r"[0-9a-f]{32}", card_id) or card_id in seen:
+                continue
+            seen.add(card_id)
+            record = _record_of(await client.get(_key(HELD_NAMESPACE, card_id)))
+            if record is None:
+                continue
+            if record.get("owner") != member or record.get("run") != run_id:
+                continue
+            if await client.get(_key(DECISION_NAMESPACE, card_id)) is not None:
+                continue
+            out.append((card_id, record))
+    return out
+
+
+@router.post("/sandbox/held/card", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_card(
+    req: HeldCardAsk, user: UserContext = Depends(get_current_user),
+) -> Any:
+    """The next open card of a run of the member, or 204 for none.
+
+    The answer holds ``card_id``, ``title``, ``detail``, ``context``,
+    ``rows`` and ``seconds_left``, the time to the deadline of the batch. It
+    reads only the held record and the decision key, and it writes nothing.
+    A record that cannot make a card shows no card, and its batch times out
+    with nothing run."""
+    org, member = _held_gate(user)
+    try:
+        cards = await _open_cards(org, member, req.run_id)
+    except Exception as exc:
+        _log.warning("sandbox.held_card_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The card could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    for card_id, record in cards:
+        seconds_left = int(float(record.get("deadline") or 0) - time.time())
+        if seconds_left <= 0:
+            continue
+        try:
+            text = card_text(record)
+        except (ValueError, CardWontFit) as exc:
+            _log.warning("sandbox.held_card_not_drawn", card=card_id[:12],
+                         error=type(exc).__name__)
+            continue
+        return {"card_id": card_id, **text, "context": str(text["context"]),
+                "seconds_left": seconds_left}
+    return Response(status_code=204)
+
+
+def _audit_act(card_id: str, record: Mapping[str, Any], decision: str,
+               ticked: frozenset[str]) -> None:
+    """The one audit line of an act: the card, its class and the counts. No
+    body, no path, no answer text and no token reach the log."""
+    rows = [r for r in record.get("rows") or [] if isinstance(r, dict)]
+    count = sum(1 for r in rows if r.get("id") in ticked)
+    _log.info("sandbox.held_card_acted", card=card_id[:12], cls=str(record.get("class")),
+              decision=decision, ticked=count, left_out=len(rows) - count)
+
+
+@router.post("/sandbox/held/act", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_act(
+    req: HeldActRequest, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Decide one held card with the member's answer (decision 7).
+
+    1. Read the held record (``GET``). A missing record, another ``owner``
+       or another ``thread`` decides nothing (409). This holds for an
+       approval and for a refusal.
+    2. An approval takes the answer once (``reply_card.take_reply_answer``).
+    3. It checks the ticked ids against the RECORDED ids
+       (``ask_tools.ticked_rows``). A forged id decides nothing (409).
+    4. :func:`decide`. A card that has a decision takes no second one (409).
+
+    It returns at once, and does not wait for the rows to run."""
+    from acb_skills.ask_tools import ticked_rows
+    from acb_skills.reply_card import take_reply_answer
+
+    org, member = _held_gate(user)
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            record = _record_of(await client.get(_key(HELD_NAMESPACE, req.card_id)))
+    except Exception as exc:
+        _log.warning("sandbox.held_act_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The card could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    if (record is None or record.get("owner") != member
+            or record.get("thread") != req.card_thread_id):
+        _log.warning("sandbox.held_act_refused", reason="no_card")
+        raise HTTPException(status_code=409,
+                            detail="This card is not open for you, so nothing ran.")
+    if req.refused:
+        if not await decide(req.card_id, None):
+            raise HTTPException(status_code=409,
+                                detail="This card has a decision already, so nothing ran.")
+        _audit_act(req.card_id, record, REFUSED, frozenset())
+        return {"decided": REFUSED}
+    if not await take_reply_answer(org, req.card_id, member, req.answer, req.card_thread_id,
+                                   wait_s=ANSWER_WAIT_S):
+        _log.warning("sandbox.held_act_refused", reason="no_record")
+        raise HTTPException(status_code=409,
+                            detail="This answer was not given on its card, so nothing ran.")
+    rows = [r for r in record.get("rows") or [] if isinstance(r, dict)]
+    ticked = ticked_rows(req.answer, frozenset(str(r.get("id")) for r in rows))
+    if ticked is None:
+        _log.warning("sandbox.held_act_refused", reason="bad_ids")
+        raise HTTPException(status_code=409,
+                            detail="The answer names a row that the card did not offer, "
+                                   "so nothing ran.")
+    if not await decide(req.card_id, ticked):
+        raise HTTPException(status_code=409,
+                            detail="This card has a decision already, so nothing ran.")
+    _audit_act(req.card_id, record, APPROVED, ticked)
+    return {"decided": APPROVED, "ticked": sorted(ticked)}
+
+
+@router.post("/sandbox/held/results", dependencies=[Depends(require_internal_auth)])
+async def sandbox_held_results(
+    req: HeldCardAsk, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The results of each card of a run of the member, each one once.
+
+    A result goes back only when its ``owner`` is the member and its
+    ``run`` is the run. It is read first, and spent with ``GETDEL`` only
+    after that check, so a call of another member spends nothing."""
+    org, member = _held_gate(user)
+    out: list[dict[str, Any]] = []
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            ids = await client.lrange(_key(RUN_NAMESPACE, req.run_id), 0, -1)
+            seen: set[str] = set()
+            for raw_id in ids or []:
+                card_id = _text(raw_id)
+                if not re.fullmatch(r"[0-9a-f]{32}", card_id) or card_id in seen:
+                    continue
+                seen.add(card_id)
+                key = _key(RESULT_NAMESPACE, card_id)
+                found = _record_of(await client.get(key))
+                if (found is None or found.get("owner") != member
+                        or found.get("run") != req.run_id):
+                    continue
+                taken = _record_of(await client.getdel(key))
+                if (taken is None or taken.get("owner") != member
+                        or taken.get("run") != req.run_id):
+                    continue
+                rows = [{k: r[k] for k in ("id", "status", "code") if k in r}
+                        for r in taken.get("rows") or [] if isinstance(r, dict)]
+                out.append({"card_id": card_id, "rows": rows})
+    except Exception as exc:
+        _log.warning("sandbox.held_results_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The results could not be read.",
+                            headers={"Retry-After": "1"}) from None
+    return {"results": out}
+
+
 __all__ = [
     "APPROVED",
+    "CARD_WARNING",
+    "CARD_WARNING_C",
+    "CLASS_C_COUNTS",
     "DECISION_NAMESPACE",
     "EXPIRED",
     "HELD_NAMESPACE",
     "REFUSED",
+    "RESULT_NAMESPACE",
     "RUN_NAMESPACE",
     "batch_wait_s",
+    "card_text",
     "decide",
     "router",
     "stamp_of",

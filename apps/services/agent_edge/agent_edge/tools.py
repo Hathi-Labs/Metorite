@@ -6612,8 +6612,8 @@ ADD_TASK_REFERENCE = Tool(
         " one row, and created is false the second time. Metorite reads no"
         " outside site for this call. For a pull request, landing marks it"
         " queued, parked or gone: an open PR older than 48 hours with no mark"
-        " can block your next claim. Returns the reference with its kind,"
-        " provider, short label and title." + _UNTRUSTED_NOTE
+        " can block your next claim where the claim gate is on. Returns the"
+        " reference with its kind, provider, short label and title." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ADD_REF_INPUT,
@@ -8885,6 +8885,9 @@ _SET_ASSIGNEES_INPUT: dict[str, Any] = {
         "expected_version": {
             "type": "string", "pattern": _VERSION_PATTERN,
             "description": "The version that get_task returned for this task."},
+        # LBB-2c (engineering_practice.md §7b.10): the label of this session,
+        # as claim_task takes it. The claim gate of a self-add reads it.
+        "agent_label": _LABEL_INPUT,
     },
     "required": ["task_id", "assignees", "expected_version"],
     "additionalProperties": False,
@@ -8915,12 +8918,20 @@ async def _set_assignees(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     SW-45 (review P2). A self-add outside the member's own apps gets the
     claim's text for the 403 ``outside_apps`` (mode ``refuse``), and the
     claim's ``warning`` in mode ``warn``.
+
+    LBB-2c (``engineering_practice.md`` §7b.10). ``agent_label`` goes in the
+    body only when the agent sent it, as ``claim_task`` sends it. The claim
+    gate of a self-add checks the PRs of that label.
     """
     task_id = str(args["task_id"])
     sent = list(args["assignees"])
+    body: dict[str, Any] = {"assignees": sent}
+    label = _str_or_none(args.get("agent_label"))
+    if label is not None:
+        body["agent_label"] = label
     _, after = await _write(
         ctx, "PUT", ASSIGNEES_ROUTE, TEXT_TASK_NOT_FOUND,
-        path_params={"task_id": task_id}, json_body={"assignees": sent},
+        path_params={"task_id": task_id}, json_body=body,
         if_match=str(args["expected_version"]),
         coded={**_assignee_codes(sent), **_OUTSIDE_CODED}, coded_statuses=(422, 403))
     if not isinstance(after, dict):
@@ -8956,6 +8967,7 @@ SET_ASSIGNEES = Tool(
         " task after your read, a comment too, refuses the call. Read it again"
         " and resend the full set. Removing a person does not stop an agent run"
         " that holds the task. To give back your own task, call release_task."
+        " When you add yourself, send agent_label as you send it on claim_task."
         " Returns the task id, its assignees and its new version." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
@@ -8963,7 +8975,7 @@ SET_ASSIGNEES = Tool(
     output_schema=_SET_ASSIGNEES_OUTPUT,
     route=ASSIGNEES_ROUTE,
     params={"task_id": "task_id", "assignees": "assignees",
-            "expected_version": "If-Match"},
+            "expected_version": "If-Match", "agent_label": "agent_label"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_set_assignees,
     routes=(TASK_ROUTE,),

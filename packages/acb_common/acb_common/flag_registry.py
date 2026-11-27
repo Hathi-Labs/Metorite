@@ -1457,6 +1457,16 @@ class FlagRegistry(BaseSettings):
     # spends credits. Spec: ai_studio_rows/F4.md.
     studio_skill_tests_orgs: str = ""
 
+    # ── The teams of Projects (WS-39 T-1, task 2532) ────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, `GET /projects/teams` answers 404, and so does a read
+    # of `/projects` that sends a `team` value. The one reader is
+    # `gateway.routes.projects.team_scope.teams_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_teams_read_model_r8.py.
+    teams_orgs: str = ""
+
     # ── One Today rule (my_day_command_centre.md §9.2, WS-MDC CC-2) ─────────
     #
     # `today_rule_orgs` lists the organization ids where the Today chip of My
@@ -1600,6 +1610,7 @@ OWNER_ONLY_FLAGS: frozenset[str] = frozenset("""
     studio_residency_orgs
     studio_skill_repair_orgs
     studio_skill_tests_orgs
+    teams_orgs
     today_rule_orgs
     tool_search_orgs
     whatsapp_assistant_orgs

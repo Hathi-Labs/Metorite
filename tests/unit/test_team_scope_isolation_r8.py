@@ -97,7 +97,8 @@ follow-up work for this fence.
 * The team chip and the team scope of the shell (T-2, T-4). They are not
   built. Rule 3 and rule 5 ("a scope never grants") wait for
   ``src/lib/shell/teamScope.test.ts``.
-* The read model of the teams of a member (T-1, task 2532). It is not built.
+* The read model of the teams of a member (T-1, task 2532), and its ``team``
+  value. Its own fence is ``tests/unit/test_teams_read_model_r8.py``.
 * ``GET /projects/needs-attention``. Its rows need agent runs or a parked
   blocker, and this world seeds neither.
 * The analytics and the reports (``/projects/analytics/*``). They read
