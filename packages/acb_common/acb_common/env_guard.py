@@ -464,6 +464,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # token is a read-only box token. A tenant must never save these.
     "METORITE_WATCHER_TOKEN", "METORITE_WATCHER_STATE", "METORITE_REPO",
     "METORITE_MCP_URL", "WATCHER_CLAUDE_CMD",
+    # Task 4086: the guarded flag flip (scripts/flag_flip.py) on the box, and
+    # its test seams. A tenant must never save these.
+    "FLAG_FLIP_APP_DIR", "FLAG_FLIP_PYTHON", "FLAG_FLIP_RELOAD_WAIT_S", "FLAG_FLIP_VERSION_URL",
     # MCP-G17g: the sign-in alarm of a dev machine (scripts/home_server). It
     # reads its channel, its files and the login to mention. A tenant must
     # never save these.

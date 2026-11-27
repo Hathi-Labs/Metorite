@@ -47,6 +47,7 @@ Fence: ``tests/unit/test_flag_flip.py``.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import fcntl
 import json
@@ -195,10 +196,8 @@ def atomic_write(path: Path, data: bytes) -> None:
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.flagflip.", dir=str(path.parent))
     try:
         os.fchmod(fd, st.st_mode & 0o7777)
-        try:
+        with contextlib.suppress(PermissionError):  # the same user owns both
             os.fchown(fd, st.st_uid, st.st_gid)
-        except PermissionError:
-            pass  # the same user owns both: nothing to change
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
@@ -317,9 +316,8 @@ def flip(a: argparse.Namespace) -> int:
     names, owner_only = registry()
     if key not in names:
         raise Refused(f"{key} is not in acb_common/flag_registry.py. This tool flips per-org flags only")
-    if key in owner_only:
-        if not a.owner_approved or not ANSWER_RE.fullmatch(a.owner_approved):
-            raise Refused(f"{key} is owner-only (money, identity or a third party). Pass --owner-approved <answer id>")
+    if key in owner_only and not (a.owner_approved and ANSWER_RE.fullmatch(a.owner_approved)):
+        raise Refused(f"{key} is owner-only (money, identity or a third party). Pass --owner-approved <answer id>")
 
     app = APP_DIR
     root = app / ROOT_ENV

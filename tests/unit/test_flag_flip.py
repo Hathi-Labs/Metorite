@@ -118,6 +118,8 @@ def test_a_name_outside_the_registry_is_refused_before_any_write(box):
     before = box.root.read_bytes()
     assert flip("AGENT_BOX_TOKENS_ENABLED", "--set", "true", "--task", "1") == 2
     assert flip("DATABASE_URL", "--off", "--task", "1") == 2
+    # A per-org shape that is not a registry field: only the registry guard refuses it.
+    assert flip("NOT_A_REGISTRY_ORGS", "--set", ORG1, "--task", "1") == 2
     assert box.root.read_bytes() == before and box.calls() == ""
 
 
@@ -243,8 +245,7 @@ def test_the_smoke_runs_only_when_it_is_on(box, monkeypatch):
 def test_each_owner_only_flag_is_a_registry_field():
     from acb_common import flag_registry as fr
 
-    assert fr.OWNER_ONLY_FLAGS <= set(fr.FlagRegistry.model_fields)
-    assert sorted(fr.OWNER_ONLY_FLAGS) == sorted(fr.OWNER_ONLY_FLAGS)  # a set: no duplicate
+    assert fr.OWNER_ONLY_FLAGS.issubset(fr.FlagRegistry.model_fields)
 
 
 def test_the_wrapper_refuses_with_no_python(tmp_path):

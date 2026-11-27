@@ -878,3 +878,24 @@ key that the file gained after the start stays dormant until a restart.
 
 The reload covers the gateway only. The workbench, the agent edge and the
 customer console still read their flags at start.
+
+## Flip with the tool, not by hand
+
+Task 4086. Run `scripts/flag_flip.sh` on the box as `acb`, from `/opt/acb/app`:
+
+    bash scripts/flag_flip.sh TOOL_PACKS_ORGS --add <org id> --task <n>
+    bash scripts/flag_flip.sh DECIDE_FEATURE_MODES --add '<org id>=warn' --task <n>
+    bash scripts/flag_flip.sh CRM_ORGS --off --task <n> --dry-run
+
+The tool refuses a name that is not in `acb_common/flag_registry.py`. It refuses
+a flag in `OWNER_ONLY_FLAGS` without `--owner-approved <answer id>`. It refuses
+before any write.
+
+The tool writes the key into the root `.env`, and into each other env file
+that already holds the key. The edge reads only `apps/services/agent_edge/.env`.
+Then the tool sends the SIGHUP above, and waits for the `flags.reloaded` line
+that names the key. It restarts `acb-agent-edge` only when the edge file
+changed.
+
+The tool prints the rollback commands, and it appends one line to
+`.flag_flips.log`. Fence: `tests/unit/test_flag_flip.py`.
