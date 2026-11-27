@@ -1130,7 +1130,9 @@ def test_the_other_callers_of_the_hydrate_keep_their_arguments() -> None:
 
     assert "hydrate_message_body(db,str(message_id),user_email)" in flat(
         actions._apply_rule_actions)
-    assert "hydrate_message_body(db,str(r.last_message_id),acc.user_id)" in flat(
+    # Task 3995: the scan passes the session of its write block (``w``),
+    # which is the block of the scan itself with the flag off.
+    assert "hydrate_message_body(w,str(r.last_message_id),acc.user_id)" in flat(
         followups._maybe_send_follow_up_reminders)
     assert "_build_reply_context(db,account_id,str(message_id),user_email)" in flat(
         actions._apply_rule_actions)

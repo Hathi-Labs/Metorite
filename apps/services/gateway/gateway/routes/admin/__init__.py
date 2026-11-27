@@ -33,6 +33,10 @@ from gateway.routes.admin import groups as _groups  # noqa: F401
 # integrations_console.md §3.9.4). Dark behind `INTEGRATION_ACCESS_ORGS`.
 from gateway.routes.admin import integration_access as _integration_access  # noqa: F401
 from gateway.routes.admin import members as _members  # noqa: F401
+
+# `my_integrations` attaches `/auth/me/integrations` to `me_router` (ACC-3,
+# integrations_console.md §3.9.4). Dark behind `INTEGRATION_ACCESS_ORGS`.
+from gateway.routes.admin import my_integrations as _my_integrations  # noqa: F401
 from gateway.routes.admin import organization as _organization  # noqa: F401
 from gateway.routes.admin import roles as _roles  # noqa: F401
 from gateway.routes.admin._common import router

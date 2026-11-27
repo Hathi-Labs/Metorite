@@ -561,7 +561,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | apps | 29 | 28 | P-6 | 3115, 3950 (PAR-9 built) |
 | agents | 20 | 20 | P-6 | 3115 |
 | chat | 25 | 28 | P-7 | 3115 |
-| shell | 15 | 7 | P-7 | 3115, 3903 (PAR-8b built) |
+| shell | 15 | 9 | P-7 | 3115, 3903 (PAR-8b built). WS-AP AP-2a added two reads, and slice AP-10 pays them |
 | settings | 21 | 30 | P-8 | 3108 |
 | admin | 36 | 36 | P-8 | 3102, 3107 |
 | integrations | 19 | 22 | P-8 | 3109 |
