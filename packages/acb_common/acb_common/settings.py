@@ -528,6 +528,15 @@ class Settings(FlagRegistry):
     # is `gateway.routes.knowledge.flags`. A flip on production is the owner's.
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
+    # WS-61 KC-5a (knowledge_curation.md §17). The organization ids whose
+    # included Drive folders the index pass reads, in the grammar of
+    # `knowledge_orgs`. `*` is each org. It needs `knowledge_sync` and the
+    # provider flag too. Empty, the default, means no organization: the loop
+    # starts no index run, makes no provider call and opens no session for it.
+    # The one reader is `gateway.routes.knowledge.flags`. A flip on production
+    # is the owner's, and the two P1s of KC-5b (#463) block it.
+    # Fence: tests/unit/test_kb_flags.py.
+    knowledge_index: str = ""
 
 
     reach_enabled: bool = False
@@ -1486,6 +1495,21 @@ class Settings(FlagRegistry):
     # after, so a working dir above this size refuses. Keep it below
     # `sandbox_memory`, because a tmpfs uses the memory of the container.
     sandbox_remote_workspace_mb: int = 512
+    # WS-43g1 (maf_coding_engine.md §7.3, task 4009) — egress. It ships DARK.
+    # Off (the default), `grant_egress` refuses, and the broker makes no
+    # proxy container and no egress network. To turn it on in production is
+    # WS43-G1, and it needs the host firewall rule on the box first.
+    sandbox_egress_enabled: bool = False
+    # The hosts that a grant may name. An entry matches one host exactly, or
+    # with a leading dot the subdomains at a dot boundary. The owner sets the
+    # production list (WS43-G4).
+    sandbox_egress_allow_hosts: str = "pypi.org,files.pythonhosted.org"
+    # The door forward (done-when 9): `<ip>:<port>` of the gateway door. The
+    # proxy sends `metorite-api.sandbox` there with no DNS lookup. Empty (the
+    # default) refuses the door. A name refuses too.
+    sandbox_egress_door_upstream: str = ""
+    # The longest life of a grant. The run's end revokes it first.
+    sandbox_egress_grant_ttl_seconds: int = 1800
 
     # Agent dependency installs (packages/acb_skills/acb_skills/loader.py
     # _install_agent_deps) — RCE guard (BO-7 fast pass). Agent repos'

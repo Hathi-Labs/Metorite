@@ -4,6 +4,21 @@
 #
 #   bash scripts/premerge.sh               # in the PR's worktree. Commit everything first.
 #   bash scripts/premerge.sh --no-tests    # collision fences only (same as PREMERGE_MERGE_TEST=0)
+#   bash scripts/premerge.sh --auto-tests  # the merge test only for a migration or an R8 suite
+#                                          # (same as PREMERGE_MERGE_TEST=auto)
+#
+# THREE MODES (engineering_practice.md 7b.9, LBB-5a, task 4046). The last flag wins.
+#   1     the default. Step 4 always runs on a behind head. The merge bot keeps it.
+#   0     --no-tests: the fences and the trial merge only. No type check, no step 4.
+#   auto  --auto-tests: the fences, the type check and the picker always run. Step 4
+#         runs only when a side adds or changes a migration (infra/postgres/ or
+#         infra/customer_console/), or when the picker's list holds an R8 suite
+#         (`affected_tests.py --r8`). An R8 suite needs both database variables.
+#         A step with no answer FAILs. A cap hit at the step's own cap is UNPROVEN
+#         (exit 0), except at the picker and at `--r8`: a cap hit there FAILs.
+#   WHO MAY USE auto: a merger that runs --no-tests today. For it, auto is stricter.
+#   A switch of the merge bot, or of a merger that runs the default, to auto
+#   loosens the gate. That switch, and a change of the default, is the owner's.
 #
 # WHY. pr-check tests the PR merged with main AS IT WAS when the run started.
 # Branch protection does not ask for an up-to-date branch (strict: false), and
@@ -44,14 +59,21 @@
 set -euo pipefail
 
 # CIV-MT (task 3277): the merge test is ON by default. PREMERGE_MERGE_TEST=0 or
-# --no-tests turns it off. --with-tests stays as a no-op alias, for old callers.
+# --no-tests turns it off. --with-tests resets the mode to the default (old callers use it).
+# LBB-5a (task 4046): PREMERGE_MERGE_TEST=auto or --auto-tests. In auto, merge_test stays 1,
+# so the type check and the picker run as in the default. Only step 4 asks auto first.
 merge_test=1
-case "${PREMERGE_MERGE_TEST:-1}" in 0|false|no|off|FALSE|NO|OFF) merge_test=0 ;; esac
+auto=0
+case "${PREMERGE_MERGE_TEST:-1}" in
+  0|false|no|off|FALSE|NO|OFF) merge_test=0 ;;
+  auto|AUTO) auto=1 ;;
+esac
 for arg in "$@"; do
   case "$arg" in
-    --with-tests) merge_test=1 ;;
-    --no-tests) merge_test=0 ;;
-    *) printf 'premerge: FAIL. unknown argument %s. The flags are --no-tests and --with-tests.
+    --with-tests) merge_test=1; auto=0 ;;
+    --no-tests) merge_test=0; auto=0 ;;
+    --auto-tests) merge_test=1; auto=1 ;;
+    *) printf 'premerge: FAIL. unknown argument %s. The flags are --no-tests, --auto-tests and --with-tests.
 ' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -382,6 +404,9 @@ main_cap=$(( $(remaining) - 2 * RERUN_TIMEOUT ))
 [ "$main_cap" -lt 60 ] && main_cap=60
 [ "$main_cap" -gt "$TEST_TIMEOUT" ] && main_cap=$TEST_TIMEOUT
 TEST_TIMEOUT=$main_cap
+# auto: the cap of `affected_tests.py --r8`. PREMERGE_R8_TIMEOUT may lower it, never raise it.
+R8_TIMEOUT=60
+[ -n "${PREMERGE_R8_TIMEOUT:-}" ] && [ "$PREMERGE_R8_TIMEOUT" -lt "$R8_TIMEOUT" ] && R8_TIMEOUT=$PREMERGE_R8_TIMEOUT
 if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
   if [ "$merge_test" = 1 ]; then
     if [ -f scripts/premerge_select.py ]; then
@@ -389,6 +414,9 @@ if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
       # PREMERGE_PICKER_TIMEOUT, when set, is an upper bound. Main has no picker cap, so it
       # would run past the bot's limit (a BACK): a picker with no time or no verdict FAILs.
       picker_cap=$(( $(remaining) - main_cap - 10 ))
+      # auto: the R8 list (`affected_tests.py --r8`) runs after the picker, inside the budget.
+      # Its cap and its 5 s kill grace come out of the picker's time. The default is unchanged.
+      [ "$auto" = 1 ] && picker_cap=$(( picker_cap - R8_TIMEOUT - 5 ))
       if [ "$picker_cap" -lt 20 ]; then
         stage "picker"
         out_of_time "no time is left for the picker ($(left0) s of the budget, and the tests need ${main_cap} s)"
@@ -415,6 +443,12 @@ if [ -z "${PREMERGE_AFFECTED_CMD:-}" ]; then
         grep -c . "$logs/sel.txt" > "$logs/first.txt" || echo 0 > "$logs/first.txt"
       fi
     else
+      # auto decides from the picker's list. With no picker it has no answer: FAIL, where the
+      # default says UNPROVEN and passes (LBB-5a: auto is stricter than --no-tests, never looser).
+      if [ "$auto" = 1 ]; then
+        stage "picker"
+        fail "auto: scripts/premerge_select.py is not in the merge result, so auto cannot tell which tests the merge reaches. Merge $BASE into the branch, push, and run premerge again."
+      fi
       no_picker=1; merge_test=0
     fi
   fi
@@ -426,6 +460,71 @@ else
   AFFECTED_CMD="$PREMERGE_AFFECTED_CMD"
 fi
 stage "picker"
+
+# ── 4a. auto: does the merge add the most risk? (LBB-5a, task 4046) ────────
+# Step 4 runs only when M or R is true. M: a side adds or changes a migration since the
+# merge base. R: the picker's list holds an R8 suite. `affected_tests.py --r8` runs for every
+# behind merge in auto, so the database rule holds also when M is true. Any step here with
+# no answer FAILs: auto must never pass what --no-tests fails. Spec: engineering_practice.md 7b.9.
+auto_skip=0
+if [ "$auto" = 1 ]; then
+  m_file="$( { grep -hE '^infra/(postgres|customer_console)/' "$logs/pr.txt" "$logs/main.txt" || true; } | head -1 || true)"
+  r_file=""
+  if [ -n "${PREMERGE_AFFECTED_CMD:-}" ]; then
+    # A test override replaces the picker. R counts as true, so the database rule applies.
+    r_file="PREMERGE_AFFECTED_CMD"
+  else
+    r8_cap=$(( $(remaining) - main_cap - 10 ))
+    [ "$r8_cap" -gt "$R8_TIMEOUT" ] && r8_cap=$R8_TIMEOUT
+    if [ "$r8_cap" -lt 5 ]; then
+      stage "auto"
+      out_of_time "auto: no time is left for \`affected_tests.py --r8\` ($(left0) s of the budget, and the tests need ${main_cap} s)"
+    fi
+    r8_t=$SECONDS; r8_rc=0
+    # shellcheck disable=SC2086
+    timeout -k 5 "$r8_cap" ${PREMERGE_PY:-env -u VIRTUAL_ENV uv run python} scripts/affected_tests.py --r8 \
+      > "$logs/r8.raw" 2> "$logs/r8.err" || r8_rc=$?
+    # A Windows Python writes CRLF and may write a backslash. Either one makes the match empty,
+    # and then R reads false and step 4 never runs. Strip both, and drop blank lines.
+    { tr -d '\r' < "$logs/r8.raw" | sed 's#\\#/#g' | grep -v '^[[:space:]]*$' > "$logs/r8.txt"; } || true
+    if timed_out "$r8_rc"; then
+      stage "auto"
+      fail "auto: \`affected_tests.py --r8\` hit its cap of ${r8_cap} s after $(( SECONDS - r8_t )) s with no answer, so auto cannot tell whether the merge touches an R8 suite. Run premerge again when the box is quieter, or run it in the default mode."
+    elif [ "$r8_rc" != 0 ]; then
+      tail -8 "$logs/r8.err" >&2 || true
+      stage "auto"
+      fail "auto: \`affected_tests.py --r8\` failed (exit $r8_rc, log above), so auto cannot tell whether the merge touches an R8 suite. Run premerge in the default mode."
+    elif [ ! -s "$logs/r8.txt" ]; then
+      stage "auto"
+      fail "auto: \`affected_tests.py --r8\` printed no file, so auto cannot tell whether the merge touches an R8 suite. Run premerge in the default mode."
+    fi
+    r_file="$( { grep -Fx -f "$logs/r8.txt" "$logs/sel.txt" || true; } | head -1 || true)"
+  fi
+  if [ -n "$m_file" ]; then
+    say "auto: migration $m_file"
+  fi
+  if [ "$r_file" = PREMERGE_AFFECTED_CMD ]; then
+    say "auto: R8 suite (PREMERGE_AFFECTED_CMD is set, so R counts as true)"
+  elif [ -n "$r_file" ]; then
+    say "auto: R8 suite $r_file"
+  fi
+  if [ -n "$r_file" ]; then
+    # The database rule. An R8 file that needs an unset variable skips and proves nothing.
+    unset_vars=""
+    for v in CUSTOMER_CONSOLE_DATABASE_URL TENANT_LADDER_DATABASE_URL; do
+      [ -n "${!v:-}" ] || unset_vars="$unset_vars $v"
+    done
+    if [ -n "$unset_vars" ]; then
+      say "auto: not exported:$unset_vars"
+      stage "auto"
+      fail 'auto: the merge touches R8 suites, and the database is not exported. Run `eval "$(bash scripts/dev_db.sh --export)"`, then run premerge again. One R8 run at a time: dev_db uses one shared scratch database.'
+    fi
+  fi
+  if [ -z "$m_file" ] && [ -z "$r_file" ]; then
+    auto_skip=1
+  fi
+  stage "auto"
+fi
 RERUN_CMD="${PREMERGE_RERUN_CMD:-$PYT}"
 # Ids at the function level: a parameter such as [Earlier reply] holds a space,
 # and a cut id selects nothing on the re-run. The re-run takes whole functions.
@@ -468,6 +567,25 @@ if [ -n "$overlap" ]; then
 fi
 if [ "$no_picker" = 1 ]; then
   say "UNPROVEN. scripts/premerge_select.py is not in the merge result, so no test was picked. Merge $BASE once the script has landed on it."
+elif [ "$auto_skip" = 1 ]; then
+  # Where the default says UNPROVEN, auto says UNPROVEN too, never the skip line (review of
+  # PR 2921, P3). The exit stays 0, as in the default. No test ran, so the lines say so.
+  picked_n="$(grep -c . "$logs/sel.txt" || true)"
+  unproven=0
+  if [ "$picked_n" = 0 ]; then
+    say "UNPROVEN. The selector picked no test, so NO test ran on the merge result. Nothing is proven here. pr-check is the evidence."
+    unproven=1
+  fi
+  if [ "$both_full" = 1 ]; then
+    say "UNPROVEN. Both sides changed a file that makes every test affected, and auto ran no test (no migration and no R8 suite in the merge). pr-check is the evidence."
+    unproven=1
+  elif [ -s "$logs/note.txt" ] && grep -q . "$logs/note.txt"; then
+    say "UNPROVEN. The selector says every test is affected by: $(cat "$logs/note.txt"), and auto ran no test (no migration and no R8 suite in the merge). pr-check is the evidence."
+    unproven=1
+  fi
+  if [ "$unproven" = 0 ]; then
+    say "auto: no migration and no R8 suite in the merge. The trial merge, the fences, the type check and the green pr-check decide."
+  fi
 elif [ "$merge_test" = 0 ]; then
   say "the affected tests did not run (PREMERGE_MERGE_TEST=0 or --no-tests). pr-check and main run them."
 else

@@ -13,7 +13,7 @@ from typing import Any, NamedTuple
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
-from acb_common import honorifics
+from acb_common import honorifics, member_actions
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
 from acb_skills.card_revise import draft_digest, draft_files_digest
@@ -4587,6 +4587,20 @@ async def send_draft_endpoint(
                 text("DELETE FROM email_messages WHERE id = :id"),
                 {"id": req.draft_id},
             )
+        # WS-PZ MM-1: the member's own send of a draft, after the provider took
+        # it. The composer, the inline reply and a yes on a chat card send here.
+        # The send-later sweep sends inside ``member_actions.job_acts``, so it
+        # records nothing. The row holds the recipients the server took, and no
+        # text. Dark behind MEMBER_ACTIONS_ORGS, and it never fails the send.
+        await member_actions.record_act(
+            db, org=member_actions.org_of(user), member=user.email or "",
+            app="email", act="reply" if drow.thread_id else "send",
+            via="app", item_kind="email", item_id=req.draft_id,
+            mailbox_id=req.account_id,
+            features={"is_reply": bool(drow.thread_id),
+                      "new_thread": not drow.thread_id},
+            targets=member_actions.sent_to(
+                to, getattr(provider, "last_refused", None) or ()))
         # Reply complete: learn from the sent body and move the thread out of
         # "Reply" → Awaiting Reply (same hooks as the full /send path).
         if drow.thread_id:

@@ -157,6 +157,7 @@ const PURGE_LABELS: Record<string, string> = {
   brief_runs: "daily brief",
   // WS-MDC CC-5a: the member's focus sessions, with their minutes.
   focus_sessions: "focus session",
+  member_actions: "act record",
   // Each label is a singular noun that takes a plain "s". The fence
   // `test_every_purge_count_has_a_label` holds the gateway's keys to this map.
   goal_records: "personal goal",

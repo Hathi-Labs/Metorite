@@ -427,3 +427,90 @@ def test_a_run_with_too_many_pages_is_not_vetted():
 def test_the_prompt_tells_the_session_to_read_every_page():
     text = aw.prompt_for(run())
     assert "EVERY page" in text and "cursor" in text
+
+
+# ── Task 4062: an answered run of a box lane writes an event ───────────────
+
+LANES = frozenset({"lane-devx", "lane-merge"})
+
+
+class Emitter:
+    def __init__(self, ok=True):
+        self.calls: list[tuple[str, str]] = []
+        self.ok = ok
+
+    def __call__(self, r, lane):
+        self.calls.append((r["id"], lane))
+        return self.ok
+
+
+def boxrun(rid=R1, label="lane-devx", host="metorite-home", **kw):
+    return run(rid=rid, agent_label={"untrusted_text": label}, agent_host={"untrusted_text": host}, **kw)
+
+
+def go_route(runs, tmp_path, starter, emitter, *, now=NOW, free=20000, live=0):
+    return aw.tick(runs, state_dir=tmp_path, start=starter, now=now, free_mb=lambda: free,
+                   live=lambda: live, route=aw.make_route(LANES), emit=emitter)
+
+
+def test_a_box_lane_run_writes_one_event_and_starts_no_session(tmp_path):
+    s, e = Starter(), Emitter()
+    assert go_route([boxrun()], tmp_path, s, e) == []
+    assert e.calls == [(R1, "lane-devx")] and s.calls == []
+    # The same wake on the next tick writes nothing again.
+    go_route([boxrun()], tmp_path, s, e, now=NOW + 120)
+    assert e.calls == [(R1, "lane-devx")]
+
+
+def test_a_lane_not_on_the_keeper_list_or_another_host_starts_a_session(tmp_path):
+    s, e = Starter(), Emitter()
+    runs = [boxrun(R1, label="lane-gone"), boxrun(R2, host="VJ laptop"), run(rid=R3)]
+    go_route(runs, tmp_path, s, e)
+    assert e.calls == [] and s.calls == [R1, R2]  # R3 waits: the live cap is 2
+
+
+def test_a_label_that_is_not_a_plain_lane_name_never_routes():
+    route = aw.make_route(frozenset({"lane-devx"}))
+    for bad in ("lane-devx\tEVENT", "lane-devx\n", "../lane-devx", "LANE-DEVX", "devx", None):
+        assert route(boxrun(label=bad)) is None
+
+
+def test_the_live_cap_and_low_memory_do_not_hold_an_event(tmp_path):
+    s, e = Starter(), Emitter()
+    go_route([run(rid=R2), boxrun(R1)], tmp_path, s, e, live=2, free=10)
+    assert e.calls == [(R1, "lane-devx")] and s.calls == []
+
+
+def test_a_failed_event_frees_its_wake(tmp_path):
+    s = Starter()
+    go_route([boxrun()], tmp_path, s, Emitter(ok=False))
+    e = Emitter()
+    go_route([boxrun()], tmp_path, s, e, now=NOW + 120)
+    assert e.calls == [(R1, "lane-devx")]
+
+
+def test_a_vet_by_another_member_writes_no_event(tmp_path):
+    e = Emitter()
+    aw.tick([boxrun()], state_dir=tmp_path, start=Starter(), now=NOW, free_mb=lambda: 20000,
+            live=lambda: 0, vet=lambda _r: False, route=aw.make_route(LANES), emit=e)
+    assert e.calls == []
+
+
+def test_the_event_line_has_the_orch_watch_form_and_ids_only(tmp_path):
+    log_path = tmp_path / "orch-events.log"
+    emit = aw.make_emit(log_path, NOW)
+    assert emit(boxrun(), "lane-devx")
+    line = log_path.read_text(encoding="utf-8")
+    fields = line.rstrip("\n").split("\t")
+    assert line.endswith("\n") and line.count("\n") == 1
+    assert fields[0] == "EVENT" and fields[1] == "answered" and fields[2].endswith(" UTC")
+    assert fields[3] == "lane-devx"
+    assert fields[4] == f"run {R1} task aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert oct(log_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_keeper_lanes_reads_plain_names_and_skips_comments(tmp_path):
+    (tmp_path / "keeper-lanes.txt").write_text("lane-merge\n# note\nlane-devx  # mine\nnot a lane\n\n",
+                                               encoding="utf-8")
+    assert aw.keeper_lanes(tmp_path) == frozenset({"lane-merge", "lane-devx"})
+    assert aw.keeper_lanes(tmp_path / "missing") == frozenset()

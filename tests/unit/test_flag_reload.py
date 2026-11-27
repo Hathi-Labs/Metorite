@@ -197,6 +197,7 @@ def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> Non
 # Keep the lines SORTED by flag name. A new flag adds one line here, at its sorted place.
 _READERS = {
     "CORE_EVENTS_ORGS": ("gateway.core_events", "core_events_allowed"),
+    "MEMBER_ACTIONS_ORGS": ("acb_common.member_actions", "enabled_for"),
     "STUDIO_DOOR_OPS_ORGS": ("gateway.routes.studio.flags", "door_ops_allowed"),
     "STUDIO_LOGIC_ORGS": ("gateway.routes.studio.flags", "logic_allowed"),
     "STUDIO_NUM_F8_ORGS": ("acb_common.studio_flags", "num_f8_allowed"),

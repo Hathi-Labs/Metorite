@@ -1,5 +1,9 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-27, the IMAP trash moves the right mail (task 4025, §18.13.3).** Built, not merged. No flag, because it fixes a data loss.
+>
+> **Dated 2026-11-26, Mark done (task 3995, §6.6).** Built with fix rounds 3 and 4, owner approved 2026-11-27. A Done by hand stays until new inbound mail. Dark behind `EMAIL_MARK_DONE_ORGS`.
+>
 > **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Merged in #2878, dark behind `CHAT_DRAFT_CHOICE_ORGS`, and task 4026 closes the gaps before the flip (§18.13.2). A trash of a draft reads Drafts, and the answer names each draft that stays.
 >
 > **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Merged in #2893, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
@@ -383,6 +387,219 @@ Rules the writer already enforces (do not weaken these when building on it):
 recent mail in a post-sync hook, so the directory fills without waiting for someone to click
 every sender. Deliberately deferred — it is a body-text scan over the whole mailbox, and the
 click-driven path already covers everyone the user cares about.
+
+### 6.6 Mark done: a Done that sticks (task 3995)
+
+**Owner ask:** "Some emails in my Follow-up list are actually done. I need a fast way."
+**Status:** 🔨 BUILT on branch `mt-17d83515-email-mark-done`, not merged (2026-11-26).
+No migration. Dark behind `EMAIL_MARK_DONE_ORGS`, which is empty (off) by default.
+
+Fix round 2 closes the ten findings of the verifier (D1 to D10) and the two visual ones.
+Fix round 3 closes F1 to F6 and V1: the lock order, a reopen, a reply before a move back,
+the reminder, and the bar on a phone. Fix round 4 closes N1, N4 and N5. These are a
+click during a learner correction, one provider for the sweep, and the row lock of
+the click.
+
+**One act, one route.** `POST /email/reply-zero/resolve` stays the only write of Done.
+A bulk act sends one call for each conversation, as a pair of `account_id` and
+`thread_id`. The chat tool `mark_thread_done` uses the same route. With the flag on,
+Done does these steps in the request:
+
+1. It reads the state before the act. The answer returns it as `previous`:
+   `{status, follow_up}`, or null when the thread was Done and had no open label.
+2. It writes status `DONE`, reason `Marked done by you`, and the newest stored
+   message. `last_message_at` becomes the **anchor**. The anchor is the newest
+   `received_at` of the mail that the automation has seen (D8, below).
+3. It tries to take the message rows of the thread with `NOWAIT`. When it gets
+   them, it removes "Needs Reply", "Awaiting Reply" and "Follow-up" from the local
+   rows, and it adds "Done" to the latest inbound message. A draft is no inbound
+   message, so no label goes on a draft (D3). When a writer holds a row, the
+   request does not wait, and the label job of step 5 does this step.
+4. It closes each open task that came from the thread, as before.
+5. A background job of the request sets the local labels when step 3 could not.
+   Then it makes the provider show them.
+
+**The hold.** A thread is held while its status is `DONE`, its reason is the mark,
+and no message from another person is newer than the anchor. The sender decides,
+not the folder, so a copy of the member's own mail in any folder keeps the hold
+(D7). The self set comes from `identity.py` (D-EM-27). `mark_done.held_sql` is the
+one definition. While a thread is held:
+
+- An automated status write keeps the status, the reason, the anchor and the time of
+  the classification. It still moves `last_message_id`, so the backfill does not
+  select the thread again. This covers the runner, the backfill and each write after
+  a reply of the member.
+- The label reconcile keeps only "Done".
+- The runner suppresses each rule match, and History says why. It asks no model for a
+  status.
+- The sync removes again a label that comes back. That label sets no status. This
+  also covers a label that the member adds in the mail program of the provider.
+  The learner asks the hold once before its corrections, and each correction keeps
+  a held row in its own write too (N1). So a click during an earlier correction
+  stays Done. The Fix of the member still ends the hold.
+- The follow-up scan, an approval of a proposal and the repair of a failed run each
+  ask the hold for each thread (D1, D5). A held proposal or repair becomes
+  `SKIPPED`, and History says why.
+
+**The locks (fix round 3, F1 and F2).** The member's request must not wait for
+provider or model I/O, and it must not deadlock. Fix round 2 failed both. Mark done
+locked the status row and then the message rows. The follow-up scan and the rules
+runner locked a message row, held it across their I/O, and then wrote the status row.
+On a real database the two orders made a deadlock. A writer that held a row also
+made the click wait for its whole block, so its second ask of the hold could not
+see the click.
+
+We weighed three designs:
+
+- **No row across I/O.** No writer holds a row of a thread across its I/O. This
+  needs a rewrite of the actions of the runner, because each action writes its
+  local label in the same block as its provider call.
+- **One lock order, the status row first.** This stops the deadlock. The click
+  still waits for the I/O of each writer that holds the status row.
+- **A lock of the thread for each block.** A transaction lock lasts until the
+  commit, so it is held across the I/O too. A session lock does not end the row
+  locks of the block.
+
+We chose a mix, because no single design meets both rules at a small cost:
+
+1. **The request waits only for the status row.** It takes the message rows with
+   `FOR NO KEY UPDATE NOWAIT` (`mark_done._take_thread_rows`). A lock that never
+   waits is in no cycle, so the request cannot deadlock. The block writes no key
+   column, so the `FOR KEY SHARE` of a child-row insert does not stop it (N5).
+2. **A writer takes the status row last.** With the flag on, the rules runner,
+   Process past and the status backfill run the label reconcile first. Then they
+   write the status row, and the block commits
+   (`replyzero.project_and_reconcile`). The runner stamps its mail before the
+   status row too. The follow-up scan writes each row of a thread in a short
+   block of its own, and no short block is open across I/O. So the request waits
+   at most for one statement and a commit.
+3. **A label job never waits.** It takes the message rows with `NOWAIT`, and it
+   tries again after 0.2, 0.5, 1, 2, 4 and 8 seconds (`SETTLE_DELAYS`). The
+   writer that holds the rows asks the hold after its I/O, so the job then
+   leaves them to that writer and to the sweep.
+
+The approval of a proposal and the repair of a failed run write no status row, so
+they keep their blocks. A click during their I/O does not wait for them now. Their
+second ask then sees it (F5).
+
+A commit ends the `SET LOCAL` tenant of a block. So each short block is a new
+`_tenant_session()` with the tenant of the context, and no block calls `commit()`.
+
+**The races.** One mechanism closes each race, in three parts:
+
+1. **Ask again after the I/O.** After a provider call or a model call, an
+   automated writer asks the hold again. When the thread is held now, the writer
+   puts "Done" back at once, and it sends the whole state of the thread to the
+   provider (`mark_done.recheck_after_io`). The runner, its reconcile, the
+   follow-up scan, an approval and a repair do this (D1, D5, D6). So does a
+   correction of the label learner (N1). The scan drafts no nudge for a thread
+   that is held now.
+2. **A sweep each sync cycle.** After the follow-up scan, `mark_done.heal_held`
+   finds each held thread with an open local label. It puts "Done" back here and
+   at the provider, with one provider for the sweep (N4). An import or a folder
+   load gives the learner no delta, so only the sweep heals its label (D9).
+3. **The provider shows the committed rows.** A label job reads the committed
+   local labels, sends each message that is not a draft its whole set, and reads
+   them again. While the read differs from what it sent, it sends again
+   (`mark_done.converge`). A writer commits before it sends, so the last read
+   sees each later write. So an older Done job cannot undo a move back (D2a), a
+   reopen or a dismiss (F3).
+
+A new inbound message ends the hold. The Fix in the app, a reopen, a dismiss and a
+move back end it too. A reply that the member sends does not end it.
+
+A reopen with the flag on writes the reason `Reopened by you` (F3). So it is a write
+of the member, as a move back is, and its label job pushes its labels. The chat tool
+`mark_thread_done` with `done=false` sends the same body.
+
+Only the act of the member stores the mark. An automated write that gives those words
+as its reason stores `Auto-classified`, because a model writes that reason over the
+mail text.
+
+**Move back.** The same route with `done=false` and `restore` writes the status of
+`restore` (`NEEDS_REPLY`, `AWAITING` or `FYI`). The reason is `Moved back by you`,
+or `Moved back to Follow-up by you` with `follow_up`. It puts that label on the
+latest inbound message. With `follow_up` it puts "Follow-up" on the latest message
+that is not a draft. It opens no task that Done closed, and no cleanup label.
+
+The write asks the hold in its own `WHERE`. When new mail or another write changed
+the thread after Done, the answer is 409 and nothing changes (D4). A message of the
+member that is newer than the anchor gives 409 too, because the state of before is
+no longer true (F4). A new draft does not count. The app then drops the undo step
+and reads the rows again.
+
+An automated write on a held row keeps `follow_up_reminded_at` too (F6). It still
+moves `last_message_id`, and before this round that move set a new nudge.
+
+For 10 minutes after a move back, the label job may not have run yet (D2b). In
+that time the sync reads a conversation label that disagrees with the status as
+stale. It puts the labels of the move back again, and the learner ignores the label.
+
+**D8, the choice of the anchor.** Mail that the member may not have seen must not
+fall under the hold. The anchor leaves out inbound mail with no
+`rules_processed_at` that arrived and was stored after the last write of the
+status. Such mail ends the hold at once, so its own classification sets the status.
+We chose this over an anchor from the app, because the chat tool and a bulk act
+know no newest message. The cost: when the rules of that mail already ran with no
+status write, the thread stays Done with no hold.
+
+**The app.** `GET /email/reply-zero/mark-done` answers `{enabled}`. When it is on,
+the app shows these surfaces:
+
+- "Mark done" as the first item of the row menu, for one row and for a selection.
+- A "Done" button beside Reply all, Reply and Forward, on desktop and on a phone.
+- "Mark done" in the bar of a selection.
+- The key `d` for the open mail. `e` stays Archive.
+- A toast with "Move back to Follow-up". It reads "Undo" when no conversation of the
+  act had "Follow-up". Ctrl+Z runs the same step, on the one undo stack of the app.
+  The toast closes when the step ran, from either control.
+
+On a phone the "Done" button is an icon with the name "Mark done", as Reply and
+Forward are. With the flag on, Print moves from the bar of the pane into its "..."
+menu, so the bar has one row at 390 px (V1). The flag off keeps Print in the bar.
+Email claims the undo scope only with the flag on. The flag off leaves the history
+of another surface alone (D10).
+
+**Accepted limits.**
+
+- A message that arrives with a date before the anchor does not end the hold.
+- When the flag goes off, a held row is a plain `DONE` row again.
+- The label jobs of the hold write at the provider with Auto-run off too, because
+  the member asked for Done.
+- A reply of the member in a held conversation still pays one status call. The
+  result changes nothing.
+- The self set holds the address of each mailbox of the member. Mail from an alias
+  that no mailbox names ends the hold, as mail of another person does.
+- A label that lands between the last ask and the commit of a writer stays until the
+  next sync cycle, when the sweep removes it. The sweep reads the local labels only.
+- The request still waits for a writer that has written the status row and has not
+  committed. That writer does no I/O before its commit.
+- Two automated writers on one thread at once can still wait for the I/O of each
+  other, as before this feature. The member's request is not one of them.
+- The follow-up scan asks the hold just before its draft call. A Mark done that
+  lands during that one provider call still gets the nudge draft.
+- A label job sends each message of the thread that is not a draft its whole set of
+  conversation labels. That is one provider call for each message, and Outlook
+  reads the message first.
+- When a writer holds the rows at each try of a label job, the provider shows the
+  old labels until that writer asks again, or until the sweep.
+- A reopen with `done=false` and no `restore` reads the folder of the latest dated
+  message, as before. A nudge draft there makes it Needs Reply.
+- Known limits: the task-close path (`tasks/email_link.py`) still holds the status
+  row across provider I/O, as before this feature. Mark done on a long thread makes
+  one provider call for each message.
+
+**Fences.** `tests/unit/test_email_mark_done.py` holds the flag, and the statement with
+the flag off. `tests/unit/test_email_mark_done_r8.py` holds the hold and each race of
+D1 to D9, F1 to F6, N1, N4 and N5 on a real database. Its F1 and F2 tests run the real scan and
+the real rules job in one task and the click in another, at three points each. They
+assert that the click answers while the writer waits in its I/O, and that the
+database counted no deadlock. The others are
+`src/app/email/lib/markDone.test.ts` (the key, the patch and the undo step) and
+`src/app/email/components/markDoneMenu.test.ts` (the menu order).
+
+The N1 tests run the real learner. The click lands during a correction of another
+thread, and during a correction of the same thread.
 
 ### Build-or-kill decisions (each needs a one-line owner call)
 
@@ -21756,8 +21973,8 @@ With `?report=true` it answers 200 and `{id, provider, reason, discarded}`. `pro
 loads, when it does not authenticate, or when its trash raises. `reason` is one fixed word.
 
 A failure after the provider accepted (the new id, or the saved tokens) keeps `confirmed`.
-The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a STORE that
-is not OK. So an IMAP draft reads `not_confirmed`.
+The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a trash that
+the server did not confirm (§18.13.3). So an IMAP draft reads `not_confirmed`.
 
 **Known limits.**
 
@@ -21766,8 +21983,8 @@ is not OK. So an IMAP draft reads `not_confirmed`.
   sync. The answer says so, and it does not count it.
 - A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
 - `bulk_manage_inbox` does not run this check.
-- The IMAP trash copies to Trash with the Trash folder open, so the copy can take the wrong
-  message. That is a defect of before, outside this slice.
+- The IMAP trash copied to Trash with the Trash folder open, so the copy took the wrong
+  message. Task 4025 fixes it (§18.13.3).
 
 **Fences.** `tests/unit/test_email_draft_choice.py` and
 `src/components/email/draftTrashReceipt.test.ts`.
@@ -21956,6 +22173,54 @@ writes nothing into the record.
 `src/components/email/draftTrashReceipt.test.ts`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.3 The IMAP trash moves the right mail (2026-11-27, task 4025)
+
+**Status:** BUILT on branch `imap4025`, not merged. No migration and no flag, because this is a
+fix of a data loss (rung 0).
+
+**The defect.** `IMAPProvider.trash_message` ran UID COPY with the Trash folder selected. A UID
+names a mail in one folder only, so the copy read a Trash mail, not the INBOX mail. Then it
+flagged the INBOX UID `\Deleted` and sent a plain EXPUNGE. So the INBOX mail was lost, and a
+Trash mail could get a second copy.
+
+The plain EXPUNGE also removed each mail that another client had flagged `\Deleted`. The old
+code also deleted when no Trash folder existed or the copy failed.
+
+**The rule now** (`_trash_inbox_uid` in `providers/imap.py`):
+
+1. LIST finds the Trash folder. A folder with the SPECIAL-USE flag `\Trash` wins. Else the first
+   name of `TRASH_FOLDER_NAMES` that LIST shows wins. LIST selects no folder.
+2. The provider selects INBOX for each later command. A UID SEARCH confirms that the UID is in
+   INBOX.
+3. With MOVE, one UID MOVE runs. Without MOVE, UID COPY runs, then a STORE of `\Deleted` on that
+   UID. With UIDPLUS, a UID EXPUNGE of that UID follows.
+4. With neither MOVE nor UIDPLUS, the copy is in Trash and the original stays flagged
+   `\Deleted`. The next expunge of any client removes it. A plain EXPUNGE never runs, because
+   it removes mail that another client flagged.
+5. The name of the Trash folder goes in quotes, so `Deleted Items` works.
+6. The provider raises, and removes and flags nothing, in three cases. No Trash folder exists.
+   The UID is not in INBOX. The copy or the move is not OK.
+7. The trash route reads a raise as `not_confirmed` (§18.13). `bulk_apply` puts the UID in
+   `failed_out`. A rule action keeps its row as it was.
+8. It answers None. The copy in Trash has a new UID, but each IMAP id names a mail of INBOX.
+
+**Known limits.** These are not fixed here.
+
+- A STORE that fails after a good copy raises, and the copy stays in Trash. A retry of the bulk
+  path then puts a second copy in Trash. No mail is lost.
+- A mail that another client expunges between the SEARCH and the MOVE reads as trashed.
+- `modify_message` does not check the answer of its STORE, and the base `move_to_folder` is a
+  no-op for IMAP. Each says success with no change on the server. No mail is lost.
+- Each IMAP draft has the id `draft-<folder>`, so two drafts share one id. The draft clean-up of
+  `drafting.py` deletes its mirror row when the trash raises. The draft stays on the server.
+- A call that `asyncio.wait_for` stops leaves its thread on the shared connection. The next
+  call can then run on the same connection at the same time.
+
+**Fence.** `tests/unit/test_email_imap_trash.py`. Its fake server keeps a UID set for each folder
+and a selected folder. The test failed on the code of before (17 of 18 cases).
+
+**Verify with.** `uv run pytest tests/unit/test_email_imap_trash.py -q`
 
 ## 19. Send later (2026-10-21)
 
