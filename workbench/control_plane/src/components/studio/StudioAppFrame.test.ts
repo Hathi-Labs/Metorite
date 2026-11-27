@@ -5,6 +5,9 @@
  * Mutation 2: draw a row with a `<button`. "draws the rows with RailRow" turns red.
  * Mutation 3 (STU-D23a): set `data-floor` on the root with no check. "draws no data-floor and the
  * same markup without the floor view" turns red.
+ * Mutation 4 (STU-D23a-2): drop the `FloorContext` provider. "gives the floor view to its
+ * children" turns red. Add the touch classes to the back link always: "keeps the back link of
+ * every other app byte for byte" turns red.
  */
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
@@ -15,6 +18,8 @@ vi.mock("next/navigation", () => ({ usePathname: () => "/studio/package-preview"
 vi.mock("@/components/AppShell", () => ({ useMobileDrawer: () => ({ open: () => {}, close: () => {} }) }));
 
 import StudioAppFrame, { type StudioAppFrameProps } from "./StudioAppFrame";
+import { AppTopBar, BACK_LINK_FLOOR } from "@/components/AppTopBar";
+import { useFloor } from "@/lib/floorContext";
 
 const read = (url: string) => readFileSync(new URL(url, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -50,7 +55,11 @@ describe("StudioAppFrame", () => {
     const app = read("../../app/studio/package-preview/AppFrame.tsx");
     expect(app).toContain("<StudioAppFrame");
     expect(app).toContain("<StudioPage bare");
-    expect(app).not.toContain('label="Page"');
+    // The rail replaced the page picker. The floor view has no rail, so it alone draws one, and
+    // only through `floorPages` (STU-D23a-2). `package-preview/AppFrame.test.ts` holds the markup.
+    expect(app.match(/label="Page"/g) ?? []).toHaveLength(1);
+    expect(app).toMatch(/\{floorPick \? \(\s*<SelectButton label="Page"/);
+    expect(app).toContain("const floorPick = floorPages(parts, sections);");
     const page = read("./StudioPage.tsx");
     expect(page).toContain("bare = false");
     expect(read("../../app/studio/page-preview/page.tsx")).not.toContain("bare");
@@ -88,5 +97,39 @@ describe("the floor view root (STU-D23a)", () => {
 
   it("draws the scope line beside the name", () => {
     expect(draw({ subtitle: "Signed in as Asha Rao" })).toContain("Signed in as Asha Rao");
+  });
+});
+
+describe("the floor context and the back link (STU-D23a-2)", () => {
+  const BACK = { href: "/studio", label: "Back to Studio" };
+  // The class of the back link before STU-D23a-2. Outside the floor view it stays byte for byte.
+  const USUAL_LINK = 'class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground tech-transition hover:bg-secondary hover:text-foreground"';
+  /** A child that draws what the context says. */
+  const Probe = () => createElement("i", { "data-probe": useFloor() ? "floor" : "usual" });
+  const drawBack = (props: Partial<StudioAppFrameProps>) => renderToStaticMarkup(
+    createElement(StudioAppFrame, { title: "Shop jobs", back: BACK, children: createElement(Probe), ...props }));
+
+  it("gives the floor view to its children, and nothing without it", () => {
+    expect(drawBack({ floor: true })).toContain('data-probe="floor"');
+    expect(drawBack({})).toContain('data-probe="usual"');
+    expect(drawBack({ floor: false })).toContain('data-probe="usual"');
+  });
+
+  it("gives the back link the touch size in the floor view", () => {
+    expect(BACK_LINK_FLOOR).toBe(" pointer-coarse:h-10 pointer-coarse:w-10");
+    expect(drawBack({ floor: true })).toContain(`${USUAL_LINK.slice(0, -1)}${BACK_LINK_FLOOR}"`);
+  });
+
+  it("keeps the back link and the frame byte for byte without the floor view", () => {
+    const usual = drawBack({});
+    expect(usual).toContain(USUAL_LINK);
+    expect(usual).not.toContain(BACK_LINK_FLOOR.trim());
+    expect(drawBack({ floor: false })).toBe(usual);
+  });
+
+  it("keeps the back link of every other app byte for byte, with no provider", () => {
+    const html = renderToStaticMarkup(createElement(AppTopBar, { title: "Teams", back: BACK }));
+    expect(html).toContain(USUAL_LINK);
+    expect(html).not.toContain("pointer-coarse");
   });
 });

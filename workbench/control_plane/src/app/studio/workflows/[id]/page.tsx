@@ -9,6 +9,17 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import Tabs from "@/components/Tabs";
+import { useViewMode } from "@/components/ViewModeProvider";
+import {
+  DEFAULT_PHONE_TAB,
+  PHONE_TABS,
+  leftTabFor,
+  phoneTabAfter,
+  runConsoleCollapsed,
+  visiblePanes,
+  type PhoneTab,
+} from "@/app/workflows/lib/editorPhone";
 import {
   Suspense,
   use,
@@ -46,6 +57,7 @@ import NodeInspector from "@/app/workflows/components/NodeInspector";
 import NodePalette, { type PaletteDrop } from "@/app/workflows/components/NodePalette";
 import RunConsole from "@/app/workflows/components/RunConsole";
 import TriggerPanel from "@/app/workflows/components/TriggerPanel";
+import { CANVAS_STYLE } from "@/app/workflows/lib/canvasLook";
 import { cleanTriggers } from "@/app/workflows/lib/eventTriggers";
 import WorkflowEdge from "@/app/workflows/components/WorkflowEdge";
 import WorkflowNode, { type CCNodeData } from "@/app/workflows/components/WorkflowNode";
@@ -63,6 +75,7 @@ import {
 } from "@/app/workflows/lib/api";
 import { readOnlyNote } from "@/app/workflows/lib/humanStep";
 import { writerRole } from "@/app/workflows/lib/studioWrite";
+import { newWorkflowGraph, normalizeTriggerId } from "@/app/workflows/lib/triggerId";
 import type {
   Catalog,
   GraphIssue,
@@ -87,9 +100,11 @@ const TRIGGER_KIND_HINTS = [
 
 /** Edit-model graph → React Flow state (used on load and on copilot apply). */
 function flowFromGraph(
-  graph: WorkflowGraph,
+  stored: WorkflowGraph,
   catalog: Catalog | null,
 ): { nodes: Node[]; edges: Edge[] } {
+  // Task 3382: an old draft names its trigger node `trigger`, a reserved root.
+  const graph = normalizeTriggerId(stored);
   const graphNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const graphEdges = Array.isArray(graph?.edges) ? graph.edges : [];
   return {
@@ -132,6 +147,14 @@ function humanDuration(seconds: number): string {
   }
   return `${seconds}s`;
 }
+
+/**
+ * Vertical distance between nodes that the editor places. A card is at most
+ * 152 px tall at default and comfortable density, so 180 leaves a gap of 28 px
+ * or more. A saved workflow can hold a pitch of 160 px, and the card fits that
+ * too. Fence: `e2e/workflow-card-height.spec.ts`.
+ */
+const NODE_PITCH = 180;
 
 /** Single-line clip for card text — the card clamps, this stops giant strings. */
 function clip(value: unknown, max = 160): string {
@@ -295,6 +318,10 @@ function EditorInner({ id }: { id: string }) {
   // Drafting, validating, and Test runs stay open to the workflows feature.
   const { access, loading: accessLoading } = useAccess();
   const canPublish = hasCapability(access, "workflows:publish");
+  // E7a: below 768 px the editor draws one pane at a time under a tab bar
+  // (`lib/editorPhone.ts`). These hooks sit above the early returns.
+  const { isMobile } = useViewMode();
+  const [phoneTab, setPhoneTab] = useState<PhoneTab>(DEFAULT_PHONE_TAB);
 
   const [detail, setDetail] = useState<WorkflowDetail | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -314,7 +341,8 @@ function EditorInner({ id }: { id: string }) {
   const [testPayload, setTestPayload] = useState('{\n  "body": "example"\n}');
   const [runEvents, setRunEvents] = useState<RunEvent[]>([]);
   const [running, setRunning] = useState(false);
-  const [consoleCollapsed, setConsoleCollapsed] = useState(false);
+  // Null until the member chooses: open on a desktop, shut on a phone (E7a).
+  const [consoleCollapsed, setConsoleCollapsed] = useState<boolean | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // The message of a refused save, shown in full inside the Trigger panel. The
   // top bar truncates `notice`, and a 403 for a Studio trigger needs its words.
@@ -347,20 +375,8 @@ function EditorInner({ id }: { id: string }) {
           ? g.nodes
           : [];
         if (graphNodes.length === 0) {
-          // Every workflow starts from its trigger (RFC §5.2).
-          setNodes([
-            {
-              id: "trigger",
-              type: "ccNode",
-              position: { x: 120, y: 60 },
-              data: {
-                label: "Trigger",
-                nodeType: "trigger",
-                config: { kind: "manual" },
-                ...describeNode("trigger", { kind: "manual" }, cat),
-              } satisfies CCNodeData & { config: Record<string, unknown> },
-            },
-          ]);
+          // Every workflow starts from its trigger (RFC §5.2), with a free id.
+          setNodes(flowFromGraph(newWorkflowGraph(), cat).nodes);
           setDirty(true);
         } else {
           const flow = flowFromGraph(g, cat);
@@ -409,7 +425,8 @@ function EditorInner({ id }: { id: string }) {
         graph: toGraph(),
         triggers: cleanTriggers(triggers),
       });
-      setDetail(wf);
+      // The save answer holds no versions or hook fields: keep what the page already has.
+      setDetail((d) => (d ? { ...d, ...wf } : wf));
       setDirty(false);
       return true;
     } catch (e) {
@@ -474,7 +491,7 @@ function EditorInner({ id }: { id: string }) {
       }
       if (!where) {
         const maxY = nodes.reduce((acc, n) => Math.max(acc, n.position.y), 0);
-        where = { x: 140, y: maxY + 160 };
+        where = { x: 140, y: maxY + NODE_PITCH };
       }
       const first = where;
 
@@ -483,7 +500,7 @@ function EditorInner({ id }: { id: string }) {
         ...chain.map((d, i) => ({
           id: ids[i],
           type: "ccNode",
-          position: { x: first.x, y: first.y + i * 160 },
+          position: { x: first.x, y: first.y + i * NODE_PITCH },
           data: {
             label: d.label,
             nodeType: d.nodeType,
@@ -578,9 +595,12 @@ function EditorInner({ id }: { id: string }) {
       seen.add(cur);
       stack.push(...(parents.get(cur) ?? []));
     }
-    seen.delete("trigger");
+    // The trigger node's data is the `{{trigger.*}}` root, whatever its id.
+    for (const n of nodes) {
+      if ((n.data as CCNodeData).nodeType === "trigger") seen.delete(n.id);
+    }
     return [...seen];
-  }, [edges, selectedId]);
+  }, [edges, nodes, selectedId]);
 
   /**
    * The trigger card reads from the Triggers panel, not from its own config —
@@ -617,7 +637,10 @@ function EditorInner({ id }: { id: string }) {
   const armInsert = useCallback(
     (edgeId: string) =>
       setInsertEdgeId((cur) => {
-        if (cur !== edgeId) setLeftTab("palette");
+        if (cur !== edgeId) {
+          setLeftTab("palette");
+          setPhoneTab(phoneTabAfter("arm"));
+        }
         return cur === edgeId ? null : edgeId;
       }),
     [],
@@ -1003,11 +1026,27 @@ function EditorInner({ id }: { id: string }) {
   }
 
   const published = detail.status === "published";
+  // E7a: a desktop draws the three panes, a phone the one pane of its tab.
+  const panes = visiblePanes(isMobile, phoneTab, leftTab);
+  const leftShown = panes.includes(leftTab);
+  const canvasShown = panes.includes("canvas");
+  const inspectorShown = panes.includes("inspector");
+  const openPhoneTab = (id: string) => {
+    const tab = id as PhoneTab;
+    setPhoneTab(tab);
+    setLeftTab((cur) => leftTabFor(tab, cur));
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden relative">
-      {/* Topbar */}
-      <div className="flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border shrink-0">
+      {/* Topbar. On a phone it wraps: the name on top, the trigger and the actions below (E7a). */}
+      <div
+        className={
+          isMobile
+            ? "flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2 border-b border-border shrink-0"
+            : "flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-border shrink-0"
+        }
+      >
         <Link
           href="/studio"
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary tech-transition"
@@ -1020,7 +1059,7 @@ function EditorInner({ id }: { id: string }) {
             setName(e.target.value);
             setDirty(true);
           }}
-          className="bg-transparent text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-ring rounded-md px-1.5 py-0.5 min-w-0 w-48 sm:w-64"
+          className={`bg-transparent text-sm font-semibold text-foreground focus:outline-none focus:ring-1 focus:ring-ring rounded-md px-1.5 py-0.5 min-w-0 ${isMobile ? "flex-1" : "w-48 sm:w-64"}`}
         />
         <div className="relative shrink-0">
           <button
@@ -1043,7 +1082,7 @@ function EditorInner({ id }: { id: string }) {
             {detail.latest_version ? ` · v${detail.latest_version}` : ""}
           </button>
           {showVersions && (
-            <div className="absolute left-0 top-7 z-30 w-80 rounded-xl border border-border bg-popover shadow-lg p-2">
+            <div className={`absolute ${isMobile ? "right-0" : "left-0"} top-7 z-30 w-80 rounded-xl border border-border bg-popover shadow-lg p-2`}>
               <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide px-1.5 pb-1">
                 Versions — rollback republishes a copy
               </div>
@@ -1115,11 +1154,12 @@ function EditorInner({ id }: { id: string }) {
             </div>
           )}
         </div>
+        {isMobile && <div aria-hidden="true" className="basis-full" />}
         {/* What fires this workflow, said in words — the mockup's trigger chip */}
         <button
           onClick={() => setShowTriggers((s) => !s)}
           title="Configure triggers"
-          className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-cat-12/30 bg-cat-12/10 text-cat-12 hover:bg-cat-12/15 tech-transition shrink-0 max-w-56"
+          className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-cat-12/30 bg-cat-12/10 text-cat-12 hover:bg-cat-12/15 tech-transition ${isMobile ? "min-w-0 flex-1 max-w-fit" : "shrink-0 max-w-56"}`}
         >
           <Icon name="Zap" className="w-3 h-3 shrink-0" />
           <span className="truncate">
@@ -1135,9 +1175,11 @@ function EditorInner({ id }: { id: string }) {
               {notice}
             </span>
           )}
+          {/* On a phone, Save and Validate show their icon and keep their name for a screen reader. */}
           <button
             onClick={save}
             disabled={saving || !dirty}
+            aria-label={isMobile ? (dirty ? "Save" : "Saved") : undefined}
             className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary tech-transition flex items-center gap-1 disabled:opacity-50"
           >
             {saving ? (
@@ -1145,11 +1187,12 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="Save" className="w-3.5 h-3.5" />
             )}
-            {dirty ? "Save" : "Saved"}
+            {isMobile ? null : dirty ? "Save" : "Saved"}
           </button>
           <button
             onClick={onValidate}
             disabled={busy !== null}
+            aria-label={isMobile ? "Validate" : undefined}
             className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-foreground hover:bg-secondary tech-transition flex items-center gap-1 disabled:opacity-50"
           >
             {busy === "validate" ? (
@@ -1157,11 +1200,18 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="ShieldCheck" className="w-3.5 h-3.5" />
             )}
-            Validate
+            {isMobile ? null : "Validate"}
           </button>
           <div className="flex items-center">
             <button
-              onClick={onTest}
+              onClick={
+                isMobile
+                  ? () => {
+                      setPhoneTab(phoneTabAfter("test"));
+                      void onTest();
+                    }
+                  : onTest
+              }
               disabled={busy !== null || running}
               className="rounded-l-lg border border-border px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-secondary tech-transition flex items-center gap-1 disabled:opacity-50"
             >
@@ -1180,11 +1230,12 @@ function EditorInner({ id }: { id: string }) {
               <Icon name="ChevronDown" className="w-3.5 h-3.5" />
             </button>
           </div>
-          <Button size="none" layout="flex items-center" onClick={onPublish} disabled={busy !== null || !canPublish} title={
+          {/* On a phone, Publish is the icon button of the Studio IDE. */}
+          <Button size={isMobile ? "icon" : "none"} layout={isMobile ? undefined : "flex items-center"} onClick={onPublish} disabled={busy !== null || !canPublish} aria-label={isMobile ? "Publish" : undefined} title={
               canPublish
                 ? undefined
                 : "Publishing needs the workflows:publish permission — ask an admin. You can still edit and Test this draft."
-            } className="px-2.5 py-1.5 text-xs gap-1">
+            } className={isMobile ? undefined : "px-2.5 py-1.5 text-xs gap-1"}>
             {busy === "publish" ? (
               <Icon name="Loader2" className="w-3.5 h-3.5 animate-spin" />
             ) : published ? (
@@ -1192,10 +1243,17 @@ function EditorInner({ id }: { id: string }) {
             ) : (
               <Icon name="Rocket" className="w-3.5 h-3.5" />
             )}
-            Publish
+            {isMobile ? null : "Publish"}
           </Button>
         </div>
       </div>
+
+      {/* A phone has no room for the notice in the toolbar, so it shows on its own line (E7a). */}
+      {isMobile && notice && (
+        <p role="status" className="px-3 py-1.5 border-b border-border text-xs text-muted-foreground break-words shrink-0">
+          {notice}
+        </p>
+      )}
 
       {detail.status === "disabled" && (
         <div className="flex items-center gap-2 px-3 sm:px-4 py-2 border-b border-warning/20 bg-warning/10 shrink-0">
@@ -1244,7 +1302,7 @@ function EditorInner({ id }: { id: string }) {
       )}
 
       {showTestPayload && (
-        <div className="absolute right-3 top-12 z-20 w-80 rounded-xl border border-border bg-popover shadow-lg p-3">
+        <div className={`absolute right-3 ${isMobile ? "top-28" : "top-12"} z-20 w-80 rounded-xl border border-border bg-popover shadow-lg p-3`}>
           <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1">
             Sample trigger payload (JSON) — {"{{trigger.*}}"}
           </div>
@@ -1258,31 +1316,46 @@ function EditorInner({ id }: { id: string }) {
         </div>
       )}
 
-      {/* Panes */}
+      {/* Panes. A phone picks one with the tab bar of the Studio IDE on a phone (E7a). */}
+      {isMobile && (
+        <Tabs tabs={PHONE_TABS} activeTab={phoneTab} onTabChange={openPhoneTab} variant="segmented" chrome="inline" className="p-2" />
+      )}
       <div className="flex-1 min-h-0 flex">
-        <div className="flex flex-col shrink-0 border-r border-border">
-          <div className="flex border-b border-border">
-            <button
-              onClick={() => setLeftTab("palette")}
-              className={`flex-1 text-[11px] px-3 py-2 tech-transition ${
-                leftTab === "palette"
-                  ? "text-primary font-semibold border-b-2 border-primary -mb-px"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              Palette
-            </button>
-            <button
-              onClick={() => setLeftTab("copilot")}
-              className={`flex-1 text-[11px] px-3 py-2 tech-transition inline-flex items-center justify-center gap-1 ${
-                leftTab === "copilot"
-                  ? "text-primary font-semibold border-b-2 border-primary -mb-px"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <Icon name="Sparkles" className="w-3 h-3" /> Copilot
-            </button>
-          </div>
+        {/* A phone keeps the left column mounted on the other tabs, so a Copilot
+            conversation and its Undo stay while the member looks at the canvas. */}
+        <div
+          className={
+            !isMobile
+              ? "flex flex-col shrink-0 border-r border-border"
+              : leftShown
+                ? "flex flex-col flex-1 min-w-0"
+                : "hidden"
+          }
+        >
+          {!isMobile && (
+            <div className="flex border-b border-border">
+              <button
+                onClick={() => setLeftTab("palette")}
+                className={`flex-1 text-[11px] px-3 py-2 tech-transition ${
+                  leftTab === "palette"
+                    ? "text-primary font-semibold border-b-2 border-primary -mb-px"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Palette
+              </button>
+              <button
+                onClick={() => setLeftTab("copilot")}
+                className={`flex-1 text-[11px] px-3 py-2 tech-transition inline-flex items-center justify-center gap-1 ${
+                  leftTab === "copilot"
+                    ? "text-primary font-semibold border-b-2 border-primary -mb-px"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Icon name="Sparkles" className="w-3 h-3" /> Copilot
+              </button>
+            </div>
+          )}
           {insertEdgeId && leftTab === "palette" && (
             <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-primary/30 bg-primary/10 text-[10px] text-primary">
               <span className="min-w-0 truncate">
@@ -1300,8 +1373,12 @@ function EditorInner({ id }: { id: string }) {
             {leftTab === "palette" ? (
               <NodePalette
                 catalog={catalog}
-                onAdd={(drop) => addNode(drop)}
+                onAdd={(drop) => {
+                  addNode(drop);
+                  if (isMobile) setPhoneTab(phoneTabAfter("add"));
+                }}
                 studioWriteOffered={studioRole === "owner"}
+                fill={isMobile}
               />
             ) : (
               <CopilotPanel
@@ -1311,11 +1388,15 @@ function EditorInner({ id }: { id: string }) {
                 onUndo={undoCopilot}
                 canUndo={undoGraph !== null}
                 onModulesCreated={refreshCatalog}
+                fill={isMobile}
               />
             )}
           </div>
         </div>
-        <div
+        {/* A phone mounts the canvas on its own tab only. React Flow then fits the
+            graph again on the way back, and a hidden canvas cannot clear the
+            selection of the step that a tap on the palette added. */}
+        {canvasShown && <div
           className="flex-1 min-w-0 relative"
           onDragOver={(e) => {
             e.preventDefault();
@@ -1335,17 +1416,24 @@ function EditorInner({ id }: { id: string }) {
               setSelectedId(sel.length === 1 ? sel[0].id : null)
             }
             colorMode={resolvedTheme === "light" ? "light" : "dark"}
+            style={CANVAS_STYLE}
             fitView
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: "ccEdge" }}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} />
-            <Controls showInteractive={false} />
+            <Controls showInteractive={false} position={isMobile ? "top-left" : undefined} />
           </ReactFlow>
 
           <div className="absolute right-3 top-3 z-10 pointer-events-none rounded-lg border border-border bg-background/80 backdrop-blur-sm px-2 py-1 text-[10px] text-muted-foreground">
-            Drag to move · scroll to zoom · <span className="text-foreground">+</span> on a
-            wire inserts a block
+            {isMobile ? (
+              "Pinch to zoom · tap a step"
+            ) : (
+              <>
+                Drag to move · scroll to zoom · <span className="text-foreground">+</span> on a
+                wire inserts a block
+              </>
+            )}
           </div>
 
           {/* Describe → generate → refine (RFC §5.4), on the canvas where the
@@ -1357,6 +1445,7 @@ function EditorInner({ id }: { id: string }) {
               const text = describe.trim();
               if (!text) return;
               setLeftTab("copilot");
+              setPhoneTab(phoneTabAfter("generate"));
               setCopilotSeed((s) => ({ text, n: (s?.n ?? 0) + 1 }));
               setDescribe("");
             }}
@@ -1373,26 +1462,29 @@ function EditorInner({ id }: { id: string }) {
               Generate
             </Button>
           </form>
-        </div>
-        <NodeInspector
-          node={selected}
-          catalog={catalog}
-          upstreamIds={upstreamIds}
-          issues={issues}
-          triggerKinds={TRIGGER_KIND_HINTS}
-          onConfig={patchSelected}
-          onLabel={relabelSelected}
-          onDelete={deleteSelected}
-          studioWrite={studioWrite}
-        />
+        </div>}
+        {inspectorShown && (
+          <NodeInspector
+            node={selected}
+            catalog={catalog}
+            upstreamIds={upstreamIds}
+            issues={issues}
+            triggerKinds={TRIGGER_KIND_HINTS}
+            onConfig={patchSelected}
+            onLabel={relabelSelected}
+            onDelete={deleteSelected}
+            studioWrite={studioWrite}
+            fill={isMobile}
+          />
+        )}
       </div>
 
       <RunConsole
         workflowId={id}
         events={runEvents}
         running={running}
-        collapsed={consoleCollapsed}
-        onToggle={() => setConsoleCollapsed((c) => !c)}
+        collapsed={runConsoleCollapsed(consoleCollapsed, isMobile)}
+        onToggle={() => setConsoleCollapsed((c) => !runConsoleCollapsed(c, isMobile))}
         onPaintRun={paintRunResults}
       />
     </div>

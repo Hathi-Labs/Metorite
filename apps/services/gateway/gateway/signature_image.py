@@ -17,8 +17,13 @@ the aspect ratio, applies the EXIF orientation, scales the long side down to
 signature path, so the signature route cannot store a capture.
 
 This module holds no SQL and no route. ``routes/email/signature_images.py`` is
-its one caller, and it owns the table. Every refusal is a
+its caller for a signature image, and it owns the table. Every refusal is a
 :class:`SignatureImageError` with a sentence for the member and an HTTP status.
+
+The profile picture uses the same child (task 2186). ``gateway/avatar.py``
+calls :func:`run_worker` with the kind ``avatar`` and reads the answer with
+:func:`read_answer`. It keeps its own sentences, so it reads ``code`` and not
+the text of a :class:`SignatureImageError`.
 """
 from __future__ import annotations
 
@@ -138,11 +143,14 @@ _NO_START = "The image reader could not start. Try again in a moment."
 
 class SignatureImageError(ValueError):
     """A refusal. The text is a sentence for the member, ``status`` the HTTP
-    answer: 4xx for the image, 503 for this server."""
+    answer: 4xx for the image, 503 for this server. ``code`` names a refusal
+    of this server (``busy``, ``no_start`` or ``unavailable``) for a caller
+    that writes its own sentence."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(self, message: str, status: int = 400, *, code: str = "") -> None:
         super().__init__(message)
         self.status = status
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -198,20 +206,33 @@ async def encode_capture(data: bytes) -> Encoded:
 
 
 async def _encode_kind(data: bytes, kind: str) -> Encoded:
+    """The sniff of ``kind``, the confined child, and the checked answer."""
     check_type(data, kind)
-    held = await _take_slot(SLOT_WAIT_S)
-    if not held:
-        raise SignatureImageError(_BUSY, 503)
-    try:
-        # The default cap is not passed, so a fake child keeps its old shape.
-        extra = {"cap": _MAX_CAPTURE_ANSWER_BYTES} if kind == CAPTURE else {}
-        answer, timed_out = await _run_child(
-            _worker_argv(_spec(kind)), data, TIMEOUT_S, **extra)
-    finally:
-        _SLOT.release()
+    answer, timed_out = await run_worker(kind, data)
     if timed_out:
         raise SignatureImageError(_TIMED_OUT, 503)
     return _parse(answer, kind)
+
+
+async def run_worker(kind: str, data: bytes, **extra: Any) -> tuple[bytes | None, bool]:
+    """Run the confined child on bytes that passed a sniff. ``(stdout, timed_out)``.
+
+    It takes a slot of :data:`MAX_CHILDREN` and gives it back. ``extra`` adds
+    the fields of a kind to the spec. Raises :class:`SignatureImageError`
+    with a ``code`` when no slot is free or the child cannot start.
+
+    Only a ``capture`` reads up to :data:`_MAX_CAPTURE_ANSWER_BYTES`. Every
+    other kind keeps the cap :data:`_MAX_ANSWER_BYTES`."""
+    held = await _take_slot(SLOT_WAIT_S)
+    if not held:
+        raise SignatureImageError(_BUSY, 503, code="busy")
+    try:
+        # The default cap is not passed, so a fake child keeps its old shape.
+        cap = {"cap": _MAX_CAPTURE_ANSWER_BYTES} if kind == CAPTURE else {}
+        return await _run_child(
+            _worker_argv({**_spec(kind), **extra}), data, TIMEOUT_S, **cap)
+    finally:
+        _SLOT.release()
 
 
 # ── The child ───────────────────────────────────────────────────────────────
@@ -237,7 +258,7 @@ def _confine_path() -> str:
     loads the whole tool set (packages/acb_skills/AGENTS.md item 4a)."""
     found = importlib.util.find_spec("acb_skills.child_confine")
     if found is None or not found.origin:
-        raise SignatureImageError(_REASONS["unavailable"][0], 503)
+        raise SignatureImageError(_REASONS["unavailable"][0], 503, code="unavailable")
     return found.origin
 
 
@@ -352,7 +373,7 @@ def _run_blocking(
     except subprocess.TimeoutExpired:
         return None, True
     except OSError as exc:
-        raise SignatureImageError(_NO_START, 503) from exc
+        raise SignatureImageError(_NO_START, 503, code="no_start") from exc
     out = done.stdout
     return (None if len(out) > cap else out), False
 
@@ -376,7 +397,7 @@ async def _run_child(
     except NotImplementedError:
         return await asyncio.to_thread(_run_blocking, argv, data, timeout, cap)
     except OSError as exc:
-        raise SignatureImageError(_NO_START, 503) from exc
+        raise SignatureImageError(_NO_START, 503, code="no_start") from exc
     try:
         return await asyncio.wait_for(_talk(proc, data, cap), timeout), False
     except TimeoutError:
@@ -424,35 +445,53 @@ def _was_confined(value: dict[str, Any]) -> bool:
     return sys.platform != "linux" and value.get("unconfined_os") == sys.platform
 
 
-def _parse(answer: bytes | None, kind: str = "logo") -> Encoded:
-    """The child's one line, checked field by field. The parent trusts no
-    value of a child that read hostile bytes: the type, the size, the shares,
-    and the magic bytes of the image must each hold."""
+def read_answer(answer: bytes | None, *, kind: str = "") -> tuple[str, Any]:
+    """The child's answer as ``("ok", fields)`` or ``("refused", code)``.
+
+    It never raises. A missing, garbled or odd answer is ``("refused",
+    "failed")``, and an ``ok`` that the child did not decode confined is
+    ``("refused", "unavailable")``. The caller checks each field of ``ok``.
+
+    Each ``unavailable`` is logged with ``kind``: it is a fault of this
+    server, and the member sees only a sentence."""
     if not answer:
-        raise _bad()
+        return "refused", "failed"
     # The answer is the LAST line. A native library that prints a line of its
     # own on stdout (MuPDF's "MuPDF error: ...") then cannot turn a refusal
     # into a bad answer (fix round 3). The child turns those prints off too.
     lines = [line for line in answer.splitlines() if line.strip()]
     if not lines:
-        raise _bad()
+        return "refused", "failed"
     try:
         item = json.loads(lines[-1].decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        raise _bad() from None
+        return "refused", "failed"
     if not isinstance(item, dict) or len(item) != 1:
-        raise _bad()
+        return "refused", "failed"
     (name, value), = item.items()
     if name == "refused":
-        code = value if isinstance(value, str) else ""
-        table = {**_REASONS, **(_CAPTURE_REASONS if kind == CAPTURE else {})}
-        message, status = table.get(code, _REASONS["failed"])
-        raise SignatureImageError(message, status)
+        code = value if isinstance(value, str) else "failed"
+        if code == "unavailable":
+            _log.warning("signature_image.unavailable", kind=kind, platform=sys.platform)
+        return "refused", code
     if name != "ok" or not isinstance(value, dict):
-        raise _bad()
+        return "refused", "failed"
     if not _was_confined(value):
-        _log.warning("signature_image.unconfined_answer", platform=sys.platform)
-        raise SignatureImageError(*_REASONS["unavailable"])
+        _log.warning("signature_image.unconfined_answer", kind=kind, platform=sys.platform)
+        return "refused", "unavailable"
+    return "ok", value
+
+
+def _parse(answer: bytes | None, kind: str = "") -> Encoded:
+    """The child's one line, checked field by field. The parent trusts no
+    value of a child that read hostile bytes: the type, the size, the shares,
+    and the magic bytes of the image must each hold."""
+    name, value = read_answer(answer, kind=kind)
+    if name != "ok":
+        # A capture has its own sentences for ``size`` and ``too_big``.
+        table = {**_REASONS, **_CAPTURE_REASONS} if kind == CAPTURE else _REASONS
+        message, status = table.get(value, _REASONS["failed"])
+        raise SignatureImageError(message, status)
     content_type = value.get("content_type")
     if content_type not in _MAGIC or not isinstance(value.get("data"), str):
         raise _bad()
@@ -487,4 +526,6 @@ __all__ = [
     "check_type",
     "encode",
     "encode_capture",
+    "read_answer",
+    "run_worker",
 ]

@@ -9,8 +9,9 @@
  * Mutation 1: remove the `[data-floor]` branch. "has a branch for the floor root" and "emits both
  * branches" turn red.
  * Mutation 2: edit the media query. "keeps the media branch byte for byte" turns red.
- * Mutation 3: put `data-floor` on `<html>` or on a second component. "only the app frame sets
- * data-floor" turns red.
+ * Mutation 3: put `data-floor` on `<html>` or on a third component. "only the app frame and the
+ * dialog set data-floor" turns red. The dialog (`Modal`) sets it on its popup, from the floor
+ * context only (STU-D23a-2), because its portal sits outside the root of the floor view.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -80,10 +81,20 @@ describe("the floor root", () => {
     return out;
   }
 
-  it("only the app frame sets data-floor", () => {
+  it("only the app frame and the dialog set data-floor", () => {
     const setters = files(SRC)
       .filter((f) => /data-floor\s*=|["']data-floor["']\s*[:\]]/.test(readFileSync(f, "utf8")))
-      .map((f) => relative(SRC, f).split(sep).join("/"));
-    expect(setters).toEqual(["components/studio/StudioAppFrame.tsx"]);
+      .map((f) => relative(SRC, f).split(sep).join("/"))
+      .sort();
+    expect(setters).toEqual(["components/studio/StudioAppFrame.tsx", "components/ui/Modal.tsx"]);
+  });
+
+  it("the dialog sets it from the floor context only (STU-D23a-2)", () => {
+    const modal = readFileSync(join(SRC, "components", "ui", "Modal.tsx"), "utf8");
+    expect(modal.match(/data-floor=/g)).toHaveLength(1);
+    expect(modal).toContain('data-floor={floor ? "" : undefined}');
+    expect(modal).toContain("const floor = useFloor();");
+    const context = readFileSync(join(SRC, "lib", "floorContext.ts"), "utf8");
+    expect(context).toContain("export const FloorContext = createContext(false);");
   });
 });

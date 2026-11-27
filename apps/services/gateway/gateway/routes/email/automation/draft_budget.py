@@ -70,9 +70,12 @@ BALANCED_CHARS = 12_000
 POWERFUL_CHARS = 60_000
 
 
-#: The highest tier that a draft the member WAITS for may take. tier-powerful
-#: can be a reasoning model that needs 20 to 60 s, and the reply card waits
-#: inside a 60 s call (review of #1219, P2). A background draft has no cap.
+#: The highest tier that the SIZE of a mail may raise a draft the member
+#: WAITS for to (review of #1219, P2: the reply card waits inside a 60 s
+#: call). It caps only the raise. :func:`tier_for_size` never lowers a tier,
+#: so since 2026-11-16 (task 3541) "Draft with AI" stays on its own compose
+#: tier, tier-powerful, which is Sonnet 5.5 on production and not a reasoning
+#: model. A background draft has no cap.
 INTERACTIVE_CEILING = "tier-balanced"
 
 

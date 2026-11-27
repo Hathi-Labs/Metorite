@@ -7,7 +7,7 @@
  *
  * Reading this as: a lens of the project board, not a canvas. It takes the
  * place of the board while it is on, under the same project header, with the
- * rows of the server in three sections. It matches the "Waiting on people"
+ * rows of the server in up to four sections. It matches the "Waiting on people"
  * panel of Reports in its row shape: the task as a link, then why and how
  * long. Its neighbour is the board it replaces.
  *
@@ -20,6 +20,9 @@
  * `POST /projects/agent-runs/{id}/resume`. Close the run is the release of
  * EA-14a, and it asks first. Neither changes the task. Each one reads the list
  * again through `onChanged`.
+ *
+ * WS-MCP SW-44: a `no_lead` row names an app project, not a task. Its title
+ * and its one act, Open project, open the project. It writes nothing.
  */
 import { displayProjectName, displayRowProject } from "../lib/personalTree";
 import { useEffect, useReducer, useState } from "react";
@@ -62,6 +65,11 @@ function taskHref(taskId: string): string {
   return `/projects?task=${encodeURIComponent(taskId)}`;
 }
 
+/** The deep link of a project: the shape `open_in_app` returns. */
+function projectHref(projectId: string): string {
+  return `/projects?project=${encodeURIComponent(projectId)}`;
+}
+
 export interface NeedsAttentionListProps {
   /** The server's answer, or null while the first read is in flight. */
   page: AttentionPage | null;
@@ -70,6 +78,11 @@ export interface NeedsAttentionListProps {
   personLabels?: ReadonlyMap<string, string>;
   /** Open a task in the panel, as a card click does. */
   onOpenTask: (taskId: string) => void;
+  /**
+   * Open a project, for a `no_lead` row (SW-44). Without it, a plain click
+   * follows the deep link of the project.
+   */
+  onOpenProject?: (projectId: string) => void;
   /** Leave the lens for the board. */
   onBack: () => void;
   /** Read the list again, after an act. */
@@ -81,6 +94,7 @@ export function NeedsAttentionList({
   error,
   personLabels,
   onOpenTask,
+  onOpenProject,
   onBack,
   onChanged,
 }: NeedsAttentionListProps) {
@@ -95,9 +109,30 @@ export function NeedsAttentionList({
     dispatch({ kind: "prune", ids: keys ? keys.split("|") : [] });
   }, [keys]);
 
+  function openProject(projectId: string) {
+    if (onOpenProject) onOpenProject(projectId);
+    else window.location.assign(projectHref(projectId));
+  }
+
+  /** Where the title of a row goes: the task, or the project of a `no_lead` row. */
+  function openRow(row: AttentionRow) {
+    if (row.kind === "no_lead") openProject(row.project_id);
+    else if (row.task_id) onOpenTask(row.task_id);
+  }
+
+  function rowHref(row: AttentionRow): string {
+    return row.kind === "no_lead" || !row.task_id
+      ? projectHref(row.project_id)
+      : taskHref(row.task_id);
+  }
+
   async function act(row: AttentionRow, action: AttentionAction) {
     if (action === "open_blocker") {
       if (row.blocker_id) onOpenTask(row.blocker_id);
+      return;
+    }
+    if (action === "open_project") {
+      openProject(row.project_id);
       return;
     }
     if (!row.run_id) return;
@@ -187,18 +222,20 @@ export function NeedsAttentionList({
                         letters (visual review, 390 px). */}
                     <div className="min-w-0 flex-1 basis-56">
                       <ControlLink
-                        href={taskHref(row.task_id)}
-                        onActivate={() => onOpenTask(row.task_id)}
+                        href={rowHref(row)}
+                        onActivate={() => openRow(row)}
                         className="block truncate text-xs font-medium text-foreground hover:underline"
                         title={`Open ${rowTitle(row)}`}
                       >
                         {rowTitle(row)}
                       </ControlLink>
                       <p className="text-[11px] text-muted-foreground">{rowDetail(row)}</p>
-                      <p className="text-[10px] text-muted-foreground">
-                        Owner: {ownerText(row, personLabels)}
-                        {row.project_name ? ` · ${displayRowProject(row)}` : ""}
-                      </p>
+                      {row.kind === "no_lead" ? null : (
+                        <p className="text-[10px] text-muted-foreground">
+                          Owner: {ownerText(row, personLabels)}
+                          {row.project_name ? ` · ${displayRowProject(row)}` : ""}
+                        </p>
+                      )}
                       {row.kind === "stalled" && row.connection_gone ? (
                         <p className="text-[10px] text-muted-foreground">{CONNECTION_GONE}</p>
                       ) : null}
@@ -214,10 +251,15 @@ export function NeedsAttentionList({
                     {acts.length ? (
                       <div className="flex shrink-0 flex-wrap items-center gap-1">
                         {acts.map((action, index) =>
-                          action === "open_blocker" && row.blocker_id ? (
+                          (action === "open_blocker" && row.blocker_id) ||
+                          action === "open_project" ? (
                             <ControlLink
                               key={action}
-                              href={taskHref(row.blocker_id)}
+                              href={
+                                action === "open_project"
+                                  ? projectHref(row.project_id)
+                                  : taskHref(row.blocker_id ?? "")
+                              }
                               onActivate={() => void act(row, action)}
                               className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-primary hover:underline"
                               title={ACTION_HINT[action]}

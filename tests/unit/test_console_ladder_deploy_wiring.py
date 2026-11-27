@@ -185,6 +185,13 @@ def _run_dsn_block(
         '#!/usr/bin/env bash\necho "APPLIED ${CUSTOMER_CONSOLE_DATABASE_URL}"\n',
         encoding="utf-8",
     )
+    # H-170: the branch backs up the Console before the applier, and a failed
+    # backup stops it. This stub backup passes, so these cases test the DSN
+    # matrix only. tests/unit/test_console_backup_gate.py runs the real one.
+    (tmp_path / "scripts" / "backup_db.sh").write_text(
+        '#!/usr/bin/env bash\necho "Console backup complete: stub"\n',
+        encoding="utf-8",
+    )
     cc_dir = tmp_path / "apps" / "services" / "customer_console"
     cc_dir.mkdir(parents=True, exist_ok=True)
     if env_line is not None:

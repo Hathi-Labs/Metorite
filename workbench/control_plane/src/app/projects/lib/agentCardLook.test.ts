@@ -1,8 +1,15 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { agentCardLook } from "./agentCardLook";
+import { agentCardLook, agentPlaceLine, splitPlanProgress } from "./agentCardLook";
+import { stampStrands, strandedLine } from "./agentRuns";
+import { agentRunsApi, projectsApi } from "./api";
+
+const css = readFileSync(
+  fileURLToPath(new URL("../../globals.css", import.meta.url)),
+  "utf8",
+);
 
 const via = "mcp:claude.ai:claude-code";
 
@@ -87,13 +94,127 @@ describe("agentCardLook", () => {
     ).toBe("Waiting");
     expect(agentCardLook("waiting").edge).not.toBe("live");
   });
+
+  // Task 1045c. A stranded run draws the warning edge and says when the
+  // last word came. It never reads as working or waiting.
+  it("stranded is a still warning edge with the time of the last word", () => {
+    const now = Date.parse("2026-11-12T15:00:00");
+    const at = new Date(now - 29 * 60 * 1000);
+    const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    const stranded = { idle_s: 29 * 60 };
+    stampStrands({ stranded }, now);
+    for (const st of ["working", "answered", "waiting", "stale", "queued", "awaiting"]) {
+      expect(agentCardLook(st, { clientVia: via, stranded, note: "busy" })).toEqual({
+        edge: "warning",
+        line: `No word since ${hhmm}`,
+      });
+    }
+    // Without a stamp the time of the nudge is the fallback.
+    const nudged = new Date("2026-11-12T14:31:00");
+    expect(
+      agentCardLook("working", { stranded: { nudged_at: nudged.toISOString() } }).line,
+    ).toBe("No word since 14:31");
+    expect(agentCardLook("working", { stranded: {} }).line).toBe("No word for a while");
+    // SW-32: a plan never hides the strand, and it puts no count on the line.
+    const plan = { done: 3, total: 7, step: "Run the tests" };
+    expect(agentCardLook("working", { clientVia: via, stranded, plan })).toEqual({
+      edge: "warning",
+      line: `No word since ${hhmm}`,
+    });
+    // A failed or stopping run keeps its own look; no strand means no change.
+    expect(agentCardLook("failed", { stranded }).edge).toBe("destructive");
+    expect(agentCardLook("stopping", { stranded }).edge).toBeNull();
+    expect(agentCardLook("working", { stranded: null }).edge).toBe("live");
+  });
+
+  it("draws the warning edge from the warning token in light and in dark", () => {
+    const warn = css.match(/\[data-agent-edge="warning"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(warn).toMatch(/var\(--warning\)/);
+    expect(warn).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(|animation/i);
+    const block = (selector: string) =>
+      css.match(new RegExp(`(?:^|\\n)${selector}\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1] ?? "";
+    expect(block(":root"), "dark").toMatch(/--warning:/);
+    expect(block("\\.light"), "light").toMatch(/--warning:/);
+  });
+});
+
+describe("the run panel and the strand", () => {
+  it("AgentRunPanel merges a change of the strand into the task row", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/AgentRunPanel.tsx", import.meta.url)),
+      "utf8",
+    );
+    // The polled run's strand wins over the older copy of the row.
+    expect(src).toContain("agent_stranded: run?.stranded ?? null,");
+    expect(src).not.toContain("task.agent_stranded ?? run.stranded");
+    expect(src).toContain(
+      "strandedLine(task.agent_stranded) === strandedLine(next.agent_stranded)",
+    );
+    expect(src).toContain("[enabled, state, run?.stranded,");
+  });
+});
+
+describe("the board card and the strand", () => {
+  it("TaskBoard gives the strand of the row to the card look", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/TaskBoard.tsx", import.meta.url)),
+      "utf8",
+    );
+    const call = src.match(/agentCardLook\(task\.agent_state, \{([\s\S]*?)\}\);/)?.[1] ?? "";
+    expect(call).toContain("stranded: task.agent_stranded,");
+    expect(src).toContain("agentLook.line");
+  });
+});
+
+// Task 1045c. `idle_s` is true only at the read. The time of the last word is
+// fixed when the reply arrives, so it holds while the row ages.
+describe("the time of the last word", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const read = new Date("2026-11-12T15:00:00");
+  const strand = () => ({ nudged_at: "2026-11-12T14:50:00", idle_s: 29 * 60 });
+  const reply = (body: unknown) =>
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body))));
+
+  it("a row and a run read the same line hours after the read", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(read);
+
+    reply({ id: "t1", agent_stranded: strand() });
+    const row = await projectsApi.task("t1");
+    reply({ rows: [{ id: "r1", stranded: strand() }] });
+    const runs = await agentRunsApi.list("t1");
+    reply({ run: { id: "r1", stranded: strand() }, activities: [] });
+    const detail = await agentRunsApi.get("r1");
+
+    for (const hours of [0, 3, 27]) {
+      vi.setSystemTime(new Date(read.getTime() + hours * 3_600_000));
+      expect(
+        agentCardLook("working", { stranded: row.agent_stranded }).line,
+      ).toBe("No word since 14:31");
+      expect(strandedLine(runs?.[0]?.stranded)).toBe("No word since 14:31");
+      expect(strandedLine(detail.run.stranded)).toBe("No word since 14:31");
+    }
+  });
+
+  it("stamps each nested strand, and leaves one with no idle_s alone", () => {
+    const body = {
+      groups: [{ rows: [{ agent_stranded: strand() }, { agent_stranded: null }] }],
+      run: { stranded: { nudged_at: "2026-11-12T14:31:00", idle_s: null } },
+    };
+    stampStrands(body, read.getTime());
+    expect(body.groups[0]!.rows[0]!.agent_stranded).toMatchObject({
+      last_word_ms: read.getTime() - 29 * 60_000,
+    });
+    expect(body.run.stranded).not.toHaveProperty("last_word_ms");
+    expect(strandedLine(body.run.stranded)).toBe("No word since 14:31");
+  });
 });
 
 describe("the stylesheet", () => {
-  const css = readFileSync(
-    fileURLToPath(new URL("../../globals.css", import.meta.url)),
-    "utf8",
-  );
   it("has no dashed rule on an agent edge, and draws each edge it names", () => {
     const rules = css.match(/\[data-agent-edge[^{]*\{[^}]*\}/g) ?? [];
     expect(rules.length).toBeGreaterThan(0);
@@ -151,5 +272,109 @@ describe("the board applies the look", () => {
     expect(src).toMatch(/agentCardLook\(/);
     expect(src).toMatch(/data-agent-edge=\{/);
     expect(src).toMatch(/data-agent-line/);
+  });
+});
+
+describe("agentPlaceLine (SW-106)", () => {
+  it("reads the machine with its kind, then the model", () => {
+    expect(
+      agentPlaceLine({ agent_host: "VJ laptop", agent_host_kind: "computer", agent_model: "Sonnet 5.5" }),
+    ).toEqual({
+      icon: "Laptop",
+      machine: "VJ laptop (Computer)",
+      model: "Sonnet 5.5",
+      line: "Machine: VJ laptop (Computer) \u00b7 Model: Sonnet 5.5",
+      none: false,
+    });
+  });
+  it("picks the icon of each kind", () => {
+    const icon = (kind: string) => agentPlaceLine({ agent_host: "x", agent_host_kind: kind }).icon;
+    expect([icon("computer"), icon("server"), icon("cloud"), icon("laptop")]).toEqual([
+      "Laptop",
+      "Server",
+      "Cloud",
+      "CircleHelp",
+    ]);
+  });
+  it("reads Not reported for each fact that the agent did not send", () => {
+    expect(agentPlaceLine({}).line).toBe("Machine: Not reported \u00b7 Model: Not reported");
+    expect(agentPlaceLine({}).none).toBe(true);
+    expect(agentPlaceLine({ agent_host: null, agent_host_kind: null, agent_model: "" }).none).toBe(true);
+    expect(agentPlaceLine({ agent_model: "Opus 5.5" }).line).toBe("Machine: Not reported \u00b7 Model: Opus 5.5");
+    expect(agentPlaceLine({ agent_host: "box" }).line).toBe("Machine: box \u00b7 Model: Not reported");
+  });
+  it("drops a bad value, and cleans control characters", () => {
+    const look = agentPlaceLine({ agent_host: "a\u0007  b", agent_host_kind: "tablet", agent_model: 5 });
+    expect(look.line).toBe("Machine: a b \u00b7 Model: Not reported");
+    expect(look.icon).toBe("CircleHelp");
+  });
+  it("makes no claim of a box check, because the run read has no proof", () => {
+    expect(agentPlaceLine({ agent_host: "box", agent_host_kind: "server" }).line).not.toMatch(/checked/i);
+  });
+  it("shows no place line for a run with no place, and one line for a run with a value", () => {
+    expect(agentPlaceLine({ agent_host: null, agent_host_kind: null, agent_model: null }).none).toBe(true);
+    for (const facts of [{ agent_host: "box" }, { agent_host_kind: "cloud" }, { agent_model: "Opus 5.5" }]) {
+      expect(agentPlaceLine(facts).none).toBe(false);
+    }
+  });
+  it("draws the place line in the run panel only when a value exists", () => {
+    const panel = readFileSync(fileURLToPath(new URL("../components/AgentRunPanel.tsx", import.meta.url)), "utf-8");
+    const at = panel.indexOf("data-agent-place");
+    expect(at).toBeGreaterThan(0);
+    expect(panel.slice(Math.max(0, at - 400), at)).toContain("placeLook.none ? null");
+  });
+});
+
+describe("a plan on the live line (SW-32)", () => {
+  it("shows the step in progress and the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "old thought",
+        plan: { done: 3, total: 7, step: "Write the tests" },
+      }),
+    ).toEqual({ edge: "live", line: "Claude Code · Write the tests · 3 of 7" });
+  });
+
+  it("falls back to the note when no step is in progress, and keeps the count", () => {
+    expect(
+      agentCardLook("working", {
+        clientVia: via,
+        note: "thinking",
+        plan: { done: 0, total: 2, step: null },
+      }).line,
+    ).toBe("Claude Code · thinking · 0 of 2");
+    expect(
+      agentCardLook("answered", { clientVia: via, plan: { done: 2, total: 2, step: null } }).line,
+    ).toBe("Claude Code · 2 of 2");
+  });
+
+  it("a plan of no step or no plan changes nothing", () => {
+    for (const plan of [null, undefined, { done: 0, total: 0, step: null }]) {
+      expect(agentCardLook("working", { clientVia: via, note: "n", plan }).line).toBe(
+        "Claude Code · n",
+      );
+    }
+  });
+
+  it("only a live run shows the plan: a waiting run keeps its wait", () => {
+    expect(
+      agentCardLook("waiting", {
+        waiting: { on: "ci", until: null },
+        plan: { done: 1, total: 3, step: "x" },
+      }).line,
+    ).toBe("Waiting on CI");
+  });
+});
+
+describe("the count of a plan stays apart from the step (SW-32)", () => {
+  it("splits the head and the count, and leaves other lines whole", () => {
+    expect(
+      splitPlanProgress("Claude Code (lane-invites) · Pull the invite list · 0 of 2", { done: 0, total: 2 }),
+    ).toEqual({ head: "Claude Code (lane-invites) · Pull the invite list", tail: "· 0 of 2" });
+    expect(splitPlanProgress("Claude Code working", { done: 0, total: 2 })).toBeNull();
+    expect(splitPlanProgress("Claude Code · n", null)).toBeNull();
+    expect(splitPlanProgress(null, { done: 1, total: 3 })).toBeNull();
+    expect(splitPlanProgress(" · 1 of 3", { done: 1, total: 3 })).toBeNull();
   });
 });

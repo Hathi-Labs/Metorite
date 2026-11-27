@@ -42,6 +42,7 @@ import { studioLibraryView, type StudioKind } from "@/lib/studio/library";
 import AppsGallery from "./components/AppsGallery";
 import ReadyApps from "./components/ReadyApps";
 import SkillsGallery from "./components/SkillsGallery";
+import ToolGapsPanel from "./components/ToolGaps";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
 /** The raised panel every library section sits on (DESIGN_SYSTEM §3 `bg-card`). */
@@ -123,6 +124,7 @@ function StudioLibrary() {
             {view.showApps && <div key={`apps-${librarySeq}`} className={PANEL}><AppsGallery /></div>}
             {view.showWorkflows && <div key={`workflows-${librarySeq}`} className={PANEL}><WorkflowsGallery /></div>}
             {view.showSkills && <div key={`skills-${librarySeq}`} className={PANEL}><SkillsGallery /></div>}
+            {view.activeKind === "all" && <ToolGapsPanel key={`gaps-${librarySeq}`} className={PANEL} />}
           </div>
         </>
       )}

@@ -26,7 +26,7 @@ is not a pass.
 **Acceptance (I8a).**
 
 a. An org row of org A meets the need of Owen's draft in org A. A name with
-   no row reads not met. The answer holds the five keys of each row, in the
+   no row reads not met. The answer holds the seven keys of each row, in the
    order of the draft.
 b. The org row of org A never meets the need of a draft in org B, and the
    org row of org B never meets a need in org A.
@@ -88,7 +88,7 @@ ADMIN = ("feature:studio", "integrations:manage")
 TALLY = f"mcp:tally-{TAG}"
 LEDGER = f"ledger_{TAG}"
 DIARY = f"diary_{TAG}"
-ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect"}
+ROW_KEYS = {"name", "label", "met", "checkable", "setup_href", "can_connect", "asked"}
 
 
 def _manifest(names: list[str]) -> dict[str, Any]:
@@ -125,7 +125,7 @@ async def _bound(org: str, fn: Callable[[], Awaitable[Any]]) -> tuple[int, Any]:
         release_tenant(token)
 
 
-async def _new(org: str, email: str, names: list[str]) -> str:
+async def _new(org: str, email: str, names: list[Any]) -> str:
     status, got = await _bound(org, lambda: packages.create_package(
         request=_Request(_manifest(names)), user=_user(org, email)))
     assert status == 200, got
@@ -238,10 +238,15 @@ def test_r8_b_a_row_of_one_org_never_meets_a_need_of_the_other(world) -> None:
 
 def test_r8_c_a_member_row_meets_the_need_of_its_own_member_only(world) -> None:
     _row(world, DIARY, world.a, member=BEN)
-    owen = _run(world, lambda: _new(world.a, OWEN, [DIARY]))
-    ben = _run(world, lambda: _new(world.a, BEN, [DIARY]))
+    need = [{"name": DIARY, "as": "member"}]
+    owen = _run(world, lambda: _new(world.a, OWEN, need))
+    ben = _run(world, lambda: _new(world.a, BEN, need))
     assert _met(_run(world, lambda: _read(world.a, OWEN, owen))[1]) == {DIARY: False}
     assert _met(_run(world, lambda: _read(world.a, BEN, ben))[1]) == {DIARY: True}
+    # I9a: the step reads the set of the need. A plain unknown name is an ORG need,
+    # so Ben's own member row never meets it (the door reads the same way).
+    plain = _run(world, lambda: _new(world.a, BEN, [DIARY]))
+    assert _met(_run(world, lambda: _read(world.a, BEN, plain))[1]) == {DIARY: False}
     # An admin of the org does not borrow Ben's row either.
     status, got = _run(world, lambda: _read(world.a, OWEN, owen, ADMIN))
     assert (status, _met(got)) == (200, {DIARY: False})

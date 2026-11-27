@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { clearAll, put } from "@/lib/dataCache";
+import { __setSkillOfferForTests } from "@/lib/shell/shellPrefs";
 import { __forgetOffersForTests, type OfferTurn } from "@/lib/studio/skillOffer";
 import type { CatalogAction } from "@/lib/studio/skillsApi";
 
@@ -41,7 +42,7 @@ vi.mock("@/components/ui/Button", () => {
 });
 
 // Imported after the mocks, so the card draws the recording controls.
-const { default: SkillOfferCard, OFFER_CATALOG_KEY } = await import("./SkillOfferCard");
+const { default: SkillOfferCard, OFFER_CATALOG_KEY, offerRanKey } = await import("./SkillOfferCard");
 
 const CATALOG: CatalogAction[] = [
   { id: "knowledge.list_spaces", title: "List the spaces.", source: "manifest", class: "A", tool: "list_spaces" },
@@ -72,11 +73,13 @@ function render() {
 }
 
 beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_SKILL_OFFER", "1");
+  __setSkillOfferForTests(true);
   put(OFFER_CATALOG_KEY, CATALOG);
+  put(offerRanKey("m-press"), false);
 });
 
 afterEach(() => {
+  __setSkillOfferForTests(false);
   clearAll();
   __forgetOffersForTests();
   vi.unstubAllEnvs();
@@ -91,7 +94,7 @@ describe("the press of the card", () => {
       return new Response(JSON.stringify({ skill: { id: "sk-typed" }, version: null }), { status: 201 });
     });
     const first = render();
-    expect(first.box?.value).toBe("Find the onboarding page and propose");
+    expect(first.box?.value).toBe("Find the onboarding page");
     // The member types a new name in the box.
     (first.box?.onChange as (e: { target: { value: string } }) => void)({ target: { value: "Weekly onboarding check" } });
     const second = render();

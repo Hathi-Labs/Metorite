@@ -280,8 +280,8 @@ target over a source that the viewer cannot read whole. The text of a rule
 that reads a hidden key, or of a key rule over records that the viewer cannot
 read, names no field (:func:`_masked`). The parent of a line must be a record
 that the viewer can read. ``test_studio_row_rules.py`` fails each call of
-these seven that passes no viewer. ⚠️ :func:`aggregate_records` takes no viewer
-yet. Its one caller is the door, for the owner only (D4b).
+these eight that passes no viewer. C2d-a: :func:`aggregate_records` takes a REQUIRED
+``viewer`` too, and it reads what :func:`query_records` reads.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -299,9 +299,10 @@ from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequen
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dc_field
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_common import studio_query
 from acb_common.paging import page_line
@@ -337,6 +338,10 @@ from acb_common.studio_fields import (
     FieldError,
     FieldSpec,
     RecordError,
+    autonumber_fields,
+    autonumber_pad,
+    autonumber_reset,
+    autonumber_text,
     check_can_be_hot,
     entry_bytes,
     hot_value,
@@ -712,6 +717,20 @@ _CREATE_RECORD_SQL = (
     "RETURNING 1) "
     "SELECT r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
     "r.created_at, r.updated_at FROM r"
+)
+
+#: C15a. The next number of one autonumber field, in ONE atomic statement: an
+#: insert that starts at 1, and on a second call an increment of the stored
+#: value, under the row lock of the conflict. It never reads then writes. The
+#: statement runs in the SAVEPOINT of the batch, so a refused batch rolls the
+#: counter back, and a refusal leaves no gap. The org comes from the DEFAULT of
+#: the table, the bound tenant, and the policy binds the row.
+_NEXT_NUMBER_SQL = (
+    "INSERT INTO studio_object_counters (object_id, field_key, period, last_value) "
+    "VALUES (CAST(:oid AS uuid), :key, :period, 1) "
+    "ON CONFLICT (organization_id, object_id, field_key, period) "
+    "DO UPDATE SET last_value = studio_object_counters.last_value + 1, updated_at = now() "
+    "RETURNING last_value"
 )
 
 _GET_RECORD_SQL = (
@@ -1435,6 +1454,15 @@ _FIELD_ATTRS = (
     "normal", "critical", "conversions")
 
 
+#: C15a. The parts of an autonumber field that a sync cannot change, each read
+#: as the store reads it (a default for a part that the manifest leaves out).
+_AUTONUMBER_ATTRS = (
+    ("prefix", lambda f: f.prefix or ""),
+    ("pad", autonumber_pad),
+    ("reset", autonumber_reset),
+)
+
+
 @dataclass(frozen=True)
 class SyncProblem:
     """One reason that a manifest does not fit the stored objects. ``message``
@@ -1565,13 +1593,26 @@ async def _plan_fields(db: Any, item: _Item, row: StudioObject,
             item.add.append(raw)
             continue
         changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        if cur.type == spec.type == "autonumber":
+            # C15a. The three are read as the store reads them, so an unset pad or
+            # reset equals its default and an unchanged manifest is no change.
+            changed += [a for a, read in _AUTONUMBER_ATTRS
+                        if read(cur) != read(spec)]
+        if changed and set(changed) <= {a for a, _ in _AUTONUMBER_ATTRS}:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A prefix, a pad and a reset of a published auto-number cannot change. "
+                "Make a new field."))
+            continue
         if changed:
             problems.append(SyncProblem(
                 FIELD_CHANGED, item.name, field=spec.key,
                 message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
                 "A published field cannot change yet."))
-        elif cur.hot != spec.hot:
-            item.heat.append((spec.key, spec.hot))
+        else:
+            if cur.hot != spec.hot:
+                item.heat.append((spec.key, spec.hot))
     wanted = {f.key for f in item.fields}
     for key in old:
         if key not in wanted:
@@ -2600,6 +2641,23 @@ def _q_access(rid: str) -> str:
             "AND ac.v_text = CAST(:me AS text))")
 
 
+def _q_access_probe(rid: str) -> str:
+    """The row rule of :func:`_q_access` for a WALK, as a probe by record id (task 3375).
+
+    The plain EXISTS is flattened into a semi-join, and with no statistics the planner took
+    ``studio_record_hot_num_f8_idx`` for ``ac`` and joined it to the walk by a filter: 2,003
+    edges x 671 rows of ``ac`` for each of 3 passes, 267,466 buffers and 1.4 s for 2,000
+    nodes on the box. Here the lookup sits in a subquery with ``OFFSET 0``, so it stays one
+    probe for each record id, and the object test is ``IS NOT DISTINCT FROM`` so that the
+    primary key ``(organization_id, record_id, field_key)`` is the only index with a full
+    equality prefix. The rows are the same. :func:`_q_access` stays as it is for
+    ``build_query``: a list over a big object may prefer to start from the person field."""
+    return (f"EXISTS (SELECT 1 FROM (SELECT ac.record_id FROM studio_record_hot ac "
+            f"WHERE ac.{_OF_ORG} AND ac.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid) "
+            f"AND ac.record_id = {rid} AND ac.field_key = ANY(CAST(:akeys AS text[])) "
+            "AND ac.v_text = CAST(:me AS text) OFFSET 0) ap)")
+
+
 def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
              skip: int | None = None, only_hot: bool = False) -> str:
     """Each condition, with its index in *conditions*, so one statement holds
@@ -3086,8 +3144,9 @@ def _q_agg_currency(j: int) -> str:
             f"WHERE mc{j}.{_OF_ORG} AND mc{j}.{_OF_OBJECT} AND mc{j}.id = c.id), '') END)")
 
 
-def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
-                    package_id: str) -> tuple[str, dict[str, Any]]:
+def build_aggregate(agg: studio_query.Aggregate, *, object_id: str, package_id: str,
+                    access: tuple[Sequence[str], str] | None = None
+                    ) -> tuple[str, dict[str, Any]]:
     """The one statement of the aggregate *agg*: its SQL and its binds. Pure.
 
     The first row holds the count of the fields that are still hot (``v.n``),
@@ -3098,9 +3157,16 @@ def build_aggregate(agg: studio_query.Aggregate, *, object_id: str,
     row then holds the columns of ``p``: the part (0 for a kept group, 1 for
     ``other``), the rank, the key, the records, and the sum and the count of
     each field. With no group in the result, the row holds NULL there.
+
+    C2d-a: *access* is the row rule of the viewer, ``(person keys, address)``,
+    as in :func:`build_query`. Each part then holds it (:func:`_q_access`), so
+    the groups and the total count only the records that the viewer reads.
+    With no *access*, the statement is the one of the owner.
     """
     params: dict[str, Any] = {"oid": object_id, "pid": package_id,
                               "hk": list(agg.hot_keys()), "groups": studio_query.MAX_GROUPS}
+    if access is not None:
+        params["akeys"], params["me"] = list(access[0]), access[1]
     conditions = agg.conditions
     guard = "CAST(NULL AS bigint)"
     if agg.query().cold():
@@ -3250,13 +3316,14 @@ def _aggregate_result(agg: studio_query.Aggregate, rows: Sequence[Any]) -> Aggre
 
 
 async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_by: Any,
-                          measures: Any) -> tuple[studio_query.Aggregate, list[Any]]:
+                          measures: Any, access: tuple[Sequence[str], str] | None = None
+                          ) -> tuple[studio_query.Aggregate, list[Any]]:
     """The fields, then the aggregate statement. A field that turned cold
     after the store read the fields has lost its hot rows, so the store reads
     the fields and runs the aggregate once more, as :func:`_read_page` does."""
     for _ in range(2):
         agg = studio_query.parse_aggregate(await _fields(timed, oid), filter, group_by, measures)
-        sql, params = build_aggregate(agg, object_id=oid, package_id=pid)
+        sql, params = build_aggregate(agg, object_id=oid, package_id=pid, access=access)
         rows = (await timed.execute(text(sql), params)).all()
         if int(rows[0][0]) == len(agg.hot_keys()):
             _check_hot_or_small(rows, agg.query())
@@ -3264,8 +3331,37 @@ async def _read_aggregate(timed: _Timed, oid: str, pid: str, filter: Any, group_
     raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
-async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
-                            group_by: Any = None,
+def _refuse_hidden_aggregate(view: _View, items: Sequence[Mapping[str, Any]],
+                             group_by: Any, measures: Sequence[Mapping[str, Any]]) -> None:
+    """C2d-a. A filter, a group or a measure on a key that is hidden from the
+    viewer would show the value, so it is refused before any read."""
+    _refuse_hidden_query(view, items, None)
+    hidden = view.maybe_hidden()
+    if not hidden:
+        return
+    key = group_by.get("field") if isinstance(group_by, Mapping) else None
+    if isinstance(key, str) and key in hidden:
+        raise QueryError(studio_query.OP_NOT_ALLOWED,
+                         f"Field `{key}` is hidden from you, so a query cannot group "
+                         "by it.", key)
+    for measure in measures:
+        key = measure.get("field")
+        if isinstance(key, str) and key in hidden:
+            raise QueryError(studio_query.OP_NOT_ALLOWED,
+                             f"Field `{key}` is hidden from you, so a query cannot "
+                             "total it.", key)
+
+
+def _empty_aggregate(agg: studio_query.Aggregate) -> AggregateResult:
+    """C2d-a. The result for a viewer whose roles read no record: no group, a
+    total of 0, and the measures that the caller asked for, each at zero."""
+    zero = {f.key: (0, 0) for f in agg.measure_fields()}
+    total = AggregateGroup(None, 0, _measure_values(agg, 0, zero))
+    return AggregateResult(agg.measures, (None,) * len(agg.measures), (), None, 0, total)
+
+
+async def aggregate_records(db: Any, *, package_id: str, object_id: str, viewer: Viewer,
+                            filter: Any = None, group_by: Any = None,
                             measures: Any = None) -> AggregateResult | None:
     """Group the records of the object *object_id* of the package
     *package_id*, and take a count, a sum or an average of each group (C2b).
@@ -3280,17 +3376,29 @@ async def aggregate_records(db: Any, *, package_id: str, object_id: str, filter:
     each record that it adds holds one currency, as the CRM does (HANDOFF
     H-333). The :data:`~acb_common.studio_query.MAX_GROUPS` groups with the
     most records stay, and the rest fold into :attr:`AggregateResult.other`.
+
+    C2d-a: *viewer* is REQUIRED, and the call reads what :func:`query_records`
+    reads for it. The row rule joins each part of the one statement. A filter,
+    a group or a measure on a hidden key is refused. A viewer whose roles read
+    no record gets a total of 0 and no group.
     """
+    who = _check_viewer(viewer)
     deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
-    studio_query.check_aggregate_shape(filter, group_by, measures)
+    items, group, shaped = studio_query.check_aggregate_shape(filter, group_by, measures)
     await _warm_f8(db, deadline)
     async with _time_limit(db, deadline) as timed:
-        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
-        if found.first() is None:
+        view = await _view(timed, oid, pid, who)
+        if view is None:
             return None
-        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures)
+        _refuse_hidden_aggregate(view, items, group, shaped)
+        if not view.scope.reads:
+            fields = await _fields(timed, oid)
+            return _empty_aggregate(
+                studio_query.parse_aggregate(fields, filter, group_by, measures))
+        access = (view.scope.where_keys, who.email) if view.scope.row_bound else None
+        agg, rows = await _read_aggregate(timed, oid, pid, filter, group_by, measures, access)
     return _aggregate_result(agg, rows)
 
 
@@ -3414,6 +3522,9 @@ class _Batch:
         #: The last write that gave each line a new parent (C13), for the place
         #: of a refusal.
         self.moved: dict[tuple[str, str], int] = {}
+        #: C15a. The day of the batch in the zone of the org, as YYYY-MM-DD. It
+        #: is read once, under the org lock, by :func:`_batch_day`.
+        self.day: str | None = None
 
 
 @dataclass(frozen=True)
@@ -3957,6 +4068,74 @@ def _formulas(held: _Held, checked: Mapping[str, Any],
     return run_formulas(plan, held.name, {**checked, **kept})
 
 
+def _wall_now() -> datetime:
+    """C15a. The wall clock of the store, in UTC. A test patches this name. The
+    period of a counter never comes from SQL ``now()``, which is the start of the
+    transaction, so a batch that waits for the org lock would count the old day."""
+    return datetime.now(UTC)
+
+
+async def _batch_day(db: Any, batch: _Batch) -> str:
+    """C15a. The day of the batch, as YYYY-MM-DD, in ``default_timezone`` of the
+    work-schedule policy of the org (UTC when it has none). It is read once for
+    each batch, and the caller holds the org lock, so two writers of one org
+    never read two days for one batch."""
+    if batch.day is None:
+        from gateway.work_schedule import load_policy  # lazy, as brief/planner does
+
+        batch.day = _wall_now().astimezone(_org_zone(
+            (await load_policy(db)).get("default_timezone"))).date().isoformat()
+    return batch.day
+
+
+def _org_zone(name: Any) -> ZoneInfo:
+    """The zone of a stored name, UTC when it has none, a bad name or a name that
+    no zone has. The shell reads a zone name the same way (``zone_of``), but a
+    store never imports a route, so the three lines are here."""
+    try:
+        return ZoneInfo(str(name or "UTC"))
+    except (ValueError, OSError, ZoneInfoNotFoundError):
+        return ZoneInfo("UTC")
+
+
+def _refuse_autonumber_keys(held: _Held, data: Any) -> None:
+    """C15a. A caller never writes an autonumber field: the store fills it. A body
+    that names the key is refused, on a create and on an update, whatever the
+    value. The refusal names the field and shows no value."""
+    if not isinstance(data, Mapping):
+        return
+    hidden = (held.scope.maybe_hidden()
+              if held.scope is not None and not held.scope.open else frozenset())
+    for f in autonumber_fields(held.fields):
+        if f.key in data:
+            if f.key in hidden:
+                # ``_refuse_hidden_write`` ran first and refused each non-null value of a
+                # hidden key (create and update) with the sentence of any hidden key. A
+                # create may send a hidden key with no value, and the store accepts that
+                # for every type. So a hidden autonumber gets no refusal of its own here:
+                # it must not tell the type (the store then fills the number).
+                continue
+            raise FieldError(
+                f.key, f"Field `{f.key}` is filled by the store, one number for each new "
+                "record. Write no value for it.")
+
+
+async def _fill_autonumbers(db: Any, batch: _Batch, oid: str, held: _Held, data: Any) -> Any:
+    """C15a. The record *data* of a create with the next number of each autonumber
+    field, in the order of the fields. It runs after the lock of the org, inside
+    the SAVEPOINT of the batch, and before ``validate_record``."""
+    fields = autonumber_fields(held.fields)
+    if not fields or not isinstance(data, Mapping):
+        return data
+    out = dict(data)
+    for f in fields:
+        period = await _batch_day(db, batch) if autonumber_reset(f) == "day" else ""
+        number = (await db.execute(text(_NEXT_NUMBER_SQL), {
+            "oid": oid, "key": f.key, "period": period})).scalar_one()
+        out[f.key] = autonumber_text(f, int(number))
+    return out
+
+
 async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
@@ -3965,12 +4144,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     linked = _link(batch, step)
     if step.op == "create":
         _refuse_hidden_write(held, step.data, create=True)
+        _refuse_autonumber_keys(held, step.data)
         if linked is not None and isinstance(step.data, Mapping):
             # C13: the line takes its parent from the batch, never from its data.
             step = replace(step, data={**step.data, linked[0].via: {"id": linked[1]}})
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
         data = with_rollup_zero(held.plan, data)
+        # C15a: the number comes in this SAVEPOINT, so a refusal below rolls it back.
+        data = await _fill_autonumbers(db, batch, oid, held, data)
         checked = validate_record(plain, data)
         # Fix round 3 (rule 2): the access rules come before each formula.
         _check_write(held, None, checked, _sent(held, step.data))
@@ -4006,6 +4188,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         # Fix round 4 (rule 19): the test of the link comes after the row rule.
         _check_line_of(held, linked[0], linked[1], mark.after)
     _refuse_hidden_write(held, changes)
+    _refuse_autonumber_keys(held, changes)
     refuse_computed_keys(held.plan, held.name, changes)
     merged = without_targets(held.plan, {**(mark.after or {}), **changes})
     checked = validate_record(plain, merged)
@@ -4553,29 +4736,61 @@ async def _one_write(db: Any, who: str, package_id: str, write: Write,
 #: 2,000 nodes in one read.
 MAX_TREE_NODES = 2_000
 
+#: The child edges of the field, read once: one range scan on the full prefix
+#: ``(organization_id, object_id, field_key)`` of the object (51 buffers for 2,000 edges). The
+#: walk down, in a READ and in the C18 WRITE CHECK, joins this set by the text of the parent id,
+#: so the plan does not choose an index for each step (task 3308 and its follow-up 3346). A
+#: lookup per step took the wrong index under stale statistics: 102,010 buffers and 0.8 s on the
+#: box to check a write that moves a node with a subtree of 2,000 nodes.
+#: COST, stated: a write that sets a parent now reads ALL child edges of the field of its object
+#: (a leaf write too), where the lookup per step read O(subtree). Estimated, not measured, at
+#: 1M edges in one object: 0.1 to 0.5 s for each batch that sets a parent; 100k edges: tens of ms.
+#: The join may also be a nested loop over the materialised set under odd statistics: the buffer
+#: fence in the R8 test cannot see that CPU shape (task 3346 keeps the read at 100k edges open).
+_TREE_KIDS = (
+    "kids AS MATERIALIZED (SELECT h.record_id, h.v_text FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " AND h.object_id = CAST(:oid AS uuid) "
+    "AND h.field_key = CAST(:fk AS text) AND h.v_text IS NOT NULL)"
+)
+
+
+#: The object test of a lookup in ``studio_record_hot`` BY RECORD ID (the parent step, the
+#: roots). The primary key is ``(organization_id, record_id, field_key)``. With a plain
+#: ``object_id = ...`` test the planner can also take an index that leads with
+#: ``(organization_id, object_id, field_key)`` and filter ``record_id`` row by row, and under
+#: stale statistics it does: 2,000 lookups of 2,000 rows (task 3308, measured). Written as
+#: ``IS NOT DISTINCT FROM`` the test is no index qual, so the primary key is the one path
+#: with a full equality prefix. Do NOT use it for the lookup by parent text: that lookup needs
+#: the object in the index prefix, or it scans the whole org.
+_HOT_OF_OBJECT = "h.object_id IS NOT DISTINCT FROM CAST(:oid AS uuid)"
+#: THE PARENT RECORD by id (task 3308, CI run 43696143611, never analyzed): the parent id is
+#: computed in the hot-row select (``pid``) and the record lookup compares two plain uuids.
+#: Before, ``p.id = CASE WHEN v_text ~ uuid-form THEN CAST(v_text AS uuid) END`` was a
+#: row-by-row FILTER in every CI plan, never an index condition (the org index: 249,875
+#: buffers for 2,000 lookups on the runner). PROBABLE cause, an inference that no planner
+#: trace has confirmed: the regex is not leakproof and the tables are under FORCE RLS. The fix
+#: does not depend on the cause. A lead for later: ``build_query`` compares a relation with
+#: the same regex shape (``_UUID_FORM``) and may be a Filter for the same reason.
+
 #: The parent of a record, by the primary key of the hot row. A parent id that
 #: is no UUID, or that names no record of this object, ends the walk.
 _TREE_PARENT = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.record_id = u.id "
-    "AND h.field_key = CAST(:fk AS text) "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
-)
-
-#: The children of a record, by the text index of the hot rows.
-_TREE_CHILDREN = (
-    "JOIN studio_record_hot h ON h.organization_id = " + _BOUND_ORG + " "
-    "AND h.object_id = CAST(:oid AS uuid) AND h.field_key = CAST(:fk AS text) "
-    "AND h.v_text = CAST(t.id AS text) "
+    "JOIN LATERAL (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
+    "WHERE h.organization_id = " + _BOUND_ORG + " "
+    "AND " + _HOT_OF_OBJECT + " AND h.record_id = u.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h ON true "
+    "JOIN LATERAL (SELECT p.id FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
+    "OFFSET 0) p ON true "
 )
 
 #: The walk of each record of `:rids` (C18): its level (the walk up, which stops
 #: one past the cap), a cycle, the levels below it (the walk down, to the cap),
 #: and whether its parent is a record of this object.
 _TREE_CHECK_SQL = (
-    "WITH RECURSIVE s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
+    "WITH RECURSIVE " + _TREE_KIDS + ", s AS (SELECT DISTINCT x.id FROM unnest(CAST(:rids AS uuid[])) AS x(id) "
     "WHERE " + _IN_PACKAGE + "), "
     "up(start, id, depth, path, cyc) AS ("
     "SELECT s.id, s.id, 1, ARRAY[s.id], false FROM s "
@@ -4584,11 +4799,11 @@ _TREE_CHECK_SQL = (
     + _TREE_PARENT +
     "WHERE NOT u.cyc AND u.depth <= CAST(:cap AS int) "
     "AND (p.id = u.start OR NOT p.id = ANY(u.path))), "
-    "down(start, id, depth, path) AS ("
-    "SELECT s.id, s.id, 0, ARRAY[s.id] FROM s "
+    "down(start, id, depth, path, key) AS ("
+    "SELECT s.id, s.id, 0, ARRAY[s.id], CAST(s.id AS text) FROM s "
     "UNION ALL "
-    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id FROM down t "
-    + _TREE_CHILDREN +
+    "SELECT t.start, h.record_id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+    "FROM down t JOIN kids h ON h.v_text = t.key "
     "WHERE t.depth < CAST(:cap AS int) AND NOT h.record_id = ANY(t.path)) "
     "SELECT s.id::text, "
     "(SELECT max(u.depth) FROM up u WHERE u.start = s.id), "
@@ -4611,12 +4826,14 @@ _TREE_OBJECT_SQL = (
 _TREE_ALL_ROOTS = (
     "SELECT r.id FROM studio_records r "
     f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND NOT EXISTS ("
-    "SELECT 1 FROM studio_record_hot h "
-    "JOIN studio_records p ON p.organization_id = " + _BOUND_ORG + " "
-    "AND p.object_id = CAST(:oid AS uuid) "
-    "AND p.id = CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END "
-    f"WHERE h.{_OF_ORG} AND h.{_OF_OBJECT} AND h.record_id = r.id "
-    "AND h.field_key = CAST(:fk AS text))"
+    "SELECT 1 FROM (SELECT CASE WHEN h.v_text ~ " + _UUID_FORM + " THEN CAST(h.v_text AS uuid) END AS pid "
+    "FROM studio_record_hot h "
+    f"WHERE h.{_OF_ORG} AND " + _HOT_OF_OBJECT + " AND h.record_id = r.id "
+    "AND h.field_key = CAST(:fk AS text) OFFSET 0) h "
+    "JOIN LATERAL (SELECT 1 FROM studio_records p "
+    "WHERE p.organization_id = " + _BOUND_ORG + " "
+    "AND p.object_id = CAST(:oid AS uuid) AND p.id = h.pid "
+    "OFFSET 0) p ON true)"
 )
 
 #: The root of a read of one tree: the record `:root` of the object.
@@ -4638,18 +4855,18 @@ def _tree_read_sql(roots: str, scoped: bool = False) -> str:
     at a record that the viewer cannot read, and the subtree below it is cut.
     The limit, the levels and the parent ids count only the records that the
     viewer reads."""
-    root_rule = " AND " + _q_access("r.id") if scoped else ""
-    step_rule = " AND " + _q_access("h.record_id") if scoped else ""
+    root_rule = " AND " + _q_access_probe("r.id") if scoped else ""
+    step_rule = " AND " + _q_access_probe("h.record_id") if scoped else ""
     return (
-        "WITH RECURSIVE roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
-        "tree(id, parent, depth, path) AS ("
-        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id] FROM roots "
+        "WITH RECURSIVE " + _TREE_KIDS + ", roots AS (" + roots + " AND " + _IN_PACKAGE + root_rule + "), "
+        "tree(id, parent, depth, path, key) AS ("
+        "SELECT roots.id, CAST(NULL AS uuid), 1, ARRAY[roots.id], CAST(roots.id AS text) FROM roots "
         "UNION ALL "
-        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id FROM tree t "
-        + _TREE_CHILDREN +
+        "SELECT h.record_id, t.id, t.depth + 1, t.path || h.record_id, CAST(h.record_id AS text) "
+        "FROM tree t JOIN kids h ON h.v_text = t.key "
         "WHERE t.depth < CAST(:depth AS int) AND NOT h.record_id = ANY(t.path)" + step_rule + ") "
         "SELECT t.depth, t.parent::text, " + _QUERY_COLUMNS + " FROM tree t "
-        "JOIN studio_records r ON r." + _OF_ORG + " AND r." + _OF_OBJECT + " AND r.id = t.id "
+        + _q_lookup("t.id") + " "
         "ORDER BY t.depth, t.parent NULLS FIRST, r.created_at, r.id "
         "LIMIT CAST(:limit AS int) + 1"
     )

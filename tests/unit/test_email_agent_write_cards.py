@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_NOT_SHOWN, card_outcome_text
 
 _AGENT = (
     Path(__file__).resolve().parents[2]
@@ -60,10 +61,8 @@ MSG = "0b0b0b0b-0000-4000-8000-00000000000b"
 WRITE_METHODS = ("POST", "PATCH", "PUT", "DELETE")
 
 #: The pinned answer of a write tool with no card channel (auditor edit).
-NO_CARD_TEXT = (
-    "Nothing changed. This needs your approval on a card, and a card cannot "
-    "show here. Ask for it in the Chat app or the Email app."
-)
+#: HRD-7: the words of ``CARD_NOT_SHOWN`` in the one table of card outcomes.
+NO_CARD_TEXT = card_outcome_text(CARD_NOT_SHOWN)
 
 #: Each POST that only reads, by path, with the reason. The behavioural
 #: fences do not count these as writes.
@@ -382,7 +381,8 @@ async def test_each_registry_tool_asks_a_card_before_it_writes(
     out = await getattr(agents, tool)(**WRITE_CASES[tool])
     assert len(gw.cards) == 1, (tool, out)
     assert gw.writes == [], tool
-    assert "ancelled" in out, (tool, out)
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:"), (tool, out)
 
 
 @pytest.mark.parametrize("tool", REGISTRY)
@@ -401,8 +401,9 @@ def test_the_no_card_text_is_pinned() -> None:
     # One name only: the old alias is gone (EM-G11c1b).
     assert not hasattr(agents, "_USE_CHAT_APP")
     # ``noActionOf`` in EmailToolCards.tsx draws this lead as "did not act".
-    assert NO_CARD_TEXT.startswith("Nothing changed.")
+    assert NO_CARD_TEXT.startswith("Not shown:")
     assert "ancelled" not in NO_CARD_TEXT
+    assert "declin" not in NO_CARD_TEXT.lower()
 
 
 async def test_the_no_card_text_names_no_chat(
@@ -544,6 +545,8 @@ CHOICES: dict[tuple[str, str], list[Any]] = {
     ("set_sender_status", "status"): ["cold", "not_cold", "keep", "block"],
     ("resolve_execution", "decision"): ["approve", "reject", "undo"],
     ("forget_pattern", "kind"): ["draft", "rule"],
+    # P-2c (task 3919): a review approves or rejects one learned rule pattern.
+    ("forget_pattern", "action"): ["forget", "review"],
     ("rule_guidance", "action"): ["list", "add", "delete", "policies"],
     ("voice_profile", "action"): ["view", "preview", "status", "build", "save",
                                   "delete", "sample", "approve_knowledge"],
@@ -671,7 +674,7 @@ async def test_each_setting_that_turns_on_asks(gw: Gateway, key: str) -> None:
         return
     assert len(gw.cards) == 1, key
     assert gw.writes == [], key
-    assert out.startswith("Cancelled"), out
+    assert out.startswith("Declined:"), out
 
 
 TURN_ON = [
@@ -694,7 +697,7 @@ async def test_turning_a_write_on_asks(gw: Gateway, change: dict[str, Any]) -> N
     out = await agents.update_assistant_settings(BOX, **change)
     assert len(gw.cards) == 1
     assert gw.writes == []
-    assert out.startswith("Cancelled")
+    assert out.startswith("Declined:")
 
 
 async def test_turning_on_the_digest_mail_asks_when_the_digest_is_on(gw: Gateway) -> None:
@@ -777,7 +780,7 @@ async def test_an_archive_card_names_the_act_the_count_and_the_mailbox(
     assert card["title"] == f"Archive 3 messages in {BOX_TEXT}?"
     assert card["context"].splitlines() == [
         "Each message:", "- Kim: Offer 0", "- Kim: Offer 1", "- Kim: Offer 2"]
-    assert gw.writes == [] and out.startswith("Cancelled")
+    assert gw.writes == [] and out.startswith("Declined:")
     gw.answer = True
     await agents.manage_inbox("archive", ["m1", "m2", "m3"])
     assert gw.writes == [("POST", "/email/messages/bulk",
@@ -1011,6 +1014,33 @@ async def test_a_forget_card_names_the_pattern(gw: Gateway, kind: str, shown: st
     assert shown in card["detail"]
 
 
+@pytest.mark.parametrize(("approve", "title"), [
+    (True, "Approve this learned rule pattern?"),
+    (False, "Reject this learned rule pattern?"),
+])
+async def test_a_pattern_review_sends_one_pattern_after_its_card(
+    gw: Gateway, approve: bool, title: str,
+) -> None:
+    """P-2c (task 3919): ``action="review"`` asks one card that names the
+    pattern. Then it sends the request of the Rules tab for that pattern only.
+    A review with no card call, or a body with no id, turns this red."""
+    gw.answer = True
+    await agents.forget_pattern("p1", action="review", approve=approve)
+    [card] = gw.cards
+    assert card["title"] == title
+    assert 'from "bank.test": always match the rule "Bank"' in card["detail"]
+    assert gw.writes == [("POST", "/email/rules/patterns/review",
+                          {"account_id": BOX, "pattern_ids": ["p1"], "approve": approve})]
+
+
+async def test_a_pattern_review_with_no_yes_writes_nothing(gw: Gateway) -> None:
+    gw.answer = False
+    out = await agents.forget_pattern("p1", action="review", approve=False)
+    assert len(gw.cards) == 1 and gw.writes == [], out
+    out = await agents.forget_pattern("nope", action="review")
+    assert out.startswith("Nothing changed.") and len(gw.cards) == 1
+
+
 async def test_the_knowledge_card_shows_no_hidden_text(gw: Gateway) -> None:
     await agents.save_knowledge(BOX, title="Prices", content="Net‮30​ days")
     [card] = gw.cards
@@ -1136,7 +1166,7 @@ async def test_turning_on_the_morning_brief_asks_and_names_the_address(gw: Gatew
     ``_settings_needing_card`` → red."""
     gw.answer = False
     out = await agents.update_assistant_settings(BOX, morning_brief_enabled=True)
-    assert out.startswith("Cancelled") and gw.writes == []
+    assert out.startswith("Declined:") and gw.writes == []
     [card] = gw.cards
     assert "Morning brief" in card["context"] and "account address" in card["context"]
 

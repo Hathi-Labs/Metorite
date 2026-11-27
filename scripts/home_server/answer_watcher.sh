@@ -7,8 +7,8 @@
 #
 # ⚠️ `install` copies answer_watcher.py to ~/.local/lib/metorite. After a change
 # to it, run `install` again, or the timer runs the old copy.
-# ⚠️ It never prints a token. The token lives in ~/.config/metorite/watcher.env,
-# which the owner drops through docs/secrets_drop.md.
+# ⚠️ It never prints a token. The token comes from ~/.config/metorite/watcher.env
+# when that file exists, else from the box token helper (task 4062).
 # Fence: tests/unit/test_answer_watcher.py.
 set -Eeuo pipefail
 
@@ -29,8 +29,12 @@ install_files() {
 case "${1:-}" in
   install) install_files ;;
   enable)
-    [ -f "${HOME}/.config/metorite/watcher.env" ] || { echo "no watcher.env: the owner drops the token first" >&2; exit 2; }
-    [ "$(stat -c %a "${HOME}/.config/metorite/watcher.env")" = "600" ] || { echo "watcher.env must be mode 0600" >&2; exit 2; }
+    if [ -f "${HOME}/.config/metorite/watcher.env" ]; then
+      [ "$(stat -c %a "${HOME}/.config/metorite/watcher.env")" = "600" ] || { echo "watcher.env must be mode 0600" >&2; exit 2; }
+    elif [ ! -x "${HOME}/.local/bin/metorite-box-headers" ] || [ ! -f "${HOME}/.config/metorite/box.env" ]; then
+      # Task 4062: with no watcher.env, the watcher reads the box token (box_connect.sh).
+      echo "no watcher.env and no box token: run scripts/box_connect.sh first" >&2; exit 2
+    fi
     systemctl --user enable --now "$TIMER" ;;
   disable) systemctl --user disable --now "$TIMER" ;;
   *) echo "usage: answer_watcher.sh install|enable|disable" >&2; exit 64 ;;

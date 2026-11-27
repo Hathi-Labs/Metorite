@@ -385,7 +385,7 @@ async def test_r8_a_declined_card_writes_nothing(world, monkeypatch) -> None:
         (skill_projects.create_area, ("Garden",)),
     ):
         out = await _as(world, monkeypatch, ALICE, lambda t=tool, a=args: t(*a))
-        assert out.startswith("Cancelled"), out
+        assert out.startswith("Declined:"), out  # HRD-7: the one table
     assert len(asked) == 3
     assert _areas(world, ALICE) == before
 

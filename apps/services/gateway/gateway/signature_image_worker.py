@@ -1,4 +1,7 @@
-"""The child process that decodes a signature image (WS-17 SG-1, D-EM-67).
+"""The child process that decodes a member's image (WS-17 SG-1, D-EM-67).
+
+It decodes a signature image, and a profile picture too (task 2186): the
+kind ``avatar`` is the re-encode of ``gateway/avatar.py``.
 
 The parent, :mod:`gateway.signature_image`, starts this file as a SCRIPT::
 
@@ -42,6 +45,13 @@ The child writes ONE JSON line on stdout and exits 0:
 Landlock and seccomp are Linux features. On Windows, the dev box only, steps 3
 and 5 do nothing, and the parent logs ``signature_image.unconfined``.
 
+**The profile picture** (kind ``avatar``). The crop comes as fractions of the
+source, ``[x, y, side]``, or ``null`` for the centre square. The child clamps it
+inside the page in POINTS, as ``avatar.normalise`` did in the request before
+task 2186. It renders to exactly ``size`` x ``size`` with ``alpha=False``, so a
+clear pixel lands on white, and writes JPEG at ``jpeg_quality``. A source
+smaller than ``size`` is scaled up.
+
 **The image.** A ``capture`` (WS-STU D24a) keeps its aspect ratio, is upright
 by its EXIF orientation, has a long side of at most ``capture_side`` and is
 re-encoded from pixels, so no EXIF or GPS block survives. It is JPEG when
@@ -63,6 +73,7 @@ import base64
 import contextlib
 import importlib.util
 import json
+import math
 import os
 import socket
 import sys
@@ -85,6 +96,17 @@ _SPEC_FIELDS: dict[str, type] = {
     "confine_path": str,
 }
 
+#: The extra fields of an ``avatar`` spec: the crop and the edge of the output.
+_AVATAR_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "crop": (list, type(None)),
+    "size": int,
+}
+_MISSING = object()
+#: The kinds of image that the child takes.
+_KINDS = ("logo", "photo", "avatar", "capture")
+#: The longest edge of a profile picture that the child renders.
+_MAX_AVATAR_PX = 1024
+
 #: The long edges that the child tries, largest first.
 EDGES = (480, 360, 240)
 
@@ -101,6 +123,15 @@ CLEAR_ALPHA = 128
 #: truncated PNG as a blank image and only warns ("missing pixel data in png
 #: image; possibly truncated", measured 2026-11-07), so the child reads the
 #: warnings after each render and refuses with ``broken``.
+#:
+#: ⚠️ A JPEG with only its end marker (EOI) missing is refused too, for every
+#: kind (task 2186, measured 2026-11-21). MuPDF gives the same one warning,
+#: "premature end of file in jpeg", for that file and for a JPEG cut at 60 %
+#: or 90 %. It renders all of them to the end, and an appended EOI clears the
+#: warning for all of them. A second probe added filler bytes, then EOI, and
+#: compared the pixels. It passed the missing-EOI file, and it also passed
+#: cuts at 60 %, 90 %, 99 % and 3 bytes short. No test here tells the two
+#: apart, so the child refuses both.
 _DAMAGE_WORDS = ("truncated", "missing pixel data", "corrupt", "premature end",
                  "zlib error")
 
@@ -139,9 +170,26 @@ def _spec(raw: str) -> dict[str, Any]:
         value = spec.get(name)
         if not isinstance(value, kind) or isinstance(value, bool):
             raise _Refused("failed")
-    if spec["kind"] not in ("logo", "photo", "capture") or spec["landlock_abi"] < 1:
+    if spec["kind"] not in _KINDS or spec["landlock_abi"] < 1:
         raise _Refused("failed")
+    if spec["kind"] == "avatar":
+        _check_avatar_spec(spec)
     return spec
+
+
+def _check_avatar_spec(spec: dict[str, Any]) -> None:
+    """The crop and the size of a profile picture. Only this kind has them."""
+    for name, kind in _AVATAR_FIELDS.items():
+        value = spec.get(name, _MISSING)
+        if not isinstance(value, kind) or isinstance(value, bool):
+            raise _Refused("failed")
+    if not 1 <= spec["size"] <= _MAX_AVATAR_PX:
+        raise _Refused("failed")
+    crop = spec["crop"]
+    if crop is not None and (len(crop) != 3 or not all(
+            isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+            for v in crop)):
+        raise _Refused("failed")
 
 
 def _limit_self(spec: dict[str, Any]) -> None:
@@ -319,6 +367,68 @@ def _encode(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
     raise _Refused("too_big")
 
 
+def _avatar(pymupdf: Any, data: bytes, spec: dict[str, Any]) -> dict[str, Any]:
+    """Decode, crop square, scale to ``size`` and write JPEG. The ``ok`` object."""
+    _warnings(pymupdf)  # start with an empty list
+    try:
+        page = pymupdf.open(stream=data, filetype="image")[0]
+    except Exception:  # every decoder failure is one clean refusal
+        raise _Refused("broken") from None
+    width_px, height_px = _source_pixels(page)
+    if width_px <= 0 or height_px <= 0:
+        raise _Refused("broken")
+    if max(width_px, height_px) > spec["max_side"] or width_px * height_px > spec["max_pixels"]:
+        raise _Refused("pixels")
+    width, height = float(page.rect.width), float(page.rect.height)
+    if width <= 0 or height <= 0:
+        raise _Refused("broken")
+    size = spec["size"]
+    clip = _avatar_clip(pymupdf, width, height, spec["crop"])
+    # torect maps the clip (points) onto the exact pixel box. Matrix(scale,
+    # scale) rounds outward and gave 257x257 (measured, WS-28q).
+    try:
+        pix = page.get_pixmap(
+            matrix=clip.torect(pymupdf.Rect(0, 0, size, size)), clip=clip, alpha=False)
+    except MemoryError:
+        raise
+    except Exception:  # a render that fails is a damaged image
+        raise _Refused("broken") from None
+    said = _warnings(pymupdf).lower()
+    if any(word in said for word in _DAMAGE_WORDS):
+        raise _Refused("broken")
+    out = pix.tobytes("jpg", jpg_quality=spec["jpeg_quality"])
+    if len(out) > spec["max_output_bytes"]:
+        raise _Refused("too_big")
+    return {
+        "content_type": "image/jpeg",
+        "width": pix.width,
+        "height": pix.height,
+        "data": base64.b64encode(out).decode("ascii"),
+    }
+
+
+def _avatar_clip(pymupdf: Any, width: float, height: float,
+                 crop: list[float] | None) -> Any:
+    """The clip rectangle of a profile picture: always square, always inside
+    the page. ``crop`` is ``[x, y, side]`` as fractions, already finite.
+
+    The clamp makes the fractional protocol safe to take from a browser. A
+    caller can send ``(9, 9, 5)`` and gets the largest square that fits."""
+    shortest = min(width, height)
+    if not crop:
+        side = shortest
+        x = (width - side) / 2
+        y = (height - side) / 2
+    else:
+        fx, fy, fside = (float(v) for v in crop)
+        # A zero or negative side means the client sent nothing usable. The
+        # whole shortest edge is the honest reading of "no valid selection".
+        side = shortest if fside <= 0 else min(fside * shortest, shortest)
+        x = min(max(fx * width, 0.0), width - side)
+        y = min(max(fy * height, 0.0), height - side)
+    return pymupdf.Rect(x, y, x + side, y + side)
+
+
 def _warnings(pymupdf: Any) -> str:
     """The MuPDF warnings since the last call, and clear them."""
     try:
@@ -428,7 +538,8 @@ def main(argv: list[str]) -> int:
             raise _Refused("broken")
         if len(data) > spec["max_bytes"]:
             raise _Refused("size")
-        _emit({"ok": {**_encode(pymupdf, data, spec), **_marks(state)}})
+        work = _avatar if spec["kind"] == "avatar" else _encode
+        _emit({"ok": {**work(pymupdf, data, spec), **_marks(state)}})
     except _Refused as exc:
         _emit({"refused": exc.reason})
     except MemoryError:

@@ -4,11 +4,13 @@
  * Mutation 1: give the floor view `rail: usual || floor`. "drops the rail ..." turns red.
  * Mutation 2: let `isFloor` take any value. "turns on for 1 only" turns red.
  * Mutation 3: return the line in the usual view. "names the member in the floor view only" turns red.
+ * Mutation 4 (STU-D23a-2): give the usual view `pagePicker: true`. "offers nothing in the usual
+ * view" turns red.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { FLOOR_KEY, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
+import { FLOOR_KEY, floorPages, floorSubtitle, floorView, isFloor, recordFull } from "@/lib/studio/floorView";
 
 const SRC = readFileSync(new URL("./floorView.ts", import.meta.url), "utf8");
 
@@ -76,6 +78,43 @@ describe("the line of the app bar", () => {
     expect(floorSubtitle(floor, { name: "  ", email: "asha@example.com" })).toBe("Signed in as asha@example.com");
     expect(floorSubtitle(floor, { name: null, email: null })).toBeUndefined();
     expect(floorSubtitle(floor, null)).toBeUndefined();
+  });
+});
+
+describe("the page picker (STU-D23a-2)", () => {
+  const ONE = [{ title: "", rows: [{ page: "today", label: "Today" }] }];
+  const TWO = [{ title: "", rows: [{ page: "today", label: "Today" }, { page: "done", label: "Done" }] }];
+
+  it("is a part of the floor view only", () => {
+    expect(floorView(true).pagePicker).toBe(true);
+    expect(floorView(false).pagePicker).toBe(false);
+  });
+
+  it("offers the rows of the rail in the floor view", () => {
+    expect(floorPages(floorView(true), TWO)).toEqual([
+      { value: "today", label: "Today" }, { value: "done", label: "Done" },
+    ]);
+  });
+
+  it("offers nothing in the usual view, where the rail picks", () => {
+    expect(floorPages(floorView(false), TWO)).toBeNull();
+  });
+
+  it("offers nothing with one page or none", () => {
+    expect(floorPages(floorView(true), ONE)).toBeNull();
+    expect(floorPages(floorView(true), [])).toBeNull();
+  });
+
+  it("keeps the order of the rail, and a titled section names the group", () => {
+    const sections = [
+      { title: "Work", rows: [{ page: "b", label: "Board" }, { page: "a", label: "All jobs" }] },
+      { title: " ", rows: [{ page: "c", label: "Settings" }] },
+    ];
+    expect(floorPages(floorView(true), sections)).toEqual([
+      { value: "b", label: "Board", group: "Work" },
+      { value: "a", label: "All jobs", group: "Work" },
+      { value: "c", label: "Settings" },
+    ]);
   });
 });
 

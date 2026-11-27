@@ -535,6 +535,9 @@ export interface AgentStateVisual {
   icon: string;
 }
 
+/** The key of the Done state of the Agents view in `AGENT_STATES` and `AGENT_MARKS`. */
+export const AGENT_DONE_KEY = "lens_done";
+
 export const AGENT_STATES: Record<string, AgentStateVisual> = {
   awaiting: { hue: "amber", icon: "MessageCircleQuestion" },
   answered: { hue: "blue", icon: "CircleCheck" },
@@ -545,7 +548,32 @@ export const AGENT_STATES: Record<string, AgentStateVisual> = {
   stale: { hue: "gray", muted: true, icon: "CirclePause" },
   stopping: { hue: "gray", muted: true, icon: "CircleStop" },
   failed: { hue: "red", icon: "CircleAlert" },
+  // AMR-4: a session whose last run completed, drawn by the Agents view only.
+  // ⚠️ The key is not a state of the server. A `completed` run keeps the gray
+  // chip on every surface outside `AGENT_LENSES_ORGS`.
+  [AGENT_DONE_KEY]: { hue: "green", icon: "CircleCheck" },
 };
+
+/**
+ * AMR-4: the fill of the small mark of an agent state, the square of a session
+ * and the part of a sub-agent bar (`agent_coordination.md` §3.12.9). Tokens
+ * only. The Agents view draws it beside the word of the state, never in place
+ * of it: each mark carries a name.
+ */
+export const AGENT_MARKS: Record<string, string> = {
+  awaiting: "bg-warning",
+  failed: "bg-destructive",
+  working: "bg-primary",
+  waiting: "bg-primary/40",
+  stale: "bg-muted-foreground/35",
+  [AGENT_DONE_KEY]: "bg-success/50",
+};
+
+/** The fill of the mark of a state. An unknown state reads as idle. */
+export function agentMarkFill(value?: string | null): string {
+  const key = value?.trim().toLowerCase();
+  return (key && Object.hasOwn(AGENT_MARKS, key) && AGENT_MARKS[key]) || AGENT_MARKS.stale;
+}
 
 /** How an agent state draws, or `null` when the value is not one. */
 export function agentStateVisual(value?: string | null): AgentStateVisual | null {

@@ -575,6 +575,85 @@ def test_mget_stays_inside_the_r5c_ratchet() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 5c-1. delete_unless (RESUME-2a follow-up, P2-1): ONE compare-and-delete
+# ---------------------------------------------------------------------------
+#
+# The command runs a FIXED Lua script. A caller gives the key and the value
+# only, so no caller can send a script that names a key of another tenant.
+
+class _EvalRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> int:
+        self.calls.append((script, numkeys, *keys_and_args))
+        return 1
+
+
+async def test_delete_unless_sends_the_fixed_script_and_one_prefixed_key() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        assert await client.delete_unless(client.key("chat-late-offer", "a@x.test", "t1", "d"),
+                                          "SPENT") == 1
+    assert fake.calls == [(tr._DELETE_UNLESS_LUA, 1,
+                           f"{KEY_ROOT}:{ORG_A}:chat-late-offer:a@x.test:t1:d", "SPENT")]
+    assert "KEYS[1]" in tr._DELETE_UNLESS_LUA and "KEYS[2]" not in tr._DELETE_UNLESS_LUA
+    params = list(inspect.signature(TenantRedis.delete_unless).parameters)
+    assert params == ["self", "k", "value"], "a caller gives no script and no second key"
+
+
+async def test_delete_unless_refuses_a_raw_string_and_another_tenant() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.delete_unless("cc:chat-late-offer:t1", "x")  # type: ignore[arg-type]
+    with organization_scope(ORG_A):
+        stolen = key("chat-late-offer", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.delete_unless(stolen, "x")
+    assert fake.calls == []
+
+
+# 5c-2. delete_if and replace_if (HRD-17a): the one-use claim of a send. Each
+# is a FIXED script on one typed key, as delete_unless is.
+
+async def test_delete_if_and_replace_if_send_the_fixed_script_and_one_key() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A):
+        k = client.key("send-once", "t1", "m", "id12345678")
+        assert await client.delete_if(k, "v") == 1
+        assert await client.replace_if(k, "old", "new", 86400) == 1
+    raw = f"{KEY_ROOT}:{ORG_A}:send-once:t1:m:id12345678"
+    assert fake.calls == [
+        (tr._DELETE_IF_LUA, 1, raw, "v"),
+        (tr._REPLACE_IF_LUA, 1, raw, "old", "new", 86400),
+    ]
+    for script in (tr._DELETE_IF_LUA, tr._REPLACE_IF_LUA):
+        assert "KEYS[1]" in script and "KEYS[2]" not in script
+    assert list(inspect.signature(TenantRedis.delete_if).parameters) == ["self", "k", "value"]
+    assert list(inspect.signature(TenantRedis.replace_if).parameters) == [
+        "self", "k", "expected", "value", "seconds"]
+
+
+async def test_delete_if_and_replace_if_refuse_a_raw_string_and_another_tenant() -> None:
+    fake = _EvalRecorder()
+    client = TenantRedis(fake)
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.delete_if("cc:send-once:t1", "x")  # type: ignore[arg-type]
+    with organization_scope(ORG_A), pytest.raises(TypeError, match="TenantKey"):
+        await client.replace_if("cc:send-once:t1", "x", "y", 1)  # type: ignore[arg-type]
+    with organization_scope(ORG_A):
+        stolen = key("send-once", "t1")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.delete_if(stolen, "x")
+    with organization_scope(ORG_B), pytest.raises(TenantMismatch):
+        await client.replace_if(stolen, "x", "y", 1)
+    assert fake.calls == []
+
+
+# ---------------------------------------------------------------------------
 # 5d. Sorted sets (WS-58 MD-5b) — the My Day active set, same key discipline.
 # ---------------------------------------------------------------------------
 #

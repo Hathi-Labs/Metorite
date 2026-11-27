@@ -17,6 +17,10 @@ import pytest
 from acb_common.studio_manifest import (
     BLOCKS,
     FIELD_TYPES,
+    LAYOUTS,
+    NAV_ICONS,
+    PRESET_REGIONS,
+    REGION_NAMES,
     SOURCE_NOT_A_READ,
     Manifest,
     ManifestError,
@@ -288,7 +292,8 @@ def test_bad_uses_grammar():
 
 
 @pytest.mark.parametrize(
-    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000"]
+    "uses", ["crm.create_account", "workflow:123e4567-e89b-12d3-a456-426614174000",
+             "mcp:github.get_issue"]
 )
 def test_other_uses_forms_are_valid(uses):
     d = copy.deepcopy(EXAMPLE)
@@ -1199,6 +1204,92 @@ def test_a_tab_title_is_not_empty_or_blank(title):
     assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)
 
 
+# --- the extension fields of `contributes.fields` (PKG-14a-2) ----------------
+
+from acb_common.studio_manifest import HOST_RECORD_KINDS, MAX_HOST_FIELDS  # noqa: E402
+
+_WARRANTY = {"record": "task", "key": "warranty_end", "type": "date", "label": "Warranty end"}
+
+
+def _fields(*entries: dict) -> dict:
+    return doc(contributes={"fields": [copy.deepcopy(e) for e in entries]})
+
+
+def test_an_extension_field_on_each_host_record_kind_is_valid() -> None:
+    entries = [{**_WARRANTY, "record": kind} for kind in HOST_RECORD_KINDS]
+    entries.append({"record": "crm.deal", "key": "tier", "type": "select",
+                    "options": ["Gold", "Silver"], "many": False})
+    assert validate_manifest(_fields(*entries)) == []
+
+
+@pytest.mark.parametrize("record", ["crm.leads", "Task", "project", "", None, 3, ["task"]])
+def test_an_unknown_record_kind_is_refused(record) -> None:
+    one(_fields({**_WARRANTY, "record": record}), "$.contributes.fields[0].record",
+        contains="record kind")
+
+
+def test_an_entry_with_no_record_kind_is_refused() -> None:
+    entry = {k: v for k, v in _WARRANTY.items() if k != "record"}
+    one(_fields(entry), "$.contributes.fields[0].record", contains="record kind")
+
+
+@pytest.mark.parametrize("key", ["Warranty", "1st", "a-b", "x" * 49, "", None])
+def test_a_bad_field_key_is_refused(key) -> None:
+    one(_fields({**_WARRANTY, "key": key}), "$.contributes.fields[0].key", contains="field key")
+
+
+@pytest.mark.parametrize("kind", ["relation", "file", "autonumber"])
+def test_a_refused_type_is_refused(kind) -> None:
+    errs = validate_manifest(_fields({**_WARRANTY, "type": kind}))
+    assert any(e.path == "$.contributes.fields[0].type" and "cannot have the type" in e.message
+               for e in errs), errs
+
+
+def test_an_unknown_type_is_refused() -> None:
+    one(_fields({**_WARRANTY, "type": "warranty"}), "$.contributes.fields[0].type",
+        contains="unknown")
+
+
+@pytest.mark.parametrize("part", ["required", "hot", "to"])
+def test_a_refused_part_is_refused_also_when_false(part) -> None:
+    value = "visit" if part == "to" else False
+    errs = validate_manifest(_fields({**_WARRANTY, part: value}))
+    assert any(e.path == f"$.contributes.fields[0].{part}" and "cannot set" in e.message
+               for e in errs), errs
+
+
+def test_an_unknown_key_of_an_entry_is_refused() -> None:
+    one(_fields({**_WARRANTY, "feature": "studio"}), "$.contributes.fields[0].feature",
+        contains="not a key")
+
+
+def test_a_duplicate_in_one_manifest_is_refused_and_two_kinds_may_share_a_key() -> None:
+    one(_fields(_WARRANTY, _WARRANTY), "$.contributes.fields[1].key", contains="twice")
+    assert validate_manifest(_fields(_WARRANTY, {**_WARRANTY, "record": "crm.deal"})) == []
+
+
+def test_more_than_the_cap_is_refused() -> None:
+    entries = [{**_WARRANTY, "key": f"f{i}"} for i in range(MAX_HOST_FIELDS + 1)]
+    one(_fields(*entries), "$.contributes.fields", contains=str(MAX_HOST_FIELDS))
+    assert validate_manifest(_fields(*entries[:MAX_HOST_FIELDS])) == []
+
+
+def test_a_long_label_and_bad_options_are_refused() -> None:
+    one(_fields({**_WARRANTY, "label": "x" * 121}), "$.contributes.fields[0].label",
+        contains="label")
+    one(_fields({**_WARRANTY, "type": "select"}), "$.contributes.fields[0].options",
+        contains="option")
+
+
+def test_every_extension_field_error_is_one_short_sentence() -> None:
+    bad = {"record": "crm.x", "key": "Bad", "type": "relation", "hot": True, "x": 1}
+    errs = validate_manifest(_fields(bad, bad))
+    assert errs
+    for e in errs:
+        assert e.path.startswith("$.contributes.fields"), e
+        assert words(e.message) <= 25, e.message
+
+
 def test_a_package_cannot_extend_itself():
     """PKG-15a. The host of a sub-app is another package (package_host.md §8.2)."""
     ok = copy.deepcopy(EXAMPLE)
@@ -1292,7 +1383,7 @@ def test_the_example_names_a_registry_connection():
 
 @pytest.mark.parametrize("names", [
     [], ["mcp:tally"], ["zoho"], ["google_drive", "outlook_calendar"], ["mcp:my-erp-2", "github"],
-    ["mcp:" + "a" * 50], ["a" * 48],
+    ["mcp:" + "a" * 50], ["a" * 48], ["api:zoho_books"],
 ])
 def test_a_connection_of_the_grammar_passes(names):
     assert validate_manifest(_with_connections(names)) == []
@@ -1301,6 +1392,8 @@ def test_a_connection_of_the_grammar_passes(names):
 @pytest.mark.parametrize("name", [
     "Zoho", "zoho crm", "", "1zoho", "a" * 49, "whats-app", "mcp:x", "mcp:", "mcp:Tally",
     "mcp:-tally", "mcp:tally-", "mcp:" + "a" * 51, "mcp:tally:x", "MCP:tally", " zoho",
+    # API-5: an API connection is api:<template id>, one name only.
+    "api:", "api:Zoho", "api:zoho-books", "api:zoho:books", "API:zoho_books",
 ])
 def test_a_bad_connection_name_is_refused_with_its_path(name):
     e = one(_with_connections(["zoho", name]), "$.connections[1]", contains="mcp:<server>")
@@ -1329,6 +1422,106 @@ def test_a_package_names_at_most_32_connections():
 def test_a_connections_value_that_is_not_a_list_of_text_is_refused(names):
     errs = validate_manifest(_with_connections(names))
     assert errs and all(e.path.startswith("$.connections") for e in errs), errs
+
+
+# -- STU-I9a: whose account a connection uses, and its scopes ----------------
+#
+# R7 mutations, run on 2026-11-14:
+# * A1. `connection_as`: ignore the connector list. The default cases go red.
+# * A2. `_check_connection_scopes`: drop the duplicate check. The duplicate
+#   case goes red.
+# * A3. `ConnectionNeed.as_`: widen the Literal to `str`. The unknown `as`
+#   case goes red.
+
+#: The hash of a manifest with plain connection names, computed on the code of
+#: origin/main before I9a (`manifest_hash` of `EXAMPLE` with these names).
+_PLAIN_HASH = "9487d0d12b2b48d94f620335c4641358fabfa100b00b39f831cdce3be6d4a004"
+
+
+def test_a_stored_manifest_with_plain_names_validates_and_hashes_as_before():
+    from acb_common.studio_manifest import manifest_hash
+
+    stored = _with_connections(["mcp:tally", "zoho", "google_drive"])
+    assert validate_manifest(stored) == []
+    assert manifest_hash(stored) == _PLAIN_HASH
+
+
+def test_an_object_connection_passes_with_as_and_scopes():
+    names = ["zoho", {"name": "github"}, {"name": "google_drive", "as": "org",
+                                            "scopes": ["drive.file", "drive.readonly"]},
+             {"name": "mcp:tally", "as": "member", "scopes": []}]
+    assert validate_manifest(_with_connections(names)) == []
+
+
+@pytest.mark.parametrize(("name", "whose"), [
+    ("mailbox", "member"), ("whatsapp", "member"), ("google_calendar", "member"),
+    ("outlook_calendar", "member"), ("google_drive", "member"),
+    ("zoho", "org"), ("github", "org"), ("mcp:tally", "org"), ("not-a-connector", "org"),
+])
+def test_the_default_account_comes_from_the_connector_list(name, whose):
+    from acb_common.connector_list import connector
+    from acb_common.studio_manifest import connection_as, connection_item
+
+    row = connector(name)
+    assert row is None or row["scope"] == whose
+    assert connection_as(name) == whose
+    assert connection_item(name) == (name, whose)
+    assert connection_item({"name": name}) == (name, whose)
+
+
+def test_a_declared_account_wins_over_the_default():
+    from acb_common.studio_manifest import connection_item
+
+    assert connection_item({"name": "google_drive", "as": "org"}) == ("google_drive", "org")
+    assert connection_item({"name": "zoho", "as": "member"}) == ("zoho", "member")
+    assert connection_item({"name": "zoho", "as": None}) == ("zoho", "org")
+    assert connection_item({"as": "org"}) is None and connection_item(3) is None
+
+
+@pytest.mark.parametrize(("item", "path"), [
+    ({"name": "zoho", "as": "all"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": "Org"}, "$.connections[1].as"),
+    ({"name": "zoho", "as": 1}, "$.connections[1].as"),
+    ({"name": "zoho", "scopes": "read"}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": {"read": True}}, "$.connections[1].scopes"),
+    ({"name": "zoho", "scopes": [1]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["read", "read"]}, "$.connections[1].scopes[1]"),
+    ({"name": "zoho", "scopes": [""]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["two words"]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "scopes": ["x" * 201]}, "$.connections[1].scopes[0]"),
+    ({"name": "zoho", "token": "x"}, "$.connections[1].token"),
+    ({"as": "org"}, "$.connections[1].name"),
+    ({"name": "Zoho CRM"}, "$.connections[1]"),
+    (5, "$.connections[1]"),
+])
+def test_a_hostile_connection_item_is_refused_with_a_path_and_one_sentence(item, path):
+    errs = validate_manifest(_with_connections(["github", item]))
+    assert [e.path for e in errs] == [path], errs
+    assert words(errs[0].message) <= 25, errs[0].message
+
+
+def test_too_many_scopes_are_refused_once():
+    from acb_common.studio_manifest import MAX_CONNECTION_SCOPES
+
+    ok = [f"s{i}" for i in range(MAX_CONNECTION_SCOPES)]
+    assert validate_manifest(_with_connections([{"name": "zoho", "scopes": ok}])) == []
+    errs = validate_manifest(_with_connections([{"name": "zoho", "scopes": [*ok, "more"]}]))
+    assert [e.path for e in errs] == ["$.connections[0].scopes"]
+    huge = validate_manifest(_with_connections([{"name": "zoho", "scopes": ["a"] * 5000}]))
+    assert [e.path for e in huge] == ["$.connections[0].scopes"]
+
+
+def test_a_name_in_two_forms_is_a_duplicate():
+    errs = validate_manifest(_with_connections(["zoho", {"name": "zoho", "as": "member"}]))
+    assert [e.path for e in errs] == ["$.connections[1]"]
+
+
+def test_the_old_pure_reader_still_returns_the_names():
+    from gateway.package_host import resolve
+
+    names = ["zoho", {"name": "google_drive", "as": "org", "scopes": ["a"]}]
+    assert resolve.connection_names({"connections": names}) == ("zoho", "google_drive")
+    assert resolve.connection_names({"connections": [{"as": "org"}]}) is None
 
 
 def _with_field(key: str) -> dict:
@@ -1520,3 +1713,185 @@ def test_every_first_party_template_still_validates():
     assert files
     for f in files:
         assert validate_manifest(json.loads(f.read_text(encoding="utf-8"))) == [], f.name
+
+
+# --- record, the tabs of the record page (STU-AF5b) ---
+
+
+def _rec_doc(rec) -> dict:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["record"] = rec
+    return d
+
+
+def test_record_is_optional_and_the_example_stays_valid():
+    assert all("record" not in o for o in EXAMPLE["objects"])
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).objects[0].record is None
+
+
+def test_valid_record_tabs_keep_their_order():
+    d = _rec_doc({"tabs": ["files", "details"]})
+    assert validate_manifest(d) == []
+    assert Manifest.model_validate(d).objects[0].record.tabs == ["files", "details"]
+
+
+def test_record_tabs_cap_is_six():
+    from acb_common.studio_manifest import MAX_RECORD_TABS
+
+    assert MAX_RECORD_TABS == 6
+    assert _at(_rec_doc({"tabs": ["details", "related", "files"]}), "$.objects[0].record.tabs") == []
+    assert _at(_rec_doc({"tabs": ["details"] * 6}), "$.objects[0].record.tabs[1]")  # duplicates only
+    seven = _at(_rec_doc({"tabs": ["details"] * 7}), "$.objects[0].record.tabs")
+    assert len(seven) == 1 and "at most 6" in seven[0].message
+
+
+def test_empty_record_tabs_are_refused():
+    assert _at(_rec_doc({"tabs": []}), "$.objects[0].record.tabs")
+
+
+def test_duplicate_record_tab_is_refused():
+    one(_rec_doc({"tabs": ["details", "files", "details"]}), "$.objects[0].record.tabs[2]",
+        contains="used twice")
+
+
+def test_unknown_record_tab_is_refused():
+    assert _at(_rec_doc({"tabs": ["activity"]}), "$.objects[0].record.tabs[0]")
+
+
+def test_record_refuses_a_colour_key_and_an_unknown_key():
+    one(_rec_doc({"tabs": ["details"], "color": "red"}), "$.objects[0].record.color", contains="style")
+    assert _at(_rec_doc({"tabs": ["details"], "lists": 4}), "$.objects[0].record.lists")
+
+
+# ── Page presets (STU-LY-0, specs/studio_layouts.md section 6) ──────────────────────────────
+
+_LY_VIEWS = [
+    {"id": "all_visits", "block": "table", "source": {"object": "visit"}, "columns": ["status"]},
+    {"id": "one_visit", "block": "detail", "object": "visit"},
+    {"id": "n_open", "block": "stat", "source": {"object": "visit"}},
+    {"id": "by_status", "block": "chart", "source": {"object": "visit"}},
+]
+
+
+def _ly(*pages: dict, extra_views=True) -> dict:
+    d = doc(pages=list(pages))
+    if extra_views:
+        d["views"] = [*d["views"], *_LY_VIEWS]
+    return d
+
+
+def _lp(layout: str, **regions) -> dict:
+    return {"id": "main", "layout": layout, "regions": regions}
+
+
+def test_a_page_with_no_layout_is_unchanged():
+    d = _with_pages(_page())
+    assert validate_manifest(d) == []
+    pg = Manifest.model_validate(d).pages[0]
+    assert pg.layout is None and pg.regions == {}
+
+
+def test_each_first_preset_validates_with_its_regions():
+    assert validate_manifest(_ly(_lp("table_workspace", main=["all_visits"]))) == []
+    assert validate_manifest(_ly(_lp("board", main=["board"]))) == []
+    for name in ("list_detail", "work_queue", "approval_queue"):
+        assert validate_manifest(_ly(_lp(name, list=["all_visits"], detail=["one_visit"]))) == []
+    full = _lp("dashboard", kpis=["n_open"], charts=["by_status"], worklist=["all_visits"])
+    assert validate_manifest(_ly(full)) == []
+
+
+def test_the_enum_is_closed_to_a_preset_whose_block_is_not_built():
+    errs = validate_manifest(_ly(_lp("calendar", main=["week"])))
+    assert errs and errs[0].path.startswith("$.pages[0]")
+
+
+def test_a_region_outside_the_preset_is_refused():
+    d = _ly(_lp("board", main=["board"], kpis=["n_open"]))
+    one(d, "$.pages[0].regions.kpis", contains="no region")
+
+
+def test_a_missing_required_region_is_refused():
+    one(_ly(_lp("list_detail", list=["all_visits"])), "$.pages[0].regions.detail", contains="needs region")
+    one(_ly(_lp("board")), "$.pages[0].regions.main", contains="needs region")
+
+
+def test_a_view_of_the_wrong_block_is_refused():
+    one(_ly(_lp("table_workspace", main=["board"])), "$.pages[0].regions.main[0]", contains="table view")
+
+
+def test_an_undeclared_view_in_a_region_is_refused():
+    one(_ly(_lp("table_workspace", main=["ghost"])), "$.pages[0].regions.main[0]", contains="ghost")
+
+
+def test_a_region_cap_is_refused():
+    d = _ly(_lp("table_workspace", main=["all_visits", "all_visits"]))
+    one(d, "$.pages[0].regions.main", contains="at most 1 view")
+    seven = _lp("dashboard", kpis=["n_open"] * 7)
+    one(_ly(seven), "$.pages[0].regions.kpis", contains="at most 6")
+
+
+def test_a_layout_page_has_no_grid():
+    d = _ly({**_lp("board", main=["board"]), "cells": [{"view": "board"}]})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+    d = _ly({**_lp("board", main=["board"]), "side": {"view": "board"}})
+    one(d, "$.pages[0]", contains="no tabs, cells or side")
+
+
+def test_regions_need_a_layout():
+    d = _with_pages({"id": "main", "cells": [{"view": "board"}], "regions": {"main": ["board"]}})
+    one(d, "$.pages[0].regions", contains="needs a `layout`")
+
+
+def test_a_colour_or_size_key_in_a_region_is_refused():
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["regions"]["color"] = ["board"]
+    assert validate_manifest(d)
+    d = _ly(_lp("board", main=["board"]))
+    d["pages"][0]["width"] = 300
+    assert validate_manifest(d)
+
+
+def test_a_rail_count_reads_the_views_of_a_layout_page():
+    d = _ly(_lp("table_workspace", main=["all_visits"]))
+    d["nav"] = [{"title": "Work", "rows": [{"page": "main", "count": True}]}]
+    assert validate_manifest(d) == []
+
+
+def test_the_region_table_matches_the_validator_and_the_names():
+    assert set(PRESET_REGIONS) == set(LAYOUTS)
+    assert {r for t in PRESET_REGIONS.values() for r in t} <= set(REGION_NAMES)
+    schema = Manifest.model_json_schema()
+    assert schema["$defs"]["PageDef"]["properties"]["layout"]["anyOf"][0]["enum"] == list(LAYOUTS)
+
+
+# ── The icon of a stat view (STU-LOOK-2, studio_layouts.md section 11.4) ──────────────────────
+
+
+def _stat_doc(**patch) -> dict:
+    d = doc()
+    d["views"] = [*d["views"], {"id": "n_open", "block": "stat", "source": {"object": "visit"}, **patch}]
+    return d
+
+
+def test_a_stat_view_may_carry_an_icon_of_the_list():
+    assert validate_manifest(_stat_doc(icon="Truck")) == []
+    assert validate_manifest(_stat_doc()) == []
+
+
+def test_an_icon_on_another_block_is_refused_in_one_sentence():
+    d = doc()
+    d["views"] = [*d["views"], {"id": "all_v", "block": "table", "source": {"object": "visit"}, "icon": "Truck"}]
+    one(d, f"$.views[{len(d['views']) - 1}].icon", contains="stat view")
+
+
+def test_an_icon_outside_the_list_is_refused():
+    errs = validate_manifest(_stat_doc(icon="NotAnIcon"))
+    assert errs and errs[0].path.endswith(".icon") and "icon list" in errs[0].message
+
+
+def test_the_icon_of_a_view_and_of_a_rail_row_share_one_list():
+    schema = Manifest.model_json_schema()
+    view = schema["$defs"]["ViewDef"]["properties"]["icon"]["anyOf"][0]["enum"]
+    row = schema["$defs"]["NavRow"]["properties"]["icon"]["anyOf"][0]["enum"]
+    assert view == row and view == list(NAV_ICONS)
