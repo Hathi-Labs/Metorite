@@ -1,5 +1,5 @@
 -- ============================================================================
--- 453_member_action.sql — the act record of the member model (WS-PZ MM-1,
+-- 510_member_action.sql — the act record of the member model (WS-PZ MM-1,
 -- task 2878).
 --
 -- What: one new table. `member_action` holds one row for each act that the
@@ -35,8 +35,9 @@
 -- keys and the short scalar values are the Python half of the "no text" rule
 -- (tests/unit/test_member_action_writer.py), so a new key needs no migration.
 --
--- The number is taken at build time (R1): 453 was booked for this task by
--- ~/lanes/reserve_migration.sh. Check it again at merge. Pinned by
+-- The number is taken at build time (R1). 453 was booked at build, and 510
+-- was booked by ~/lanes/reserve_migration.sh when the branch took main.
+-- Check it again at merge. Pinned by
 -- tests/unit/test_member_action_r8.py, which finds this file by CONTENT,
 -- never by number (R1).
 -- ============================================================================

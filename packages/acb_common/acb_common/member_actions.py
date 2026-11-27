@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/personalization.md`` §19.4 and §19.10, and
 ``project-docs/specs/proactive_loop.md`` §5.3. Table: migration
-``member_action`` (453 at build). ``tests/unit/test_member_action_r8.py`` runs
+``member_action`` (510 after the merge renumber). ``tests/unit/test_member_action_r8.py`` runs
 this SQL on a real Postgres.
 
 **What a row is.** One act of one member: a send, a reply, a forward, a done,
