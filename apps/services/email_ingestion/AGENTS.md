@@ -111,7 +111,7 @@ All providers implement the `BaseEmailProvider` abstract interface:
    - `parse_sender` gives an empty address for a sender that is malformed or ambiguous, never a guess. Two `From` headers with different addresses give an empty address too.
    - Each address outside quotes and comments must be the sender. So `john@x.com <john@x.com>` keeps its sender, and `ceo@company.test <mallory@evil.test>` gets none.
    - More than `SENDER_MAX_VALUES` `From` values, or more than `SENDER_MAX_CHARS` characters in all, give no sender. The policy parser is slow on some text, and the receiver runs on the event loop.
-   - The parse never raises, and a name or an address holds no NUL. In `providers/imap.py`, the sync logs and skips one message that does not parse, so the rest of the batch stays.
+   - The parse never raises, and a name or an address holds no NUL. In `providers/imap.py`, the sync logs and skips one message that does not parse, so the rest of the batch stays. Fence for the NUL: `test_email_from_nul_r8.py` (R8).
    - Fence: `test_email_from_parser.py`. It also refuses a `split("<")` in this package.
    - The gateway shows a stored sender through `capture_email._sender_label`. A name that holds `@` or `<`, and is not the address, shows the address. Fence: `test_capture_email_sender_label.py`.
 
