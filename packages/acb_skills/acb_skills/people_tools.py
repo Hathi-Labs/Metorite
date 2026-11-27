@@ -49,8 +49,11 @@ person. It reads ``GET /auth/me`` first, so a member without
 ``admin:members:manage`` gets plain words and no card. It then asks the route
 for a ``dry_run``, and ONE card shows the impact that the server computed: who
 moves, and the hours of the week before and after. Only ``approved`` sends,
-and it sends ONE request. The tool reads the impact again after the answer,
-and it sends nothing when that impact moved while the card was open.
+and it sends ONE request. The tool reads the schedule and the impact again
+after the answer, and it sends nothing when one of them moved while the card
+was open. It refuses a field that the route does not know, a value that the
+route would repair, and a text that the card cannot show. ``changes={}`` reads
+the schedule of now, and it writes nothing.
 
 **Text of other people is data.** A name, a title, a note and the text of a
 Reach brief are the text of other people. Each result puts that text in ONE

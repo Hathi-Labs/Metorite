@@ -144,8 +144,11 @@ record of a person. The tool reads `GET /auth/me` first, so a member without
 to change, onto the policy of now, because the route replaces the whole policy.
 It asks the route for a `dry_run`, and ONE card shows the impact that the server
 computed: the hours of the company week before and after, how many people
-move, and up to ten examples. The tool reads the impact again after Approve,
-and it sends nothing when the impact moved. It paid one people row, so the
+move, and up to ten examples. The tool reads the schedule and the impact again
+after Approve, and it sends nothing when one of them moved. It refuses an
+unknown field, a value that the route would repair, and a text that the card
+cannot show. A change of a list names each entry that it removes or adds, and
+`changes={}` reads the schedule first. It paid one people row, so the
 people ceiling went from 7 to 6. Fence: `tests/unit/test_people_schedule_tool.py`.
 
 **PAR-2a (task 3102) is BUILT, 2026-11-23, and it ships dark.** The pack
