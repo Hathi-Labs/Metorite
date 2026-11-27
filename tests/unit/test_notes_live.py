@@ -119,16 +119,17 @@ async def test_bot_live_token_shares_the_browser_path(monkeypatch) -> None:
     assert ei.value.status_code == 503
 
 
-async def test_bot_live_token_open_when_no_shared_secret_is_set(monkeypatch) -> None:
-    """Self-hosted LAN default (matches the live-segment callback's rule)."""
+async def test_bot_live_token_refuses_when_no_shared_secret_is_set(monkeypatch) -> None:
+    """Task 4113: no token on the box is a refusal, never an open door. The
+    refusal names the setting, so it is not the 503 of the provider check."""
     from fastapi import HTTPException
 
     monkeypatch.delenv("MEETING_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
-    monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
+    monkeypatch.setenv("ASSEMBLYAI_API_KEY", "aai-secret")
     with pytest.raises(HTTPException) as ei:
         await live.bot_live_token(authorization=None)
-    assert ei.value.status_code == 503  # reached the provider check, not 401
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "MEETING_BOT_TOKEN is not configured"
 
 
 # ── streaming model family ───────────────────────────────────────────────────

@@ -223,6 +223,9 @@ services:
     <<: *restart
     environment:
       # Shared secret for gateway <-> worker calls, both directions.
+      # Set it. With no token the gateway refuses the worker's callbacks
+      # (503, task 4113), so the bot records but shows no live captions.
+      # This file has profiles, so a `:?` here would stop every profile.
       MEETING_BOT_TOKEN: ${MEETING_BOT_TOKEN:-}
       MEETING_BOT_DATA: /data
       # Live transcript + speaking are additive and gated: unset -> the bot just
