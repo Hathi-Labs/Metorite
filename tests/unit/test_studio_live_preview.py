@@ -270,7 +270,7 @@ def lw(dw, monkeypatch):  # noqa: F811
     # ``TestTheRealRule`` below runs with the real rule.
     w.real_live_unmet = invoke._live_unmet
     monkeypatch.setattr(invoke, "_live_unmet",
-                        lambda manifest, met: _resolve.first_unmet_connection(manifest, met, True))
+                        lambda manifest, met: _resolve.first_unmet_need(manifest, met, True))
     monkeypatch.setattr(get_settings(), "studio_live_preview_orgs", "*")
     mcp_tools._LIVE_IN_FLIGHT.clear()
     yield w
@@ -1344,7 +1344,7 @@ def test_the_answer_identity_holds_updated_at_and_the_list_identity_does_not() -
 
 
 class TestTheRealRule:
-    """``invoke._live_unmet`` as it ships: ``first_unmet_connection`` with
+    """``invoke._live_unmet`` as it ships: ``first_unmet_need`` with
     ``org_approved=False``, as ``_needs_connection`` asks for a preview of
     each other source. A draft is no install, so an ``org`` need is never
     met, and no live read of a draft calls a server today (fail closed)."""
@@ -1369,12 +1369,18 @@ class TestTheRealRule:
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["code"] == "needs_connection"
         assert (r.json()["detail"]["provider"], r.json()["detail"]["as"]) == ("mcp:github", whose)
+        if whose == "org":
+            # I9b-1 rule 2: an org need of a draft says why, as the door does.
+            assert r.json()["detail"]["reason"] == "org_approval"
+            assert r.json()["detail"]["message"] == invoke.ORG_APPROVAL_TEXT
         assert real.lists == [] and real.calls == [] and real.meta_reads == []
 
     def test_the_rule_is_the_one_of_the_door(self) -> None:
-        """``_live_unmet`` calls ``first_unmet_connection`` with a literal
-        False, as ``_needs_connection`` gets ``org_approved=False`` for a draft."""
+        """``_live_unmet`` calls ``first_unmet_need`` with a literal False, as
+        ``_needs_connection`` gets ``org_approved=False`` for a draft. The
+        reason travels with it (I9b-1)."""
         src = inspect.getsource(invoke._live_unmet)
-        assert "first_unmet_connection(manifest, met, False)" in src
+        assert "first_unmet_need(manifest, met, False)" in src
         met = _resolve.Met(org=frozenset({"mcp:github"}), member=frozenset({"mcp:github"}))
-        assert invoke._live_unmet({"connections": ["mcp:github"]}, met) == ("mcp:github", "org")
+        assert invoke._live_unmet({"connections": ["mcp:github"]}, met) == (
+            "mcp:github", "org", "org_approval")

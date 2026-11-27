@@ -2517,11 +2517,11 @@ async def _held_live_read(db: Any, member: str, package: _App, ref: UsesRef, out
     return True
 
 
-def _live_unmet(manifest: Any, met: Any) -> tuple[str | None, str | None] | None:
+def _live_unmet(manifest: Any, met: Any) -> tuple[str | None, str | None, str] | None:
     """The first unmet connection need of the draft *manifest* in a live
-    preview, or None (I11a after I9a).
+    preview, as ``(provider, as, reason)``, or None (I11a after I9a and I9b-1).
 
-    The one rule ``resolve.first_unmet_connection``, called as
+    The one rule ``resolve.first_unmet_need``, called as
     :func:`_needs_connection` calls it for a preview of each other source: a
     draft is no install, so ``org_approved`` is False. So an ``org`` need is
     NEVER met here, and ``mcp:<server>`` is an ``org`` need (an MCP server is
@@ -2529,7 +2529,10 @@ def _live_unmet(manifest: Any, met: Any) -> tuple[str | None, str | None] | None
     draft therefore never calls a server. Whether a preview of the owner may
     count the org row is a question for the owner (the I11a row). Do not open
     it here without that decision."""
-    return _resolve.first_unmet_connection(manifest, met, False)
+    # I9b-1: the reason travels too, so the 409 of a live read says
+    # "org_approval" and its sentence for an org need of a draft, as the door
+    # does, and never "missing" (the merge with I11a, task 3169 delta verify).
+    return _resolve.first_unmet_need(manifest, met, False)
 
 
 def _live_args(raw: bytes) -> dict[str, Any] | None:
