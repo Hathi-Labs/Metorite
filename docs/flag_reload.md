@@ -34,7 +34,9 @@ map of SW-103. The view reads the map of SW-102, so it also needs
 `AGENTS_VIEW_ORGS` and `AGENT_MAP_ORGS`. Its one reader is
 `gateway.agent_lenses_flag.agent_lenses_allowed`, and each shell read asks it.
 `GET /auth/me/shell` serves the answer as `agent_lenses`, so a tab shows a
-change at its next shell read. A reload applies a change. The flip stays
+change at its next shell read. AMR-4: the map read asks the same reader on
+each call. For a listed org it also answers `detail=summary` and `session=`
+(`agent_coordination.md` §3.12.9). A reload applies a change. The flip stays
 OWNER-GATE (`enforcement-flip`), after the owner preview.
 
 `AGENT_QUESTIONS_ORGS` changes who may answer an agent's question
@@ -131,8 +133,17 @@ counts only a trash that the mail provider confirmed, and names each matching dr
 stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
 before.
 
+The same flag turns on the question of task 3978 (§18.13.1). A member declines the card of
+`edit_draft`, or discards a new-mail card, for a draft that the chat saved. The card then asks
+"Keep the earlier draft, or delete it?". The question also needs `CHAT_CARD_REVISE_ORGS` for
+the org, because only its record knows the chat's draft. The new-mail card also needs
+`EMAIL_EDIT_CARD_ORGS`, which draws that card. With this flag on, each decline of the card of
+`edit_draft` says that the draft is still in Drafts.
+
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
-each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).
+each trash, before each new-mail card, in each `draft_reply` and in each `edit_draft`, so a
+reload applies at once. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
@@ -513,6 +524,18 @@ run. Any value other than empty is OWNER-GATE, and only the owner flips it.
 The five tools join each request, so the flip takes the trade of the tool cap
 in `chat_parity.md`, PAR-8b facts for the owner.
 
+`INTEGRATION_ACCESS_ORGS` opens the two admin routes that set who can use each
+integration (`integrations_console.md` §3.9.4, ACC-1). Off,
+`GET /admin/integration-access` and `PUT /admin/integration-access/{service}`
+answer 404, and the console shows no control. `*` lists every org, and the
+default is empty. The flag gates the routes only. The access read applies a
+stored rule whatever the flag says. So when the flag goes off, no member gets
+an integration back.
+
+Its one reader is `gateway.routes.admin._common.integration_access_allowed`.
+Each request asks it, so a reload applies at once. The flip waits for the
+owner preview, and it stays OWNER-GATE (`enforcement-flip`).
+
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
 upload of a signed agent answers 404 and `attachment_ids` answers 422, and the
@@ -723,6 +746,10 @@ The route also needs `STUDIO_ORGS`, and it refuses each run until the owner
 sets `STUDIO_SKILL_TESTS_CAP_CREDITS`. That cap has no default, and it needs a
 restart, because it is no `*_ORGS` key. A reload applies a change to this
 flag. Any value other than empty is OWNER-ONLY, because it spends credits.
+
+`TODAY_RULE_ORGS` moves the Today chip of My work and its count to the one
+Today rule (`my_day_command_centre.md` §9.2). A reload applies it, and the flip
+stays OWNER-GATE (`enforcement-flip`).
 
 `TOOL_FAILURE_LOG_ORGS` turns on the record of tool failures for each listed
 org (`tool_failure_log.md` §6, TOF-2b). A capture site writes one row in the

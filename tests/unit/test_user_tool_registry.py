@@ -500,6 +500,200 @@ def test_6_the_route_gives_a_publisher_the_rows_of_their_org_only(world) -> None
     assert ben == 403
 
 
+# ── SBX-4b1: user_tool_runs (§7.3, §12.4 decision 10) ─────────────────────
+
+_RUNS_MARK = "CREATE TABLE IF NOT EXISTS user_tool_runs ("
+
+
+def _runs_migration() -> Path:
+    hits = [p for p in sorted((_ROOT / "infra" / "postgres").glob("[0-9]*.sql"))
+            if _RUNS_MARK in p.read_text(encoding="utf-8")]
+    assert len(hits) == 1, hits
+    return hits[0]
+
+
+@pytest.fixture
+def runs_world(promoted):  # noqa: F811
+    """Org A with Ana and Ben, and org B with Zed. A chat for each. No
+    package, because a run row names none in SBX-4b."""
+    p = promoted
+    w = SimpleNamespace(p=p, a=p.org_a, b=p.org_b, chats=[])
+    w.chat_ana = _chat(w, w.a, ANA)
+    w.chat_ben = _chat(w, w.a, BEN)
+    w.chat_zed = _chat(w, w.b, ZED)
+    yield w
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM user_tool_runs WHERE member_email LIKE :e"),
+                  {"e": _EMAIL_LIKE})
+        for sid in w.chats:
+            c.execute(text("DELETE FROM chat_session WHERE id = :s"), {"s": sid})
+
+
+async def _record_run(org: str, member: str, thread: str, **over: Any) -> str | None:
+    from gateway.studio import user_tool_runs as runs_store
+
+    values: dict[str, Any] = {
+        "member": member, "run_id": f"run-{TAG}", "thread_id": thread, "phase": "smoke",
+        "backend": "docker-runc", "outcome": "succeeded", "exit_code": 0, "wall_ms": 1200,
+        "api_reads": 2}
+    values.update(over)
+    async with tenant_session(org) as db:
+        return await runs_store.record_run(db, **values)
+
+
+def _run_rows(world: Any, member: str) -> list[Any]:
+    with world.p.admin_engine.connect() as c:
+        return list(c.execute(text(
+            "SELECT organization_id::text, member_email, thread_id, phase, backend, outcome, "
+            "exit_code, wall_ms, api_reads, writes_held, writes_approved, writes_refused, "
+            "cpu_ms, peak_mem_mb, egress_bytes, credits, error_class, ended_at "
+            "FROM user_tool_runs WHERE member_email = :m ORDER BY started_at, id"),
+            {"m": member}))
+
+
+def test_user_tool_runs_rls(runs_world) -> None:
+    """SBX-4b1 done-when 4, as the NOBYPASSRLS role. Org B cannot see a row
+    of org A, and cannot write one. The table has FORCE RLS and one policy,
+    each CHECK refuses its bad value, and a second run of the migration
+    changes nothing. The store writes a build row, a smoke row and a refused
+    row with the columns of decision 10.
+
+    Mutation: drop the policy -> org B reads the row -> red."""
+    w = runs_world
+    with w.p.admin_engine.connect() as c:
+        rls = c.execute(text(
+            "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+            "WHERE oid = 'user_tool_runs'::regclass")).one()
+        assert tuple(rls) == (True, True)
+        policies = c.execute(text(
+            "SELECT polname, pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid) "
+            "FROM pg_policy WHERE polrelid = 'user_tool_runs'::regclass")).all()
+    assert [p[0] for p in policies] == ["user_tool_runs_tenant_isolation"]
+    assert "app.tenant_id" in policies[0][1] and "app.tenant_id" in policies[0][2]
+
+    async def go() -> tuple[Any, ...]:
+        build = await _record_run(w.a, ANA, w.chat_ana, phase="build", api_reads=0)
+        smoke = await _record_run(w.a, ANA, w.chat_ana)
+        refused = await _record_run(w.a, ANA, w.chat_ana, outcome="refused", exit_code=None,
+                                    wall_ms=None, api_reads=0, error_class="missing_file")
+        async with tenant_session(w.b) as db:
+            seen_b = (await db.execute(text("SELECT count(*) FROM user_tool_runs"))).scalar_one()
+        async with tenant_session(w.a) as db:
+            seen_a = (await db.execute(text(
+                "SELECT count(*) FROM user_tool_runs WHERE member_email = :m"), {"m": ANA}
+            )).scalar_one()
+        wrote = False
+        try:
+            async with tenant_session(w.b) as db:
+                await db.execute(text(
+                    "INSERT INTO user_tool_runs (organization_id, member_email, run_id, "
+                    "thread_id, phase, backend, outcome) VALUES (CAST(:o AS uuid), :m, 'r', "
+                    ":t, 'smoke', 'docker-runc', 'failed')"),
+                    {"o": w.a, "m": ZED, "t": w.chat_zed})
+                wrote = True
+        except DBAPIError:
+            pass
+        return build, smoke, refused, seen_b, seen_a, wrote
+
+    build, smoke, refused, seen_b, seen_a, wrote = _run(w, go)
+    assert None not in (build, smoke, refused)
+    assert seen_b == 0, "org B reads no row of org A"
+    assert seen_a == 3
+    assert not wrote, "WITH CHECK refused a row of org A written from org B"
+    rows = _run_rows(w, ANA)
+    assert [(r.phase, r.outcome, r.error_class) for r in rows] == [
+        ("build", "succeeded", None), ("smoke", "succeeded", None),
+        ("smoke", "refused", "missing_file")]
+    for r in rows:
+        assert r.organization_id == w.a and r.thread_id == w.chat_ana
+        assert r.backend == "docker-runc" and r.ended_at is not None
+        assert (r.writes_held, r.writes_approved, r.writes_refused) == (0, 0, 0)
+        assert (r.cpu_ms, r.peak_mem_mb, r.egress_bytes, r.credits) == (None,) * 4
+    assert (rows[1].exit_code, rows[1].wall_ms, rows[1].api_reads) == (0, 1200, 2)
+
+    good = {"o": w.a, "m": ANA, "t": w.chat_ana, "ph": "smoke", "be": "docker-runc",
+            "out": "failed", "err": None, "sig": None, "reads": 0}
+    insert = ("INSERT INTO user_tool_runs (organization_id, member_email, run_id, thread_id, "
+              "phase, backend, outcome, error_class, signal, api_reads) VALUES "
+              "(CAST(:o AS uuid), :m, 'r', :t, :ph, :be, :out, :err, :sig, :reads)")
+    for bad in ({"m": ANA.upper()}, {"ph": "deploy"}, {"be": "podman"}, {"out": "ok"},
+                {"err": "Free text"}, {"sig": "other"}, {"reads": -1}, {"t": "no-such-chat"}):
+        with w.p.admin_engine.connect() as c, pytest.raises(DBAPIError), c.begin():
+            c.execute(text(insert), {**good, **bad})
+
+    def shape() -> tuple[Any, ...]:
+        with w.p.admin_engine.connect() as c:
+            return tuple(c.execute(text(
+                "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'user_tool_runs'::regclass ORDER BY conname")).all())
+
+    before = shape()
+    auto = w.p.admin_engine.execution_options(isolation_level="AUTOCOMMIT")
+    with auto.connect() as c, c.connection.dbapi_connection.cursor() as cur:
+        cur.execute(_runs_migration().read_text(encoding="utf-8"))
+    assert shape() == before and len(before) >= 10
+
+
+def test_a_chat_delete_keeps_the_run_row(runs_world) -> None:
+    """SBX-4b1 done-when 5, as the NOBYPASSRLS role. A Delete of the chat
+    sets ``thread_id`` to NULL and keeps the row. A chat of another org gives
+    no row.
+
+    Mutation: make the key ON DELETE CASCADE -> the row goes -> red."""
+    w = runs_world
+
+    async def go() -> tuple[Any, ...]:
+        made = await _record_run(w.a, BEN, w.chat_ben, phase="build")
+        async with tenant_session(w.a) as db:
+            await db.execute(text("DELETE FROM chat_session WHERE id = :s"), {"s": w.chat_ben})
+        async with tenant_session(w.a) as db:
+            kept = (await db.execute(text(
+                "SELECT thread_id FROM user_tool_runs WHERE id = CAST(:i AS uuid)"),
+                {"i": made})).all()
+        cross = await _record_run(w.b, ZED, w.chat_ana)
+        return made, kept, cross
+
+    made, kept, cross = _run(w, go)
+    assert made is not None
+    assert [tuple(r) for r in kept] == [(None,)], "the row stays with no chat"
+    assert cross is None
+    assert _run_rows(w, ZED) == []
+
+
+def test_the_member_purge_deletes_run_rows(runs_world) -> None:
+    """SBX-4b1 done-when 6, on the real entry of ``_PURGE_DELETES``, as the
+    NOBYPASSRLS role. The purge of Ana in org A deletes each of her rows,
+    also a row whose chat is gone. It keeps the row of Ben in org A and the
+    row of the same address in org B.
+
+    Mutation: drop the bound-org clause and run as a role with no RLS, or
+    drop the entry -> red."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _purge_params
+
+    w = runs_world
+    [entry] = [r for r in _PURGE_DELETES if r.table == "user_tool_runs"]
+    chat_zed_ana = _chat(w, w.b, ANA)
+
+    async def go() -> tuple[int, int]:
+        await _record_run(w.a, ANA, w.chat_ana, phase="build")
+        await _record_run(w.a, ANA, w.chat_ana)
+        await _record_run(w.a, BEN, w.chat_ben)
+        await _record_run(w.b, ANA, chat_zed_ana)
+        async with tenant_session(w.a) as db:
+            await db.execute(text("DELETE FROM chat_session WHERE id = :s"), {"s": w.chat_ana})
+        async with tenant_session(w.a) as db:
+            params = _purge_params(entry, uid="0", email=ANA)
+            counted = int((await db.execute(text(entry.count_sql), params)).scalar() or 0)
+            result = await db.execute(text(entry.delete_sql), params)
+            return counted, int(result.rowcount or 0)
+
+    counted, deleted = _run(w, go)
+    assert (counted, deleted) == (2, 2)
+    left = _run_rows(w, ANA)
+    assert [r.organization_id for r in left] == [w.b], "the row of org B stays"
+    assert [r.organization_id for r in _run_rows(w, BEN)] == [w.a]
+
+
 # ── The CI guard ──────────────────────────────────────────────────────────
 
 

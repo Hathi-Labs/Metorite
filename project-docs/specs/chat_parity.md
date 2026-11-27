@@ -21,7 +21,8 @@ decisions.** §6 sets the order of the work now.
 
 **Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
 an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
-Spec only, and nothing is built. The place of the converter waits for the owner.
+Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
+(2026-11-26).
 
 **P-3, task 3954 (the CRM field map suggestions and the AI analysis) is BUILT,
 2026-11-25, in review, with no flag and no migration.** The CRM agent gets five
@@ -508,6 +509,10 @@ chat, settings, studio), and each one names its
 task. The CRM wave P-3 had no task,
 so task 3678 is its task. Fence: `tests/unit/test_chat_parity.py`.
 
+P-6 (Workflows) paid its first parity rows through `ai_studio.md` rows E13a
+(ceiling 24 to 22) and E13b (22 to 18). PAR-8a (§6.4) paid the other 18. E13c
+owns the arm of one trigger, and its chat tool is open (STB-6, task 2134).
+
 **A new UI action needs a chat tool, or a row in the parity table.**
 `workbench/control_plane/AGENTS.md` carries this rule to UI work.
 
@@ -608,6 +613,9 @@ Task 3963 took notes to 45.
 
 The total of `DEBT_CEILING` is 252. The "Today" column above does not show
 all of these changes.
+
+ACC-2 (task 3988) raised admin from 10 to 12, because the chat tool ACC-4
+waits on the PAR-6b decision (task 3932). Task 3990 pays the two rows.
 
 ### 6.3 Rungs 0 to 3, slice by slice
 
@@ -1151,7 +1159,7 @@ owner and the board set its order (D118), and a customer waits for it.
 
 | Order | Slice | Task | Tier | Needs | State |
 |---|---|---|---|---|---|
-| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | 4027 | HIGH | The answer on where it runs. SBX-15a | Not built |
+| 1 | DOC-1: the `convert` worker. A broker target runs one office converter in a sealed container | 4027 | HIGH | SBX-15a | Not built |
 | 2 | DOC-2: `convert_to_pdf` in the chat, for one `.xlsx` or `.docx` of the chat folder | 4028 | HIGH | DOC-1 | Not built |
 | 3 | DOC-3: `edit_document`. Cell values and formulas of a `.xlsx`, and text of a `.docx` | 4029 | HIGH | DOC-1 | Not built |
 | 4 | DOC-4: the result goes on an email draft in the same turn | 4030 | STANDARD | DOC-2 | Not built |
@@ -1182,15 +1190,19 @@ owner and the board set its order (D118), and a customer waits for it.
 - **Verify.** Each slice names its test file in its pull request. DOC-1 runs its
   container tests with the marker `sandbox_docker`.
 
-#### Where the converter runs (open, §7 item 14)
+#### Where the converter runs (DECIDED 2026-11-26, §7 item 14)
+
+**The owner chose option (a)** on task 3979: the sandbox worker
+`aroh-sandbox-1`, through the broker.
 
 | Option | What it means | Cost |
 |---|---|---|
-| **(a) Recommended.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
+| **(a) Chosen.** The sandbox worker `aroh-sandbox-1` (D231), through the broker | The broker sends the file over `docker-remote` to a sealed container under `runsc`. The gateway box opens no file. The sandbox API door of §5.2 is not used, because the worker calls nothing | It waits for the box and its gates |
 | (b) A converter service on the gateway box | It is faster to ship | A hostile file runs beside the keys of the gateway. This goes against the reason for D85 |
 | (c) An outside conversion service | No image to run | Customer files leave Metorite, and a new processor needs the owner |
 
-No slice of this rung starts before the owner answers.
+The owner did not choose (b) or (c). This answer opens no gate. The gates of
+the rules above still bind each slice.
 
 ## 7. Decisions
 
@@ -1273,6 +1285,6 @@ he approves the merge.
     `HELD_CARD_WRITES_ORGS` is empty. The switch says that the task blocks go
     to the Metorite calendar when calendar write-out is on. It promises no
     delivery, because the tool cannot read `CALENDAR_SYNC_WRITE`.
-14. **The documents rung (§6.6).** Say where the converter runs. The
-    recommendation is option (a), the sandbox worker `aroh-sandbox-1`, through
-    the broker.
+14. **The documents rung (§6.6). ANSWERED 2026-11-26 (task 3979).** The
+    converter runs on the sandbox worker `aroh-sandbox-1`, through the broker,
+    which is option (a).

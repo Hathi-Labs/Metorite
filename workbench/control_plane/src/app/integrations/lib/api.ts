@@ -6,6 +6,17 @@
 
 import { parseBooksStatus, pickErrorText, startErrorText, type BooksStatus } from "./apiConnect";
 import { refusalText, startErrorMessage, type Connection, type McpSwitches } from "./connections";
+import {
+  LOAD_FAILED,
+  SAVE_FAILED,
+  parseAccessItem,
+  parseAccessList,
+  type AccessGroup,
+  type AccessItem,
+  type AccessList,
+  type AccessPerson,
+  type RuleBody,
+} from "./whoCanUse";
 
 export class IntegrationsError extends Error {
   status: number;
@@ -221,4 +232,63 @@ export async function addMcp(body: Record<string, unknown>): Promise<void> {
     body: JSON.stringify(body),
   });
   if (!res.ok) return fail(res);
+}
+
+// ── Who can use an integration (ACC-2) ────────────────────────────────────
+//
+// The routes sit under `/admin`, so they go through the `/api/admin` relay.
+// The GET answers 404 for an org that `INTEGRATION_ACCESS_ORGS` does not hold,
+// and 403 without `integrations:manage` and `admin:access:manage`. Both read
+// as `null`: the console then shows no control.
+
+const ACCESS_URL = "/api/admin/integration-access";
+
+/** The server's own words for a refusal, or `fallback`. Never a bare status. */
+async function refusal(res: Response, fallback: string): Promise<IntegrationsError> {
+  const body = (await res.json().catch(() => ({}))) as { detail?: unknown };
+  const said = body?.detail ? refusalText(body, res.status) : fallback;
+  return new IntegrationsError(said, res.status);
+}
+
+export async function getIntegrationAccess(): Promise<AccessList | null> {
+  const res = await fetch(ACCESS_URL, { cache: "no-store" });
+  if (res.status === 404 || res.status === 403) return null;
+  if (!res.ok) throw await refusal(res, LOAD_FAILED);
+  return parseAccessList(await res.json().catch(() => ({})));
+}
+
+/**
+ * Set, change or clear the rule of one service. A refusal (422, 409, 403, 500)
+ * carries the gateway's own words, so the admin knows what to correct.
+ */
+export async function setIntegrationAccess(service: string, rule: RuleBody): Promise<AccessItem> {
+  const res = await fetch(`/api/admin/integration-access/${encodeURIComponent(service)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rule),
+  });
+  if (!res.ok) throw await refusal(res, SAVE_FAILED);
+  const item = parseAccessItem(await res.json().catch(() => null));
+  if (!item) {
+    throw new IntegrationsError("Metorite could not read the saved rule. Open this page again.", 502);
+  }
+  return item;
+}
+
+/** The teams of the organization, for the picker. */
+export async function getAccessGroups(): Promise<AccessGroup[]> {
+  const res = await fetch("/api/admin/groups", { cache: "no-store" });
+  if (!res.ok) throw await refusal(res, "Could not read the teams.");
+  const rows: unknown = await res.json().catch(() => null);
+  if (!Array.isArray(rows)) throw new IntegrationsError("Could not read the teams.", 502);
+  return rows as AccessGroup[];
+}
+
+/** The members of the organization, for the picker. A removed member is not here. */
+export async function getAccessPeople(): Promise<AccessPerson[]> {
+  const res = await fetch("/api/admin/members", { cache: "no-store" });
+  if (!res.ok) throw await refusal(res, "Could not read the people.");
+  const rows: unknown = await res.json().catch(() => null);
+  if (!Array.isArray(rows)) throw new IntegrationsError("Could not read the people.", 502);
+  return rows as AccessPerson[];
 }

@@ -1,0 +1,12 @@
+# Every 2 hours (LBB-3a). The timer ships DISABLED: an install copies it and
+# `enable` turns it on. Enabling it is OWNER-GATE (`deploy`).
+[Unit]
+Description=Metorite landing sweeper every 2 hours (LBB-3a)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

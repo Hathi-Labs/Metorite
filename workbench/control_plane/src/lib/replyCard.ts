@@ -146,6 +146,62 @@ export interface ReplyForm {
    * ticked, is dropped.
    */
   unticked?: string[];
+  /**
+   * Task 3978 (§18.13.1), a new mail only: one line that names the draft of
+   * this email that the chat saved earlier. Discard then asks
+   * `EARLIER_QUESTION` on this card. The tool sets it only while the draft is
+   * the chat's own text.
+   */
+  earlier?: string;
+  /** Task 3978: what "Delete it" does at the mailbox's provider (`EARLIER_EFFECTS`), if known. */
+  earlierEffect?: string;
+}
+
+/** Task 3978: the question that Discard or Reject asks on a card with an `earlier` draft. */
+export const EARLIER_QUESTION = "Keep the earlier draft, or delete it?";
+/** Task 3978: what Keep does. It holds for each provider. */
+export const EARLIER_HINT = "Nothing is sent. Keep leaves the draft in Drafts.";
+/**
+ * Task 3978: what "Delete it" does, one sentence for each provider whose
+ * effect is known (`draft_choice.DELETE_EFFECTS` holds the same text). The
+ * server picks one. The card draws it whole, in a line of its own, so no clip
+ * cuts it. With none (IMAP, or a mailbox that could not be read), the card
+ * promises nothing about the delete.
+ */
+export const EARLIER_EFFECTS = [
+  "Delete removes it from Gmail for good.",
+  "Delete moves it to Deleted Items in Outlook.",
+] as const;
+/**
+ * Task 3978: the answer of Discard or Reject, then "Delete it". It is a
+ * decline, so the card sends and saves nothing. The tool then trashes the
+ * earlier draft. Each other answer keeps it. `ask_tools.DELETE_EARLIER_ANSWER`
+ * holds the same text.
+ */
+export const DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}' as const;
+
+/** Task 3978: the earlier draft that a card asks about: its line, and the effect of a delete. */
+export interface EarlierDraft {
+  line: string;
+  effect?: string;
+}
+
+/**
+ * Task 3978: the `earlier` and `earlier_effect` keys of a card event, checked,
+ * or {}. The ONE reader for a new-mail form and for a plain card. A line over
+ * 300 characters is cut, and an effect that is not one of `EARLIER_EFFECTS`
+ * is dropped.
+ */
+export function earlierFromEvent(v: Record<string, unknown>): { earlier?: string; earlierEffect?: string } {
+  const line = typeof v.earlier === "string" ? v.earlier.slice(0, 300).trim() : "";
+  if (!line) return {};
+  const effect = (EARLIER_EFFECTS as readonly unknown[]).includes(v.earlier_effect) ? String(v.earlier_effect) : "";
+  return { earlier: line, ...(effect ? { earlierEffect: effect } : {}) };
+}
+
+/** Task 3978: the hint under the question: what Keep does, then the effect of a delete. */
+export function earlierHint(effect?: string): string {
+  return effect ? `${EARLIER_HINT} ${effect}` : EARLIER_HINT;
 }
 
 /** The kept unticks of a new-mail form (§18.11 rule 7): each a person of the
@@ -307,6 +363,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...(isNew ? linkOf(v) : {}),
     ...(isNew && v.reopened === true ? { reopened: true as const } : {}),
     ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
+    ...(isNew ? earlierFromEvent(v) : {}),
   };
 }
 
