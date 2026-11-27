@@ -1266,6 +1266,32 @@ def test_crm_mapping_plans_page_the_versions_and_the_items(monkeypatch, crm_agen
     assert "Showing 31-60 of 70. Call again with offset=60 for the rest." in one
 
 
+def test_crm_questions_page_the_questions(monkeypatch, crm_agent) -> None:
+    """Task 3955: 25 open questions, 10 a page. The route reads up to 200."""
+    shown = [{"id": f"purpose:M{k:02d}", "kind": "purpose", "label": f"Module {k:02d}",
+              "reason": "open", "records": 1, "why": "w", "choices": []} for k in range(25)]
+    seen = _gw(monkeypatch, crm_agent,
+               lambda p, q: {"open": 25, "more": 0, "shown": shown, "plan": 3})
+    first = asyncio.run(crm_agent.crm_list_questions())
+    assert "«Module 09»" in first and "«Module 10»" not in first
+    assert "Showing 1-10 of 25. Call again with offset=10 for the rest." in first
+    last = asyncio.run(crm_agent.crm_list_questions(offset=20))
+    assert "«Module 24»" in last and "«Module 19»" not in last
+    assert "Showing 21-25 of 25. This is the last page." in last
+    assert seen[0] == ("/crm/questions", {"limit": 200})
+
+
+def test_crm_my_question_picks_page_the_picks(monkeypatch, crm_agent) -> None:
+    """Task 3955: 15 picks of the member, 10 a page."""
+    picks = [{"id": f"purpose:M{k:02d}", "question": f"Q {k:02d}", "label": "Lead",
+              "at": "2026-11-27"} for k in range(15)]
+    _gw(monkeypatch, crm_agent, lambda p, q: {"choices": picks})
+    first = asyncio.run(crm_agent.crm_my_question_picks())
+    assert "«Q 09»" in first and "«Q 10»" not in first
+    assert "Showing 1-10 of 15. Call again with offset=10 for the rest." in first
+    assert "«Q 14»" in asyncio.run(crm_agent.crm_my_question_picks(offset=10))
+
+
 def test_crm_timeline_pages_with_no_repeat_and_no_gap(monkeypatch, crm_agent) -> None:
     """30 newer emails and 30 notes, 20 a page: 3 pages hold all 60 once."""
     pytest.importorskip("gateway.routes.crm.activities")

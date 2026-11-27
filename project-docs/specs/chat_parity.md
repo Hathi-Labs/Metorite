@@ -28,6 +28,17 @@ from 13 to 6. §6.2 names the tools and the open row. Fence:
 A WhatsApp read marks no chat (task 4010). So for injected WhatsApp text, the
 approval card is the only guard of these seven writes.
 
+**P-3, task 3955 (the CRM setup questions, CRM-M2h) is BUILT, 2026-11-27, in
+review, with no flag and no migration.** The CRM agent gets six tools.
+`crm_list_questions`, `crm_my_question_picks` and `crm_check_question_sum`
+read. `crm_answer_setup_question`, `crm_dismiss_question` and
+`crm_accept_best_guesses` write, each on one card. They pay six CRM rows, so
+the CRM ceiling goes from 52 to 46. Fence: `tests/unit/test_crm_question_tools.py`.
+
+Three question rows stay planned: the Undo of a dismissal, the clear of a
+member's own pick and the PUT of the catalogue. The CRM agent sends no
+`DELETE` and no `PUT`.
+
 **Task 3979 (2026-11-26): §6.6 specifies the documents rung.** The chat edits
 an uploaded `.xlsx` or `.docx`, converts it to PDF and attaches it to a draft.
 Spec only, and nothing is built. The owner put the converter on `aroh-sandbox-1`
@@ -560,7 +571,7 @@ went down. P-1a then paid three rows of tasks and calendar, so the total is 424.
 | tasks | 11 | 7 | P-1 | 3922 (P-1a, task 3112, paid 2) |
 | calendar | 1 | 4 | P-1 | 3923 (P-1a, task 3112, paid 1) |
 | email | 13 | 5 | P-2 | 3111 (P-2a built), 3919 (P-2c built) |
-| crm | 74 | 52 | P-3 | 3678 (task 3951 paid 5, task 3954 paid 7, task 3953 paid 8) |
+| crm | 74 | 46 | P-3 | 3678 (task 3951 paid 5, task 3954 paid 7, task 3953 paid 8, task 3955 paid 6) |
 | notes | 51 | 51 | P-4 | 3113 |
 | whatsapp | 25 | 25 | P-4 | 3113 |
 | people | 19 | 19 | P-5 | 3114 |
@@ -672,16 +683,16 @@ PAR-3 took knowledge to 15, and PAR-3b took it to 4.
 
 P-5b-1 took people to 13 and memory to 4. P-5b-6 took people to 12, and P-5b-2
 took it to 7. Tasks 3951 and 3954 took crm to 60, and task 3953 took it from 60
-to 52. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
+to 52. Task 3955 took crm from 52 to 46. Task 3960 took whatsapp to 13, and task 3961 took it to 6.
 
 P-1b took tasks to 1, and P-1c took calendar to 2. PAR-9 took apps to 2. Task
 3963 took notes to 45.
 
-The total of `DEBT_CEILING` is 242. The "Today" column above does not show
+The total of `DEBT_CEILING` is 236. The "Today" column above does not show
 all of these changes. The crm row is different: it shows the changes of tasks
-3951, 3954 and 3953.
+3951, 3954, 3953 and 3955.
 
-The rows of the table add up to 412 in the P-0 column and to 370 in the
+The rows of the table add up to 412 in the P-0 column and to 364 in the
 "Today" column. The totals 427 and 424 above are readings of 2026-11-22, and
 they do not change.
 
@@ -857,7 +868,7 @@ at build. Each of these rungs ends in a demo task, and the table names it.
 | 4 | Email, then Calendar and Tasks | P-2, P-1 | 3111, then 3112, 3922 and 3923 | 3904 | 5 and 5 (email 14 before P-2a and P-2c. Calendar and Tasks 14 before P-1a, 11 before P-1b) | Production said "I can't" on 2026-11-09. Three most-used actions are here. |
 | 5 | The shell, then Workflows | P-7, P-6 | 3903 (cut from 3115) | 3905 | 7 (PAR-8b built) and 0 (PAR-8a built) | Four most-used actions are here. |
 | 6 | WhatsApp, then Notes | P-4 | 3113 | 3906 | 25 and 51 | Two most-used actions are here. |
-| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 52 (72 before tasks 3951, 3954 and 3953) | People and CRM each hold one of the most-used actions. |
+| 7 | People and Memory, then CRM | P-5b, P-3 | 3114, 3678 | 3907 | 11 (24 before P-5b-1) and 46 (72 before tasks 3951, 3954, 3953 and 3955) | People and CRM each hold one of the most-used actions. |
 | 8 | Chat threads, Custom Apps, Agent Registry, AI Studio | P-7, P-6, P-9 | 3115 | 3908 | 79 | No evidence of demand yet. |
 
 - **Rung 4.** The three actions are mail search, a task from an email and the

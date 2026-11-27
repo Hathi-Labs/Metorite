@@ -77,6 +77,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "author": { label: "Author", kind: "person" },
   "assignees_add": { label: "Assign", kind: "person", many: true },
   "assignees_remove": { label: "Unassign", kind: "person", many: true },
+  // WS-CRM CRM-M2h (task 3955): one answer of a batch of best guesses.
+  "best guess N": { label: "Best guess", plural: "Best guesses" },
   "body": { label: "Text" },
   // `file_tasks` (2026-10-18): a task the batch leaves out, and why.
   // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
@@ -277,6 +279,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "waiting_on": { label: "Waiting on" },
   // WS-66 RM-3: the time of a reminder, as the member reads it.
   "when": { label: "When" },
+  // WS-CRM CRM-M2h (task 3955): what an answer of a CRM question changes.
+  "what changes": { label: "What changes" },
   // `file_tasks`: a subtask that moves with its parent's row, not on its own.
   "with parent N": { label: "With parent", plural: "With parent" },
   // SP-8a: the track that owns an epic.

@@ -1426,7 +1426,9 @@ CARD_WRITE_KEY = "card_write"
 #: Its card carries the Zoho note. In Mirror mode the three record writes leave
 #: the run first (``_tool_injection.MIRROR_RECORD_WRITES``). The three class B
 #: writes of the Field map (task 3953): ``crm_edit_field_rule``,
-#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``.
+#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``. The three class
+#: B writes of the setup questions (task 3955): ``crm_answer_setup_question``,
+#: ``crm_dismiss_question`` and ``crm_accept_best_guesses``.
 #:
 #: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
 #: The class C Projects tools. Each is hard to undo or acts on many rows, so a
@@ -1586,6 +1588,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "crm_edit_field_rule": _pin("action entity field target_column"),
     "crm_draft_mapping_plan": _pin("changes"),
     "crm_restore_mapping_plan": _pin("version"),
+    # CRM-M2h (task 3955): the three class B writes of the setup questions.
+    # Each card names the question and each answer.
+    "crm_answer_setup_question": _pin("question_id choice fields"),
+    "crm_dismiss_question": _pin("question_id"),
+    "crm_accept_best_guesses": _pin("question_ids"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter

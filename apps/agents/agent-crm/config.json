@@ -72,6 +72,12 @@
     "crm_list_mapping_plans",
     "crm_draft_mapping_plan",
     "crm_approve_mapping_plan",
-    "crm_restore_mapping_plan"
+    "crm_restore_mapping_plan",
+    "crm_list_questions",
+    "crm_my_question_picks",
+    "crm_check_question_sum",
+    "crm_answer_setup_question",
+    "crm_dismiss_question",
+    "crm_accept_best_guesses"
   ]
 }

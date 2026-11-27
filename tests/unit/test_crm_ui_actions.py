@@ -63,7 +63,8 @@ SPEC = REPO_ROOT / "project-docs" / "specs" / "crm_conversational.md"
 #: ``PATCH /crm/pipelines/{pipeline_id}/stages/{status_id}``, a CRM-M2j row.
 #: The spec records why (crm_conversational.md "Built as (CRM-M3b)").
 #: Task 3953 (CRM-M2f, CRM-M2i) paid eight rows of the Field map and the plan (79 to 71).
-PLANNED_CEILING = 71
+#: Task 3955 (CRM-M2h) paid six rows of the setup questions (71 to 65).
+PLANNED_CEILING = 65
 
 #: The directory of the CRM client files, relative to ``src``.
 CLIENT_DIR = "app/crm/lib/"

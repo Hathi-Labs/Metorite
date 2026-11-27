@@ -3614,6 +3614,566 @@ async def crm_restore_mapping_plan(version: int) -> str:
     )
 
 
+# ── CRM-M2h (task 3955): the open questions of the CRM set-up ────────────────
+#
+# A CRM that mirrors Zoho asks a CRM admin each question that the AI cannot
+# answer with confidence (`gateway/routes/crm/questions.py`): the purpose of a
+# module, a key field of a total, the module of a list, a stage value, the
+# meaning of revenue and the field of a word. Three reads and three writes.
+# Each write reads the open questions first, and shows one card that names the
+# question and the answer. Each label, sample, id and name of a member reaches
+# the model and the card inside a « » fence (`tool_refusals.data`).
+#
+# Not here: the Undo of a dismissal (DELETE .../dismiss), the clear of a
+# member's own pick (DELETE .../mine) and PUT /crm/catalogue/{module}. The
+# agent sends no DELETE and no PUT (`_ALLOWED_METHODS`), so they stay planned.
+
+#: The most questions that one read of the route returns (``questions.MAX_LIMIT``).
+_QUESTION_READ_MAX = 200
+
+#: The questions of one page of :func:`crm_list_questions` (``acb_common.paging``).
+_QUESTION_PAGE = 10
+
+#: The words of each kind of question.
+_QUESTION_KINDS: dict[str, str] = {
+    "purpose": "the purpose of a module",
+    "key_field": "a key field of a module",
+    "slot": "the module of a list",
+    "stage_value": "a stage value",
+    "revenue": "the meaning of revenue",
+    "term": "the field of a word",
+}
+
+#: The words of each key part of a module (``catalogue.KEY_PARTS``).
+_KEY_PART_WORDS: dict[str, str] = {
+    "amount": "the amount", "date": "the date", "status": "the status",
+    "parent": "the customer",
+}
+
+#: The words that mean "None of these" in an answer.
+_NONE_WORDS = frozenset({"none", "none of these", "no field", "nothing"})
+
+#: The grammar of a question id (``crm_sync/questions.py``, ``terms.term_id``).
+#: The id goes into the path, so only these characters reach it.
+_QUESTION_ID = re.compile(
+    r"^(?:revenue|(?:purpose|key|slot|stage|term):[A-Za-z0-9_-]+(?::[A-Za-z0-9_-]+)*)$")
+
+#: The first line of the card of an answer and of a batch.
+_ANSWER_NOTE = (
+    "This answer is for the whole organization. Each total, count and list of "
+    "the CRM that uses this part reads it from the next read on."
+)
+
+#: The first line of the card of a dismissal.
+_DISMISS_NOTE = (
+    "The CRM stops asking this question. It asks again when the Zoho data of "
+    "this part changes."
+)
+
+
+def _question_segment(question_id: Any) -> str:
+    """A question id as the path takes it, or refuse. The model can send the
+    id with its fence, so the marks are cut first."""
+    qid = str(question_id or "").replace("«", "").replace("»", "").strip()
+    if not _QUESTION_ID.match(qid):
+        raise GatewayRefusal(
+            f"Invalid CRM question id {question_id!r}. Use an id that "
+            "crm_list_questions shows, such as key:Invoices:amount."
+        )
+    return qid
+
+
+def _question_label(q: dict[str, Any]) -> str:
+    """The thing that a question is about, fenced: a module, a list or revenue."""
+    return data(q.get("label") or q.get("module") or q.get("id"))
+
+
+def _part_words(q: dict[str, Any]) -> str:
+    part = str(q.get("part") or "")
+    return _KEY_PART_WORDS.get(part) or data(part)
+
+
+def _choice_words(choice: dict[str, Any]) -> str:
+    """One choice of a question, for the read: the label, the key and the facts."""
+    label, value = choice.get("label"), choice.get("value")
+    out = data(label)
+    if value is not None and str(value) != str(label):
+        out += f" (key {data(value)})"
+    facts: list[str] = []
+    if choice.get("best"):
+        facts.append("the best guess")
+    if isinstance(choice.get("fill"), (int, float)):
+        facts.append(f"filled on {round(float(choice['fill']) * 100)}% of records")
+    if isinstance(choice.get("records"), int):
+        facts.append(f"{choice['records']} records")
+    samples = [data(s) for s in choice.get("samples") or []]
+    if samples:
+        facts.append("samples " + ", ".join(samples))
+    modules = [data(m) for m in choice.get("modules") or []]
+    if modules:
+        facts.append("modules " + ", ".join(modules))
+    evidence = [data(e) for e in choice.get("evidence") or []]
+    if evidence:
+        facts.append(", ".join(evidence))
+    return out + (f" · {' · '.join(facts)}" if facts else "")
+
+
+def _question_text(q: dict[str, Any]) -> str:
+    """One question for the read, on a few lines, each value fenced."""
+    kind = str(q.get("kind") or "")
+    head = f"• id {data(q.get('id'))} · {_QUESTION_KINDS.get(kind, data(kind))} · {_question_label(q)}"
+    if kind == "key_field":
+        head += f" · {_part_words(q)}"
+    if kind == "stage_value":
+        head += f" · the value {data(q.get('value'))} of {data(q.get('field'))}"
+    if kind == "term":
+        head += f" · the word {data(q.get('value'))}"
+    head += f" · {q.get('reason')}"
+    if q.get("records"):
+        head += f" · {q.get('records')} records"
+    lines = [head, f"  why: {data(q.get('why'))}"]
+    if q.get("current") is not None:
+        current = q.get("current")
+        shown = ", ".join(data(c) for c in current) if isinstance(current, list) else data(current)
+        lines.append(f"  in use: {shown}" + (f", set by {data(q.get('set_by'))}"
+                                             if q.get("set_by") else f", set by {q.get('by')}"))
+    choices = [c for c in q.get("choices") or [] if isinstance(c, dict)]
+    lines += [f"  choice: {_choice_words(c)}" for c in choices]
+    others = [c for c in q.get("options") or [] if isinstance(c, dict)
+              and c.get("value") not in {x.get("value") for x in choices}]
+    if others:
+        lines.append("  also: " + ", ".join(
+            f"{data(c.get('label'))} (key {data(c.get('value'))})" for c in others))
+    if q.get("sums"):
+        lines.append("  a sum of 2 to 5 of: " + ", ".join(
+            f"{data(c.get('label'))} (key {data(c.get('value'))})"
+            for c in q.get("sums") or [] if isinstance(c, dict)))
+    if q.get("none"):
+        lines.append('  "None of these" is an answer.')
+    if not q.get("dismissible", True):
+        lines.append("  It takes no dismissal.")
+    for p in q.get("proposals") or []:
+        if isinstance(p, dict):
+            lines.append(f"  a member's pick: {data(p.get('name'))} chose {data(p.get('label'))}")
+    return "\n".join(lines)
+
+
+async def _read_questions(everything: bool = False) -> dict[str, Any]:
+    """The open questions of the org, by impact, and the approved plan version."""
+    params: dict[str, Any] = {"limit": _QUESTION_READ_MAX}
+    if everything:
+        params["all"] = "true"
+    body = await _get("/crm/questions", params)
+    return body if isinstance(body, dict) else {}
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_list_questions(
+    include_answered: bool = False, offset: int = 0, limit: int = _QUESTION_PAGE,
+) -> str:
+    """Read the open questions of a CRM that mirrors Zoho, by impact. The AI
+    asks each one because it cannot answer it with confidence: the purpose of
+    a module, a key field of a total, the module of a list, a stage value,
+    the meaning of revenue or the field of a word. Only a CRM admin can read
+    them.
+
+    Each question shows its id, its choices, the best guess and the picks of
+    members. With ``include_answered``, the answers in use follow, for a
+    correction. The answer is one page. ``offset`` reads the next page, as
+    its last line says. Use it before crm_answer_setup_question,
+    crm_dismiss_question and crm_accept_best_guesses."""
+    body = await _read_questions(bool(include_answered))
+    shown = [q for q in body.get("shown") or [] if isinstance(q, dict)]
+    answered = [q for q in body.get("answered") or [] if isinstance(q, dict)]
+    rows = [_question_text(q) for q in shown]
+    rows += [_question_text(q).replace("• id", "• answered · id", 1) for q in answered]
+    page = paged(rows, offset, limit, default=_QUESTION_PAGE, noun="questions")
+    total = int(body.get("open") or 0)
+    head = f"The CRM has {total} open setup questions."
+    if not total:
+        head = "The CRM has no open setup question."
+    out = [head, _MAP_DATA_NOTE, *page.items]
+    if page.line:
+        out.append(page.line)
+    more = int(body.get("more") or 0)
+    if more:
+        out.append(f"{more} more open questions come after the first {len(shown)}. "
+                   "Answer some, then read again.")
+    return "\n".join(out)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_my_question_picks(offset: int = 0, limit: int = _QUESTION_PAGE) -> str:
+    """Read the answers that the person you act for picked in the chat for an
+    open CRM question, and that wait for a CRM admin. It shows only the
+    member's own picks, never the pick of another member. Each member with
+    CRM access can read their own."""
+    body = await _get("/crm/questions/mine")
+    choices = [c for c in (body or {}).get("choices") or [] if isinstance(c, dict)] \
+        if isinstance(body, dict) else []
+    rows = [
+        f"• id {data(c.get('id'))} · {data(c.get('question'))} · your pick "
+        f"{data(c.get('label'))} · {c.get('at')}"
+        for c in choices
+    ]
+    page = paged(rows, offset, limit, default=_QUESTION_PAGE, noun="picks")
+    if not page.total:
+        return "You have no pick that waits for a CRM admin."
+    out = [f"You have {page.total} picks that wait for a CRM admin.", _MAP_DATA_NOTE,
+           *page.items]
+    if page.line:
+        out.append(page.line)
+    return "\n".join(out)
+
+
+def _sum_keys(fields: Any) -> list[str]:
+    """The keys of a sum, as a list of distinct texts."""
+    raw = fields if isinstance(fields, list) else str(fields or "").split(",")
+    out: list[str] = []
+    for f in raw:
+        key = " ".join(str(f or "").replace("«", "").replace("»", "").split())
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def crm_check_question_sum(question_id: str, fields: list[str]) -> str:
+    """Check a sum of fields for the amount question of a module, before an
+    answer: how many records set any of the fields, and each pair of fields
+    that hold the same value on half or more of the records. Only a CRM admin
+    can. It changes nothing.
+
+    ``question_id`` is the id of an amount question, such as
+    key:Invoices:amount. ``fields`` is 2 to 5 keys of currency fields, as
+    crm_list_questions lists them after "a sum of"."""
+    record = _question_segment(question_id)
+    if not record.startswith("key:") or not record.endswith(":amount"):
+        return ("Only the amount question of a module takes a sum. Its id ends in "
+                ":amount. Nothing was checked.")
+    keys = _sum_keys(fields)
+    if not 2 <= len(keys) <= 5:
+        return (f"A sum takes 2 to 5 different fields, and this one has {len(keys)}. "
+                "Nothing was checked.")
+    body = await _get(f"/crm/questions/{record}/sum-check", {"fields": ",".join(keys)})
+    row = body if isinstance(body, dict) else {}
+    out = [
+        f"The check of the sum of {', '.join(data(k) for k in row.get('fields') or keys)} "
+        f"in {data(row.get('module'))}:",
+        _MAP_DATA_NOTE,
+        f"• {data(row.get('line'))}",
+        f"• It read {row.get('records')} records"
+        + (", and the module may hold more." if row.get("capped") else "."),
+    ]
+    for p in row.get("pairs") or []:
+        if isinstance(p, dict):
+            labels = " and ".join(data(x) for x in p.get("labels") or [])
+            out.append(f"• {labels}: both set on {p.get('both')} records, the same value "
+                       f"on {p.get('equal')}")
+    out += [f"• warning: {data(w)}" for w in row.get("warnings") or []]
+    return "\n".join(out)
+
+
+def _open_question(body: dict[str, Any], qid: str) -> tuple[dict[str, Any] | None, str]:
+    """The open question *qid* of the read, or the words of a refusal."""
+    shown = [q for q in body.get("shown") or [] if isinstance(q, dict)]
+    found = next((q for q in shown if q.get("id") == qid), None)
+    if found is not None:
+        return found, ""
+    if int(body.get("more") or 0):
+        return None, (
+            f"The question {data(qid)} is not in the first {len(shown)} open questions. "
+            "Nothing was changed. Answer or dismiss others first, then read again."
+        )
+    return None, (
+        f"The question {data(qid)} is not open now. Nothing was changed. Read the "
+        "open questions again with crm_list_questions."
+    )
+
+
+def _norm(word: Any) -> str:
+    return " ".join(str(word or "").replace("«", "").replace("»", "").lower().split())
+
+
+def _pick_choice(q: dict[str, Any], choice: str) -> tuple[dict[str, Any] | None, str]:
+    """The choice of *q* that *choice* names by its key or its label, or the
+    words of a refusal. A key that starts with "@" is never an answer."""
+    pool = [c for c in [*(q.get("choices") or []), *(q.get("options") or [])]
+            if isinstance(c, dict) and not str(c.get("value") or "").startswith("@")]
+    want = _norm(choice)
+    by_key = [c for c in pool if _norm(c.get("value")) == want]
+    found = by_key or [c for c in pool if _norm(c.get("label")) == want]
+    unique = {str(c.get("value")): c for c in found}
+    if len(unique) == 1:
+        return next(iter(unique.values())), ""
+    names = ", ".join(f"{data(c.get('label'))} (key {data(c.get('value'))})"
+                      for c in {str(c.get("value")): c for c in pool}.values()) or "(none)"
+    if len(unique) > 1:
+        return None, (f"{data(choice)} names more than one answer. Nothing was changed. "
+                      f"Give its key. The answers are: {names}.")
+    return None, (f"{data(choice)} is not an answer of this question. Nothing was "
+                  f"changed. The answers are: {names}.")
+
+
+def _sum_pick(q: dict[str, Any], fields: Any) -> tuple[list[dict[str, Any]], str]:
+    """The fields of a sum answer, or the words of a refusal."""
+    if q.get("kind") != "key_field" or q.get("part") != "amount" or not q.get("sums"):
+        return [], ("Only the amount question of a module with 2 or more currency "
+                    "fields takes a sum. Nothing was changed.")
+    pool = [c for c in q.get("sums") or [] if isinstance(c, dict)]
+    picked: list[dict[str, Any]] = []
+    for key in _sum_keys(fields):
+        want = _norm(key)
+        found = [c for c in pool if _norm(c.get("value")) == want] or [
+            c for c in pool if _norm(c.get("label")) == want]
+        if len(found) != 1:
+            names = ", ".join(f"{data(c.get('label'))} (key {data(c.get('value'))})"
+                              for c in pool)
+            return [], (f"{data(key)} is not one currency field of the sum. Nothing was "
+                        f"changed. The fields are: {names}.")
+        if found[0] not in picked:
+            picked.append(found[0])
+    if not 2 <= len(picked) <= 5:
+        return [], (f"A sum takes 2 to 5 different fields, and this one has {len(picked)}. "
+                    "Nothing was changed.")
+    return picked, ""
+
+
+def _and_list(words: list[str]) -> str:
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+
+
+def _answer_effect(q: dict[str, Any], label: str | None) -> str:
+    """What the answer changes, in words. *label* is the fenced answer, or
+    None for "None of these"."""
+    kind, what = str(q.get("kind") or ""), _question_label(q)
+    if kind == "purpose":
+        return (f"{what} is now a module of the purpose {label}." if label
+                else f"{what} gets the purpose Other.")
+    if kind == "key_field":
+        part = str(q.get("part") or "")
+        if label is None:
+            return f"{what} uses no field for {_part_words(q)}."
+        if part == "amount":
+            return f"Totals of {what} now use {label}."
+        if part == "date":
+            return f"Totals of {what} by month now use {label}."
+        if part == "status":
+            return f"Counts of {what} by status now use {label}."
+        return f"Totals of {what} by customer now use {label}."
+    if kind == "revenue":
+        return f"Each answer about revenue now reads {label}."
+    if kind == "slot":
+        if label is None:
+            return f"The CRM stops asking which module stands in for {what}."
+        return (f"The open draft of the field map gets {label} for the list {what}. "
+                "Nothing changes in the CRM until an admin approves the draft.")
+    if kind == "stage_value":
+        return (f"The value {data(q.get('value'))} of {data(q.get('field'))} in {what} "
+                f"now counts as {label}. {q.get('count') or q.get('records') or 0} records "
+                "leave Unsorted.")
+    return f"The word {data(q.get('value'))} in {what} now reads the field {label}, for everyone."
+
+
+def _answer_plan(
+    q: dict[str, Any], choice: str, fields: Any,
+) -> tuple[dict[str, Any] | None, str]:
+    """The card lines and the value of an answer, or the words of a refusal."""
+    kind = str(q.get("kind") or "")
+    if kind not in _QUESTION_KINDS:
+        return None, f"The CRM question kind {data(kind)} is new to the chat. Nothing was changed."
+    if fields:
+        picked, refusal = _sum_pick(q, fields)
+        if refusal:
+            return None, refusal
+        label = "the sum of " + _and_list([data(c.get("label")) for c in picked])
+        return {"value": [str(c.get("value")) for c in picked], "label": label}, ""
+    if _norm(choice) in _NONE_WORDS:
+        if not q.get("none"):
+            return None, ('This question takes no "None of these". Nothing was changed. '
+                          "Pick one of its answers.")
+        return {"value": None, "label": None}, ""
+    if not _norm(choice):
+        return None, "Which answer is meant? Give its key or its label. Nothing was changed."
+    picked_one, refusal = _pick_choice(q, choice)
+    if picked_one is None:
+        return None, refusal
+    label = data(picked_one.get("label") or picked_one.get("value"))
+    return {"value": str(picked_one.get("value")), "label": label}, ""
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_answer_setup_question(
+    question_id: str, choice: str = "", fields: list[str] | None = None,
+) -> str:
+    """Answer one open setup question of a CRM that mirrors Zoho, as a CRM
+    admin. The answer is for the whole organization: the purpose of a
+    module, the field of a total, the module of a list (into the open draft
+    of the field map), a stage value, the meaning of revenue or the field of
+    a word. Only a CRM admin can, and the person you act for approves it on
+    a card first.
+
+    ``question_id`` is the id that crm_list_questions shows. ``choice`` is
+    the key or the label of one answer, or "none" for "None of these". For
+    the amount question of a module, ``fields`` gives a sum of 2 to 5
+    currency fields in place of ``choice``. For a member who is not an
+    admin, use crm_answer_question."""
+    qid = _question_segment(question_id)
+    # Read first: the card names an open question, and an answer it takes.
+    body = await _read_questions()
+    q, refusal = _open_question(body, qid)
+    if q is None:
+        return refusal
+    plan, refusal = _answer_plan(q, choice, fields)
+    if plan is None:
+        return refusal
+    shown = plan["label"] if plan["label"] is not None else "None of these"
+    card = {
+        "question": f"{_QUESTION_KINDS[str(q.get('kind'))]} · {_question_label(q)}"
+                    + (f" · {_part_words(q)}" if q.get("kind") == "key_field" else ""),
+        "answer": shown,
+        "what changes": _answer_effect(q, plan["label"]),
+    }
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=f"Answer the CRM question about {_question_label(q)}?",
+        detail=f"{_question_label(q)} · {shown}",
+        context=await _held_fields_block(card, note=_ANSWER_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=f"The question about {_question_label(q)} "
+                                              "stays open.")
+    record = _question_segment(q.get("id"))
+    payload: dict[str, Any] = {"value": plan["value"]}
+    if body.get("plan") is not None:
+        payload["version"] = body.get("plan")
+    made = await _post(f"/crm/questions/{record}/answer", payload)
+    row = made if isinstance(made, dict) else {}
+    out = f"Answered the question about {_question_label(q)}: {shown}. {card['what changes']}"
+    if row.get("version") is not None:
+        out += f" The field map is at version {row.get('version')} now."
+    return out
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_dismiss_question(question_id: str) -> str:
+    """Mark one open setup question of a CRM that mirrors Zoho as "Not
+    relevant", so the CRM stops asking it. It asks again when the Zoho data
+    of that part changes. Only a CRM admin can, and the person you act for
+    approves it on a card first. The meaning of revenue takes no dismissal,
+    because it has a default.
+
+    ``question_id`` is the id that crm_list_questions shows."""
+    qid = _question_segment(question_id)
+    body = await _read_questions()
+    q, refusal = _open_question(body, qid)
+    if q is None:
+        return refusal
+    if not q.get("dismissible", True):
+        return ("The meaning of revenue takes no dismissal, because it has a default. "
+                "Nothing was changed. Answer it with crm_answer_setup_question.")
+    card = {
+        "question": f"{_QUESTION_KINDS.get(str(q.get('kind')), 'a question')} · "
+                    f"{_question_label(q)}"
+                    + (f" · {_part_words(q)}" if q.get("kind") == "key_field" else ""),
+        "what changes": "Not relevant: the CRM keeps what it uses now, and stops asking.",
+    }
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=f"Dismiss the CRM question about {_question_label(q)}?",
+        detail=f"{_question_label(q)} · Not relevant",
+        context=await _held_fields_block(card, note=_DISMISS_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged=f"The question about {_question_label(q)} "
+                                              "stays open.")
+    record = _question_segment(q.get("id"))
+    await _post(f"/crm/questions/{record}/dismiss", {})
+    return (f"Dismissed the question about {_question_label(q)}. The CRM asks again "
+            "when the Zoho data of that part changes.")
+
+
+def _best_line(q: dict[str, Any], best: dict[str, Any]) -> str:
+    """One line of a batch card: the question and its best guess."""
+    return _answer_effect(q, data(best.get("label") or best.get("value")))
+
+
+def _best_of(q: dict[str, Any]) -> dict[str, Any] | None:
+    """The best guess of a question that joins a batch, or None. Only a
+    purpose or a key field with a best guess joins (``questions.batch_joins``)."""
+    if q.get("kind") not in ("purpose", "key_field"):
+        return None
+    return next((c for c in q.get("choices") or [] if isinstance(c, dict) and c.get("best")),
+                None)
+
+
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
+async def crm_accept_best_guesses(question_ids: list[str] | None = None) -> str:
+    """Accept the best guess of the AI for open setup questions of a CRM that
+    mirrors Zoho, in one batch. Only the purpose of a module and a key field
+    with a best guess join a batch. Only a CRM admin can, and the person you
+    act for approves the batch on one card that names each answer.
+
+    ``question_ids`` are ids that crm_list_questions shows. With none, the
+    batch takes each open question that joins. A batch that one card cannot
+    show is refused: give fewer ids."""
+    wanted = [_question_segment(raw) for raw in question_ids or []]
+    body = await _read_questions()
+    shown = [q for q in body.get("shown") or [] if isinstance(q, dict)]
+    if wanted:
+        picked: list[dict[str, Any]] = []
+        for qid in wanted:
+            q, refusal = _open_question(body, qid)
+            if q is None:
+                return refusal
+            if _best_of(q) is None:
+                return (f"The question {data(qid)} has no best guess that joins a batch. "
+                        "Only the purpose of a module and a key field with a best guess "
+                        "join. Nothing was changed. Answer it with "
+                        "crm_answer_setup_question.")
+            if q not in picked:
+                picked.append(q)
+    else:
+        picked = [q for q in shown if _best_of(q) is not None]
+        if not picked:
+            return "No open question has a best guess that joins a batch. Nothing was changed."
+    lines = [_best_line(q, _best_of(q) or {}) for q in picked]
+    card = {f"best guess {n}": line for n, line in enumerate(lines, start=1)}
+    held = _card_room(card, _ANSWER_NOTE)
+    if held < len(card):
+        return (
+            f"This batch has {len(card)} answers, and one card holds {held} of them, so "
+            f"nothing was changed. Give at most {held} ids in question_ids."
+        )
+
+    from acb_skills.ask_tools import request_confirmation
+    answer = await request_confirmation(
+        # Task 2494: the member's chat message closes the card.
+        close_on_steer=True,
+        title=f"Accept {len(lines)} best guesses of the AI for the CRM?",
+        detail=f"{len(lines)} answers",
+        context=await _held_fields_block(card, note=_ANSWER_NOTE),
+    )
+    if not answer:
+        return _not_written(answer, unchanged="No best guess was accepted.")
+    payload: dict[str, Any] = {
+        "ids": [_question_segment(q.get("id")) for q in picked], "dry_run": False}
+    if body.get("plan") is not None:
+        payload["version"] = body.get("plan")
+    made = await _post("/crm/questions/accept-best", payload)
+    row = made if isinstance(made, dict) else {}
+    out = f"Accepted {len(lines)} best guesses."
+    if row.get("version") is not None:
+        out += f" The field map is at version {row.get('version')} now."
+    return out
+
+
 # ── MAF agent factory (Dynamic Agent Loader entry point) ─────────────────────
 
 _TOOLS = [
@@ -3641,6 +4201,14 @@ _TOOLS = [
     crm_draft_mapping_plan,
     crm_approve_mapping_plan,
     crm_restore_mapping_plan,
+    # CRM-M2h (task 3955): the open setup questions. Three reads, and three
+    # writes that each show one card.
+    crm_list_questions,
+    crm_my_question_picks,
+    crm_check_question_sum,
+    crm_answer_setup_question,
+    crm_dismiss_question,
+    crm_accept_best_guesses,
     # CRM-C7: the shared read tools (records, fields, pipelines, contacts,
     # owners, reports, totals, stage dwell and the mirrored modules).
     *CRM_TOOLS,

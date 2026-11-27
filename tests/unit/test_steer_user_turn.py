@@ -449,8 +449,9 @@ def test_every_crm_card_answers_a_steer_apart_from_its_decline():
                      for n in ast.walk(fn))]
     # 15: 7 before, crm_edit_status and crm_edit_lost_reason of CRM-M2e (task 3951),
     # crm_decide_suggestion and crm_rerun_analysis (task 3954), and the four writes
-    # of the Field map and its plan (task 3953). 7 + 2 + 2 + 4 = 15.
-    assert len(cards) == 15, [fn.name for fn in cards]
+    # of the Field map and its plan (task 3953), and the three writes of the setup
+    # questions (task 3955). 7 + 2 + 2 + 4 + 3 = 18.
+    assert len(cards) == 18, [fn.name for fn in cards]
     for fn in cards:
         declines = [n for n in ast.walk(fn) if isinstance(n, ast.If)
                     and isinstance(n.test, ast.UnaryOp) and isinstance(n.test.op, ast.Not)

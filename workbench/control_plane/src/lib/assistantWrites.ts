@@ -73,7 +73,7 @@ const EMAIL_WRITES: ReadonlySet<string> = new Set([
  * (CRM-M3a) wakes the pipeline read, so an open Deals board shows the switcher.
  * A stage or a lost reason (CRM-M2e) changes the CRM app, so the CRM re-reads.
  * A field rule or a plan version (CRM-M2f, CRM-M2i) changes the Field map, so
- * the CRM re-reads.
+ * the CRM re-reads. An answer of a setup question (CRM-M2h) changes it too.
  */
 const CRM_WRITES: ReadonlySet<string> = new Set([
   "create_lead", "update_deal_status", "log_activity", "convert_lead",
@@ -83,6 +83,9 @@ const CRM_WRITES: ReadonlySet<string> = new Set([
   "crm_edit_status", "crm_edit_lost_reason",
   "crm_edit_field_rule", "crm_draft_mapping_plan", "crm_approve_mapping_plan",
   "crm_restore_mapping_plan",
+  "crm_answer_setup_question",
+  "crm_dismiss_question",
+  "crm_accept_best_guesses",
 ]);
 
 /** Knowledge write tools: a proposal lands in the review queue. */
