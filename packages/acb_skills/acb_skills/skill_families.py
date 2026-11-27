@@ -1195,8 +1195,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "only the fields that the People app shows to that member. Five writes change "
             "only the member's own record: the profile, the skills, the credentials and "
             "the absences. Each write shows one card first, and no write changes the "
-            "email address. A run loads a pack only where tool packs are on, so until "
-            "then this switch has no effect."
+            "email address. One more write changes the work schedule of the company, for an "
+            "admin, after one card. A run loads a pack only where tool packs are on, so "
+            "until then this switch has no effect."
         ),
         "tools": (
             "people_directory",
@@ -1208,6 +1209,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "set_my_credentials",
             "add_my_absence",
             "remove_my_absence",
+            "set_work_schedule",
         ),
         "owner": "org-admin",
         "core": False,

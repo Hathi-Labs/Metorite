@@ -262,7 +262,9 @@ PEOPLE_WORDS = "Search the people directory and show my person record"
 PEOPLE_TOOLS = ("people_directory", "people_me", "people_work", "reach_preview",
                 # P-5b-2 (task 3943): the five self writes of the same pack.
                 "update_my_profile", "set_my_skills", "set_my_credentials",
-                "add_my_absence", "remove_my_absence")
+                "add_my_absence", "remove_my_absence",
+                # P-5b-4 (task 3945): the work schedule of the company.
+                "set_work_schedule")
 
 
 def test_flag_off_the_people_pack_reaches_no_chat(store, monkeypatch) -> None:
