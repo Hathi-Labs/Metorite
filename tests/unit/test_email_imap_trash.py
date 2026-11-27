@@ -10,7 +10,8 @@ Trash folder existed or when the copy failed.
 ``FakeImap`` keeps real UIDs for each folder, a selected folder, and the
 answers of a real server: NO for a missing folder, an error (imaplib's BAD)
 for an unknown command or a name with a space and no quotes, and a UID COPY
-of an absent UID that copies nothing and answers OK.
+of an absent UID that copies nothing and answers OK. Task 4095 added FETCH,
+STATUS and ``rebuild``, and each trash here passes the stored Message-ID.
 
 Owning spec: ``project-docs/specs/email_app_master_plan.md`` §18.13.3.
 Run: ``uv run pytest tests/unit/test_email_imap_trash.py -q``
@@ -62,12 +63,30 @@ class FakeImap:
         self.refuse = refuse or set()
         self.selected: str | None = None
         self.readonly = False
+        self.uidvalidity = 1
+        self.uid_last = False  # a FETCH answer names the UID after the header
         self.log: list[str] = []
 
     # The commands that imaplib.IMAP4 exposes and the provider calls.
 
     def noop(self) -> tuple[str, list[bytes]]:
         return "OK", [b""]
+
+    def status(self, mailbox: str, _names: str) -> tuple[str, list[bytes]]:
+        name = _astring(mailbox)
+        self.log.append(f"STATUS {name}")
+        if name not in self.boxes:
+            return "NO", [b"Mailbox does not exist"]
+        return "OK", [f"{name} (UIDNEXT {self.uidnext[name]} "
+                      f"UIDVALIDITY {self.uidvalidity})".encode()]
+
+    def rebuild(self, order: list[bytes]) -> None:
+        """The server rebuilds INBOX (task 4095). It gives each mail a new
+        UID from 1, in the order of ``order``, and a new UIDVALIDITY."""
+        by_body = {body: (body, flags) for body, flags in self.boxes["INBOX"].values()}
+        self.boxes["INBOX"] = {i + 1: by_body[body] for i, body in enumerate(order)}
+        self.uidnext["INBOX"] = len(order) + 1
+        self.uidvalidity += 1
 
     def capability(self) -> tuple[str, list[bytes]]:
         return "OK", [" ".join(self.caps).encode()]
@@ -109,7 +128,8 @@ class FakeImap:
         if command in self.refuse:
             return "NO", [b"refused"]
         handler = {"SEARCH": self._search, "COPY": self._copy, "MOVE": self._copy,
-                   "STORE": self._store, "EXPUNGE": self._uid_expunge}.get(command)
+                   "STORE": self._store, "EXPUNGE": self._uid_expunge,
+                   "FETCH": self._fetch}.get(command)
         if handler is None:
             raise imaplib.IMAP4.error(f"BAD unknown command UID {command}")
         return handler(box, command, *args)
@@ -147,6 +167,35 @@ class FakeImap:
                 box[u][1].difference_update(names)
         return "OK", [b"done"]
 
+    def _fetch(self, box: dict, _cmd: str, uid_set: Any, items: str):
+        """A UID FETCH of the full mail or of some header fields. As on a
+        real server, a ``BODY[`` fetch that is not ``BODY.PEEK[`` sets
+        ``\\Seen`` on a folder that is not read-only."""
+        upper = str(items).upper()
+        fields = re.search(r"HEADER\.FIELDS \(([^)]*)\)", upper)
+        wanted = self._uids(uid_set)
+        out: list[Any] = []
+        for seq, u in enumerate(sorted(box), start=1):
+            if u not in wanted:
+                continue
+            body, flags = box[u]
+            if "BODY[" in upper and not self.readonly:
+                flags.add("\\Seen")
+            if fields and self.uid_last:  # the UID after the literal
+                part = _header_fields(body, fields.group(1).split())
+                out += [(f"{seq} (BODY[HEADER.FIELDS ({fields.group(1)})] "
+                         f"{{{len(part)}}}".encode(), part), f" UID {u})".encode()]
+                continue
+            if fields:
+                part = _header_fields(body, fields.group(1).split())
+                head = f"{seq} (UID {u} BODY[HEADER.FIELDS ({fields.group(1)})] {{{len(part)}}}"
+            else:
+                part = body
+                head = (f"{seq} (UID {u} FLAGS ({' '.join(sorted(flags))}) "
+                        f"BODY[] {{{len(part)}}}")
+            out += [(head.encode(), part), b")"]
+        return "OK", out or [None]
+
     def _uid_expunge(self, box: dict, _cmd: str, uid_set: Any):
         if "UIDPLUS" not in self.caps:
             raise imaplib.IMAP4.error("BAD unknown command UID EXPUNGE")
@@ -172,8 +221,26 @@ class FakeImap:
                 for name, box in self.boxes.items()}
 
 
+#: The stored Message-ID of B, which each trash passes (task 4095).
+B_ID = "<B@test>"
+
+
 def _mail(tag: str) -> bytes:
     return f"Subject: {tag}\r\nMessage-ID: <{tag}@test>\r\n\r\n{tag}".encode()
+
+
+def _header_fields(mail: bytes, names: list[str]) -> bytes:
+    """The header fields ``names`` of ``mail``, folded lines kept, as a
+    server answers ``BODY.PEEK[HEADER.FIELDS (...)]``."""
+    lines: list[bytes] = []
+    for line in mail.split(b"\r\n\r\n", 1)[0].split(b"\r\n"):
+        if line[:1] in (b" ", b"\t") and lines:
+            lines[-1] += b"\r\n" + line
+        else:
+            lines.append(line)
+    want = {n.lower().encode() for n in names}
+    keep = [f for f in lines if f.split(b":", 1)[0].strip().lower() in want]
+    return b"".join(f + b"\r\n" for f in keep) + b"\r\n"
 
 
 def _mailbox(trash: str = "Trash", **kw: Any) -> FakeImap:
@@ -207,7 +274,7 @@ def _expect_b_trashed(before: dict, after: dict, trash: str = "Trash") -> None:
 async def test_the_trashed_mail_is_in_trash_and_no_other_mail_changed(caps):
     server = _mailbox(caps=caps)
     before = server.snapshot()
-    assert await _provider(server).trash_message("2") is None
+    assert await _provider(server).trash_message("2", message_id=B_ID) is None
     _expect_b_trashed(before, server.snapshot())
     assert "EXPUNGE" not in server.log  # never the plain EXPUNGE
 
@@ -216,7 +283,7 @@ async def test_the_trashed_mail_is_in_trash_and_no_other_mail_changed(caps):
 async def test_the_copy_and_the_move_run_with_inbox_selected():
     for caps, verb in ((_FULL_CAPS, "MOVE"), (_COPY_CAPS, "COPY")):
         server = _mailbox(caps=caps)
-        await _provider(server).trash_message("2")
+        await _provider(server).trash_message("2", message_id=B_ID)
         at = next(i for i, line in enumerate(server.log)
                   if line.startswith(f"UID {verb}"))
         selects = [line for line in server.log[:at] if line.split()[0] in
@@ -230,7 +297,7 @@ async def test_with_neither_move_nor_uidplus_the_original_stays_flagged():
     \\Deleted in INBOX, and C (flagged by another client) is not removed."""
     server = _mailbox(caps=_BARE_CAPS)
     before = server.snapshot()
-    await _provider(server).trash_message("2")
+    await _provider(server).trash_message("2", message_id=B_ID)
     after = server.snapshot()
     assert dict(after["INBOX"]) == {
         _mail("A"): frozenset({"\\Seen"}),
@@ -246,7 +313,7 @@ async def test_with_neither_move_nor_uidplus_the_original_stays_flagged():
 async def test_a_folder_name_with_a_space_is_quoted(caps):
     server = _mailbox(trash="Deleted Items", caps=caps)
     before = server.snapshot()
-    await _provider(server).trash_message("2")
+    await _provider(server).trash_message("2", message_id=B_ID)
     after = server.snapshot()
     if caps == _BARE_CAPS:  # the original stays flagged, as above
         assert after["Deleted Items"] == sorted(
@@ -260,7 +327,7 @@ async def test_a_folder_name_with_a_space_is_quoted(caps):
 async def test_the_special_use_trash_flag_wins_over_a_name():
     server = _mailbox(special={"Papierkorb": "\\Trash"})
     server.boxes["Papierkorb"], server.uidnext["Papierkorb"] = {}, 1
-    await _provider(server).trash_message("2")
+    await _provider(server).trash_message("2", message_id=B_ID)
     assert [b for b, _f in server.boxes["Papierkorb"].values()] == [_mail("B")]
     assert len(server.boxes["Trash"]) == 2
 
@@ -270,7 +337,7 @@ async def test_no_trash_folder_raises_and_changes_nothing():
     server = FakeImap({"INBOX": [(_mail("A"), set()), (_mail("B"), set())]})
     before = server.snapshot()
     with pytest.raises(RuntimeError, match="no Trash folder"):
-        await _provider(server).trash_message("2")
+        await _provider(server).trash_message("2", message_id=B_ID)
     assert server.snapshot() == before
 
 
@@ -281,7 +348,7 @@ async def test_a_refused_copy_or_move_raises_and_changes_nothing(caps, verb):
     server = _mailbox(caps=caps, refuse={verb})
     before = server.snapshot()
     with pytest.raises(RuntimeError, match=verb):
-        await _provider(server).trash_message("2")
+        await _provider(server).trash_message("2", message_id=B_ID)
     assert server.snapshot() == before
     assert not any(line.startswith("UID STORE") for line in server.log)
 
@@ -295,7 +362,7 @@ async def test_a_bad_answer_raises_and_changes_nothing():
     server.capability = lambda: ("OK", [b"IMAP4rev1 MOVE UIDPLUS"])  # type: ignore[method-assign]
     before = server.snapshot()
     with pytest.raises(imaplib.IMAP4.error):
-        await _provider(server).trash_message("2")
+        await _provider(server).trash_message("2", message_id=B_ID)
     assert server.snapshot() == before
 
 
@@ -306,7 +373,7 @@ async def test_a_uid_that_is_not_in_inbox_raises_and_changes_nothing(caps):
     server.boxes["Trash"][7] = (_mail("T7"), set())  # UID 7 is in Trash only
     before = server.snapshot()
     with pytest.raises(RuntimeError, match="not in INBOX"):
-        await _provider(server).trash_message("7")
+        await _provider(server).trash_message("7", message_id="<T7@test>")
     assert server.snapshot() == before
 
 
@@ -324,7 +391,9 @@ async def test_a_bulk_trash_goes_on_past_one_failure():
     ``failed_out``, and the other UIDs are trashed."""
     server = _mailbox(caps=_COPY_CAPS)
     failed: list[str] = []
-    rekeys = await _provider(server).bulk_apply(["1", "99", "2"], "trash", failed)
+    rekeys = await _provider(server).bulk_apply(
+        ["1", "99", "2"], "trash", failed,
+        message_ids={"1": "<A@test>", "99": "<Z@test>", "2": B_ID})
     assert rekeys == {} and failed == ["99"]
     assert [b for b, _f in server.boxes["INBOX"].values()] == [_mail("C")]
     assert sorted(b for b, _f in server.boxes["Trash"].values()) == sorted(

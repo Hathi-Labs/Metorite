@@ -169,3 +169,63 @@ def test_a_failed_read_answers_none(monkeypatch: pytest.MonkeyPatch, redis: _Red
 def test_the_read_names_the_bound_org_and_the_choice_vias() -> None:
     assert "organization_id = CAST(NULLIF(current_setting('app.tenant_id'" in mh.READ_SQL
     assert member_actions.counts_as_choice("app") and not member_actions.counts_as_choice("rule")
+
+
+# ── Task 3639: a purge clears the cache ─────────────────────────────────────
+
+
+class _ScanRedis(_Redis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted: list[str] = []
+
+    async def scan_iter(self, pattern: Any, *, count: int = 200):
+        for k in list(self.store):
+            if k.startswith(f"cc:{ORG}:{pattern.namespace}:{pattern.parts[0]}:"):
+                yield k
+
+    async def delete(self, *keys: Any) -> int:
+        n = 0
+        for k in keys:
+            if str(k) in self.store:
+                del self.store[str(k)]
+                self.deleted.append(str(k))
+                n += 1
+        return n
+
+
+def test_a_purge_clears_the_cache_of_that_member_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from acb_common import tenant_redis
+
+    _on(monkeypatch)
+    r = _ScanRedis()
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda **kw: r)
+    mine = _Db([("forward", ["veena@ge.com"])] * 4)
+    assert _run(mine).act == "forward"
+    other = _run(_Db([("archive", [])] * 3), member="ben@example.com")
+    assert other.act == "archive" and len(r.store) == 2
+    assert asyncio.run(mh.forget_member(ORG, ME.upper())) == 1
+    assert len(r.store) == 1
+    assert all(ME not in k for k in r.store)
+    # The next read computes again.
+    db = _Db([("forward", ["veena@ge.com"])] * 4)
+    assert _run(db).count == 4 and any(s.startswith("SELECT act") for s in db.sql)
+
+
+def test_the_key_holds_no_address() -> None:
+    from acb_common import tenant_redis
+
+    with tenant_redis.organization_scope(ORG):
+        k = str(mh._cache_key(ME, "email", None, {"sender_domain": "ge.com"}))
+    assert ME not in k and "ge.com" not in k and k.startswith(f"cc:{ORG}:member_habits:")
+
+
+def test_forget_without_a_member_or_org_does_nothing() -> None:
+    assert asyncio.run(mh.forget_member(ORG, "")) == 0
+    assert asyncio.run(mh.forget_member("", ME)) == 0
+
+
+def test_the_member_purge_calls_it() -> None:
+    src = (Path(mh.__file__).parents[3] / "apps" / "services" / "gateway" / "gateway"
+           / "routes" / "admin" / "members.py").read_text(encoding="utf-8")
+    assert "member_habits.forget_member(str(org_id), addr)" in src

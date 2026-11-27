@@ -13,6 +13,7 @@ from pathlib import Path
 from acb_auth import UserContext, get_current_user
 from acb_common import member_actions
 from fastapi import BackgroundTasks, Depends, HTTPException
+from gateway.routes.email import act_features
 from gateway.routes.email.core import (
     _tenant_session,
     provider_session,
@@ -431,8 +432,10 @@ async def send_email(
             via="app", item_kind="email", item_id=str(msg_id or "sent"),
             mailbox_id=req.account_id,
             features={"is_reply": bool(req.reply_to_message_id),
-                      "new_thread": not req.reply_to_message_id},
-            targets=member_actions.sent_to(req.to, refused))
+                      "new_thread": not req.reply_to_message_id,
+                      **act_features.of_address(req.to[0] if req.to else None)},
+            targets=member_actions.sent_to(
+                [*req.to, *(req.cc or []), *(req.bcc or [])], refused))
         return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
 
 

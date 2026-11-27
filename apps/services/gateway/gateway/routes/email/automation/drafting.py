@@ -24,6 +24,7 @@ from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
     ProviderDidNotAnswer,
     ProviderMailTooLarge,
+    trash_checked,
 )
 from email_ingestion.providers.gmail import GmailDraftNotFound, GmailProvider
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -534,7 +535,8 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             if not wrote:
                 return
             rows = (await db.execute(text(
-                "SELECT id, provider_message_id, body_text FROM email_messages "
+                "SELECT id, provider_message_id, internet_message_id, body_text "
+                "FROM email_messages "
                 "WHERE account_id = :aid AND thread_id = :tid "
                 "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
             ), {"aid": account_id, "tid": thread_id})).fetchall()
@@ -571,8 +573,9 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             if _fold(_live_draft_text(live)) not in wrote:
                 continue  # the member edited it: keep it
             try:
-                await asyncio.wait_for(
-                    provider.trash_message(r.provider_message_id),
+                await asyncio.wait_for(  # task 4100: the draft's own Message-ID
+                    trash_checked(provider, r.provider_message_id,
+                                  r.internet_message_id),
                     BODY_FETCH_TIMEOUT_S)
             except Exception:  # noqa: BLE001 — one stuck draft: no abort
                 pass
@@ -620,7 +623,8 @@ async def _resolve_existing_thread_draft(
         return "none"
     try:
         row = (await db.execute(text(
-            "SELECT id, provider_message_id, body_text FROM email_messages "
+            "SELECT id, provider_message_id, internet_message_id, body_text "
+            "FROM email_messages "
             "WHERE account_id = :aid AND thread_id = :tid "
             "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft') "
             "ORDER BY updated_at DESC NULLS LAST, received_at DESC LIMIT 1"
@@ -636,8 +640,9 @@ async def _resolve_existing_thread_draft(
                 _normalize_text(original):
             if not trash:
                 return "replace"
-            try:
-                await provider.trash_message(row.provider_message_id)
+            try:  # task 4100: the draft's own Message-ID, never the thread id
+                await trash_checked(provider, row.provider_message_id,
+                                    row.internet_message_id)
             except Exception:  # noqa: BLE001 — a stuck draft shouldn't abort
                 pass
             await db.execute(text(
@@ -3473,6 +3478,8 @@ async def _update_provider_draft(
             attachments=attachments or None, exact_to=True,
         )
         try:
+            # Task 4095: no stored Message-ID here, so an IMAP trash raises
+            # (fail closed) and the old draft stays. No mail moves by mistake.
             await provider.trash_message(provider_message_id)
         except Exception:  # noqa: BLE001
             pass
@@ -3643,7 +3650,8 @@ async def _upsert_reply_draft(
 
 #: One draft row of a thread, by its local id.
 _CARD_DRAFT_SQL = (
-    "SELECT id, provider_message_id, body_text FROM email_messages"
+    "SELECT id, provider_message_id, internet_message_id, body_text"
+    " FROM email_messages"
     " WHERE id = CAST(:id AS uuid) AND account_id = :aid AND thread_id = :tid"
     " AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')")
 
@@ -3670,7 +3678,9 @@ async def trash_chat_draft(
         return False
     if not await _live_is_chat_text(provider, row.provider_message_id, wrote, sig):
         return False
-    await provider.trash_message(row.provider_message_id)
+    # Task 4100: the draft's own Message-ID. ``thread_id`` names the parent
+    # when the draft has no Message-ID, and the IMAP check must not match it.
+    await trash_checked(provider, row.provider_message_id, row.internet_message_id)
     await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
     return True
 
@@ -4466,7 +4476,7 @@ async def send_draft_endpoint(
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
-            " bcc_addresses, body_text, thread_id"
+            " bcc_addresses, body_text, thread_id, internet_message_id"
             " FROM email_messages WHERE id = :id AND account_id = :aid"
             " AND LOWER(folder) IN ('drafts', 'draft')"
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
@@ -4519,8 +4529,9 @@ async def send_draft_endpoint(
                     cc=cc or None, bcc=bcc or None,
                     reply_to_message_id=drow.thread_id or None,
                     thread_id=drow.thread_id or None)
-                try:
-                    await provider.trash_message(drow.provider_message_id)
+                try:  # task 4100: the draft's own Message-ID
+                    await trash_checked(provider, drow.provider_message_id,
+                                        drow.internet_message_id)
                 except Exception:  # noqa: BLE001
                     pass
 

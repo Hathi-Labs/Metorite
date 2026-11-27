@@ -675,7 +675,8 @@ def _drafts_rig(monkeypatch, records: list[str], drafts: list[Any],
 
 
 def _draft(pmid: str, body: str) -> Any:
-    return SimpleNamespace(id=f"row-{pmid}", provider_message_id=pmid, body_text=body)
+    return SimpleNamespace(id=f"row-{pmid}", provider_message_id=pmid, body_text=body,
+                           internet_message_id=None)  # task 4100: the trash reads it
 
 
 async def test_draft_cleanup_keeps_a_member_draft(monkeypatch) -> None:
