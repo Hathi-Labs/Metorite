@@ -45,7 +45,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from acb_auth import AgentScope, UserContext, require_feature_router
+from acb_auth import AgentScope, UserContext, get_current_user, require_feature_router
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN
 from acb_auth.permissions import normalize_grant_subject
 from acb_common import get_logger
@@ -87,6 +87,7 @@ ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
 
 async def capture_actor_via(
     x_actor_via: str | None = Header(None, alias="X-Actor-Via"),
+    user: UserContext = Depends(get_current_user),
 ) -> None:
     """Bind the request's ``X-Actor-Via`` for :func:`record_activity`.
 
@@ -94,11 +95,22 @@ async def capture_actor_via(
     refuses: a bad value is dropped, because provenance is a courtesy on the
     row, not a gate on the act.
 
+    SBX-3a (``agent_sandbox.md`` §12.5 decision 5): a request of the sandbox
+    door (``user.sandbox`` set) binds ``user.sandbox.stamp``, the stamp of
+    its ticket, and ignores the header. The door refuses an ``X-Actor-Via``
+    header anyway. ``get_current_user`` is the cached dependency of the
+    request, so the identity step runs once.
+
     ⚠️ ``async``, and that is load-bearing. Starlette runs a SYNC dependency
     in a threadpool with a COPY of the request context, so a ContextVar set
     there never reaches the async handler. Measured 2026-09-22 by the fence
     in ``test_projects_actor_via.py``: the sync form bound nothing.
     """
+    sandbox = getattr(user, "sandbox", None)
+    if sandbox is not None:
+        stamp = sandbox.stamp
+        ACTOR_VIA.set(stamp if ACTOR_VIA_PATTERN.fullmatch(stamp) else "")
+        return
     value = x_actor_via.strip().lower() if isinstance(x_actor_via, str) else ""
     ACTOR_VIA.set(value if ACTOR_VIA_PATTERN.match(value) else "")
 
@@ -446,6 +458,54 @@ CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
 #: hand-mirrored constraint without that test is a comment claiming to be an
 #: invariant (the migration-150 lesson).
 NODE_KINDS: tuple[str, ...] = ("project", "folder")
+
+#: WS-39 SP-3a (`project_management_app.md` §13.1, D195). The five work styles
+#: of the catalogue, in the order of the picker. `pm_projects.work_style` holds
+#: one of them. The migration CHECK holds only the length, so this tuple is the
+#: list. `workbench/.../app/projects/lib/workStyle.ts` keeps the same keys in
+#: the same order, and `tests/unit/test_project_work_style.py` holds the two
+#: equal.
+WORK_STYLES: tuple[str, ...] = ("flow", "sprints", "shape_up", "plan", "personal")
+#: The styles that a member can pick today. The other three show in the picker,
+#: disabled. A style becomes live when its blocks ship (the slices of WM).
+LIVE_WORK_STYLES: tuple[str, ...] = ("flow", "sprints")
+#: The style of a node that nobody set: the column DEFAULT of the migration.
+DEFAULT_WORK_STYLE = "flow"
+
+
+def validate_work_style(values: dict[str, Any]) -> None:
+    """422 on a work style that the picker cannot set, before any SQL runs.
+
+    A no-op when ``work_style`` is not in ``values``. ``null`` is refused: the
+    column is NOT NULL, and a node always has a style. An unknown value and a
+    style that is not live yet are refused with words that name the choices.
+    The message never echoes a long value back.
+    """
+    if "work_style" not in values:
+        return
+    style = values["work_style"]
+    if style is None:
+        raise HTTPException(
+            status_code=422,
+            detail="A node always has a work style. Pick Flow or Sprints.",
+        )
+    if not isinstance(style, str) or style not in WORK_STYLES:
+        shown = str(style)[:40]
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Unknown work style '{shown}'. One of: {list(WORK_STYLES)}."
+            ),
+        )
+    if style not in LIVE_WORK_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The work style '{style}' is not available yet. Pick one of: "
+                f"{list(LIVE_WORK_STYLES)}."
+            ),
+        )
+
 
 #: The depth cap on PROJECT generations: space=1, project=2, subproject=3.
 #: Folders are transparent to this count and never extend it.
@@ -900,6 +960,9 @@ class ProjectModel(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str = "UTC"
+    #: WS-39 SP-3a (migration 505). How the team of this node works: one of
+    #: :data:`WORK_STYLES`. A row from before the column reads the default.
+    work_style: str = DEFAULT_WORK_STYLE
     created_by: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -908,6 +971,13 @@ class ProjectModel(BaseModel):
     #: when archived directly, an ancestor when swept in with its subtree. It is
     #: what makes unarchive reversible; see the migration header.
     archived_root_id: str | None = None
+
+    @field_validator("work_style", mode="before")
+    @classmethod
+    def _null_style_is_the_default(cls, value: Any) -> str:
+        # `row_to_model` reads a column a row lacks as NULL: a fake row, or a
+        # read that named its columns. The column itself is NOT NULL.
+        return value if value else DEFAULT_WORK_STYLE
 
 
 class ProjectIn(BaseModel):
@@ -929,6 +999,9 @@ class ProjectIn(BaseModel):
     archive_after_months: int | None = None
     close_after_months: int | None = None
     timezone: str | None = None
+    # WS-39 SP-3a — any node, set by hand, no inheritance. The write path
+    # checks it with `validate_work_style` before any SQL runs.
+    work_style: str | None = None
 
 
 class TaskModel(BaseModel):

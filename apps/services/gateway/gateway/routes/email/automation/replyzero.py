@@ -10,11 +10,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import member_actions
 from email_ingestion.llm_cap import LLMBudgetExhausted, automation_job
 from email_ingestion.post_sync import status_skips_rule_match, triage_once_per_cycle
 from fastapi import BackgroundTasks, Depends, Query
 from gateway import decide_features
+from gateway.routes.email import act_features
 from gateway.routes.email.account_ref import resolve_account_filter
+from gateway.routes.email.automation import mark_done
 from gateway.routes.email.automation.assistant import _load_assistant_about
 from gateway.routes.email.automation.identity import (
     SELF_ADDRESSES_SQL,
@@ -72,7 +75,8 @@ _NO_NEWER_MAIL_SQL = """NOT EXISTS (
 async def _upsert_thread_status(
     db: Any, account_id: str, thread_id: str, status: str,
     msg_id: Any, msg_at: Any, reason: str, *, preserve_done: bool = False,
-    guard: bool = False, seen_at: Any = None,
+    guard: bool = False, seen_at: Any = None, keep_held: bool = False,
+    member_guard: bool = False, member_seen: Any = None,
 ) -> bool:
     """Write a thread's Reply Zero status. Returns True when it wrote the row.
 
@@ -90,13 +94,36 @@ async def _upsert_thread_status(
     between a separate check and the write. A newer message
     (:data:`_NO_NEWER_MAIL_SQL`) voids the write: no row is written, and
     this returns False. Without ``guard`` the statement is the old one,
-    and it always writes."""
+    and it always writes.
+
+    Task 3995: an automated write (``preserve_done``, ``guard`` or
+    ``keep_held``) keeps a HELD row, one that the member marked done by hand
+    (``mark_done.upsert_expressions``). ``keep_held`` changes nothing else
+    in the statement.
+
+    ``member_guard`` is for the label learner (§6.6, fix round 5, F2).
+    ``member_seen`` is the ``classified_at`` of the row that the learner
+    read, or None for no row. With the flag on, the statement then writes no
+    row that a member wrote after that read
+    (``mark_done.member_wrote_since_sql``), and this returns False. With the
+    flag off the statement is the old one."""
+    automated = preserve_done or guard or keep_held
+    member_guard = member_guard and mark_done.mark_done_on()
     status_expr = "EXCLUDED.status"
     if preserve_done:
         status_expr = (
             "CASE WHEN email_thread_status.status = 'DONE' "
             "AND EXCLUDED.status <> 'NEEDS_REPLY' THEN 'DONE' "
             "ELSE EXCLUDED.status END")
+    # Re-arm the follow-up reminder whenever the thread changes hands.
+    reminder_expr = """CASE
+               WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
+                 OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
+               THEN NULL ELSE email_thread_status.follow_up_reminded_at END"""
+    status_expr, at_expr, reason_expr, classified_expr, reminder_expr = (
+        mark_done.upsert_expressions(automated, status_expr, reminder_expr))
+    if automated:
+        reason = mark_done.automated_reason(reason)
     params = {"aid": account_id, "tid": thread_id, "st": status, "mid": msg_id,
               "mat": msg_at, "reason": reason}
     if guard:
@@ -110,6 +137,12 @@ async def _upsert_thread_status(
     else:
         rows = "VALUES (:aid, :tid, :st, :mid, :mat, :reason, now())"
         returning = ""
+    where = ""
+    if member_guard:
+        where = (f"\n           WHERE NOT "
+                 f"{mark_done.member_wrote_since_sql('email_thread_status')}")
+        returning = "\n           RETURNING 1"
+        params["member_seen"] = member_seen
     result = await db.execute(text(
         f"""INSERT INTO email_thread_status
              (account_id, thread_id, status, last_message_id, last_message_at,
@@ -118,15 +151,12 @@ async def _upsert_thread_status(
            ON CONFLICT (account_id, thread_id) DO UPDATE SET
              status = {status_expr},
              last_message_id = EXCLUDED.last_message_id,
-             last_message_at = EXCLUDED.last_message_at,
-             reason = EXCLUDED.reason, classified_at = now(),
+             last_message_at = {at_expr},
+             reason = {reason_expr}, classified_at = {classified_expr},
              -- Re-arm the follow-up reminder whenever the thread changes hands.
-             follow_up_reminded_at = CASE
-               WHEN email_thread_status.status IS DISTINCT FROM EXCLUDED.status
-                 OR email_thread_status.last_message_id IS DISTINCT FROM EXCLUDED.last_message_id
-               THEN NULL ELSE email_thread_status.follow_up_reminded_at END{returning}"""
+             follow_up_reminded_at = {reminder_expr}{where}{returning}"""
     ), params)
-    if not guard:
+    if not (guard or member_guard):
         return True
     return result.fetchone() is not None
 
@@ -379,6 +409,19 @@ async def project_reply_status_from_matches(
     (e.g. "Reply") when a conversation rule matched — so the caller can
     reconcile the mutually-exclusive thread labels — else None. Best-effort;
     caller commits. Only call for inbound mail (sends → ``_mark_thread_replied``)."""
+    plan = await _projection_of(db, account_id, message_row, matches)
+    if plan is None:
+        return None
+    await _write_projection(db, account_id, message_row, plan)
+    return plan[2]
+
+
+async def _projection_of(
+    db: Any, account_id: str, message_row: Any, matches: list[dict[str, Any]],
+) -> tuple[str, str, str | None] | None:
+    """The READ half of :func:`project_reply_status_from_matches`: the
+    ``(status, reason, label)`` that the projection writes, or None for a row
+    with no thread. It writes nothing."""
     thread_id = getattr(message_row, "thread_id", None)
     if not thread_id:
         return None
@@ -397,15 +440,59 @@ async def project_reply_status_from_matches(
     if status in ("NEEDS_REPLY", "AWAITING") and await _thread_is_self_only(
             db, account_id, thread_id):
         chosen, status, reason = "FYI", "FYI", SELF_ONLY_REASON
+    return (status, reason or "Auto-classified",
+            _THREAD_STATUS_MAP[chosen][1] if chosen else None)
+
+
+async def _write_projection(
+    db: Any, account_id: str, message_row: Any,
+    plan: tuple[str, str, str | None],
+) -> None:
+    """The WRITE half of :func:`project_reply_status_from_matches`."""
+    status, reason, _label = plan
     # preserve_done: this is an AUTOMATED inbound re-projection — never let a
     # trailing FYI/notification silently re-open a thread the user marked DONE
     # (only a genuine NEEDS_REPLY re-opens it). A non-empty reason keeps the row
     # from looking like an un-determined blank so the backfill doesn't re-chew it.
     await _upsert_thread_status(
-        db, account_id, thread_id, status, message_row.id,
+        db, account_id, message_row.thread_id, status, message_row.id,
         getattr(message_row, "received_at", None),
-        reason or "Auto-classified", preserve_done=True)
-    return _THREAD_STATUS_MAP[chosen][1] if chosen else None
+        reason, preserve_done=True)
+
+
+async def project_and_reconcile(
+    db: Any, provider: Any, account_id: str, message_row: Any,
+    matches: list[dict[str, Any]], *, labels: bool,
+) -> str | None:
+    """The projection of the status, then the reconcile of the labels when
+    *labels* is true and a conversation rule matched. Returns the label.
+
+    With the flag off this is the order of before. Task 3995, with
+    ``EMAIL_MARK_DONE_ORGS`` on (§6.6 "The locks"): the reconcile, with its
+    provider calls, runs FIRST, and the status row is the LAST write. So the
+    block holds the status row across no I/O and waits for no row after it,
+    and a Mark done waits at most for the commit. The reconcile asks the hold
+    as before, and an automated write keeps a held row, so the result is the
+    same.
+    """
+    if not mark_done.mark_done_on():
+        keep_label = await project_reply_status_from_matches(
+            db, account_id, message_row, matches)
+        if keep_label and labels:
+            await _reconcile_thread_labels(
+                db, provider, account_id, message_row.thread_id, keep_label)
+        return keep_label
+    plan = await _projection_of(db, account_id, message_row, matches)
+    if plan is None:
+        return None
+    if plan[2] and labels:
+        await _reconcile_thread_labels(
+            db, provider, account_id, message_row.thread_id, plan[2])
+        # The hold may have begun during the provider calls of the reconcile.
+        await mark_done.recheck_after_io(
+            db, provider, account_id, [message_row.thread_id])
+    await _write_projection(db, account_id, message_row, plan)
+    return plan[2]
 
 
 # The thread-status judgment is hard to do well on a weak model (it's a
@@ -1346,6 +1433,9 @@ async def status_before_match(
     if not thread_id:
         return StatusFirst(rules={})
     try:
+        # Task 3995: a held thread needs no status, so no model is asked.
+        if await mark_done.thread_is_held(db, account_id, thread_id):
+            return StatusFirst(rules={})
         rules = await _enabled_conversation_rules(db, account_id)
         if not rules:
             return StatusFirst(rules={})
@@ -1577,6 +1667,11 @@ async def resolve_conversation_status_matches(
     from gateway.routes.email.automation.engine import DecisionUnavailable
 
     matches = matches or []
+    # Task 3995: a held thread keeps its Done. No rule of it runs, and no model
+    # is asked. A new inbound message ends the hold before this runs.
+    if await mark_done.thread_is_held(
+            db, account_id, getattr(message_row, "thread_id", None)):
+        return mark_done.hold_matches(matches)
     if decide_features.mode_for("email.thread_status") == "on":
         return await _resolve_on(
             db, account_id, message_row, matches, provider=provider, first=first,
@@ -1660,6 +1755,8 @@ async def _reconcile_thread_labels(
     apply is simply skipped. Stated explicitly because callers without a
     provider used to rely on ``None.set_labels`` raising into the best-effort
     handler, which works by accident and reads like a bug."""
+    # Task 3995: a thread that the member marked done by hand wears "Done" only.
+    keep_label = await mark_done.held_label(db, account_id, thread_id, keep_label)
     rows = (await db.execute(text(
         """SELECT id, provider_message_id, categories, folder
            FROM email_messages
@@ -1707,6 +1804,12 @@ async def _reconcile_thread_labels(
     # reader looks at); fall back to the latest message if all are outbound.
     inbound = [r for r in rows if (r.folder or "").lower() != "sent"]
     target = inbound[-1] if inbound else rows[-1]
+    if mark_done.mark_done_on():
+        # Task 3995 (D3): a draft is no inbound mail. A nudge draft is often
+        # the newest row, and the list does not show a label on it.
+        kept = [r for r in rows if (r.folder or "").lower() != "drafts"]
+        received = [r for r in kept if (r.folder or "").lower() != "sent"]
+        target = (received or kept or rows)[-1]
     if keep_label in list(target.categories or []):
         return
     # Mirror first (see above), then best-effort provider apply — so a thread
@@ -2140,6 +2243,9 @@ async def read_job_status(
     row_id = getattr(message_row, "id", None)
     message_id = str(row_id) if row_id is not None else None
     try:
+        # Task 3995: a held thread needs no status, so no model is asked.
+        if await mark_done.thread_is_held(db, account_id, message_row.thread_id):
+            return None
         # D-EM-27 first, as in `_determine_status_of`: FYI, with no ask.
         if await _thread_is_self_only(db, account_id, message_row.thread_id):
             return StatusRead(
@@ -2338,7 +2444,8 @@ async def _reconcile_labels_bg(
 
 
 async def apply_thread_status_correction(
-    account_id: str, thread_id: str, status_key: str,
+    account_id: str, thread_id: str, status_key: str, *,
+    automated: bool = False, seen: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Force a thread's Reply Zero status to a user-corrected value (the Fix flow).
 
@@ -2355,6 +2462,18 @@ async def apply_thread_status_correction(
     block closes, inside the sync loop's binding. Block A writes the status.
     Block B reads the account. The provider authenticates with no session
     open. Block C swaps the labels and persists rotated credentials.
+
+    Task 3995: ``automated`` is for the label learner of the sync, a write
+    that no member asked for. Its block A keeps a held row, and when the row
+    is held after the write, nothing else runs and the answer is
+    ``{ok: False, held: True}``. Its block C asks the hold again after the
+    provider I/O and puts "Done" back (``mark_done.recheck_after_io``). The
+    Fix of the member leaves it False, so the Fix still ends the hold.
+
+    Fix round 5 (F2): ``seen`` is the map of ``mark_done.owned_and_seen``,
+    which the learner read before its loop. With it, block A writes no row
+    that a member wrote after that read, and the answer is
+    ``{ok: False, member: True}``. The Fix of the member passes no map.
     """
     rz_status, label = _THREAD_STATUS_MAP.get(
         _canon_status_key(status_key), ("", ""))
@@ -2367,10 +2486,20 @@ async def apply_thread_status_correction(
                 "WHERE account_id = :aid AND thread_id = :tid "
                 "ORDER BY received_at DESC NULLS LAST LIMIT 1"
             ), {"aid": account_id, "tid": thread_id})).fetchone()
-            await _upsert_thread_status(
+            wrote = await _upsert_thread_status(
                 db, account_id, thread_id, rz_status,
                 latest.id if latest else None,
-                latest.received_at if latest else None, "Fix correction")
+                latest.received_at if latest else None, "Fix correction",
+                keep_held=automated, member_guard=seen is not None,
+                member_seen=(seen or {}).get(thread_id))
+            if not wrote:
+                return {"ok": False, "member": True}
+            # The upsert holds the row lock, so this read stays true until
+            # the block commits. No read with the flag off.
+            held = automated and await mark_done.thread_is_held(
+                db, account_id, thread_id)
+        if held:
+            return {"ok": False, "held": True}
         # Best-effort: swap the provider/local labels to the corrected status.
         async with _tenant_session() as db:
             acc = (await db.execute(text(
@@ -2386,6 +2515,10 @@ async def apply_thread_status_correction(
                 async with _tenant_session() as db:
                     await _reconcile_thread_labels(
                         db, provider, account_id, thread_id, label)
+                    if automated:
+                        # A click during the provider I/O ends Done.
+                        await mark_done.recheck_after_io(
+                            db, provider, account_id, [thread_id])
                     if provider.credentials_dirty():
                         await _persist_rotated_creds(
                             db, store, account_id, provider)
@@ -2823,8 +2956,6 @@ async def _maybe_classify_threads(
                     matches = await resolve_classification(
                         db, account_id, r, plan, asked, provider=provider,
                         status=status)
-                    keep_label = await project_reply_status_from_matches(
-                        db, account_id, r, matches)
                     # Collapse the thread to that ONE conversation label. This
                     # backfill wrote the status row but never reconciled the
                     # labels, so earlier messages kept whatever they were
@@ -2835,10 +2966,12 @@ async def _maybe_classify_threads(
                     # disagree.
                     # EM-G11c2: with Auto-run OFF, the status row is the
                     # only write. No label changes, local or upstream.
-                    if keep_label and writes \
-                            and not conversation_match_proposes(matches):
-                        await _reconcile_thread_labels(
-                            db, provider, account_id, r.thread_id, keep_label)
+                    # Task 3995: with the flag on, the status row is the last
+                    # write (``project_and_reconcile``).
+                    await project_and_reconcile(
+                        db, provider, account_id, r, matches,
+                        labels=bool(writes)
+                        and not conversation_match_proposes(matches))
             except LLMUnavailable as exc:
                 # Classifier down for this one — skip it (this backfill writes
                 # no watermark, so the gap query re-selects it next cycle)
@@ -2987,6 +3120,9 @@ class ThreadResolveRequest(BaseModel):
     # Files the thread as FYI (not awaiting anything, nothing claimed finished)
     # and does NOT close tasks captured from it. Overrides ``done``.
     dismiss: bool = False
+    # "Move back" after Mark done (task 3995): with ``done=false``, the state
+    # to restore. Ignored with the flag off.
+    restore: mark_done.ThreadRestore | None = None
 
 
 @router.post("/reply-zero/resolve")
@@ -3006,10 +3142,20 @@ async def resolve_thread(
     has ``thread_id``, the answer is 404 and nothing is written. That covers
     the done, the reopen and the dismiss branches. The chat tool
     ``mark_thread_done`` has no mail id, so this check is what makes a wrong
-    mailbox from the model fail closed."""
+    mailbox from the model fail closed.
+
+    Task 3995, with ``EMAIL_MARK_DONE_ORGS`` on: Done writes a HELD status and
+    returns ``previous``, ``restore`` moves the thread back, and a reopen is a
+    write of the member (``mark_done.resolve_marked``). With the flag off
+    ``restore`` is ignored."""
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         await _assert_thread_in_mailbox(db, req.account_id, req.thread_id)
+        if mark_done.mark_done_on() and not req.dismiss:
+            return await mark_done.resolve_marked(
+                db, background, account_id=req.account_id,
+                thread_id=req.thread_id, done=req.done, restore=req.restore,
+                user_email=user.email or "anonymous")
         keep_label = "Done"
         if req.dismiss:
             # A dead loop the user will never answer: file it as FYI. DONE
@@ -3052,6 +3198,15 @@ async def resolve_thread(
                 await propagate_thread_done_to_tasks(
                     db, user.email or "anonymous", req.account_id,
                     req.thread_id)
+            # WS-PZ MM-1: the member marked the thread done. One row in the act
+            # record, with no text. Dark behind MEMBER_ACTIONS_ORGS, and it never
+            # fails the act (acb_common.member_actions.record_act).
+            await member_actions.record_act(
+                db, org=member_actions.org_of(user), member=user.email or "",
+                app="email", act="mark_done", via="app", item_kind="thread",
+                item_id=req.thread_id, mailbox_id=req.account_id,
+                features=await act_features.of_thread(
+                    db, member_actions.org_of(user), req.account_id, req.thread_id))
         else:
             # Reopen: re-derive from the latest message's folder. Resolve the
             # latest message directly (don't rely on last_message_id, which may

@@ -802,6 +802,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S14 · No forged agent rows** — ✅ **BUILT 2026-09-28** | The server mints the agent row of a run when the run starts · no client inserts an agent row or a system row · an empty minted row stays hidden · a creator owns only a room with no rows, and migration 221 backfills every creator's owner row (§20) | AGENT-SAFE. D-PM-39 decided by the owner 2026-09-28 |
 | **S15 · Chat is saved on production** — ✅ **BUILT 2026-09-29** | A JSON body to the gateway names its content type, so a save gets no 422 · each chat, room, fold, mint, run-trace and blob write binds the tenant · `_load_room` binds it too, so no member owns a room that they cannot see · an empty server answer keeps the browser cache · an R8 suite, a smoke check and an alarm (§21) | AGENT-SAFE. A live defect, audited by the diagnosis of 2026-09-29 |
 | **H-229 · Chat attachments** — ✅ **BUILT 2026-10-04** | `read_attachment` reads the text of a `.docx`, PDF, `.txt`, `.md` or `.csv` file attached in this chat, by pure parsing · an upload to a shared agent lands in its thread's own folder · an older flat upload reads only in the thread that the blob history names (§22) | AGENT-SAFE. Restores the flow that D85 stopped |
+| **CIV-SMOKE-TURN · The smoke runs a real turn** — ✅ **BUILT 2026-11-27, dark** (task 4061) | The release smoke runs one short model turn with tools on, in the smoke org. The stream ends with `done`, the saved answer has text, and no gateway line of the turn holds a Traceback (red with `LOG_FORMAT=json` only, and a warning today). `SMOKE_CHAT_TURN` and `SMOKE_CHAT_TURN_CAP_USD` in the box `.env`, both unset. Two cap guards: the smoke's own count of turns, and the metered spend. `deploy/smoke_chat.sh --turn-only` (§21.10) | HIGH: the deploy path. The owner sets the cap before the switch goes on |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-11-30 (`.claude/OWNER_GRANTS.md`, PR #487) |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -3984,10 +3985,10 @@ Then it runs `scripts/smoke_chat_persist.py`.
 
 - Exit 1 (a step failed) and exit 2 (the environment is wrong) make the run
   red at once, with no retry. An ssh blip retries, 3 tries in total.
-- The script has a time bound of 935 s, and its header gives the sum. The
-  job gives one ssh 990 s. A session that goes past that is a timeout, with
+- The script has a time bound of 1175 s, and its header gives the sum. The
+  job gives one ssh 1230 s. A session that goes past that is a timeout, with
   its own message and no retry, and the job gives a warning. The job
-  timeout is 60 min.
+  timeout is 72 min.
 - Only a smoke that ran and failed is red. When ssh cannot reach the box for
   the whole connect budget, or drops on all 3 tries, the job gives a
   warning and stays green. That keeps the H-142 contract for the pull path:
@@ -4023,6 +4024,58 @@ Then it runs `scripts/smoke_chat_persist.py`.
   delete, and no database access. A failed sweep prints `WARN 0` and does
   not fail the smoke.
 - The fence is `tests/unit/test_deploy_smoke_wiring.py`.
+
+**The smoke can run one real model turn (CIV-SMOKE-TURN, task 4061, built
+2026-11-27, dark).** On 2026-11-26, 25 flags went on, and no real turn tested
+them for hours. So the persist run can also run one short turn of the
+orchestrator, with its tools on, in the smoke session. The module is
+`scripts/smoke_chat_turn.py`, and its lines start with `T`.
+
+- The operator sets `SMOKE_CHAT_TURN=1` and `SMOKE_CHAT_TURN_CAP_USD` in
+  `/opt/acb/app/.env`. The script reads both on each run, so a change needs no
+  restart. Both are unset, so the turn is off. The owner has not set the cap.
+- On with no cap is `REFUSED`, exit 2, and the smoke writes nothing.
+- T1 has two guards, and either one skips the turn. A skip prints a
+  `WARNING T1` line, the smoke stays green, and `deploy.yml` shows a
+  `Model turn skipped` warning.
+- The count guard does not need Redis. The smoke keeps its own count of this
+  UTC month's turns in `/var/lib/acb/smoke-chat-turn.json`. It writes the
+  count + 1 before the turn, so a crash still counts the turn. It skips when
+  the count times `SMOKE_CHAT_TURN_EST_USD` (default 0.25) is at or over the
+  cap. A corrupt file, a file it cannot write, or a lock that another smoke
+  holds skips the turn.
+- The metering guard reads the smoke org's cost rollup of this UTC month
+  through `GET /api/observability/cost`. The rollup is in Redis, and a model
+  with no price writes no cost, so it is a second guard and not the cap. An
+  empty rollup is unknown. Zeros with no calls are also unknown after a
+  counted turn of this month.
+- T2 needs the `done` event, and T3 needs an assistant row with text. Each
+  failure is exit 1, with no PASS line.
+- T4 reads `journalctl -u acb-gateway -o json` from the turn start to now. A
+  Traceback on a line with the thread id of this turn is red. That works
+  with `LOG_FORMAT=json`, where the executor binds `thread_id` to each line
+  of the run. Any other Traceback, or a log that acb cannot read, is a
+  `WARNING T4` line. Another tenant can own that line. T4 prints the count
+  and the times of the hits only, and never the log text.
+- Before the flip, the owner runs `journalctl -u acb-gateway -n 1` as acb.
+  If acb cannot read it, add acb to the `systemd-journal` group. Without
+  that, T4 cannot check the log.
+- T4 can be red only with `LOG_FORMAT=json` in the gateway environment.
+  The box used the console format on 2026-11-27. Then a Traceback spans
+  many journal lines, its line holds no thread id, and T4 only warns.
+- After the first turn, the owner checks that the cost rollup of the smoke
+  org shows `calls > 0`. A model with no price writes no calls. Then each
+  later turn of the month skips with a warning.
+- The cap needs about 7 turns a day times `SMOKE_CHAT_TURN_EST_USD` (0.25)
+  for a month, which is about 53 USD. A lower cap stops the turn early in
+  the month, with a warning on each deploy.
+- A retry of the smoke after an ssh drop can run up to 3 turns in one
+  release. The count guard counts each one.
+- The turn takes at most 227 s of `SMOKE_TURN_S` (240 s).
+- `bash deploy/smoke_chat.sh --turn-only` runs the turn alone. A later
+  `flag_flip.sh` calls it after a flip.
+- The fence is `tests/unit/test_smoke_chat_turn.py`, with the wiring in
+  `tests/unit/test_deploy_smoke_wiring.py`.
 
 **The alarm stays manual.** `alarm_chat_persist.sh` counts write failures in
 the last 10 minutes of the gateway journal. After a deploy, that window holds
@@ -5870,6 +5923,11 @@ Every element of an assistant turn is one of four kinds.
    it. Answering the element removes the bar. The bar reuses the "1 of N"
    confirmation queue and adds no state of its own.
 
+   **Amended 2026-11-27 (§24.11, D234).** With `WAITING_DOCK_ORGS` on, the bar
+   becomes the dock. The element draws in the dock above the message box until
+   the member answers or declines it, and the thread keeps one line at its old
+   place. With the flag off, this rule holds as written.
+
    ~~**Exception: a reply card and a draft pin above the composer** (owner
    report, 2026-10-22).~~ **Withdrawn by the owner, 2026-10-23.** On a
    phone the pinned card covered the chat, and a declined question stayed
@@ -6221,6 +6279,12 @@ Fences: `tests/unit/test_question_decline.py`, `declineAnswer.test.ts`,
 the thread and scrolls with it. Only a one-line status may sit outside the
 thread.
 
+**Amended 2026-11-27 (§24.11, D234).** With `WAITING_DOCK_ORGS` on, this
+answer holds for every card that does NOT wait. A card that waits on the
+member draws in the dock above the message box. The rules C1, C2, C3, C6 and
+C8 and the pin test below change as each dated note says. With the flag off,
+they hold as written.
+
 **The report.** The owner wrote an email reply over chat on a phone. Three
 things went wrong:
 
@@ -6232,7 +6296,8 @@ things went wrong:
   waited on the question for minutes.
 
 **The test for a pin.** An element may sit outside the thread only when all
-three of these are true:
+three of these are true. *Amended 2026-11-27 (§24.11):* the dock is the one
+exception to this test, and only for a card that waits on the member.
 
 1. It is one line on a phone.
 2. It tells the state of the run, or it points to an element in the thread.
@@ -6246,16 +6311,22 @@ pass. A card fails the first test, so it goes in the thread.
 - **C1 — The box area holds the member's own input.** The form under the
   thread holds the box, its controls, the status row, the ask bar and one
   notice. It draws no card. The Todos panel opens folded on a phone, and its
-  one line names the step that runs now.
+  one line names the step that runs now. *Amended 2026-11-27 (§24.11):* with
+  the dock on, the dock is the one card in this area.
 - **C2 — A card that waits draws at the foot of the live turn.** It draws
   after the last message of the thread, so a steer that the member sent
   sits above it. When it is out of view, the ask bar names it, and a press
-  scrolls to it. This is the only pin.
+  scrolls to it. This is the only pin. *Amended 2026-11-27 (§24.11):* with the
+  dock on, a waiting card draws in the dock and not in the thread, the thread
+  keeps the line "Waiting for you: N items, below", and the ask bar never
+  names a card of the dock. It still names a generative-UI ask until WD-2.
 - **C3 — A card holds no scroll box.** The thread is the one thing that
   scrolls. A long body uses `components/ui/ShowMore.tsx`. It shows the
   first part with a fade, and "Show all" opens the rest in place. Two boxes
   may scroll: the working trail, which follows its own tail, and the raw
-  text of an error. A wide table may scroll sideways.
+  text of an error. A wide table may scroll sideways. *Amended 2026-11-27
+  (§24.11):* the body of the active item in the dock may also scroll, when it
+  is over the height cap.
 - **C4 — One live copy.** A revision replaces the card. The newest draft
   draws in full, and an older draft draws as one line that says a newer
   draft replaced it (`lib/pinnedDraft.ts`).
@@ -6266,19 +6337,26 @@ pass. A card fails the first test, so it goes in the thread.
   The caption under the box says "Answers the question above". Otherwise a
   typed message steers the run. A message typed while an approval waits
   steers it, so the member can ask for a change in words
-  (`lib/typedAnswer.ts`).
+  (`lib/typedAnswer.ts`). *Amended 2026-11-27 (§24.11):* with the dock on,
+  typed text follows WD-D4 from slice WD-3. This fast path stays first, and
+  typed text never approves a card.
 - **C7 — A card that sends shows all that it sends.** Each recipient and the
   whole text are in the thread, with no box that hides the end. This
   carries the §21 rule of the email plan ("a send card never shows less
-  than it sends") to the screen.
+  than it sends") to the screen. *Amended 2026-11-27 (§24.11):* in the dock,
+  the whole text is in the card, which may scroll in the dock.
 - **C8 — The thread follows its foot only when the member is there.** A
   reader near the foot stays at the foot when a card grows
   (`stickToBottom.ts`). A reader who scrolled up keeps the place, and the
-  ask bar tells them that a card waits.
+  ask bar tells them that a card waits. *Amended 2026-11-27 (§24.11):* with the
+  dock on, the dock is outside the scroll, so it stays in view in both cases.
+  The ask bar still names a generative-UI ask until WD-2.
 
 **How to check a new card.** Open it at 390 × 844 with the keyboard up.
 The member must see the card and at least two lines of the thread above it.
 The member must reach every control of the card with no inner scroll.
+*Amended 2026-11-27 (§24.11):* in the dock, the body of the active item may
+scroll over the height cap.
 
 **What this change built.**
 
@@ -6297,6 +6375,216 @@ on a scroll box in a file that draws a card, and on a card in the form.
 C2 and C4. C5, C7 and C8 keep their fences in §24.6 and §24.9.
 
 The check at 390 × 844 is advisory, so review holds it.
+
+### 24.11 The waiting dock (owner, 2026-11-27)
+
+**Status.** SPECIFIED 2026-11-27 (task 4088, D234), verified against code on
+2026-11-27 at `79e0e12278`. Epic: task 4087. Each slice ships dark behind
+`WAITING_DOCK_ORGS`. With the flag off, §24.2 and §24.10 hold as written, and
+the chat behaves as before. The three slices are **AGENT-SAFE** to build. The
+flip of `WAITING_DOCK_ORGS` on a box is **OWNER-GATE** (`enforcement-flip`).
+
+**The problem, in the owner's words (2026-11-27).**
+
+```text
+"People are missing out on the AGUI input cards that show up because they, by mistake, scroll up. Whenever an AGUI card needs an input, ... have it persistent in the chat ... a way in which they cannot navigate away from the AGUI interface. And if new AGUI cards show up, they should be stacked on the same card ... And in case the user opts to message into the message box instead of clicking on the AGUI, depending on the input text ... decide whether a particular AGUI input is answered, not answered, or needs a change."
+```
+
+The owner saw the mockup
+`workbench/control_plane/ux-shots/agui-dock/index.html` (the dock against an
+overlay, the phone with the keyboard up and down, the side rail and the full
+chat). The owner said, in chat with metorite-78:
+
+```text
+"I like the dock. go ahead with your recommendations for everything else. Ensure you take care of the cases in which we want the keyboard minimized or maximized. Basically, take care of the keyboard activation where needed. So that when there's an MCQ or whatever, there's the maximum amount of space that can be utilized, but when text input is needed, then only the keyboard shows up. Figure it out."
+```
+
+#### The decisions
+
+- **WD-D1, the dock.** Every element that NEEDS THE MEMBER draws in a dock
+  directly above the message box, outside the scrolling thread. The thread
+  scrolls behind it. In the thread, the place of the card keeps one line,
+  "Waiting for you: N items, below". That line is not a card. This reverses
+  the owner's own rule of 2026-10-23 for waiting elements only. It amends
+  §24.2 rule 1 and §24.10 (C1, C2, C6, C8 and the pin test). The owner made
+  both rules, so this is no re-litigation.
+- **WD-D2, always visible, may fold.** An item leaves the dock only when the
+  member answers, declines or discards it. The member may fold the dock to one
+  row: the tab row, the title of the active item and its primary action. The
+  dock never scrolls away, and it has no close control that drops an item
+  unanswered.
+- **WD-D3, one card with tabs for all that waits.** Approvals (the
+  `ConfirmationQueue`, D173), `ask_questions` and `ask_user` cards, and the
+  generative-UI asks (`formCard`, `optionPicker`, `planCard`, and any spec
+  with a `request_id`) are tabs of ONE card. The count, the kind icon, the dot
+  on an unopened tab and the auto-advance stay as `lib/cardTabs.ts` has them.
+  This widens the scope of D173 from approvals to every waiting element.
+- **WD-D4, typed text.** Typed text may ANSWER a question, picker or form,
+  leave it OPEN, or CHANGE it. Typed text may CHANGE an approval card or leave
+  it OPEN, and it NEVER approves it. The click is the consent (D168.1 and
+  D173.5, one consent per card). A card can hold outside text (a held chat), so a model
+  that reads "approved" from text would be a new injection path. Code enforces
+  this, not a prompt.
+- **WD-D5, the keyboard.** A picks-only item gets the whole space with the
+  keyboard down. The keyboard comes up only for text. Rules K1 to K7 below.
+
+#### The three failures of 2026-10-23 must not come back
+
+- **F1:** on a phone the pinned card took most of the screen, and the chat
+  behind it did not scroll. The dock has a height cap. At 390 x 844 with the
+  keyboard up, the member sees the dock and at least two lines of the thread
+  (the §24.10 check), and the thread still scrolls.
+- **F2:** a declined question stayed stuck above the box. An answered or
+  declined item leaves the dock at once and leaves a one-line note in the
+  thread (C5).
+- **F3:** a typed answer went as a steer, so the run waited for minutes. WD-D4
+  and slice WD-3 fix it.
+
+#### Size, C3 and C7 in the dock
+
+- Height cap: 50% of the chat height on a desktop, and 60% of the visual
+  viewport on a phone with the keyboard down. With the keyboard up, the dock
+  folds to one row, except when a field in the card has the focus (K3).
+- Over the cap, the body of the active item scrolls inside the dock. That is
+  the one amendment to C3. An Expand control opens the item at full height.
+- C7 still holds: the member can reach every recipient and the whole text of a
+  send card in the card.
+
+#### Keyboard rules
+
+K1 to K7 bind the phone. The desktop follows K1, K6 and the a11y line.
+
+- **K1** The arrival of a card never moves the focus while the member types
+  (the box holds text, or a key went down in the last 3 s). Otherwise, on a
+  phone, the arrival of a picks-only item blurs the message box, so the
+  keyboard drops and the dock unfolds.
+- **K2** Picks-only items (Approve, Send, Discard, an option picker with no
+  free text, yes or no, a date): the keyboard stays down, and the dock unfolds
+  to its cap.
+- **K3** A text item opens the keyboard only on the member's own tap (a tab,
+  "Other", a field, "Edit"). iOS opens a keyboard only inside a user gesture,
+  so there is no auto-focus on arrival. On that tap, focus the field in the
+  card, fold the rest of the dock, and keep the field and the item's buttons
+  above the keyboard (`visualViewport`).
+- **K4** A question that takes free text uses the message box as its field on a
+  phone. The placeholder reads "Type your answer…", and the caption reads
+  "Answers: <question>". The card on a phone has no second text field. A
+  desktop may keep the inline "Other" field.
+- **K5** Each field opens the right keyboard: `inputmode`, or `type` for
+  numbers, email, phone and web addresses. A date opens the native date picker
+  and no text keyboard. `enterkeyhint` is "next" between form fields and
+  "done" or "send" on the last one.
+- **K6** After an answer, a picks-only answer never opens the keyboard. When
+  the last item leaves, the dock goes. The focus goes back to the message box
+  on a desktop only, and on a phone the keyboard stays down.
+- **K7** With the keyboard up and no field of the card in focus (the member
+  types in the message box), the dock folds to one row. The caption under the
+  box says what the text will do (WD-D4).
+- **A11y:** one polite live region says "N items wait for you" when the count
+  goes up. The arrival never steals the focus. Every control of the dock is a
+  native button or field.
+
+#### Rules of the audit (2026-11-27)
+
+The spec audit found gaps. These rules close them with the safest reading.
+Where a rule here differs
+from the text above or from the slice table, this rule wins.
+
+1. **The pin and the generative-UI ask.** In WD-1 an ask from a form, a picker
+   or a plan stays in the message bubble. `AskPin` still draws for it. `AskPin`
+   never draws for an item of the dock. The thread line counts dock items only.
+2. **The folded row never consents.** Its main button only opens the card.
+   For an approval it never approves, rejects or sends. This keeps D168.1 and
+   C7: the member sees the whole card before the consent.
+3. **The tabs.** The order is the approvals (queue order), then the
+   `ask_questions` card, then the `ask_user` card. One card is one tab, also a
+   card with several questions. A question tab has a question icon and the
+   label "Question: <title>", cut. When every tab is an approval, the count
+   keeps "N to approve". Else it reads "N waiting". The auto-advance and the
+   unseen dot work across the kinds, as in `ConfirmationQueue`. A redraft slot
+   (§18.11) stays in the dock and is not counted.
+4. **When an item leaves.** The member answers, declines or discards it. It also
+   leaves when today's state removes it: the run ends, another tab answers it,
+   it times out, or a redraft replaces it. An answered question card keeps its
+   folded one-line form at its thread place until the run ends.
+5. **The caps.** Desktop: 50% of the chat height. Phone with the keyboard down:
+   60% of the visual viewport. Phone with the keyboard up and a card field in
+   focus: at most the visual viewport minus the composer and two thread lines.
+   Expand opens up to the chat column minus the composer and two thread lines,
+   and never covers the composer. The cap counts the dock only. "Phone" and
+   "keyboard up" use the signals that the chat already has.
+6. **Picks-only.** An approval of any kind is picks-only, because its fields
+   are optional edits. A question card is picks-only when every question has
+   options. The blur of an idle message box in K1 is the one exception to "the
+   arrival never steals the focus".
+7. **WD-1 captions.** WD-1 keeps `ANSWER_CAPTION` and `STEER_CAPTION` as today.
+   The new text of K7 and WD-D4 comes with WD-3. The inline "Other" field stays
+   on a phone until WD-2 builds K4.
+8. **Two folds.** The dock fold is a second fold beside `RollupCard`, which
+   never folds a card that waits. The dock card does not use the fold of
+   `RollupCard`.
+
+#### Done when (WD-1)
+
+- A card that waits draws in the dock, and it stays in view after any scroll.
+- Approvals, `ask_questions` and `ask_user` that wait together show as one card
+  with tabs.
+- The fold, the caps, the thread line, K1, K2, K3, K6, K7 and the live region
+  work, as in the rules above.
+- With the flag off, the chat draws as today, and the old assertions of the
+  changed tests hold.
+- The captures show 390 x 844 with the keyboard up (the dock and two thread
+  lines) and down, the 420 px rail, the full chat, light and dark, compact
+  density and a changed accent.
+- **Demo, rung 1:** with the flag on for Hathi Labs, ask Mira to draft an email
+  and ask one question. Scroll up. One card with two tabs stays above the box,
+  and the phone keyboard stays down for Send.
+
+**Verify with:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest
+run`, and
+`uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_flag_reload.py`
+and `uv run python scripts/affected_tests.py --run`.
+
+**Demos of the later rungs.** These belong to their own slices:
+
+- **Demo, rung 2:** one turn with a form, a picker and an approval shows one
+  card with three tabs.
+- **Demo, rung 3:** type "use the Website project, and make the email shorter"
+  with an approval and a question waiting. The question is answered, the email
+  card redrafts, and nothing is sent.
+
+**Edit paths (WD-1):** `components/AgentChat.tsx`,
+`components/ConfirmationQueue.tsx`, `components/ui/CardTabs.tsx`,
+`lib/cardTabs.ts`, `lib/askPin.ts`, new `lib/waitingDock.ts` and
+`components/WaitingDock.tsx`, `lib/shell/shellPrefs.ts`, `flag_registry.py`,
+`routes/admin/me.py`, `docs/flag_reload.md`, `.env.example` and, if a fence
+asks, `env_guard.py`, `ElicitationCard.tsx` and `ConfirmationCard.tsx`.
+The two new test files also hold the audit rules (rule 2 first), K3, K7, the
+live region and the thread line. The 390 x 844 check is advisory.
+
+#### Out of scope
+
+No overlay. No approval from typed text. No change to what a card sends or to
+the respond-input protocol. Cards outside the chat (My Day, the Approvals
+page) keep their place.
+
+#### The flag
+
+`WAITING_DOCK_ORGS` is a per-org list (ids with a comma between them, or `*`).
+Empty is off, the default, and a SIGHUP reload applies a change
+(`docs/flag_reload.md`). The field is `waiting_dock_orgs` in
+`flag_registry.py`, at its sorted place before `waiting_orgs`.
+`GET /auth/me/shell` serves it as `waiting_dock`, a read-only fact of the
+server, and the organization comes from the session. With the flag off, the
+chat draws and behaves as before this section.
+
+#### Slices
+
+| Slice | Task | What it builds | Fence (R7) |
+|---|---|---|---|
+| **WD-1** (rung 1, STANDARD UI, dark) | 4089 | The dock for today's approvals and question cards as tabs of one card, the fold, the height caps, the thread line, K1 to K3, K6, K7 and the a11y line. Under the flag, `AskPin` never draws for an item of the dock. Every surface that draws `AgentChat` gets it. The flag and the shell key. | `src/lib/waitingDock.test.ts` (the dock draws only while an item waits, the fold, the cap math, K1, K2 and K6) and `src/components/waitingDock.test.ts` (the markup). Under the flag, `chatCardScroll.test.ts` C1 and C3, `pinnedDraft.test.ts` ("no card pins above the composer") and `askPin.test.ts` change: the dock is the one card path in the form, its body is the one new scroll box, and `AskPin` draws no dock item (it still draws a generative-UI ask until WD-2). Each keeps its old assertions for the flag-off path. `tests/unit/test_auth_me_shell.py` and `tests/unit/test_flag_reload.py` hold the key and the reload. |
+| **WD-2** (rung 2, STANDARD UI, dark) | 4090 | Each generative-UI ask draws as a tab and not in the bubble. A non-blocking ask waits until the member answers or declines it. K4 and K5. | `src/lib/waitingDock.test.ts` and `src/lib/askPin.test.ts`: each ask kind becomes a tab, a non-blocking ask survives a new message, and the K4 and K5 attributes. |
+| **WD-3** (rung 3, HIGH, dark) | 4091 | The fast path of C6 stays first. Else, while an item waits, one cheap call on the decide tier reads the text against the waiting items and returns `answers`, `change` or `open` for each, with a confidence. The card shows "Answered from your message" with Undo for 10 s. Low confidence asks one chip. The code drops an `answers` or approve result for an approval. In a room, only the member that a card waits on can answer or change it with text (the room rule of `orchestrator/pending_ask.py`). The model reads titles, kinds, options and field names, not outside body text. | `src/lib/typedAnswer.test.ts` (the fast path), `tests/unit/test_waiting_dock_typed_read.py` (a mutation of the approval guard turns it red, the room rule, each result kind and Undo), and a fixed eval of at least 30 typed replies with an eval spend under USD 0.50. The build names any file that differs. |
 
 ## 25. The fixed prefix of each request (2026-10-09)
 
@@ -7613,6 +7901,40 @@ migration, no flag and no new route. BUILT 2026-11-09 on branch
   - `voiceDictation.test.ts` tests the label of the Stop button.
   - `src/lib/theme/conformance.test.ts` holds the colour rules.
 
+**VOX-8 (task 2505). The mic hears the languages the member speaks.** HIGH,
+because it changes the metered door. Design: `personalization.md` §5.3a.
+Needs PZ-52 for the list. **DEFERRED by the owner on 2026-11-09.** It opens
+only when Sarvam, now first on `tier-stt`, shows a wrong-language guess.
+
+- **Why:** the owner said on 2026-11-09: "just because our preference is
+  English doesn't mean that it should not understand Hindi as input."
+- **Files:** `chat_transcribe.py`, `acb_auth/console_resolve.py`
+  (`transcribe_on_console`), and in the Console `main.py`
+  (`audio_transcriptions`), `router.py`, `stt_sarvam.py` and
+  `stt_assemblyai.py`.
+- **Do:**
+  - The gateway loads `style.languages` of the proven member on the server. It
+    sends them as the form field `language_hints`: lowercase base tags
+    joined by commas, at most 6 and 64 characters. It never reads a language
+    from the request (R5).
+  - The door accepts the optional field `language_hints`. It drops a tag that
+    is not well formed. It ignores a field that is too long or too big. It
+    never answers 4xx because of it.
+  - Sarvam sends no `language_code`, so the vendor detects the language.
+  - AssemblyAI: a model id that names languages wins. Otherwise it sends the
+    supported tags as `language_codes`, `en` first when present. It sends
+    nothing when fewer than two tags are supported.
+  - The usage row is the same with or without a hint. Billing reads the
+    seconds of the WAV, as in VOX-6.
+- **Done when:** a clip on `tier-stt` with the list `en,hi,kn` makes the
+  AssemblyAI request carry `language_codes: ["en","hi"]` and the Sarvam
+  request carry no `language_code`. A client field `language_hints` on the
+  gateway route changes nothing.
+- **Fence (R7):** `tests/unit/test_customer_console_stt_language_hints.py`
+  (R8) pins both request bodies, the drop of `kn` and of a bad tag, the model
+  id that wins, and equal usage rows. `tests/unit/test_chat_transcribe_hints.py`
+  pins that the gateway reads the profile and ignores the client.
+
 ### 31.6 Owner calls
 
 **The owner accepted all four recommendations on 2026-11-08 at 08:42 UTC**, on
@@ -7632,7 +7954,7 @@ Deepgram, OpenAI or Groq on `tier-stt`. VOX-2 follows, for Sarvam. VOX-3 goes
 in parallel with VOX-1, because the two touch different code. VOX-5 follows
 VOX-3.
 VOX-6 follows VOX-2, because it copies the same handler pattern. It serves
-the chat mic (VOX-1) and the operator Try box (VOX-4).
+the chat mic (VOX-1) and the operator Try box (VOX-4). VOX-8 follows PZ-52 (`personalization.md` §5.3a), because it reads the list that PZ-52 stores.
 
 ### 31.8 What §31 does not do
 
