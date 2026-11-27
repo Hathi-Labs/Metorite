@@ -94,6 +94,7 @@ __all__ = [
     "HELD_CARD_SEND_TOOLS",
     "HELD_CARD_WRITE_TOOLS",
     "HELD_CLASS_C_TOOLS",
+    "HELD_OFF_OWN_WRITES",
     "HELD_OFF_PACK_WRITES",
     "HELD_OWNER_CHAT_FILES",
     "HELD_PARAM_REASONS",
@@ -1423,7 +1424,9 @@ CARD_WRITE_KEY = "card_write"
 #: Each CRM write says ``open_world=True`` and keeps saying it, because D-CRM-9
 #: can queue it for Zoho. The list keeps it, never a claim on the annotation.
 #: Its card carries the Zoho note. In Mirror mode the three record writes leave
-#: the run first (``_tool_injection.MIRROR_RECORD_WRITES``).
+#: the run first (``_tool_injection.MIRROR_RECORD_WRITES``). The three class B
+#: writes of the Field map (task 3953): ``crm_edit_field_rule``,
+#: ``crm_draft_mapping_plan`` and ``crm_restore_mapping_plan``.
 #:
 #: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
 #: The class C Projects tools. Each is hard to undo or acts on many rows, so a
@@ -1431,7 +1434,10 @@ CARD_WRITE_KEY = "card_write"
 #: bulk update, a move of a project, a revert, a status set, a change of access
 #: (``grant_access``, ``revoke_access``). The archive is the one class C
 #: exception, and it is not on this list either: :data:`HELD_CLASS_C_TOOLS`
-#: holds it behind its own flag. ``nudge_task`` tells another
+#: holds it behind its own flag. ``crm_approve_mapping_plan`` (class C, task
+#: 3953) approves the field map of the whole org, and no owner decision keeps
+#: it. So a held chat drops it, and the member approves the draft in the
+#: Field mapping section of the CRM settings. ``nudge_task`` tells another
 #: person. ``add_report_recipient``, ``remove_report_recipient`` and
 #: ``set_report_schedule`` change who gets mail later, so they are paths out.
 #: ``attach_to_task`` moves a file of the chat onto a shared task. A store write
@@ -1464,10 +1470,12 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "defer": _pin("task_id until"),
     "move_task": _pin(
         "task_ids destination_project_id parent_task_id fields include_subtasks"),
+    # WS-MDC CC-2: `todays_focus` marks the member's own today's focus. It writes the
+    # member's overlay only, on the same card, and reaches nobody.
     "set_my_overlay": _pin(
         "task_id disposition context energy next_action estimate_mins two_minute "
         "block_start block_end flexible hard_date actual_start actual_end "
-        "deep_work waiting_on waiting_since expected_by clear"),
+        "deep_work waiting_on waiting_since expected_by todays_focus clear"),
     "update_task": _pin(
         "task_id title description status due start estimate_mins tags clear "
         "priority important leveraged importance type fields include_subtasks"),
@@ -1572,6 +1580,12 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     # shows the row and each changed field before the write.
     "crm_edit_status": _pin("kind action name new_name status_type probability hidden"),
     "crm_edit_lost_reason": _pin("action label new_label hidden"),
+    # CRM-M2f and CRM-M2i (task 3953): the three class B writes of the Field
+    # map. Each card shows each rule that changes. The class C approve of a
+    # plan (crm_approve_mapping_plan) is not here, so a held chat drops it.
+    "crm_edit_field_rule": _pin("action entity field target_column"),
+    "crm_draft_mapping_plan": _pin("changes"),
+    "crm_restore_mapping_plan": _pin("version"),
 }
 
 #: The class C writes that a held chat keeps, each with its whole parameter
@@ -1791,6 +1805,32 @@ HELD_OFF_PACK_WRITES: Mapping[str, frozenset[str]] = {
 }
 
 
+#: P-4b (task 3961). The own writes of an agent that is NOT in
+#: :data:`HELD_WRITE_OWNERS`, that a held chat holds off by name. The WhatsApp
+#: agent has drafts and a transcribe that say no ``read_only=True``, so the owner
+#: rule would drop them too. This table names only its seven card writes. A held
+#: chat drops them, and it keeps the reads and the drafts. Only a tool that the
+#: run of that agent holds as its own counts. ``held_card_writes_on`` is the
+#: switch, as for an owner.
+#:
+#: ⚠️ **A WhatsApp read marks no chat** (``UNTRUSTED_INPUT_AGENTS`` does not hold
+#: the agent). So for injected WhatsApp text the approval card is the only
+#: guard. This table acts only after another read marked the chat, such as an
+#: email read, or in a delegated ``no_egress`` run. A run under a covered run
+#: keeps these tools until a read marks the chat (:func:`covered_chain`).
+#: Follow-up: task 4010.
+#: Fences: ``tests/unit/test_whatsapp_write_tools.py`` and
+#: ``tests/unit/test_no_egress_tool_audit.py``.
+HELD_OFF_OWN_WRITES: Mapping[str, frozenset[str]] = {
+    "whatsapp-assistant": frozenset({
+        "capture_whatsapp_task", "create_whatsapp_saved_reply",
+        "delete_whatsapp_saved_reply", "seed_whatsapp_categories",
+        "snooze_whatsapp_chat", "unsnooze_whatsapp_chat",
+        "update_whatsapp_category",
+    }),
+}
+
+
 @functools.lru_cache(maxsize=1)
 def _owner_tool_names() -> frozenset[str]:
     """Each tool of a pack of :data:`HELD_WRITE_OWNERS`, less the packs that
@@ -1835,11 +1875,15 @@ def is_held_off_write(item: Any, *, owner: str | None = None) -> bool:
     tools (``_tool_injection._covered_hold``). Fails closed: a tool with no
     annotation counts as a write. With the org off (:func:`held_card_writes_on`)
     it is False for each tool, because a held chat then drops what it dropped
-    before the slice.
+    before the slice. P-4b: it is True too for an own write of *owner* that
+    :data:`HELD_OFF_OWN_WRITES` names.
     """
     from acb_skills.tool_packs import CHAT_FILE_TOOLS
 
     name = item if isinstance(item, str) else tool_name(item)
+    if name in HELD_OFF_OWN_WRITES.get(str(owner or ""), frozenset()):
+        return (not isinstance(item, str) and not _platform_owned(item, name)
+                and held_card_writes_on())
     if name in CHAT_FILE_TOOLS or name in HELD_OWNER_CHAT_FILES or not (
             name in _owner_tool_names() or _own_tool_of(item, name, owner)):
         return False

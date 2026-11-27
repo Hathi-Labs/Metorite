@@ -191,13 +191,50 @@ class _Found:
     row: store.Connection
 
 
-def _granted(user: UserContext, name: str, row: store.Connection) -> bool:
-    """The grant of §2.3a, decision a."""
-    if not user.has_permission(integration_use_permission(f"api-{name}")):
-        return False
+#: The statuses of a row that :func:`_resolve` serves. Each other status is
+#: the one 404.
+SERVED_STATUSES: tuple[str, ...] = (store.STATUS_CONNECTED, store.STATUS_NEEDS_RECONNECT)
+
+
+async def read_row(db: Any, org: str, name: str) -> store.Connection | None:
+    """The org-scope row of the connection *name* in *org*, or ``None``.
+
+    The one read of :func:`_resolve`. The self view of ACC-3
+    (``routes/admin/my_integrations.py``) calls it too.
+    """
+    return await store.get(db, org, f"api:{name}", OWNING_APP)
+
+
+def served(row: store.Connection | None) -> bool:
+    """True when *row* exists and its status is one that the routes serve."""
+    return row is not None and row.status in SERVED_STATUSES
+
+
+def needs_manage(row: store.Connection) -> bool:
+    """True when the grant mark of *row* asks for ``integrations:manage``.
+
+    ``grant = admin`` asks for it, and so does each value that is not in
+    :data:`_GRANTS` (D-API-3).
+    """
     grant = row.provider_meta.get(connect.META_GRANT)
-    needs_manage = grant == connect.GRANT_ADMIN or grant not in _GRANTS
-    return not needs_manage or user.has_permission(MANAGE_PERMISSION)
+    return grant == connect.GRANT_ADMIN or grant not in _GRANTS
+
+
+def granted(has: Callable[[str], bool], name: str, row: store.Connection) -> bool:
+    """THE grant of §2.3a, decision a, over one permission check *has*.
+
+    *has* is ``user.has_permission`` here. The self view of ACC-3 calls it with
+    the same check, and with the fresh narrowed access. No other code repeats
+    the grant.
+    """
+    if not has(integration_use_permission(f"api-{name}")):
+        return False
+    return not needs_manage(row) or has(MANAGE_PERMISSION)
+
+
+def _granted(user: UserContext, name: str, row: store.Connection) -> bool:
+    """The grant of §2.3a, decision a, for the caller."""
+    return granted(user.has_permission, name, row)
 
 
 async def _resolve(user: UserContext, name: str) -> _Found:
@@ -214,13 +251,9 @@ async def _resolve(user: UserContext, name: str) -> _Found:
     row: store.Connection | None = None
     if shaped:
         async with tenant_session(org) as db:
-            row = await store.get(db, org, f"api:{name}", OWNING_APP)
+            row = await read_row(db, org, name)
     template = api_templates.template(name)
-    if (
-        template is None or row is None
-        or row.status not in (store.STATUS_CONNECTED, store.STATUS_NEEDS_RECONNECT)
-        or not _granted(user, name, row)
-    ):
+    if template is None or row is None or not served(row) or not _granted(user, name, row):
         raise _not_found()
     if row.provider_meta.get(connect.META_OPS_HASH) != connect.ops_hash(template):
         # §2.2: a changed template asks the admin again. No op is approved.

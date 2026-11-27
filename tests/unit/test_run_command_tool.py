@@ -30,7 +30,7 @@ import pytest
 from acb_skills import sandbox_tools as st
 from orchestrator import sandbox_broker as sb
 
-from tests.unit._sandbox_broker_fakes import bound_run
+from tests.unit._sandbox_broker_fakes import bound_run, flag_values
 from tests.unit._sandbox_tools_fakes import (  # noqa: F401 — fixtures by name
     ORG_A,
     ORG_B,
@@ -197,13 +197,363 @@ def test_run_command_is_annotated_as_a_closed_world_write() -> None:
     }
 
 
-# ── request_network_access is a stub (done-when 8) ───────────────────────────
+# ── request_network_access, live and dark (WS-43g2b, §7.3) ───────────────────
+#
+# Done-when 3 to 6 of WS-43g (maf_coding_engine.md §11). The tool reads the
+# flag, refuses through the code_task binding, checks the hosts ONCE, asks the
+# member of the run on a fenced card, and grants the SAME tuple. The broker
+# runs on the egress fake Docker of WS43-F9, so a grant makes a real network
+# call there and a refusal makes none.
+#
+# Mutations this half catches (R7), each run red once by hand:
+#
+# * the flag check removed: the egress-off test;
+# * ``non_interactive_default="approve"``: the no-chat test;
+# * ``responder=`` dropped: the other-member test;
+# * the card built from the raw ``hosts``, or the grant given a part of the
+#   tuple: the approval test;
+# * ``data()`` dropped from the reason: the fence test. Dropped from a host:
+#   the host test;
+# * ``_code_task_binding`` moved after the card: the binding test;
+# * the hosts dropped from the decision line: the audit line test;
+# * ``_card_fits`` that lets a long card through: the whole-host test;
+# * the ``docker-remote`` check removed: the backend test;
+# * the open-card marker removed: the second-call test.
+
+MEMBER = "member@example.com"
+OTHER = "other@example.com"
+CODE_AGENT = "agent-x"
+NET = "request_network_access"
 
 
-async def test_request_network_access_says_the_network_is_off() -> None:
-    assert await st.request_network_access("pip install", ["pypi.org"]) == (
-        "Network access is off on this platform."
+@pytest.fixture
+def net(sandbox, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: F811
+    """The broker on the egress fake Docker, ``code_task:<ORG_A>``, egress on."""
+    from tests.unit.test_sandbox_network_grant import EgressDocker
+
+    docker = EgressDocker()
+    broker = sb.SandboxBroker(docker=docker)  # type: ignore[arg-type]
+    broker._note_docker(True)
+    monkeypatch.setattr(sb, "_BROKER", broker)
+    sandbox.docker, sandbox.broker = docker, broker
+    sandbox.set_scope(monkeypatch, f"code_task:{ORG_A}")
+    settings = sandbox.env["settings"]
+    monkeypatch.setattr(settings, "sandbox_egress_enabled", True)
+    monkeypatch.setattr(settings, "sandbox_approval_timeout_seconds", 300)
+    monkeypatch.setenv("AGENT_PERMISSION_MODE", "audit")
+    return sandbox
+
+
+class _Chat:
+    """The emitter of one chat turn: the cards it got, and the answer it gives."""
+
+    def __init__(self, answer: str | None = "APPROVE", responder: str = MEMBER) -> None:
+        self.answer, self.responder = answer, responder
+        self.cards: list[dict[str, Any]] = []
+        self.closed: list[dict[str, Any]] = []
+
+
+async def _ask(
+    chat: _Chat | None, reason: Any = "pip install pandas-stubs",
+    hosts: Any = ("pypi.org",), *, then: Any = None, **bind: Any,
+) -> str:
+    """Call the tool in a bound ``code_task`` run. With *chat*, the turn has an
+    emitter, and the chat answers each card as ``chat.responder``. *then* is
+    awaited after the call, inside the same bound run."""
+    import asyncio
+
+    from orchestrator import executor
+
+    bind.setdefault("agent", CODE_AGENT)
+    bind.setdefault("member", MEMBER)
+    queue: asyncio.Queue = asyncio.Queue()
+    token = executor._active_run_queue.set(queue if chat is not None else None)
+    try:
+        with bound_run(ORG_A, thread=new_thread(), **bind):
+            call = asyncio.ensure_future(st.request_network_access(
+                reason, list(hosts) if isinstance(hosts, tuple) else hosts,
+            ))
+            while chat is not None and not call.done():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.05)
+                except TimeoutError:
+                    continue
+                value = event.get("value") or {}
+                if event.get("name") == "confirmation_requested":
+                    chat.cards.append(value)
+                    rid = value["request_id"]
+                    if chat.answer is not None:
+                        assert executor.resolve_user_input(
+                            rid, chat.answer, was_freeform=False,
+                            thread_id=executor._pending_user_input.owner_of(rid),
+                            responder=chat.responder,
+                        )
+                elif event.get("name") == "confirmation_resolved":
+                    chat.closed.append(value)
+            out = await asyncio.wait_for(call, timeout=10)
+            if then is not None:
+                # Still inside the bound run, as the executor's ``finally``.
+                await then()
+            return out
+    finally:
+        executor._active_run_queue.reset(token)
+
+
+def _network_calls(box: Any) -> list[list[str]]:
+    return [c for c in box.docker.calls if c[0] == "network"]
+
+
+async def test_the_live_tool_with_egress_off_answers_off(net, monkeypatch) -> None:
+    """Done-when 3: off, the tool answers off, shows no card and starts nothing."""
+    monkeypatch.setattr(net.env["settings"], "sandbox_egress_enabled", False)
+    chat = _Chat()
+    out = await _ask(chat)
+    assert out == st.NETWORK_OFF == "Network access is off on this platform."
+    assert chat.cards == [] and net.docker.calls == []
+    assert not (net.broker.state_dir() / "egress").exists()
+
+
+@pytest.mark.parametrize("no_chat", ["no_channel", "no_person", "cards_refused"])
+async def test_the_live_tool_with_no_chat_answers_not_approved(
+    net, monkeypatch, no_chat: str,
+) -> None:
+    """Done-when 4: a run with no chat channel gets "not approved", and its
+    container stays on ``--network none``."""
+    from orchestrator import executor
+
+    with bound_run(ORG_A, agent=CODE_AGENT, thread=new_thread(), member=MEMBER):
+        handle = await net.broker.acquire()
+        await net.broker.release(handle)
+    if no_chat == "no_channel":
+        monkeypatch.setattr(executor, "resolve_relay_thread_id", lambda: None)
+        out = await _ask(None)
+    elif no_chat == "no_person":
+        from acb_common.no_person import no_person_scope
+
+        with no_person_scope():
+            out = await _ask(None)
+    else:
+        from acb_skills.ask_tools import refuse_cards
+
+        with refuse_cards():
+            out = await _ask(None)
+    assert out.startswith("Network access was not approved (no card)"), out
+    assert _network_calls(net) == [] and net.docker.proxy_runs == []
+    assert all(flag_values(r, "--network") == ["none"] for r in net.docker.runs())
+    assert handle.egress is None
+
+
+async def test_an_approval_opens_the_grant_with_the_card_hosts(net) -> None:
+    """Done-when 5: the card shows the normalized tuple, and the grant gets the
+    SAME tuple, with the member of the run as the approver."""
+    chat = _Chat("APPROVE")
+    out = await _ask(chat, hosts=["PyPI.org ", "files.pythonhosted.org", "pypi.org"])
+    assert out.startswith("Network access is open to: pypi.org, files.pythonhosted.org."), out
+    (card,) = chat.cards
+    assert "Hosts:\n- «pypi.org»\n- «files.pythonhosted.org»\n" in card["context"]
+    (handle,) = net.broker._live.values()
+    grant = handle.egress
+    assert grant is not None
+    assert grant.hosts == ("pypi.org", "files.pythonhosted.org")
+    assert grant.approver == MEMBER and grant.org == ORG_A
+    assert flag_values(net.docker.sandbox_runs()[-1], "--network") == [grant.network]
+    assert handle.leases == 0, "the tool did not release its lease"
+
+
+@pytest.mark.parametrize("answer", ["REJECT", "APPROVE please", ""])
+async def test_a_refusal_changes_nothing(net, answer: str) -> None:
+    """Done-when 5: a decline opens no grant, makes no network and starts no
+    container."""
+    chat = _Chat(answer)
+    out = await _ask(chat)
+    assert out.startswith("Network access was not approved (declined)"), out
+    assert len(chat.cards) == 1
+    assert net.docker.calls == [] and net.broker._grants == {}
+
+
+async def test_an_answer_of_another_member_opens_no_grant(net) -> None:
+    """PZ-32: the card binds the member of the run. An APPROVE of another
+    member is a refusal, and it opens no grant."""
+    chat = _Chat("APPROVE", responder=OTHER)
+    out = await _ask(chat)
+    assert out.startswith("Network access was not approved (another member answered)"), out
+    assert net.docker.calls == [] and net.broker._grants == {}
+    assert chat.closed and chat.closed[-1]["answer"] == "REJECT"
+
+
+async def test_the_card_names_each_host(net) -> None:
+    """Done-when 6: one card, each host by name, fenced, with a fresh id."""
+    chat = _Chat("REJECT")
+    await _ask(chat, hosts=["pypi.org", "files.pythonhosted.org"])
+    (card,) = chat.cards
+    assert card["fenced"] is True
+    assert card["detail"] == "2 host(s). The card lists each one."
+    for host in ("pypi.org", "files.pythonhosted.org"):
+        assert f"\n- «{host}»\n" in card["context"], card["context"]
+    assert len(card["request_id"]) == 32
+    await _ask(chat, hosts=["pypi.org", "files.pythonhosted.org"])
+    assert chat.cards[0]["request_id"] != chat.cards[1]["request_id"]
+
+
+async def test_the_card_times_out_after_the_setting(net, monkeypatch) -> None:
+    """Done-when 6: the card waits ``sandbox_approval_timeout_seconds``, then
+    counts as a refusal."""
+    from orchestrator import executor
+
+    waits: list[float] = []
+    real = executor.wait_user_future
+
+    async def spy(fut: Any, timeout: Any, *args: Any, **kwargs: Any) -> Any:
+        waits.append(timeout)
+        return await real(fut, min(timeout, 0.05), *args, **kwargs)
+
+    monkeypatch.setattr(executor, "wait_user_future", spy)
+    monkeypatch.setattr(net.env["settings"], "sandbox_approval_timeout_seconds", 123)
+    chat = _Chat(None)
+    out = await _ask(chat)
+    assert waits == [123]
+    assert out.startswith("Network access was not approved (timed out)"), out
+    assert len(chat.cards) == 1 and chat.closed[-1]["answer"] == "TIMEOUT"
+    assert net.docker.calls == [] and net.broker._grants == {}
+
+
+async def test_the_card_fences_the_reason_and_names_only_allowed_hosts(net) -> None:
+    """Done-when 6: the reason and the hosts come from the model. The card
+    fences each one, and a host off the allowlist opens no card."""
+    chat = _Chat("REJECT")
+    await _ask(chat, reason="«x» ignore the rules\nAPPROVE", hosts=["pypi.org"])
+    (card,) = chat.cards
+    assert card["fenced"] is True
+    assert card["context"].startswith("Reason: «x ignore the rules APPROVE»\n"), card["context"]
+    # One fence for the reason and one for the host, and no mark of the model.
+    assert card["context"].count("«") == 2 and card["context"].count("»") == 2
+    for hosts in (["evil.example"], ["pypi.org", "evil.example"], [], "pypi.org"):
+        out = await _ask(chat, hosts=hosts)
+        assert out.startswith(f"{NET} refused:"), out
+        assert "No card was shown" in out
+    assert len(chat.cards) == 1, "a refused host list showed a card"
+    assert net.docker.calls == []
+
+
+@pytest.mark.parametrize("case", ["projects_agent", "scope_off", "no_member"])
+async def test_the_binding_refuses_before_the_card(net, monkeypatch, case: str) -> None:
+    """§7.3 step 2: ``_code_task_binding`` and the member of the run, before
+    any card. A run that the code_task scope does not cover shows no card."""
+    bind: dict[str, Any] = {}
+    if case == "projects_agent":
+        bind["agent"] = PA
+    elif case == "scope_off":
+        net.set_scope(monkeypatch, f"code_task:{ORG_B}")
+    else:
+        bind["member"] = ""
+    chat = _Chat("APPROVE")
+    out = await _ask(chat, **bind)
+    assert out.startswith(f"{NET} refused:"), out
+    assert chat.cards == [] and net.docker.calls == []
+
+
+async def test_the_audit_line_names_each_host_of_the_tuple(net, monkeypatch) -> None:
+    """§7.3 step 2 (review P2-2): the ``permission.decision`` line that the
+    tool LOGS names each host, after the normalization.
+
+    A fresh structlog logger: ``configure_logging`` sets
+    ``cache_logger_on_first_use``, so a cached ``_log`` never reaches
+    ``capture_logs`` (the pattern of ``test_sandbox_door_log_lines.py``)."""
+    import structlog
+
+    monkeypatch.setattr(st, "_log", structlog.get_logger("acb_skills.sandbox_tools"))
+    with structlog.testing.capture_logs() as logs:
+        await _ask(_Chat("REJECT"), hosts=["PYPI.org", "files.pythonhosted.org"])
+    (line,) = [e for e in logs if e.get("event") == "permission.decision"]
+    assert line["tool"] == NET and line["surface"] == "sandbox_tool"
+    assert line["hosts"] == ["pypi.org", "files.pythonhosted.org"]
+
+
+def _long_hosts(length: int) -> list[str]:
+    """Sixteen allowed hosts (``EGRESS_MAX_HOSTS``), each *length* characters."""
+    out = []
+    for i in range(sb.EGRESS_MAX_HOSTS):
+        tail = f".h{i:02d}.example"
+        out.append(("a" * (length - len(tail))) + tail)
+    return out
+
+
+@pytest.mark.parametrize("length, shows", [(200, True), (250, False)])
+async def test_the_card_shows_every_host_whole_or_refuses(
+    net, monkeypatch, length: int, shows: bool,
+) -> None:
+    """Review P2-1: ``request_confirmation`` cuts a long field. The card shows
+    each host whole, or the tool refuses before the card. A card never shows
+    a part of the hosts that the grant opens."""
+    hosts = _long_hosts(length)
+    monkeypatch.setattr(net.env["settings"], "sandbox_egress_allow_hosts", ",".join(hosts))
+    chat = _Chat("REJECT")
+    out = await _ask(chat, hosts=hosts)
+    if shows:
+        (card,) = chat.cards
+        for host in hosts:
+            assert f"\n- «{host}»\n" in card["context"], host
+        assert out.startswith("Network access was not approved (declined)"), out
+    else:
+        assert out.startswith(f"{NET} refused: the card cannot show each host whole"), out
+        assert chat.cards == []
+    assert net.docker.calls == []
+
+
+async def test_a_docker_remote_backend_shows_no_card(net, monkeypatch) -> None:
+    """Review P3-1: ``grant_egress`` refuses on ``docker-remote``, so the tool
+    refuses before the card, and no member is asked for nothing."""
+    monkeypatch.setattr(net.env["settings"], "sandbox_backend", "docker-remote", raising=False)
+    chat = _Chat("APPROVE")
+    out = await _ask(chat)
+    assert out.startswith(f"{NET} refused: the docker-remote sandbox"), out
+    assert chat.cards == [] and net.docker.calls == []
+
+
+async def test_a_leading_dot_entry_says_every_name_under_it(net, monkeypatch) -> None:
+    """Review P3-2: an entry with a leading dot matches each name under it,
+    so the card says so for that line."""
+    monkeypatch.setattr(
+        net.env["settings"], "sandbox_egress_allow_hosts", "pypi.org,.example.com",
     )
+    chat = _Chat("REJECT")
+    await _ask(chat, hosts=["pypi.org", ".example.com"])
+    (card,) = chat.cards
+    assert "\n- «pypi.org»\n" in card["context"]
+    assert "\n- «.example.com» and every name under it\n" in card["context"]
+
+
+async def test_a_second_call_while_a_card_is_open_is_refused(net) -> None:
+    """Review P3-3: one open network card for each run. A second grant would
+    remove the network of the first, and the first answer would then say
+    that its hosts are open when they are not."""
+    import asyncio
+
+    from orchestrator import executor
+
+    queue: asyncio.Queue = asyncio.Queue()
+    token = executor._active_run_queue.set(queue)
+    try:
+        with bound_run(ORG_A, agent=CODE_AGENT, thread=new_thread(), member=MEMBER):
+            first = asyncio.ensure_future(st.request_network_access("pip", ["pypi.org"]))
+            event = await asyncio.wait_for(queue.get(), timeout=5)
+            while event.get("name") != "confirmation_requested":
+                event = await asyncio.wait_for(queue.get(), timeout=5)
+            second = await asyncio.wait_for(
+                st.request_network_access("pip", ["files.pythonhosted.org"]), timeout=5,
+            )
+            assert second.startswith(f"{NET} refused: a network card of this run"), second
+            rid = event["value"]["request_id"]
+            assert executor.resolve_user_input(
+                rid, "REJECT", was_freeform=False,
+                thread_id=executor._pending_user_input.owner_of(rid), responder=MEMBER,
+            )
+            out = await asyncio.wait_for(first, timeout=5)
+            assert out.startswith("Network access was not approved (declined)"), out
+            assert not st._OPEN_NETWORK_CARDS, "the marker of the card stayed"
+    finally:
+        executor._active_run_queue.reset(token)
+    assert net.docker.calls == []
 
 
 def test_the_projects_track_never_attaches_request_network_access() -> None:
@@ -215,3 +565,69 @@ def test_the_projects_track_never_attaches_request_network_access() -> None:
 def test_covers_still_refuses_every_code_task_and_app_builder_agent(sandbox) -> None:  # noqa: F811
     for agent in ("agent-x", "app-builder", "metorite"):
         assert sb.covers(agent, ORG_A) is False
+
+
+@pytest.mark.parametrize("failure", ["error", "cancel"])
+async def test_the_open_card_marker_clears_on_an_error_and_a_cancel(
+    net, monkeypatch, failure: str,
+) -> None:
+    """Review P3-3, verify F1: the open-card marker clears on EVERY way out of
+    the card, a raise and a cancel too. Else the run could never ask again."""
+    import asyncio
+    import importlib
+
+    at = importlib.import_module("acb_skills.ask_tools")
+    real = at.request_confirmation
+    calls: list[str] = []
+    never = asyncio.Event()
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        calls.append(failure)
+        if len(calls) > 1:
+            return await real(*args, **kwargs)
+        if failure == "error":
+            raise RuntimeError("the card broke")
+        await never.wait()
+        return False
+
+    monkeypatch.setattr(at, "request_confirmation", broken)
+    with bound_run(ORG_A, agent=CODE_AGENT, thread=new_thread(), member=MEMBER):
+        first = asyncio.ensure_future(st.request_network_access("pip", ["pypi.org"]))
+        if failure == "error":
+            with pytest.raises(RuntimeError):
+                await asyncio.wait_for(first, timeout=5)
+        else:
+            while not calls:
+                await asyncio.sleep(0.01)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        assert not st._OPEN_NETWORK_CARDS, "the marker of the card stayed"
+    # The next call of the same run is not refused: it reaches the card.
+    chat = _Chat("REJECT")
+    monkeypatch.setattr(at, "request_confirmation", real)
+    out = await _ask(chat)
+    assert out.startswith("Network access was not approved (declined)"), out
+    assert len(chat.cards) == 1
+    assert net.docker.calls == []
+
+
+async def test_a_grant_from_an_approved_card_ends_with_the_run(net) -> None:
+    """Done-when 7, the card half: a grant that an approved card opened ends
+    at the run's end. No grant stays, the network of the grant is gone, and
+    the container is back on ``--network none``."""
+    handles: list[Any] = []
+
+    async def end_the_run() -> None:
+        (handle,) = net.broker._live.values()
+        assert handle.egress is not None, "the card opened no grant"
+        handles.append(handle)
+        assert await net.broker.end_run() is True
+
+    out = await _ask(_Chat("APPROVE"), then=end_the_run)
+    assert out.startswith("Network access is open to: pypi.org."), out
+    (handle,) = handles
+    assert handle.egress is None
+    assert net.broker._grants == {}
+    assert net.docker.networks == {}, "the network of the grant stayed"
+    assert flag_values(net.docker.sandbox_runs()[-1], "--network") == ["none"]

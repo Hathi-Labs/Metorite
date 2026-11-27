@@ -206,6 +206,24 @@ describe("the one-card batches (file_tasks, link_tasks_batch, 2026-10-18)", () =
   });
 });
 
+describe("the plan cards of the CRM Field mapping (task 3953)", () => {
+  // Mutation caught: the key "field 1" read as a custom field called "1".
+  it("draws the rules of a plan as one Rules row, and its other items as Plan items", () => {
+    expect(cardKey("rule 1")).toBe("rule N");
+    expect(fieldSpec("rule 1").label).toBe("Rule");
+    expect(runKey("rule 2")).toBe("rule");
+    const body = parseCardBody(
+      "This approves a new version of the field mapping.\n" +
+        "state: draft → approved\n" +
+        "rule 1: Deal «Segment» goes to the column «description»\n" +
+        "rule 2: Deal «Region» leaves the plan\n" +
+        "plan item 1: the slot «deals» moves from the module «A» to «B»",
+    );
+    expect(body.fields.map((f) => f.label)).toEqual(["State", "Rules", "Plan item"]);
+    expect(body.fields.map((f) => f.values?.length)).toEqual([undefined, 2, undefined]);
+  });
+});
+
 describe("the color kind (PJP-1)", () => {
   it("the one `color` key draws a swatch for status, tag and type cards alike", () => {
     expect(fieldSpec("color").kind).toBe("color");

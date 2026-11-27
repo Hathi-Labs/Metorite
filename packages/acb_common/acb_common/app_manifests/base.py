@@ -209,6 +209,15 @@ class Route:
     #: has no chat tool, so the chat rules do not run. An :class:`App`
     #: refuses it.
     api: bool = False
+    #: SBX-2 (``agent_sandbox.md`` §12.2 decision 2): the sandbox door reads
+    #: this row. Off by default, so a row joins only by an edit to its own
+    #: line. Only a GET row of class A may set it.
+    sandbox: bool = False
+    #: SBX-3a (``agent_sandbox.md`` §12.5 decision 3): the sandbox door holds
+    #: a write of this row for a card. Off by default, so a row joins only by
+    #: an edit to its own line. Only a POST, PUT or PATCH row of class B or C
+    #: that sends nothing may set it, and never with ``sandbox``.
+    sandbox_write: bool = False
 
     def __post_init__(self) -> None:
         where = f"{self.method} {self.path}"
@@ -216,11 +225,27 @@ class Route:
             raise ValueError(f"{where}: the method is not one of {METHODS}")
         if self.cls not in CLASSES:
             raise ValueError(f"{where}: class {self.cls!r} is not one of {CLASSES}")
+        if self.sandbox and (self.cls != "A" or self.method != "GET"):
+            raise ValueError(f"{where}: the sandbox door reads a GET row of class A only")
+        if self.sandbox_write:
+            self._check_sandbox_write(where)
         if self.api:
             self._check_api(where)
         else:
             self._check_chat(where)
         self._check_door(where)
+
+    def _check_sandbox_write(self, where: str) -> None:
+        """The rule of ``sandbox_write`` (SBX-3a, §12.5 decision 3). A DELETE
+        never joins, because §5.3 puts deletes in class X for the door."""
+        if self.cls not in ("B", "C"):
+            raise ValueError(f"{where}: a sandbox write row is class B or C")
+        if self.method in ("GET", "DELETE"):
+            raise ValueError(f"{where}: a sandbox write row is a POST, PUT or PATCH")
+        if self.sends:
+            raise ValueError(f"{where}: a sandbox write row sends nothing")
+        if self.sandbox:
+            raise ValueError(f"{where}: a row is a sandbox read or a sandbox write, not both")
 
     def _check_api(self, where: str) -> None:
         """The rules of an API op row. The template validator adds its own."""

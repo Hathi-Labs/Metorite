@@ -125,6 +125,13 @@ from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.attachments import served_url
+from gateway.routes.projects.authority import LED_SUBTREE_SQL
+from gateway.routes.projects.claim_gate import check_claim_gate
+from gateway.routes.projects.claim_scope import (
+    apply_warning,
+    check_claim_scope,
+    record_outside_claim,
+)
 from gateway.routes.projects.core import (
     LANE_STAGE_REVIEW,
     LANE_STAGE_TODO,
@@ -160,6 +167,7 @@ from gateway.routes.projects.filters import (
     agent_run_waiting_cap_min,
     agent_runs_enabled,
     answer_change_enabled,
+    app_lead_runs_allowed,
     attach_agent_state,
     connection_gone_sql,
     holder_free,
@@ -2603,6 +2611,17 @@ async def start_agent_run(
 
     201 with ``created: true``, or 200 with ``created: false`` and the run
     that the key or the open-run rule found (EA12-6).
+
+    SW-45 (review P1). An agent's start on a task that does not hold the
+    session member gets the scope check of ``claim_task``
+    (``claim_scope.check_claim_scope``).
+    Outside the member's own apps, mode ``warn`` starts the run, writes one
+    timeline line for a new run, and the answer has ``warning`` and
+    ``outside_apps``. Mode ``refuse`` answers 403 ``outside_apps`` and
+    writes nothing. A replay of the same key is not checked again. The MCP
+    ``ask_on_task`` starts its run here, so it gets the same answer. A run
+    that the member queued here (``via is None``) lets the member's agent
+    in, and a run that an agent started does not.
     """
     task_id = _parse_uuid(task_id, "Task")
     _require_write_scope(user)
@@ -2629,7 +2648,7 @@ async def start_agent_run(
     written: _Written | None = None
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
         if via is not None:
             client_via, connection_id = via, str(user.agent.connection_id)  # type: ignore[union-attr]
             # SW-104 (SW-50): a box token's connection name wins over `host`.
@@ -2668,6 +2687,12 @@ async def start_agent_run(
         if replay is not None:
             response.status_code = 200
             return replay
+
+        # SW-45 (review P1): an agent's start on a task that does not hold
+        # the member holds it as a claim does. So the claim's ONE check runs here, before
+        # any write, and `refuse` has no second door.
+        # LBB-2: the claim gate runs in it too, right after the scope check.
+        scope_note = await _start_scope(db, user, via, task, vis, label)
 
         # EA-14a: ONE AI for each task. The gate returns this caller's own
         # open run, or None for a free task, or it raises 409 `task_held`.
@@ -2737,11 +2762,53 @@ async def start_agent_run(
             run = await _load_run(db, str(made.id))
             out = (await _runs_out(db, [run]))[0]
             created = True
+            # SW-45: the ONE timeline line, only for the start that made the run.
+            await _record_start_scope(db, user, task_id, scope_note)
     if written is not None and written.commented:
         await emit("pm.task.comment_added", {"task_id": task_id})
-    result: dict[str, Any] = {"run": out, "created": created}
+    # SW-45: the warning of a start outside the own apps first. SW-107: then
+    # the fixed text of a dropped dispatcher.
+    result = _with_scope_warning({"run": out, "created": created}, scope_note)
     warn_dispatch(result, dropped)
     return result
+
+
+async def _start_scope(db: Any, user: UserContext, via: str | None, task: Any,
+                       vis: Any, label: str | None = None) -> dict[str, Any] | None:
+    """SW-45: the scope check of an agent's start, or ``None`` for a member.
+    It reads the assignees of the task. Only the session member among them
+    is a pass (review P1 of 2026-11-17). The other passes are in
+    ``check_claim_scope``.
+
+    LBB-2 (``engineering_practice.md`` §7b.2): then the claim gate of the
+    start, with the start's *label*, before any write. A member's start is
+    never checked, and a start on the agent's own open run passes (trap 2)."""
+    if via is None:
+        return None
+    current = {
+        str(r.assignee) for r in (await db.execute(
+            text("SELECT assignee FROM pm_task_assignees WHERE task_id = CAST(:tid AS uuid)"),
+            {"tid": str(task.id)},
+        )).fetchall()
+    }
+    note = await check_claim_scope(db, user, task, current, vis)
+    await check_claim_gate(db, user, str(task.id), vis, label)
+    return note
+
+
+def _with_scope_warning(result: dict[str, Any],
+                        note: dict[str, Any] | None) -> dict[str, Any]:
+    """SW-45: *result* with the warning of *note*, in mode ``warn``."""
+    if note is not None:
+        apply_warning(result, note)
+    return result
+
+
+async def _record_start_scope(db: Any, user: UserContext, task_id: str,
+                              note: dict[str, Any] | None) -> None:
+    """SW-45: the ONE timeline line of a new run outside the own apps."""
+    if note is not None:
+        await record_outside_claim(db, user, task_id, note)
 
 
 # ── Child runs (WS-MCP SW-39, SW-114) ───────────────────────────────────────
@@ -3437,15 +3504,36 @@ def person_may_end_sql(run: str) -> str:
     the caller's address in lower case. An org admin may too, and
     :func:`may_end_run` adds that half from the context.
 
+    SW-48 (``agent_coordination.md`` §3.10.2, Q9): a lead of the project of
+    the run's task, or of any ancestor project, may end the run too. The walk
+    is ``authority.LED_SUBTREE_SQL``, embedded and not copied. It binds the
+    same ``:me``. The arm binds ``:lead_runs``, the answer of
+    ``filters.app_lead_runs_allowed`` for the session's org. Off, the arm is
+    false and the rule is EA-14a's exactly. The lead gains Release and Resume
+    only. The answer set (:func:`person_may_answer_sql`) does not read this
+    text.
+
     ONE text. The release route and the resume route read it through
     :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
     spec §12.7) reads it for ``can_act`` on each row, so the list never
-    offers a button that the route refuses.
+    offers a button that the route refuses. Each reader binds ``:lead_runs``
+    with :func:`lead_runs_param`. ``record_outside_decision`` and
+    ``set_run_plan`` call :func:`may_end_run` for a signed agent only, so this
+    text never decides them.
     """
     return (
         f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
-        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me))"
+        f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me)"
+        f" OR (CAST(:lead_runs AS boolean) AND EXISTS (SELECT 1 FROM pm_tasks lt"
+        f" WHERE lt.id = {run}.task_id AND lt.project_id IN ({LED_SUBTREE_SQL}))))"
     )
+
+
+def lead_runs_param(user: UserContext) -> bool:
+    """The value of ``:lead_runs`` in :func:`person_may_end_sql` for *user*:
+    ``APP_LEAD_RUNS_ORGS`` on for the session's org (SW-48). The org comes
+    from the session, never from the request (R5)."""
+    return app_lead_runs_allowed(getattr(user, "organization_id", None))
 
 
 async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
@@ -3453,8 +3541,10 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
     (SW-11a).
 
     * An agent ends its OWN run only: the same member and the same stamp.
-    * A person ends a run when they are its member, an assignee of its task
-      (:func:`person_may_end_sql`), or hold :data:`RELEASE_ADMIN_PERMISSION`.
+    * A person ends a run when they are its member, an assignee of its task,
+      or, with ``APP_LEAD_RUNS_ORGS`` on, a lead of its task's project or an
+      ancestor (:func:`person_may_end_sql`), or hold
+      :data:`RELEASE_ADMIN_PERMISSION`.
     """
     via = _agent_via(user)
     me = _member(user)
@@ -3465,7 +3555,7 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
     held = (await db.execute(
         text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
              " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
-        {"rid": str(run.id), "me": me},
+        {"rid": str(run.id), "me": me, "lead_runs": lead_runs_param(user)},
     )).scalar()
     return bool(held)
 
@@ -3751,7 +3841,8 @@ async def release_agent_run(
     * An agent releases its OWN run only: the same member and the same
       client stamp.
     * A person releases a run when they are its member, an assignee of the
-      task, or an org admin.
+      task, or an org admin. With the flag ``APP_LEAD_RUNS_ORGS`` on, the
+      lead of the task's project, or of an ancestor, may release too.
     * A caller who cannot see the task gets 404. A caller who sees it and
       has no right to release gets 403.
     * A run that is already ``released`` answers 200 again, with no write.

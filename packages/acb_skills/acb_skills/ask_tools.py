@@ -812,6 +812,98 @@ async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool
     return True
 
 
+#: The event that gives the receipt of a held sandbox card the result of each
+#: row (SBX-3b, ``agent_sandbox.md`` §12.5 decision 8). The value names the
+#: card's ``request_id`` and, for each row, its id, its HTTP status and its
+#: door code. It carries no body. ``src/lib/confirmationQueue.ts`` holds the
+#: same name (``CONFIRMATION_ROW_RESULTS``). Fence:
+#: ``tests/unit/test_confirmation_rows.py::test_row_results_carry_no_body``.
+CONFIRMATION_ROW_RESULTS = "confirmation_row_results"
+#: The id of a row of a held sandbox card (``gateway/sandbox_batch.py``).
+_RESULT_ROW_ID = _re.compile(r"row-[0-9]{1,2}")
+#: A door code of a row result.
+_RESULT_CODE = _re.compile(r"sandbox_[a-z_]{1,48}")
+
+
+def row_results_value(request_id: str, rows: Any) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_ROW_RESULTS` event, or None.
+
+    *request_id* is the card id (32 lower-case hex digits). *rows* is a list
+    of ``{id, status, code?}``. Only those three keys go on, so no body, no
+    path and no text of a route reach the stream. A bad value gives None."""
+    rid = str(request_id or "")
+    if not _re.fullmatch(r"[0-9a-f]{32}", rid):
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_CARD_ROWS:
+        return None
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        row_id, status, code = row.get("id"), row.get("status"), row.get("code")
+        if not isinstance(row_id, str) or not _RESULT_ROW_ID.fullmatch(row_id):
+            return None
+        if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599:
+            return None
+        entry: dict[str, Any] = {"id": row_id, "status": status}
+        if isinstance(code, str) and _RESULT_CODE.fullmatch(code):
+            entry["code"] = code
+        out.append(entry)
+    return {"request_id": rid, "rows": out}
+
+
+async def _live_publisher() -> Any:
+    """The publisher of the chat stream of this run, or None.
+
+    The same two channels as :func:`request_confirmation`: the queue of a
+    native run, or the relay of the run's thread."""
+    try:
+        from orchestrator.executor import _active_run_queue
+
+        queue = _active_run_queue.get(None)
+    except Exception:
+        queue = None
+    if queue is not None:
+        return queue.put
+    try:
+        from orchestrator.executor import (
+            _push_sse_to_stream,
+            resolve_relay_thread_id,
+        )
+        tid = resolve_relay_thread_id()
+    except Exception:
+        return None
+    if not tid:
+        return None
+
+    async def _publish(ev: dict, _t: str = tid) -> None:
+        await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
+
+    return _publish
+
+
+async def publish_card_rows(request_id: str, rows: Any) -> bool:
+    """Send the result of each row of one held sandbox card to the chat.
+
+    SBX-3b. The watcher of a held batch (``acb_skills.sandbox_held``) calls
+    it when the gateway gives the results of a card. It sends one
+    :data:`CONFIRMATION_ROW_RESULTS` event, keyed by the card's
+    ``request_id``, on the stream of this run. The client draws the results
+    on the receipt of that card (``receiptText``). True when the event went
+    out. A bad value, no stream, or a fault gives False. It never raises."""
+    value = row_results_value(request_id, rows)
+    if value is None:
+        return False
+    publish = await _live_publisher()
+    if publish is None:
+        return False
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_ROW_RESULTS, "value": value})
+    except Exception:  # the receipt then shows no result
+        return False
+    return True
+
+
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
 #: ``APPROVE {"rows": ["row-1", "row-3"]}``. A card with no rows keeps the
@@ -1120,6 +1212,10 @@ def _clean_new_mail_form(form: dict) -> dict:
     # says so. Each is a person of the card that starts unticked, or no card shows.
     if "unticked" in form:
         out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    # Task 3978 (§18.13.1): the draft of this email that the chat saved
+    # earlier. Discard then asks "Keep the earlier draft, or delete it?" on
+    # this card. The tool sets it only with CHAT_DRAFT_CHOICE_ORGS on.
+    out.update(clean_earlier(form))
     out.update(_new_mail_redraft(form))
     return out
 
@@ -1711,6 +1807,78 @@ def last_card_outcome() -> str | None:
     return _LAST_OUTCOME.get()
 
 
+#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of a card
+#: that names an ``earlier`` draft (a new-mail form, or the plain card of
+#: ``edit_draft``), when the member pressed Discard or Reject and then
+#: "Delete it". It is a decline: the card sends and saves nothing.
+#: :func:`earlier_draft_choice` then says "delete", and the tool trashes that
+#: one draft. Each other answer keeps the draft.
+DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}'
+#: The choice of the last card of this frame: "delete:<responder>", or "".
+_EARLIER_CHOICE: _contextvars.ContextVar[str] = _contextvars.ContextVar(
+    "acb_earlier_draft_choice", default="")
+#: The longest line that names the earlier draft on a card.
+EARLIER_LINE_MAX = 300
+
+
+def clean_earlier(src: Any) -> dict:
+    """The keys of the earlier-draft question of a card, checked: the ONE
+    cleaner of a new-mail form and of a plain card.
+
+    ``earlier`` is one line that names the draft, at most
+    :data:`EARLIER_LINE_MAX` characters. ``earlier_effect`` is what "Delete
+    it" does at the mailbox's provider, and it is kept only when it is one
+    sentence of ``draft_choice.DELETE_EFFECTS``. So the card never draws an
+    effect that the server did not choose. With no line, the answer is {}
+    and the card asks nothing."""
+    if not isinstance(src, dict) or not isinstance(src.get("earlier"), str):
+        return {}
+    line = _clip_line(src["earlier"], EARLIER_LINE_MAX)
+    if not line:
+        return {}
+    from acb_skills.draft_choice import DELETE_EFFECTS
+
+    effect = src.get("earlier_effect")
+    return {"earlier": line,
+            **({"earlier_effect": effect} if effect in DELETE_EFFECTS else {})}
+
+
+#: Task 3978: the text of a card that the member declined and then answered
+#: "Delete it". Its lead is the lead of :data:`CARD_DECLINED`, so each chat
+#: card still reads the act of the card as declined. What happened says only
+#: what is true for each case: nothing was sent or saved. The act sentence
+#: then says what became of the draft. It is not a row of
+#: :data:`CARD_OUTCOMES`: the outcome stays "declined".
+#: ``src/lib/cardOutcomes.ts`` holds the same words (``DECLINED_DRAFT``).
+DECLINED_DRAFT = CardOutcome(
+    CARD_OUTCOMES[CARD_DECLINED].lead,
+    "the member said no on the card, so nothing was sent or saved. The card "
+    "is closed, and no decision is open.",
+    "Tell the member what became of the draft, as the line before this step "
+    "says. Do not say that the draft did not change. Show the card again "
+    "only if the member asks for it.")
+
+
+def card_declined_draft_text(act: str) -> str:
+    """The text of :data:`DECLINED_DRAFT` with *act*: one plain sentence for
+    the member that says what became of the draft. The chat draws the head
+    and *act* as the member's line (``memberLineOf``)."""
+    act = " ".join(str(act or "").split())
+    o = DECLINED_DRAFT
+    return f"{o.lead}: {o.happened} {act} {o.next}" if act else f"{o.lead}: {o.happened} {o.next}"
+
+
+def earlier_draft_choice(member: str) -> str:
+    """"delete" when *member* answered the last card of this frame with
+    :data:`DELETE_EARLIER_ANSWER`, on a card that names an earlier draft.
+    The responder is the gateway's session member, never a field of the
+    answer. Else "": a Keep, a plain Discard, a timeout, a close, an answer
+    of another member, or no member. "" keeps the draft, so each fault
+    keeps it."""
+    me = str(member or "").strip().lower()
+    return "delete" if me and _EARLIER_CHOICE.get() == f"delete:{me}" else ""
+
+
 def clear_card_outcome() -> None:
     """Forget the outcome of the last card of this frame, as the start of
     :func:`request_confirmation` does. TOF-3a F12b calls it before a tool of
@@ -1806,6 +1974,27 @@ async def _record_approved_card(request_id: str | None, responder: str = "") -> 
         await record_approved(tid, request_id, act_kind_of(_CARD_TOOL.get()),
                               responder=responder)
     except Exception:  # noqa: BLE001
+        return
+
+
+async def _record_card_act(outcome: str, request_id: str | None, responder: str = "",
+                           *, late: bool = False) -> None:
+    """WS-PZ MM-1b (``personalization.md`` §19.4, ``proactive_loop.md``
+    §5.3): the member's own answer to a chat card, in the act record. The
+    outcome is a key of :data:`CARD_OUTCOMES`, and
+    ``orchestrator.card_act.record_card_act`` keeps only an approve and a
+    decline of the run's own member. *responder* is the gateway's session
+    member who answered, never a field of the answer. *late* is True only for
+    a late approve and the yes of a stored call. Dark behind
+    ``MEMBER_ACTIONS_ORGS``. No text of the card goes in. Never raises."""
+    try:
+        from orchestrator.card_act import record_card_act
+        from orchestrator.executor import resolve_relay_thread_id
+
+        tid = resolve_relay_thread_id() or ""
+        if tid:
+            await record_card_act(tid, request_id, outcome, responder, late=late)
+    except Exception:
         return
 
 
@@ -2604,6 +2793,28 @@ class RowsAnswer:
 _CARD_ID_RE = _re.compile(r"[0-9a-f]{32}")
 
 
+#: The wait of a card when the caller sets no ``timeout_s``, in seconds.
+CARD_WAIT_S = 3600
+
+
+def card_wait_s(timeout_s: object) -> float:
+    """The wait of one card: :data:`CARD_WAIT_S` for ``None``, else *timeout_s*.
+
+    SBX-3b (``agent_sandbox.md`` §12.5 decision 8). The watcher of a held
+    batch passes the time left to the deadline of its batch. A value of 0 or
+    less gives 0, so the card times out at once. A bool, a value that is not a
+    number, NaN or an infinity raises ``ValueError``: a NaN wait never ends.
+    """
+    if timeout_s is None:
+        return float(CARD_WAIT_S)
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+        raise ValueError("timeout_s is a number of seconds")
+    wait = float(timeout_s)
+    if wait != wait or wait in (float("inf"), float("-inf")):
+        raise ValueError("timeout_s is a finite number of seconds")
+    return max(wait, 0.0)
+
+
 def _check_card_args(request_id: str | None, with_answer: bool, rows: Any) -> bool:
     """Check the two arguments of a held send card (§21), and give
     ``with_answer`` as a bool. A bad one is a programming error of the
@@ -2696,6 +2907,13 @@ def reply_card_channel_open() -> bool:
     for the member's reply code (:func:`_whatsapp_email_path`)."""
     if _whatsapp_email_path():
         return True
+    return confirmation_channel_open() and not _whatsapp_run()
+
+
+def rows_card_channel_open() -> bool:
+    """True when this run can draw a card with checkbox rows that the member
+    ticks (task 3977): a card channel (:func:`confirmation_channel_open`) and
+    no WhatsApp run, whose reply code approves no rows card of ``manage_inbox``."""
     return confirmation_channel_open() and not _whatsapp_run()
 
 
@@ -2823,6 +3041,8 @@ async def request_confirmation(
     with_answer: bool = False,
     responder: str | None = None,
     edit: dict | None = None,
+    earlier: dict | None = None,
+    timeout_s: float | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -2889,6 +3109,19 @@ async def request_confirmation(
             any other shape is a REJECT. With ``PROJECT_EDIT_CARD_ORGS`` off,
             in a WhatsApp run, with no channel and with no ``responder``, the
             form is dropped, and the card is the card of before.
+        earlier: task 3978 (§18.13.1), a plain card only: ``{"earlier":
+            line, "earlier_effect": sentence}`` (:func:`clean_earlier`). The
+            card's Reject then asks "Keep the earlier draft, or delete it?"
+            on the same card. :data:`DELETE_EARLIER_ANSWER` is a decline, and
+            :func:`earlier_draft_choice` then says "delete". A card with
+            rows, a reply form, an edit form or a held send id drops it.
+            ``None`` is the card of before.
+        timeout_s: the wait of the card, in seconds (SBX-3b, ``agent_sandbox.md``
+            §12.5 decision 8). ``None`` keeps :data:`CARD_WAIT_S`. At the end
+            of the wait the card closes, and :func:`last_card_outcome` gives
+            :data:`CARD_TIMED_OUT`. A value of 0 or less closes the card at
+            once. A value that is not a finite number raises ``ValueError``
+            before any card shows.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -2929,6 +3162,8 @@ async def request_confirmation(
         answered. A raise (a park, a stop) records no outcome.
     """
     _LAST_OUTCOME.set(None)
+    # Task 3978: the choice of an earlier card is never the choice of this one.
+    _EARLIER_CHOICE.set("")
     # WT-6a: a card of an earlier call is never the card of this one. A path
     # with no chat card (WhatsApp, no channel) leaves this None.
     _APPROVED_CARD.set(None)
@@ -2950,9 +3185,15 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    #: SBX-3b: the wait of this card, in seconds.
+    _wait_s = card_wait_s(timeout_s)
     #: EAC-1: the edit form of a new task, or None for the card of before.
     _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
                             str(responder or "").strip().lower())
+    #: Task 3978: the earlier-draft question of a plain card, or {}.
+    _earlier = (clean_earlier(earlier) if earlier is not None and _rows is None
+                and _reply is None and _edit is None and not _with_answer
+                and request_id is None else {})
     if _no_person_present():
         # AUTO-7a: before every path, the WhatsApp paths too. A run with no
         # person cannot ask anyone, and no argument of a tool changes that.
@@ -3007,6 +3248,8 @@ async def request_confirmation(
         # place of a closed card with the same act (task 3130).
         _card_opened(_CARD_CALL.get())
         await _record_approved_card(None)
+        # MM-1b: the late yes of the run's own member (the grant binds it).
+        await _record_card_act(CARD_APPROVED, None, late=True)
         return _noted(CARD_APPROVED, True)
     # HRD-6: the card is the sign of the wait. The tool call that shows it
     # gets no "Please wait" line, and a line that shows goes.
@@ -3029,6 +3272,7 @@ async def request_confirmation(
             value["reply"] = _reply
         if _edit is not None:
             value["edit"] = _edit
+        value.update(_earlier)
         if fenced is not None:
             value["fenced"] = bool(fenced)
         return {"type": "CUSTOM", "name": "confirmation_requested", "value": value}
@@ -3069,6 +3313,13 @@ async def request_confirmation(
             choice = (parse_new_mail_answer(raw) if _reply.get("kind") == "new"
                       else parse_reply_answer(raw))
             if choice is None:
+                # Task 3978: Discard, then "Delete it", on a form that names
+                # an earlier draft. Only this exact text. The responder goes
+                # with it, and earlier_draft_choice counts only the run's
+                # own member. It stays a decline.
+                if _reply.get("earlier") and raw == DELETE_EARLIER_ANSWER:
+                    _EARLIER_CHOICE.set(
+                        f"delete:{str(result.get('responder') or '').strip().lower()}")
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,
                                         str(result.get("responder") or ""),
@@ -3087,6 +3338,11 @@ async def request_confirmation(
             _edited.append(edited)
             return "APPROVE", None
         if _rows is None:
+            # Task 3978: Reject, then "Delete it", on a plain card that names
+            # an earlier draft. Only this exact text. It stays a decline.
+            if _earlier and str(result.get("answer", "")) == DELETE_EARLIER_ANSWER:
+                _EARLIER_CHOICE.set(
+                    f"delete:{str(result.get('responder') or '').strip().lower()}")
             return ("APPROVE" if said.upper() == "APPROVE" else "REJECT"), None
         ticked = ticked_rows(said, _offered)
         if ticked and _with_answer:
@@ -3140,7 +3396,7 @@ async def request_confirmation(
         _waiting = _WAITING_CARD.set((_rid, _card) if _card is not None else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
-            _result = await wait_user_future(_fut, 3600)
+            _result = await wait_user_future(_fut, _wait_s)
             _answer, _ticked = _verdict(_result, _rid)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"
@@ -3175,6 +3431,11 @@ async def request_confirmation(
         # WT-6a: only an APPROVE of this card lets a later Undo name it.
         _APPROVED_CARD.set(
             (_rid, _publish) if _answer == "APPROVE" and not _other_member else None)
+        # MM-1b: the member's own approve or decline, in the act record. The
+        # outcome above decides the act, and the responder must be the run's
+        # own member.
+        await _record_card_act(_LAST_OUTCOME.get() or "", _rid,
+                               _responded[-1] if _responded else "")
         if _answer == "APPROVE":
             # CO-17: the durable record of an approved card. No card text.
             await _record_approved_card(_rid, _responded[-1] if _responded else "")

@@ -378,6 +378,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "people_me": ("show my person record", "what does my people profile say?"),
     "people_work": ("what is on the plate of a colleague? show the work of a colleague",),
     "reach_preview": ("show me the reach preview", "what would reach send me now?"),
+    # -- people: five self writes of my own record (P-5b-2, task 3943) --
+    "update_my_profile": ("set my pronouns to she/her", "change my people record",
+                          "update my emergency contact"),
+    "set_my_skills": ("add python to the skills on my people profile",),
+    "set_my_credentials": ("add my AWS certificate to the credentials on my people profile",),
+    "add_my_absence": ("record my holiday from 24 to 31 December",
+                       "add my absence for next Friday"),
+    "remove_my_absence": ("remove my absence on Friday", "delete one of my absences"),
+    "set_work_schedule": ("change the company work schedule to four days",
+                          "set the working week of the company"),
     # -- calendar-connections: Sync now and the task switch (P-1c, task 3923) --
     # The pack is dark, and EVERY names each pack, so this table reads the pack
     # set of a box whose TOOL_PACKS line names it.
@@ -385,6 +395,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
                                      "show my tasks in google calendar",
                                      "stop sending my tasks to outlook",
                                      "send my tasks to google calendar"),
+    # -- notes: six reads of the Notes app (task 3963) --
+    "notes_meetings": ("list my meetings", "search my meetings for the budget review"),
+    "notes_meeting": ("show the meeting transcript of the sales sync",
+                      "show the meeting summary of the sales sync"),
+    "notes_settings": ("show my note taker settings",),
+    "notes_templates": ("list the meeting templates",),
+    "notes_glossary": ("show my notes glossary",),
+    "notes_copilot_instructions": ("show my copilot instructions",),
     # -- chat-threads: the chat list of the member (PAR-11 part a, task 4012) --
     # The pack is dark, and EVERY names each pack, so this table reads the pack
     # set of a box whose TOOL_PACKS line names it.

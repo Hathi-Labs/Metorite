@@ -88,14 +88,18 @@ WHEN = {
     "org-admin": (
         "Load for org members, seats, sign-in requests, groups, roles, overrides or name, or "
         "integrations, MCP servers, plugins, GitHub."),
-    # P-5b-1 (task 3114): the dark people pack of the same owner.
+    # P-5b-1 (task 3114): the dark people pack of the same owner. P-5b-2 (task
+    # 3943) added the changes of your own row and your absences.
     "people": (
-        "Load for the people directory, your own row, the open work of a colleague, or the "
-        "Reach preview."),
+        "Load for the people directory, your own row or its changes, your absences, the open "
+        "work of a colleague, or the Reach preview."),
     # P-1c (task 3923): the dark calendar-connections pack of the same owner.
     "calendar-connections": (
         "Load to sync a connected Google or Outlook calendar now, or to show or hide "
         "your tasks in it."),
+    # Task 3963: the notes pack of the same owner.
+    "notes": (
+        "Load for your meetings, a meeting transcript or the Note Taker settings."),
     # PAR-11 part a (task 4012): the dark chat-threads pack of the same owner.
     "chat-threads": (
         "Load to list, rename, archive, restore, delete or move a chat of your chat list, "
