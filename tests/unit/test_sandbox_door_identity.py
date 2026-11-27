@@ -745,7 +745,7 @@ def test_a_ticket_admits_one_write_once(monkeypatch, armed_tripwire):
 
 
 def test_a_direct_write_with_a_write_scope_is_still_read_only(monkeypatch, armed_tripwire):
-    door, state, stamps = _write_door(monkeypatch, armed_tripwire)
+    door, _state, stamps = _write_door(monkeypatch, armed_tripwire)
     answer = _post(door, kit.headers())
     assert answer.status_code == 403
     assert answer.json() == {"detail": sandbox_capabilities.READ_ONLY}

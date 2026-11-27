@@ -108,6 +108,22 @@ AGENT_ASSIGNEE_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
 }
 AGENT_PREFIX = "agent:"
 
+#: The fields that a batch row may not set at all, by pair. An agent runs the
+#: Check of a task (``check_text``) as a shell command, so code in the sandbox
+#: may not write one. A row whose body holds one of these keys is refused,
+#: whatever its value. Fence:
+#: ``test_sandbox_door_writes.py::test_every_check_field_of_a_write_row_is_refused``.
+REFUSED_FIELDS: Mapping[tuple[str, str], tuple[str, ...]] = {
+    ("POST", "/projects/tasks"): ("check_text",),
+    ("PATCH", "/projects/tasks/{task_id}"): ("check_text",),
+}
+
+#: One open batch for each capability token (review P2). The key is the token
+#: hash under this namespace, set with ``SET NX`` before the hold, and deleted
+#: when the batch ends. A second batch while one is open gets 429.
+OPEN_NAMESPACE = "sandbox_batch_open"
+BATCH_BUSY = "sandbox_batch_busy"
+
 #: The host name of the in-process requests. It reaches nothing outside.
 _INNER_BASE = "http://sandbox-door"
 
@@ -239,6 +255,26 @@ def _names_an_agent(pair: tuple[str, str], body: Mapping[str, Any]) -> bool:
     return False
 
 
+def _sets_a_refused_field(pair: tuple[str, str], body: Mapping[str, Any]) -> bool:
+    """True when the body of a row of *pair* holds a key of
+    :data:`REFUSED_FIELDS`, whatever its value."""
+    return any(name in body for name in REFUSED_FIELDS.get(pair, ()))
+
+
+def _path_is_plain(path: object) -> bool:
+    """True when *path* has the row shape and reaches the same route after
+    the in-process client builds its URL: no empty, ``.`` or ``..`` segment,
+    and no change by ``httpx.URL`` (review P1)."""
+    if not isinstance(path, str) or _PATH.fullmatch(path) is None:
+        return False
+    if any(segment in ("", ".", "..") for segment in path.split("/")[1:]):
+        return False
+    try:
+        return httpx.URL(_INNER_BASE + path).path == path
+    except Exception:
+        return False
+
+
 def _check_row(app: Any, index: int, raw: object, write_scopes: Iterable[str]) -> _Row:
     """The checks of one row, in order. The first failure raises."""
     if not isinstance(raw, dict) or set(raw) != ROW_KEYS:
@@ -249,8 +285,7 @@ def _check_row(app: Any, index: int, raw: object, write_scopes: Iterable[str]) -
     method, path, query, body = raw["method"], raw["path"], raw["query"], raw["body"]
     if method not in WRITE_METHODS:
         raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
-    if (not isinstance(path, str) or _PATH.fullmatch(path) is None
-            or ".." in path or "//" in path):
+    if not _path_is_plain(path):
         raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
     if not isinstance(query, dict) or not all(
             isinstance(k, str) and k and isinstance(v, str) for k, v in query.items()):
@@ -273,6 +308,9 @@ def _check_row(app: Any, index: int, raw: object, write_scopes: Iterable[str]) -
     assert template is not None
     # No agent assignee in any assignee field: it would start an agent run.
     if _names_an_agent((method, template), body):
+        raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
+    # No field that an agent later runs (the Check of a task).
+    if _sets_a_refused_field((method, template), body):
         raise _Refused(422, sandbox_capabilities.BAD_BATCH, index)
     return _Row(index=index, method=method, path=path, template=template,
                 query=dict(query), body=body, cls=cls)
@@ -594,6 +632,52 @@ async def sandbox_batch(
         "thread": capability.thread_id, "token_sha256": capability.token_sha256,
         "held": held_id, "stamp": stamp, "deadline": time.time() + wait_s,
     }
+    if not await _open_batch(org, capability.token_sha256, held_id,
+                             capability.seconds_left + TTL_GRACE_S):
+        sandbox_capabilities.log_door_call(
+            status=429, code=BATCH_BUSY, method="POST",
+            template=app_manifests.SANDBOX_BATCH_PAIR[1], org=org, run_id=run_id,
+            phase=phase, warn=True)
+        return JSONResponse(status_code=429, content={"detail": BATCH_BUSY})
+    try:
+        return await _hold_and_run(request, capability, raw_capability, rows, cards,
+                                   record, wait_s, stamp, held_id, end)
+    finally:
+        await _close_batch(org, capability.token_sha256)
+
+
+async def _open_batch(org: str, token_sha256: str, held_id: str, ttl: int) -> bool:
+    """Mark one open batch for the token (``SET NX``). False when another
+    batch of the same token is open. A fault raises the 503, and nothing is
+    held."""
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            done = await client.set(_key(OPEN_NAMESPACE, token_sha256), held_id, nx=True,
+                                    ex=ttl)
+    except Exception as exc:
+        _log.warning("sandbox.batch_open_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="The batch could not be held.",
+                            headers={"Retry-After": "2"}) from None
+    return bool(done)
+
+
+async def _close_batch(org: str, token_sha256: str) -> None:
+    """Delete the open mark of the token. A fault leaves it to its TTL."""
+    try:
+        client = tenant_redis.get_tenant_redis()
+        with tenant_redis.organization_scope(org):
+            await client.delete(_key(OPEN_NAMESPACE, token_sha256))
+    except Exception as exc:
+        _log.warning("sandbox.batch_close_failed", error=type(exc).__name__)
+
+
+async def _hold_and_run(request: Request,
+                        capability: sandbox_capabilities.Capability, raw_capability: str,
+                        rows: list[_Row], cards: list[_Card], record: Mapping[str, Any],
+                        wait_s: int, stamp: str, held_id: str, end: float) -> JSONResponse:
+    """Hold the cards, wait for each answer, then run the approved rows."""
+    org, run_id, phase = capability.organization_id, capability.run_id, capability.phase
     await _hold(org, cards, record, wait_s + TTL_GRACE_S, run_id)
     _log_write("held", org=org, run_id=run_id, phase=phase, held_id=held_id, rows=rows)
 

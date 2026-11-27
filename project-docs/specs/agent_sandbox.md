@@ -3685,8 +3685,9 @@ with `/projects`.
 `POST /sandbox/v1/batch`. That is the one path in.
 
 - A direct write is a non-GET on a route of an app. It keeps 403
-  `sandbox_read_only`, the code of SBX-2, in every phase.
-  The answer text names the batch route.
+  `sandbox_read_only`, the code of SBX-2, in every phase. The answer is
+  403 `{"detail": "sandbox_read_only"}`, a fixed code (SBX-2 decision 8).
+  The door client sends writes only through `POST /sandbox/v1/batch`.
 - So step 5 of the door (`deps.py`, `_sandbox_gate`) keeps its rule. It
   admits two more cases: the batch pair, and a row with a live ticket.
 
@@ -3702,8 +3703,10 @@ with `/projects`.
 - 1 to 25 rows. Each row has exactly the four keys. Any other key gets 422
   `sandbox_bad_batch`, so the model can put no label on the card.
 - `method` is POST, PUT or PATCH. `path` is the path of one route, with no
-  query, no `..` and no `//`. `query` is a flat object of strings. `body` is
-  a JSON object.
+  query and no empty, `.` or `..` segment. The URL that the in-process
+  client builds must keep the same path, so the handler runs the row that
+  it checked. Else 422 `sandbox_bad_batch`. `query` is a flat object
+  of strings. `body` is a JSON object.
 - Each row is at most 64 KiB as JSON, and the body is at most 512 KiB. Past
   a cap, the answer is 422 `sandbox_batch_cap`.
 - **No agent assignee.** An assignee `agent:<name>` starts an agent run
@@ -3716,6 +3719,18 @@ with `/projects`.
   `gateway/sandbox_batch.py` lists them. Fence:
   `test_sandbox_door_writes.py::test_every_assignee_field_of_a_write_row_is_scanned`.
   It walks the body model of each write row on the live router.
+- **No Check.** An agent runs the Check of a task (`check_text`) as a shell
+  command. So any row whose body holds `check_text` gets 422
+  `sandbox_bad_batch`, whatever the value, and nothing is held. Two rows
+  have the field: `POST /projects/tasks` and
+  `PATCH /projects/tasks/{task_id}`. `REFUSED_FIELDS` in
+  `gateway/sandbox_batch.py` lists them. Fence:
+  `test_sandbox_door_writes.py::test_every_check_field_of_a_write_row_is_refused`.
+- **One open batch for each capability.** The handler writes
+  `tenant_redis.key("sandbox_batch_open", <token hash>)` with `SET NX`
+  before it holds a card, and deletes it when the batch ends. A second
+  batch of the same capability while one is open gets 429
+  `sandbox_batch_busy`, and nothing is held.
 
 **The checks, before anything is held.** The batch is all or nothing here.
 The first failed row refuses the whole batch, and the answer names its
@@ -3736,7 +3751,9 @@ each. Each class C row gets a card of its own, with the counts first
 
 **The wait.** The batch call stays open until each card has an answer or
 times out (decision 6). One open call is simpler for the code than a poll.
-All the cards of one batch share one deadline.
+All the cards of one batch share one deadline. The route takes no
+`get_db` and no `tenant_session` dependency. Fence:
+`test_sandbox_door_writes.py::test_the_wait_holds_no_database_session`.
 
 - **The proxy cuts a held batch at 60 seconds today.** On PR 2887 the egress
   proxy reads with `FORWARD_TIMEOUT_S = 60.0` (`sandbox/egress_proxy.py:110`).
@@ -3884,7 +3901,7 @@ recommendation of §12.2 decision 12.
   smoke capability. No new code name: SBX-3 does not add
   `smoke_is_read_only`.
 - **The setting.** `sandbox_approval_timeout_seconds: int = 300` in
-  `settings.py`, beside `sandbox_door_orgs`.
+  `settings.py`. The flag `sandbox_door_orgs` lives in `flag_registry.py`.
 - **The wait and the step budget.** The wait of a batch is the setting, or
   the time left on the capability less 30 seconds, whichever is less. So the
   batch always answers before the step ends. The wait counts against the
@@ -4381,3 +4398,7 @@ here, and each needs its own check before anyone acts on it.
 - 2026-11-27 — SBX-3a fix (task 3802). The batch refuses an `agent:`
   assignee in any assignee field of a write row. The move row joins the
   create and the set-assignees rows, and a fence walks each body model.
+- 2026-11-27 — SBX-3a review fixes (task 3802). The batch refuses a row path
+  with a `.` or an empty segment. One batch is open for each capability. The
+  batch refuses a row that sets `check_text`. A fence holds the rule of no database
+  session for the wait. The answer of a direct write is the fixed code.

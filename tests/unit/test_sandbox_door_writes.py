@@ -218,6 +218,20 @@ _REFUSALS = [
      [_GOOD, _row("PUT", f"/projects/tasks/{TASK}/assignees",
                   {"assignees": ["m@x.test", " Agent:Ops"]})], 422,
      sandbox_capabilities.BAD_BATCH, 1),
+    ("dot segment", {}, [_GOOD, _row("PATCH", "/projects/tasks/./personal", {"x": 1})],
+     422, sandbox_capabilities.BAD_BATCH, 1),
+    ("dot segment in the middle", {}, [_row("POST", f"/projects/tasks/./{TASK}/move")],
+     422, sandbox_capabilities.BAD_BATCH, 0),
+    ("dot dot segment", {}, [_row("POST", f"/projects/tasks/{TASK}/../bulk")], 422,
+     sandbox_capabilities.BAD_BATCH, 0),
+    ("trailing slash", {}, [_row("POST", "/crm/leads/")], 422,
+     sandbox_capabilities.BAD_BATCH, 0),
+    ("check text on create", {},
+     [_row("POST", "/projects/tasks", {"title": "t", "check_text": "rm -rf /"})], 422,
+     sandbox_capabilities.BAD_BATCH, 0),
+    ("check text on change", {},
+     [_GOOD, _row("PATCH", f"/projects/tasks/{TASK}", {"check_text": None})], 422,
+     sandbox_capabilities.BAD_BATCH, 1),
     ("agent on move", {},
      [_GOOD, _row("POST", f"/projects/tasks/{TASK}/move",
                   {"project_id": TASK, "assignees": ["agent:ops"]})], 422,
@@ -245,9 +259,9 @@ def test_the_batch_refuses_before_it_holds(monkeypatch, armed_tripwire, label, o
     assert not any(":sandbox_ticket:" in k for k in door.redis.values)
 
 
-def _assignee_paths(model: Any, prefix: str = "") -> set[str]:
-    """Each field of *model*, nested models included, whose name names an
-    assignee, as a dotted path."""
+def _field_paths(model: Any, word: str, prefix: str = "") -> set[str]:
+    """Each field of *model*, nested models included, whose name holds
+    *word*, as a dotted path."""
     import typing
 
     from pydantic import BaseModel
@@ -255,23 +269,23 @@ def _assignee_paths(model: Any, prefix: str = "") -> set[str]:
     found: set[str] = set()
     for name, info in getattr(model, "model_fields", {}).items():
         path = prefix + name
-        if "assign" in name.lower():
+        if word in name.lower():
             found.add(path)
         stack = [info.annotation]
         while stack:
             one = stack.pop()
             if isinstance(one, type) and issubclass(one, BaseModel):
-                found |= _assignee_paths(one, path + ".")
+                found |= _field_paths(one, word, path + ".")
             else:
                 stack.extend(typing.get_args(one))
     return found
 
 
-def test_every_assignee_field_of_a_write_row_is_scanned():
-    """The fence of the agent rule. It walks the body model of each row of
-    ``SANDBOX_WRITE_ROUTES`` on the live router. Each field that names an
-    assignee must be a top-level field in ``AGENT_ASSIGNEE_FIELDS`` of its
-    pair, so a new row or a new field cannot miss the refusal."""
+def _write_row_fields(word: str) -> dict[tuple[str, str], set[str]]:
+    """For each row of ``SANDBOX_WRITE_ROUTES`` on the live router, the fields
+    of its body model whose name holds *word*."""
+    import typing
+
     from acb_common import app_manifests
     from fastapi.routing import iter_route_contexts
     from gateway.main import app
@@ -288,16 +302,89 @@ def test_every_assignee_field_of_a_write_row_is_scanned():
             while stack:
                 one = stack.pop()
                 if hasattr(one, "model_fields"):
-                    paths |= _assignee_paths(one)
+                    paths |= _field_paths(one, word)
                 else:
-                    import typing
                     stack.extend(typing.get_args(one))
             if paths:
                 found[pair] = paths
+    return found
+
+
+def test_every_assignee_field_of_a_write_row_is_scanned():
+    """The fence of the agent rule. It walks the body model of each row of
+    ``SANDBOX_WRITE_ROUTES`` on the live router. Each field that names an
+    assignee must be a top-level field in ``AGENT_ASSIGNEE_FIELDS`` of its
+    pair, so a new row or a new field cannot miss the refusal."""
+    found = _write_row_fields("assign")
     expected = {pair: set(names) for pair, names in sandbox_batch.AGENT_ASSIGNEE_FIELDS.items()}
     assert found == expected
     assert set(found) == {("POST", "/projects/tasks"), ("POST", "/projects/tasks/{task_id}/move"),
                           ("PUT", "/projects/tasks/{task_id}/assignees")}
+
+
+def test_every_check_field_of_a_write_row_is_refused():
+    """The fence of the Check rule (review P3). An agent runs the Check of a
+    task as a shell command. Each field of a write row's body model whose
+    name holds "check" must be in ``REFUSED_FIELDS`` of its pair."""
+    found = _write_row_fields("check")
+    expected = {pair: set(names) for pair, names in sandbox_batch.REFUSED_FIELDS.items()}
+    assert found == expected
+    assert set(found) == {("POST", "/projects/tasks"), ("PATCH", "/projects/tasks/{task_id}")}
+
+
+def test_the_wait_holds_no_database_session():
+    """R7 fence of "no database session for the wait". The dependant of the
+    batch route, walked to the end, holds no ``get_db`` and no
+    ``tenant_session``."""
+    from fastapi.routing import APIRoute
+
+    (route,) = [r for r in sandbox_batch.router.routes
+                if isinstance(r, APIRoute) and r.path == "/sandbox/v1/batch"]
+    seen: list[str] = []
+    stack = [route.dependant]
+    while stack:
+        dependant = stack.pop()
+        call = getattr(dependant, "call", None)
+        if call is not None:
+            seen.append(f"{getattr(call, '__module__', '')}.{getattr(call, '__name__', '')}")
+        stack.extend(dependant.dependencies)
+    assert any(name.endswith(".get_current_user") for name in seen), seen
+    for name in seen:
+        assert "get_db" not in name and "tenant_session" not in name, name
+
+
+def test_one_open_batch_for_each_token(monkeypatch, armed_tripwire):
+    """Review P2. While one batch of a token is open, a second gets 429
+    ``sandbox_batch_busy`` and holds nothing. After the first ends, a batch
+    of the same token holds again. A short wait, so a second batch that the
+    lock misses ends at once and the test fails rather than hangs."""
+    monkeypatch.setattr(get_settings(), "sandbox_approval_timeout_seconds", 2)
+    door = _door(monkeypatch, armed_tripwire)
+    answers: dict[str, Any] = {}
+
+    async def act(task):
+        (card_id,) = await _wait_held(door.redis, 1, task)
+        open_key = f"cc:{kit.ORG_A}:{sandbox_batch.OPEN_NAMESPACE}:{door.state.row.token_sha256}"
+        assert open_key in door.redis.values
+        transport = httpx.ASGITransport(app=door.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://gw") as client:
+            answers["second"] = await client.post(
+                "/sandbox/v1/batch", json={"rows": [_GOOD]}, headers=kit.headers())
+        assert list(_held(door.redis)) == [card_id], "the second batch held nothing"
+        await _decide(card_id, None)
+
+    first = asyncio.run(_batch(door, [_GOOD], act))
+    assert first.status_code == 200
+    assert answers["second"].status_code == 429
+    assert answers["second"].json() == {"detail": sandbox_batch.BATCH_BUSY}
+    assert not any(":sandbox_batch_open:" in k for k in door.redis.values), "released"
+
+    async def again(task):
+        (card_id,) = await _wait_held(door.redis, 1, task)
+        await _decide(card_id, None)
+
+    assert asyncio.run(_batch(door, [_GOOD], again)).status_code == 200
+    assert door.ran == []
 
 
 @pytest.mark.parametrize("raw", [b"not json", b"[]", b'{"rows": []}',
