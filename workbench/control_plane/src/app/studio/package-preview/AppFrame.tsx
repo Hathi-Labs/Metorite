@@ -114,20 +114,20 @@ function FilteredList({ source, door, active, onClear, children }: {
 }
 
 /**
- * The table of a page with a preset (STU-LY-2). It draws the shared states of `StudioBlockState`
+ * The table or the board of a page with a preset (STU-LY-2, STU-LY-4). It draws the shared states of `StudioBlockState`
  * (loading, error, empty and filtered-empty) and a count line, and the table itself when rows exist.
  * It reads the same cached key as the block's own read, so this adds no second read.
  */
-function LayoutList({ source, door, active, noun, onClear, children }: {
+function LayoutList({ source, door, active, noun, shape = "rows", onClear, children }: {
   source: { action: string; args?: Record<string, unknown> }; door: StudioDataDoor;
-  active: number; noun: string; onClear: () => void; children: React.ReactNode;
+  active: number; noun: string; shape?: "rows" | "board"; onClear: () => void; children: React.ReactNode;
 }) {
   const rows = useCachedResource<Row[]>(sourceKey(door, source), () => door.read(source));
   const n = rows.data?.length ?? 0;
   const failed = Boolean(rows.error) && rows.data === undefined;
   const state = (
     <StudioBlockState loading={rows.data === undefined && !rows.error} error={failed ? "read failed" : null}
-      forbidden={false} rows={n} filtersActive={active > 0} noun={noun}
+      forbidden={false} rows={n} filtersActive={active > 0} noun={noun} shape={shape}
       onClearFilters={onClear} onRetry={rows.refresh} />
   );
   if (rows.data === undefined || n === 0) return <div className={PANEL}>{state}</div>;
@@ -227,11 +227,13 @@ export default function AppFrame({ pkg, detail, door, controls, onDeleted, above
           ? hideNode(model.node, parseHidden(state.hide)) : model.node;
         const node = <GenerativeUINode spec={spec} />;
         const src = spec.props.source as { action: string; args?: Record<string, unknown> } | undefined;
-        if (built.page.layout === "table_workspace" && src && id === built.page.regions.main?.[0]) {
+        const preset = built.page.layout;
+        if ((preset === "table_workspace" || preset === "board") && src && id === built.page.regions.main?.[0]) {
           const object = detail.objects.find((o) => o.name === viewObjectName(view!, controls.actions));
           return (
             <LayoutList source={src} door={door} active={bar ? activeCount(bar.fields, bar.value) : 0}
-              noun={pluralOf(object?.label || object?.name || "")} onClear={() => update(clearedBar)}>{node}</LayoutList>
+              noun={pluralOf(object?.label || object?.name || "")} shape={preset === "board" ? "board" : "rows"}
+              onClear={() => update(clearedBar)}>{node}</LayoutList>
           );
         }
         if (!bar || id !== bar.lens.view || !src) return node;

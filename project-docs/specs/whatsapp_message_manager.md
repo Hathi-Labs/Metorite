@@ -614,6 +614,9 @@ streams/list/digest all hide snoozed chats and a new **"Snoozed" nav stream**
 surfaces them; the conversation header gains a Snooze menu (Later today / This
 evening / Tomorrow 9am / Next week) and a one-tap "wake". An OUTBOUND reply never
 wakes a snooze.
+*(Fix, task 4011: a snooze keeps a group @mention in Needs reply.
+`recompute_chat_status` reads the account phone when the caller gives none.
+Fence: `tests/unit/test_whatsapp_snooze_mention_r8.py`.)*
 
 **W7 — Pulse (analytics / insights) — BUILT (the founder-CEO's "am I keeping
 up?").** A read-only projection (`pulse.py`, alongside `digest.py`) over the

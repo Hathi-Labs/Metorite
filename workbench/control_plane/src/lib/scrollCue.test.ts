@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasMoreToTheRight } from "./scrollCue";
+import { hasMoreToTheRight, stepRight } from "./scrollCue";
 
 describe("hasMoreToTheRight", () => {
   it("is true while lanes sit past the right edge", () => {
@@ -15,5 +15,12 @@ describe("hasMoreToTheRight", () => {
 
   it("ignores a sub-pixel remainder", () => {
     expect(hasMoreToTheRight(361.5, 360, 0)).toBe(false);
+  });
+});
+
+describe("stepRight", () => {
+  it("steps four fifths of the view and never zero", () => {
+    expect(stepRight(1000)).toBe(800);
+    expect(stepRight(0)).toBe(1);
   });
 });

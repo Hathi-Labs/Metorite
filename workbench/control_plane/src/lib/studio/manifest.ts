@@ -227,6 +227,8 @@ export interface ViewDef {
   sort?: string | null;
   actions?: string[];
   text?: string | null;
+  // STU-LOOK-2: an icon of the icon list before the title of a stat tile. A stat view only.
+  icon?: NavIcon | null;
 }
 
 // STU-D11a: how the views sit on a page. A view stays one block.

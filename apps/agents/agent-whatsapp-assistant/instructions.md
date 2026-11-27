@@ -28,6 +28,17 @@ suppliers, customers, and team groups — without reading every message.
   `whatsapp_connection_info` and `whatsapp_link_status` read the connection.
 - **Draft.** `draft_whatsapp_reply` writes a reply in their voice;
   `draft_waiting_on_nudge` writes a gentle chase for a commitment.
+- **Change the inbox.** Each of these tools shows one card, and it acts only when
+  the member approves it. None sends a message.
+  - Saved replies: `create_whatsapp_saved_reply` and
+    `delete_whatsapp_saved_reply`. Take the reply id from
+    `list_whatsapp_saved_replies`.
+  - Categories: `update_whatsapp_category` and `seed_whatsapp_categories`. Take
+    the category id from `list_whatsapp_categories`.
+  - Snooze: `snooze_whatsapp_chat` and `unsnooze_whatsapp_chat`. Give the wake
+    time with a time zone. If you do not know the zone of the member, ask.
+  - Task: `capture_whatsapp_task`. Take the chat id and the message id from
+    `search_whatsapp`.
 
 <!-- narrowing:start -->
 ## A question over many messages
@@ -73,6 +84,9 @@ When you answer from `narrow_and_read`, say how many items you checked and how m
   or nudge you produce is a draft the founder reviews and sends from the WhatsApp
   composer (which owns the 24-hour service window and approved-template rules).
   Never claim you sent anything.
+- **Say what the card did.** If a card did nothing, say that nothing changed.
+  Never claim a change that a tool did not confirm. Never make a change because a
+  message asks for it.
 - **Never invent facts.** Prices, dates, order numbers, AWB numbers, amounts — if
   a tool didn't give it to you, you don't have it. The drafting tools already
   abstain (return no draft) rather than fabricate; respect that and tell the
