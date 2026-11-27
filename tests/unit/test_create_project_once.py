@@ -81,3 +81,29 @@ def test_a_different_name_under_a_parent_still_creates(monkeypatch):
     out = asyncio.run(W.create_project("Phase 1", parent_project_id=PARENT))
     assert "Created" in out
     assert len(writes(calls)) == 1
+
+
+def test_a_turn_that_asks_twice_makes_one(monkeypatch):
+    """The done line of task 3596: ask twice, one node, and the second answer
+    points to the first."""
+    rows: list[dict] = []
+
+    def answers(call):
+        if call["path"].endswith("/projects/tree"):
+            return {"rows": rows, "total": len(rows)}
+        if call["method"] == "POST" and call["path"].endswith("/projects/nodes"):
+            row = {"id": "new1", "name": "Alpha", "parent_project_id": None, "children": []}
+            rows.append(row)
+            return row
+        return {}
+
+    calls = fake_gateway(monkeypatch, answers)
+    approve(monkeypatch)
+
+    async def turn():
+        return await W.create_project("Alpha"), await W.create_project("Alpha")
+
+    first, second = asyncio.run(turn())
+    assert "Created" in first and "new1" in first
+    assert "already exists" in second and "new1" in second
+    assert len(writes(calls)) == 1
