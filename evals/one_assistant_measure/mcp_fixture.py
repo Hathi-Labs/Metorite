@@ -1,13 +1,16 @@
 """A fake MCP server for the connected-systems chats (CSY-3, ``chat_connected_systems.md`` §8.2).
 
 Only the SERVER EDGE is fake. The run reads the org's servers from the registry, applies
-the grant, connects, builds the tools and gates each call, all by the real code:
-``_tool_injection._inject_mcp_servers``, ``_maf_mcp.attach_mcp_tools``,
-``RunScopedMCPTool`` and ``McpPermissionGate``. Three things stand in for the world:
+the grant, connects, builds the tools, writes the "Connected systems" block and gates
+each call, all by the real code: ``_tool_injection._inject_mcp_servers``,
+``_maf_mcp.attach_mcp_tools``, ``RunScopedMCPTool``, ``McpPermissionGate`` and
+``server_brief``. These things stand in for the world:
 
 * the registry read (``RegistrySpy``) answers one ``http-sse`` row for the eval org,
 * the URL guard accepts the one local URL of the server (every other URL is checked),
-* a real MCP server answers on ``127.0.0.1`` in a thread, with one read-only tool.
+* a real MCP server answers on ``127.0.0.1`` in a thread, with one read-only tool,
+* the member's grant answers yes for this one server,
+* the daily use counter of CSY-8 writes to memory, never to a Redis of the machine.
 
 The server holds one fact, and only the server holds it. No chat reaches the network, no
 real server is named and no key is read. Nothing in this file calls a model.
@@ -93,18 +96,45 @@ def running() -> Iterator[FakeServer]:
         thread.join(timeout=10)
 
 
+class _MemoryCounter:
+    """The three Redis writes of ``mcp_use``, in memory."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    async def incr(self, key: str, amount: int = 1) -> int:
+        self.values[key] = int(self.values.get(key, 0)) + amount
+        return int(self.values[key])
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+    async def set(self, key: str, value: Any, **_kw: Any) -> bool:
+        self.values[key] = value
+        return True
+
+
 def install(mp: Any, org: str, stack: contextlib.ExitStack) -> FakeServer:
     """Wire the fake server into the run of *org*, on the monkeypatch *mp*.
 
-    The flag ``MAF_MCP_ORGS`` is set in the eval process only. The fixture never writes it on
-    a box. *stack* closes the server."""
-    from acb_common import get_settings
+    The flags ``MAF_MCP_ORGS`` and ``CONNECTED_SYSTEMS_ORGS`` (CSY-1) are set in the eval
+    process only. The fixture never writes them on a box. ``MCP_MAIL_PRECEDENCE_ORGS``
+    (CSY-4) is held empty, so the ``.env`` of a developer does not change the mail chat.
+    *stack* closes the server."""
+    from acb_common import get_settings, mcp_use
+    from acb_common.tenant_redis import TenantRedis
     from gateway import outbound_guard
 
     from tests.unit._maf_mcp_fakes import RegistrySpy, row
 
     srv = stack.enter_context(running())
-    mp.setattr(get_settings(), "maf_mcp_orgs", org, raising=False)
+    # ``raising=True``: a renamed flag fails the run, and is not set in silence.
+    settings = get_settings()
+    mp.setattr(settings, "maf_mcp_orgs", org)
+    mp.setattr(settings, "connected_systems_orgs", org)
+    mp.setattr(settings, "mcp_mail_precedence_orgs", "")
+    counter = TenantRedis(_MemoryCounter())
+    mp.setattr(mcp_use, "_client", lambda: counter)
     RegistrySpy([row(SERVER, org=org, url=srv.url)]).install(mp)
     real = outbound_guard.check_mcp_url
 

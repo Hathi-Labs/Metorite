@@ -24,7 +24,8 @@ spend so far. It writes ``--out`` after each chat.
 ``--report`` prints the tables of ``--out``.
 
 Exit codes: 0 pass (or a live run that finished), 1 a scripted check
-failed, 2 the live run cannot start.
+failed, 2 the live run cannot start (or ``--compare`` cannot read its files), 3 ``--compare``
+says that A does not win (task 3649).
 """
 from __future__ import annotations
 
@@ -47,7 +48,17 @@ import httpx
 from acb_skills import tier_policy
 
 from evals.one_assistant_measure import checks as ck
-from evals.one_assistant_measure import fanout, mcp_fixture, pack, spend
+from evals.one_assistant_measure import checks_2874 as ck_2874
+from evals.one_assistant_measure import compare as cmp
+from evals.one_assistant_measure import (
+    fanout,
+    mcp_fixture,
+    mirror,
+    pack,
+    scenarios_2874,
+    spend,
+    splits,
+)
 from evals.one_assistant_measure import mailbox as mb
 from evals.one_assistant_measure import workgateway as wg
 from evals.one_assistant_measure.scenarios import SCENARIOS, Scenario, all_scenarios
@@ -66,6 +77,9 @@ from tests.unit._egress_mark_store import install_memory_mark_store
 
 HERE = Path(__file__).resolve().parent
 EXIT_PASS, EXIT_FAIL, EXIT_NO_GO = 0, 1, 2
+OWNER_SPEND_CEILING_USD = spend.OWNER_SPEND_CEILING_USD
+#: ``--compare``: A does not win on the rule of :mod:`.compare` (task 3649).
+EXIT_LOSS = cmp.EXIT_LOSS
 ARMS = ("delegation", "pack")
 #: The third arm of the spec (OA-8e): the packs with ``spawn_subagents`` on
 #: (OA-9b). It sets ``SPAWN_SUBAGENTS_ORGS`` for the eval org, in the eval
@@ -108,6 +122,13 @@ def live_refusal(chosen: tuple[Scenario, ...], wanted: set[str]) -> str:
     return ""
 
 
+def _no_live_mcp(sc: Scenario, live: bool) -> None:
+    """CSY-3. A live ``run_chat`` of a connected-systems chat raises, also for a caller
+    that skips the command line."""
+    if live and (refusal := live_refusal((sc,), {sc.id})):
+        raise ValueError(refusal)
+
+
 def search_built() -> bool:
     """True when the plans of TS-5b are in (:data:`SEARCH_PLANS`) and the
     settings hold ``tool_search_orgs``, the flag of TS-2a. Until then the
@@ -123,7 +144,11 @@ def arms_for(sc: Scenario, asked: tuple[str, ...]) -> tuple[str, ...]:
     (delegation holds no spawn tool), a Studio chat on ``pack`` and ``search``
     (``studio-builder`` takes no hand-off), any other chat on ``delegation`` and
     ``pack``. The ``search`` arm drops out when :func:`search_built` is False."""
-    if sc.set == "fanout":
+    if "t2874" in sc.tags:
+        # Task 2874: the chats replay one owner chat on the real packs. The delegation
+        # arm has no such chat, and ``resolve_person`` is no tool of a specialist.
+        want = (ARMS[1],)
+    elif sc.set == "fanout":
         want = (ARMS[1], SPAWN_ARM)
     elif sc.set == "studio":
         want = (ARMS[1], SEARCH_ARM)
@@ -177,7 +202,7 @@ def owners_of(sc: Scenario) -> tuple[str, ...]:
     return (EA,) if sc.set == "email" else pack.OWNERS
 
 
-def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
+def flag_for(sc: Scenario, arm: str, mirror_prod: bool = False) -> dict[str, Any]:
     """The settings that *arm* adds for *sc*, set in the eval process only.
 
     The pack arms get the packs of the owners (:func:`pack_flag`). A Studio chat
@@ -187,8 +212,13 @@ def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
     if arm not in PACK_ARMS:
         return {}
     flag = pack_flag(owners_of(sc))
+    if mirror_prod:
+        # Task 2874 part 3: the chat flags of production (``prod_flags.json``), set in the
+        # eval process only. The arm flags below come after, so the search arm keeps its own.
+        flag.update(mirror.settings_for(ds.ORG))
     if sc.set == "studio":
-        flag["tool_packs"] = ",".join([flag["tool_packs"], *STUDIO_PACKS])
+        have = flag["tool_packs"].split(",")
+        flag["tool_packs"] = ",".join([*have, *(p for p in STUDIO_PACKS if p not in have)])
         flag["studio_orgs"] = ds.ORG
     if arm == SPAWN_ARM:
         # In the eval process only. The tool leaves the request of any
@@ -196,6 +226,8 @@ def flag_for(sc: Scenario, arm: str) -> dict[str, Any]:
         flag["spawn_subagents_orgs"] = ds.ORG
     if arm == SEARCH_ARM:
         flag["tool_search_orgs"] = ds.ORG
+    # Task 2874: a chat that needs a flag beyond the packs (``resolve_person`` needs the profile).
+    flag.update(scenarios_2874.FLAGS.get(sc.id, {}))
     return flag
 
 
@@ -310,7 +342,10 @@ def call_row(c: ModelCall) -> dict[str, Any]:
 
 
 #: Tools of the orchestrator's base that no pack owner holds.
-BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents"})
+BASE_DIRECT = frozenset({"web_search", "fetch_page", "spawn_subagents",
+                         # Task 2874: ``resolve_person`` is the orchestrator's own tool
+                         # (``orchestrator/agents.py``, ``profile_on``), not a tool of the pack.
+                         "resolve_person"})
 
 
 def pack_tool_names() -> frozenset[str]:
@@ -346,7 +381,8 @@ def pack_of_tool(name: str) -> str:
     raise KeyError(name)
 
 
-def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C901 - one plan per arm
+def scripted_models(sc: Scenario, arm: str,  # noqa: C901 - one plan per arm
+                    mirror_prod: bool = False) -> dict[str, ReplyModel]:
     """The known-good models of *sc* on *arm*, from the plan of each turn.
 
     On the ``pack`` arm a call of the ``email`` pack runs in the orchestrator's
@@ -433,7 +469,19 @@ def scripted_models(sc: Scenario, arm: str) -> dict[str, ReplyModel]:  # noqa: C
                 held.add(slug)
                 n += 1
                 orch.append(tool_turn(name, args, call_id=f"call_{n}"))
-            if setup:
+            if setup and mirror_prod:
+                # Task 2874 part 4. With the production flags the request holds too many tools
+                # for ``email-setup`` to fit beside ``email`` (the cap of 110), so the loader
+                # refuses it. The rules of the pack then send a setup call to the email
+                # assistant by a hand-off, which the measure counts as legal.
+                n += 1
+                orch.append(tool_turn("call_agent", {"agent_name": EA, "message": turn.words},
+                                      call_id=f"call_{n}"))
+                for name, args in setup:
+                    n += 1
+                    subs.setdefault(EA, []).append(tool_turn(name, args, call_id=f"call_{n}"))
+                subs[EA].append(text_turn(plan.answer))
+            elif setup:
                 # With the base trim on (run 2 onward) the ``email-setup`` pack
                 # fits beside ``email``, so the loader reaches the email owner and
                 # a hand-off to it is refused. The model loads the setup pack and
@@ -536,19 +584,45 @@ class LogTap:
 
 
 class Member:
-    """Answers each card as the member does, and keeps each card's value."""
+    """Answers each card as the member does, and keeps each card's value.
+
+    The answer grammar is the one that production reads. ``ask_tools._verdict``
+    (``packages/acb_skills/acb_skills/ask_tools.py:2594-2639``) turns the answer string
+    of a card into the verdict:
+
+    * ``APPROVE`` alone approves a plain card (line 2632).
+    * ``APPROVE {"reply": {...}}`` answers a reply card (``reply_card.REPLY_ANSWER_PREFIX``,
+      ``reply_card.py:91``). Its ``action`` is ``send`` or ``save`` (``REPLY_ACTIONS``,
+      ``reply_card.py:94``). An answer that does not parse is a REJECT (line 2613-2614).
+    * ``APPROVE {"rows": [ids]}`` answers a rows card, the held card (line 2633-2639). No
+      ticked row is a REJECT.
+    * ``REJECT`` is the Discard button (``reply_card.py:93``, "Discard is ``REJECT``").
+    * A revise is NOT an answer string. ``{"revised": True}`` comes from a steer, a chat message
+      that the member writes while the card is open (``ask_tools.py:1398`` and ``1408``,
+      ``_close_on_new_steer``). The harness cannot post a steer in the middle of a run, so the
+      measure does not replay a revise.
+
+    ``mode`` is the ``Turn.card`` of the turn that runs: ``approve``, ``send`` or ``discard``.
+    A Discard on a reply card also trashes the card's draft, as the browser does
+    (``ReplyCardForm``), through ``on_discard``."""
 
     def __init__(self) -> None:
         self.cards: list[dict[str, Any]] = []
+        self.mode = "approve"
+        self.on_discard: Any = None
 
     def __call__(self, _record: RunRecord, value: dict[str, Any]) -> str:
         self.cards.append(dict(value))
         form = value.get("reply")
+        if self.mode == "discard":
+            if isinstance(form, dict) and self.on_discard is not None:
+                self.on_discard(str(form.get("draft_id") or ""))
+            return "REJECT"
         if isinstance(form, dict):
             mode = "reply_all" if form.get("reply_all") else "reply"
             ticked = (form.get("ticked") or {}).get(mode) or {}
             return "APPROVE " + json.dumps({"reply": {
-                "action": "save", "reply_all": bool(form.get("reply_all")),
+                "action": "send" if self.mode == "send" else "save", "reply_all": bool(form.get("reply_all")),
                 "body": form.get("body") or "Thanks", "to": list(ticked.get("to") or []),
                 "cc": list(ticked.get("cc") or []), "message_id": form.get("message_id") or "",
             }})
@@ -583,6 +657,7 @@ def tap_schemas(mp: Any) -> None:
 
     ``harness.ModelCall`` keeps only the NUMBER of tools. The checks of the search
     arm need their names, the description of ``find_tools`` and the schema tokens.
+    It also sets ``connected``, the "Connected systems" block of the request (CSY-3).
     This wraps ``_WireTap.handle_async_request`` from here and edits no harness
     file: it reads the body that the tap reads, and sets three attributes on the
     call that the tap added (``tool_names``, ``find_description``, ``schema_tokens``,
@@ -609,6 +684,7 @@ def tap_schemas(mp: Any) -> None:
         if mine is not None:
             funcs = [t.get("function") or {} for t in tools]
             mine.tool_names = [str(f.get("name") or "") for f in funcs]
+            mine.connected = ck.connected_block_in(body if isinstance(body, dict) else {})
             mine.find_description = next(
                 (str(f.get("description") or "") for f in funcs if f.get("name") == ck.FIND_TOOL), "")
             mine.schema_tokens = ck.schema_tokens_of(tools)
@@ -634,6 +710,11 @@ def _use_router(harness: RoutingHarness, router: tuple[str, str]) -> None:
     # are off by default, and the live run pins them off.
     mp.setattr(settings, "mem0_enabled", False, raising=False)
     mp.setattr(settings, "graphiti_enabled", False, raising=False)
+    # Task 3554: a call that the Router does not take runs on a dev box only.
+    # This eval sets no serving flag, and the executor's error recovery calls
+    # `acb_llm.client.complete` in process. So the live run says dev, and that
+    # call keeps the direct arm that it had before.
+    mp.setattr(settings, "acb_env", "dev", raising=False)
     harness.allow = (base + "/",)
     _system_one_seam(mp)
     tap_system_one(mp, harness.model_calls)
@@ -774,11 +855,19 @@ def _system_one_seam(mp: Any) -> None:
     mp.setattr(routed, "routing_is_on", routing_is_on)
 
 
+#: TS-ORD. The seconds that a scripted turn may take. The first turn of a process
+#: loads the orchestrator, the registry and the model client: 20 s on a quiet
+#: PC, and over 60 s on a PC that runs other work. There is no network in a
+#: scripted run, so a long limit costs nothing and a short one is a flake.
+SCRIPTED_TURN_TIMEOUT = 300.0
+
+
 def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
              tier: str | None = None, timeout: float = 60.0, repeat: int = 1,
              models: dict[str, ReplyModel] | None = None,
              on_turn: Any = None, should_stop: Any = None,
-             tier_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> list[dict[str, Any]]:
     """One chat of *sc* on *arm*: each turn through the real orchestrator run.
 
     *tier_map* is the eval-only rewrite of the tier a request names (see
@@ -793,13 +882,14 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
     out (:func:`cap_sends`), and the row says ``capped``.
     Returns one row for each turn.
     """
+    if router is None:
+        timeout = max(timeout, SCRIPTED_TURN_TIMEOUT)
     from acb_common import get_settings
 
     from tests.unit._native_maf_harness import load_agent_module
 
     live = router is not None
-    if live and sc.set == MCP_SET:
-        raise ValueError(live_refusal((sc,), {sc.id}) or "no live arm for the MCP set")
+    _no_live_mcp(sc, live)
     rows: list[dict[str, Any]] = []
     with contextlib.ExitStack() as servers, \
             RoutingHarness(live=live, real_specialists=live) as harness:
@@ -859,7 +949,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
 
         harness._mp.setattr(crm_tools, "crm_mode", crm_mode)
         settings = get_settings()
-        flag = flag_for(sc, arm)
+        flag = flag_for(sc, arm, True) if mirror_prod else flag_for(sc, arm)
         web = fanout.WebFixtures()
         web.install(harness._mp)
         for name, value in {**PRODUCTION, **flag}.items():
@@ -874,8 +964,31 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
         tap.install(harness._mp)
         fanout.install_timer(harness._mp, tap.events, harness.model_calls)
         if not live:
-            harness.models = models if models is not None else scripted_models(sc, arm)
+            harness.models = models if models is not None else (
+                scripted_models(sc, arm, True) if mirror_prod else scripted_models(sc, arm))
+            # TS-ORD: a scripted run reaches no database. The session load of a
+            # native run reads the chat rows, and a PC with a stale dev database
+            # on a port made each scripted turn stall until the turn timeout.
+            # The answer is the one of a database with no chat row: no session,
+            # the text history, no save. Fence: ``test_one_assistant_measure``.
+            from orchestrator import native_session_store as nss
+
+            harness._mp.setattr(
+                nss, "read_state", lambda *a, **k: nss.LoadState(chat_exists=False))
+            # The member's access read is the second database reach. With no
+            # database it fails closed (``is_active=False``), and CI runs that
+            # way. On a PC with a stale dev database it waited for the turn
+            # timeout instead. The pin answers what CI answers.
+            import acb_auth
+            from acb_auth import access as access_mod
+
+            async def _no_access(*a: Any, **k: Any) -> Any:
+                return access_mod.EffectiveAccess(is_active=False)
+
+            harness._mp.setattr(acb_auth, "resolve_access", _no_access)
+            harness._mp.setattr(access_mod, "resolve_access", _no_access)
         member = Member()
+        member.on_discard = gateway.trash_draft
         history = [dict(h) for h in sc.history]
         thread: str | None = None
         marked = False  # the chat read outside mail: its packs are held (TS-5a)
@@ -887,6 +1000,7 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                      len(store.calls), len(work.calls), len(refused),
                      len(server.calls) if server else 0)
             turn_at[:] = [marks[2], marks[5]]
+            member.mode = turn.card
             # The gateway binds the app that the member is in, for this turn.
             with tool_packs.surface_scope(sc.surface):
                 record = asyncio.run(harness.drive(
@@ -933,7 +1047,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 held=marked,
                 mcp_calls=ck.work_calls_of(record.events, frozenset({mcp_fixture.FULL}))[0],
                 mcp_served=list(server.calls[marks[9]:]) if server else [],
-                call_order=ck.call_order_of(record.events),
+                connected=next((b for c in orch_calls if (b := getattr(c, "connected", ""))), ""),
+                ordered=ck_2874.ordered_calls_of(record.events),
             )
             result = ck.check_turn(turn, obs)
             find_requests = find_requests_of(orch_calls)
@@ -961,6 +1076,8 @@ def run_chat(sc: Scenario, arm: str, *, router: tuple[str, str] | None = None,
                 "handoffs": [ck.handoff_kind(t) for t in obs.tasks],
                 "set": sc.set, "surface": sc.surface,
                 "mcp_tools": [n for n, _, _ in obs.mcp_calls], "mcp_served": obs.mcp_served,
+                # Task 3649: the split and the tags, so a results file reads on its own.
+                "split": splits.split_of(sc), "tags": list(sc.tags),
                 "work_tools": [n for n, _, _ in [*obs.work_calls, *obs.sub_work_calls]],
                 "specialist_handoffs": {k: len(v) for k, v in obs.handoffs.items()},
                 "handoffs_refused": {k: len(v) for k, v in obs.handoffs_refused.items()},
@@ -1069,11 +1186,12 @@ def runnable(scenarios: tuple[Scenario, ...]) -> tuple[Scenario, ...]:
 
 def run_scripted(scenarios: tuple[Scenario, ...] = SCENARIOS,
                  arms: tuple[str, ...] = ALL_ARMS,
-                 tier_map: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+                 tier_map: dict[str, str] | None = None,
+                 mirror_prod: bool = False) -> tuple[list[dict[str, Any]], list[str]]:
     rows: list[dict[str, Any]] = []
     for sc in runnable(scenarios):
         for arm in arms_for(sc, arms):
-            rows += run_chat(sc, arm, tier_map=tier_map)
+            rows += run_chat(sc, arm, tier_map=tier_map, mirror_prod=mirror_prod)
     return rows, scripted_problems(rows)
 
 
@@ -1469,6 +1587,25 @@ def stop_results(summary: dict[str, Any]) -> list[tuple[int, str, str]]:
     return sorted(out)
 
 
+def sealed_lines(data: dict[str, Any]) -> list[str]:
+    """The counts of the held-out chats (task 3649), as Markdown lines."""
+    arms_sealed = (data.get("sealed") or {}).get("arms", {})
+    if not arms_sealed:
+        return []
+    lines = ["", "Held-out chats (sealed, counts only; the rows are in the sibling file):", "",
+             "| Arm | Repeat | Turns passed | Capped |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for rep, c in v["repeats"].items():
+            lines.append(f"| {arm_name} | {rep} | {c['passed']}/{c['turns']} | {c['capped']} |")
+    lines += ["", "| Held-out check | Arm | Pass | Fail |", "|---|---|---|---|"]
+    for arm_name, v in arms_sealed.items():
+        for name, c in v["checks"].items():
+            lines.append(f"| `{name}` | {arm_name} | {c['pass']} | {c['fail']} |")
+    lines += ["", "Held-out spend, USD (in the counted total): "
+              + ", ".join(f"{a} {v['cost_usd']}" for a, v in arms_sealed.items())]
+    return lines
+
+
 def report(data: dict[str, Any]) -> str:
     """The tables of a results file, in Markdown."""
     s = data["summary"]
@@ -1569,7 +1706,16 @@ def report(data: dict[str, Any]) -> str:
                 lines += ["", f"{a}: offered but not called: {s[a].get('offered_not_called')}"]
         lines += ["", "| Stop result of §4.3.3 | State | Why |", "|---|---|---|"]
         lines += [f"| {n} | {state} | {why} |" for n, state, why in stop_results(s)]
+    lines += sealed_lines(data)
     return "\n".join(lines)
+
+
+def public_view(data: dict[str, Any]) -> dict[str, Any]:
+    """*data* as a public file holds it: the tune rows, the counts of the held-out
+    rows, and a summary of the tune rows. Every print of a result reads this."""
+    public, _ = splits.seal(data)
+    public["summary"] = summarise(public["rows"])
+    return public
 
 
 # ── the live run ─────────────────────────────────────────────────────────────
@@ -1607,10 +1753,12 @@ def served_models(rows: list[dict[str, Any]]) -> list[str]:
 def _write(out: Path, data: dict[str, Any]) -> None:
     data["spent_this_chunk_usd"] = round(
         float(data.get("spent_usd") or 0.0) - float(data.get("spent_before_usd") or 0.0), 4)
-    data["summary"] = summarise(data["rows"])
+    # Task 3649: the summary reads the tune rows only. The held-out rows go to the
+    # sibling file, and the public file keeps their counts (:func:`splits.save`).
+    data["summary"] = summarise([r for r in data["rows"] if splits.split_of_row(r) == splits.TUNE])
     data["served_models"] = served_models(data["rows"])
     data["spend_by_agent"] = {k: round(v, 4) for k, v in spend.spend_by_agent(data["rows"]).items()}
-    out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    splits.save(out, data)
 
 
 def utc_now() -> datetime:
@@ -1670,7 +1818,8 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
              *, repeat: int, tier: str, budget: float, out: Path, timeout: float,
              first_repeat: int = 1, spent_before: float = 0.0,
              allow_peak: bool = True, clock: Any = None,
-             tier_map: dict[str, str] | None = None) -> dict[str, Any]:
+             tier_map: dict[str, str] | None = None,
+             mirror_prod: bool = False) -> dict[str, Any]:
     """The live chats. *budget* caps the spend, counted from *spent_before*,
     so a run in chunks keeps one cap. The check runs before each chat AND
     before each turn after the first, so one long chat cannot pass the cap by
@@ -1690,6 +1839,8 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         "started_utc": started.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "member": ds.MEMBER,
         "tier_map": dict(tier_map or {}),
+        # Task 2874 part 3: the production flags that this run set (None: none).
+        "mirror_prod": mirror.header() if mirror_prod else None,
         "email_tier": "tier-powerful (its own default, the floor of a delegated run)",
         "repeat": repeat, "budget_usd": budget,
         "rate_card": {name: m["usd_per_1m"] for name, m in RATE_CARD["models"].items()},
@@ -1706,13 +1857,16 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
         t = turn_totals(row)
         spent += t["cost_usd"]
         unpriced.extend(c.get("served") or "" for c in row["model_calls"] if c.get("unpriced"))
-        print(f"[{row.get('arm_label') or row['arm']:<10}] {row['scenario']}#{row['turn']} r{row['repeat']}: "
-              f"{turn_state(row)} first {row['first_text_s']} s, "
+        held = row.get("split") == splits.HOLDOUT
+        # Task 3649: a held-out turn shows its cost and nothing of its result.
+        print(f"[{row.get('arm_label') or row['arm']:<10}] "
+              f"{splits.HIDDEN if held else row['scenario'] + '#' + str(row['turn'])} r{row['repeat']}: "
+              f"{'sealed' if held else turn_state(row)} first {row['first_text_s']} s, "
               f"total {row['total_s']} s, {t['calls']} calls, in {t['prompt']} "
               f"(cached {t['cached']}), out {t['completion']}, USD {t['cost_usd']:.4f}"
               f" | spent USD {spent:.3f} of {budget:.2f}", flush=True)
         bad = [k for k, v in row["checks"].items() if v is False]
-        if bad and not row.get("capped"):
+        if bad and not row.get("capped") and not held:
             print(f"      fails {bad}: {row['answer'][:240]!r}", flush=True)
 
     def finish() -> dict[str, Any]:
@@ -1733,26 +1887,26 @@ def run_live(router: tuple[str, str], scenarios: tuple[Scenario, ...], arms: tup
             order = mine if (rep + i) % 2 else tuple(reversed(mine))
             for arm in order:
                 if why := over():
-                    return stop(f"{why} before {sc.id} {arm} r{rep}")
+                    return stop(f"{why} before {splits.label(sc)} {arm} r{rep}")
                 ok, why = spend.peak_gate(clock(), allow_peak)
                 if not ok:
-                    return stop(f"peak band before {sc.id} {arm} r{rep}. {why}")
+                    return stop(f"peak band before {splits.label(sc)} {arm} r{rep}. {why}")
                 if not router_up(router[0]):
-                    return stop(f"the Router does not answer before {sc.id} {arm} r{rep}")
+                    return stop(f"the Router does not answer before {splits.label(sc)} {arm} r{rep}")
                 rows = run_chat(sc, arm, router=router, tier=tier, timeout=timeout,
                                 repeat=rep, on_turn=on_turn,
                                 should_stop=lambda extra=0.0: bool(over(extra)),
-                                tier_map=tier_map)
+                                tier_map=tier_map, mirror_prod=mirror_prod)
                 if _lost_the_router(rows) or not router_up(router[0]):
                     data["dropped"].append({"scenario": sc.id, "arm": arm, "repeat": rep,
                                             "usd": round(sum(turn_totals(r)["cost_usd"]
                                                              for r in rows), 4)})
-                    return stop(f"the Router went away during {sc.id} {arm} r{rep}: "
+                    return stop(f"the Router went away during {splits.label(sc)} {arm} r{rep}: "
                                 "the chat is dropped")
                 data["rows"] += rows
                 data["spent_usd"] = round(spent, 4)
                 if inside := stopped_inside(rows, len(sc.turns), over()):
-                    return stop(f"{inside[0]} inside {sc.id} {arm} r{rep}, {inside[1]}")
+                    return stop(f"{inside[0]} inside {splits.label(sc)} {arm} r{rep}, {inside[1]}")
                 _write(out, data)
     return finish()
 
@@ -1763,7 +1917,14 @@ def merge(paths: list[Path], out: Path) -> dict[str, Any]:
     Each chunk keeps its own SHA, in ``chunks_run`` and on each of its rows,
     because the chunks of one run can run on different code (fix round 1).
     ``sha`` is the one SHA when all chunks agree, else ``"mixed"``."""
-    parts = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
+    parts = [splits.load(p) for p in paths]
+    for path, p in zip(paths, parts, strict=True):
+        held = [r for r in p["rows"] if splits.split_of_row(r) == splits.HOLDOUT]
+        if (p.get("sealed") or {}).get("rows") and not held:
+            raise ValueError(f"{path.name}: it holds held-out counts, but its sibling file "
+                             f"{splits.sibling(path).name} is missing. A merge would drop them.")
+    if len({json.dumps(p.get("mirror_prod"), sort_keys=True) for p in parts}) > 1:
+        raise ValueError("the chunks ran with different --mirror-prod settings. Do not merge them.")
     data = {k: v for k, v in parts[0].items()
             if k not in ("rows", "summary", "stopped", "sha", "tier_map")}
     maps: dict[str, dict[str, str]] = {}
@@ -1911,6 +2072,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     mode.add_argument("--merge", default="", help="a comma list of chunk files, into --out")
     mode.add_argument("--rescore", action="store_true",
                       help="run the answer checks again on the stored rows of --out")
+    mode.add_argument("--compare", default="",
+                      help="B.json,A.json: the win margin of A over B (task 3649). The sibling "
+                           "files of the held-out rows are read too")
+    parser.add_argument("--mirror-prod", action="store_true",
+                        help="EVAL ONLY. Set the chat flags of production (prod_flags.json) in the "
+                             "eval process, for each chat of the pack arms. Default off")
+    parser.add_argument("--split", default=splits.ALL, choices=splits.SPLITS,
+                        help="run the tune chats, the held-out chats, or all (default)")
+    parser.add_argument("--t-tag", default=cmp.DEFAULT_T_TAG,
+                        help="compare: the tag of the tune chats that the change aims at")
+    parser.add_argument("--compare-arm", default=cmp.DEFAULT_ARM,
+                        help="compare: the arm to read (the arm label, default pack)")
     parser.add_argument("--arms", default=",".join(ALL_ARMS))
     parser.add_argument("--scenarios", default="", help="a comma list of scenario ids")
     parser.add_argument("--repeat", type=int, default=2)
@@ -1954,31 +2127,51 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
               "settings and SEARCH_PLANS on (the plans of TS-5b). One of them is missing.")
         arms = tuple(a for a in arms if a != SEARCH_ARM)
     wanted = {s.strip() for s in args.scenarios.split(",") if s.strip()}
-    chosen = tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted)
+    chosen = splits.keep(tuple(sc for sc in all_scenarios() if not wanted or sc.id in wanted),
+                         args.split)
     for sc in chosen:
         if sc.skip:
-            print(f"SKIP: {sc.id} ({sc.set}): {sc.skip}")
+            print(f"SKIP: {splits.label(sc)} ({sc.set}): {sc.skip}")
     scenarios = runnable(chosen)
     out = Path(args.out)
 
+    if args.compare:
+        names = [p.strip() for p in args.compare.split(",") if p.strip()]
+        if len(names) != 2:
+            print("NO-GO: --compare takes two files: B.json,A.json")
+            return EXIT_NO_GO
+        try:
+            text, code = cmp.compare(Path(names[0]), Path(names[1]), t_tag=args.t_tag,
+                                     arm=args.compare_arm)
+        except (OSError, ValueError, AttributeError, TypeError, KeyError) as exc:
+            # One line. Never a row, and never the path of a sibling file.
+            print(f"NO-GO: --compare: a file does not read ({type(exc).__name__}). "
+                  f"Files: {names[0]}, {names[1]}")
+            return EXIT_NO_GO
+        print(text)
+        return code
     if args.report:
-        print(report(json.loads(out.read_text(encoding="utf-8"))))
+        print(report(public_view(splits.load(out))))
         return EXIT_PASS
     if args.merge:
         data = merge([Path(p) for p in args.merge.split(",") if p.strip()], out)
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.rescore:
-        data = json.loads(out.read_text(encoding="utf-8"))
+        data = splits.load(out)
         changes = rescore(data)
-        out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        # Task 3649: _write seals the held-out rows into the sibling file again.
+        _write(out, data)
+        shown = splits.public_lines(changes)
         print(f"{len(changes)} checks changed")
-        for line in changes:
+        for line in shown:
             print(f"  {line}")
-        print(report(data))
+        print(report(public_view(data)))
         return EXIT_PASS
     if args.scripted:
-        rows, problems = run_scripted(scenarios, arms, tier_map)
+        # A run with no --mirror-prod calls as before, so a test double of the old shape still fits.
+        rows, problems = (run_scripted(scenarios, arms, tier_map, mirror_prod=True)
+                          if args.mirror_prod else run_scripted(scenarios, arms, tier_map))
         for r in rows:
             print(f"  {'pass' if r['passed'] else 'FAIL'}  {r['arm_label']:<10} {r['scenario']}#{r['turn']}"
                   f"  {len(r['model_calls'])} calls  {r['email_tools']}")
@@ -1993,6 +2186,18 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
         print(f"NO-GO: {refusal}")
         return EXIT_NO_GO
     scenarios = tuple(sc for sc in scenarios if sc.set != MCP_SET)
+    # The owner ceiling comes before any credential, network or file step of a live run.
+    earlier = args.spent_before
+    if args.spent_before_from.strip():
+        try:
+            earlier += spent_so_far([Path(p) for p in args.spent_before_from.split(",") if p.strip()])
+        except (OSError, ValueError, AttributeError, TypeError):
+            print("NO-GO: --spent-before-from: a chunk file does not read.")
+            return EXIT_NO_GO
+    ok, why = spend.ceiling_gate(args.budget_usd, earlier)
+    if not ok:
+        print(why)
+        return EXIT_NO_GO
     router = router_env()
     if router is None:
         print("NO-GO: set LITELLM_BASE_URL and LITELLM_API_KEY, or write them in eval.env")
@@ -2014,8 +2219,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901 - one command line
     data = run_live(router, scenarios, arms, repeat=max(1, args.repeat), tier=args.tier,
                     budget=args.budget_usd, out=out, timeout=args.timeout,
                     first_repeat=args.first_repeat, spent_before=before,
-                    allow_peak=args.allow_peak, tier_map=tier_map)
-    print(report(data))
+                    allow_peak=args.allow_peak, tier_map=tier_map, mirror_prod=args.mirror_prod)
+    print(report(public_view(data)))
     print(f"results: {out}")
     return EXIT_PASS
 

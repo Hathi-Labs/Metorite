@@ -343,7 +343,12 @@ def instructions(scopes: Iterable[str] = ()) -> str:
         text += _RUN_INSTRUCTIONS
         if agent_oauth.answer_change_enabled():
             text += prompts.ANSWER_RULE
+        # Task 3648: the stages come BEFORE the routine, so Claude Code's cut
+        # at 4096 characters leaves them. The routine may be cut.
+        text += prompts.LANE_RULE
     text += _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
+    if not runs:
+        text += prompts.LANE_RULE_NO_RUNS
     return text + _IMAGE_INSTRUCTIONS
 
 #: The methods the route accepts, so that check 3 answers and not the router.

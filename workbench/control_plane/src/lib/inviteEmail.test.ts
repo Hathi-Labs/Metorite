@@ -5,9 +5,10 @@
  *
  * The clause that needs a real fence rather than a reading is **"no token, no
  * query-string secret"** (D49.1). It is asserted as a SCAN of the rendered
- * message — every URL in the text and the HTML must be the bare sign-in URL,
- * with no query string and no path segment beyond `/signin` — rather than as a
- * spot check for the word "token", because the failure mode is somebody adding
+ * message — every URL in the text and the HTML must be the sign-in URL, and its
+ * one query parameter may be `email`, the recipient's own address (OB-0c). No
+ * other parameter and no path segment beyond `/signin` — rather than as a spot
+ * check for the word "token", because the failure mode is somebody adding
  * `?invite=<uuid>` and a spot check agreeing with them.
  */
 import { describe, expect, it } from "vitest";
@@ -85,6 +86,15 @@ describe("inviteSignInUrl", () => {
     ).toBe("https://app.example.com/signin");
   });
 
+  it("fills the address on the sign-in form, encoded (OB-0c)", () => {
+    expect(
+      inviteSignInUrl(
+        { WORKBENCH_PUBLIC_URL: "https://app.example.com" },
+        "new+tag@customer.example",
+      ),
+    ).toBe("https://app.example.com/signin?email=new%2Btag%40customer.example");
+  });
+
   it("falls back rather than mailing a relative link", () => {
     expect(inviteSignInUrl({})).toBe(
       `${INVITE_SIGNIN_FALLBACK_ORIGIN}/signin`,
@@ -106,16 +116,42 @@ describe("the message body", () => {
     expect(built.html).toContain('href="https://app.example.com/signin"');
   });
 
-  it("carries NO token and NO query string — D49.1, scanned not spot-checked", () => {
+  it("carries NO token, and the only query parameter is the recipient's address — D49.1, scanned not spot-checked", () => {
+    const filled = inviteEmail(
+      "Fracktal Works",
+      inviteSignInUrl({ WORKBENCH_PUBLIC_URL: "https://app.example.com" }, "new@customer.example"),
+    );
     const urls = [
-      ...`${built.text} ${built.html}`.matchAll(/https?:\/\/[^\s"'<>)]+/g),
-    ].map((m) => m[0]);
+      ...`${filled.text} ${filled.html}`.matchAll(/https?:\/\/[^\s"'<>)]+/g),
+    ].map((m) => m[0].replace(/&amp;/g, "&").replace(/\.$/, ""));
     expect(urls.length).toBeGreaterThan(0);
     for (const url of urls) {
-      expect(url, `${url} carries a query string`).not.toContain("?");
-      expect(url, `${url} carries a fragment`).not.toContain("#");
-      expect(new URL(url).pathname).toBe("/signin");
+      const u = new URL(url);
+      expect(u.pathname, url).toBe("/signin");
+      expect(u.hash, `${url} carries a fragment`).toBe("");
+      expect([...u.searchParams.keys()], `${url} carries another parameter`).toEqual(["email"]);
+      expect(u.searchParams.get("email")).toBe("new@customer.example");
     }
+  });
+
+  it("has ONE button, \"Join {org}\", whose link fills the address (OB-0c)", () => {
+    const url = "https://app.example.com/signin?email=new%40customer.example";
+    const mail = inviteEmail("Fracktal Works", url);
+    const buttons = [...mail.html.matchAll(/<a [^>]*style=[^>]*>([^<]*)<\/a>/g)];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0][1]).toBe("Join Fracktal Works");
+    expect(buttons[0][0]).toContain(`href="${url}"`);
+    expect(mail.text).toContain(`Join Fracktal Works: ${url}`);
+  });
+
+  it("puts the recipient's address in the link a send builds", async () => {
+    const { sent, send } = collect();
+    await sendInviteEmail(send, {
+      to: "new@customer.example",
+      orgName: "Org",
+      env: { ...LIT, WORKBENCH_PUBLIC_URL: "https://app.example.com" },
+    });
+    expect(sent[0].html).toContain('href="https://app.example.com/signin?email=new%40customer.example"');
   });
 
   it("writes no colour — an email renders outside the theme system", () => {
@@ -173,6 +209,29 @@ describe("sendInviteEmail", () => {
         { to: "a@b.example", orgName: "Org", env: LIT },
       ),
     ).rejects.toThrow(/Resend send failed/);
+  });
+});
+
+describe("the invite dialog and the sign-in form (OB-0c)", () => {
+  it("the dialog says that the person gets an email, and no longer says it sends none", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const src = readFileSync(
+      fileURLToPath(new URL("../app/settings/organization/OrganizationAdmin.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).not.toMatch(/Sign-in is Microsoft SSO/);
+    expect(src).toMatch(/They get an email with a button/);
+  });
+
+  it("the sign-in form opens with the address of the link", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const src = readFileSync(
+      fileURLToPath(new URL("../app/signin/SignInForm.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain('searchParams.get("email")');
   });
 });
 

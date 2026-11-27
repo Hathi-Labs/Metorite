@@ -784,6 +784,10 @@ class HeldCardRequest(BaseModel):
     #: its link. There is no ``revises`` and no ``draft`` field: the gateway
     #: sets those, and ``extra="forbid"`` refuses a request that names them.
     card_thread_id: str = Field(default="", max_length=200)
+    #: ``new`` (task 3814): the draft of this chat that a Save draft replaces,
+    #: as the tool named it before the card. The act checks it again against
+    #: the chat's record, so another id does nothing.
+    replaces: str = Field(default="", max_length=64)
 
     @model_validator(mode="after")
     def _fields_of_the_kind(self) -> HeldCardRequest:
@@ -806,12 +810,13 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
     "draft": frozenset({"account_id", "draft_id"}),
     "schedule": frozenset({"account_id", "draft_id", "send_at"}),
     "unsubscribe": frozenset({"account_id", "email", "emails"}),
-    "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files"}),
+    "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files",
+                          "card_thread_id"}),
     "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files",
-                      "card_thread_id"}),
+                      "card_thread_id", "replaces"}),
 }
 _KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "emails", "message_id", "to", "cc",
-                     "bcc", "note", "subject", "files", "card_thread_id")
+                     "bcc", "note", "subject", "files", "card_thread_id", "replaces")
 #: The fields that each kind of held card must name. A forward may leave out
 #: its mailbox, which the mail names.
 _KIND_NEEDS: dict[str, tuple[str, ...]] = {
@@ -1380,9 +1385,23 @@ async def _forward_card(req: HeldCardRequest, user: UserContext) -> dict[str, An
     subject = " ".join(str(mail.subject or "(no subject)").split())
     context = "\n".join([f"Forwarding the email: {subject}", "",
                          "Your note above it:", note or "(no note)"])
+    # HRD-8b-2: the record names its chat thread, so a chat message that closes
+    # this card can spend it and link the next card (``redraft.revise_new_mail_card``).
+    # This card draws no "Draft N" and no line (it is a rows card), but it TAKES a
+    # link that fits it, so a link never waits for an unrelated card to pick it up.
+    # The record keeps the draft number, so a chain of forwards counts its drafts.
+    from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import link_fields
+
+    edit = edit_card_on(_org_of(user))
+    thread = req.card_thread_id.strip() if edit else ""
+    linked = (await link_fields(user, thread, lists["to"], cc=lists["cc"], bcc=lists["bcc"],
+                              act="forward")
+              if thread else {})
     return await _person_card(user, req, rows, context, {
         "kind": "forward", "account_id": account_id, "message_id": req.message_id,
         "note": note, "subject": subject,
+        **({"thread": thread} if thread else {}), **linked,
     }, title="Forward this email?", mailbox=me)
 
 
@@ -1441,12 +1460,15 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     # the rows above come from the server alone, as for any held card: a
     # snapshot of the revised card never ticks a new address (rule 4). Only a
     # card to the same people takes the link (fix round 3).
-    linked = await link_fields(user, req.card_thread_id, lists["to"]) if edit else {}
+    linked = (await link_fields(user, req.card_thread_id, lists["to"], cc=lists["cc"],
+                               bcc=lists["bcc"], act="new")
+              if edit else {})
     unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
         **({"thread": req.card_thread_id.strip()} if edit and req.card_thread_id.strip() else {}),
         **linked, **({"unticked": unticked} if unticked else {}),
+        **({"replaces": req.replaces.strip()} if edit and req.replaces.strip() else {}),
     }, title="Send this new email?", mailbox=me)
     # §18.10: the same record, drawn as the one email card that the member
     # edits. The rows card stays for a run that cannot draw it (WhatsApp).
@@ -1625,13 +1647,16 @@ async def _act_new(
     rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str],
     background: BackgroundTasks, user: UserContext,
 ) -> dict[str, Any]:
+    from gateway.routes.email.markdown_mail import mail_text
     from gateway.routes.email.transport.send import SendEmailRequest, send_email
 
     attachments, count = await _new_attachments(rec, files, user)
+    # Task 3605: the body is Markdown. A held run (a ``no_egress`` run, H-236)
+    # sends text only: the Markdown as written, so each link shows its address.
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
-        body_text=rec["body"], attachments=attachments or None,
+        body_text=mail_text(rec["body"]), attachments=attachments or None,
     ), background, user)
     return {"ok": True, "action": "send", "id": (res or {}).get("id"),
             "files": count, **ticked}
@@ -1641,17 +1666,26 @@ async def _save_new(
     rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str], user: UserContext,
 ) -> dict[str, Any]:
     """Save draft of a held new mail (§18.10): a NEW draft with the answered
-    text, the ticked people and the files of the record. It sends nothing."""
-    from gateway.routes.email.automation.drafting import DraftUpsertRequest
+    text, the ticked people and the files of the record. It sends nothing.
+
+    Task 3814: the one-draft rule (``drafting.save_chat_draft``). The thread
+    is the one that the record holds, and the member and the org are the
+    session's."""
+    from gateway.routes.email.automation.drafting import replace_fields, save_chat_draft
 
     attachments, count = await _new_attachments(rec, files, user)
-    saved = await upsert_draft(DraftUpsertRequest(
+    saved = await save_chat_draft(dict(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC],
         bcc=ticked[KIND_BCC], subject=rec.get("subject") or "", body=rec["body"],
-        attachments=attachments, from_chat=True,
-    ), user)
-    return {"ok": True, "action": "save", "draft_id": str((saved or {}).get("id") or ""),
-            "files": count, **ticked}
+        attachments=attachments, from_chat=True, body_markdown=True,
+    ), user, thread=str(rec.get("thread") or ""), member=_owner(user), org=_org_of(user),
+        replaces=str(rec.get("replaces") or ""), act="new_mail", upsert=upsert_draft)
+    # Task 3605: the draft holds text only, and the answer says so.
+    res = saved.result
+    kept = {"formatting": res["formatting"]} if res.get("formatting") else {}
+    return {"ok": True, "action": "save", "draft_id": str(res.get("id") or ""),
+            **replace_fields(saved, rec),
+            "files": count, **ticked, **kept}
 
 
 def _form_ids(rows: Sequence[dict[str, Any]], choice: Any) -> frozenset[str] | None:

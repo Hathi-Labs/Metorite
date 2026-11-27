@@ -132,13 +132,12 @@ class Observation:
     #: CSY-3. The queries that the fake SERVER itself received this turn (the ground
     #: truth: a call that the run made and the server never saw would not show here).
     mcp_served: list[str] = field(default_factory=list)
-    #: CSY-3. The names of the orchestrator's own tool calls this turn, in order.
-    call_order: list[str] = field(default_factory=list)
-
-
-def call_order_of(events: list[dict[str, Any]]) -> list[str]:
-    """CSY-3. The names of the orchestrator's own tool calls, in the order they started."""
-    return [str(e.get("toolCallName") or "") for e in events if e.get("type") == "TOOL_CALL_START"]
+    #: CSY-3. The "Connected systems" block (CSY-1) as a request of the orchestrator
+    #: carried it in this turn, or "".
+    connected: str = ""
+    #: Task 2874. EVERY tool call of the orchestrator's own run in this turn, in order:
+    #: name, arguments, result (:func:`checks_2874.ordered_calls_of`).
+    ordered: list[tuple[str, dict[str, Any], str]] = field(default_factory=list)
 
 
 def trace_of(events: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
@@ -781,9 +780,16 @@ _UNKNOWN_FUNCTION = re.compile(r"""^['"]?Function "[^"]+" not found\.?['"]?$""")
 def refused(result: str) -> bool:
     """True when *result* is the answer to a call that the run refused: it starts
     as a refusal does, it is the unknown-function answer, or it says that nothing
-    was created or changed."""
+    was created or changed.
+
+    Task 3599: the stream no longer carries MAF's unknown-function text. The
+    step of such a call shows ``unknown_tool.MEMBER_LINE``, and that call did
+    not run either."""
+    from acb_skills.unknown_tool import MEMBER_LINE
+
     text = str(result).strip()
-    return (text.startswith(REFUSED_PREFIXES) or _UNKNOWN_FUNCTION.match(text) is not None
+    return (text.startswith(REFUSED_PREFIXES) or text == MEMBER_LINE
+            or _UNKNOWN_FUNCTION.match(text) is not None
             or _NOTHING_HAPPENED.search(text) is not None)
 
 
@@ -1343,9 +1349,8 @@ def _schema_tokens(obs: Observation, _arg: Any) -> bool | None:
 # ── CSY-3: the connected-systems chats (chat_connected_systems.md §8.2) ─────
 #
 # A scripted run plays a known-good plan, so these checks prove the PATH (the server is
-# attached, offered, called and gated by the real code) and the checks themselves. They
-# never prove the model's choice. CSY-1 (the block of §3.2) will tighten the choice: see
-# the README, "CSY-3".
+# attached, named in the context, offered, called and gated by the real code) and the
+# checks themselves. They never prove the model's choice.
 
 
 def _mcp_name() -> str:
@@ -1359,6 +1364,33 @@ def _email_pack_tools() -> frozenset[str]:
     from acb_skills.skill_families import SKILL_FAMILIES
 
     return frozenset(SKILL_FAMILIES["email"]["tools"])
+
+
+def connected_block_in(body: dict[str, Any]) -> str:
+    """The "Connected systems" block (CSY-1, §3.2) in the messages of one request,
+    from its header to the end of that text, or "" when no message holds it."""
+    from acb_skills.server_brief import BLOCK_HEADER
+
+    for message in body.get("messages") or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        parts = content if isinstance(content, list) else [{"text": content}]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and BLOCK_HEADER in text:
+                return text[text.index(BLOCK_HEADER):]
+    return ""
+
+
+def _connected_block(obs: Observation, _arg: Any) -> bool:
+    """CSY-1. The request told the model about the server: the block holds the brief of
+    the server (its name and its tool) and the standing rule, which says to try a system
+    before "not found". A reason line alone does not pass."""
+    from acb_skills.server_brief import STANDING_RULE
+
+    from evals.one_assistant_measure.mcp_fixture import SERVER, TOOL
+
+    return (f"({SERVER})" in obs.connected and f"Tools (named {SERVER}_<tool>): " in obs.connected
+            and TOOL in obs.connected and STANDING_RULE in obs.connected)
 
 
 def _mcp_ok(obs: Observation) -> list[tuple[str, dict[str, Any], str]]:
@@ -1387,7 +1419,7 @@ def _server_after_metorite(obs: Observation, _arg: Any) -> bool:
     """A Metorite tool ran first, and the server's tool ran after it. The turn tried
     Metorite, then the server, before it answered."""
     work = work_tool_names()
-    names = obs.call_order
+    names = [name for name, _, _ in obs.ordered]
     if _mcp_name() not in names:
         return False
     first_server = names.index(_mcp_name())
@@ -1462,6 +1494,7 @@ KINDS: dict[str, Callable[[Observation, Any], bool | None]] = {
     "server_after_metorite": _server_after_metorite,
     "no_mail_pack_with_mcp": _no_mail_pack_with_mcp,
     "mail_without_server": _mail_without_server,
+    "connected_block": _connected_block,
 }
 
 #: The checks that run on EVERY turn, with no entry in the scenario. Each gives
@@ -1485,3 +1518,9 @@ def check_turn(turn: Any, obs: Observation) -> dict[str, bool | None]:
 
 def passed(result: dict[str, bool | None]) -> bool:
     return all(v is not False for v in result.values())
+
+
+# Task 2874: the checks of the seven defects of the chat of 2026-11-11.
+from evals.one_assistant_measure import checks_2874 as _checks_2874  # noqa: E402
+
+KINDS.update(_checks_2874.KINDS)

@@ -52,11 +52,20 @@ from typing import Annotated, Any
 from fastapi import Header, Request
 
 #: The four signed headers, the two that tell branch 0 to refuse a body on a
-#: GET, the nonce of a write (EA-6a), and the signed MCP session key (SW-7).
+#: GET, the nonce of a write (EA-6a), the signed MCP session key (SW-7), and
+#: the signed approval of a door write with the ``If-Match`` that its digest
+#: reads (MCP-P1b-2, AD-6 and AD-17).
 ALLOWED_HEADERS = frozenset({
     "x-agent-connection", "x-agent-timestamp", "x-agent-signature",
     "x-actor-via", "content-length", "transfer-encoding", "x-agent-nonce",
-    "x-agent-session",
+    "x-agent-session", "x-agent-approval", "if-match",
+})
+
+#: SBX-2: the capability of the sandbox sibling, and the headers that the
+#: sibling reads only to refuse a second credential. Allowed ONLY while the
+#: sibling runs (:data:`_IN_SANDBOX`), so a read of one in branch 0 trips.
+SANDBOX_HEADERS = frozenset({
+    "x-sandbox-capability", "authorization", "x-user-email", "x-user-role",
 })
 
 #: ``route`` and ``app`` find the matched template. ``path`` and
@@ -80,6 +89,10 @@ VIOLATIONS: list[str] = []
 
 _IN_MATCHES: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "branch_zero_tripwire_in_matches", default=False)
+
+#: True while the sandbox sibling (``deps._sandbox_user``) runs.
+_IN_SANDBOX: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "branch_zero_tripwire_in_sandbox", default=False)
 
 #: The classes this module makes, so a wrapped request is never wrapped twice.
 _WRAPPER_CLASSES: set[type] = set()
@@ -151,7 +164,8 @@ MONITOR = _Monitor()
 
 def _headers(real: Any, log: list[str]) -> Any:
     def _check(name: Any) -> None:
-        if type(name) is not str or name.lower() not in ALLOWED_HEADERS:
+        allowed = ALLOWED_HEADERS | SANDBOX_HEADERS if _IN_SANDBOX.get() else ALLOWED_HEADERS
+        if type(name) is not str or name.lower() not in allowed:
             _violate(f"the header {name!r} (type {type(name).__name__})")
         log.append(name.lower())
 
@@ -322,8 +336,9 @@ def _patch_matches(monkeypatch: Any) -> None:
 def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     """Wrap every request that branch 0 sees, for the rest of the test.
 
-    Patches ``deps._is_agent_request`` and ``deps._agent_user`` so a direct
-    caller of ``get_current_user`` is covered too. :func:`current_user_override`
+    Patches ``deps._is_agent_request`` and ``deps._agent_user``, and the
+    sandbox sibling ``deps._is_sandbox_request`` and ``deps._sandbox_user``
+    (SBX-2), so a direct caller of ``get_current_user`` is covered too. :func:`current_user_override`
     covers the body of ``get_current_user`` itself, for an app. *agent_user*
     replaces ``_agent_user``, for a mutation test. Clears :data:`VIOLATIONS`
     and arms the RAISE hook until the test ends; the caller calls
@@ -333,6 +348,8 @@ def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     armed = Armed(deps)
     is_agent = deps._is_agent_request
     user = agent_user or deps._agent_user
+    is_sandbox = deps._is_sandbox_request
+    sandbox_user = deps._sandbox_user
 
     def _trigger(request: Any) -> bool:
         return is_agent(armed.wrap(request))
@@ -340,8 +357,21 @@ def arm(monkeypatch: Any, deps: Any, agent_user: Any = None) -> Armed:
     async def _branch_zero(request: Any) -> Any:
         return await user(armed.wrap(request))
 
+    def _sandbox_trigger(request: Any) -> bool:
+        return is_sandbox(armed.wrap(request))
+
+    async def _sandbox_branch(request: Any) -> Any:
+        token = _IN_SANDBOX.set(True)
+        try:
+            return await sandbox_user(armed.wrap(request))
+        finally:
+            _IN_SANDBOX.reset(token)
+
     monkeypatch.setattr(deps, "_is_agent_request", _trigger)
     monkeypatch.setattr(deps, "_agent_user", _branch_zero)
+    # SBX-2: the sandbox sibling runs under the same wrapper.
+    monkeypatch.setattr(deps, "_is_sandbox_request", _sandbox_trigger)
+    monkeypatch.setattr(deps, "_sandbox_user", _sandbox_branch)
     monkeypatch.setattr(MONITOR, "armed", True)
     _patch_matches(monkeypatch)
     return armed

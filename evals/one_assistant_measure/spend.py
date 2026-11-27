@@ -19,6 +19,7 @@ expensive rate of the card (:func:`worst_card`), never the cheapest.
 
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -112,6 +113,26 @@ def peak_gate(now: datetime, allow_peak: bool) -> tuple[bool, str]:
     return False, (f"NO-GO: {now.astimezone(UTC):%Y-%m-%d %H:%M} UTC is in a DeepSeek peak band, "
                    f"which costs double. The next off-peak start is {start}. "
                    "Pass --allow-peak to run now.")
+
+
+#: The owner approved USD 10 of live eval spend in total (task 3649). A run
+#: whose budget plus the spend of earlier chunks is above it does not start.
+OWNER_SPEND_CEILING_USD = 10.0
+
+
+def ceiling_gate(budget: float, spent_before: float) -> tuple[bool, str]:
+    """``(ok, message)``: refuse a live run when ``budget + spent_before`` is
+    above :data:`OWNER_SPEND_CEILING_USD`, or when a figure is negative or not a number."""
+    try:
+        b, s = float(budget), float(spent_before)
+    except (TypeError, ValueError):
+        return False, "NO-GO: --budget-usd and --spent-before must be numbers."
+    if not (math.isfinite(b) and math.isfinite(s)) or b < 0 or s < 0:
+        return False, "NO-GO: --budget-usd and --spent-before must be finite and not negative."
+    if b + s > OWNER_SPEND_CEILING_USD:
+        return False, (f"NO-GO: --budget-usd {b:.2f} plus --spent-before {s:.2f} is above the "
+                       f"owner ceiling of USD {OWNER_SPEND_CEILING_USD:.2f} of live eval spend.")
+    return True, ""
 
 
 def unseen_usage_usd(request_chars: int, card: dict[str, Any]) -> float:

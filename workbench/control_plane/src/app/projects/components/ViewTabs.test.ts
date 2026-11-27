@@ -13,7 +13,8 @@ import { describe, expect, it } from "vitest";
 import { ModeSwitch } from "@/components/ModeSwitch";
 
 import type { ViewRow } from "../lib/api";
-import { VIEW_MODES } from "../lib/commands";
+import { VIEW_MODES, type ViewMode } from "../lib/commands";
+import { canvasesFor } from "../lib/viewTabs";
 import { EMPTY_FILTERS, NO_LANES } from "../lib/grouping";
 import { DEFAULT_SHOWN } from "../lib/shownFields";
 import { ViewSheetBody } from "./ViewSheet";
@@ -25,10 +26,15 @@ const views = [
   { id: "v2", project_id: "p", name: "Sprint", view_type: "board", config: {} },
 ] as ViewRow[];
 
-const tabs = (activeViewId: string | null, canvas: "board" | null = "board") =>
+const tabs = (
+  activeViewId: string | null,
+  canvas: "board" | null = "board",
+  canvases?: readonly ViewMode[],
+) =>
   renderToStaticMarkup(
     createElement(ViewTabs, {
       canvas,
+      canvases,
       onCanvas: noop,
       views,
       activeViewId,
@@ -42,8 +48,11 @@ const tabs = (activeViewId: string | null, canvas: "board" | null = "board") =>
 describe("the view tab row", () => {
   const html = tabs("v2");
 
-  it("draws the six canvases first, then the saved views, then + View", () => {
-    const order = [...VIEW_MODES.map((m) => m.id[0].toUpperCase() + m.id.slice(1)), "My open bugs", "Sprint", "View"];
+  // A Flow node: every canvas but the Backlog (WS-39 SP-3a).
+  const FLOW = canvasesFor(VIEW_MODES, false);
+
+  it("draws the seven canvases first, then the saved views, then + View", () => {
+    const order = [...FLOW.map((m) => m.id[0].toUpperCase() + m.id.slice(1)), "My open bugs", "Sprint", "View"];
     let at = -1;
     for (const label of order) {
       const next = html.indexOf(`${label}</button>`, at + 1);
@@ -58,7 +67,15 @@ describe("the view tab row", () => {
   });
 
   it("names the key of each canvas in a tooltip", () => {
-    for (const m of VIEW_MODES) expect(html).toContain(`(${m.key})`);
+    for (const m of FLOW) expect(html).toContain(`(${m.key})`);
+  });
+
+  it("draws the Backlog tab only for a node that offers it (SP-3a)", () => {
+    expect(html).not.toContain("Backlog</button>");
+    const sprints = tabs("v2", "board", canvasesFor(VIEW_MODES, true).map((m) => m.id));
+    expect(sprints).toContain("Backlog</button>");
+    expect(sprints).toContain("(k)");
+    expect(sprints.indexOf("Timeline</button>")).toBeLessThan(sprints.indexOf("Backlog</button>"));
   });
 
   it("selects no canvas while the lens is on", () => {
@@ -141,5 +158,32 @@ describe("the View sheet", () => {
     const src = (rel: string) => readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
     expect(src("page.tsx")).toMatch(/compactChrome \? \(\s*\/\/[^\n]*\n[^\n]*\n\s*<ViewTabs/);
     expect(src("components/ViewSheet.tsx")).toContain("tabs={phone}");
+  });
+});
+
+describe("a dark canvas (SW-112)", () => {
+  const draw = (hiddenModes: readonly ("agents")[]) =>
+    renderToStaticMarkup(
+      createElement(ViewTabs, {
+        canvas: "board",
+        onCanvas: noop,
+        views,
+        activeViewId: null,
+        onView: noop,
+        onAddView: noop,
+        onDeleteView: noop,
+        canAddView: true,
+        hiddenModes,
+      })
+    );
+
+  it("is absent from the row while the map is dark", () => {
+    expect(draw(["agents"])).not.toContain("Agents</button>");
+    expect(draw(["agents"])).toContain("Timeline</button>");
+  });
+
+  it("is drawn last of the canvases when the map answers", () => {
+    const html = draw([]);
+    expect(html.indexOf("Agents</button>")).toBeGreaterThan(html.indexOf("Timeline</button>"));
   });
 });

@@ -30,7 +30,7 @@ pytest.importorskip("agent_framework", reason="MAF not installed")
 pytest.importorskip("mcp", reason="mcp not installed")
 pytest.importorskip("uvicorn", reason="uvicorn not installed")
 
-from acb_skills import tool_packs
+from acb_skills import server_brief, tool_packs
 from acb_skills.tier_policy import SHORT_MESSAGE_WORDS
 
 from evals.one_assistant_measure import checks as ck
@@ -211,10 +211,15 @@ def test_mcp_checks_on_a_refused_call_and_an_unseen_call() -> None:
 
 def test_server_after_metorite_reads_the_order() -> None:
     work = "find_tasks"
-    assert ck.KINDS["server_after_metorite"](_obs(call_order=[work, mx.FULL]), None) is True
-    assert ck.KINDS["server_after_metorite"](_obs(call_order=[mx.FULL, work]), None) is False
-    assert ck.KINDS["server_after_metorite"](_obs(call_order=[work]), None) is False
-    assert ck.KINDS["server_after_metorite"](_obs(call_order=[mx.FULL]), None) is False
+
+    def order(*names: str) -> bool | None:
+        obs = _obs(ordered=[(name, {}, "ok") for name in names])
+        return ck.KINDS["server_after_metorite"](obs, None)
+
+    assert order(work, mx.FULL) is True
+    assert order(mx.FULL, work) is False
+    assert order(work) is False
+    assert order(mx.FULL) is False
 
 
 def test_the_fake_server_holds_the_one_fact_that_no_metorite_fixture_holds() -> None:
@@ -224,6 +229,31 @@ def test_the_fake_server_holds_the_one_fact_that_no_metorite_fixture_holds() -> 
                      if p.name not in {"mcp_fixture.py", "scenarios_mcp.py"})
     assert "2026-03-02" not in text and "C-17" not in text and "Vendor Nova" not in text
     assert mx.serves("circuit C-17") == mx.FACT and mx.serves("board order") == mx.NOTHING
+
+
+def test_a_run_with_no_block_fails_cases_1_and_3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutation: the product writes no "Connected systems" block (CSY-1). The plan still
+    calls the server, and the two chats that need the block turn red on that check."""
+    from orchestrator import executor
+
+    monkeypatch.setattr(executor, "_connected_systems_block", lambda: "")
+    for sid in ("csy_only_server", "csy_miss"):
+        assert _failed(run.run_chat(scenario(sid), "pack")) == {"connected_block"}, sid
+
+
+def test_the_block_check_needs_the_brief_and_the_rule() -> None:
+    brief = server_brief.server_brief(mx.SERVER, mx.SERVER, "", [mx.TOOL])
+    good = server_brief.block([(mx.SERVER, brief)])
+    assert ck.KINDS["connected_block"](_obs(connected=good), None) is True
+    assert ck.KINDS["connected_block"](_obs(), None) is False
+    no_rule = good.replace(server_brief.STANDING_RULE, "")
+    assert ck.KINDS["connected_block"](_obs(connected=no_rule), None) is False
+    # A reason line alone names the server, and offers no system in reach.
+    note = server_brief.block([], [(mx.SERVER, server_brief.reason_line("x", mx.SERVER, "mail"))])
+    assert ck.KINDS["connected_block"](_obs(connected=note), None) is False
+    body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi\n" + good}]}]}
+    assert ck.connected_block_in(body) == good
+    assert ck.connected_block_in({"messages": [{"role": "user", "content": "hi"}]}) == ""
 
 
 # ── (c) the words against the packs ──────────────────────────────────────────

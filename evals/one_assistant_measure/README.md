@@ -158,7 +158,7 @@ The checks that read a turn by name:
 
 | Check | Passes when |
 |---|---|
-| `ran_tool` | A tool of the list ran, in the orchestrator or in a sub-run. A call that answers "Requested function not found" did not run. |
+| `ran_tool` | A tool of the list ran, in the orchestrator or in a sub-run. A call that answers "Requested function not found" did not run. Since task 3599 the stream shows `unknown_tool.MEMBER_LINE` for that call, and `checks.refused` reads it as not run. |
 | `work_write` | A write of the method and path reached the gateway, and its body holds the text. |
 | `no_unasked_write` | At most N write tools ran. With N = 0, no write reached the gateway. |
 | `right_pack` | Pack arm. A tool of the pack ran in the orchestrator's own run, or the route went to the owner. None on the delegation arm. |
@@ -378,6 +378,8 @@ of the turn do not, and it hands a setup call to the email assistant.
 
 ## Run it live
 
+**Owner ceiling.** The owner approved USD 10 of live eval spend in total. `--budget-usd` plus `--spent-before` (and the chunks of `--spent-before-from`) above `OWNER_SPEND_CEILING_USD` (10.0) ends the run with exit 2. It does this before any credential or network step. A scripted run ignores it.
+
 A live run spends credits on the Router. Open the tunnel to the Console
 first, and close it after the run. The tunnel maps local port 18090 to the
 Router on port 8090 of the production box (`staging_and_daily_release.md`
@@ -408,6 +410,16 @@ and the key. Close the tunnel with Ctrl+C in that shell.
    uv run python -m evals.one_assistant_measure.run --merge a.json,b.json \
      --out evals/one_assistant_measure/results_<date>.json
    ```
+
+### Mirror the chat flags of production (`--mirror-prod`)
+
+`--mirror-prod` sets the chat flags of production for each chat of the pack arms, in the eval process only. `prod_flags.json` holds the values, the read date (2026-11-17) and the source (`/opt/acb/app/.env` on the production box).
+
+An org list of `*` becomes the eval org. `TOOL_SEARCH_ORGS` stays empty. The switch is off by default. So the old results stay comparable.
+
+Part 4 (read 2026-11-17 06:10 UTC) mirrors 44 flags that change a turn. Each has a line in `why`, and each flag left out has a line in `left_out`. The scripted run then carries a median of 77 tools in a request (67 before), and 107 at most. A setup call plays as a hand-off to the email assistant, because `email-setup` no longer fits under the cap of 110.
+
+The results header records `mirror_prod`. `--merge` and `--compare` refuse files that ran with different values. Each key must be a real settings field, and the unit test checks it.
 
 ### Test one tier on another model (`--tier-map`)
 
@@ -548,7 +560,71 @@ The two Claude cards reproduce the bill of the pilot of 2026-11-15
 |---|---|
 | 0 | The scripted run passed, or the live run finished |
 | 1 | A scripted check failed |
-| 2 | The live run cannot start |
+| 2 | The live run cannot start, or `--compare` cannot read its two files |
+| 3 | `--compare`: A does not win on the rule below |
+
+## Held-out chats and the win margin
+
+**Status.** Task 3649, built 2026-11-17. It runs scripted and offline. It changes no product code.
+
+A fix can pass its own chats and still fix only those chats. So the chats have two splits. Tune chats guide a fix. Held-out chats only show whether the fix generalised.
+
+**The split.** A chat is held out when `"holdout"` is in `Scenario.tags`. `splits.split_of` reads it. The held-out chats live in `scenarios_holdout.py`, in the constant `HOLDOUT_SCENARIOS`. The file may be absent, and then every chat is tune.
+
+Each result row keeps `split` and `tags`. A row of an old file has no stamp, so it reads the tags of its chat today. A chat that no longer exists reads as tune. `--split tune|holdout|all` (default `all`) picks the chats of a run.
+
+**Sealed results.** `--out X.json` keeps the tune rows in full. For the held-out rows it keeps counts only. The block `sealed` holds the passes and fails of each check name, and the turn passes of each repeat. The full held-out rows go to `X.holdout.json`.
+
+No chat id may be in two chats. `splits.check_unique_ids` raises on a twin, because `scenario(sid)` returns the first match. One rule of practice has no code behind it. A held-out chat that a fix reads must move to `tune` and be replaced by a new chat. The code cannot see who read a chat.
+
+A fixer brief never names that file. No answer, tool argument, card or word of a held-out turn reaches `X.json` or the console.
+
+The live console line of a held-out turn shows its cost only. `--report`, `--merge` and `--rescore` read the sibling file and seal their output the same way. A scripted run plays known-good plans, so it holds no model output. It prints the chat ids, the tool names and the names of failed checks of held-out chats. It prints no answer text.
+
+**The win margin.** `--compare B.json,A.json` reads two files. B ran before a change and A ran after it. Each file needs two repeats of the arm (`--compare-arm`, default `pack`). A turn passes when every check that gives a value passes. A turn that is capped or missing in any of the four runs is left out, and the report counts it.
+
+The **noise** `n` counts the T and H turns whose pass or fail differs between repeat 1 and repeat 2 of B. A turn of E or of another group does not count. The report prints these facts for each split: the turns, the passes of each repeat and the flips each way. It names the tune turns that flipped. It counts the held-out turns that flipped. A **wins** when all four rules hold:
+
+1. Each chat tagged `case:<k>` passes in both repeats of A. A case that failed in B is then fixed. A case that passed in both repeats of B stays passed. A case that is missing or capped in A fails.
+2. On T, the tune chats tagged `t2874`, the passes of A minus the passes of B are at least `max(2, n + 1)`. The sum covers both repeats. Or A passes every T turn in both repeats. `--t-tag` changes the tag.
+3. On H, the held-out chats, the passes of A are at least the passes of B minus `n`.
+4. On E, the passes of A are at least the passes of B minus `n`. E is the tune chats of the `email` set that are not T.
+
+Rule 1 and the "A passes every T turn" clause of rule 2 are the owner's own accept rule and its Amendment 1 (task 3649). They are not a drift from it.
+
+The passes of rules 2 to 4 are sums over both repeats. The report prints `H: 0 turns` when no held-out chat ran, because rule 3 then holds with no evidence. The compare refuses two files with different `mirror_prod` headers. Exit 0 is a win. Exit 3 is a loss. Exit 2 means the two files do not compare.
+
+The fence is `tests/unit/test_one_assistant_measure_split.py`. The rule lives in `compare.py`. The split and the seal live in `splits.py`.
+
+## The seven chats of task 2874
+
+**Status.** Built 2026-11-17. Scripted only. The chats live in `scenarios_2874.py`.
+
+Each has the tags `t2874` and `case:<k>`. They are in the `email` set, so the E set of the compare rule leaves them out. They run on the `pack` arm only.
+
+| Case | The defect of the owner chat of 2026-11-11 | New check |
+|---|---|---|
+| 1 | A forward became a new mail | `act_kept` |
+| 2 | "I'll check the thread", and no check | `no_promise` |
+| 3 | A doubt of a send that the tool called "Sent" | `no_doubt`, `result_has` |
+| 4 | A card that the member discarded still "waits" | `states_discard` |
+| 5 | "Mark it done" on an email went to Projects | `done_direct` |
+| 6 | A first name that `resolve_person` missed | `tried_closest` |
+| 7 | `send_email` for a reply | `reply_by_compose` |
+
+Every new check has a unit test. The behaviour of 11-11 fails it, and the right behaviour passes it. The checks read `Observation.ordered`, which holds every tool call of the turn in order. `checks_2874.py` holds them.
+
+**What the harness gained.**
+
+1. A turn has `card`: `approve`, `send` or `discard`. `run.Member` answers the card with the grammar of production. The docstring of `Member` cites the lines of `ask_tools.py` and `reply_card.py`. A revise is a steer, and the harness cannot post a steer in a run, so no chat replays one.
+2. The mailbox fake answers the held forward card, `/email/forward`, `/email/reply-zero/resolve` and `/email/reply-card/draft-state`. It scores a near spelling as `closest`, with `acb_common.name_match`. A Discard trashes the card's draft, as the browser does.
+3. `workgateway.py` answers `resolve_person`. Case 6 turns on the profile flag in the eval process only. The flag is not in `prod_flags.json`.
+
+Limit of cases 3 and 4. The harness sends turn 2 only the text that the browser sends. Production loads the stored session, so turn 2 also sees the tool results of turn 1. A live pass or fail of turn 2 of case 3 or case 4 does not prove what production does. The harness is not changed for this.
+
+Case 5 fails the 11-11 way only when the Projects packs are on. Run it live with `--mirror-prod`.
+
+The fence is `tests/unit/test_one_assistant_measure_2874.py`. It holds one failing and one passing case for each new check.
 
 ## Fix round 2 (after the first live run)
 
@@ -647,28 +723,31 @@ The four chats ask where a question goes when an MCP server is attached:
 
 **The fake edge.** `mcp_fixture.py` fakes the server and nothing else. A real
 MCP server answers on `127.0.0.1` in a thread, with one read-only tool. The
-registry read, the grant and the URL check are stand-ins. The real code does
-the rest: `_inject_mcp_servers`, `attach_mcp_tools`, `RunScopedMCPTool` and
-`McpPermissionGate`. The harness guard still refuses every other send.
+registry read, the grant, the URL check and the use counter are stand-ins. The
+real code does the rest: `_inject_mcp_servers`, `attach_mcp_tools`,
+`RunScopedMCPTool`, `McpPermissionGate` and `server_brief`. The harness guard
+still refuses every other `httpx` send.
 
-**The checks.** `mcp_called`, `mcp_not_called`, `mcp_offered`,
-`server_after_metorite`, `no_mail_pack_with_mcp` and `mail_without_server`.
-`mcp_called` also needs the server's own log to show the query.
+**The flags.** The fixture sets `MAF_MCP_ORGS` and `CONNECTED_SYSTEMS_ORGS`
+(CSY-1) for the eval org, in the eval process only. It holds
+`MCP_MAIL_PRECEDENCE_ORGS` (CSY-4) empty. It writes no flag on a box.
 
-**What the scripted run proves today.** The server attaches by the real path
-and the model sees its tool. A call reaches the server and the result comes
+**The checks.** `connected_block`, `mcp_called`, `mcp_not_called`,
+`mcp_offered`, `server_after_metorite`, `no_mail_pack_with_mcp` and
+`mail_without_server`. `mcp_called` also needs the server's own log to show the
+query. `connected_block` reads the block of §3.2 in the request of
+`csy_only_server` and `csy_miss`. It needs the brief of the server, its tool
+and the standing rule.
+
+**What the scripted run proves today.** The server attaches by the real path,
+and the model sees its tool and the block. A call reaches the server and the result comes
 back. A mail chat holds no server beside the email pack. Each check fails on a
 broken plan.
 
 **What it does not prove.** It does not prove the model's choice. The plans
-are known-good. Demo 3396, or a small live arm with the owner's OK, proves the
-choice.
-
-**What CSY-1 will tighten.** CSY-1 (task 3400) adds the block of §3.2 to the
-context. Then two assertions change. In `csy_only_server` and `csy_miss`, a
-new check must read the block in the request, because the tool name alone is
-not enough. In `csy_miss`, the block carries the rule "ask the server on a
-miss". The scripted plan cannot prove that the model obeys it.
+are known-good. The block carries the rule "try each system before you say that
+something does not exist", and a scripted run cannot prove that the model obeys
+it. Demo 3396, or a small live arm with the owner's OK, proves the choice.
 
 Run it with `uv run python -m evals.one_assistant_measure.run --scripted
 --scenarios csy_only_server,csy_metorite,csy_miss,csy_mail`.
@@ -696,3 +775,7 @@ proves these facts:
 - The measure installs the mark store.
 - The live mode refuses a send that is not the Router.
 - The card reproduces the Router's figures.
+
+## Known limit of the scripted run
+
+`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database or Redis (`identity_pool`, `stream_relay`). Those tries come from the product imports on `main` and not from this harness. A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).

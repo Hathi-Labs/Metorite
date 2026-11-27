@@ -16,7 +16,15 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
    `unheld` true. Claim it.
    - Never take a task outside your lane.
    - Never take a task that a live session holds.
+   - Never take a task that another member holds, even when the hold went
+     quiet. Ask on the task with `ask_on_task` first. A contributor's fleet
+     works beside yours (`docs/contributor_playbook.md`).
    - Refuse OWNER-GATE work (`work_plan.md` §6).
+   - Send your place with each `claim_task`: `agent_label` is your lane name,
+     `host` is the machine, `host_kind` is `computer`, `server` or `cloud`, and
+     `model` is your model. Send a value only when you know it. While Remote
+     Control is on, build `external_link` from `CLAUDE_CODE_BRIDGE_SESSION_ID`
+     as `https://claude.ai/code/<id>`. The map of agents shows these values.
 2. **Read the whole task.** After `claim_task`, call `get_task_context`. Read
    the description and EVERY comment. When the task has more than 20
    comments, read the older ones with `get_task_timeline` (kind comments).
@@ -133,3 +141,7 @@ You are a lane on the home box `metorite-home`. You run as user `dev` in
     `project-docs/specs/ai_studio_rows/<id>.md`. Take main's section 14. Then
     put your row text in its row file and your index line back. Run
     `python scripts/ai_studio_rows.py check` before you push.
+18. **A conflict in `tests/fences.json` or `docs/flag_reload.md` (CIV-HS, task 3284).**
+    Take main's side of the file and add your entry anywhere in its list. Then run
+    `python scripts/sort_fence_lists.py`. It sorts both files in place. Do not sort by
+    hand. `--check` only reports.

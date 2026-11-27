@@ -105,12 +105,15 @@ def ref(
     p: Any, org: str, tid: str, number: int, state: str | None, *,
     checks: str | None = None, summary: dict[str, int] | None = None,
     updated: str = "now()", merged: str | None = None, title: str | None = None,
-    repo: str = REPO, kind: str = "pull_request",
+    repo: str = REPO, kind: str = "pull_request", triggers_off: bool = False,
 ) -> str:
     """One reference. *updated* is a SQL time expression for ``pr_updated_at``
-    and *merged* one for ``merged_at``."""
+    and *merged* one for ``merged_at``. *triggers_off* plants a row that the
+    guard of task 3846 refuses: a reference of one org to a task of another."""
     rid = str(uuid.uuid4())
     with p.admin_engine.begin() as c:
+        if triggers_off:
+            c.execute(text("SET LOCAL session_replication_role = replica"))
         c.execute(text(
             "INSERT INTO pm_task_refs (id, organization_id, task_id, kind, provider, ref, "
             "url, title, state, via, created_by, checks_state, checks_summary, "

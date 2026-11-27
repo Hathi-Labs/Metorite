@@ -117,6 +117,7 @@ from customer_console.auth import (
     ProvisionCaller,
     ResolveCaller,
     SeatAdminCaller,
+    ServeReadCaller,
     ServingCaller,
     SignedWebhook,
     StaffIdentity,
@@ -181,7 +182,6 @@ from customer_console.reasoning import (
     sampling_params_for,
 )
 from customer_console.router import (
-    SSE_DONE,
     ExtractedUsage,
     ResolvedTier,
     TierUnknown,
@@ -4400,6 +4400,42 @@ def provider_health(staff: Operator) -> dict[str, Any]:
     balance is theirs to watch.
     """
     return _provider_health_body()
+
+
+@app.post("/registry/providers/health")
+def provider_health_for_box(caller: ServeReadCaller) -> dict[str, Any]:
+    """One alert word per vendor, for the box that serves AI (AO-2).
+
+    Spec: ``customer_console.md`` §6A.17b. The gateway reads this door through
+    ``acb_auth.console_resolve.provider_health_on_console`` and tells the
+    admins of the operator org when a vendor runs out.
+
+    **Why the box asks.** Every arrow between the two planes runs from the box
+    to the Console (``placed_orgs`` above says why). So the box reads, and this
+    service calls no box.
+
+    **Deployment key only, capability ``serve``.** The operator arm is refused:
+    the operator reads ``GET /providers/health``, which shows more.
+
+    🔴 **A closed set of keys** (``provider_balance.alert_rows``): the vendor
+    id, its display name, one word of ``ALERT_SIGNALS`` and the days left. No
+    reason, no probe error and no balance. So no text that a vendor wrote can
+    reach the box, a bell or a push.
+
+    It reads only. It flushes no refusal and logs no transition, and it is not
+    audited: a box that reads on a timer is not an event.
+    """
+    if caller is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this door answers a box that serves AI; an operator reads "
+                "GET /providers/health"
+            ),
+        )
+    with get_engine().begin() as conn:
+        report = provider_balance.health_report(conn)
+    return {"providers": provider_balance.alert_rows(report)}
 
 
 @app.post("/providers/health/check")
@@ -8733,7 +8769,9 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     `/v1/chat/completions`, `/v1/audio/transcriptions`,
     `/v1/images/generations`, `/v1/audio/speech` and `/v1/decide` — so a
     second endpoint cannot grow a second opinion about what a vendor 500
-    means. A native handler raises an error that carries `status_code`, so
+    means. ⚠️ One arm is apart since AO-3: a chat STREAM that no step opens
+    answers 503 `unavailable` (:func:`_stream_unavailable`), whatever the
+    vendor status was. A native handler raises an error that carries `status_code`, so
     a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
@@ -9038,14 +9076,14 @@ def _open_stream_or_release(
     org_id: str,
     request_id: str,
     watch: tuple[Any, Any] = (None, None),
-) -> tuple[list[Any], Any, ResolvedTier] | None:
-    """Open the stream, or give the call's hold back. ``None`` = every step failed.
+) -> tuple[list[Any], Any, ResolvedTier] | router_mod.UpstreamFailed:
+    """Open the stream, or give the call's hold back. A failure is RETURNED.
 
     🔴 **Every way the stream fails to open returns the hold (2026-09-28).**
     No body generator runs after a failed open, so nothing else would settle
-    it. A vendor refusal answers ``None`` and the route sends the closed-stream
-    sentinel. Any other error (an anyio error, a bug building the call) also
-    returns the hold, then propagates unchanged.
+    it. A vendor refusal returns the ``UpstreamFailed`` and the route answers
+    :func:`_stream_failure` (AO-3). Any other error (an anyio error, a bug
+    building the call) also returns the hold, then propagates unchanged.
 
     📌 Split out of `chat_completions` for C901, like `_preflight_gates`.
     """
@@ -9054,7 +9092,7 @@ def _open_stream_or_release(
     except router_mod.UpstreamFailed as failed:
         _log_refusal("router.stream_open_failed", failed)
         _release_call_hold(org_id, request_id)
-        return None
+        return failed
     except BaseException:
         _release_call_hold(org_id, request_id)
         raise
@@ -9088,24 +9126,48 @@ def _open_stream_chain(
     )
 
 
-async def _stream_closed() -> AsyncIterator[bytes]:
-    """Every step refused before a frame existed. Close cleanly, meter nothing.
+#: The reason of a stream that no step could open (AO-3). OUR word, never the
+#: vendor's. A spend refusal keeps its own reasons and statuses.
+STREAM_UNAVAILABLE = "unavailable"
 
-    A client that never sees the sentinel waits for its own timeout, so it
-    gets the sentinel and nothing else.
 
-    ⚠️ **The 200 here is a CHOICE now, and it was a constraint before.** While
-    the open lived inside the body generator the status line had already gone
-    out, and a 502 could not be expressed at all. The walk moved into the
-    route, so that 502 became reachable — and this slice still does not raise
-    it, because changing what a streaming caller is answered WITH is not a
-    failover change. ``test_a_stream_that_never_starts_writes_no_usage_row``
-    pins the 200 and the sentinel.
+def _stream_failure(failed: router_mod.UpstreamFailed) -> HTTPException:
+    """The answer for a stream that no step opened.
+
+    🔴 **A terminal vendor status is NOT an outage (AO-3 fix round).** A 400,
+    404, 413 or 422 means the request itself is wrong, such as a context
+    overflow or an image that is too large. ``walk_chain`` stops on it at
+    once. The chat must not say "try again in a few minutes", because each
+    retry fails the same way. So it takes :func:`_upstream_refusal`, as the
+    buffered path does, and the chat shows ``model_refused``. A billing 400
+    is lifted to 402 by ``router.effective_status`` and stays an outage. Fence:
+    ``test_a_stream_whose_only_step_answers_413_is_a_refusal_not_a_503``.
+    """
+    if failed.status in router_mod.TERMINAL_STATUSES:
+        return _upstream_refusal(failed)
+    return _stream_unavailable()
+
+
+def _stream_unavailable() -> HTTPException:
+    """Every step refused before a frame existed. Say so with a status.
+
+    🔴 **A 503, not a 200 with a lone ``[DONE]`` (AO-3, 2026-11-17).** The
+    Anthropic account ran out of credits on production, and every chat turn
+    got the old sentinel. The gateway relayed it, and the agent read an empty
+    stream as a finished turn. The member saw an empty reply. The walk runs
+    before the response starts, so a status is still possible here.
+
+    The body is ``{"detail": {"reason": "unavailable"}}``. It holds no vendor
+    text, because a vendor message can quote the request. The gateway reads
+    the 5xx class (``ConsoleRouterUnavailable``), and the chat shows the
+    ``ai_unavailable`` card.
 
     ⚠️ **No usage row, and no refusal row either.** The wall was the vendor's,
-    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1).
+    not the customer's, and ``_REFUSAL_REASONS`` stays closed (§8.1). So this
+    is raised directly, never through ``_raise_spend_refusal``. Fence:
+    ``test_a_stream_that_never_starts_writes_no_usage_row``.
     """
-    yield SSE_DONE
+    return HTTPException(status_code=503, detail={"reason": STREAM_UNAVAILABLE})
 
 
 async def _streamed_completion(
@@ -9508,15 +9570,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
             org_id=org_id, request_id=request_id,
             watch=_chain_watch(credentials),
         )
-        if opened is None:
-            # 🔴 A 200 with a lone sentinel, NOT the 502 the buffered path
-            # raises. `_stream_closed` holds the reason this stayed a 200 once
-            # the walk moved out of the body generator and made a 502
-            # reachable. The meter writes nothing, and `_REFUSAL_REASONS`
+        if isinstance(opened, router_mod.UpstreamFailed):
+            # 🔴 AO-3: a 503 with the reason `unavailable`, before any frame.
+            # `_stream_unavailable` holds why it is no longer a 200 with a
+            # lone sentinel. The meter writes nothing, and `_REFUSAL_REASONS`
             # stays closed: an upstream outage is not a customer wall (§8.1).
-            return StreamingResponse(
-                _stream_closed(), media_type="text/event-stream", headers=headers
-            )
+            # A terminal status keeps its 400 class (`_stream_failure`).
+            raise _stream_failure(opened)
         head, source, resolved = opened
 
         return StreamingResponse(

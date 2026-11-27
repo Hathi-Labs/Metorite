@@ -51,6 +51,7 @@ MCP_SCENARIOS: tuple[Scenario, ...] = (
             Turn(
                 ONLY_ASK,
                 (
+                    Check("connected_block"),
                     Check("mcp_offered"),
                     Check("mcp_called"),
                     Check("answer_all", (r"2026-03-02", mx.SERVER), "gives_the_fact_and_the_server"),
@@ -92,6 +93,7 @@ MCP_SCENARIOS: tuple[Scenario, ...] = (
                 MISS_ASK,
                 (
                     Check("ran_tool", ("find_tasks",), "tried_metorite"),
+                    Check("connected_block"),
                     Check("mcp_offered"),
                     Check("server_after_metorite"),
                     Check("mcp_called"),

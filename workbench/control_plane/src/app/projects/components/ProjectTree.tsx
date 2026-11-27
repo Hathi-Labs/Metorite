@@ -315,6 +315,8 @@ interface Props {
   onManageFields?: (space: ProjectRow) => void;
   onManageTags?: (space: ProjectRow) => void;
   onManageLifecycle?: (space: ProjectRow) => void;
+  /** WS-39 SP-3a — "How this team works", on the row it opened from. */
+  onWorkStyle?: (node: ProjectRow) => void;
   /**
    * Project generations above a ROOT row. Absent = 0, which is right for the
    * live tree. The Archived section lists heads that sit deeper in the full
@@ -340,6 +342,7 @@ interface TreeManageValue {
   onManageFields?: (space: ProjectRow) => void;
   onManageTags?: (space: ProjectRow) => void;
   onManageLifecycle?: (space: ProjectRow) => void;
+  onWorkStyle?: (node: ProjectRow) => void;
 }
 
 const TreeManage = createContext<TreeManageValue>({});
@@ -478,7 +481,9 @@ function Node({
   const run = hasRunState(level)
     ? effectiveState(node, inheritedState)
     : { state: inheritedState ?? "active", inherited: Boolean(inheritedState) };
-  const addOptions = onAddChild ? childCreationOptions(kind, gen) : [];
+  const addOptions = onAddChild
+    ? childCreationOptions(kind, gen, Boolean(actions?.onNewFromTemplate))
+    : [];
   // Is the row being named a child of THIS node? If so this node opens,
   // whatever its own fold state said — you cannot name what you cannot see.
   const draftHere = creating != null && creating.parentId === node.id;
@@ -764,7 +769,9 @@ function Node({
           items={addOptions.map((option) => ({
             kind: "item" as const,
             label: option.label,
-            icon: themedIcon(option.kind === "folder" ? "Folder" : "Plus"),
+            icon: themedIcon(
+              option.kind === "folder" ? "Folder" : option.template ? "LayoutTemplate" : "Plus"
+            ),
             onSelect: () => onAddChild(node, option),
           }))}
           onClose={() => setAddMenu(null)}
@@ -806,6 +813,9 @@ function Node({
                 : undefined,
               onManageLifecycle: manage.onManageLifecycle
                 ? () => manage.onManageLifecycle?.(node)
+                : undefined,
+              onWorkStyle: manage.onWorkStyle
+                ? () => manage.onWorkStyle?.(node)
                 : undefined,
             },
             level
@@ -884,6 +894,7 @@ export function ProjectTree({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  onWorkStyle,
   rootParentGen,
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
@@ -904,8 +915,8 @@ export function ProjectTree({
 
   /** One object for the whole tree, so a re-render does not re-key every row. */
   const manageValue = useMemo<TreeManageValue>(
-    () => ({ onManageStatuses, onManageFields, onManageTags, onManageLifecycle }),
-    [onManageStatuses, onManageFields, onManageTags, onManageLifecycle]
+    () => ({ onManageStatuses, onManageFields, onManageTags, onManageLifecycle, onWorkStyle }),
+    [onManageStatuses, onManageFields, onManageTags, onManageLifecycle, onWorkStyle]
   );
 
   /**

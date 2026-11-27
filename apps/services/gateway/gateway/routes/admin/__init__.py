@@ -24,7 +24,14 @@ from gateway.routes.admin import assistant_profile as _assistant_profile  # noqa
 from gateway.routes.admin import (  # noqa: F401
     assistant_profile_people as _assistant_profile_people,
 )
+
+# `chat_decisions` attaches `/auth/me/chat-decisions` to `me_router` (HRD-12b).
+from gateway.routes.admin import chat_decisions as _chat_decisions  # noqa: F401
 from gateway.routes.admin import groups as _groups  # noqa: F401
+
+# `integration_access` attaches `/admin/integration-access` (ACC-1,
+# integrations_console.md §3.9.4). Dark behind `INTEGRATION_ACCESS_ORGS`.
+from gateway.routes.admin import integration_access as _integration_access  # noqa: F401
 from gateway.routes.admin import members as _members  # noqa: F401
 from gateway.routes.admin import organization as _organization  # noqa: F401
 from gateway.routes.admin import roles as _roles  # noqa: F401

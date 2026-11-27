@@ -32,7 +32,11 @@ import {
   asLayout,
   bodyFor,
   chatPinAllowed,
+  agentLensesAllowed,
+  agentLensesOn,
   chatPinOn,
+  chatTopicsAllowed,
+  chatTopicsOn,
   guideOn,
   markChatFirstMessage,
   markTourSeen,
@@ -257,7 +261,14 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
 
   /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
   const server = (
-    layout: StoredShell & { guide?: boolean; module_runs?: boolean; skill_offer?: boolean; chat_pin?: boolean },
+    layout: StoredShell & {
+      guide?: boolean;
+      module_runs?: boolean;
+      skill_offer?: boolean;
+      chat_pin?: boolean;
+      chat_topics?: boolean;
+      agent_lenses?: boolean;
+    },
   ) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -384,6 +395,44 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     await readShellPrefs();
     expect(chatPinAllowed()).toBe(false);
     expect(asLayout({ ...NEVER, chat_pin: true })).not.toHaveProperty("chat_pin");
+  });
+
+  // Mutation: let the read set the topic switch from `chat_pin` -> red.
+  it("chatTopicsOn: only `chat_topics: true` is on, and a missing field is off (CO-2b)", () => {
+    expect(chatTopicsOn({ ...NEVER, chat_topics: true })).toBe(true);
+    expect(chatTopicsOn({ ...NEVER, chat_topics: false })).toBe(false);
+    expect(chatTopicsOn({ ...NEVER })).toBe(false);
+    expect(chatTopicsOn({ ...NEVER, chat_topics: "true" })).toBe(false);
+    // The pin switch is not the topic switch.
+    expect(chatTopicsOn({ ...NEVER, chat_pin: true })).toBe(false);
+    expect(chatTopicsOn(null)).toBe(false);
+  });
+
+  it("the read sets the chat topics switch, and a new member resets it to off (CO-2b)", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_topics: true }));
+    await readShellPrefs();
+    expect(chatTopicsAllowed()).toBe(true);
+    clearAll();
+    expect(chatTopicsAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, chat_topics: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(chatTopicsAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, chat_topics: true })).not.toHaveProperty("chat_topics");
+  });
+
+  it("the read sets the Agents lenses switch, and a new member resets it (AMR-1)", async () => {
+    expect(agentLensesOn({ ...NEVER, agent_lenses: true })).toBe(true);
+    expect(agentLensesOn({ ...NEVER, agent_lenses: "true" })).toBe(false);
+    expect(agentLensesOn({ ...NEVER, chat_topics: true })).toBe(false);
+    expect(agentLensesOn(null)).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, agent_lenses: true }));
+    await readShellPrefs();
+    expect(agentLensesAllowed()).toBe(true);
+    clearAll();
+    expect(agentLensesAllowed()).toBe(false);
+    expect(asLayout({ ...NEVER, agent_lenses: true })).not.toHaveProperty("agent_lenses");
   });
 
   it("the read passes the switch to the guide, and a new member resets it", async () => {
