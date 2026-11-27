@@ -1156,6 +1156,116 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
 are gate `enforcement-flip` (a dated grant or the owner). `warn` comes first,
 then `block` after one day with no false block.
 
+### 7b.6 LBB-1: done means live (task 4044)
+
+**Status: LBB-1a built (report only). LBB-1b not built (verified against code 2026-11-27).** Rung 1. The demo:
+the owner reads `~/lanes/live-check.tsv` on the box and sees, for each merge
+of the last three days, whether production runs it. LBB-1 has two parts.
+- **LBB-1a (this build): a report.** After each release slot, a box script
+  lists each recent merge and says whether production runs it. It writes only
+  its own file. Tier STANDARD. The build is AGENT-SAFE.
+- **LBB-1b (later): the board.** The merger lane moves a task to Done only
+  when the report says LIVE, and leaves a "merged, not live" comment before
+  that. This changes step f of `scripts/home_server/lanes/lane-merge.md`.
+  metorite-78 makes that change after one day of the report. A script cannot
+  write the board yet: the box has no Metorite credential (task 1819).
+
+**What runs.** `scripts/home_server/live_check.py` (Python standard library,
+plus `git`). The units `scripts/home_server/metorite-live-check.service` and
+`.timer` run it at 06:00, 14:00 and 22:00 UTC, 30 minutes after each slot, in
+the shape of `metorite-answer-watcher.service`:
+`EnvironmentFile=-%h/.config/metorite/live-check.env`,
+`ExecStart=/usr/bin/python3 %h/.local/lib/metorite/live_check.py`,
+`Type=oneshot`, `TimeoutStartSec=300`. The timer ships disabled, as the
+answer-watcher timer does.
+
+**The env file** (mode 0600, no secret). Its full key set:
+- `LIVE_CHECK_MODE`: a missing file or `off` (the default) exits 0 with no
+  call. `dry` writes the report. Any other value reads as `off` and logs one
+  line to stderr, which journald keeps.
+- `LIVE_CHECK_GATEWAY_URL`: the production gateway, with no default. When it
+  is missing, the run writes one `UNKNOWN` line and exits 0.
+
+**What it reads.**
+- `GET <LIVE_CHECK_GATEWAY_URL>/version`, a read with no credential, as
+  `scripts/ci_deploy_reach.sh` does. The deployed SHA is `applied_sha` only:
+  `sha` names the gateway checkout, and a failed web build could then read
+  LIVE. A null `applied_sha` or a failed call gives one `UNKNOWN` line and
+  exit 0. The value may be short, so the script resolves it with
+  `git rev-parse` in its clone.
+- The merges, from two logs. It ignores every other line type:
+  - `~/lanes/merge-bot.log`: the line `DONE <pr> <sha>`, split on spaces, with
+    the full 40-character merge SHA. Its task is `-`.
+  - `~/lanes/merge-queue.log`: the line `DONE<TAB><pr><TAB><sha><TAB>(...)`,
+    split on tabs. The task comes from the regex `task (\d+)` in the last
+    field, else `-`.
+  - One report line for each (pr, sha) in each run, even when both logs name
+    it.
+- Its clone `~/lanes/live-check-src`. Each run fetches `main` and the
+  deployed SHA. The script makes the clone with `git clone` when it is
+  missing.
+
+**The time of a merge** is the committer date of its SHA in the clone. A
+merge is in the report when that date is within 72 hours of now. A SHA that
+the clone cannot fetch has no date: it gives `UNKNOWN` and is always
+written.
+
+**The states, for each merge.**
+- `LIVE`: `git merge-base --is-ancestor <merge> <deployed>` succeeds.
+- `WAITING`: not live, and fewer than two slot instants lie in the interval
+  (merge time, now].
+- `STUCK`: not live, and two or more slot instants lie in that interval. The
+  slot instants are 05:30, 13:30 and 21:30 UTC each day. The script counts
+  them in epoch UTC seconds, so midnight needs no special case.
+- `UNKNOWN`: the merge SHA or the deployed SHA cannot be fetched or resolved.
+
+A slot ships `green/main` (deploy.yml, CIV-30), not the tip of `main`. So a
+merge that came after `green/main` stays unreleased through a slot. The
+states count the slots that ran, not the slots that could ship this merge. A
+merge after `green/main` can be `STUCK`, and that is correct: it is built
+work that is not live.
+
+**The report.** One line for each merge in each run, appended to
+`~/lanes/live-check.tsv`:
+`<UTC time><TAB><pr><TAB><merge sha><TAB><task or -><TAB><state><TAB><deployed sha or ->`.
+A run-level `UNKNOWN` line (a null `applied_sha`, a failed read or a missing
+URL) holds `-` in the pr, merge SHA and task columns. Its time is now, in UTC.
+
+**Test seams** (read from the environment; the env file sets only the two keys
+above). `LIVE_CHECK_VERSION_CMD` (the `/version` read),
+`LIVE_CHECK_LANES` (the folder of the logs and the report),
+`LIVE_CHECK_SRC` (the clone), `LIVE_CHECK_NOW` (now, epoch seconds).
+
+**Fence (R7).** `tests/unit/test_live_check.py` holds the rules of this
+section. No rule here is advisory.
+
+**Done when** (each with a test in `tests/unit/test_live_check.py`, with a
+temp git repo and temp log files):
+1. `off`, a missing env file, or another value: no read and no write.
+2. `dry`: one report line for each (pr, sha) of both log shapes, with the
+   task read from the queue shape, and none for a merge older than 72 hours.
+3. Each state. An ancestor is `LIVE`. A merge after the deployed SHA is
+   `WAITING` with one slot instant in its interval, and `STUCK` with two (one
+   test crosses 21:30 and then 05:30). A SHA that cannot be fetched is
+   `UNKNOWN`.
+4. A `/version` with a null `applied_sha`, a failed read, or a missing URL
+   gives one `UNKNOWN` line and exit 0.
+5. The unit text: the timer's `OnCalendar` lines are 06:00, 14:00 and 22:00
+   UTC. The service has `EnvironmentFile=-` and holds no secret. The test
+   parses the files, because no systemd runs in a unit test.
+
+**Verify with.**
+
+```
+PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider \
+  tests/unit/test_live_check.py
+uv run ruff check scripts/home_server/live_check.py tests/unit/test_live_check.py
+```
+
+**Rollout (not in the build).** Install and enable the units, and set
+`LIVE_CHECK_MODE=dry` with the production gateway URL: gate `deploy`. After
+one day, metorite-78 changes lane-merge.md step f (LBB-1b).
+
 ## 8. What to fix before customer #1 — in order
 
 This list names them so that nobody finds them again from zero. Each belongs
