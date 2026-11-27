@@ -1158,7 +1158,7 @@ then `block` after one day with no false block.
 
 ### 7b.6 LBB-1: done means live (task 4044)
 
-**Status: not built (verified against code 2026-11-27).** Rung 1. The demo:
+**Status: LBB-1a built (report only). LBB-1b not built (verified against code 2026-11-27).** Rung 1. The demo:
 the owner reads `~/lanes/live-check.tsv` on the box and sees, for each merge
 of the last three days, whether production runs it. LBB-1 has two parts.
 - **LBB-1a (this build): a report.** After each release slot, a box script
