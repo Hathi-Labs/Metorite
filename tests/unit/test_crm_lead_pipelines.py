@@ -782,16 +782,21 @@ def test_the_status_undo_and_delete_take_the_create_lock_first() -> None:
     3: the status PATCH of a deal stage takes it before the stage row, because
     it locks the memberships of the stage after that row. The R8 proof is
     ``test_crm_pipelines_native.py::test_a_status_patch_and_a_pipeline_copy_at_one_moment_never_deadlock``.
+    The stage repair of the Zoho import takes it before the stage row too
+    (``stage_metadata.apply_repair``). Its R8 proof is
+    ``test_a_stage_repair_and_a_pipeline_copy_at_one_moment_never_deadlock``.
     Mutation: move any of these locks after the row read -> red."""
     import inspect
 
-    from gateway.routes.crm import admin, change_log, pipelines
+    from gateway.routes.crm import admin, change_log, pipelines, stage_metadata
 
     undo_change = inspect.getsource(change_log.undo_change)
     assert undo_change.index("lock_pipeline_creates(") < undo_change.index("FOR UPDATE")
     patch = inspect.getsource(admin.patch_status_in)
     assert patch.index("lock_pipeline_creates(") < patch.index("require_row(")
     assert patch.index("require_row(") < patch.index("update_row(")
+    repair = inspect.getsource(stage_metadata.apply_repair)
+    assert repair.index("lock_pipeline_creates(") < repair.index("update_row(")
     for write in (pipelines.add_stage_in, pipelines.remove_stage_in):
         source = inspect.getsource(write)
         assert source.index("lock_pipeline_creates(") < source.index("_native_pipeline("), write

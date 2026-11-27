@@ -2279,6 +2279,72 @@ async def test_a_status_patch_and_a_pipeline_copy_at_one_moment_never_deadlock(
         assert _membership(pns, copy.json()["id"], stage) == (40, None), "the copy came second"
 
 
+@pytest.mark.parametrize("values", [{"probability": 40}, {"type": "open"}])
+async def test_a_stage_repair_and_a_pipeline_copy_at_one_moment_never_deadlock(
+    pns, values: dict[str, Any],
+) -> None:
+    """The risk of the round 3 hand-off. The stage repair of the Zoho import
+    (``stage_metadata.apply_repair``) locks the stage row and then each
+    membership: the fan-out of a win chance, or the sweep of a type change.
+    A copy locks each membership of the source and then its stage row. A
+    third transaction holds the first membership of the stage, so the repair
+    waits there. Then the copy starts and waits, and then the hold ends. The
+    repair takes the create lock first, so the copy waits for the whole
+    repair: no cycle, and the copy reads the value of the repair. Mutation:
+    take the lock out of ``apply_repair`` -> 40P01 in one of the two."""
+    import asyncio
+
+    from acb_common.db import tenant_session
+    from gateway.routes.crm.stage_metadata import RepairPlan, apply_repair
+
+    ids = _seed(pns, pns.org_a)
+    admin = _admin(pns.org_a)
+    retype = "type" in values
+    stage = ids["won"] if retype else ids["proposal"]
+    if retype:
+        _signed(pns)
+    _one(pns, "INSERT INTO crm_pipelines (id, organization_id, name, position, is_default) "
+              "VALUES (CAST(:i AS uuid), CAST(:o AS uuid), 'Early', 1, false) RETURNING id",
+         i=_EARLY, o=pns.org_a)
+    _one(pns, "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id, "
+              "position) VALUES (CAST(:o AS uuid), CAST(:pl AS uuid), CAST(:s AS uuid), 0) "
+              "RETURNING 1", o=pns.org_a, pl=_EARLY, s=stage)
+    url = pns.app_url.render_as_string(hide_password=False)
+
+    async def repair() -> None:
+        async with tenant_engine_scope(url), tenant_session(pns.org_a) as db:
+            await apply_repair(db, RepairPlan(updates={stage: dict(values)}))
+
+    tasks: list[Any] = []
+    with pns.admin_engine.connect() as c:
+        hold = c.begin()
+        try:
+            c.execute(text(
+                "SELECT 1 FROM crm_pipeline_stages WHERE pipeline_id = CAST(:pl AS uuid) "
+                "AND status_id = CAST(:s AS uuid) FOR UPDATE"), {"pl": _EARLY, "s": stage})
+            tasks.append(asyncio.ensure_future(repair()))
+            await _until_waiting(pns, 1, "the repair")
+            tasks.append(asyncio.ensure_future(_call(
+                pns, admin, "POST", "/crm/pipelines",
+                {"name": "Copy", "copy_from": ids["pipeline"]})))
+            await _until_waiting(pns, 2, "the copy")
+            hold.commit()
+        finally:
+            if hold.is_active:
+                hold.rollback()
+            done = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=90)
+    repaired, copy = done
+    assert not isinstance(repaired, BaseException), repr(repaired)
+    assert not isinstance(copy, BaseException), repr(copy)
+    assert copy.status_code == 201, copy.text
+    if retype:
+        assert _one(pns, "SELECT type FROM crm_deal_statuses WHERE id = CAST(:s AS uuid)",
+                    s=stage) == "open"
+    else:
+        assert _membership(pns, copy.json()["id"], stage) == (40, None), "the copy came second"
+
+
 @pytest.mark.parametrize("sqlstate", ["40P01", "40001", "55P03"])
 async def test_the_status_patch_answers_try_again_on_a_lock_failure(
     pns, monkeypatch, sqlstate: str,
