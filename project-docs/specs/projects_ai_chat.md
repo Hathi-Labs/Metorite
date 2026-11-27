@@ -6318,8 +6318,8 @@ pass. A card fails the first test, so it goes in the thread.
   sits above it. When it is out of view, the ask bar names it, and a press
   scrolls to it. This is the only pin. *Amended 2026-11-27 (§24.11):* with the
   dock on, a waiting card draws in the dock and not in the thread, the thread
-  keeps the line "Waiting for you: N items, below", and the ask bar does not
-  draw.
+  keeps the line "Waiting for you: N items, below", and the ask bar never
+  names a card of the dock. It still names a generative-UI ask until WD-2.
 - **C3 — A card holds no scroll box.** The thread is the one thing that
   scrolls. A long body uses `components/ui/ShowMore.tsx`. It shows the
   first part with a fade, and "Show all" opens the rest in place. Two boxes
@@ -6348,8 +6348,8 @@ pass. A card fails the first test, so it goes in the thread.
   reader near the foot stays at the foot when a card grows
   (`stickToBottom.ts`). A reader who scrolled up keeps the place, and the
   ask bar tells them that a card waits. *Amended 2026-11-27 (§24.11):* with the
-  dock on, the dock is outside the scroll, so it stays in view in both cases
-  and the ask bar does not draw.
+  dock on, the dock is outside the scroll, so it stays in view in both cases.
+  The ask bar still names a generative-UI ask until WD-2.
 
 **How to check a new card.** Open it at 390 × 844 with the keyboard up.
 The member must see the card and at least two lines of the thread above it.
@@ -6483,7 +6483,8 @@ K1 to K7 bind the phone. The desktop follows K1, K6 and the a11y line.
 #### Rules of the audit (2026-11-27)
 
 The spec audit found gaps. These rules close them with the safest reading.
-They change no rule above.
+Where a rule here differs
+from the text above or from the slice table, this rule wins.
 
 1. **The pin and the generative-UI ask.** In WD-1 an ask from a form, a picker
    or a plan stays in the message bubble. `AskPin` still draws for it. `AskPin`
@@ -6534,22 +6535,27 @@ They change no rule above.
 - **Demo, rung 1:** with the flag on for Hathi Labs, ask Mira to draft an email
   and ask one question. Scroll up. One card with two tabs stays above the box,
   and the phone keyboard stays down for Send.
+**Verify with:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest
+run`, and
+`uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_flag_reload.py`
+and `uv run python scripts/affected_tests.py --run`.
+
+**Demos of the later rungs.** These belong to their own slices:
+
 - **Demo, rung 2:** one turn with a form, a picker and an approval shows one
   card with three tabs.
 - **Demo, rung 3:** type "use the Website project, and make the email shorter"
   with an approval and a question waiting. The question is answered, the email
   card redrafts, and nothing is sent.
 
-**Verify with:** `cd workbench/control_plane && npx tsc --noEmit && npx vitest
-run src/lib src/components`, and
-`uv run pytest tests/unit/test_auth_me_shell.py tests/unit/test_flag_reload.py`
-and `uv run python scripts/affected_tests.py --run`.
-
 **Edit paths (WD-1):** `components/AgentChat.tsx`,
 `components/ConfirmationQueue.tsx`, `components/ui/CardTabs.tsx`,
 `lib/cardTabs.ts`, `lib/askPin.ts`, new `lib/waitingDock.ts` and
 `components/WaitingDock.tsx`, `lib/shell/shellPrefs.ts`, `flag_registry.py`,
-`routes/admin/me.py` and `docs/flag_reload.md`.
+`routes/admin/me.py`, `docs/flag_reload.md`, `.env.example` and, if a fence
+asks, `env_guard.py`, `ElicitationCard.tsx` and `ConfirmationCard.tsx`.
+The two new test files also hold the audit rules (rule 2 first), K3, K7, the
+live region and the thread line. The 390 x 844 check is advisory.
 
 #### Out of scope
 
@@ -6571,7 +6577,7 @@ chat draws and behaves as before this section.
 
 | Slice | Task | What it builds | Fence (R7) |
 |---|---|---|---|
-| **WD-1** (rung 1, STANDARD UI, dark) | 4089 | The dock for today's approvals and question cards as tabs of one card, the fold, the height caps, the thread line, K1 to K3, K6, K7 and the a11y line. Under the flag, `AskPin` does not draw. Every surface that draws `AgentChat` gets it. The flag and the shell key. | `src/lib/waitingDock.test.ts` (the dock draws only while an item waits, the fold, the cap math, K1, K2 and K6) and `src/components/waitingDock.test.ts` (the markup). Under the flag, `chatCardScroll.test.ts` C1 and C3, `pinnedDraft.test.ts` ("no card pins above the composer") and `askPin.test.ts` change: the dock is the one card path in the form, its body is the one new scroll box, and the chat mounts `AskPin` only with the dock off. Each keeps its old assertions for the flag-off path. `tests/unit/test_auth_me_shell.py` and `tests/unit/test_flag_reload.py` hold the key and the reload. |
+| **WD-1** (rung 1, STANDARD UI, dark) | 4089 | The dock for today's approvals and question cards as tabs of one card, the fold, the height caps, the thread line, K1 to K3, K6, K7 and the a11y line. Under the flag, `AskPin` never draws for an item of the dock. Every surface that draws `AgentChat` gets it. The flag and the shell key. | `src/lib/waitingDock.test.ts` (the dock draws only while an item waits, the fold, the cap math, K1, K2 and K6) and `src/components/waitingDock.test.ts` (the markup). Under the flag, `chatCardScroll.test.ts` C1 and C3, `pinnedDraft.test.ts` ("no card pins above the composer") and `askPin.test.ts` change: the dock is the one card path in the form, its body is the one new scroll box, and `AskPin` draws no dock item (it still draws a generative-UI ask until WD-2). Each keeps its old assertions for the flag-off path. `tests/unit/test_auth_me_shell.py` and `tests/unit/test_flag_reload.py` hold the key and the reload. |
 | **WD-2** (rung 2, STANDARD UI, dark) | 4090 | Each generative-UI ask draws as a tab and not in the bubble. A non-blocking ask waits until the member answers or declines it. K4 and K5. | `src/lib/waitingDock.test.ts` and `src/lib/askPin.test.ts`: each ask kind becomes a tab, a non-blocking ask survives a new message, and the K4 and K5 attributes. |
 | **WD-3** (rung 3, HIGH, dark) | 4091 | The fast path of C6 stays first. Else, while an item waits, one cheap call on the decide tier reads the text against the waiting items and returns `answers`, `change` or `open` for each, with a confidence. The card shows "Answered from your message" with Undo for 10 s. Low confidence asks one chip. The code drops an `answers` or approve result for an approval. In a room, only the member that a card waits on can answer or change it with text (the room rule of `orchestrator/pending_ask.py`). The model reads titles, kinds, options and field names, not outside body text. | `src/lib/typedAnswer.test.ts` (the fast path), `tests/unit/test_waiting_dock_typed_read.py` (a mutation of the approval guard turns it red, the room rule, each result kind and Undo), and a fixed eval of at least 30 typed replies with an eval spend under USD 0.50. The build names any file that differs. |
 
