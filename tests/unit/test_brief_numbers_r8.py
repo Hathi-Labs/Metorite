@@ -24,11 +24,14 @@ Without the database every test here SKIPS. A skip is not a pass.
   ``test_r8_a_run_with_counts_and_no_line_is_empty`` goes red.
 * M4. ``store``: drop the member filter of the claims read, and
   ``brief_today``: read the run of another member. The route test goes red.
+* M5. ``run._gather``: drop the ``snap.capped`` argument.
+  ``test_r8_a_cut_source_stores_at_least`` goes red.
 """
 
 # ruff: noqa: F811
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -40,6 +43,7 @@ pytest.importorskip("sqlalchemy")
 from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.brief import flags
+from gateway.reach import loop
 from gateway.routes import brief_today
 
 from tests.unit.test_brief_run_r8 import (  # noqa: F401
@@ -100,6 +104,22 @@ def test_r8_the_three_counts_pass_the_checks_of_the_table(world) -> None:
         ("1 promise you made falls due", 1, ["tasks:8"], "count")]
     run = next(r for r in _runs(world) if r.member_email == ANA)
     assert run.lead.endswith("3 things need you.")
+
+
+def test_r8_a_cut_source_stores_at_least(world, monkeypatch) -> None:
+    """The feed cut the mail read, so the stored count is a floor. The count
+    of an uncut source stays exact."""
+    world.cards[ANA] = [card("email:acc:t1"), card("tasks:7", "due_today")]
+    world.cards[BEN] = []
+    whole = loop.snapshot  # the fake of the ``world`` fixture
+
+    async def cut(org: str, user: Any, now: Any = None) -> Any:
+        return replace(await whole(org, user, now), capped=frozenset({"email"}))
+
+    monkeypatch.setattr(loop, "snapshot", cut)
+    _seed_and_run(world)
+    assert [(c.text, int(c.value)) for c in _numbers(world, ANA)] == [
+        ("At least 1 thread waits for your reply", 1), ("1 task is due today", 1)]
 
 
 def test_r8_a_count_with_no_source_is_skipped(world) -> None:

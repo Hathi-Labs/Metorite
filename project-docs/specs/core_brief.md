@@ -316,6 +316,9 @@ BR-1b builds.
   - **A floor.** The feed cuts each source. When it cut the source of a
     kind (`Snapshot.capped`), the line says "At least", and the value is
     the number of cards.
+  - **A count that a cut hides.** When the read of a source is cut and holds
+    no card of a kind, that count is not shown. The case: 15 or more older
+    overdue tasks hide the due-today count.
   - **No source, no claim.** A card with no known prefix or no in-app link
     is not counted. A count of no card makes no claim.
   - **A count is not a line.** The counts follow the lines, and only when
@@ -323,8 +326,8 @@ BR-1b builds.
     A count adds nothing to the lead's number, to the 4 claims of the
     phrase step, or to the chat's pills and its "more" note. `GET
     /brief/today` returns each count, so the My Day card draws it as a link
-    row, and the chat tool `home_read` lists it. The phrase step reads it
-    as a claim with a value (§4.4).
+    row, and the chat tool `home_read` lists it. The phrase step gets no
+    count (§4.4).
 - **The close-out** reads `handled_run` for `done`, the open cards of today
   for `moved`, and BR-7b's executed acts for `acted`. BR-2b-1 builds `done`
   and `moved` only. The rules of BR-2b-1:
@@ -362,6 +365,9 @@ BR-1b builds.
 - **When.** `BRIEF_COMPOSE` is on, and the run has 4 claims or more. A count
   of the `numbers` section is not one of the 4. Else the lead is
   `plan.brief_lead`, from the counts.
+- **No count claim.** The model gets no claim of the `numbers` section. It
+  does not read one, and it cannot cite one. The check reads numbers only, so
+  a sentence could drop the "At least" of a count.
 - **The input.** The claims as a numbered list `[c1] … [cN]`, with their
   values. The member's block from `render_block`. The house voice from
   `voice_prompt("summary", json=True)`.

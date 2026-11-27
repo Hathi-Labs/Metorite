@@ -77,7 +77,8 @@ and no call runs. On:
 7a. ONE session commits the claims, ``gathered``, the template lead, and
     ``phrasing`` with ``model_request_id`` (``store.mark_phrasing``, the
     intent mark). The job stays claimed, and the session closes.
-7b. ``phrase.phrase`` makes the ONE call, with NO session open.
+7b. ``phrase.phrase`` makes the ONE call, with NO session open. It gets the
+    lines only (``gather.line_claims``), never a count of ``numbers``.
 7c. A new session holds the job claim, moves ``phrasing`` to ``ready``,
     writes the model lead with its claim ids, delivers when
     ``flags.in_app`` is on, and completes the job. A fence refusal
@@ -379,7 +380,10 @@ async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue
     # The session is closed: the call holds no connection and no lock.
     phrased: phrase.Phrased | None = None
     try:
-        phrased = await phrase.phrase(member, stored, ref=ref, block=block)
+        # BR-4c: the model reads and cites the lines only. The fence checks
+        # numbers, so a cited count could lose its "At least".
+        phrased = await phrase.phrase(member, gather.line_claims(stored), ref=ref,
+                                      block=block)
     except routed.RoutedRefusal as exc:
         _log.warning("brief.phrase_failed", error="RoutedRefusal", router_status=exc.status)
     except Exception as exc:

@@ -31,7 +31,8 @@ most 50. The first id is the first of those cards in the feed's order, and
 the ``source_id`` and ``href`` of the claim are those of that card. When
 the feed cut the source of a kind, the cards are a floor, and the line says
 "At least". A count with no usable card makes no claim. A count is NOT a
-line of the brief: :func:`line_claims` drops it.
+line of the brief: :func:`line_claims` drops it, and the phrase step gets no
+count, because its fence checks numbers and cannot keep "At least".
 
 **The acts** (BR-7b-2, ``core_brief.md`` §8) make the section ``acted``
 with :func:`acted_claims`: one claim for each allow-listed ``audit_event``
@@ -204,7 +205,7 @@ def number_claims(cards: list[dict[str, Any]], start: int,
 def line_claims(claims: list[Any]) -> list[Any]:
     """*claims* without the counts of the ``numbers`` section. A count is not
     a line of the brief: it adds no chat pill, no "thing" to a count of the
-    lead and nothing to the phrase threshold."""
+    lead and nothing to the phrase threshold, and the model never reads it."""
     return [c for c in claims if c.section != NUMBERS]
 
 
