@@ -739,3 +739,243 @@ def test_premerge_refuses_an_override_that_is_not_a_task_number(repo):
     res = _run(repo, PREMERGE_NOW=str(_at(12, 30)), PREMERGE_RUNS_CMD=_NO_RUN,
                PREMERGE_FREEZE_OK="yes please")
     assert res.returncode == 1 and "must be a task number" in res.stderr
+
+
+# ── LBB-5a (task 4046): PREMERGE_MERGE_TEST=auto, engineering_practice.md 7b.9 ──
+# Two harness traps (7b.9 "Fences"). `_run` copies os.environ, and pr-check sets both R8
+# variables, so `_run_auto` drops both and sets only the ones a case names. `_run` sets
+# PREMERGE_AFFECTED_CMD=true, and then R counts as true, so `_run_auto` clears it and each case
+# commits a stub picker and a stub scripts/affected_tests.py that answers `--r8`.
+_R8_VARS = ("CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL")
+_R8_SUITE = "tests/unit/test_db_r8.py"
+_PLAIN = "tests/unit/test_plain.py"
+_SKIP_LINE = ("auto: no migration and no R8 suite in the merge. The trial merge, the fences, "
+              "the type check and the green pr-check decide.")
+_DB_FAIL = ('auto: the merge touches R8 suites, and the database is not exported. Run '
+            '`eval "$(bash scripts/dev_db.sh --export)"`, then run premerge again. One R8 run '
+            'at a time: dev_db uses one shared scratch database.')
+# What a Windows Python writes: CRLF. A CR left on a path would make R false for every merge.
+_R8_LIST = ("import sys\n"
+            "sys.stdout.buffer.write(b'tests/unit/test_other_r8.py\\r\\n" + _R8_SUITE + "\\r\\n')\n")
+
+
+def _run_auto(repo: Path, *args: str, db: tuple[str, ...] = (), **env: str) -> subprocess.CompletedProcess[str]:
+    base = {k: v for k, v in _ENV.items() if k.upper() not in _R8_VARS}
+    env = {"PREMERGE_MERGE_TEST": "auto", "PREMERGE_AFFECTED_CMD": "", "PREMERGE_RERUN_CMD": "true",
+           "PREMERGE_PY": "python3", "PREMERGE_NOW": str(_at(10, 0)),
+           **{v: "postgresql://stub/r8" for v in db}, **env}
+    return subprocess.run([_BASH, SCRIPT.as_posix(), *args], cwd=repo, capture_output=True,
+                          text=True, encoding="utf-8", env={**base, **env}, timeout=170)
+
+
+def _picker_lists(*files: str) -> str:
+    """A stub picker that prints these test files (CRLF) and puts none in the first tier."""
+    out = "".join(f"{f}\\r\\n" for f in files)
+    return ("import sys\na = sys.argv\nout = lambda flag: a[a.index(flag) + 1]\n"
+            "open(out('--first-out'), 'w').write('0\\n')\n"
+            "open(out('--note-out'), 'w').write('')\n"
+            f"sys.stdout.buffer.write(b'{out}')\n")
+
+
+def _stub_r8(repo: Path, body: str = _R8_LIST) -> None:
+    (repo / "scripts").mkdir(exist_ok=True)
+    (repo / "scripts" / "affected_tests.py").write_text(body, encoding="utf-8")
+    _git(repo, "add", "scripts/affected_tests.py")
+    _git(repo, "commit", "-q", "-m", "affected_tests stub")
+
+
+def _auto_stubs(repo: Path, *picked: str, r8: str = _R8_LIST) -> Path:
+    """The stub picker and the stub --r8 on the branch. It gives the fake pytest to pass."""
+    _stub_picker(repo, _picker_lists(*picked))
+    _stub_r8(repo, r8)
+    return _fake_pytest(repo)
+
+
+def _pytest_ran(repo: Path) -> str:
+    log = repo.parent / "pytest-args"
+    return log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+def test_auto_runs_step_4_for_a_migration_of_the_pr(repo):
+    """Fence 1. M alone needs no database: the picker's list holds no R8 suite."""
+    fake = _auto_stubs(repo, _PLAIN)
+    _commit(repo, "infra/postgres/316_x.sql")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "auto: migration infra/postgres/316_x.sql" in res.stdout
+    assert f"{_PLAIN}|" in _pytest_ran(repo) and "stage tests:" in res.stdout
+    assert _SKIP_LINE not in res.stdout
+
+
+def test_auto_runs_step_4_for_a_migration_of_main(repo):
+    """Fence 2. The migration is on the main side only."""
+    fake = _auto_stubs(repo, _PLAIN)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "auto: migration infra/postgres/316_other.sql" in res.stdout
+    assert f"{_PLAIN}|" in _pytest_ran(repo)
+
+
+def test_auto_runs_step_4_for_an_r8_suite_with_the_database_exported(repo):
+    """Fence 3. The CRLF of the stub --r8 is stripped, so the suite matches."""
+    fake = _auto_stubs(repo, _PLAIN, _R8_SUITE)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, db=_R8_VARS, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"auto: R8 suite {_R8_SUITE}" in res.stdout and "auto: migration" not in res.stdout
+    assert f"{_R8_SUITE}|" in _pytest_ran(repo)
+
+
+@pytest.mark.parametrize("with_migration", [False, True], ids=["r8-only", "migration-and-r8"])
+@pytest.mark.parametrize("exported", _R8_VARS)
+def test_auto_fails_on_an_r8_suite_with_one_database_variable_unset(repo, exported, with_migration):
+    """Fence 4. Each variable alone is not enough. M does not lift the rule: --r8 runs for
+    every behind merge, so the rule holds also when the PR adds a migration."""
+    fake = _auto_stubs(repo, _R8_SUITE)
+    _commit(repo, "infra/postgres/316_x.sql" if with_migration else "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, db=(exported,), PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert _DB_FAIL in res.stderr
+    missing = next(v for v in _R8_VARS if v != exported)
+    assert f"auto: not exported: {missing}" in res.stdout
+    assert _pytest_ran(repo) == "", "no test may run when the R8 suites would skip"
+
+
+def test_auto_with_a_test_override_counts_r_as_true(repo):
+    """7b.9: PREMERGE_AFFECTED_CMD set, R counts as true. So the database rule applies."""
+    _both_sides_change_shared(repo)
+    marker = repo.parent / "affected-ran"
+    res = _run_auto(repo, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 1 and _DB_FAIL in res.stderr and not marker.exists()
+    res = _run_auto(repo, db=_R8_VARS, PREMERGE_AFFECTED_CMD=f"touch {marker.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert marker.exists() and "auto: R8 suite (PREMERGE_AFFECTED_CMD is set" in res.stdout
+
+
+def test_auto_skips_step_4_with_no_migration_and_no_r8_suite(repo):
+    """Fence 5. The list is not empty, so only auto keeps pytest from running."""
+    fake = _auto_stubs(repo, _PLAIN)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert _SKIP_LINE in res.stdout and "PASS" in res.stdout
+    assert _pytest_ran(repo) == "", "step 4 ran with neither M nor R"
+    assert "auto: migration" not in res.stdout and "auto: R8 suite" not in res.stdout
+
+
+def test_auto_always_runs_the_type_check(repo):
+    """Fence 6. Front-end files on both sides: the type check runs, and step 4 does not."""
+    _frontend_pair(repo)
+    fake = _auto_stubs(repo, _PLAIN)
+    marker = repo.parent / "tsc-ran"
+    res = _run_auto(repo, PREMERGE_TSC_CMD=f"touch {marker.as_posix()}",
+                    PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert marker.exists() and "type check passed" in res.stdout
+    assert _SKIP_LINE in res.stdout and _pytest_ran(repo) == ""
+
+
+def test_auto_fails_when_the_picker_hits_its_cap(repo):
+    """Fence 7, the time-out case."""
+    _stub_picker(repo, "import time\ntime.sleep(60)\n")
+    _stub_r8(repo)
+    fake = _fake_pytest(repo)
+    _advance_main(repo, "infra/postgres/316_other.sql")
+    res = _run_auto(repo, db=_R8_VARS, PREMERGE_PICKER_TIMEOUT="20",
+                    PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 1, res.stdout
+    assert "the picker hit its cap of 20 s with no verdict" in res.stderr
+    assert _pytest_ran(repo) == ""
+
+
+def test_auto_fails_with_no_picker(repo):
+    """Fence 7, the absent case."""
+    _stub_r8(repo)
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, db=_R8_VARS)
+    assert res.returncode == 1, res.stdout
+    assert "auto: scripts/premerge_select.py is not in the merge result" in res.stderr
+
+
+@pytest.mark.parametrize(("body", "said"), [
+    ("import sys\nsys.exit(3)\n", "`affected_tests.py --r8` failed (exit 3"),
+    ("import sys\nsys.stdout.buffer.write(b'\\r\\n')\n", "`affected_tests.py --r8` printed no file"),
+    ("import time\ntime.sleep(60)\n", "`affected_tests.py --r8` hit its cap of 5 s"),
+], ids=["fails", "no-file", "cap"])
+def test_auto_fails_when_the_r8_list_gives_no_answer(repo, body, said):
+    """Fence 8, three cases. Each FAILs and names the command. No test runs after it."""
+    fake = _auto_stubs(repo, _PLAIN, r8=body)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, db=_R8_VARS, PREMERGE_R8_TIMEOUT="5",
+                    PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert said in res.stderr
+    assert _SKIP_LINE not in res.stdout and _pytest_ran(repo) == ""
+
+
+def test_auto_with_a_head_that_holds_main_exits_at_once(repo):
+    """Fence 9. The early exit comes before every auto step."""
+    _commit(repo, "infra/postgres/316_feat.sql")
+    res = _run_auto(repo)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "Merge now" in res.stdout and "auto:" not in res.stdout + res.stderr
+
+
+def test_auto_with_both_sides_full_and_a_migration_runs_the_changed_tests(repo):
+    """Fence 10. FULL is no trigger of its own. M is, and step 4 runs the changed tests."""
+    fake = _auto_stubs(repo, "FULL", "tests/unit/test_changed.py")
+    _commit(repo, "infra/postgres/316_x.sql")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_PYTEST_CMD=f"bash {fake.as_posix()}")
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "auto: migration infra/postgres/316_x.sql" in res.stdout
+    assert "UNPROVEN in part. Both sides changed a file" in res.stdout
+    assert "tests/unit/test_changed.py|" in _pytest_ran(repo)
+
+
+def test_the_last_mode_flag_wins(repo):
+    """Fence 11. The default and --no-tests keep their tests above, unchanged."""
+    _auto_stubs(repo, _PLAIN)
+    _commit(repo, "a_feat.py")
+    _advance_main(repo, "other.py")
+    no_tests = "did not run (PREMERGE_MERGE_TEST=0 or --no-tests)"
+    for args, mode in ((("--auto-tests", "--no-tests"), "1"), (("--no-tests",), "auto")):
+        res = _run_auto(repo, *args, PREMERGE_MERGE_TEST=mode, PREMERGE_PYTEST_CMD="false")
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert no_tests in res.stdout and "auto:" not in res.stdout, args
+    for args, mode in ((("--no-tests", "--auto-tests"), "1"), (("--auto-tests",), "0")):
+        res = _run_auto(repo, *args, PREMERGE_MERGE_TEST=mode, PREMERGE_PYTEST_CMD="false")
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert _SKIP_LINE in res.stdout and no_tests not in res.stdout, args
+    res = _run_auto(repo, "--auto-tests", "--with-tests", PREMERGE_PYTEST_CMD="true")
+    assert "auto:" not in res.stdout and "running the tests both sides can affect" in res.stdout
+
+
+def test_auto_with_step_4_at_its_cap_is_unproven(repo):
+    """Fence 12. A cap hit at the step's own cap is UNPROVEN with exit 0, as the default."""
+    _auto_stubs(repo, _PLAIN)
+    slow = _bash_stub(repo, "slow_pytest.sh", "sleep 30\n")
+    _commit(repo, "infra/postgres/316_x.sql")
+    _advance_main(repo, "other.py")
+    res = _run_auto(repo, PREMERGE_TEST_TIMEOUT="1", PREMERGE_PYTEST_CMD=slow)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "UNPROVEN. The affected tests passed no verdict in 1s" in res.stdout
+
+
+def test_auto_fails_with_no_picker_where_the_default_passes(repo):
+    """Fence 13. The default says UNPROVEN and exits 0. auto is stricter."""
+    _stub_r8(repo)
+    _advance_main(repo, "other.py")
+    default = _run(repo, PREMERGE_AFFECTED_CMD="")
+    assert default.returncode == 0, default.stdout + default.stderr
+    assert "UNPROVEN. scripts/premerge_select.py is not in the merge result" in default.stdout
+    res = _run_auto(repo, db=_R8_VARS)
+    assert res.returncode == 1, res.stdout
+    assert "auto: scripts/premerge_select.py is not in the merge result" in res.stderr

@@ -755,7 +755,7 @@ cannot drift.
 **Status: ACTIVE spec. Live in the release of 2026-11-27 05:30 UTC (f4205e60d):
 LBB-2, the claim gate, dark (task 4041, both flags empty, no flip); LBB-4
 (task 4042); LBB-3a (task 4043); LBB-1a (task 4044); LBB-6a (task 4045). Not
-built: LBB-1b, LBB-3b, LBB-6b. LBB-5a has a spec (§7b.9).** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
+built: LBB-1b, LBB-3b, LBB-6b. LBB-5a is built, not merged (§7b.9), and the default is unchanged.** Each slice ships dark when it is built. Epic: WS-CIV task 1628.
 Spec task: 4040 (LBB-0). Part A, the backlog itself, is task 4019 (lane-land)
 and task 4039 (pc-land-core). `ci_velocity.md` points here.
 
@@ -1456,7 +1456,9 @@ PYTEST_ADDOPTS="-o timeout_method=thread" uv run pytest -p no:cacheprovider   te
 
 ### 7b.9 LBB-5a: the merge test runs only where the merge adds the most risk (task 4046)
 
-**Status.** Spec, 2026-11-27. The owner chose "build auto now, default
+**Status.** BUILT, 2026-11-27, on branch `lbb5-merge-test-auto-mt-9dfb928d`,
+not merged. The default stays `1`, and no merger uses `auto` yet.
+Spec, 2026-11-27. The owner chose "build auto now, default
 unchanged; mergers may switch from --no-tests to auto" on task 4046 (answer
 a5af3552, 06:59 UTC). Tier HIGH: the merge path.
 
