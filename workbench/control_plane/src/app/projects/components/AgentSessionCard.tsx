@@ -228,7 +228,7 @@ function MapBody({
       <span className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{workLine(session, nowMs)}</span>
         {session.host ? (
-          <span className="max-w-[40%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground" data-agent-machine="">
+          <span className="max-w-[50%] shrink-0 truncate rounded bg-secondary px-1 text-[11px] text-muted-foreground" data-agent-machine="">
             {session.host}
           </span>
         ) : null}

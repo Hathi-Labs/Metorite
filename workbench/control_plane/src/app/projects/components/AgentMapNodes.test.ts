@@ -11,7 +11,7 @@ import { buildLensModel } from "../lib/agentLenses";
 import { splitFleet } from "../lib/agentLensesFixtures";
 import { NEW_VIEW } from "../lib/agentScale";
 import { AgentDetails } from "./AgentDetails";
-import { GraphCard, NODE_MOVE } from "./AgentGraphLens";
+import { GraphCard, NODE_MOVE, readingOrder } from "./AgentGraphLens";
 
 const NOW = Date.parse("2026-11-26T12:00:00Z");
 const model = buildLensModel(splitFleet(), new Map(), { email: "ana@x.test" });
@@ -86,6 +86,16 @@ describe("the node cards of the map", () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(out.indexOf("data-agent-card-foot")).toBeLessThan(out.lastIndexOf("data-agent-sub-count"));
+  });
+  it("gives the tab stops column by column, from the scope to the agents", () => {
+    expect(readingOrder(graph.nodes)[0].id).toBe("root");
+    expect(readingOrder(graph.nodes).map((n) => n.x)).toEqual(graph.nodes.map((n) => n.x).sort((a, b) => a - b));
+  });
+  it("says a state node count once", () => {
+    const sessions = model.sessions.filter((s) => s.state === "done");
+    const bucket: GraphNode = { id: "k", kind: "bucket", person: "a", state: "done", sessions, next: 0, x: 0, y: 0, w: 1, h: 1 };
+    const out = renderToStaticMarkup(createElement(GraphCard, { data: data(bucket) }));
+    expect(text(out).match(/\+\d+/g)).toEqual([`+${sessions.length}`]);
   });
   it("moves a node in 200 ms, and not with reduced motion (G4)", () => {
     expect(NODE_MOVE).toContain("duration-200");

@@ -222,6 +222,12 @@ describe("the bound of the map", () => {
     expect(cards(g).filter((id) => id.startsWith("ana")).length).toBe(CARDS_MAX);
     expect(kind(g, "person").find((n) => n.person === "ben@x.test")!.folded).toBe(true);
   });
+  it("fills the canvas group by group, so an orchestrator keeps its agents", () => {
+    const g = layoutGraph(buildLensModel(workingFleet(500)), options({ person: "ana@x.test" }));
+    const orchs = kind(g, "orch");
+    expect(orchs.length).toBeLessThanOrEqual(5);
+    expect(kind(g, "session").length).toBeGreaterThan(30);
+  });
   it("draws the state node of AMR-4 for one person past 40", () => {
     const g = layoutGraph(of({ ana: 55 }), options());
     expect(cards(g)).toHaveLength(CARDS_MAX);

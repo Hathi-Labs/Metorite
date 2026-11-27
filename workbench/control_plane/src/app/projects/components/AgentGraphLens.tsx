@@ -364,6 +364,10 @@ function FlowNode({ data }: NodeProps<Node<NodeData>>) {
 }
 
 const NODE_TYPES = { agentGraph: FlowNode };
+/** The order of the tab stops: column by column, from the top, as the map reads. */
+export function readingOrder<N extends { x: number; y: number }>(nodes: readonly N[]): N[] {
+  return [...nodes].sort((a, b) => a.x - b.x || a.y - b.y);
+}
 /** The move of a node to its new place (decision G4). */
 export const NODE_MOVE = "transition-transform duration-200 ease-out motion-reduce:transition-none";
 const MIN_ZOOM = 0.3;
@@ -475,6 +479,32 @@ function KeepSelected({ box, graph, selectedId }: { box: React.RefObject<HTMLDiv
     }, 80);
     return () => window.clearTimeout(timer);
   }, [box, selectedId, getViewport, setViewport]);
+  return null;
+}
+
+/**
+ * The sub-agent column opens to the right of the cards. A click that opens it
+ * pans it into view, once. A refresh never moves the view (decision G4).
+ */
+function ShowSubs({ box, graph, sessionId }: { box: React.RefObject<HTMLDivElement | null>; graph: Graph; sessionId: string | null }) {
+  const { getViewport, setViewport } = useReactFlow();
+  const done = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionId === null) {
+      done.current = null;
+      return undefined;
+    }
+    if (done.current === sessionId) return undefined;
+    const column = graph.nodes.find((n) => "sessionId" in n && n.sessionId === sessionId);
+    if (!column) return undefined;
+    const timer = window.setTimeout(() => {
+      done.current = sessionId;
+      const view = getViewport();
+      const next = panToShow(column, view, box.current?.getBoundingClientRect().width ?? 0);
+      if (next !== null) void setViewport({ ...view, x: next });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [box, graph, sessionId, getViewport, setViewport]);
   return null;
 }
 
@@ -593,7 +623,7 @@ export function AgentGraphLens({ model, options, selectedId, nowMs, subs = null,
   );
   const nodes: Node<NodeData>[] = useMemo(
     () =>
-      graph.nodes.map((node) => ({
+      readingOrder(graph.nodes).map((node) => ({
         id: node.id,
         type: "agentGraph",
         position: { x: node.x, y: node.y },
@@ -689,6 +719,7 @@ export function AgentGraphLens({ model, options, selectedId, nowMs, subs = null,
           <ZoomWatch onChange={setNamesOnly} />
           <CenterOn graph={graph} focus={focus} />
           <KeepSelected box={box} graph={graph} selectedId={selectedId} />
+          <ShowSubs box={box} graph={graph} sessionId={subs?.sessionId ?? null} />
           {legend ? <Legend /> : null}
           <Controls legend={legend} onLegend={() => setLegend((v) => !v)} />
         </ReactFlow>

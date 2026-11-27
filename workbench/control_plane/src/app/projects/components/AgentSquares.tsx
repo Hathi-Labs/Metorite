@@ -43,11 +43,14 @@ export function Squares({
   nowMs,
   onPick,
   max = SQUARES_MAX,
+  more = true,
 }: {
   sessions: readonly LensSession[];
   nowMs: number;
   onPick?: (session: LensSession) => void;
   max?: number;
+  /** False where the words beside the squares already say the count. */
+  more?: boolean;
 }) {
   const rest = sessions.length - Math.min(sessions.length, max);
   return (
@@ -73,7 +76,7 @@ export function Squares({
           <Square state={s.state} />
         </span>
       ))}
-      {rest > 0 ? <span className="text-[11px] text-muted-foreground">+{rest}</span> : null}
+      {more && rest > 0 ? <span className="text-[11px] text-muted-foreground">+{rest}</span> : null}
     </span>
   );
 }
@@ -162,7 +165,7 @@ export function BucketRow({
       className="flex h-full min-h-10 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-lg border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground hover:bg-secondary"
     >
       <span className="min-w-0 flex-1 overflow-hidden">
-        <Squares sessions={sessions} nowMs={nowMs} max={max} onPick={onPick} />
+        <Squares sessions={sessions} nowMs={nowMs} max={max} onPick={onPick} more={false} />
       </span>
       <Button
         variant="text"

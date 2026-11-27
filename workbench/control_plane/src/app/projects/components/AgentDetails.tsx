@@ -387,7 +387,7 @@ function PersonDetails({ person, ...props }: DetailsProps & { person: LensPerson
 }
 
 export function AgentDetails(props: DetailsProps) {
-  const { model, selection, nowMs, onSelect } = props;
+  const { model, selection } = props;
   if (selection.kind === "session") {
     const session = model.byId.get(selection.id);
     return session ? <SessionDetails key={session.id} {...props} session={session} /> : null;

@@ -15,16 +15,14 @@
  *  - `dispatch` neutral, with an arrow: one agent dispatched another.
  */
 import {
-  type LensGroup,
   type LensModel,
   type LensSession,
   type LensState,
   type SubRow,
-  LENS_STATES,
   matchesFind,
   membersOf,
 } from "./agentLenses";
-import { type PlanOptions, SUB_ROWS_MAX, isActive, personNodeId, planMap, sessionNodeId } from "./agentScale";
+import { type PlanOptions, SUB_ROWS_MAX, isActive, orderGroups, personNodeId, planMap, sessionNodeId } from "./agentScale";
 
 export type GraphNode = { id: string; x: number; y: number; w: number; h: number } & (
   /** The scope: everyone, or one person. */
@@ -75,13 +73,13 @@ export interface OpenSubs {
 }
 
 /** The four columns, left to right. They never move, so a refresh keeps each node in place. */
-export const GRAPH_X = { root: 0, person: 206, orch: 456, session: 716 } as const;
-export const GRAPH_W = { root: 170, person: 214, orch: 224, session: 280, sub: 240 } as const;
-export const GRAPH_H = { root: 96, person: 72, card: 116, orch: 76, session: 82, row: 40, sub: 30 } as const;
+export const GRAPH_X = { root: 0, person: 166, orch: 388, session: 626 } as const;
+export const GRAPH_W = { root: 142, person: 206, orch: 214, session: 264, sub: 230 } as const;
+export const GRAPH_H = { root: 96, person: 72, card: 130, orch: 76, session: 82, row: 40, sub: 30 } as const;
 export const ROOT_ID = "root";
 /** The space between the agents and the next column. */
-export const COLUMN_GAP = 40;
-/** The lowest top of the root: two cards down, so the first view holds it. */
+export const COLUMN_GAP = 32;
+/** How far below the top of what it holds a node may sit, so the first view holds it. */
 const ROOT_LOWEST = 140;
 const GAP = 10;
 const PERSON_GAP = 24;
@@ -123,19 +121,6 @@ function placeSubs(
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /**
- * The groups of a person (decision G4): the orchestrators by urgency, then the
- * oldest first. The agents with no orchestrator come last. Only a change of a
- * state moves a group.
- */
-export function orderGroups(groups: readonly LensGroup[]): LensGroup[] {
-  const urgency = (g: LensGroup) => Math.min(...membersOf(g).map((s) => LENS_STATES.indexOf(s.state)));
-  return [...groups].sort((a, b) => {
-    if (!a.orch || !b.orch) return Number(!a.orch) - Number(!b.orch);
-    return urgency(a) - urgency(b) || b.orch.startedAge - a.orch.startedAge || a.key.localeCompare(b.key);
-  });
-}
-
-/**
  * The one map of the Agents view (AMR-5): the scope, each person, their
  * orchestrators, their agents and the sub-agents of the one open agent.
  * `planMap` bounds the cards. A fold, a state node and the "idle or done" node
@@ -166,7 +151,6 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   /** The sessions that draw their own card. */
   const own = new Set<string>();
   const centers: number[] = [];
-  let subsOpen = false;
   let y = 0;
 
   for (const plan of rootFolded ? [] : plans) {
@@ -189,7 +173,6 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
       if (!mine) link(holder, id, "tree");
       const centre = y + (GRAPH_H.session * u) / 2;
       const bottom = placeSubs(graph, subs, s, { x: subX, top: y, u });
-      if (bottom > y) subsOpen = true;
       y = Math.max(y + (GRAPH_H.session + GAP) * u, bottom + (GAP - 6) * u);
       return centre;
     };
@@ -210,7 +193,9 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
         const tall = GRAPH_H.orch * u;
         let top = from;
         if (inGroup.length > 0) {
-          top = Math.max((inGroup[0] + inGroup[inGroup.length - 1]) / 2 - tall / 2, from);
+          // A tall group keeps its card near its top, where the view is.
+          const centred = (inGroup[0] + inGroup[inGroup.length - 1]) / 2 - tall / 2;
+          top = Math.max(Math.min(centred, from + ROOT_LOWEST * u), from);
         }
         const members = membersOf(group).filter((s) => matchesFind(s, find, nameOf(s.person)));
         const hidden = members.filter((s) => s.id !== orch.id && !plan.shown.has(s.id)).length;
@@ -228,10 +213,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
         // A short group must not let the tall orchestrator overlap what follows.
         y = Math.max(y, top + tall + GAP * u);
         const bottom = placeSubs(graph, subs, orch, { x: subX, top: Math.max(top, from), u });
-        if (bottom > top) {
-          subsOpen = true;
-          y = Math.max(y, bottom + (GAP - 6) * u);
-        }
+        if (bottom > top) y = Math.max(y, bottom + (GAP - 6) * u);
       }
       const row = (node: DistributiveOmit<GraphNode, "x" | "y" | "w" | "h">) => {
         put(node, sessionX * u, GRAPH_W.session, GRAPH_H.row, y);
@@ -264,7 +246,7 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
       for (const s of plan.sessions) rep.set(s.id, pid);
     }
     const middle = kids.length > 0 ? (Math.min(...kids) + Math.max(...kids)) / 2 : blockTop + h / 2;
-    const top = Math.max(middle - h / 2, blockTop);
+    const top = Math.max(Math.min(middle - h / 2, blockTop + ROOT_LOWEST * u), blockTop);
     put(
       {
         id: pid,
@@ -301,7 +283,6 @@ export function layoutGraph(model: LensModel, options: GraphOptions): Graph {
   });
 
   // The dispatch lines, between whatever stands for each end.
-  const place = new Map(nodes.map((n) => [n.id, n]));
   for (const s of inScope) {
     const to = rep.get(s.id);
     if (!to) continue;

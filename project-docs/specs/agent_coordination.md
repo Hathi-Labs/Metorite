@@ -888,7 +888,7 @@ The owner approved two mockups on 2026-11-26: a new Agents view, and a simpler p
 This replaces some rules of 2026-11-26. They are the Board, Graph and List switch, the state chips and the Waits-on toggle. They are also the overview tiles, the levels and the breadcrumb. It also replaces the scale mockup `scale.html`. Do not bring them back.
 
 - **One view.** The Agents canvas draws one map. The question that it answers: how the work splits across people, their agents and their subagents, and what needs the member.
-- **One toolbar, one row.** People (Everyone, Me, then each person), one switch (Active or All) and Find. "Needs you N" with a step back and next sits at the right, and only when a question waits. It holds no other control.
+- **One toolbar, one row.** People (Everyone, Me, then each person), one switch (Active or All) and Find. "Needs you N" with a step back and next sits at the right, and only when a question waits. It holds no other control. In a narrow column, as with the dock open, the switch and "Needs you" hide their words. Each control keeps its word as its accessible name.
 - **Active or All.** Active shows Needs you, Failed, Working and Waiting. It is the default. All adds Idle and Done. "Done" is the word of the ended state `completed`. Its look is the key `lens_done` of `statusAccent.ts`. So a `completed` run keeps its gray chip on every other surface. The test `AgentRepairs.test.ts` holds that rule.
 - **Four columns.** Left to right: the scope, the person, the orchestrator and the agent (a session). The subagents of one open agent add a column. The columns never move.
 - **The counts.** The scope node reads "Everyone" or the person. It counts the agents, the active ones, the ones that need the member and the subagents. Each level shows its own counts.
@@ -915,6 +915,7 @@ This replaces some rules of 2026-11-26. They are the Board, Graph and List switc
 The owner asked on 2026-11-26 that the view of §3.12.8 stays usable with hundreds of sessions. **Owner, 2026-11-27 (task 4097):** the overview tiles, the levels and the toolbar rule of 2026-11-26 are gone. The map folds in place. The flag `AGENT_LENSES_ORGS` keeps these rules dark too. Where this section and §3.12.8 differ, this section wins.
 
 - **The bound.** The canvas draws at most 40 agent cards, the orchestrators included. The pure function `planMap` (`lib/agentScale.ts`) holds this rule.
+- **Group by group.** Inside one state, a person's cards fill one group after the other, so an orchestrator keeps its agents on the canvas.
 - **Urgency wins (G3).** While the cap has room, a Needs you or Failed agent never folds. The rest fold in this order: Done, Idle, Waiting, Working. Inside one state, the people with the most agents fold first. A person with no card left draws as their folded card.
 - **The click.** The person that the member opened last takes the room first, after each urgent agent. That person keeps room for at least 12 cards.
 - **The state nodes.** A person whose agents do not all fit draws one node for each state of the rest, "+N working". A click draws the next agents of that state, and walks on to the next ones. So the member reaches every agent by clicks.

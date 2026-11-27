@@ -68,6 +68,11 @@ export const NO_AGENT_WORKS = "No agent works now.";
 export const MAP_DRAWN_MARK = "agents-view:map-drawn";
 export const MAP_MEASURE = "agents-view:first-map";
 
+/**
+ * One row with the dock open too: in a narrow column the switch keeps its icons
+ * and hides its words. A hidden word stays the name of its control.
+ */
+const MODE_WORD = "@max-[32rem]:sr-only";
 /** The phone view takes over at this width (the owner's mockup). */
 export const PHONE_QUERY = "(max-width: 760px)";
 /** The dock stands beside the lens from this width. Under it, the details are a `Modal`. */
@@ -466,10 +471,10 @@ export function AgentLenses({
     <div data-agent-lenses="map" className="flex h-full min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="@container shrink-0 border-b border-border">
-          <div role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2">
+          <div role="toolbar" aria-label="Agent filters" className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2 @max-[32rem]:gap-x-1">
             <SelectButton
               label={PEOPLE_LABEL}
-              widthClass="w-36 @max-[36rem]:w-28"
+              widthClass="w-36 @max-[40rem]:w-28 @max-[24rem]:w-24"
               value={choice}
               defaultValue=""
               onChange={(who) => {
@@ -491,8 +496,9 @@ export function AgentLenses({
                 setView((old) => ({ ...old, window: null }));
               }}
               label={MODE_SWITCH_LABEL}
+              labelClass={MODE_WORD}
             />
-            <div className="min-w-24 max-w-64 flex-1 basis-32">
+            <div className="min-w-16 max-w-64 flex-1 basis-16">
               <Input
                 inputSize="sm"
                 icon="Search"
@@ -514,7 +520,7 @@ export function AgentLenses({
                 <Button variant="ghost" size="sm" onClick={() => goQuestion(0)}>
                   <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                     <Icon name={lensIcon("you")} size={14} className="text-warning" aria-hidden />
-                    {NEEDS_YOU} {stops.length}
+                    <span className="@max-[32rem]:sr-only">{NEEDS_YOU}</span> {stops.length}
                   </span>
                 </Button>
                 <Button

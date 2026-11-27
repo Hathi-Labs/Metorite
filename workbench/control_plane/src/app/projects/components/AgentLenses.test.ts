@@ -47,6 +47,8 @@ describe("the toolbar (AMR-5)", () => {
   it("holds People, Active or All, and Find, and no other control", () => {
     const out = toolbar(lenses());
     expect(words(out)).toEqual(["Everyone", "Active", "All"]);
+    // In a narrow column the words of the switch hide, and stay its names.
+    expect(out).toContain('<span class="@max-[32rem]:sr-only">Active</span>');
     expect(out).toContain('aria-label="Agents shown"');
     expect(out).toContain('aria-label="Find a session, task or subagent"');
     expect(out).toContain("People");
@@ -68,7 +70,7 @@ describe("the toolbar (AMR-5)", () => {
     expect(lenses()).not.toContain("data-agent-question-pager");
     const source = readFileSync(new URL("./AgentLenses.tsx", import.meta.url), "utf-8");
     expect(source).toContain("{stops.length > 0 ? (");
-    expect(source).toContain("{NEEDS_YOU} {stops.length}");
+    expect(source).toContain('<span className="@max-[32rem]:sr-only">{NEEDS_YOU}</span> {stops.length}');
     for (const way of ["goQuestion(-1)", "goQuestion(1)"]) expect(source).toContain(way);
   });
   it("opens the legend from one button, and keeps it shut at the start", () => {

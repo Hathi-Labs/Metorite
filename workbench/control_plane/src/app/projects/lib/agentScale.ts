@@ -11,6 +11,7 @@
  */
 import {
   type LensCounts,
+  type LensGroup,
   type LensModel,
   type LensPerson,
   type LensSession,
@@ -21,6 +22,7 @@ import {
   compareSessions,
   countStates,
   matchesFind,
+  membersOf,
   personSessions,
 } from "./agentLenses";
 
@@ -167,6 +169,19 @@ interface Draft {
   quiet: LensSession[] | null;
 }
 
+/**
+ * The groups of a person (decision G4): the orchestrators by urgency, then the
+ * oldest first. The agents with no orchestrator come last. Only a change of a
+ * state moves a group.
+ */
+export function orderGroups(groups: readonly LensGroup[]): LensGroup[] {
+  const urgency = (g: LensGroup) => Math.min(...membersOf(g).map((s) => LENS_STATES.indexOf(s.state)));
+  return [...groups].sort((a, b) => {
+    if (!a.orch || !b.orch) return Number(!a.orch) - Number(!b.orch);
+    return urgency(a) - urgency(b) || b.orch.startedAge - a.orch.startedAge || a.key.localeCompare(b.key);
+  });
+}
+
 function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   const { mode, find, nameOf, folds, restOpen, pin } = options;
   const q = find.trim();
@@ -178,7 +193,10 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   const wanted: LensSession[] = [];
   const holder = new Map<string, LensSession>();
   const quiet: LensSession[] = [];
-  for (const group of person.groups) {
+  /** The place of each session among the groups of the person (decision G4). */
+  const placeOf = new Map<string, number>();
+  for (const [place, group] of orderGroups(person.groups).entries()) {
+    for (const s of membersOf(group)) placeOf.set(s.id, place);
     const orch = group.orch;
     const folded = orch !== null && !q && folds.get(sessionNodeId(orch.id)) === false;
     const lanes = group.sessions.filter(visible);
@@ -200,8 +218,14 @@ function draftOf(person: LensPerson, options: PlanOptions): Draft | null {
   return {
     person: person.person,
     sessions: matches,
-    // By state, then name. Never by the last event, so an activity moves no card.
-    ranked: [...wanted].sort(compareSessions),
+    // By state, then by group, then by name. So the bound keeps an orchestrator
+    // with its agents. Never by the last event, so an activity moves no card.
+    ranked: [...wanted].sort(
+      (a, b) =>
+        LENS_STATES.indexOf(a.state) - LENS_STATES.indexOf(b.state) ||
+        placeOf.get(a.id)! - placeOf.get(b.id)! ||
+        compareSessions(a, b),
+    ),
     holder,
     cards: wanted.length,
     open,
