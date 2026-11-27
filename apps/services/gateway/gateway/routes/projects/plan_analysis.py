@@ -63,6 +63,7 @@ SELECT t.id, t.parent_task_id, s.category, t.estimate_mins,
        CASE WHEN ({visible}) THEN t.title END AS title,
        t.importance, t.leveraged, t.due_at,
        ty.name AS type_name,
+       (t.description IS NOT NULL AND btrim(t.description) <> '') AS has_desc,
        (SELECT min(a.assignee) FROM pm_task_assignees a
          WHERE a.task_id = t.id) AS owner,
        ({visible}) AS vis
@@ -153,6 +154,7 @@ async def compute_plan(db: Any, vis: Any, root: str, start: date | None = None) 
             type=r.type_name,
             parent=str(r.parent_task_id) if r.parent_task_id and str(r.id) != root else None,
             priority_rank=_rank(r),
+            done_when=bool(r.has_desc),
         )
         for r in rows
         if r.vis and (str(r.id) not in parents or str(r.id) in visible_parents)

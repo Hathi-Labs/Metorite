@@ -13,15 +13,18 @@ from typing import Any, NamedTuple
 from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
-from acb_common import honorifics
+from acb_common import honorifics, member_actions
 from acb_llm.context import StreamTimeout
 from acb_llm.voice import voice_prompt
+from acb_skills.card_revise import draft_digest, draft_files_digest
 from acb_skills.untrusted import UntrustedFrame
 from email_ingestion.llm_cap import automation_job, llm_slot
 from email_ingestion.persist import TRUNCATION_MARKER
 from email_ingestion.providers.base import (
     ProviderAttachmentFailed,
+    ProviderDidNotAnswer,
     ProviderMailTooLarge,
+    trash_checked,
 )
 from email_ingestion.providers.gmail import GmailDraftNotFound, GmailProvider
 from fastapi import BackgroundTasks, Depends, HTTPException
@@ -58,6 +61,8 @@ from gateway.routes.email.core import (
     _fmt_addr_list,
     _llm_json,
     _log,
+    _persist_rotated_creds,
+    _provider_for_message,
     _row_to_message,
     _savepoint,
     _tenant_session,
@@ -66,6 +71,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_ids_sql
 from gateway.routes.email.memory_purge import writable_memory_scope
 from gateway.routes.email.quoting import split_quoted_text
 from gateway.routes.email.signature import (
@@ -529,7 +535,8 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             if not wrote:
                 return
             rows = (await db.execute(text(
-                "SELECT id, provider_message_id, body_text FROM email_messages "
+                "SELECT id, provider_message_id, internet_message_id, body_text "
+                "FROM email_messages "
                 "WHERE account_id = :aid AND thread_id = :tid "
                 "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')"
             ), {"aid": account_id, "tid": thread_id})).fetchall()
@@ -566,8 +573,9 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
             if _fold(_live_draft_text(live)) not in wrote:
                 continue  # the member edited it: keep it
             try:
-                await asyncio.wait_for(
-                    provider.trash_message(r.provider_message_id),
+                await asyncio.wait_for(  # task 4100: the draft's own Message-ID
+                    trash_checked(provider, r.provider_message_id,
+                                  r.internet_message_id),
                     BODY_FETCH_TIMEOUT_S)
             except Exception:  # noqa: BLE001 — one stuck draft: no abort
                 pass
@@ -615,7 +623,8 @@ async def _resolve_existing_thread_draft(
         return "none"
     try:
         row = (await db.execute(text(
-            "SELECT id, provider_message_id, body_text FROM email_messages "
+            "SELECT id, provider_message_id, internet_message_id, body_text "
+            "FROM email_messages "
             "WHERE account_id = :aid AND thread_id = :tid "
             "AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft') "
             "ORDER BY updated_at DESC NULLS LAST, received_at DESC LIMIT 1"
@@ -631,8 +640,9 @@ async def _resolve_existing_thread_draft(
                 _normalize_text(original):
             if not trash:
                 return "replace"
-            try:
-                await provider.trash_message(row.provider_message_id)
+            try:  # task 4100: the draft's own Message-ID, never the thread id
+                await trash_checked(provider, row.provider_message_id,
+                                    row.internet_message_id)
             except Exception:  # noqa: BLE001 — a stuck draft shouldn't abort
                 pass
             await db.execute(text(
@@ -1030,6 +1040,41 @@ def _files_prompt(files: Any, frame: UntrustedFrame) -> tuple[str, list[tuple[st
     return block, list(files.images)
 
 
+#: The copy of a draft that the model could not write (task 3541). Each line
+#: says what happened and what the member does next.
+DRAFT_FAILED_COPY = (
+    "The AI could not write this draft. Your text is kept. Try Draft again "
+    "in a minute. If it fails again, tell your admin."
+)
+DRAFT_UNAVAILABLE_COPY = (
+    "The AI service did not answer, so no draft was written. Your text is "
+    "kept. Try Draft again in a minute."
+)
+
+
+def draft_failure(exc: BaseException) -> tuple[int, str]:
+    """The status and the member's copy for a draft that failed (task 3541).
+
+    Out of credits keeps the Router's own copy, because the member's next
+    step is different: an admin adds credits. An outage and any other
+    failure say to try again. No copy holds the error text, because it can
+    name a vendor, a key or an account.
+    """
+    # `acb_llm.routed`, never `acb_auth.console_resolve`: that module has a
+    # fixed set of callers (`test_console_dependency_boundary.py`).
+    from acb_llm.routed import (  # noqa: PLC0415
+        OUT_OF_CREDITS,
+        RoutedRefusal,
+        is_router_outage,
+    )
+
+    if isinstance(exc, RoutedRefusal) and exc.status == 402:
+        return 402, OUT_OF_CREDITS
+    if is_router_outage(exc):
+        return 503, DRAFT_UNAVAILABLE_COPY
+    return 503, DRAFT_FAILED_COPY
+
+
 async def _llm_draft_reply(
     email: dict[str, str], about: str, signature: str,
     instructions: str = "", context: str = "", user_email: str = "",
@@ -1053,9 +1098,12 @@ async def _llm_draft_reply(
         rule DRAFT_EMAIL action / follow-up nudge simply skips. An outage must
         NOT auto-file a generic "I'll get back to you" draft into the mailbox
         and then feed that boilerplate into the edit-learning loop.
-      * True (interactive paths — the compose box's "Draft with AI"): return a
-        neutral human-editable template so the user who clicked the button has a
-        starting point rather than a silent no-op.
+      * True (interactive paths — the compose box's "Draft with AI"): raise an
+        error that names the cause (task 3541). A stream bound raises its
+        ``StreamTimeout``, and every other failure raises an ``HTTPException``
+        with copy for the member. Before 2026-11-16 this path returned a
+        stock "I'll review this and get back to you shortly" body as if the
+        model wrote it, so a model with no balance looked like a bad draft.
     """
     try:
         from acb_llm.context import acompletion_with_fallback  # noqa: PLC0415
@@ -1188,9 +1236,11 @@ async def _llm_draft_reply(
         )
         files = email.get("_files")
         if on_delta is not None and isinstance(files, DraftFiles) and files.images:
-            # The streamed call goes to litellm with no Router hop, so no
-            # model is chosen for the images (review round 1, P1-c). They
-            # are named as not read instead.
+            # The streamed call sends no images (review round 1, P1-c). With
+            # routing off it goes to litellm with no Router hop. With routing
+            # on it streams from the Router (tasks 3541 and 3542), and neither
+            # slice added a vision task to it. So the images are named as not
+            # read.
             files.unread.extend((n, UNREAD_IMAGE) for n, _u in files.images)
             files.images = []
         # Fit the parts to the window of the tier, or move to a tier with a
@@ -1329,12 +1379,15 @@ async def _llm_draft_reply(
         if interactive_fallback and isinstance(exc, StreamTimeout):
             # EM-T17 PR-A (§17.3.7): a stalled model is not a draft. The
             # member waits at the composer, so the route sends an `error`
-            # with the reason, never the template below. The rule path keeps
-            # the sentinel.
+            # with the reason. The rule path keeps the sentinel.
             raise
         if interactive_fallback:
-            body = ("Hi,\n\nThanks for your email — I'll review this and get "
-                    "back to you shortly.")
+            # Task 3541: a failed model is not a draft either. The member
+            # sees why, and the composer keeps the member's own text. The
+            # SSE route sends `exc.detail` as its `error`, and the JSON route
+            # answers with it.
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         else:
             # Automation path: the sentinel makes the caller skip. Never file a
             # boilerplate draft the user didn't write (and never teach the
@@ -1635,6 +1688,14 @@ async def _llm_compose_assist(
             # watches in the composer, raises it. The route sends an `error`
             # with the reason, and the composer keeps the member's own text.
             raise
+        # Task 3541, review P2. The Router serves this call now, so a refusal
+        # (402: out of credits) or a Router outage can reach it. Each one
+        # names its cause. It never reads as "not confident enough".
+        from acb_llm.routed import RoutedRefusal, is_router_outage  # noqa: PLC0415
+
+        if isinstance(exc, RoutedRefusal) or is_router_outage(exc):
+            status, detail = draft_failure(exc)
+            raise HTTPException(status_code=status, detail=detail) from exc
         # Fall back to the owner's own text (improve) or a neutral opener (draft).
         return (current_body or "").strip() or DRAFT_NO_DRAFT_SENTINEL
     if _is_no_draft(body):
@@ -2563,12 +2624,21 @@ async def draft_reply_smart(
         # timeout (one specialist agent, short timeout). Interactive → the
         # COMPOSE tier, not the background one. Our code chooses it, and no
         # stored choice changes it (D-EM-61).
-        draft = await _agent_draft_reply(
-            email, about, signature, user.email or "",
-            max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
-            model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
-            interactive_fallback=True, extra_instructions=req.instruction,
-        )
+        try:
+            draft = await _agent_draft_reply(
+                email, about, signature, user.email or "",
+                max_agents=1, agent_timeout=18.0, follow_up=req.follow_up,
+                model=EMAIL_TASK_TIERS["compose"], account_id=req.account_id,
+                interactive_fallback=True, extra_instructions=req.instruction,
+            )
+        except HTTPException:
+            # Task 3541, review P1. A failed model raises here, inside this
+            # session. The body fetch above can rotate an Outlook refresh
+            # token in this same session, and the session rolls back on an
+            # exception. Microsoft revokes the old token on use, so a rollback
+            # would cut the mailbox off. So the session commits first.
+            await db.commit()
+            raise
 
         # Confidence gate (defense-in-depth): if the drafter declined, never
         # persist or surface a literal "NO_DRAFT" body. (Sync requests default to
@@ -2631,6 +2701,10 @@ async def draft_reply_smart(
                         saved_to = list(reply_to or [email["from"]])
                         saved_cc = list(reply_cc or [])
                 # The wrapper's exit commit lands the mirrored local draft.
+            except ProviderDidNotAnswer:
+                # HRD-20: the model reads the provider's words, not a draft
+                # that claims no save. The draft may have landed.
+                raise
             except Exception as exc:  # noqa: BLE001
                 _log.warning("email.draft_reply_create_failed", error=str(exc)[:160])
 
@@ -2841,8 +2915,9 @@ async def _compose_assist_run(
         try:
             # No session stays open over the provider fetch (PR-A1): the
             # loader lists the files in a short session of its own. No
-            # images: the composer streams, and a streamed call has no
-            # Router hop to choose a model that reads them (P1-c).
+            # images: the composer streams, and the streamed call sends no
+            # `vision` task, so the Router does not pick a model that reads
+            # them (P1-c). Neither task 3541 nor task 3542 added one.
             ctx["_files"] = await load_draft_files(
                 None, req.message_id, user, budget_s=COMPOSE_FILES_BUDGET_S,
                 vision=False)
@@ -3403,6 +3478,8 @@ async def _update_provider_draft(
             attachments=attachments or None, exact_to=True,
         )
         try:
+            # Task 4095: no stored Message-ID here, so an IMAP trash raises
+            # (fail closed) and the old draft stays. No mail moves by mistake.
             await provider.trash_message(provider_message_id)
         except Exception:  # noqa: BLE001
             pass
@@ -3573,7 +3650,8 @@ async def _upsert_reply_draft(
 
 #: One draft row of a thread, by its local id.
 _CARD_DRAFT_SQL = (
-    "SELECT id, provider_message_id, body_text FROM email_messages"
+    "SELECT id, provider_message_id, internet_message_id, body_text"
+    " FROM email_messages"
     " WHERE id = CAST(:id AS uuid) AND account_id = :aid AND thread_id = :tid"
     " AND LOWER(COALESCE(folder, '')) IN ('drafts', 'draft')")
 
@@ -3600,9 +3678,111 @@ async def trash_chat_draft(
         return False
     if not await _live_is_chat_text(provider, row.provider_message_id, wrote, sig):
         return False
-    await provider.trash_message(row.provider_message_id)
+    # Task 4100: the draft's own Message-ID. ``thread_id`` names the parent
+    # when the draft has no Message-ID, and the IMAP check must not match it.
+    await trash_checked(provider, row.provider_message_id, row.internet_message_id)
     await db.execute(text("DELETE FROM email_messages WHERE id = :id"), {"id": row.id})
     return True
+
+
+#: Task 3978: the stored copy of one draft, for the live check of the chat.
+_STORED_DRAFT_SQL = (
+    "SELECT account_id, subject, body_text, folder, has_attachments,"
+    " to_addresses, cc_addresses, bcc_addresses FROM email_messages"
+    " WHERE id = CAST(:id AS uuid) AND account_id IN (")
+
+
+def _people_set(values: Any) -> frozenset[str]:
+    """The addresses of a stored list or of a provider list, lower case."""
+    out = set()
+    for a in values or []:
+        mail = a.get("email") if isinstance(a, dict) else getattr(a, "email", a)
+        if str(mail or "").strip():
+            out.add(str(mail).strip().lower())
+    return frozenset(out)
+
+
+def _live_is_stored_draft(live: Any, row: Any, sig: str) -> bool:
+    """True when the provider's live draft *live* is the stored copy *row*:
+    the same text (the fold of :func:`_live_is_chat_text`), the same subject,
+    the same To, Cc and Bcc, and no file on either side (task 3978)."""
+    stored = {k: _addresses_of(getattr(row, k)) for k in
+              ("to_addresses", "cc_addresses", "bcc_addresses")}
+    return (_fold_draft(sig, _live_draft_text(live)) == _fold_draft(sig, row.body_text or "")
+            # Case folds: Outlook's createReply names a reply draft "RE: x",
+            # and the stored copy says "Re: x" until the next sync.
+            and " ".join(str(getattr(live, "subject", "") or "").split()).casefold()
+            == " ".join(str(row.subject or "").split()).casefold()
+            and all(_people_set(getattr(live, k, None)) == _people_set(stored[k])
+                    for k in stored)
+            and not getattr(live, "has_attachments", False) and not row.has_attachments)
+
+
+async def _read_live_draft(provider: Any, provider_message_id: str) -> Any:
+    """The provider's full read of the draft (the read of the sync), or None
+    on a refused sign-in, a failure or a read past the bound. It runs with
+    NO session open (gateway rule: no session across a provider call)."""
+    try:
+        async with asyncio.timeout(BODY_FETCH_TIMEOUT_S):
+            if not await provider.authenticate():
+                return None
+            return await provider.get_message(provider_message_id)
+    except Exception:  # unread or too slow: nothing is trashed
+        return None
+
+
+@router.delete("/chat-drafts/{draft_id}")
+async def trash_chat_draft_live(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> Any:
+    """Trash ONE draft that the chat saved, after a live check (task 3978).
+
+    ``email_app_master_plan.md`` §18.13.1: the member pressed "Delete it" on a
+    card. The email assistant checked the stored copy against the record of
+    the chat. This route then reads the live draft at the provider, with the
+    full read of the sync. It trashes the draft only while the live text,
+    subject, To, Cc and Bcc are those of the stored copy, and neither holds a
+    file. Else it answers 409 and changes nothing: a draft that the member
+    edited at the mailbox stays. A passed check runs the trash of ``DELETE
+    /email/messages/{id}?report=true``, and answers its report. An older
+    gateway has no such route, so the chat never trashes with no check.
+
+    Three blocks, as ``delete_message``: block A reads the row and loads the
+    provider. The read at the provider runs with no session open. Block C
+    saves rotated tokens only. The SQL of block A takes the draft only from a
+    mailbox of the session's member (D-EM-4)."""
+    owner = user.email or "anonymous"
+    if _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    # Block A: the stored copy and the provider, in one short session.
+    async with _tenant_session() as db:
+        row = (await db.execute(text(
+            _STORED_DRAFT_SQL + mailbox_ids_sql(uid="user_id", level="send") + ")"),
+            {"id": draft_id, "user_id": owner})).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        sig = await _account_signature(db, str(row.account_id))
+        provider, pmid, account_id, store = await _provider_for_message(db, draft_id, owner)
+    # The read at the provider, with no session open.
+    live = await _read_live_draft(provider, pmid)
+    # Block C: the tokens that the sign-in rotated. A failure here keeps the check.
+    if provider.credentials_dirty():
+        try:
+            async with _tenant_session() as db:
+                await _persist_rotated_creds(db, store, account_id, provider)
+        except Exception as exc:  # the next sign-in refreshes again
+            _log.warning("email.chat_draft_creds_unsaved", error=type(exc).__name__)
+    ok = (live is not None and str(row.folder or "").lower() in ("drafts", "draft")
+          and _live_is_stored_draft(live, row, sig))
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail=("The draft at the mailbox is not the draft that Metorite holds, or "
+                    "Metorite could not read it there. Nothing was deleted."))
+    from gateway.routes.email.transport.messages import delete_message
+
+    return await delete_message(draft_id, user, report=True)
 
 
 class DraftUpsertRequest(BaseModel):
@@ -3636,6 +3816,60 @@ class DraftUpsertRequest(BaseModel):
     # are normalised before the save. The Email app's composer sends False,
     # so its saves are as before.
     from_chat: bool = False
+    # Task 3605: True when ``body`` is Markdown, as the email assistant writes
+    # it. A draft holds text only, so the save keeps the text part of
+    # ``markdown_mail.mail_bodies``: the Markdown as written, less the bidi
+    # controls. The answer says ``formatting: "text_only"`` when the body had
+    # real structure that the draft does not show.
+    body_markdown: bool = False
+    # HRD-10d-1 (``chat_failure_modes.md`` §6): the email assistant's
+    # ``edit_draft`` sends ``acb_skills.card_revise.draft_digest`` of the read
+    # that its card showed. Only an update by ``draft_id`` reads it. A draft
+    # whose digest differs now gets 412 and no write. None, the default, is
+    # the save of before, so the Email app's composer does not change.
+    expect_digest: str | None = Field(default=None, max_length=64)
+
+
+#: HRD-10d-1: the most characters of the text in the ``current`` of a 412.
+PRECONDITION_TEXT_MAX = 500
+
+
+async def _refuse_changed_draft(db: Any, req: DraftUpsertRequest) -> None:
+    """Answer 412 when the draft changed after the read of ``expect_digest``.
+
+    HRD-10d-1 (``chat_failure_modes.md`` §6). The chat's ``edit_draft`` takes
+    ``draft_digest`` of its ``GET /email/messages/{id}`` read before the card.
+    Here the route reads the row through :func:`_fetch_message_dict`, the same
+    ``_row_to_message`` shape, and folds it with the same function. A row of
+    another mailbox, or a row that is not a draft, gets the 404 of the update,
+    so no 412 shows a message of another mailbox (D-EM-4). The read runs
+    before any provider call, and a 412 writes nothing. It takes no ``FOR
+    UPDATE``, because the route keeps its session open across the provider
+    call. ``current`` holds the subject, the three address lists and the
+    first :data:`PRECONDITION_TEXT_MAX` characters of the text."""
+    row = await _fetch_message_dict(db, str(req.draft_id))
+    same_box = str(row.get("account_id") or "").lower() == str(req.account_id).strip().lower()
+    if (not row or not same_box
+            or str(row.get("folder") or "").lower() not in ("drafts", "draft")):
+        raise HTTPException(status_code=404, detail="Draft not found")
+    if draft_digest(row) == req.expect_digest:
+        return
+    raise HTTPException(status_code=412, detail={
+        "error": "precondition_failed",
+        "message": "This draft changed since the chat read it.",
+        "current": {
+            "subject": str(row.get("subject") or ""),
+            "to": _draft_addresses(row.get("to_addresses") or []),
+            "cc": _draft_addresses(row.get("cc_addresses") or []),
+            "bcc": _draft_addresses(row.get("bcc_addresses") or []),
+            "text": str(row.get("body_text") or "")[:PRECONDITION_TEXT_MAX],
+        },
+    })
+
+
+#: The ``formatting`` key of the answer of a save of a Markdown body that had
+#: formatting (task 3605). The draft holds the text only.
+FORMATTING_TEXT_ONLY = "text_only"
 
 
 #: The ``html`` key of the answer of a Gmail save (EM-G3a-f7, D-G3a-f7-2,
@@ -3733,6 +3967,22 @@ def _chat_draft_text(req: DraftUpsertRequest) -> DraftUpsertRequest:
     return req.model_copy(update={"body": visible_spacing(req.body), "subject": subject})
 
 
+def _markdown_draft_text(req: DraftUpsertRequest) -> tuple[DraftUpsertRequest, dict[str, str]]:
+    """A save of a Markdown body (task 3605): the request with the text part
+    of ``markdown_mail.mail_bodies`` as its body, and the ``formatting`` key
+    of the answer. A draft holds text only, so a body with real structure
+    shows no formatting there, and the answer says so. A save that keeps
+    the stored body does not change."""
+    if not req.body_markdown or req.keep_body:
+        return req, {}
+    from gateway.routes.email.markdown_mail import draft_text
+
+    body, lost = draft_text(req.body)
+    if body != req.body:
+        req = req.model_copy(update={"body": body})
+    return req, ({"formatting": FORMATTING_TEXT_ONLY} if lost else {})
+
+
 @router.put("/drafts")
 async def upsert_draft(
     req: DraftUpsertRequest,
@@ -3748,8 +3998,13 @@ async def upsert_draft(
     _refuse_bad_draft_id(req.draft_id)
     if req.from_chat:
         req = _chat_draft_text(req)
+    req, formatting = _markdown_draft_text(req)
     async with _tenant_session() as db:
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
+        if req.draft_id and req.expect_digest:
+            # HRD-10d-1: before the provider session opens. With no
+            # ``expect_digest`` the route runs the statements of before.
+            await _refuse_changed_draft(db, req)
         # The signature lives IN the draft body so the upstream (provider)
         # draft shows it too. The composer normally seeds it already — this is
         # the idempotent backstop for bodies that arrived without it.
@@ -3859,8 +4114,57 @@ async def upsert_draft(
                 clear_html=gmail and not req.keep_html,
             )
         if gmail:
-            return {**await _fetch_message_dict(db, local_id), "html": html_state}
-        return await _fetch_message_dict(db, local_id)
+            return {**await _fetch_message_dict(db, local_id), "html": html_state,
+                    **formatting}
+        saved = await _fetch_message_dict(db, local_id)
+        return {**saved, **formatting} if formatting else saved
+
+
+async def save_chat_draft(
+    fields: dict[str, Any], user: UserContext, *, thread: str, member: str, org: str,
+    replaces: str = "", act: str = "new_mail",
+    upsert: Callable[[DraftUpsertRequest, UserContext], Awaitable[Any]] | None = None,
+) -> Any:
+    """Save a NEW draft of a chat card through :func:`upsert_draft`, under the
+    one-draft rule of ``acb_skills.card_revise.save_one_draft`` (task 3814).
+
+    *fields* are the fields of a :class:`DraftUpsertRequest` with no
+    ``draft_id``. *thread* is the chat thread that the card's record holds,
+    and *member* and *org* come from the session, never from a request field
+    (R5). *replaces* is the id that the card's record holds, the draft that
+    the card said it replaces. With ``CHAT_CARD_REVISE_ORGS`` off, or with no
+    such id, it is the one save of before. The read of the earlier draft is
+    the read of :func:`_fetch_message_dict`, and the delete is the delete of
+    a message (``DELETE /email/messages/{id}``). *upsert* lets a caller pass
+    the ``upsert_draft`` that it imported. It answers the ``SavedDraft``."""
+    from acb_skills.card_revise import save_one_draft
+    from gateway.routes.email.transport.messages import delete_message
+
+    save = upsert or upsert_draft
+    account_id = str(fields.get("account_id") or "")
+
+    async def put(body: dict[str, Any]) -> Any:
+        return await save(DraftUpsertRequest(**body), user)
+
+    async def read(draft_id: str) -> dict[str, Any] | None:
+        async with _tenant_session() as db:
+            row = await _fetch_message_dict(db, draft_id)
+        return row if row and str(row.get("account_id") or "") == account_id else None
+
+    async def delete(draft_id: str) -> Any:
+        return await delete_message(draft_id, user)
+
+    return await save_one_draft(put, fields, replaces=replaces, thread=thread, member=member,
+                                act=act, read=read, delete=delete, org=org)
+
+
+def replace_fields(saved: Any, rec: dict[str, Any]) -> dict[str, Any]:
+    """The keys of a card act's answer for the one-draft rule (task 3814):
+    the outcome and the earlier draft, only when the record named one. A card
+    with no ``replaces`` answers no new key."""
+    if not rec.get("replaces"):
+        return {}
+    return {"replace_outcome": saved.outcome, "replaced": saved.earlier}
 
 
 class DraftExpect(BaseModel):
@@ -3877,6 +4181,17 @@ class DraftExpect(BaseModel):
     cc: list[str] = []
     bcc: list[str] = []
     text_digest: str | None = Field(default=None, max_length=64)
+    # HRD-10d-2 (``chat_failure_modes.md`` §6): ``acb_skills.card_revise.
+    # draft_files_digest`` of the read that the card showed. Only the email
+    # assistant sends it, and only with ``CHAT_CARD_PRECONDITION_ORGS`` on for
+    # its org. None, the default, checks no file, as before. Expand-only (R6):
+    # a schedule stored before it carries no key.
+    files_digest: str | None = Field(default=None, max_length=64)
+
+    def stored(self) -> dict[str, Any]:
+        """The ``expect`` that a schedule stores. With no ``files_digest`` it
+        is the dict of before, with no new key."""
+        return self.model_dump(exclude={"files_digest"} if self.files_digest is None else None)
 
 
 class DraftSendRequest(BaseModel):
@@ -3922,6 +4237,10 @@ def _draft_matches(drow: Any, expect: DraftExpect) -> bool:
 DRAFT_TEXT_CHANGED_DETAIL = (
     "The subject or the text of this draft changed after the card showed it. "
     "Nothing was sent.")
+#: The answer when the files of the draft changed after the card (HRD-10d-2).
+#: The send-later job shows its own reason for it (``send_later._why``).
+DRAFT_FILES_CHANGED_DETAIL = (
+    "The files of this draft changed after the card showed them. Nothing was sent.")
 #: The answer when the provider did not give the text of the draft.
 DRAFT_TEXT_READ_FAILED_DETAIL = (
     "The mail provider did not give the text of this draft, so the send could "
@@ -4041,6 +4360,35 @@ async def _check_chat_send(
         await _check_text_seal(provider, drow, expect, signature)
 
 
+async def check_draft_files(db: Any, draft_id: str, expect: DraftExpect) -> None:
+    """409 when the files of the draft are not the files that the card showed.
+
+    HRD-10d-2 (``chat_failure_modes.md`` §6). Only an ``expect`` with
+    ``files_digest`` runs it, so each other caller runs the statements of
+    before. The route reads the stored row and its ``email_attachments``
+    rows in the shape of ``GET /email/messages/{id}``, and folds them with
+    the one function of the tool, ``card_revise.draft_files_digest``. It
+    never trusts a digest of the request for the files that are there now.
+    It runs before any provider call, so a 409 sends nothing."""
+    if expect.files_digest is None:
+        return
+    head = (await db.execute(text(
+        "SELECT has_attachments FROM email_messages WHERE id = CAST(:id AS uuid)"
+    ), {"id": str(draft_id)})).fetchone()
+    flagged = bool(head is not None and head.has_attachments)
+    files: list[dict[str, Any]] = []
+    if flagged:
+        rows = (await db.execute(text(
+            "SELECT id, filename, size_bytes FROM email_attachments "
+            "WHERE message_id = CAST(:id AS uuid)"
+        ), {"id": str(draft_id)})).fetchall()
+        files = [{"id": str(r.id), "filename": r.filename, "size_bytes": r.size_bytes}
+                 for r in rows]
+    now = draft_files_digest({"has_attachments": flagged, "attachments": files})
+    if now != expect.files_digest:
+        raise HTTPException(status_code=409, detail=DRAFT_FILES_CHANGED_DETAIL)
+
+
 #: The answer when the PROVIDER draft holds other recipients than the card.
 DRAFT_PROVIDER_CHANGED_DETAIL = (
     "The recipients of this draft changed in your mail app. Nothing was sent.")
@@ -4128,7 +4476,7 @@ async def send_draft_endpoint(
         await _assert_account_owner(db, req.account_id, user.email or "anonymous", level="send")
         drow = (await db.execute(text(
             "SELECT provider_message_id, subject, to_addresses, cc_addresses,"
-            " bcc_addresses, body_text, thread_id"
+            " bcc_addresses, body_text, thread_id, internet_message_id"
             " FROM email_messages WHERE id = :id AND account_id = :aid"
             " AND LOWER(folder) IN ('drafts', 'draft')"
         ), {"id": req.draft_id, "aid": req.account_id})).fetchone()
@@ -4139,6 +4487,9 @@ async def send_draft_endpoint(
         if req.expect is not None and not _draft_matches(drow, req.expect):
             raise HTTPException(
                 status_code=409, detail=DRAFT_RECIPIENTS_CHANGED_DETAIL)
+        # HRD-10d-2: the files that the card showed, when it sent them.
+        if req.expect is not None:
+            await check_draft_files(db, req.draft_id, req.expect)
         async with provider_session(
             db, user.email or "anonymous", account_id=req.account_id,
         ) as sess:
@@ -4178,8 +4529,9 @@ async def send_draft_endpoint(
                     cc=cc or None, bcc=bcc or None,
                     reply_to_message_id=drow.thread_id or None,
                     thread_id=drow.thread_id or None)
-                try:
-                    await provider.trash_message(drow.provider_message_id)
+                try:  # task 4100: the draft's own Message-ID
+                    await trash_checked(provider, drow.provider_message_id,
+                                        drow.internet_message_id)
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -4246,6 +4598,20 @@ async def send_draft_endpoint(
                 text("DELETE FROM email_messages WHERE id = :id"),
                 {"id": req.draft_id},
             )
+        # WS-PZ MM-1: the member's own send of a draft, after the provider took
+        # it. The composer, the inline reply and a yes on a chat card send here.
+        # The send-later sweep sends inside ``member_actions.job_acts``, so it
+        # records nothing. The row holds the recipients the server took, and no
+        # text. Dark behind MEMBER_ACTIONS_ORGS, and it never fails the send.
+        await member_actions.record_act(
+            db, org=member_actions.org_of(user), member=user.email or "",
+            app="email", act="reply" if drow.thread_id else "send",
+            via="app", item_kind="email", item_id=req.draft_id,
+            mailbox_id=req.account_id,
+            features={"is_reply": bool(drow.thread_id),
+                      "new_thread": not drow.thread_id},
+            targets=member_actions.sent_to(
+                to, getattr(provider, "last_refused", None) or ()))
         # Reply complete: learn from the sent body and move the thread out of
         # "Reply" → Awaiting Reply (same hooks as the full /send path).
         if drow.thread_id:

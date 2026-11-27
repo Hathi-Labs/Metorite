@@ -1,5 +1,6 @@
 "use client";
 
+import { useStartFocus } from "../lib/focusStart";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
@@ -26,21 +27,14 @@ import { TaskMeta } from "@/components/TaskMeta";
 // §4.8 point 3). Every shared field block comes from Projects' components;
 // this file defines none of its own. `itemDetail.test.ts` is the fence.
 import { TaskBody } from "@/app/projects/components/TaskBody";
-import {
-  type FieldRow,
-  type StatusRow,
-  type TagRow,
-  type TaskRow,
-  projectsApi,
-  projectsKey,
-} from "@/app/projects/lib/api";
+import { projectsApi, projectsKey } from "@/app/projects/lib/api";
+import { useTaskById } from "@/app/projects/lib/useTaskById";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
 import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { taskWhere } from "@/app/projects/lib/tree";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { CLOSE_TASK_LABEL } from "@/lib/taskPanel";
-import { fetchMyTaskLanes } from "../lib/api";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -217,41 +211,11 @@ function LensBody({
   // The overlay is `full` on a desktop and the whole screen on a phone; two
   // columns at 390px is two unreadable columns (measured by the S6e rig).
   const { isMobile } = useViewMode();
-  const [task, setTask] = useState<TaskRow | null>(null);
-  const [statuses, setStatuses] = useState<StatusRow[]>([]);
-  const [fields, setFields] = useState<FieldRow[]>([]);
-  const [tags, setTags] = useState<TagRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    // The task as the project sees it, and its lanes off the LENS read
-    // (`/my/tasks/{id}` carries `statuses`, S6e repair): the lane route
-    // under `/nodes` is behind a grant a member reached by assignment alone
-    // may not hold, and a 404 there was a dead Status select. Fields and
-    // tags are behind that same grant and are best effort: a body with no
-    // tag suggestions beats no body.
-    Promise.all([projectsApi.task(item.id), fetchMyTaskLanes(item.id)])
-      .then(async ([row, lanes]) => {
-        if (!live) return;
-        setTask(row);
-        setStatuses(lanes as StatusRow[]);
-        const root = row.root_project_id ?? row.project_id;
-        const [defs, registry] = await Promise.all([
-          projectsApi.fields(root).catch(() => ({ rows: [] as FieldRow[] })),
-          projectsApi.tags(root).catch(() => ({ rows: [] as TagRow[] })),
-        ]);
-        if (!live) return;
-        setFields(defs.rows);
-        setTags(registry.rows);
-      })
-      .catch((err: Error) => {
-        if (live) setError(String(err.message ?? err));
-      });
-    return () => {
-      live = false;
-    };
-  }, [item.id]);
+  // The task as the project sees it, its lanes off the LENS read first, and
+  // its fields and tags at best effort. `useTaskById` is the one loader of a
+  // panel that starts from an id (PK-1), and its header says why each read
+  // is the one it is. My Day's panel reads through it too.
+  const { task, statuses, fields, tags, error, setTask } = useTaskById(item.id);
 
   if (!task) {
     // The strip is the store's row and needs no read — draw it at once, and
@@ -331,7 +295,7 @@ export function TaskDetail({
   const removal = useRemoval();
   const archiveItem = useTaskStore((s) => s.archiveItem);
   const openFocus = useTaskStore((s) => s.openFocus);
-  const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
+  const startFocus = useStartFocus();
   const isArchived = !!item.archivedAt;
   // S6e — the shared body needs the one store's routes, which the demo
   // backend does not serve. The strip draws in both modes.
@@ -825,7 +789,7 @@ export function TaskDetail({
                     layout="inline-flex items-center"
                     icon="Timer"
                     type="button"
-                    onClick={() => enterFocusSession(item.id)}
+                    onClick={() => void startFocus(item.id)}
                     title="Start Focus Mode — a full-screen timer for this task"
                     className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
                   >

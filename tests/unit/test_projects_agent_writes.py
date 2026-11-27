@@ -29,6 +29,7 @@ import ast
 from typing import Any
 
 import pytest
+from acb_skills.ask_tools import CARD_DECLINED, card_outcome_text
 
 pytest.importorskip("skill_projects", reason="skill-projects not installed")
 
@@ -490,6 +491,102 @@ def _lp1a_answers(call: dict) -> Any:
     return None
 
 
+#: SW-43c. One agent run of the member on the task UUID, whose question the
+#: member answered with the costly option. No agent has read the answer.
+RUN_ID = "e2f9fad5-d9cb-469f-a165-70867728950e"
+QUESTION_ID = "e3f9fad5-d9cb-469f-a165-70867728950e"
+ANSWER_ID = "e4f9fad5-d9cb-469f-a165-70867728950e"
+QUESTION = {"id": QUESTION_ID, "seq": 2, "type": "elicitation",
+            "content": {"body": "Restart the box?"},
+            "signal_metadata": {"options": [
+                {"id": "go", "label": "Restart it now", "confirm": True},
+                {"id": "no", "label": "Not now"}], "allow_multiple": False}}
+ANSWER = {"id": ANSWER_ID, "seq": 3, "type": "prompt", "in_reply_to": QUESTION_ID,
+          "content": {"body": None, "selected": ["go"], "labels": ["Restart it now"]}}
+RUN_ROW = {"id": RUN_ID, "task_id": UUID, "member_email": "pm@fracktal.in",
+           "status": "in_progress", "state": "answered", "client_name": "Claude Code",
+           "answer": {"id": ANSWER_ID, "seq": 3, "changeable": True}}
+
+
+#: WS-55 EA-18d: one run that awaits one question, and the activities route.
+ASK_RUN_ID = "e4f9fad5-d9cb-469f-a165-70867728950e"
+ASK_QUESTION_ID = "e5f9fad5-d9cb-469f-a165-70867728950e"
+
+
+def _ea18d_answers(call: dict) -> Any:
+    path, method = call["path"], call["method"]
+    if path == f"/projects/agent-runs/{ASK_RUN_ID}" and method == "GET":
+        return {"run": {"id": ASK_RUN_ID, "status": "awaiting", "open_elicitation": {
+            "id": ASK_QUESTION_ID, "content": {"body": "Which box?"},
+            "signal_metadata": {"options": []}, "content_metadata": None}}}
+    if path == f"/projects/agent-runs/{ASK_RUN_ID}/activities" and method == "POST":
+        return {"created": True, "activity": {"id": OTHER, "in_reply_to": ASK_QUESTION_ID}}
+    return None
+
+
+def _sw43c_answers(call: dict) -> Any:
+    """SW-43c: the runs of the task, the one run, and the two answer routes."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/tasks/{UUID}/agent-runs" and method == "GET":
+        return {"rows": [RUN_ROW]}
+    if path == f"/projects/agent-runs/{RUN_ID}" and method == "GET":
+        return {"run": RUN_ROW, "activities": [QUESTION, ANSWER], "cursor": 3}
+    if path == f"/projects/agent-runs/{RUN_ID}/answer/withdraw":
+        return {"run": {**RUN_ROW, "status": "awaiting", "answer": None},
+                "activity": {"id": OTHER, "type": "prompt"}, "withdrawn": True, "created": True}
+    if path == f"/projects/agent-runs/{RUN_ID}/answer/replace":
+        return {"run": RUN_ROW, "activity": {"id": OTHER, "type": "prompt"},
+                "replaced": True, "created": True}
+    return None
+
+
+#: WS-39 SP-5a. A planned cycle on the project UUID, and an active cycle on SALES.
+PLANNED_CYCLE = "d4d9fad5-d9cb-469f-a165-70867728950e"
+ACTIVE_CYCLE = "e5d9fad5-d9cb-469f-a165-70867728950e"
+_CYCLE_BASE = {"goal": "Ship the nozzle", "starts_on": "2026-11-16", "ends_on": "2026-11-27",
+               "cooldown_days": None, "credit_budget": None, "started_at": None,
+               "started_by": None, "closed_at": None, "closed_by": None,
+               "created_by": "pm@fracktal.in", "created_at": "2026-11-09T10:00:00+00:00",
+               "updated_at": "2026-11-09T10:00:00+00:00"}
+CYCLE_PLANNED = {**_CYCLE_BASE, "id": PLANNED_CYCLE, "project_id": UUID,
+                 "name": "Sprint 7", "state": "planned"}
+CYCLE_ACTIVE = {**_CYCLE_BASE, "id": ACTIVE_CYCLE, "project_id": SALES,
+                "name": "Sprint 6", "state": "active"}
+_CYCLE_TASKS = [
+    {"id": UUID, "task_number": 7, "title": "Fix the extruder", "status_name": "In progress",
+     "status_category": "in_progress", "estimate_mins": 90, "archived": False},
+    {"id": OTHER, "task_number": 8, "title": "Order the nozzle", "status_name": "Done",
+     "status_category": "done", "estimate_mins": 30, "archived": False},
+]
+
+
+def _sp5a_answers(call: dict) -> Any:
+    """WS-39 SP-5a: the cycles of a node, one cycle, and the four writes."""
+    path, method = call["path"], call["method"]
+    if method == "GET" and path == f"/projects/nodes/{UUID}/cycles":
+        return {"project_id": UUID, "cycles": [{**CYCLE_PLANNED, "tasks": 2, "hidden": 0}]}
+    if method == "GET" and path == f"/projects/nodes/{SALES}/cycles":
+        return {"project_id": SALES, "cycles": [{**CYCLE_ACTIVE, "tasks": 2, "hidden": 0}]}
+    if method == "GET" and path == f"/projects/cycles/{PLANNED_CYCLE}":
+        return {"cycle": CYCLE_PLANNED, "tasks": _CYCLE_TASKS, "hidden": 0,
+                "committed": None, "capacity": []}
+    if method == "GET" and path == f"/projects/cycles/{ACTIVE_CYCLE}":
+        return {"cycle": CYCLE_ACTIVE, "tasks": _CYCLE_TASKS, "hidden": 0,
+                "committed": {"tasks": 2, "hidden": 0, "estimate_mins": 120},
+                "capacity": [{"member_email": "pm@fracktal.in", "review_minutes": 240}]}
+    if method == "POST" and path == f"/projects/nodes/{UUID}/cycles":
+        return {"cycle": {**CYCLE_PLANNED, "id": OTHER, **(call["json"] or {})}}
+    if method == "POST" and path == f"/projects/cycles/{PLANNED_CYCLE}/tasks":
+        return {"cycle_id": PLANNED_CYCLE, "task_id": call["json"]["task_id"], "added": True}
+    if method == "DELETE" and path.startswith(f"/projects/cycles/{PLANNED_CYCLE}/tasks/"):
+        return {"cycle_id": PLANNED_CYCLE, "removed": True}
+    if method == "POST" and path == f"/projects/cycles/{PLANNED_CYCLE}/start":
+        return {"cycle": {**CYCLE_PLANNED, "state": "active"}, "committed_tasks": 2, "hidden": 0}
+    if method == "POST" and path == f"/projects/cycles/{ACTIVE_CYCLE}/close":
+        return {"cycle": {**CYCLE_ACTIVE, "state": "closed"}, "moved": {"next": 0, "backlog": 1}}
+    return None
+
+
 def _aln2a_answers(call: dict) -> Any:
     """WS-ALN ALN-2a: the member's open decisions, and the answer."""
     path, method = call["path"], call["method"]
@@ -557,7 +654,9 @@ def _reminder_answers(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path == "/projects/my/today":
         today = W._today().isoformat()
-        return {"today": today, "timezone": "UTC", "stored": True, "valid": True}
+        # WS-MDC CC-2: the org has today's focus, so `todays_focus` sends.
+        return {"today": today, "timezone": "UTC", "stored": True, "valid": True,
+                "today_rule": True}
     if not path.startswith("/projects/my/reminders"):
         return None
     body = call["json"] if isinstance(call["json"], dict) else {}
@@ -622,7 +721,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _ea18d_answers, _sw43c_answers, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _lp1a_answers, _sp5a_answers, _sp8a_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -853,6 +952,14 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     # WS-ALN ALN-2a: one answer per card
     "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
+    # WS-55 EA-18d: the run is the fake's one open run; the card then posts one prompt.
+    "answer_agent_question": [{"run_id": ASK_RUN_ID, "answer": "Use the staging box"}],
+    # SW-43c: the member's own answer to an agent, taken back or changed
+    "change_agent_answer": [
+        {"task_id": UUID, "withdraw": True},
+        {"task_id": UUID, "option": "Not now"},
+        {"task_id": UUID, "answer": "Wait until Friday"},
+    ],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -932,6 +1039,18 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"project_id": UUID, "health": "at risk", "body": "The vendor slipped a week."}
     ],
     "delete_project_update": [{"project_id": UUID, "update_id": UPDATE_ID}],
+    # WS-39 SP-5a: plan a cycle, put tasks in it or take them out (class B), and
+    # start it or close it with a carry-over (class C), one card each.
+    "create_cycle": [
+        {"project_id": UUID, "name": "Sprint 8", "starts_on": "2026-11-30",
+         "ends_on": "2026-12-11", "goal": "Ship the nozzle"}
+    ],
+    "plan_cycle": [
+        {"cycle_id": PLANNED_CYCLE, "add_task_ids": f"{UUID},{OTHER}"},
+        {"cycle_id": PLANNED_CYCLE, "remove_task_ids": UUID},
+    ],
+    "start_cycle": [{"cycle_id": PLANNED_CYCLE}],
+    "close_cycle": [{"cycle_id": ACTIVE_CYCLE, "carry_over": "backlog"}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -973,7 +1092,10 @@ _ONE_ID: dict[str, str] = {
     "pin_authority": "page_id",
     "unpin_authority": "pin_id",
     "answer_decision": "decision_id",
+    "change_agent_answer": "task_id",
     "delete_project_update": "update_id",
+    "start_cycle": "cycle_id",
+    "close_cycle": "cycle_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
@@ -1051,7 +1173,7 @@ async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, responder)
     for kwargs in _WRITES[tool]:
         out = await getattr(skill_projects, tool)(**kwargs)
-        assert out == W.CANCELLED, f"{tool} did not report the cancel: {out!r}"
+        assert out == card_outcome_text(CARD_DECLINED), f"{tool} did not report the cancel: {out!r}"
     assert writes(calls) == [], f"{tool} wrote before consent: {writes(calls)}"
 
 
@@ -1126,6 +1248,8 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             # recipient tools' own tests (test_projects_report_delivery_tools.py)
             # pin the name, the address and the schedule on the card.
             "add_report_recipient",
+            # WS-55 EA-18d: the card names the agent's question, not a row.
+            "answer_agent_question",
             "remove_report_recipient",
             "set_report_schedule",
             # WS-66 RM-3: a NEW reminder, as create_personal_task is a new task.
@@ -2507,9 +2631,8 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 MCP-G15: an outside agent records a decision that its member made
     # outside Metorite. The chat acts as the member, who answers on the task.
     mcp_g15 = {"record_outside_decision"}
-    # SW-43a: a member takes back an answer on the run card. The chat tool
-    # comes with slice SW-43c (spec agent_coordination.md §3.9).
-    sw_43 = {"withdraw_agent_answer"}
+    # SW-43c built `change_agent_answer`, the chat tool of SW-43a and SW-43b,
+    # so neither old name is planned now (spec agent_coordination.md §3.9).
     # WS-55 EA-18a: the list of the questions that wait on a person. A read
     # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
     ea_18a = {"agent_questions"}
@@ -2521,6 +2644,9 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-MCP SW-23: an outside agent reports a run of a Check over MCP. The
     # chat moves a task through `update_task`.
     sw_23 = {"report_check"}
+    # WS-MCP SW-32: an outside agent sets the plan of its own run. The chat
+    # has no run of its own.
+    sw_32 = {"set_run_plan"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
     # WS-AP AP-8a: the person ask and its withdraw. AP-10 builds both tools.
@@ -2528,10 +2654,26 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-39 SP-1: the cycle routes. SP-5 (Metorite task 964) builds the tools.
     sp_5 = {"list_cycles", "cycle_detail", "create_cycle", "update_cycle", "delete_cycle",
             "plan_cycle", "start_cycle", "close_cycle"}
+    # WS-AGA AGA-7 and AGA-9: the member view of agents. AGA-11 builds the chat
+    # pack `agents-overview`. Its `agents_list` reads the overview route, and
+    # its `agent_recent_runs` reads the drill-down.
+    aga_11 = {"agents_list", "agent_recent_runs"}
+    # WS-MCP SW-45: the free tasks of the member's own apps. The MCP `my_work`
+    # reads the route. The chat `my_work` does not show the group yet.
+    sw_45 = {"own_app_free"}
+    # LBB-2 (engineering_practice.md section 7b.2): an agent reads its own
+    # unlanded PRs over MCP. The chat lists them in my_work later.
+    lbb_2 = {"land_your_pr"}
+    # WS-39 T-1 (task 2532): the read of the teams of a member, dark behind
+    # TEAMS_ORGS. T-6 (task 2537) gives it to the chat and the MCP.
+    t_6 = {"list_teams"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | sw_43 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
-                              | sw_23), m.PLANNED
+                              | mcp_g15 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
+                              | sw_23 | sw_32 | aga_11 | sw_45 | lbb_2 | t_6), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
+    assert "change_agent_answer" in skill_projects.__all__
+    assert not {"withdraw_agent_answer", "replace_agent_answer", "change_agent_answer"} & set(
+        m.PLANNED)
 
 
 async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
@@ -3736,7 +3878,7 @@ async def test_a_declined_card_with_files_writes_nothing(monkeypatch) -> None:
     _chat_files(monkeypatch, PNG)
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _files_gateway())
-    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == W.CANCELLED
+    assert await skill_projects.create_task(UUID, "Fix", files=[PNG[0]]) == card_outcome_text(CARD_DECLINED)
     assert writes(calls) == []
 
 

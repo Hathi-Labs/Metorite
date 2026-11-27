@@ -237,8 +237,11 @@ class TestWhoSeesWhat:
         # B names the project of A: the same answer as no project.
         status, _ = await _summary(w, w.b, w.root["id"])
         assert status == 404
-        # A row of B that points at the task of A never counts for A.
+        # A row of B that points at the task of A never counts for A. Since
+        # task 3846 a guard refuses such a row, so the admin plants it with
+        # the triggers off.
         with w.p.admin_engine.begin() as c:
+            c.execute(text("SET LOCAL session_replication_role = replica"))
             c.execute(text(
                 "INSERT INTO pm_agent_runs (organization_id, task_id, member_email, "
                 "client_via, status, started_by) VALUES (CAST(:o AS uuid), CAST(:t AS uuid), "
@@ -351,7 +354,8 @@ def test_the_state_counts_read_the_pill_query() -> None:
         "agent_state_sql" in inspect.getsource(filters._state_exists))
     assert filters.agent_state_sql(
         "r.task_id = ANY(CAST(:ids AS uuid[]))") == filters._AGENT_STATE_SQL
-    assert filters.WORKING_STATES == ("working", "answered", "stale")
+    # Task 1045a: a `waiting` run still holds its task, so it counts as working.
+    assert filters.WORKING_STATES == ("working", "answered", "stale", "waiting")
 
 
 def test_the_batched_flag_is_the_one_predicate() -> None:

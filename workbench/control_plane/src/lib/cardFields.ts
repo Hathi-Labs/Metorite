@@ -62,6 +62,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "Note": { label: "Note" },
   "actual_end": { label: "Ended", kind: "date" },
   "actual_start": { label: "Started", kind: "date" },
+  "add task N": { label: "Add task", kind: "task" },
   "after": { label: "After" },
   "amount": { label: "Amount" },
   "answer": { label: "Your answer" },
@@ -82,7 +83,9 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
   "cannot change N": { label: "Cannot change", plural: "Cannot change" },
+  "cannot open the task": { label: "Cannot open the task", kind: "person", many: true },
   "capacity": { label: "Capacity" },
+  "carry to": { label: "Carry over to" },
   "category": { label: "Category", kind: "category" },
   // SP-8a: the checks of an epic contract that a save adds, changes or removes.
   "changed check N": { label: "Changed check", plural: "Changed checks" },
@@ -97,6 +100,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "covers": { label: "Covers" },
   "created_at": { label: "Created", kind: "date" },
   "current triage": { label: "Your triage now" },
+  "cycle": { label: "Cycle" },
   "deal": { label: "Deal" },
   "decision": { label: "Decision", kind: "words" },
   "deep_work": { label: "Deep work", kind: "flag" },
@@ -112,6 +116,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "due_at": { label: "Due", kind: "date" },
   "duplicate of": { label: "Duplicate of", kind: "task" },
   "email": { label: "Email", kind: "person" },
+  "ends_on": { label: "Ends", kind: "date" },
   "energy": { label: "Energy", kind: "words" },
   "estimate_mins": { label: "Estimate", kind: "minutes" },
   "expected_by": { label: "Expected by", kind: "date" },
@@ -127,10 +132,13 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "filters": { label: "Filters" },
   "first due": { label: "First due" },
   "flexible": { label: "Flexible", kind: "flag" },
+  // WS-MDC CC-2: the member's mark of today's focus, a date or cleared.
+  "focus_on": { label: "Today's focus", kind: "date" },
   // WS-64 OP-10: the folder that `convert_folder_to_project` turns into a project.
   "folder": { label: "Folder" },
   "from": { label: "From", kind: "task" },
   "gives access to": { label: "Gives access to" },
+  "goal": { label: "Goal" },
   "group by": { label: "Group by", kind: "words" },
   // WS-39 LP-1a: the health of a project update, in words ("At risk").
   "health": { label: "Health", kind: "words" },
@@ -182,6 +190,12 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "parent_project_id": { label: "Parent project" },
   "parent_task_id": { label: "Parent task" },
   "place": { label: "Place" },
+  // WS-CRM CRM-M2i (task 3953): an item of the mapping plan that is not a
+  // field rule, such as the module that plays a slot, on an approve or a restore.
+  "plan item N": { label: "Plan item", plural: "Plan items" },
+  // The field rules of the same cards, one row each. The key is "rule N" and
+  // never "field N": `cardKey` reads `field <Name>` as a custom field.
+  "rule N": { label: "Rule", plural: "Rules" },
   "people on the list now": { label: "On the list now" },
   "person": { label: "Person" },
   // WS-CRM CRM-M3a: the card of `crm_create_pipeline`.
@@ -191,6 +205,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "project": { label: "Project", kind: "project" },
   "project_id": { label: "Project" },
   "question": { label: "Question" },
+  "remove task N": { label: "Remove task", kind: "task" },
   "reopens": { label: "Reopens" },
   "repeat day": { label: "Repeat day" },
   "repeats": { label: "Repeats" },
@@ -221,6 +236,8 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "start_date": { label: "Start", kind: "date" },
   // WS-CRM CRM-M3a: where a new pipeline starts, "new" or "a copy of X".
   "starts from": { label: "Starts from" },
+  "starts_on": { label: "Starts", kind: "date" },
+  "state": { label: "State", kind: "words" },
   "status": { label: "Status", kind: "status" },
   // WS-CRM CRM-M4a: each lead status of a new lead pipeline, in order.
   "status N": { label: "Status", plural: "Statuses" },
@@ -250,6 +267,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "type": { label: "Type", kind: "words" },
   "under": { label: "Under", kind: "project" },
   "undo": { label: "Undo" },
+  "unfinished": { label: "Unfinished tasks" },
   "until": { label: "Until", kind: "date" },
   "updated_at": { label: "Updated", kind: "date" },
   "view": { label: "View" },

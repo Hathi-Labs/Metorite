@@ -381,6 +381,50 @@ async def test_a_server_whose_names_collide_is_left_out(monkeypatch, offline):
     assert clash and clash[0]["name"] == "web" and clash[0]["tools"] == ["web_search"]
 
 
+@pytest.mark.parametrize("finder", [True, False])
+async def test_a_server_tool_named_find_tools_leaves_only_beside_the_finder(
+    monkeypatch, offline, finder: bool,
+):
+    """WS-67 TS-2a. A server ``find`` with a tool ``tools`` exposes
+    ``find_tools``. ``FindToolsProvider`` adds a tool of that name in
+    ``before_run``, so the agent's own list never shows it. With the finder
+    on the run, the server is left out and logged. With no finder (the flag
+    off), the server stays, as before TS-2a. Mutation: ``_names_held`` drops
+    ``_finder_names`` -> the finder case keeps the server -> red."""
+    from acb_skills import tool_packs as tp
+    from agent_framework import FunctionTool, MCPStreamableHTTPTool
+    from orchestrator._native_run_context import agent_with_providers
+
+    async def _connect(self: Any, *, reset: bool = False) -> None:
+        self._functions.append(FunctionTool(
+            name=f"{self.tool_name_prefix}_tools", func=lambda: "x",
+            additional_properties={"_mcp_is_tool": True},
+        ))
+
+    monkeypatch.setattr(MCPStreamableHTTPTool, "connect", _connect)
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("find", org=ORG_A), row("crm", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    if finder:
+        turn = tp.PackTurn(ORG_A, "chat-mcp-find", "m", 1, (), "", True)
+        record = tp.PackRun.of(turn, tp.choose(turn, allowed=frozenset(), base_tools=0), [])
+
+        async def _build(slug: str, ctx: Any, holds: frozenset[str]) -> Any:
+            return None
+
+        made = tp.FindTools(candidates=tp.FindCandidates(), run_key="k", record=record,
+                            build=_build, measure=_maf_mcp.schema_tokens)
+        agent = agent_with_providers(agent, [tp.FindToolsProvider(made)])
+    with structlog.testing.capture_logs() as logs:
+        await _inject_mcp_servers(agent, _AGENT, organization_id=ORG_A, opened=[])
+    clash = [e for e in logs if e["event"] == "mcp.name_collision"]
+    if finder:
+        assert _names(agent) == ["crm"]
+        assert clash and clash[0]["name"] == "find" and clash[0]["tools"] == ["find_tools"]
+    else:
+        assert _names(agent) == ["crm", "find"] and not clash
+
+
 async def test_a_connected_tool_is_not_connected_again_by_the_agent(monkeypatch, offline):
     """``Agent.__aenter__`` (the native tier) enters each MCP tool again. A
     connected tool must not reconnect and list its tools a second time."""
@@ -488,11 +532,22 @@ def test_native_agent_gets_the_server_tools_end_to_end(monkeypatch, caplog):
             row("other-org-srv", org=ORG_B, url=srv.url),
         ]).install(monkeypatch)
         _stub_pin(monkeypatch, srv.url)
+        # Task 2494: a chat run calls a per-run view of the agent (the steer
+        # turns), so the MCP tool sits on the agent that the run used.
+        from orchestrator import executor as _ex
+        used: list[Any] = []
+        _real_inject = _ex._inject_mcp_servers
+
+        async def _record(agent: Any, *a: Any, **k: Any) -> Any:
+            used.append(agent)
+            return await _real_inject(agent, *a, **k)
+
+        monkeypatch.setattr(_ex, "_inject_mcp_servers", _record)
         model = ScriptedModel([
             tool_turn("probe-srv_echo", '{"text": "ping"}'), text_turn("done"),
         ])
         with structlog.testing.capture_logs() as logs:
-            events, built = drive_native(
+            events, _built = drive_native(
                 _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
                 thread_id="thread-ws8c-e2e",
                 extra_payload={"organization_id": ORG_B},
@@ -509,7 +564,7 @@ def test_native_agent_gets_the_server_tools_end_to_end(monkeypatch, caplog):
         assert any("echo:ping" in str(m.get("content")) for m in tool_msgs), tool_msgs
         assert any(h.get("authorization") == SENTINEL for h in srv.headers_seen), (
             "the stored header never reached the server")
-        tool = built[0].mcp_tools[0]
+        tool = next(a for a in used if a.mcp_tools).mcp_tools[0]
         assert tool.is_connected is False, "the run left the MCP session open"
         text = logged_text(logs, caplog)
         assert SENTINEL not in text
@@ -557,3 +612,49 @@ def test_an_unreachable_server_does_not_fail_the_run_end_to_end(monkeypatch, cap
     assert built[0].mcp_tools == []
     assert [e for e in logs if e["event"] == "mcp.unreachable"]
     assert SENTINEL not in logged_text(logs, caplog)
+
+
+# ── CSY-10: the step keeps the server's label ────────────────────────────────
+#
+# Fence (R7): delete the ``_note_mcp_labels(...)`` call in
+# ``_inject_mcp_servers`` and the first test goes red.
+
+
+async def test_an_attached_server_gets_a_label_and_a_refused_one_never_does(monkeypatch, offline):
+    import types
+
+    from orchestrator import event_translator as et
+
+    set_flag(monkeypatch, "*")
+    RegistrySpy([row("srv-a", org=ORG_A), row("srv-x", org=ORG_A)]).install(monkeypatch)
+    agent = native_agent()
+    await _inject_mcp_servers(
+        agent, _AGENT, organization_id=ORG_A, opened=[],
+        is_authorized=lambda service: service != "mcp-srv-x",
+    )
+    assert _names(agent) == ["srv-a"]
+    assert dict(et.MCP_LABELS.get()) == {"srv-a": "srv-a"}
+
+    def _start(name: str) -> dict[str, Any]:
+        call = types.SimpleNamespace(type="function_call", call_id="c1", name=name, arguments="{}")
+        return et.function_call_events(call, et.ToolCallStreamState("r"))[0]
+
+    assert _start("srv-a_read")["mcp"] == {"server": "srv-a", "label": "srv-a"}
+    assert "mcp" not in _start("srv-x_read"), "a refused server got a label"
+
+
+async def test_a_second_run_never_sees_the_labels_of_the_first(monkeypatch, offline):
+    from orchestrator import event_translator as et
+
+    set_flag(monkeypatch, ORG_A)
+    RegistrySpy([row("srv-a", org=ORG_A)]).install(monkeypatch)
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert set(et.MCP_LABELS.get()) == {"srv-a"}
+
+    RegistrySpy([row("srv-c", org=ORG_A)]).install(monkeypatch)
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert set(et.MCP_LABELS.get()) == {"srv-c"}
+
+    set_flag(monkeypatch, "")  # a run that attaches nothing keeps no label
+    await _inject_mcp_servers(native_agent(), _AGENT, organization_id=ORG_A, opened=[])
+    assert dict(et.MCP_LABELS.get()) == {}

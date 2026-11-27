@@ -99,6 +99,22 @@ export interface Identity {
 const DEV_IDENTITY: Identity = { email: "dev@fracktal.in", role: "employee" };
 
 /**
+ * The laptop's identity. `scripts/dev_up.sh --data prod --as <email>` sets
+ * `DEV_SIGNED_IN_EMAIL` to a real member of the production copy (LD-8b), and
+ * the role follows the same rule as a session. With no variable it is
+ * `DEV_IDENTITY`. Only the `!isAuthEnabled` branch of `currentIdentity` calls
+ * this, so a production box with the variable set still gets `null`.
+ */
+function devIdentity(): Identity {
+  const email = (process.env.DEV_SIGNED_IN_EMAIL ?? "").trim();
+  if (!email) return DEV_IDENTITY;
+  return {
+    email,
+    role: EXECUTIVE_EMAILS.has(email.toLowerCase()) ? "executive" : "employee",
+  };
+}
+
+/**
  * Thrown when a call needs a person and there is nobody signed in.
  *
  * Deliberately an exception rather than a null return: the previous helper
@@ -128,7 +144,7 @@ export async function currentIdentity(): Promise<Identity | null> {
     // auth() throws outside a request context (build-time evaluation, tests).
     // Fall through: no session is no session, however we failed to find one.
   }
-  return isAuthEnabled ? null : DEV_IDENTITY;
+  return isAuthEnabled ? null : devIdentity();
 }
 
 /**
@@ -225,14 +241,23 @@ function studioDirectKey(): string | null {
 }
 
 /**
- * The gateway path of an action call, `/studio/apps/<id>/actions/<action>`, or
- * null for any other path. The segments are matched strictly, so the signed
- * path is byte-for-byte the path that the gateway receives.
+ * The gateway path of a call that needs the proof, or null for any other path.
+ * Two paths: an action call, `/studio/apps/<id>/actions/<action>`, and the CSV
+ * import of an object, `/studio/packages/<id>/objects/<name>/import` (STU-C11b).
+ * The preview of an import is no write, so it is not signed. The segments are
+ * matched strictly, so the signed path is byte-for-byte the path that the
+ * gateway receives.
  */
 export function studioActionPath(path: string[]): string | null {
-  if (path.length !== 4 || path[0] !== "apps" || path[2] !== "actions") return null;
-  if (!STUDIO_APP_ID.test(path[1]) || !STUDIO_ACTION_ID.test(path[3])) return null;
-  return `/studio/${path.join("/")}`;
+  if (path.length === 4 && path[0] === "apps" && path[2] === "actions") {
+    if (!STUDIO_APP_ID.test(path[1]) || !STUDIO_ACTION_ID.test(path[3])) return null;
+    return `/studio/${path.join("/")}`;
+  }
+  if (path.length === 5 && path[0] === "packages" && path[2] === "objects" && path[4] === "import") {
+    if (!STUDIO_APP_ID.test(path[1]) || !STUDIO_ACTION_ID.test(path[3])) return null;
+    return `/studio/${path.join("/")}`;
+  }
+  return null;
 }
 
 /** The proof for one call: `v1.<seconds>.<hex HMAC-SHA256>`. */
@@ -249,7 +274,7 @@ export function signStudioDirect(
 
 /**
  * The proof header for a call, or an empty object. It signs a POST to the
- * action route only, for a member, and only with a usable key. With no key the
+ * action route and to the import route of an object only, for a member, and only with a usable key. With no key the
  * gateway refuses every direct write, so this slice stays dark.
  */
 export function studioDirectHeaders(

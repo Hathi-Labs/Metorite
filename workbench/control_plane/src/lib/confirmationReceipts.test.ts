@@ -11,6 +11,8 @@
  *     with what to change.
  *   * `email-cards-no-browser-confirm`: the email tool cards ask in the
  *     shared `ConfirmDialog`, never with `confirm()`.
+ *   * `held-sandbox-card-row-results` (SBX-3b done-when 24): the receipt of a
+ *     held sandbox card says what happened to each row, through `receiptText`.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,6 +27,7 @@ import {
   EMPTY_CONFIRMATIONS,
   confirmationReducer,
   receiptText,
+  rowResultsFromEvent,
   settleAnswer,
   type ConfirmationAction,
   type ConfirmationQueueState,
@@ -96,6 +99,39 @@ describe("approve-card-receipt", () => {
   it("a resend drops the line, since its notice says what happened", () => {
     const done = run([answering("approved"), settleAnswer(card, "drop")], asked);
     expect(done.receipts).toEqual([]);
+  });
+});
+
+describe("approve-card-changed-since (task 3827)", () => {
+  const notDone: ConfirmationAction = { type: "notDone", requestId: "r1" };
+  const words = 'Not done · Create task "Call the supplier". The item changed after the card showed, so nothing was changed.';
+
+  it("a refused approve reads Not done, and the POST answer after it keeps that", () => {
+    // The stream beats the POST answer.
+    const early = run([answering("approved"), notDone, settleAnswer(card, "ok")], asked);
+    expect(lines(early)).toEqual([words]);
+    expect(early.receipts[0].kind).toBe("notDone");
+    // The POST answer comes first.
+    const late = run([answering("approved"), settleAnswer(card, "ok"), notDone], asked);
+    expect(lines(late)).toEqual([words]);
+  });
+
+  it("draws it in the warning tone, with its own marker", () => {
+    const done = run([answering("approved"), settleAnswer(card, "ok"), notDone], asked);
+    const html = renderToStaticMarkup(createElement(ConfirmationReceipts, { receipts: done.receipts }));
+    expect(html).toContain('data-confirmation-receipt="notDone"');
+    expect(html).toContain("text-warning");
+    expect(html).not.toContain("Approved");
+  });
+
+  it("only the receipt of that card changes, and a Reject never does", () => {
+    const other: ConfirmationAction = { type: "notDone", requestId: "r9" };
+    const approved = run([answering("approved"), settleAnswer(card, "ok"), other], asked);
+    expect(lines(approved)).toEqual(['Approved · Create task "Call the supplier"']);
+    const rejected = run([answering("rejected"), settleAnswer(card, "ok"), notDone], asked);
+    expect(lines(rejected)).toEqual(['Rejected · Create task "Call the supplier"']);
+    // No receipt of that key: nothing is made up.
+    expect(run([notDone], asked).receipts).toEqual([]);
   });
 });
 
@@ -171,5 +207,49 @@ describe("email-cards-no-browser-confirm", () => {
     );
     expect(src).not.toMatch(/(^|[^.\w])confirm\(/m);
     expect(src.match(/<ConfirmDialog\b/g)?.length).toBe(3);
+  });
+});
+
+describe("held-sandbox-card-row-results (SBX-3b done-when 24)", () => {
+  const rid = "a".repeat(32);
+  const event = {
+    request_id: rid,
+    rows: [
+      { id: "row-0", status: 200 },
+      { id: "row-1", status: 403, code: "sandbox_write_refused" },
+      { id: "row-2", status: 403, code: "sandbox_approval_timeout" },
+      { id: "row-3", status: 404 },
+    ],
+  };
+  const held = run([
+    { type: "requested", value: { request_id: rid, title: "Let a sandbox app make 4 changes?" } },
+    { type: "answering", key: rid, label: "Let a sandbox app make 4 changes?", intent: "approved", afterId: "m7" },
+    { type: "answered", key: rid },
+  ]);
+
+  it("shows a result for each row on the line of its card", () => {
+    const results = rowResultsFromEvent(event);
+    expect(results).not.toBeNull();
+    const done = run([{ type: "rowResults", ...results! }], held);
+    expect(lines(done)).toEqual([
+      "Approved · Let a sandbox app make 4 changes? Results: row 1 done; row 2 not done, "
+        + "not approved; row 3 not done, the card timed out; row 4 failed (404).",
+    ]);
+    const html = renderToStaticMarkup(createElement(ConfirmationReceipts, { receipts: done.receipts }));
+    expect(html).toContain("Results: row 1 done; row 2 not done, not approved;");
+  });
+
+  it("changes no line of another card, and takes no body", () => {
+    const other = rowResultsFromEvent({ ...event, request_id: "b".repeat(32) });
+    expect(lines(run([{ type: "rowResults", ...other! }], held))).toEqual(lines(held));
+    const withBody = rowResultsFromEvent({ request_id: rid, rows: [{ id: "row-0", status: 200, body: { secret: "x" } }] });
+    expect(withBody?.rows).toEqual([{ id: "row-0", status: 200 }]);
+  });
+
+  it("refuses a value that is not one", () => {
+    for (const bad of [null, "x", { request_id: "r1", rows: event.rows }, { request_id: rid, rows: [] },
+      { request_id: rid, rows: [{ id: "x", status: 200 }] }, { request_id: rid, rows: [{ id: "row-0", status: 99 }] }]) {
+      expect(rowResultsFromEvent(bad)).toBeNull();
+    }
   });
 });

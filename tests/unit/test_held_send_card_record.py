@@ -119,7 +119,8 @@ async def test_the_send_takes_the_ticked_recorded_rows(_world) -> None:
     sent = _world["sends"].sent
     assert len(sent) == 1
     assert sent[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [F.COLLEAGUE], "bcc": [],
-                                         "text_digest": "a" * 64}
+                                         "text_digest": "a" * 64,
+                                         "files_digest": None}
 
 
 async def test_an_unticked_row_is_not_sent_also_when_the_draft_holds_it(_world) -> None:
@@ -256,7 +257,8 @@ async def test_the_schedule_stores_only_the_ticked_set(_world, monkeypatch) -> N
     out = await _act(card["card_id"], answer)
     assert out["action"] == "schedule"
     assert stored[0].expect.model_dump() == {"to": [F.KNOWN], "cc": [], "bcc": [],
-                                           "text_digest": "a" * 64}
+                                           "text_digest": "a" * 64,
+                                           "files_digest": None}
     assert _world["sends"].sent == []
 
 
@@ -289,6 +291,39 @@ async def test_a_send_answer_is_recorded_only_while_the_switch_is_on(monkeypatch
     for bad in ("APPROVE", 'APPROVE {"rows": []}', 'APPROVE {"rows": ["a"], "x": 1}',
                 'APPROVE {"rows": [1]}', "REJECT"):
         assert not rcard.looks_like_send_answer(bad), bad
+
+
+async def test_a_sandbox_org_records_a_send_answer(monkeypatch) -> None:
+    """SBX-3b done-when 27 (``agent_sandbox.md`` §12.5 decision 7). With
+    ``EMAIL_HELD_CARD_SEND`` off, a send answer is recorded for an org in
+    ``SANDBOX_DOOR_ORGS``, and for no other org. ``*`` names each org. With
+    the flag empty, the rule is as before. Mutations caught: drop the org case
+    of ``_recordable``, drop its ``*`` case, or record for any org."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "self_serve_signup_enabled", "")
+    F.flag_off(monkeypatch)
+    answer = F.rows_answer("row-0")
+    cases = [("", False), ("org-other", False), (F.ORG, True), (F.ORG.upper(), True),
+             (f"org-other, {F.ORG}", True), ("*", True)]
+    for n, (flag, recorded) in enumerate(cases):
+        monkeypatch.setattr(settings, "sandbox_door_orgs", flag)
+        got = await F.record_answer(f"{n:032x}", answer)
+        assert got is recorded, (flag, got)
+    # A reply answer is recorded as before, with the flag empty.
+    monkeypatch.setattr(settings, "sandbox_door_orgs", "")
+    from acb_skills import reply_card as rcard
+
+    assert rcard._recordable(answer, F.ORG) is False
+    assert rcard._recordable(answer) is False
+    monkeypatch.setattr(settings, "sandbox_door_orgs", "*")
+    assert rcard._recordable(answer) is False, "no org, no record"
+    assert rcard._recordable("REJECT", F.ORG) is False
+    # The email switch keeps its own meaning: on, it records for any org.
+    monkeypatch.setattr(settings, "sandbox_door_orgs", "")
+    F.flag_on(monkeypatch)
+    assert rcard._recordable(answer, "org-other") is True
 
 
 # ── 6. The card id and the exact answer ──────────────────────────────────────

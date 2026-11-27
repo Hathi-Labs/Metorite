@@ -195,7 +195,9 @@ async def test_edit_draft_says_when_the_formatting_is_lost(gw: _Gw, monkeypatch)
 async def test_edit_draft_says_no_and_writes_nothing(gw: _Gw) -> None:
     gw.answer = False
     out = await agents.edit_draft(BOX, "d1", body="Hi")
-    assert out == "Cancelled. The draft did not change." and gw.writes == []
+    # HRD-7: the words of a declined card, from the one table.
+    assert out.startswith("Declined:") and out.count("The draft did not change.") == 1
+    assert gw.writes == []
 
 
 async def test_edit_draft_refuses_a_message_that_is_not_a_draft(gw: _Gw) -> None:

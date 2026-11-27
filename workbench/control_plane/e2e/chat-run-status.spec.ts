@@ -122,7 +122,7 @@ test.describe("One predictable run status (§4.10)", () => {
     await expect(page.locator('[data-run-tone="working"]')).toHaveCount(0);
   });
 
-  test("(f) waiting for you, parked and working draw differently", async ({ page }) => {
+  test("(f) a card that waits reads the same live or parked, and differs from working", async ({ page }) => {
     await install(page);
     await startRun(page);
     await expect(composerRow(page)).toHaveAttribute("data-run-tone", "working");
@@ -139,8 +139,13 @@ test.describe("One predictable run status (§4.10)", () => {
     const parked = await composerRow(page).innerText();
     // A parked run has nothing to stop. The composer sends.
     await expect(page.locator('[data-chat-primary="stop"]')).toHaveCount(0);
+    await expect(page.locator('[data-chat-primary="send"]')).toBeVisible();
 
-    expect(new Set([working, waiting, parked]).size).toBe(3);
+    // D-RES-6 (RESUME-3a): a park is a server detail. Both read "Waiting for
+    // your answer". A live wait counts its time, and a park has no clock.
+    expect(waiting).toContain("Waiting for your answer");
+    expect(parked.trim()).toBe("Waiting for your answer");
+    expect(working).not.toContain("Waiting for your answer");
   });
 
   test("(h) a run started elsewhere gets its own bubble, and the last reply stays as it was", async ({ page }) => {

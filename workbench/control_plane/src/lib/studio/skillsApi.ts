@@ -38,6 +38,9 @@ export interface CatalogAction {
   title: string;
   source: string;
   class: string;
+  /** The chat tool of the action, from `skill_packs.action_tool`, or null
+   *  (STU-F6a). The skill offer maps a call of a turn to a row through it. */
+  tool?: string | null;
   [key: string]: unknown;
 }
 
@@ -76,6 +79,22 @@ export function listSkills(): Promise<Reply<{ skills: Skill[] }>> {
   return send(() => fetch("/api/studio/skills", { cache: "no-store" }));
 }
 
+/**
+ * True when a skill of the member matches the *words* of a turn (task 3830).
+ * The gateway runs the matcher of the turn itself. It reads the org and the
+ * member from the session.
+ */
+export function matchSkill(words: string): Promise<Reply<{ matched: boolean }>> {
+  return send(() =>
+    fetch("/api/studio/skills/match", {
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ words }),
+      cache: "no-store",
+    }),
+  );
+}
+
 export function getSkill(id: string): Promise<Reply<{ skill: Skill; version: SkillVersion | null }>> {
   const key = encodeURIComponent(id);
   return send(() => fetch(`/api/studio/skills/${key}`, { cache: "no-store" }));
@@ -85,6 +104,8 @@ export function createSkill(input: {
   name: string;
   description: string;
   body: SkillBody;
+  /** Only for a name that gives no slug (F2a makes the slug from the name). */
+  slug?: string;
 }): Promise<Reply<{ skill: Skill; version: SkillVersion | null }>> {
   return send(() =>
     fetch("/api/studio/skills", {

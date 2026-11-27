@@ -30,8 +30,8 @@ import { createMover, type MoverState } from "@/lib/studio/boardMove";
 import { moreLine, type Row, type StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
-/** The value of one card field: a chip for a select or a person, else the words. */
-function CardValue({ field, value }: { field: FieldSpec; value: unknown }) {
+/** The value of one card field: a chip for a select or a person, else the words. The Gallery draws with it too. */
+export function CardValue({ field, value }: { field: FieldSpec; value: unknown }) {
   const text = displayValue(field, value);
   if (text === "") return null;
   const items = Array.isArray(value) ? value : [value];
@@ -184,7 +184,15 @@ function BoardView({ config, rows: given, door }: { config: BoardConfig; rows: R
                     onDragEnd={() => mover?.dragEnd()}
                   >
                     <div className="flex items-start gap-1">
-                      <TaskCardTitle>{title || "Untitled"}</TaskCardTitle>
+                      <TaskCardTitle>
+                        {id !== null && config.openBase ? (
+                          // A record link (STU-AF5). The app frame opens it in the record panel.
+                          <a href={`${config.openBase}${encodeURIComponent(id)}`} draggable={false}
+                            className="rounded-sm text-foreground outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring">
+                            {title || "Untitled"}
+                          </a>
+                        ) : (title || "Untitled")}
+                      </TaskCardTitle>
                       {movable && id !== null && !pending ? (
                         <span className="ml-auto shrink-0">
                           <Button

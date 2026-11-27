@@ -111,3 +111,45 @@ def test_the_dependency_binds_only_a_well_formed_value(header: str, expect: str)
 def test_the_dependency_is_on_the_projects_router() -> None:
     names = {getattr(d.dependency, "__name__", "") for d in core.router.dependencies}
     assert "capture_actor_via" in names
+
+
+# ── SBX-3a (agent_sandbox.md §12.5 decision 5, done-when 13) ────────────────
+
+
+def _probe_as(user: Any) -> TestClient:
+    from acb_auth import get_current_user
+
+    app = FastAPI()
+
+    @app.get("/probe", dependencies=[Depends(core.capture_actor_via)])
+    async def probe() -> dict[str, str]:
+        return {"via": core.ACTOR_VIA.get("")}
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    return TestClient(app)
+
+
+def test_a_sandbox_write_stamps_from_the_scope() -> None:
+    """A request with a sandbox scope binds the stamp of its ticket, and no
+    header moves it. Every other request keeps the header rule."""
+    from acb_auth import SandboxScope, UserContext, UserRole
+
+    def member(sandbox: Any) -> Any:
+        return UserContext(email="pm@fracktal.in", role=UserRole.EMPLOYEE, sandbox=sandbox)
+
+    stamped = SandboxScope(run_id="run-1", thread_id="thread-1", phase="run",
+                           app_id="99999999-9999-4999-8999-999999999999", version=1,
+                           write_scopes=("projects:write",), stamp="sandbox:lead-tool:v1")
+    client = _probe_as(member(stamped))
+    assert client.get("/probe").json() == {"via": "sandbox:lead-tool:v1"}
+    forged = {"X-Actor-Via": "chat:projects-assistant"}
+    assert client.get("/probe", headers=forged).json() == {"via": "sandbox:lead-tool:v1"}
+
+    # A sandbox read has no ticket, so no stamp. The header still moves nothing.
+    unstamped = SandboxScope(run_id="run-1", thread_id="thread-1", phase="run")
+    assert _probe_as(member(unstamped)).get("/probe", headers=forged).json() == {"via": ""}
+
+    # Each other request keeps the header rule.
+    plain = _probe_as(member(None))
+    assert plain.get("/probe", headers=forged).json() == {"via": "chat:projects-assistant"}
+    assert plain.get("/probe").json() == {"via": ""}

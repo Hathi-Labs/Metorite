@@ -771,7 +771,7 @@ async def _commit_stage(db: Any, org: str, by: str, approved: Any, slot: str,
                        others=merge_kinds(others, [{**stage, "values": values}]), by=by,
                        based_on=int(approved.version))
     if draft is not None:
-        await carry_draft(db, draft, row)
+        await carry_draft(db, draft, row, org=org)
     return row, stage
 
 

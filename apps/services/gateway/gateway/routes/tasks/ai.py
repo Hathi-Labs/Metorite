@@ -32,6 +32,7 @@ from gateway.routes.tasks.core import (
     router,
 )
 from gateway.routes.tasks.item_source import item_source
+from gateway.routes.tasks.settings import _BOUND_ORG
 from sqlalchemy import text
 
 _log = get_logger("gateway.tasks.ai")
@@ -1249,6 +1250,17 @@ class ClarifyRequest(BaseModel):
     note: str | None = None
 
 
+async def _clarify_accounts(db: Any, uid: str) -> list[Any]:
+    """The member's connected task accounts in the BOUND org only (H-312b,
+    migration 515). Under the owner role RLS does not apply, so the member
+    filter alone read the accounts of the member's other org too."""
+    return list((await db.execute(
+        text("SELECT id, label, provider, schema_cache FROM task_accounts "
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
+        {"uid": uid},
+    )).fetchall())
+
+
 @router.post("/items/{item_id}/clarify")
 async def clarify_item(
     item_id: str,
@@ -1270,11 +1282,7 @@ async def clarify_item(
     async with _tenant_session() as db:
         item = await src.fetch_item(db, uid, item_id)
         projects = await src.projects_for(db, uid)
-        accounts = (await db.execute(
-            text("""SELECT id, label, provider, schema_cache
-                    FROM task_accounts WHERE user_id = :uid"""),
-            {"uid": uid},
-        )).fetchall()
+        accounts = await _clarify_accounts(db, uid)
         account_statuses: dict[str, list[str]] = {}
         members: list[dict] = []
         account_briefs: list[dict] = []
@@ -1522,7 +1530,8 @@ async def _enrich_people(db: Any, uid: str) -> list[dict]:
     from gateway.routes.tasks.people import fetch_people_for_clarify
     members: list[dict] = []
     accts = (await db.execute(
-        text("SELECT schema_cache FROM task_accounts WHERE user_id = :uid"),
+        text("SELECT schema_cache FROM task_accounts "
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
         {"uid": uid})).fetchall()
     for a in accts:
         for m in (_parse_jsonb(a.schema_cache) or {}).get("members") or []:

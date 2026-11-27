@@ -92,10 +92,17 @@ const spanDays = (w: TimelineWindow) =>
  *  module's prose is dense enough that "stays readable while it is wrong"
  *  matched a search for a `while` loop. A structural test that trips on its own
  *  documentation is a test people delete. */
-const SOURCE = readFileSync(
-  fileURLToPath(new URL("./timeline.ts", import.meta.url)),
-  "utf8",
-)
+// The generic maths moved to the timeline block (STU-D6), so the scan reads the
+// block's files first and this module last. `canLink` stays the last function.
+const SOURCE = [
+  "../../../components/timeline/scale.ts",
+  "../../../components/timeline/geometry.ts",
+  "../../../components/timeline/deps.ts",
+  "./timelineAdapter.ts",
+  "./timeline.ts",
+]
+  .map((file) => readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8"))
+  .join(String.fromCharCode(10))
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/^\s*\/\/.*$/gm, "");
 
@@ -1770,5 +1777,59 @@ describe("stagger — two arrows must not share one corridor", () => {
     const input = [forward("a", 100), forward("b", 100, 200)];
     stagger(input);
     expect(input.map((r) => r.points[1].x)).toEqual([100, 100]);
+  });
+});
+
+// ── epic bar from its tasks (SP-2b) ─────────────────────────────────────────
+
+describe("epic bar from the dates of its tasks", () => {
+  const epic = (over: Partial<TaskRow> = {}) => task({ id: "e", type_id: "epic", ...over });
+  const kid = (id: string, over: Partial<TaskRow> = {}) =>
+    task({ id, parent_task_id: "e", ...over });
+  const spanOf = (rows: TaskRow[]) => {
+    const top = timelineRows(rows)[0];
+    return rowInterval(top.task, top.children);
+  };
+
+  it("draws one bar from the earliest start to the latest due of 3 tasks", () => {
+    expect(
+      spanOf([
+        epic(),
+        kid("a", { start_date: "2026-08-05", due_at: at("2026-08-08") }),
+        kid("b", { start_date: "2026-08-02", due_at: at("2026-08-04") }),
+        kid("c", { start_date: "2026-08-10", due_at: at("2026-08-20") }),
+      ]),
+    ).toEqual({ from: "2026-08-02", to: "2026-08-20", derived: true });
+  });
+
+  it("draws no bar when no task has a date", () => {
+    expect(spanOf([epic(), kid("a"), kid("b")])).toBeNull();
+  });
+
+  it("keeps its own dates", () => {
+    expect(
+      spanOf([
+        epic({ start_date: "2026-08-01", due_at: at("2026-08-03") }),
+        kid("a", { start_date: "2026-08-10", due_at: at("2026-08-20") }),
+      ]),
+    ).toEqual({ from: "2026-08-01", to: "2026-08-03", derived: false });
+  });
+
+  it("counts a grandchild", () => {
+    expect(
+      spanOf([
+        epic(),
+        kid("a"),
+        task({ id: "g", parent_task_id: "a", start_date: "2026-08-12", due_at: at("2026-08-15") }),
+      ]),
+    ).toEqual({ from: "2026-08-12", to: "2026-08-15", derived: true });
+  });
+
+  it("counts a task with only a due date as one day", () => {
+    expect(spanOf([epic(), kid("a", { due_at: at("2026-08-09") })])).toEqual({
+      from: "2026-08-09",
+      to: "2026-08-09",
+      derived: true,
+    });
   });
 });

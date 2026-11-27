@@ -102,7 +102,7 @@ You work on tasks in Metorite through the MCP connection. Follow the server inst
 - End with one result: review or done, a question that waits on a named person, or release_task with a note of what is done and what is left.
 - Then call finish_agent_run with a summary.
 
-When your server offers read_playbook or resources, read the playbook topic kit/team-setup for the full setup.
+When your server offers read_playbook or resources, read the playbook topic kit/agents-md for the core rules and kit/team-setup for the full setup.
 ```
 <!-- END:agent-setup-text -->
 
@@ -122,10 +122,10 @@ Twelve tools read:
 |---|---|
 | `whoami` | The member and the organization of the connection, its scopes and its pins |
 | `list_projects` | The projects you see |
-| `get_project` | One project |
+| `get_project` | One project. With `compact` true, it gives only the project, its statuses and its task types |
+| `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). It filters by `type_id`, by `type_name` (not case sensitive) and by `task_number`. One number can name one task in each top-level project, so add `project_id` to get one task. With `compact` true, each row is small, it holds the type, the tags and the creation time, and one call gives up to 500 rows |
 | `list_members` | The members that `set_assignees` accepts, with the address and the name only. Send `project_id` for one project. Without it, you get the members who open at least one project you see. A task in a personal project takes only its owner. `agent:<name>` is not in the list |
 | `list_tags` | The tag names of one project tree, or of every tree you see. Tags belong to the top project of a tree. A name shows once, in alphabetical order. Read it before you make a tag, so you reuse a name |
-| `list_tasks` | The tasks you see, at most 100 in one call. It filters by project, status, tag, assignee and text. It also filters by `status_category` (a list of backlog, todo, in_progress, done and cancelled), `updated_before`, `updated_after`, `created_after` and `due_before` (ISO dates), `has_parent` (false gives top-level tasks), `is_epic`, `assigned` (false gives tasks with no assignee) and `title_prefix` (not case sensitive, such as a plan id). With `compact` true, each row is small and one call gives up to 500 rows |
 | `board_stats` | The number of tasks you see, with no rows. It takes the filters of `list_tasks`. `group_by` takes one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age` (bands `<1d`, `1-3d`, `3-7d`, `7-30d`, `>30d`). Its `total` equals the rows that `list_tasks` gives for the same filters. A task with two assignees counts once for each under `assignee` |
 | `get_plan` | The order of work under one goal, epic or project: `root_task_id`. It returns the `ready` slices, the `waves`, the `critical_path` with `slack` in minutes, one `finish` date, the `next_slice`, the slices `held` by an open blocker outside the tree (`outside_blockers`), a `cycle` if the links loop, and `hidden`, the count of slices you cannot see. It names no hidden slice. `labels` gives the number and title of the tasks it names. It gives one finish date and no range. A read-only connection can call it |
 | `get_task` | One task, with its references. For an epic, `epic_contract` holds its contract: the outcome, 3 to 7 acceptance checks, what is out of scope, the risk tier, the appetite, the workstream and the spec link. For any other task it is `null`, and so it is while the organization has not turned epic contracts on |
@@ -201,7 +201,7 @@ Your agent finds the work when it next starts a session, because `my_work` gives
 
 While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
 
-Seven tools work with these runs:
+Eight tools work with these runs:
 
 | Tool | What it does |
 |---|---|
@@ -209,6 +209,7 @@ Seven tools work with these runs:
 | `post_agent_activity` | It posts a progress line, a result or a question in the run |
 | `ask_on_task` | It asks you a question on a task, with choices or free text |
 | `record_outside_decision` | You answered the question in another place, such as the agent's chat. It records your answer on the task, so the task stops waiting on you |
+| `set_run_plan` | It keeps a checklist on your run. Each call replaces the whole list, with up to 30 steps. The task card shows the step in progress and a count such as 3 of 7. A plan write ends a wait, so post the wait after the plan |
 | `get_agent_run` | It reads a run and your answers |
 | `list_agent_runs` | It lists all your runs, from each agent, for the full history |
 | `finish_agent_run` | It ends a run |

@@ -18,3 +18,8 @@ export function hasMoreToTheRight(
 ): boolean {
   return scrollWidth - clientWidth - scrollLeft > SLACK;
 }
+
+/** The step of one press: four fifths of the view, so the column at the edge stays in sight. */
+export function stepRight(clientWidth: number): number {
+  return Math.max(1, Math.round(clientWidth * 0.8));
+}

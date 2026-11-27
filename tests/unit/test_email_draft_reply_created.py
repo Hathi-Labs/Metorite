@@ -67,6 +67,43 @@ async def _call() -> dict[str, Any]:
         SimpleNamespace(email="jane@acme.test"))
 
 
+class _CommitDb(_Db):
+    def __init__(self) -> None:
+        self.commits = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+def _like_tenant_session(db: _CommitDb):
+    """``tenant_session``'s shape: it commits on a clean exit and rolls back
+    on an exception (``acb_common/db.py``)."""
+    @asynccontextmanager
+    async def _session(*_a: Any, **_k: Any):
+        yield db
+        await db.commit()
+    return _session
+
+
+async def test_a_failed_model_commits_the_session_before_it_raises(monkeypatch) -> None:
+    """Task 3541, review P1. A failed model now raises from inside the route's
+    one session. The body fetch can rotate an Outlook refresh token in that
+    session, and Microsoft revokes the old token on use. So the session
+    commits before the error leaves, and the token survives."""
+    from fastapi import HTTPException
+
+    db = _CommitDb()
+    _wire(monkeypatch, mirror=AsyncMock(), create=AsyncMock())
+    monkeypatch.setattr(drafting_mod, "_tenant_session", _like_tenant_session(db))
+    monkeypatch.setattr(drafting_mod, "_agent_draft_reply", AsyncMock(
+        side_effect=HTTPException(503, drafting_mod.DRAFT_FAILED_COPY)))
+    with pytest.raises(HTTPException) as caught:
+        await _call()
+    assert caught.value.status_code == 503
+    assert caught.value.detail == drafting_mod.DRAFT_FAILED_COPY
+    assert db.commits == 1, "the session rolled back, so a rotated token is lost"
+
+
 async def test_a_failed_mirror_still_answers_created(monkeypatch) -> None:
     create = AsyncMock(return_value="pm-draft-1")
     mirror = AsyncMock(side_effect=RuntimeError("mirror down"))
