@@ -17,7 +17,6 @@ import type { ReactNode } from "react";
 import { AppTopBar } from "@/components/AppTopBar";
 import { EmptyState } from "@/components/EmptyState";
 import Icon from "@/components/Icon";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 
@@ -30,13 +29,12 @@ import {
 } from "../lib/access";
 import type { FirstOpen as FirstOpenPhase } from "../lib/connect";
 
-/** The CRMs on the Connect card. Only Zoho is live. */
-export const CONNECT_PROVIDERS = [
-  { id: "zoho", label: "Zoho CRM", live: true },
-  { id: "hubspot", label: "HubSpot", live: false },
-  { id: "salesforce", label: "Salesforce", live: false },
-  { id: "pipedrive", label: "Pipedrive", live: false },
-] as const;
+/** The line under the Connect card. Only Zoho is live, so the others get one muted line. */
+export const OTHER_CRMS_LINE = "HubSpot, Salesforce and Pipedrive come later.";
+
+/** The truth about the choice. Each way back removes the CRM records. */
+export const CHOICE_LINE =
+  "To change this later, you start over, and the CRM records are removed.";
 
 export function CrmFrame({ children }: { children: ReactNode }) {
   return (
@@ -112,7 +110,7 @@ export default function FirstOpen({
       <div className="mx-auto w-full max-w-3xl p-4 sm:p-8">
         <h2 className="text-lg font-semibold text-foreground">Set up your CRM</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose where your leads, deals and contacts live. You can change this later in Settings.
+          Choose where your leads, deals and contacts live. {CHOICE_LINE}
         </p>
 
         <div className={`mt-5 grid gap-4 ${withMirror ? "md:grid-cols-2" : ""}`}>
@@ -145,31 +143,19 @@ export default function FirstOpen({
                 Keep your CRM where it is. Metorite reads it and shows it here. Records stay
                 read-only, and you can add notes and calls.
               </p>
-              <ul className="mt-3 flex-1 space-y-2">
-                {CONNECT_PROVIDERS.map((provider) => (
-                  <li key={provider.id} className="flex items-center gap-2 text-sm text-foreground">
-                    <span className="flex-1">{provider.label}</span>
-                    {provider.live ? (
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        loading={busy === "zoho"}
-                        disabled={busy !== null}
-                        onClick={onConnectZoho}
-                      >
-                        Connect
-                      </Button>
-                    ) : (
-                      <>
-                        <Badge>Coming soon</Badge>
-                        <Button variant="secondary" size="sm" disabled>
-                          Connect
-                        </Button>
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <div className="mt-3 flex items-center gap-2 text-sm text-foreground">
+                <span className="flex-1">Zoho CRM</span>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  loading={busy === "zoho"}
+                  disabled={busy !== null}
+                  onClick={onConnectZoho}
+                >
+                  Connect
+                </Button>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">{OTHER_CRMS_LINE}</p>
             </section>
           )}
         </div>

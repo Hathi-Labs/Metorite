@@ -263,6 +263,14 @@ describe("a legacy envelope row", () => {
       { kind: "confirmation", question: "Ship it?", decision: "approve" });
     expect(parseCardAnswerEnvelope(env("Which one?", "Apollo"))).toEqual(
       { kind: "ask_user", question: "Which one?", answer: "Apollo" });
+    // HRD-22: a late approve with a grant adds one paragraph after APPROVE.
+    const late = "APPROVE\n\nI approved this card after the chat had stopped waiting for my answer. "
+      + "If this call already ran in this chat, do not run it again. Otherwise make the same "
+      + "call once, with the same values. My approval covers that one call only.";
+    expect(parseCardAnswerEnvelope(env("Ship it?", late))).toEqual(
+      { kind: "confirmation", question: "Ship it?", decision: "approve" });
+    // Words on the same line are not the paragraph: they stay an answer.
+    expect(parseCardAnswerEnvelope(env("Ship it?", "APPROVE later"))?.kind).toBe("ask_user");
     expect(parseCardAnswerEnvelope(ENVELOPE_WITH_ROWS)).toEqual({
       kind: "confirmation", question: QUESTION, decision: "approve",
       rows: TASKS.slice(0, 7), rowsTotal: 9,
@@ -386,7 +394,9 @@ describe("the notice follows what became of the resend", () => {
     expect(hook).toContain('if (res.ok && res.status !== 202) settleSend("sent");');
     // A send that the gateway steered says so, never "as a new message".
     expect(hook).toContain('settleSend(outcome.steered ? "steered" : "refused");');
-    expect(hook).toContain("onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,");
+    expect(hook).toContain("onRunCapped: opts?.cardAnswer || !onRunCappedRef.current");
+    // The words go back with the typed mark of their send (WS-63 D-PZ-37).
+    expect(hook).toContain("(words: string) => onRunCappedRef.current?.(words, opts?.typed === true)");
   });
 });
 
@@ -429,5 +439,51 @@ describe("a turn that carries both markers", () => {
     expect(html).not.toContain("data-card-answer");
     expect(html).toContain("also delete Apollo");
     expect(html).toContain("Added to the reply");
+  });
+});
+
+// ── 7. A late edit answer of an edit card (EAC-2, `projects_ai_chat.md` §32.4) ──────────────────────────
+//
+// R7 fence `late-edit-line`: the server sends `task_card.LATE_EDIT_ANSWER` in place of an edit answer whose
+// run ended (`chat_recovery.card_resend`), and its display is kind `ask_user` with that text. The chat draws
+// it as "Your answer" and the line, with no new string. Mutation: make `parseCardAnswerEnvelope` read any
+// answer that starts with "I changed" as an approve → red.
+
+/** The line of the server, read from `task_card.py`, so a change of its words turns this red. */
+const LATE_EDIT_ANSWER = (() => {
+  const py = readFileSync(new URL("../../../../packages/acb_skills/acb_skills/task_card.py", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const block = /^LATE_EDIT_ANSWER = \(\n([\s\S]*?)\n\)/m.exec(py);
+  expect(block).not.toBeNull();
+  return [...block![1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]).join("");
+})();
+
+describe("a late edit answer", () => {
+  const QUESTION_TASK = "Create task: «Ship the pack»";
+  const LATE_DISPLAY: CardAnswer = { kind: "ask_user", question: QUESTION_TASK, fenced: true, answer: LATE_EDIT_ANSWER };
+
+  it("late-edit-line: the envelope reads as the member's own answer, and never as an approve", () => {
+    expect(LATE_EDIT_ANSWER).toContain("Nothing was written. Please show the card again.");
+    const d = parseCardAnswerEnvelope(env(QUESTION_TASK, LATE_EDIT_ANSWER));
+    expect(d).toEqual({ kind: "ask_user", question: QUESTION_TASK, answer: LATE_EDIT_ANSWER });
+    expect(d?.decision).toBeUndefined();
+    expect(cardAnswerHeadline(d!)).toBe("Your answer");
+    expect(cardAnswerText(d!)).toContain(LATE_EDIT_ANSWER);
+  });
+
+  it("late-edit-line: the marker agrees with the envelope, so the card draws from the marker", () => {
+    const text = env(QUESTION_TASK, LATE_EDIT_ANSWER);
+    expect(markerAgrees(text, LATE_DISPLAY)).toBe(true);
+    expect(cardAnswerOf({ role: "user", content: text, customEvents: [cardAnswerMarker(LATE_DISPLAY)] })).toEqual(LATE_DISPLAY);
+  });
+
+  it("late-edit-line: the bubble shows Your answer and the line, and no approve mark", () => {
+    const html = draw(userTurn({
+      content: env(QUESTION_TASK, LATE_EDIT_ANSWER), customEvents: [cardAnswerMarker(LATE_DISPLAY)],
+    }));
+    expect(html).toContain("Your answer");
+    expect(html).toContain("I changed this card and pressed Approve, but the run had ended.");
+    expect(html).toContain("Nothing was written. Please show the card again.");
+    expect(html).not.toContain('data-card-answer="approve"');
+    expect(html).not.toContain("asked-question");
   });
 });

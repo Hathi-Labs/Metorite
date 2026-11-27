@@ -282,6 +282,7 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-57 TR-3: a URL on the task.
     "add_task_ref": {"task_id": UUID, "url": "https://github.com/acme/widgets/pull/12"},
     "analytics_finished": {},
+    "get_plan": {"root_task_id": UUID},
     "analytics_load": {},
     "analytics_outlook": {},
     "analytics_stuck": {},
@@ -296,6 +297,22 @@ _BASE: dict[str, dict[str, Any]] = {
     "attach_to_task": {"task_id": UUID, "file_name": "brief.pdf"},
     # WS-64 OP-6b: one grant, for the whole organization.
     "grant_access": {"project_id": UUID},
+    # WS-ALN ALN-4: a pin is of one project. The page id is the witness.
+    "project_authorities": {"project_id": UUID},
+    "pin_authority": {"project_id": UUID},
+    # WS-39 LP-1a: the updates of one project. The page and the cursor are the
+    # witnesses of the read. The post sends the health and the text.
+    "list_project_updates": {"project_id": UUID},
+    "post_project_update": {"project_id": UUID, "health": "at_risk",
+                            "body": "The vendor slipped a week."},
+    # WS-39 SP-5a: the cycles. The date, the name and the goal are the witnesses of a plan.
+    "create_cycle": {"project_id": UUID, "name": "Sprint 8", "starts_on": "2026-11-30",
+                     "ends_on": "2026-12-11"},
+    "plan_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "start_cycle": {"cycle_id": tw.PLANNED_CYCLE},
+    "close_cycle": {"cycle_id": tw.ACTIVE_CYCLE},
+    # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
+    "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
     "add_report_recipient": {"report_id": UUID},
     "set_report_schedule": {"report_id": UUID},
@@ -354,9 +371,40 @@ _BASE: dict[str, dict[str, Any]] = {
     "update_tag": {"project_id": UUID, "tag": "urgent", "name": "p1"},
     "update_task": {"task_id": UUID, "title": "Fix the extruder now"},
     "update_type": {"project_id": UUID, "type_name": "bug", "name": "Defect"},
+    # WS-66 RM-3: the member's reminders. The fake saves the zone UTC.
+    "list_reminders": {},
+    # WS-55 EA-18d: the member answers an agent question (the fake holds one open run).
+    "answer_agent_question": {"run_id": UUID, "answer": "Use the staging box"},
+    "set_reminder": {"title": "Call the bank", "at": "2099-10-31 09:00"},
+    "update_reminder": {"reminder_id": tw.REMINDER, "title": "Fix the extruder today"},
+    "resolve_reminder": {"reminder_id": tw.REMINDER},
+    "reschedule_reminder": {"reminder_id": tw.REMINDER, "at": "2099-11-02 08:00"},
+    # WS-39 TPL-1a: the fake org holds one template, `UUID`.
+    "save_as_template": {"project_id": UUID, "name": "Office move"},
+    "create_project_from_template": {"template_id": UUID, "parent_id": UUID},
+    # SW-43c: the fake run of `UUID` holds the member's live answer. A witness
+    # names the argument that picks the route: `withdraw`, `option` or `answer`.
+    "change_agent_answer": {"task_id": UUID},
 }
 _SAMPLE: dict[str, Any] = {
+    # WS-55 EA-18d: the arguments of `agent_questions`.
+    "scope": "everyone",
+    "sort": "newest",
     "all_unread": True,
+    # SW-43c: an option of the fake question (tw.QUESTION), and the withdraw.
+    "option": "Not now",
+    "withdraw": True,
+    # WS-39 SP-5a: the witnesses of the cycle fields.
+    "add_task_ids": UUID,
+    "carry_over": "backlog",
+    "ends_on": "2026-12-11",
+    "goal": "Ship the nozzle",
+    "starts_on": "2026-11-30",
+    # WS-39 LP-1a: the cursor of the updates is the id of an update.
+    "before": OTHER,
+    "page_id": UUID,
+    "include_removed": True,
+    "answer_key": "yes",
     "subject": "org",
     "recipient": "priya@x.io",
     "enabled": True,
@@ -460,8 +508,19 @@ _SAMPLE: dict[str, Any] = {
     "waiting_on": "Priya",
     "waiting_since": "2026-10-05",
     "expected_by": "2026-10-09",
+    # WS-MDC CC-2: today's focus.
+    "todays_focus": "yes",
     "filters": '{"overdue": true}',
     "personal": '{"disposition": "someday", "context": "@home"}',
+    # WS-66 RM-3: a reminder's time, kind, estimate, answer and list state.
+    "at": "2099-11-01 10:00",
+    "in_minutes": 60,
+    "kind": "notice",
+    "estimate_minutes": 30,
+    "answer": "drop",
+    "state": "done",
+    # WS-39 TPL-1a: the day that a template's offsets count from.
+    "start_date": "2026-12-01",
 }
 #: A row key's sample, where the argument of the same name takes another form.
 _ROW_SAMPLE: dict[str, Any] = {"name": "Spike", "is_epic": "yes"}
@@ -584,6 +643,11 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
         "anchor": "completed",
     },
     ("POST", "/projects/notifications/read", "all"): {"all_unread": True},
+    # SP-8a: three checks, the least that a contract takes.
+    ("PUT", "/projects/tasks/{task_id}/epic-contract", "epic_contract"): {
+        "task_id": UUID,
+        "acceptance": "The page renders\nThe R8 suite passes\nThe owner approves",
+    },
     ("GET", "/projects/candidates", "title"): {"title": "Weld the frame"},
     ("GET", "/projects/tasks/{task_id}/timeline", "kind"): {"task_id": UUID, "kind": "comments"},
     ("POST", "/projects/nodes", "kind"): {"name": "Q4 launch", "kind": "folder"},
@@ -604,6 +668,30 @@ _CALL: dict[tuple[str, str, str], dict[str, Any]] = {
     ("POST", "/projects/tasks/bulk", "personal"): {
         "task_ids": f"{UUID},{OTHER}",
         "personal": '{"disposition": "someday"}',
+    },
+    # WS-66 RM-3: a link is both parts or neither, and a snooze is in_minutes.
+    ("POST", "/projects/my/reminders", "subject_kind"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("POST", "/projects/my/reminders", "subject_id"): {
+        "title": "Call the bank", "at": "2099-10-31 09:00",
+        "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_kind"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "subject_id"): {
+        "reminder_id": tw.REMINDER, "subject_kind": "task", "subject_id": UUID,
+    },
+    ("PATCH", "/projects/my/reminders/{reminder_id}", "tz"): {
+        "reminder_id": tw.REMINDER, "at": "2099-11-01 10:00",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "fire_at"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
+    },
+    ("POST", "/projects/my/reminders/{reminder_id}/snooze", "tz"): {
+        "reminder_id": tw.REMINDER, "in_minutes": 60, "snooze": "yes",
     },
 }
 
@@ -728,8 +816,9 @@ def _built_slices() -> set[str]:
 def test_the_spec_tables_parse() -> None:
     """A spec edit that breaks the parse would pass every check below."""
     # 23 since WS-55 EA-12a added G23, the agent-run routes (EA12-9). 24
-    # since WS-66 RM-1 added G24, the reminder routes.
-    assert len(_spec_gaps()) == 24
+    # since WS-66 RM-1 added G24, the reminder routes. 25 since WS-AP AP-8a
+    # added G25, the person ask. 26 since WS-39 SP-1 added G26, the cycles.
+    assert len(_spec_gaps()) == 26
     assert {"P1", "P2", "P3"} <= _built_slices()
 
 

@@ -1,0 +1,120 @@
+{
+  "_doc": [
+    "CRM-Z10b THE FOLD (crm_platform.md §3.4, D137). Two readers hold the switch to one board.",
+    "tests/unit/test_crm_cutover_switch_r8.py seeds 'pipelines' and 'rows' into a Mirror org, runs POST /crm/cutover, and checks that Native 'ORDER BY position, name' gives 'mirror_order' and that each row reads its 'after' values.",
+    "workbench/control_plane/src/app/crm/lib/cutoverSwitch.test.ts draws 'rows' through orderLanes(mode 'mirror') or toLeadLanes, and the 'after' rows through the Native board. The ids must be equal, and the stageAccent hue of each row must be equal before and after.",
+    "A row id is a fixture name. The R8 suite gives each a real id. 'position' is the raw (picklist) position. 'stages' lists the status ids of a pipeline in its own order. 'source_gone' true sets source_gone_at."
+  ],
+  "cases": [
+    {
+      "name": "a saved order with one NULL row",
+      "kind": "deal",
+      "pipelines": [
+        {"id": "p1", "name": "Sales", "is_default": true, "position": 0, "stages": ["a", "b", "c", "d", "e"]}
+      ],
+      "rows": [
+        {"id": "a", "name": "Qualification", "type": "open", "position": 0, "probability": 10, "ui_position": 20},
+        {"id": "b", "name": "Needs Analysis", "type": "open", "position": 10, "probability": 20, "ui_position": 0},
+        {"id": "c", "name": "Proposal", "type": "open", "position": 20, "probability": 40, "ui_position": 10},
+        {"id": "d", "name": "Negotiation", "type": "ongoing", "position": 30, "probability": 60},
+        {"id": "e", "name": "Closed Won", "type": "won", "position": 40, "probability": 100, "ui_position": 30, "ui_color": "violet", "ui_probability": 95}
+      ],
+      "mirror_order": ["b", "c", "a", "e", "d"],
+      "after": {
+        "b": {"position": 0, "color": "gray", "probability": 20},
+        "c": {"position": 10, "color": "gray", "probability": 40},
+        "a": {"position": 20, "color": "gray", "probability": 10},
+        "e": {"position": 30, "color": "violet", "probability": 95},
+        "d": {"position": 40, "color": "blue", "probability": 60}
+      },
+      "other_order": 0
+    },
+    {
+      "name": "no saved order, two pipelines, the default pipeline differs from the picklist",
+      "kind": "deal",
+      "pipelines": [
+        {"id": "p2", "name": "Service", "is_default": false, "position": 0, "stages": ["a", "b", "c", "d"]},
+        {"id": "p1", "name": "Sales", "is_default": true, "position": 1, "stages": ["c", "a", "b"]}
+      ],
+      "rows": [
+        {"id": "a", "name": "Re-Evaluate", "type": "open", "position": 0, "probability": 10},
+        {"id": "b", "name": "Confirmation and Advance", "type": "open", "position": 10, "probability": 50},
+        {"id": "c", "name": "New Deal", "type": "open", "position": 20, "probability": 5},
+        {"id": "d", "name": "Parked", "type": "on_hold", "position": 30, "probability": 0},
+        {"id": "f", "name": "Build in progress", "type": "open", "position": 5, "probability": 70}
+      ],
+      "mirror_order": ["c", "a", "b", "f", "d"],
+      "after": {
+        "c": {"position": 0, "color": "gray", "probability": 5},
+        "a": {"position": 10, "color": "gray", "probability": 10},
+        "b": {"position": 20, "color": "gray", "probability": 50},
+        "f": {"position": 30, "color": "blue", "probability": 70},
+        "d": {"position": 40, "color": "amber", "probability": 0}
+      },
+      "other_order": 1
+    },
+    {
+      "name": "a won stage in the middle",
+      "kind": "deal",
+      "pipelines": [
+        {"id": "p1", "name": "Sales", "is_default": true, "position": 0, "stages": ["a", "w", "b", "l"]}
+      ],
+      "rows": [
+        {"id": "a", "name": "Prospect", "type": "open", "position": 0, "probability": 10},
+        {"id": "w", "name": "Won Early", "type": "won", "position": 10, "probability": 100, "ui_probability": 90},
+        {"id": "b", "name": "Follow up", "type": "open", "position": 20, "probability": 30, "ui_color": "amber"},
+        {"id": "l", "name": "Lost", "type": "lost", "position": 30, "probability": 0}
+      ],
+      "mirror_order": ["a", "w", "b", "l"],
+      "after": {
+        "a": {"position": 0, "color": "gray", "probability": 10},
+        "w": {"position": 10, "color": "green", "probability": 90},
+        "b": {"position": 20, "color": "amber", "probability": 30},
+        "l": {"position": 30, "color": "red", "probability": 0}
+      },
+      "other_order": 0
+    },
+    {
+      "name": "a hidden row and a row that Zoho no longer lists",
+      "kind": "deal",
+      "pipelines": [
+        {"id": "p1", "name": "Sales", "is_default": true, "position": 0, "stages": ["h", "a", "g", "b"]}
+      ],
+      "rows": [
+        {"id": "h", "name": "Old Intake", "type": "open", "position": 0, "probability": 0, "hidden": true},
+        {"id": "a", "name": "Discovery", "type": "open", "position": 10, "probability": 20},
+        {"id": "g", "name": "Done Elsewhere", "type": "open", "position": 20, "probability": 0, "source_gone": true},
+        {"id": "b", "name": "Shipped", "type": "open", "position": 30, "probability": 100}
+      ],
+      "mirror_order": ["a", "b", "h", "g"],
+      "after": {
+        "a": {"position": 0, "color": "gray", "probability": 20},
+        "b": {"position": 10, "color": "green", "probability": 100},
+        "h": {"position": 20, "color": "gray", "probability": 0},
+        "g": {"position": 30, "color": "green", "probability": 0}
+      },
+      "other_order": 0
+    },
+    {
+      "name": "lead statuses with a saved order",
+      "kind": "lead",
+      "pipelines": [],
+      "rows": [
+        {"id": "n", "name": "New", "type": "open", "position": 0, "probability": 5, "ui_position": 10},
+        {"id": "c", "name": "Contacted", "type": "open", "position": 10, "probability": 10, "ui_position": 0},
+        {"id": "j", "name": "Junk Lead", "type": "lost", "position": 20, "probability": 0},
+        {"id": "q", "name": "Qualified", "type": "won", "position": 30, "probability": 80, "ui_position": 20, "ui_color": "blue", "ui_probability": 70},
+        {"id": "x", "name": "Old Status", "type": "open", "position": 5, "probability": 0, "hidden": true}
+      ],
+      "mirror_order": ["c", "n", "q", "j", "x"],
+      "after": {
+        "c": {"position": 0, "color": "gray", "probability": 10},
+        "n": {"position": 10, "color": "gray", "probability": 5},
+        "q": {"position": 20, "color": "blue", "probability": 70},
+        "j": {"position": 30, "color": "red", "probability": 0},
+        "x": {"position": 40, "color": "gray", "probability": 0}
+      },
+      "other_order": 0
+    }
+  ]
+}

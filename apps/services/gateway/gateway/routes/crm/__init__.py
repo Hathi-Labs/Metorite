@@ -48,6 +48,9 @@ holds the rules of the ``custom`` write path, which ``records.py`` calls.
 ``modules.py`` is WS-53 CRM-Q6b — ``GET /crm/modules`` and the read-only
 record routes of each mirrored generic Zoho module (``crm_module_records``).
 Its paths start with the literal ``modules/`` segment, so no route shadows it.
+For an org on ``CRM_MODULE_FIND_ORGS`` (CRM-Q34-7), ``q`` on the record list
+and on a module total finds across the module, through the one predicate of
+``field_sql.find_where``.
 
 ``field_rules.py`` is WS-53 CRM-Q7a — ``GET``, ``POST`` and ``PATCH`` on
 ``/crm/field-rules``, the Field map of the mirror. Admin only, behind
@@ -102,12 +105,21 @@ A view is not a CRM record, so the routes work in Mirror mode as well.
 ``aggregate.py`` is WS-53 CRM-C7 — ``GET /crm/aggregate`` and
 ``GET /crm/aggregate/stage-dwell``, the totals that an agent reads. Read only.
 It builds its filters with ``records.list_query``, the one list builder.
-``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member.
+``settings.py`` also holds ``GET /crm/mode``, the mode for any admitted member,
+and ``PUT /crm/settings/labels`` (CRM-Z10g), the names of the core records in
+a Native CRM, admin only.
 
 ``convert_mapping.py`` is WS-53 CRM-C6a — ``GET`` and ``PUT
 /crm/conversion-mapping``, the lead-conversion mapping of a Native CRM (table
 ``crm_convert_mappings``). Admin only, behind ``CRM_FIELD_STUDIO_ORGS``, and
 409 in Mirror mode. ``pipeline.convert_lead`` applies the map.
+
+``cutover.py`` is WS-53 CRM-Z10a — ``GET /crm/cutover/preview``, what moves to
+Metorite when the org leaves Zoho and what does not. Read only, with no source
+call. Admin only, behind ``CRM_MIRROR``, and Mirror mode only. CRM-Z10b adds
+the switch: ``POST /crm/cutover/start``, ``GET /crm/cutover/status`` and
+``POST /crm/cutover``. Admin only, behind ``CRM_CUTOVER_ORGS``, and the admin
+types ``SWITCH``.
 
 ``note_search.py`` is WS-53 CRM-Q27 — ``GET /crm/notes/search``, the notes
 nearest to a query by meaning (table ``crm_note_vectors``). Read only. An org
@@ -132,6 +144,11 @@ the table, and only for an org on ``CRM_DIGEST_ORGS``.
 and of each member (table ``crm_business_rules``), and the hold and the
 confirm of a rule from the chat. An org outside ``CRM_ANSWER_FIRST_ORGS``
 gets 404 ``rules_off``.
+
+``change_log.py`` is WS-CRM CRM-M1 — ``GET /crm/change-history`` and
+``POST /crm/change-history/{id}/undo`` (table ``crm_change_log``), and
+``log_change``, the one writer of a Change history row. Each feature module
+registers the Undo of its own areas there.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -139,8 +156,10 @@ from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import analysis as _analysis  # noqa: F401
 from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
+from gateway.routes.crm import change_log as _change_log  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
+from gateway.routes.crm import cutover as _cutover  # noqa: F401
 from gateway.routes.crm import deal_contacts as _deal_contacts  # noqa: F401
 from gateway.routes.crm import digests as _digests  # noqa: F401
 from gateway.routes.crm import export as _export  # noqa: F401
@@ -151,6 +170,7 @@ from gateway.routes.crm import import_zoho as _import_zoho  # noqa: F401
 from gateway.routes.crm import mapping_plans as _mapping_plans  # noqa: F401
 from gateway.routes.crm import modules as _modules  # noqa: F401
 from gateway.routes.crm import note_search as _note_search  # noqa: F401
+from gateway.routes.crm import package_fields as _package_fields  # noqa: F401
 from gateway.routes.crm import pipeline as _pipeline  # noqa: F401
 from gateway.routes.crm import pipelines as _pipelines  # noqa: F401
 from gateway.routes.crm import questions as _questions  # noqa: F401
@@ -163,6 +183,7 @@ from gateway.routes.crm import suggestions as _suggestions  # noqa: F401
 from gateway.routes.crm import sync as _sync  # noqa: F401
 from gateway.routes.crm import sync_zoho as _sync_zoho  # noqa: F401
 from gateway.routes.crm import terms as _terms  # noqa: F401
+from gateway.routes.crm import verified_queries as _verified_queries  # noqa: F401
 from gateway.routes.crm import views as _views  # noqa: F401
 from gateway.routes.crm.core import router
 

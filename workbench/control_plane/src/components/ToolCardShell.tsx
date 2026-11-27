@@ -3,6 +3,7 @@
 import Button from "@/components/ui/Button";
 import {
   CARD_FRAME_CLASS,
+  CardDismissGutterContext,
   CollapsibleCard,
   CollapsibleCardBody,
   CollapsibleCardHeader,
@@ -66,7 +67,7 @@ export function ToolCardShell({
       header="own"
       animate={animate}
     >
-      <div data-tool-card="" className={CARD_FRAME_CLASS}>
+      <div data-tool-card="" className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3`}>
         <div className="flex min-w-0 items-center gap-1.5">
           <div className="min-w-0 flex-1">
             <CollapsibleCardHeader lead={icon} />
@@ -113,7 +114,7 @@ export function DismissableCard({
           <Icon name="X" size={12} />
         </Button>
       </div>
-      {children}
+      <CardDismissGutterContext.Provider value>{children}</CardDismissGutterContext.Provider>
     </div>
   );
 }

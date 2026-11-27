@@ -78,6 +78,23 @@ export async function listSpaces(): Promise<Space[]> {
   return out?.spaces ?? [];
 }
 
+/** The body of `POST /knowledge/spaces` (KB-2q). No grants: the who-can-see control is KB-2r. */
+export interface SpaceCreateBody {
+  name: string;
+  icon?: string;
+  purpose?: string;
+}
+
+/** Make a team space. The gateway asks for `knowledge:manage` and answers 201 with the space. */
+export function createSpace(body: SpaceCreateBody): Promise<Space> {
+  return call<Space>("/spaces", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** Rename, re-icon or change the purpose. The gateway asks for manage on the space. */
+export function updateSpace(id: string, body: Partial<SpaceCreateBody>): Promise<Space> {
+  return call<Space>(`/spaces/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
 /**
  * The pages of one space, with no body. With no `state`, the live pages.
  * `state: "archived"` gives the archived pages that the member can see

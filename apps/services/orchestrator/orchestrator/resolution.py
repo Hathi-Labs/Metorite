@@ -12,7 +12,7 @@ import re
 from typing import Iterable
 from uuid import UUID
 
-from acb_audit import AuditEvent, record
+from acb_audit import AuditEvent, record, refuse_tenantless
 from acb_graph.resolver import LLM_TIEBREAK_PROMPT, ResolutionCandidate
 from acb_llm import LLMTier, complete
 
@@ -55,6 +55,12 @@ def _parse_choice(raw: str, n_candidates: int) -> int | None:
     return v if 0 <= v <= n_candidates else None
 
 
+def _audit(event: AuditEvent) -> None:
+    """Record *event*, unless it is a tenant event with no org (task 2221)."""
+    if not refuse_tenantless(event):
+        record(event)
+
+
 async def resolve_with_llm(
     *,
     incoming: dict[str, str | None],
@@ -71,6 +77,14 @@ async def resolve_with_llm(
     if not cands:
         return None
 
+    # Task 2221: the raw answer and the error name tenant records, so each
+    # audit row takes the run's tenant, from the run binding on this frame. It
+    # is never a field of *incoming*. With no tenant and ACB_GRAPH_TENANT_BIND
+    # on, refuse_tenantless skips the row. Fence: test_audit_writers_org_r8.py.
+    from orchestrator.executor import _current_run_org
+
+    org = _current_run_org()
+
     prompt = LLM_TIEBREAK_PROMPT.format(
         incoming=_format_incoming(incoming),
         candidates=_format_candidates(cands, candidate_summaries),
@@ -79,24 +93,27 @@ async def resolve_with_llm(
     try:
         raw = await complete(
             tier=LLMTier.TIER_1,
+            # One integer: a pick among the candidates (task 1128).
+            job="structured",
             messages=[
                 {"role": "system", "content": "Reply with a single integer. No prose."},
                 {"role": "user", "content": prompt},
             ],
         )
     except Exception as exc:  # noqa: BLE001 - audit + degrade gracefully
-        record(
+        _audit(
             AuditEvent(
                 actor="resolver:llm",
                 action="tiebreak_error",
                 target="entity_resolution",
                 payload={"reason": f"{type(exc).__name__}: {exc}"},
+                organization_id=org,
             )
         )
         return None
 
     choice = _parse_choice(raw, len(cands))
-    record(
+    _audit(
         AuditEvent(
             actor="resolver:llm",
             action="tiebreak",
@@ -106,6 +123,7 @@ async def resolve_with_llm(
                 "raw": raw,
                 "choice": choice,
             },
+            organization_id=org,
         )
     )
     if not choice:  # 0 or None => keep separate

@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
+import { GLASS_LOOK, LOOK_ATTRIBUTE } from "@/lib/theme/look";
 
 // The app's two faces, reached through `--font-app` / `--font-app-mono`.
 // next/font self-hosts and subsets them, so no request ever leaves for
@@ -15,6 +16,16 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// The glass look's face off Apple devices (D143): Inter, the closest open
+// relative of SF Pro. `preload: false`, so a page in the classic look never
+// fetches it. A browser downloads a face only when text uses it.
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin"],
+  preload: false,
+  display: "swap",
 });
 
 import AppShell from "@/components/AppShell";
@@ -51,7 +62,13 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-const fontVariables = [geistSans.variable, geistMono.variable].join(" ");
+const fontVariables = [geistSans.variable, geistMono.variable, inter.variable]
+  .filter(Boolean)
+  .join(" ");
+
+// Glass is the only look (D149), so the server renders the attribute on
+// every page and nothing takes it off.
+const lookAttributes = { [LOOK_ATTRIBUTE]: GLASS_LOOK };
 
 export default function RootLayout({
   children,
@@ -63,6 +80,7 @@ export default function RootLayout({
       lang="en"
       suppressHydrationWarning
       className={`${fontVariables} h-full antialiased`}
+      {...lookAttributes}
     >
       <body className="h-full bg-background text-foreground antialiased">
         {/* Applies the stored density and accent before anything paints, so

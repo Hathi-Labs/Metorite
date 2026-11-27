@@ -72,7 +72,8 @@ async def test_a_deck_becomes_one_pdf_artifact_from_the_real_child(
 ) -> None:
     out = await documents.make_document(DECK)
     assert out["ok"] is True
-    assert out["download_url"].endswith("outputs/Acme Q4 plan.pdf")
+    # The path is percent-encoded, so a space or a `#` never ends it (#120).
+    assert out["download_url"].endswith("outputs/Acme%20Q4%20plan.pdf")
     (file,) = written.refresh()
     assert file["path"] == "outputs/Acme Q4 plan.pdf"
     doc = pymupdf.open(stream=file["content"], filetype="pdf")

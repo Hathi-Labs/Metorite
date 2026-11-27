@@ -28,6 +28,7 @@ from gateway.routes.email.automation import always_copy as ac
 from gateway.routes.email.automation import held_card as hc
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 from tests.unit.test_recipient_intent import (
     KIRAN,
     MEMBER,
@@ -271,6 +272,9 @@ async def test_a_held_chat_never_changes_the_rules(monkeypatch) -> None:
         calls.append(a)
         return {}
 
+    # The held card mode is the switch on in a held run. OA-7b: a held pack
+    # holds this tool only with the switch on, so the test says so.
+    F.flag_on(monkeypatch)
     monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
     monkeypatch.setattr(agents, "_put", any_call)
     monkeypatch.setattr(agents, "_get", any_call)
@@ -300,6 +304,8 @@ async def test_the_tool_asks_a_card_then_puts_the_whole_list(monkeypatch) -> Non
         cards.append(kw)
         return True
 
+    # An open chat. OA-7b: the pack mode builds the pack from it.
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
     monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
     monkeypatch.setattr(agents, "_get", get)
     monkeypatch.setattr(agents, "_put", put)
@@ -342,6 +348,8 @@ def _copy_agent(monkeypatch, name: str, versions: list[str], put_error: Any = No
         cards.append(kw)
         return True
 
+    # An open chat. OA-7b: the pack mode builds the pack from it.
+    monkeypatch.setattr(agents, "_egress_held", lambda: False)
     monkeypatch.setattr(agents, "_held_card_mode", lambda: False)
     monkeypatch.setattr(agents, "_get", get)
     monkeypatch.setattr(agents, "_put", put)

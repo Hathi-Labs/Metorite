@@ -45,6 +45,7 @@ from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from gateway.assistant_summaries import clear_on_share
 from gateway.room_stream import (
     publish_room_event,
     read_presence,
@@ -373,6 +374,9 @@ def _add_participant(
             {"sid": session_id, "subject": subject, "role": role,
              "by": added_by, "waterline": waterline_ms},
         )
+        # PZ-33a: the chat summary is for a solo chat only. A chat with a
+        # second party loses it, in this same transaction.
+        clear_on_share(s, session_id)
         return result.rowcount > 0
 
 
@@ -455,6 +459,8 @@ def _set_visibility(
             text("UPDATE chat_session SET visibility = :v, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, "v": visibility},
         )
+        # PZ-33a: a chat that leaves `private` loses its summary.
+        clear_on_share(s, session_id)
 
 
 @router.patch("/sessions/{session_id}/participants/{subject}", summary="Change a room role")
@@ -665,6 +671,8 @@ def _update_room(
             text(f"UPDATE chat_session SET {sets}, updated_at = now() WHERE id = :sid"),
             {"sid": session_id, **updates},
         )
+        # PZ-33a: a chat that leaves `private` loses its summary.
+        clear_on_share(s, session_id)
 
 
 # ---------------------------------------------------------------------------

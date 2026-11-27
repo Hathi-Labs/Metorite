@@ -201,7 +201,7 @@ model, the build/publish pipeline, the runtime bridge, and the sharing UX.
 | **Builder engine** | `orchestrator/code_session.py` (bounded Copilot session in an arbitrary `working_directory`, BYOK via gateway `/v1`, risk-aware permission handler); `/agent/run/stream` + `stream_relay` + `event_translator` for live SSE | An interactive (not one-shot) session bound to the app workspace; build/validate harness contract |
 | **App workspace, versioned & durable** | `loader.py` local-path machinery: copy-to-cache, `git init`, baseline commit, workspace `.gitignore`; blob store (`agent_blob`) survives volume wipes | An `apps/` workspace root; checkpoint-per-edit tags; version snapshot rows |
 | **Live preview** | `SandboxedHtml` (opaque-origin srcDoc iframe, strict CSP, `ccAction`/`ccSubmit` postMessage bridge, `chromeless` full-page mode); `DocumentPane` already renders workspace `.html` live | Preview toolbar (device sizes, console, Fix-with-AI), bundle build step, error trap → chat |
-| **React support** | `skills/upstream/anthropics/web-artifacts-builder` (Vite/Parcel → self-contained `bundle.html`); esbuild is trivially available in the builder session | The standard app template + build contract |
+| **React support** | Anthropic's `web-artifacts-builder` skill (github.com/anthropics/skills) (Vite/Parcel → self-contained `bundle.html`). esbuild is available in the builder session | The standard app template + build contract |
 | **Identity** | NextAuth (Entra ID SSO) → `X-User-Email` / `X-User-Role` on every gateway call; `app_user` table | `cc.user()` pass-through into the bridge |
 | **Storage for apps** | Postgres + blob store patterns | `app_data` KV/table API, app-scoped |
 | **LLM access for apps** | Gateway `/v1` (tiered, metered, cached) | `cc.ai.complete()` proxy route with app attribution + budget |
@@ -1085,7 +1085,7 @@ watch (genUI Phase 3); app analytics; org-research permission model adoption.
   `infra/postgres/` (`66_pending_actions`, `71_agent_blob_store`, `03_pending_commits`)
 - Specs: `project-docs/specs/agent_coding_skill.md` ·
   `specs/generative_ui_2.md` · `specs/permissions_sandbox_b6.md` ·
-  `specs/multi_user_organization_research.md` · `specs/chat_agent_framework_review_2026-07.md` ·
+  `research/multi_user_organization_research.md` · `research/chat_agent_framework_review_2026-07.md` ·
   `/FOUNDATION_BUILDOUT_CHECKLIST.md` (BO-1/2/7/14)
 - Prior art (surveyed 2026-07-25):
   [dyad](https://github.com/dyad-sh/dyad) ·

@@ -19,6 +19,7 @@
  * mysterious failure three turns later.
  */
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -56,6 +57,8 @@ export function ShareSheet({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // A bar tap closes the sheet (MOB-9).
+  useCloseOnBarTap(onClose);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -111,10 +114,10 @@ export function ShareSheet({
       onClick={onClose}
     >
       <div
-        className="tech-glass my-auto w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl"
+        className="tech-glass my-auto w-full max-w-lg rounded-xl border border-border bg-card shadow-2xl glass:rounded-2xl glass:border-transparent glass:glass-menu-flat"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center gap-3 border-b border-border px-5 py-4">
+        <header className="flex items-center gap-3 border-b border-border px-5 py-4 glass:border-transparent">
           <Icon name="Users" className="h-4 w-4 text-primary" />
           <div className="flex-1">
             <h2 className="text-sm font-semibold text-foreground">
@@ -138,7 +141,7 @@ export function ShareSheet({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search people and groups…"
-              className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-faint focus:border-primary focus:outline-none"
+              className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-foreground placeholder:text-faint focus:border-primary focus:outline-none glass:h-8 glass:rounded-full glass:border-input glass:bg-field glass:py-0 glass:text-label"
             />
           </div>
 
@@ -149,10 +152,10 @@ export function ShareSheet({
                 onClick={() => setRole(r.value)}
                 title={r.blurb}
                 className={[
-                  "rounded-full border px-2.5 py-1 text-xs tech-transition",
+                  "rounded-full border px-2.5 py-1 text-xs tech-transition glass:border-transparent glass:px-3 glass:text-footnote",
                   role === r.value
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border text-muted-foreground hover:text-foreground",
+                    ? "border-primary bg-primary/10 text-primary glass:bg-primary/12"
+                    : "border-border text-muted-foreground hover:text-foreground glass:bg-secondary",
                 ].join(" ")}
               >
                 {r.label}
@@ -174,7 +177,7 @@ export function ShareSheet({
                         addParticipant(room.sessionId, d.subject, role)
                       )
                     }
-                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-secondary disabled:opacity-50"
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-secondary disabled:opacity-50 glass:rounded-[10px]"
                   >
                     {d.kind === "group" ? (
                       <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-secondary text-muted-foreground">
@@ -207,7 +210,7 @@ export function ShareSheet({
           )}
 
           {error && (
-            <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <p className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive glass:rounded-[10px] glass:border-transparent">
               {error}
             </p>
           )}
@@ -222,7 +225,7 @@ export function ShareSheet({
               return (
                 <li
                   key={p.subject}
-                  className="flex items-center gap-2.5 rounded-lg px-2 py-1.5"
+                  className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 glass:rounded-[10px]"
                 >
                   {p.kind === "person" ? (
                     <PersonAvatar
@@ -264,7 +267,7 @@ export function ShareSheet({
                           )
                         )
                       }
-                      className="rounded-md border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground focus:outline-none"
+                      className="rounded-md border border-border bg-background px-1.5 py-0.5 text-xs text-muted-foreground focus:outline-none glass:rounded-full glass:border-transparent glass:bg-secondary glass:px-2.5 glass:text-footnote"
                     >
                       {ROLE_COPY.map((r) => (
                         <option key={r.value} value={r.value}>
@@ -321,10 +324,10 @@ export function ShareSheet({
                       )
                     }
                     className={[
-                      "flex-1 rounded-lg border px-3 py-2 text-left text-xs tech-transition",
+                      "flex-1 rounded-lg border px-3 py-2 text-left text-xs tech-transition glass:rounded-[10px] glass:border-transparent glass:text-footnote",
                       room.settings.historyVisibility === value
-                        ? "border-primary bg-primary/10 text-foreground"
-                        : "border-border text-muted-foreground hover:text-foreground",
+                        ? "border-primary bg-primary/10 text-foreground glass:bg-primary/12"
+                        : "border-border text-muted-foreground hover:text-foreground glass:bg-secondary",
                     ].join(" ")}
                   >
                     <span className="flex items-center gap-1.5 font-medium">
@@ -343,7 +346,7 @@ export function ShareSheet({
           <h3 className="mt-5 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-faint">
             What the agents can reach here
           </h3>
-          <div className="rounded-lg border border-border bg-background/60 p-3">
+          <div className="rounded-lg border border-border bg-background/60 p-3 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
             {room.cap.degraded ? (
               <p className="flex items-start gap-2 text-xs text-muted-foreground">
                 <Icon name="AlertTriangle" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />

@@ -38,15 +38,18 @@ then re-evaluate whether five floor modes still earn their place*).
 """
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from acb_common import get_logger
+from agent_framework import ChatMiddleware, ContextProvider
 
 _log = get_logger("orchestrator.steer")
 
@@ -294,8 +297,16 @@ async def discard_pending(thread_id: str) -> int:
 
 def make_signal(
     *, thread_id: str, author: str, text: str, run_id: str | None = None,
+    typed: bool = False,
 ) -> dict[str, Any]:
-    """One steer, as it is stored and as it travels on the control bus."""
+    """One steer, as it is stored and as it travels on the control bus.
+
+    ``typed`` is True only when the member typed *text* (PZ-31). The steer
+    route sets False for a card answer and a Continue turn. Only a typed
+    steer of the run member grounds a profile write
+    (``assistant_profile.add_steered_words``). A stored steer with no
+    ``typed`` key reads as False.
+    """
     return {
         "id": uuid.uuid4().hex,
         "threadId": thread_id,
@@ -303,6 +314,7 @@ def make_signal(
         "text": text,
         "targetRunId": run_id,
         "ts": int(time.time() * 1000),
+        "typed": typed is True,
     }
 
 
@@ -425,17 +437,18 @@ async def discard_signal(thread_id: str, signal_id: str) -> None:
 # 4. The in-process guidance buffer — what the model actually reads
 # ---------------------------------------------------------------------------
 #
-# §4.6 step 3: the queue is drained "at the next tool boundary and injected as a
-# note". Tool boundaries are the seam because the model is between decisions
-# there, so injection does not corrupt a streaming turn.
+# §4.6 step 3: the queue is drained at the run's NEXT MODEL CALL, and each note
+# is a user turn there (:class:`SteerTurns`, task 2494). The model is between
+# decisions at that point, so a turn never cuts a streaming answer. A note never
+# rides a tool result.
 #
 # This buffer is deliberately per-process and keyed by thread: it belongs to the
 # worker that owns the run, which is the only worker whose tools are executing.
 # Cross-worker delivery is the control bus's job (dispatch_control), not this
 # dict's — by the time text lands here it has already reached the right worker.
 
-#: Each entry keeps the signal it came from (id, author, text), so a note the
-#: run never read can go back to the durable store as the same steer.
+#: Each entry keeps the signal it came from (id, author, text, typed), so a
+#: note the run never read can go back to the durable store as the same steer.
 _PENDING_GUIDANCE: dict[str, list[dict[str, Any]]] = {}
 
 #: Threads whose run can read no more guidance: it has sent its terminal
@@ -449,12 +462,16 @@ _CLOSED: set[str] = set()
 
 def buffer_guidance(
     thread_id: str, author: str, text: str, *, signal_id: str = "",
+    typed: bool = False,
 ) -> bool:
-    """Queue one attributed note for injection at the run's next tool boundary.
+    """Queue one attributed note, as a user turn of the run's next model call.
 
     Returns False when nothing was queued: no thread, no text, or a run that
     has already ended (:func:`return_unconsumed`). The caller then keeps the
     durable signal, so the steer is answered by the follow-up turn.
+
+    ``typed`` is the signal's flag (:func:`make_signal`). The entry keeps it,
+    so a note that goes back to the store keeps it too (PZ-31).
     """
     if not thread_id or not (text or "").strip():
         return False
@@ -467,12 +484,13 @@ def buffer_guidance(
         buf.pop(0)
     entry: dict[str, Any] = {
         "note": note, "id": signal_id, "author": who, "text": text.strip(),
+        "typed": typed is True,
         # A number that is never used twice in this process. A waiting card
         # compares two reads of these (:func:`guidance_marks`).
         "seq": next(_GUIDANCE_SEQ),
     }
     # The loop of the owner, so a drain on a worker thread can still drop
-    # the durable copy (:func:`decorate_tool_result`).
+    # the durable copy (:func:`take_steer_turns`).
     try:
         import asyncio  # noqa: PLC0415
 
@@ -489,7 +507,7 @@ def _forget_durable(thread_id: str, entries: list[dict[str, Any]]) -> None:
     Round 2 of the review of #920: the applier used to drop it when it
     BUFFERED the note. A note in the buffer then died with the process (a
     deploy restart), because the store no longer held it. Now the store
-    holds each steer until a tool result carries it to the model. Best
+    holds each steer until a model call reads it as a user turn. Best
     effort: a miss costs one duplicate, which ``take_pending_steers`` drops
     by id.
     """
@@ -549,9 +567,9 @@ def clear_guidance(thread_id: str) -> None:
 async def return_unconsumed(thread_id: str) -> int:
     """Close the run to guidance, and give back every note it never read.
 
-    A steer rides the next tool result (:func:`decorate_tool_result`). A
-    steer that arrives while the model writes its last answer meets no tool
-    result, and before 2026-10-12 it died in this buffer: the applier had
+    A steer is a user turn of the next model call (:class:`SteerTurns`). A
+    steer that arrives while the model writes its last answer meets no model
+    call, and before 2026-10-12 it died in this buffer: the applier had
     already discarded its durable copy. So the run's terminal event calls
     this (``stream_relay.push_event``), and each unread note goes back to the
     durable store under its own id. The follow-up turn replays it through
@@ -575,6 +593,9 @@ async def return_unconsumed(thread_id: str) -> int:
                 "targetRunId": None,
                 "ts": int(time.time() * 1000),
                 "returned": True,
+                # PZ-31: the flag goes back with the steer, so the follow-up
+                # grounds the member's own typed words.
+                "typed": e.get("typed") is True,
             }
             if signal["text"] and await persist_signal(thread_id, signal):
                 given += 1
@@ -618,47 +639,228 @@ async def end_of_run(thread_id: str) -> int:
         _CLOSED.discard(thread_id)
 
 
-def decorate_tool_result(result: Any, thread_id: str | None = None) -> Any:
-    """Append any pending steer notes to a tool's return value.
+def _count_typed_steers(entries: list[dict[str, Any]]) -> None:
+    """Make the run member's own typed steers in *entries* typed words of
+    the run (PZ-31). The model now reads them, so a later profile save in
+    the same run may ground in them.
 
-    This is §4.6 step 3 made concrete, and the choice of seam deserves stating
-    because a more obvious one does not exist. A native MAF run is driven by
-    ``agent.run(input)`` where ``input`` is a list built once by
-    ``_compose_maf_run_input`` and consumed at run start — there is no message
-    store to append to and no supported way to hand the model another turn
-    mid-run. The ONE channel that reliably carries text into a running model's
-    context is a tool's return value; it is how ``ask_user``'s answer reaches
-    the model today (``ask_tools`` returns ``"User response: …"``).
+    The rule lives in ``assistant_profile.add_steered_words``: the flag must
+    be True, and the author must be the member that the chat route named
+    for the run. This function only hands each entry over. It knows no
+    member, and it reads none from the steer text. Never raises.
+    """
+    with contextlib.suppress(Exception):  # a note must reach the model anyway
+        from acb_common.assistant_profile import add_steered_words
 
-    So a steer rides the next tool result. That is also the right *moment*
-    independent of the mechanism: the model is between decisions at a tool
-    boundary, so injecting there cannot corrupt a half-streamed sentence.
+        for e in entries:
+            add_steered_words(e.get("author"), e.get("text"), typed=e.get("typed"))
 
-    Degrades to a no-op with no pending notes, and never raises — a tool result
-    must reach the model whatever happens here.
+
+#: The ``source_id`` of :class:`SteerTurnsProvider`. MAF keys provider state on it.
+STEER_TURNS_SOURCE_ID = "metorite-steer-turns"
+
+#: The mark on each user message that :class:`SteerTurns` adds. A steer turn
+#: is a real user turn, and the mark only lets the run find it again.
+STEER_TURN_KEY = "metorite_steer_turn"
+
+#: The key of the run's :class:`SteerTurns` in ``SessionContext.metadata``,
+#: MAF's dict for the providers of one run. The session history reads it
+#: (``native_session_store.SessionHistoryProvider``).
+STEER_TURNS_KEY = "metorite_steer_turns"
+
+
+def steers_frame(count: int) -> str:
+    """The frame of a run that took *count* steers, two or more (task 3130).
+
+    Production, 2026-11-13: a run took two steers, and its answer met only
+    the last one. The other message got no answer. So the newest steer turn
+    of such a run ends with this line, and a replay of two or more steers
+    ends with it too (:func:`format_replayed`). One steer gets no frame, so
+    its turn is byte for byte as before. The words hold in a shared room,
+    where the messages can come from more than one member."""
+    return (f"[{count} new messages came in during this reply. Answer each one. "
+            "If you leave one out, name it and say why.]")
+
+
+def take_steer_turns(thread_id: str | None) -> list[str]:
+    """Take every waiting note of *thread_id* for the next model call.
+
+    Each note is one steer that the chat route sent for the session's member
+    (:func:`send_steer`). :class:`SteerTurns` gives each note to the model as
+    a USER message. A note never rides a tool result (task 2494): the model
+    read member text inside a tool result as a possible prompt injection, and
+    ignored it. The durable copy goes now, because the model reads the note
+    now. Never raises.
+    """
+    if not thread_id:
+        return []
+    try:
+        entries = _PENDING_GUIDANCE.pop(thread_id, [])
+        if not entries:
+            return []
+        _forget_durable(thread_id, entries)
+        _count_typed_steers(entries)
+        return [str(e.get("note") or "") for e in entries if str(e.get("note") or "").strip()]
+    except Exception:  # a model call must go on whatever happens here
+        return []
+
+
+def _run_thread_id() -> str | None:
+    """The relay thread of the run on this frame, or None. Never raises."""
+    try:
+        from orchestrator.executor import resolve_relay_thread_id
+
+        return resolve_relay_thread_id()
+    except Exception:
+        return None
+
+
+class SteerTurns(ChatMiddleware):
+    """Give each steer to the model as a USER turn, at the next model call.
+
+    This is §4.6 step 3 on the channel that MAF supports for it: a chat
+    middleware sees each model request of the run, after the tool results of
+    the last step. So a steer that arrived while a tool ran (or while a card
+    waited) is the next user turn, right after those tool results. Text that
+    a tool returned stays in its tool message. Only :func:`take_steer_turns`
+    gives words to this class, and only the steer applier of the run's own
+    thread fills that buffer (``stream_relay._steer_apply``).
+
+    MAF gives each model request a COPY of the message list of the run. So
+    this object keeps each turn that it added, with the message that came
+    before it, and puts it back in each later request of the same run. A
+    request that no longer holds that message (a service that keeps the
+    history) gets no second copy. For the same reason the run's response
+    holds no steer turn, so a session history asks :meth:`in_place` for them
+    (:func:`with_steer_turns`).
+    """
+
+    def __init__(self, thread_id: str | None = None) -> None:
+        self._thread_id = thread_id
+        #: ``(anchor, turn)`` in the order the turns came.
+        self._placed: list[tuple[Any, Any]] = []
+
+    def _with_turns(self, messages: list[Any]) -> list[Any]:
+        from agent_framework import Message
+
+        held = {id(m) for m in messages}
+        for anchor, turn in self._placed:
+            if id(turn) in held or anchor is None or id(anchor) not in held:
+                continue
+            at = next(i for i, m in enumerate(messages) if m is anchor) + 1
+            # After the steer turns that this run already put after the anchor.
+            while at < len(messages) and _is_steer_turn(messages[at]):
+                at += 1
+            messages.insert(at, turn)
+            held.add(id(turn))
+        notes = take_steer_turns(self._thread_id or _run_thread_id())
+        if notes:
+            # Task 3130: two or more steers in one run. The newest turn asks
+            # for an answer to each of them, and it keeps that text in each
+            # later request, because it is the same message object.
+            count = len(self._placed) + len(notes)
+            if count >= 2:
+                notes[-1] = f"{notes[-1]}\n{steers_frame(count)}"
+            anchor = messages[-1] if messages else None
+            for note in notes:
+                turn = Message(
+                    role="user", contents=[note],
+                    additional_properties={STEER_TURN_KEY: True},
+                )
+                messages.append(turn)
+                self._placed.append((anchor, turn))
+        return messages
+
+    async def process(self, context: Any, call_next: Any) -> None:
+        try:
+            context.messages = self._with_turns(list(context.messages or []))
+        except Exception:  # never fail a model request
+            _log.warning("steer.turns_failed")
+        await call_next()
+
+    def in_place(self, messages: Sequence[Any]) -> list[Any]:
+        """*messages*, the run's response, with each steer turn in its place.
+
+        Each turn goes right after the message that came before it in its
+        model request. That is the same object, or the tool message with the
+        same call ids, because a streamed response builds new messages. A turn
+        whose message came before the response (the run's input) goes first.
+        A turn that *messages* already holds is not added again.
+        """
+        out = list(messages)
+        for anchor, turn in self._placed:
+            if any(m is turn for m in out):
+                continue
+            at = _after_anchor(out, anchor)
+            while at < len(out) and _is_steer_turn(out[at]):
+                at += 1
+            out.insert(at, turn)
+        return out
+
+
+def _is_steer_turn(message: Any) -> bool:
+    props = getattr(message, "additional_properties", None) or {}
+    return getattr(message, "role", None) == "user" and props.get(STEER_TURN_KEY) is True
+
+
+def _result_ids(message: Any) -> frozenset[str]:
+    """The call ids of the tool results in *message*."""
+    return frozenset(
+        str(c.call_id) for c in (getattr(message, "contents", None) or [])
+        if getattr(c, "type", None) == "function_result" and getattr(c, "call_id", None)
+    )
+
+
+def _after_anchor(messages: list[Any], anchor: Any) -> int:
+    """The index right after *anchor* in *messages*. See :meth:`SteerTurns.in_place`."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i] is anchor:
+            return i + 1
+    ids = _result_ids(anchor)
+    if not ids:
+        return 0
+    for i in range(len(messages) - 1, -1, -1):
+        if ids & _result_ids(messages[i]):
+            return i + 1
+    return len(messages)
+
+
+def with_steer_turns(context: Any, messages: Sequence[Any]) -> list[Any]:
+    """*messages* of one ``agent.run``, with each steer turn of that run in place.
+
+    MAF stores the input and the response of a run. Neither holds a steer
+    turn, so the session history calls this before it saves (task 2494).
+    The next turn then reads the member's words as their own turn, after the
+    tool result. With no steer it gives *messages* unchanged. Never raises.
     """
     try:
-        tid = thread_id
-        if not tid:
-            from orchestrator.executor import (  # noqa: PLC0415
-                resolve_relay_thread_id,
-            )
-            tid = resolve_relay_thread_id()
-        if not tid or not has_guidance(tid):
-            return result
-        entries = _PENDING_GUIDANCE.pop(tid, [])
-        notes = [e["note"] for e in entries]
-        if not notes:
-            return result
-        _forget_durable(tid, entries)
-        block = (
-            "\n\n[The following arrived from a participant while you were "
-            "working. Treat it as instruction from the user, and adjust what "
-            "you are doing now.]\n" + "\n".join(notes)
-        )
-        return f"{result if result is not None else ''}{block}"
-    except Exception:  # noqa: BLE001 — never break a tool result
-        return result
+        turns = (getattr(context, "metadata", None) or {}).get(STEER_TURNS_KEY)
+        if isinstance(turns, SteerTurns):
+            return turns.in_place(messages)
+    except Exception:  # a save must go on whatever happens here
+        _log.warning("steer.history_turns_failed")
+    return list(messages)
+
+
+class SteerTurnsProvider(ContextProvider):
+    """Put a NEW :class:`SteerTurns` on each ``agent.run`` of a native agent.
+
+    ``_tool_injection._apply_steer_turns`` attaches it as a per-run view, so
+    the shared agent object never holds it. It adds no tool, no instruction
+    and no message of its own. It keeps the run's :class:`SteerTurns` in
+    ``context.metadata`` (:data:`STEER_TURNS_KEY`), so the session history of
+    the run can store each steer turn (:func:`with_steer_turns`).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(STEER_TURNS_SOURCE_ID)
+
+    async def before_run(
+        self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
+    ) -> None:
+        turns = SteerTurns()
+        context.metadata[STEER_TURNS_KEY] = turns
+        context.extend_middleware(self.source_id, [turns])
 
 
 def format_replayed(signals: list[dict[str, Any]]) -> str:
@@ -673,6 +875,9 @@ def format_replayed(signals: list[dict[str, Any]]) -> str:
         for s in signals
         if (s.get("text") or "").strip()
     ]
+    if len(lines) >= 2:
+        # Task 3130: each replayed steer gets an answer, as in a live run.
+        lines.append(steers_frame(len(lines)))
     return "\n".join(lines)
 
 
@@ -716,6 +921,7 @@ def without_replayed(
 
 async def send_steer(
     thread_id: str, author: str, text: str, *, run_id: str | None = None,
+    typed: bool = False,
 ) -> dict[str, Any]:
     """Persist a steer and deliver it to whichever worker owns the run.
 
@@ -727,9 +933,13 @@ async def send_steer(
     ``undelivered`` is True when NO process heard the steer. The route then
     asks ``run_liveness`` whether the run is dead, and if so it starts the
     next run itself, in the same request (incident 2026-10-09).
+
+    ``typed`` says the member typed *text* (PZ-31, :func:`make_signal`). The
+    default is False, so a caller that does not say grounds nothing.
     """
     signal = make_signal(
         thread_id=thread_id, author=author, text=text, run_id=run_id,
+        typed=typed,
     )
     stored = await persist_signal(thread_id, signal)
 
@@ -739,6 +949,7 @@ async def send_steer(
         "signal_id": signal["id"],
         "author": author,
         "text": text,
+        "typed": signal["typed"],
     }
     try:
         from orchestrator.stream_relay import dispatch_control  # noqa: PLC0415

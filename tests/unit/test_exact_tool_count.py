@@ -1,0 +1,538 @@
+"""WS-67 OA-8f: the estimate of the pack cap equals the count that a run sends.
+
+``project-docs/specs/one_assistant_context.md`` §4.2.2 and the note "As built,
+OA-8f". A staging turn of 2026-10-28 logged ``base_tools=65`` while the run
+sent far fewer. The estimate (``_tool_injection._pack_base_count``) differed
+from the sent count in three ways, and each has a fence here:
+
+1. It counted the 3 CRM facts tools that ``_add_crm_facts_block`` then removes
+   for an org that is not on ``CRM_QUESTIONS_ORGS``.
+2. The load tool comes from a context provider, and the true-count log left
+   it out.
+3. ``tool_packs.choose`` did not subtract the specialist tool that a chosen
+   pack replaces.
+
+A granted app tool and an MCP tool stay outside the estimate. The log line
+``executor.request_tools`` counts them, because it reads the request.
+
+Mutations this file catches (R7):
+
+* ``_pack_base_count`` stops subtracting ``_facts_removed()`` → the estimate
+  holds 3 tools too many → red in the staging-shape test;
+* ``choose`` ignores ``specialists`` → the email pack is refused at a base
+  where it fits → red;
+* ``_log_pack_request_tools`` drops the load tool → the true count is one
+  short of the estimate → red;
+* ``LogRequestTools`` reads the agent's pool and not the request → the
+  count misses the tool of a context provider → red;
+* ``tool_digest`` hashes the order of the names → two orders, two hashes → red.
+
+WS-67 TS-2a PR 3 (D222 decision 13) adds the count of ``find_tools``:
+
+* ``base += 1`` for ``find_tools`` runs with the flag off, or not with the
+  flag on → the base of the first choice is off by one → red;
+* ``_log_pack_request_tools`` drops ``find_tools`` → the true count is one
+  short of the estimate with the flag on → red.
+
+Run: ``uv run pytest tests/unit/test_exact_tool_count.py -q``.
+"""
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterable
+from typing import Any
+
+import pytest
+
+pytest.importorskip("agent_framework", reason="MAF not installed")
+
+from acb_skills import skill_families as sf
+from acb_skills import tool_packs as tp
+from acb_skills.tool_guard import LogRequestToolsProvider, tool_digest
+from agent_framework import (
+    Agent,
+    BaseChatClient,
+    ChatMiddlewareLayer,
+    ChatResponse,
+    ChatResponseUpdate,
+    Content,
+    ContextProvider,
+    FunctionInvocationLayer,
+    Message,
+)
+from orchestrator import _tool_injection as ti
+from orchestrator import executor as ex
+
+from tests.unit.test_tool_packs_choice import (
+    CONFIG,
+    EMAIL_TOOLS,
+    MEMBER,
+    ORG,
+    SESSION,
+    _agents_mod,
+    _bullets,
+    _names,
+    _run_ctx,
+    _tenant,
+    _turn,
+    orchestrator,  # noqa: F401  (a fixture)
+    store,  # noqa: F401  (a fixture)
+)
+
+EVERY = frozenset(sf.pack_slugs())
+EMAIL = frozenset({"email"})
+
+
+@pytest.fixture
+def staging_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The flags of the staging box: the profile tools (7), company search (1)
+    and ``decide`` (1) are on. The loader is offered by the apply."""
+    mod = _agents_mod()
+    monkeypatch.setattr(mod, "_assistant_profile_enabled", lambda org=None: True)
+    monkeypatch.setattr(mod, "_company_search_enabled", lambda: True)
+    monkeypatch.setattr("acb_skills.decide_tools.decide_tool_enabled", lambda: True)
+    monkeypatch.setattr("orchestrator.app_tools.load_app_action_tools", lambda _name: [])
+
+
+async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) -> dict[str, int]:
+    """The real order of a run: the packs, the injection, the facts block.
+
+    Returns ``base`` (the estimate of the cap, with no load tool), ``plan``
+    (the ``planned_tools`` that ``executor.pack_plan`` logged) and ``sent`` (the
+    pool of the run after the injection, plus the load tool)."""
+    seen: list[int] = []
+    real = ti._pack_base_count
+
+    def spy(*a: Any, **k: Any) -> int:
+        seen.append(real(*a, **k))
+        return seen[-1]
+
+    logged: list[dict[str, Any]] = []
+    real_info = ti._log.info
+
+    def keep(event: str, **kw: Any) -> None:
+        logged.append({"event": event, **kw})
+        real_info(event, **kw)
+
+    monkeypatch.setattr(ti, "_pack_base_count", spy)
+    monkeypatch.setattr(ti._log, "info", keep)
+    with _tenant():
+        turn = await tp.begin_turn(ORG, SESSION, MEMBER, words)
+        applied = await ti._apply_tool_packs(
+            agents, turn, _run_ctx(), allowed=allowed, agent_name="orchestrator",
+            tool_scope=list(CONFIG["tool_scope"]), agent_config=CONFIG,
+            bullets=_bullets(), offer_loader=True,
+        )
+        ti._inject_agent_tools(
+            agents, tool_scope=list(CONFIG["tool_scope"]), agent_name="orchestrator",
+            agent_config=CONFIG, no_egress=False,
+        )
+        await ti._add_crm_facts_block(agents, frozenset(_names(agents)), no_egress=False)
+    plan = [x for x in logged if x["event"] == "executor.pack_plan"]
+    loader = 1 if ex._pack_loader_offer(agents[0]) else 0
+    # WS-67 TS-2a: `find_tools` rides in a context provider too.
+    finder = 1 if ex._pack_finder(agents[0]) is not None else 0
+    return {"base": seen[0], "plan": plan[0]["planned_tools"] if plan else -1,
+            "sent": len(_names(agents)) + loader + finder, "loader": loader,
+            "finder": finder, "packs": len(applied.record.slugs) if applied else 0}
+
+
+# ── 1. The estimate equals the sent count ───────────────────────────────────
+
+
+async def test_the_estimate_equals_the_sent_count_on_the_staging_shape(
+    staging_shape, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """Staging: 65 tools before the fix (55 + the profile 7, search 1, decide 1,
+    and the loader). The 3 facts tools are not in the run of an org off the
+    list, so the base falls to 61, and 62 with the load tool. The loader then
+    reaches three owners and takes their 3 specialist tools out, so the run
+    sends 59. The count of the apply (``planned_tools``) says 59 and equals what
+    the run sends. Mutation: the estimate keeps the facts tools → 65, not 62
+    → red. Mutation: ``planned_tools`` ignores the specialists that leave → 62
+    logged against 59 sent → red."""
+    with _tenant():
+        old = _estimate_with_facts(orchestrator) + 1
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    # Still 59 after WS-CRM CRM-M1 (2026-11-03): the read `crm_change_history`
+    # is in the `crm-records` pack and not in the orchestrator's base, because
+    # the base was at the 110-tool cap (test_projects_packs.py).
+    assert got["plan"] == got["sent"] == 59, got
+    assert got["base"] + 1 == 62, got
+    assert old == got["base"] + 1 + 3 == 65, (old, got)
+
+
+def _estimate_with_facts(agents: list[Any]) -> int:
+    """The estimate as it was before OA-8f: the facts tools stay in."""
+    from unittest import mock
+
+    with mock.patch.object(ti, "_facts_removed", ti._facts_withheld):
+        return ti._pack_base_count(
+            agents[0], agent_name="orchestrator", tool_scope=list(CONFIG["tool_scope"]),
+            agent_config=CONFIG, disabled=frozenset())
+
+
+async def test_a_loaded_pack_keeps_the_estimate_exact(
+    staging_shape, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """With the email pack loaded, and no pack left to offer, the run sends the
+    base, plus the 31 pack tools, less the specialist tool that the pack
+    replaces, and no load tool. Mutation: ``planned_tools`` counts a load tool
+    that is not offered, or keeps the specialist → off by one → red."""
+    got = await _flow(orchestrator, "check my inbox", monkeypatch, allowed=EMAIL)
+    assert got["packs"] == 1 and got["loader"] == 0
+    n = len(EMAIL_TOOLS)  # the family less narrow_and_read, which no pack builds
+    assert got["sent"] == got["plan"] == got["base"] + n - 1, got
+
+
+async def test_the_true_count_log_counts_the_load_tool(
+    staging_shape, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """The load tool lives in a context provider, so no pool holds it. The log
+    ``executor.pack_request_tools`` adds it. Mutation: drop the ``+ 1`` →
+    the logged count is one short of the sent count → red."""
+    got = await _flow(orchestrator, "", monkeypatch)
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+# ── 1b. find_tools counts in the base only with the flag on (TS-2a) ─────────
+
+
+def _search(monkeypatch, on: bool) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "tool_search_orgs", ORG if on else "", raising=False)
+
+
+def _spy_choose(monkeypatch) -> list[int]:
+    """The ``base_tools`` of each call of ``tool_packs.choose``."""
+    bases: list[int] = []
+    real = tp.choose
+
+    def spy(*a: Any, **k: Any) -> Any:
+        bases.append(int(k["base_tools"]))
+        return real(*a, **k)
+
+    monkeypatch.setattr(tp, "choose", spy)
+    return bases
+
+
+@pytest.mark.parametrize("on", [False, True])
+async def test_find_tools_adds_one_to_the_base_only_with_the_flag_on(
+    staging_shape, orchestrator, store, monkeypatch, on: bool,  # noqa: F811
+) -> None:
+    """D222 decision 13: ``find_tools`` rides in each request of a run where
+    the flag is on, so the first choice already counts it: the base of the
+    estimate + 1 with the flag on, + 0 with it off. The loader adds its own
+    1 for the second choice. The plan, the sent count and the true-count log
+    agree. Mutation: ``base += 1`` with no flag test -> the off case is one
+    high -> red. Mutation: no ``base += 1`` -> the on case is one low -> red."""
+    _search(monkeypatch, on)
+    bases = _spy_choose(monkeypatch)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["finder"] == int(on) and got["loader"] == 1
+    assert bases[0] == got["base"] + int(on), (bases, got)
+    assert bases[1] == got["base"] + int(on) + 1, (bases, got)
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+# ── 1c. pin_chat counts in the base only with its flag on (CO-11b) ──────────
+
+
+@pytest.fixture(params=[False, True], ids=["pin-off", "pin-on"])
+def pin_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``CHAT_PIN_TOOL_ORGS`` (with ``CHAT_PIN_ORGS``) for the build of the
+    orchestrator. The fixture ``orchestrator`` builds with no org, so this
+    sets the one decision of the build, ``agents._chat_pin_enabled``. List it
+    before ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_chat_pin_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_pin_tool_adds_one_to_the_base_only_with_its_flag_on(
+    staging_shape, pin_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18). ``pin_chat`` is a core
+    tool of the orchestrator, so it rides in each request of an org on
+    ``CHAT_PIN_TOOL_ORGS`` and ``CHAT_PIN_ORGS``. The tool has its own flag
+    (owner, 2026-11-21). So with the tool flag off, the pin of the chat list
+    moves no count. With it off, the numbers of the staging shape do
+    not move: 59 sent and a base of 61. With it on, the estimate, the plan,
+    the sent count and the true-count log each grow by one: 60 sent. Mutation:
+    the build holds the tool with the flag off -> the off case is one high ->
+    red. Mutation: ``_pack_base_count`` skips a core tool -> plan and sent
+    differ -> red."""
+    on = pin_flag
+    assert ("pin_chat" in _names(orchestrator)) is on
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + int(on), got
+    assert got["base"] + 1 == 62 + int(on), got
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ex._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    ex._log_pack_request_tools(orchestrator)
+    line = [x for x in logged if x["event"] == "executor.pack_request_tools"]
+    assert line and line[0]["tools"] == got["sent"], (line, got)
+
+
+@pytest.fixture(params=[False, True], ids=["home-off", "home-on"])
+def home_flag(request, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """``HOME_TOOLS_ORGS`` for the build of the orchestrator (PAR-8b, task
+    3903). The fixture ``orchestrator`` builds with no org, so this sets the
+    one decision of the build, ``agents._home_tools_enabled``. List it before
+    ``orchestrator``."""
+    monkeypatch.setattr(_agents_mod(), "_home_tools_enabled", lambda org=None: request.param)
+    return bool(request.param)
+
+
+async def test_the_home_tools_add_five_to_the_base_only_with_their_flag_on(
+    staging_shape, home_flag, orchestrator, store, monkeypatch,  # noqa: F811
+) -> None:
+    """PAR-8b (task 3903, ``chat_parity.md`` facts for the owner). The five Home
+    tools are core tools of the orchestrator, so they ride in each request of an
+    org on ``HOME_TOOLS_ORGS``. With the flag off, the staging shape does not
+    move: a base of 61, and 59 planned and sent. With it on, each count grows by
+    five: a base of 66, and 64 planned and sent. The packs that then drop at the
+    cap are pinned in ``test_home_tools.py``
+    (``test_with_the_flag_on_two_cases_of_the_matrix_drop_a_studio_pack``).
+    Mutation: the build holds the tools with the flag off -> red."""
+    on = home_flag
+    names = set(_names(orchestrator))
+    home = {"home_read", "home_card", "home_prefs", "home_layout", "home_test_push"}
+    assert (home <= names) is on and (not home & names) is (not on)
+    got = await _flow(orchestrator, "", monkeypatch)
+    assert got["packs"] == 0 and got["loader"] == 1
+    assert got["plan"] == got["sent"] == 59 + 5 * int(on), got
+    assert got["base"] == 61 + 5 * int(on), got
+
+
+def test_at_the_cap_the_pin_tool_drops_studio_more_a_chosen_trade() -> None:
+    """CO-11b (task 3563): the trade that this slice chose, and that the owner
+    accepts before ``CHAT_PIN_TOOL_ORGS`` flips (``chat_organization.md``
+    §18). It is the
+    trade of D222 decision 13, with ``pin_chat`` in the place of
+    ``find_tools``. A Studio turn with the email words fills the cap exactly
+    with production's base: 57 + email 31 + studio 10 + studio-more 13, less
+    the email specialist, is 110, ``MAX_REQUEST_TOOLS``. With ``pin_chat`` in
+    the base the count is 111, so ``choose`` drops studio-more, the last pack
+    that came by the surface alone. With the flag off nothing moves. With
+    both flags on, studio-more stays out, and the request holds
+    59 + 31 + 10 - 1 = 99 tools. Mutation: ``choose`` keeps a pack past the
+    cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    pin = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    assert BASE + 1 + sum(size.values()) - 1 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert pin.slugs == ("email", "studio") and pin.skipped == ("studio-more",)
+    both = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 2, specialists=SPECIALISTS)
+    assert both.slugs == ("email", "studio") and both.skipped == ("studio-more",)
+    assert BASE + 2 + size["email"] + size["studio"] - 1 == 99
+
+
+@pytest.mark.parametrize("held", ["", "*"], ids=["held-off", "held-on"])
+def test_with_both_flags_on_the_core_studio_pack_leaves_a_chosen_trade_of_a_worst_case(
+    monkeypatch: pytest.MonkeyPatch, held: str,
+) -> None:
+    """CO-11b (task 3563, ``chat_organization.md`` §18 item 3). A chosen trade
+    of a worst case, with the flags ON only. ``pin_chat``
+    (``CHAT_PIN_TOOL_ORGS``) and ``find_tools`` (``TOOL_SEARCH_ORGS``) each add
+    one tool to the base.
+    The case ``studio_with_email_and_crm_records`` of the golden matrix runs
+    through the harness of the matrix (``_row``) at three bases:
+
+    * flags off (BASE): email, crm-records and studio, 57 + 31 + 13 + 10 less
+      the two specialists = 109 tools.
+    * pin_chat alone (BASE + 1): the same packs, 110 tools, at the cap.
+    * both flags (BASE + 2): 111 tools, so ``choose`` drops the core pack
+      ``studio`` by name. The request holds 59 + 31 + 13 - 2 = 101 tools.
+
+    With both flags off, nothing changes. Mutation: expect ``studio-more`` in
+    the place of ``studio``, or run at BASE + 1 -> red."""
+    from acb_common import get_settings
+
+    import tests.unit.test_studio_split_matrix as matrix
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", held, raising=False)
+    case = matrix.CASES["studio_with_email_and_crm_records"]
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"])
+            for slug in ("email", "crm-records", "studio")}
+    assert matrix.BASE == 57 and size == {"email": 31, "crm-records": 13, "studio": 10}
+    rows = {}
+    for extra in (0, 1, 2):
+        monkeypatch.setattr(matrix, "BASE", 57 + extra)
+        rows[extra] = matrix._row(case)
+    assert rows[0]["packs"] == rows[1]["packs"] == ["email", "crm-records", "studio"]
+    assert (rows[0]["tools"], rows[1]["tools"]) == (109, 110)
+    assert "studio" in rows[1]["packs"] and "studio" not in rows[2]["packs"]
+    assert rows[2]["packs"] == ["email", "crm-records"]
+    assert rows[2]["skipped"] == ["studio-more", "studio"]
+    assert 59 + sum(size.values()) - 2 == 111 > tp.MAX_REQUEST_TOOLS == 110
+    assert rows[2]["tools"] == 59 + size["email"] + size["crm-records"] - 2 == 101
+
+
+def test_at_the_cap_find_tools_drops_studio_more_the_trade_of_decision_13() -> None:
+    """The trade that the owner accepted in D222 decision 13. A Studio turn
+    with the email words fills the cap exactly with production's base (56 and
+    the load tool): email (31), studio (10) and studio-more (13), less the
+    email specialist, make 110 tools. With ``find_tools`` in the base the
+    count would be 111, so ``choose`` drops studio-more, the last pack that
+    came by the surface alone. The request then holds 58 + 31 + 10 - 1 = 98
+    tools. Mutation: ``choose`` keeps a pack past the cap -> red."""
+    from tests.unit.test_studio_split_matrix import (
+        BASE,
+        MEMBER,
+        SESSION,
+        SPECIALISTS,
+        TURN,
+        _allowed,
+    )
+    from tests.unit.test_studio_split_matrix import ORG as MATRIX_ORG
+
+    turn = tp.PackTurn(MATRIX_ORG, SESSION, tp._member_part(MEMBER), TURN, (),
+                       "check my emails", True, surface="studio")
+    off = tp.choose(turn, allowed=_allowed(False), base_tools=BASE, specialists=SPECIALISTS)
+    on = tp.choose(turn, allowed=_allowed(False), base_tools=BASE + 1, specialists=SPECIALISTS)
+    size = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in ("email", "studio", "studio-more")}
+    assert BASE == 57 and size == {"email": 31, "studio": 10, "studio-more": 13}
+    assert off.slugs == ("email", "studio", "studio-more") and off.skipped == ()
+    assert BASE + sum(size.values()) - 1 == tp.MAX_REQUEST_TOOLS == 110
+    assert on.slugs == ("email", "studio") and on.skipped == ("studio-more",)
+    assert BASE + 1 + size["email"] + size["studio"] - 1 == 98
+
+
+# ── 2. The choice subtracts the specialist tool that a pack replaces ────────
+
+
+def test_choose_subtracts_the_specialist_tool_of_a_replacing_pack() -> None:
+    """At a base of 80, the 31 email tools make 111. The email pack replaces
+    the one ``email_assistant`` tool, so the request holds 110 and fits.
+    Mutation: ``choose`` ignores ``specialists`` → ``email`` is skipped → red."""
+    turn = _turn(words="check my inbox")
+    plain = tp.choose(turn, allowed=EMAIL, base_tools=80)
+    assert plain.slugs == () and plain.skipped == ("email",)
+    fits = tp.choose(turn, allowed=EMAIL, base_tools=80, specialists={"email-assistant": 1})
+    assert fits.slugs == ("email",) and fits.skipped == ()
+    over = tp.choose(turn, allowed=EMAIL, base_tools=81, specialists={"email-assistant": 1})
+    assert over.slugs == ()
+
+
+def test_choose_subtracts_nothing_for_a_pack_that_replaces_no_specialist() -> None:
+    """A Projects pack leaves its specialist in until the run reaches the whole
+    owner (``_specialist_leaves``). Mutation: subtract for every pack → the
+    core pack fits at a base where it would send 111 tools → red."""
+    turn = _turn(words="show my tasks")
+    n = len(sf.SKILL_FAMILIES["projects"]["tools"])
+    base = tp.MAX_REQUEST_TOOLS - n + 1
+    out = tp.choose(
+        turn, allowed={"projects"}, base_tools=base, specialists={"projects-assistant": 1})
+    assert out.slugs == () and out.skipped == ("projects",)
+
+
+# ── 3. The log line of a request ────────────────────────────────────────────
+
+
+def test_the_digest_ignores_the_order_and_counts_the_items() -> None:
+    """Mutation: hash the names in the order given → red."""
+
+    def a() -> str:
+        return ""
+
+    def b() -> str:
+        return ""
+
+    a.__name__, b.__name__ = "alpha", "beta"
+    one = tool_digest([a, b])
+    two = tool_digest([b, a])
+    assert one == two and one[0] == 2 and len(one[2]) == 10
+    assert tool_digest([a]) != one
+    assert tool_digest([a, a])[:2] == (2, 1)
+
+
+class _Recorder(FunctionInvocationLayer, ChatMiddlewareLayer, BaseChatClient):
+    """A chat client that answers once and keeps the tools of each request."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tools: list[list[str]] = []
+
+    def _inner_get_response(self, *, messages, stream, options, **kwargs):  # type: ignore[override]
+        from acb_skills.tool_guard import tool_name
+
+        self.tools.append([tool_name(t) for t in (options or {}).get("tools") or []])
+        content = Content.from_text("ok")
+        if stream:
+            async def _gen() -> AsyncIterable[ChatResponseUpdate]:
+                yield ChatResponseUpdate(
+                    contents=[content], role="assistant", response_id="r", message_id="m")
+            return self._build_response_stream(_gen())
+
+        async def _one() -> ChatResponse:
+            return ChatResponse(messages=[Message("assistant", [content])], response_id="r")
+        return _one()
+
+
+class _Adds(ContextProvider):
+    """A provider that adds a tool to the request, as the loader does."""
+
+    def __init__(self, tool: Any) -> None:
+        super().__init__("adds")
+        self._tool = tool
+
+    async def before_run(self, *, agent, session, context, state) -> None:
+        context.extend_tools("adds", [self._tool])
+
+
+async def test_the_request_log_counts_the_tool_of_a_context_provider(monkeypatch) -> None:
+    """The line reads the request, so it holds the tool of a provider (the
+    loader) as well as the agent's own tools. Mutation: read the agent's pool
+    instead of the request → 1 tool logged, 2 sent → red."""
+    from orchestrator._native_run_context import agent_with_providers
+
+    async def own_tool(x: str = "") -> str:
+        """An own tool."""
+        return "own"
+
+    async def load_skill_tools(pack: str = "") -> str:
+        """A tool of a provider."""
+        return "loaded"
+
+    client = _Recorder()
+    agent = Agent(client=client, name="orchestrator", tools=[own_tool])
+    logged: list[dict[str, Any]] = []
+    import acb_skills.tool_guard as guard
+
+    monkeypatch.setattr(guard._log, "info", lambda event, **kw: logged.append({"event": event, **kw}))
+    view = agent_with_providers(agent, [_Adds(load_skill_tools), LogRequestToolsProvider("orchestrator")])
+    await view.run("hello")
+    assert client.tools == [["own_tool", "load_skill_tools"]]
+    line = [x for x in logged if x["event"] == "executor.request_tools"]
+    assert len(line) == 1 and line[0]["tools"] == 2 and line[0]["distinct"] == 2
+    assert line[0]["names_hash"] == tool_digest(client.tools[0] and [own_tool, load_skill_tools])[2]
+    assert json.dumps(line[0]).count("own_tool") == 0, "the line holds a hash, not the names"

@@ -30,7 +30,7 @@ lives.** It is one surface (Settings → Organization), admin-gated, tenant-owne
 | **OI-2** | **Tenant-scope the store.** `org_settings` must carry `organization_id`, widen its PK, and bind through the seam before a second customer shares a database. | 🟢 AGENT-SAFE | ✅ built 2026-10-09, migration 234 |
 | **OI-3a** | **No network wait.** The customer's mark renders from a local cache, revalidated behind it. | 🟢 AGENT-SAFE | ✅ built 2026-08-14 |
 | **OI-3b** | **True SSR branding.** The server-rendered HTML itself carries the mark. | 🟢 AGENT-SAFE | 🔴 |
-| **OI-4** | **Organization display name** — shown beside/instead of the logo, in the operator console, and on invoices (D38). | 🟢 AGENT-SAFE | 🔴 |
+| **OI-4** | **Organization display name** — shown beside/instead of the logo, in the operator console, and on invoices (D38). | 🟢 AGENT-SAFE | 🟡 The tenant rename is built (#1035, 2026-10-15). The operator rename and the cross-plane name sync are built on branch `org-rename` (2026-10-27), not merged. `customer_console.md` CP-8 "Rename an organization" holds the contract. The invoice name waits for SC-5. |
 | **OI-5** | **Logo on billing documents** — the customer's mark on their own tax invoice. | 🔴 depends on D38's invoice renderer | 🔴 |
 
 ### Non-goals
@@ -157,7 +157,7 @@ Since OI-1b the editor makes every file fit these rules before it is sent.
 | Aspect | 0.5–8.0 (w/h) | Size alone does not stop a 1:20 sliver that renders as a 2px smear. |
 | Type detection | **magic bytes only** | The declared content type is caller-controlled. The stored `data:` URI is *rebuilt* from the sniffed type — an echoed URI is a stored-XSS sink wearing an image's clothes. |
 
-Header parsing is `apps/services/gateway/gateway/image_probe.py`: fixed offsets
+Header parsing is `packages/acb_common/acb_common/image_probe.py`: fixed offsets
 and length-prefixed chunk walks, **no pixel decoding**, no dependency. The
 trade is explicit — we verify the header, not the body, so a corrupt payload
 renders broken in the browser rather than running a decoder over hostile input
@@ -220,7 +220,7 @@ logo contains that logo and not the fallback caption.
 
 | Path | Role |
 |---|---|
-| `apps/services/gateway/gateway/image_probe.py` | header-only format + dimension probe |
+| `packages/acb_common/acb_common/image_probe.py` | header-only format + dimension probe |
 | `apps/services/gateway/gateway/routes/settings.py` (`_BRANDING_KEY` onward) | `GET`/`PUT`/`DELETE /settings/branding` |
 | `packages/acb_common/acb_common/org_settings.py` | the store — **the OI-2 conversion site** |
 | `infra/postgres/151_org_settings.sql` | the table |

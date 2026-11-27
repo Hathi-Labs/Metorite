@@ -58,6 +58,8 @@ from gateway.routes.projects.core import (
     actor,
     assert_holds_tasks,
     assert_move_keeps_privacy,
+    assert_project_open_for_writes,
+    assert_task_project_open,
     emit,
     from_jsonb,
     load_visible_project,
@@ -69,7 +71,9 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     root_project_id,
     router,
+    status_order_sql,
     status_owner_id,
+    transient_as_409,
     update_row,
     vocabulary_scope,
 )
@@ -77,6 +81,7 @@ from gateway.routes.projects.custom_fields import (
     _is_blank,
     load_definitions,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
 from gateway.routes.projects.landing import (
     CHOICE_TYPES as _CHOICE_TYPES,
 )
@@ -87,16 +92,18 @@ from gateway.routes.projects.landing import (
     apply_field_map as _apply_field_map,
 )
 from gateway.routes.projects.landing import (
-    compatible as _compatible,
-)
-from gateway.routes.projects.landing import (
+    claim_target,
     completion_correction,
     land_custom_fields,
     record_drops,
 )
 from gateway.routes.projects.landing import (
+    compatible as _compatible,
+)
+from gateway.routes.projects.landing import (
     resolve_field_map as _resolve_field_map,
 )
+from gateway.routes.projects.notifications import project_grant_holders
 from gateway.routes.projects.tasks import MoveTask, move_task_in
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
@@ -222,6 +229,69 @@ async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
     return [await load_visible_task(db, vis, task_id) for task_id in ids]
 
 
+#: WS-55 MCP-G1, fix round 1. The three answers of the audience of a move.
+#: ``wider``: a member who could not see a moved task before can see it after.
+#: ``narrower``: somebody who saw it can no longer, and nobody new can.
+#: ``same``: neither. The plan carries the answer for an agent only (``None``
+#: for a member), so the Move dialog of the app does no extra read.
+AUDIENCE_SAME = "same"
+AUDIENCE_NARROWER = "narrower"
+AUDIENCE_WIDER = "wider"
+#: The code of the 403 of an agent's move whose audience is wider. An agent
+#: never widens who sees a task, so a member makes such a move in the app.
+#: The edge holds a copy, and ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_AUDIENCE_WIDENS = "audience_widens"
+
+
+async def _move_audience(
+    db: Any, vis: Any, moved: list[Any], dest: Any,
+) -> str:
+    """Who sees the *moved* tasks after the move, against who sees them now.
+
+    The grant arm of each side is ``notifications.project_grant_holders``,
+    the one predicate ``Visibility.project_clause``. The assignee arm of
+    ``task_visibility_clause`` moves with the task, so the assignees of each
+    task count on both sides. A task of a personal project that moves into a
+    project that is not personal is always ``wider`` (D-OP-15: a personal
+    node is its owner's only), even when the grants give the same people.
+    """
+    if not moved:
+        return AUDIENCE_SAME
+    dest_id = str(dest.id)
+    sources = sorted({str(t.project_id) for t in moved})
+    personal = {
+        str(r.id) for r in (await db.execute(
+            text(
+                "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
+                " AND personal_owner IS NOT NULL"
+            ),
+            {"ids": sources},
+        )).fetchall()
+    }
+    if personal and getattr(dest, "personal_owner", None) is None:
+        return AUDIENCE_WIDER
+    holders = await project_grant_holders(db, [*sources, dest_id], vis.organization_id)
+    assigned: dict[str, set[str]] = {}
+    for row in (await db.execute(
+        text(
+            "SELECT task_id, lower(assignee) AS who FROM pm_task_assignees"
+            " WHERE task_id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"ids": sorted({str(t.id) for t in moved})},
+    )).fetchall():
+        assigned.setdefault(str(row.task_id), set()).add(str(row.who))
+    after_grants = holders.get(dest_id, frozenset())
+    narrower = False
+    for task in moved:
+        keep = assigned.get(str(task.id), set())
+        before = holders.get(str(task.project_id), frozenset()) | keep
+        after = after_grants | keep
+        if after - before:
+            return AUDIENCE_WIDER
+        narrower = narrower or bool(before - after)
+    return AUDIENCE_NARROWER if narrower else AUDIENCE_SAME
+
+
 async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     # FOR SHARE: a concurrent move of the destination to the top waits for
     # this move (`core.load_visible_project`).
@@ -229,6 +299,7 @@ async def _destination(db: Any, vis: Any, project_id: str) -> Any:
     # After the visibility load, so a caller who cannot see the folder still
     # gets 404 and never learns from a 422 that it exists (R5).
     assert_holds_tasks(dest, then="Move into")
+    assert_project_open_for_writes(dest)
     return dest
 
 
@@ -311,6 +382,67 @@ async def _type_proposal(
     return out
 
 
+def choose_field_map(
+    auto_fields: dict[str, str],
+    source_defs: list[dict[str, Any]],
+    dest_defs: list[dict[str, Any]],
+    hand_map: dict[str, str] | None,
+) -> dict[str, str]:
+    """The resolved map with the caller's entries laid over it, or a 422."""
+    # ⚠️ A caller-supplied entry clears the SAME bar the resolved ones do.
+    #
+    # `chosen` used to merge `payload.field_map` straight over the resolved
+    # map, and `apply_field_map` only ever checks `target in dest_keys`. So a
+    # client could post `{"<a number key>": "<a boolean key>"}` and write a
+    # value the destination's own coercer refuses — the exact hole closed for
+    # `status_map` in the same commit that left this one open.
+    src_by_key = {str(d["field_key"]): d for d in source_defs}
+    dst_by_key = {str(d["field_key"]): d for d in dest_defs}
+    chosen = dict(auto_fields)
+    for raw_from, raw_to in (hand_map or {}).items():
+        src = src_by_key.get(str(raw_from))
+        dst = dst_by_key.get(str(raw_to))
+        if src is None or dst is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {raw_from!r} to {raw_to!r}: one of them is "
+                    "not a field of its project."
+                ),
+            )
+        if not compatible(
+            str(src["field_type"]), str(dst["field_type"]),
+            src.get("options"), dst.get("options"),
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {src['name']!r} to {dst['name']!r}: a "
+                    f"{src['field_type']} value does not fit a "
+                    f"{dst['field_type']} field."
+                ),
+            )
+        chosen[str(raw_from)] = str(raw_to)
+    # ⚠️ Two source keys may not share one destination key. The resolved map
+    # already obeys this, so only a hand entry can break it. Without the check
+    # `apply_field_map` keeps whichever key comes first in each task's JSONB, so
+    # the winner differs task by task in one bulk move (H-129). Sorted, so the
+    # refusal and its message do not depend on the order the client posted.
+    claimed: dict[str, str] = {}
+    for src_key, dst_key in sorted(chosen.items()):
+        holder = claim_target(claimed, dst_key, src_key)
+        if holder is not None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map both {holder!r} and {src_key!r} to "
+                    f"{dst_key!r}: one destination field takes one source "
+                    "field. Pick one."
+                ),
+            )
+    return chosen
+
+
 async def _plan(
     db: Any, vis: Any, payload: MoveIn, user: Any,
 ) -> dict[str, Any]:
@@ -321,6 +453,10 @@ async def _plan(
     than two that drift apart.
     """
     tasks = await _selection(db, vis, payload.task_ids)
+    # ARC-2b: a move OUT of an archived project is refused (409). The
+    # destination check is in `_destination`. The preview refuses too.
+    for task in tasks:
+        await assert_task_project_open(db, task)
     source_project_id = shared_source(tasks)          # D-PM-30
     dest = await _destination(db, vis, payload.destination_project_id)
     dest_id = str(dest.id)
@@ -368,6 +504,15 @@ async def _plan(
     #: through `move_task_in`, so the preview names them first: the card
     #: then holds Move and says which subtask, and why.
     privacy_refused = await subtree_privacy_refusals(db, carried, dest_id)
+    #: WS-55 MCP-G1, fix round 1. For an agent only: the audience of every
+    #: task that the move takes, the named ones and the carried ones.
+    audience = (
+        await _move_audience(
+            db, vis,
+            [*(t for t in tasks if str(t.project_id) != dest_id), *carried], dest,
+        )
+        if getattr(user, "agent", None) is not None else None
+    )
 
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
@@ -384,40 +529,9 @@ async def _plan(
     source_defs = await load_definitions(db, source_root)
     dest_defs = await load_definitions(db, dest_root)
     auto_fields, orphan_defs = resolve_field_map(source_defs, dest_defs)
-    # ⚠️ A caller-supplied entry clears the SAME bar the resolved ones do.
-    #
-    # `chosen` used to merge `payload.field_map` straight over the resolved
-    # map, and `apply_field_map` only ever checks `target in dest_keys`. So a
-    # client could post `{"<a number key>": "<a boolean key>"}` and write a
-    # value the destination's own coercer refuses — the exact hole closed for
-    # `status_map` in the same commit that left this one open.
-    src_by_key = {str(d["field_key"]): d for d in source_defs}
-    dst_by_key = {str(d["field_key"]): d for d in dest_defs}
-    chosen = dict(auto_fields)
-    for raw_from, raw_to in (payload.field_map or {}).items():
-        src = src_by_key.get(str(raw_from))
-        dst = dst_by_key.get(str(raw_to))
-        if src is None or dst is None:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Cannot map {raw_from!r} to {raw_to!r}: one of them is "
-                    "not a field of its project."
-                ),
-            )
-        if not compatible(
-            str(src["field_type"]), str(dst["field_type"]),
-            src.get("options"), dst.get("options"),
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Cannot map {src['name']!r} to {dst['name']!r}: a "
-                    f"{src['field_type']} value does not fit a "
-                    f"{dst['field_type']} field."
-                ),
-            )
-        chosen[str(raw_from)] = str(raw_to)
+    chosen = choose_field_map(
+        auto_fields, source_defs, dest_defs, payload.field_map,
+    )
     dest_keys = frozenset(str(d["field_key"]) for d in dest_defs)
 
     # What each task would actually lose, which is NOT the same as the orphan
@@ -533,7 +647,7 @@ async def _plan(
             text(
                 "SELECT id, name, category FROM pm_task_statuses "
                 " WHERE project_id = CAST(:owner AS uuid) "
-                " ORDER BY position, name"
+                " ORDER BY " + status_order_sql()
             ),
             {"owner": dest_home},
         )).fetchall()
@@ -575,6 +689,7 @@ async def _plan(
         "types": types,
         "tags": {"carried": tag_names, "unregistered": unregistered},
         "subtree_maps": subtree_maps,
+        "audience": audience,
         "dest_keys": dest_keys,
         "dest_defs": dest_defs,
         "dest_home": dest_home,
@@ -656,7 +771,17 @@ def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
             )
 
 
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The 422 of a signed
+#: agent move that sends no ``accepted_drops``. The edge sends the drops that
+#: its preview showed, so a move that would drop more gets the 409 below. A
+#: bare ``accept_drops`` is a yes to a question that the agent never saw.
+AGENT_MOVE_NEEDS_DROPS = (
+    "An agent move sends accepted_drops, the drops that its preview showed."
+)
+
+
 @router.post("/tasks/move")
+@transient_as_409
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
@@ -665,10 +790,29 @@ async def move_tasks(
     **One transaction.** A half-moved selection is worse than a half-applied
     bulk edit, because the tasks are then in two projects and nobody can tell
     which half landed. ``bulk.py`` makes the same argument for the same reason.
+
+    WS-55 MCP-G1. A signed agent move must send ``accepted_drops``
+    (:data:`AGENT_MOVE_NEEDS_DROPS`). Fix round 1: a signed agent move whose
+    audience is wider (:func:`_move_audience`) gets 403
+    :data:`AGENT_AUDIENCE_WIDENS`. A member's move is unchanged.
     """
+    if getattr(user, "agent", None) is not None and payload.accepted_drops is None:
+        raise HTTPException(status_code=422, detail=AGENT_MOVE_NEEDS_DROPS)
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         plan = await _plan(db, vis, payload, user)
+        # WS-55 MCP-G1, fix round 1. An agent never widens who sees a task.
+        # Before any write, and before the drops: the member makes this move.
+        # Fail closed: an agent moves only on a KNOWN same or narrower
+        # audience. A member's plan has no audience, and nothing changes.
+        is_agent = getattr(user, "agent", None) is not None
+        if is_agent and plan.get("audience") not in (AUDIENCE_SAME, AUDIENCE_NARROWER):
+            raise HTTPException(status_code=403, detail={
+                "error": AGENT_AUDIENCE_WIDENS,
+                "message": "This move shows the tasks to people who cannot see "
+                           "them now. An agent never widens who sees a task, so "
+                           "a member makes this move in the app.",
+            })
 
         _refuse_unless_agreed(plan, payload)
         # Before any write: a hidden descendant refuses the whole move (409),
@@ -828,6 +972,8 @@ async def move_tasks(
                 field_map=plan["subtree_maps"].get(str(child.root_project_id)),
             )
             carried.append(str(child.id))
+        # WS-39 SP-1. A task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, [*moved, *carried], by=actor(user))
 
     for task_id in [*moved, *carried]:
         await emit("pm.task.moved", {"task_id": task_id})

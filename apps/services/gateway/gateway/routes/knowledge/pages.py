@@ -210,8 +210,15 @@ async def writable_space(db: Any, user: UserContext, space_id: str | None) -> An
     404 for a space the caller cannot open, 403 without ``write`` on it at the
     time of the call, and 409 for an archived space. ``create_page`` and a
     page proposal (KB-5a) both call it.
+
+    An outside agent without ``include_personal`` (D-EA-4) gets 422 with no
+    space: its draft does not land in the ``me`` space that it cannot read.
     """
     if space_id is None:
+        if core._hides_personal(user):
+            raise HTTPException(status_code=422, detail=[{
+                "loc": ["body", "space_id"], "type": "missing",
+                "msg": "Name a space. This connection cannot write in My notes."}])
         space = await core.ensure_me_space(db, user)
     else:
         space = await core.load_space(db, user, space_id)

@@ -6,7 +6,8 @@ A class says how far a card may reach the member:
 * ``brief`` — goes into the morning brief.
 * ``interrupt`` — may interrupt, inside the budget, and is in the brief too.
 * ``urgent`` — reaches like ``interrupt``, and may use the urgent allowance.
-  Only a "Tell me on WhatsApp" request is ``urgent`` today (RE-5, §11.3).
+  A "Tell me on WhatsApp" request can be ``urgent`` (RE-5, §11.3), and so is
+  a due reminder on web push (WS-66 RE-9b).
 
 An unknown kind is ``none``, so a new provider reaches nobody until it adds
 its row here. ``tests/unit/test_reach_plan.py`` fails when a kind that a
@@ -43,6 +44,7 @@ REACH_CLASS: dict[str, str] = {
     "unblocked": "brief",
     "colleague_out": "brief",
     "agent_asks": "interrupt",
+    "agent_questions": "interrupt",
     # §4.2 names no class for these three. Each one is a thing to know, not a
     # thing to act on now, so each one goes in the brief and interrupts nobody.
     "waiting_quiet": "brief",
@@ -65,11 +67,38 @@ REACH_CLASS: dict[str, str] = {
     # KB-9b slice 2: a source stopped syncing, for the member who connected it
     # (only that member gets the card). It may interrupt, inside the budget.
     "source_sync_failed": "interrupt",
+    # WS-66 RE-9b (calendar_events_reminders.md §5.6, decision 3): the
+    # member's own reminders reach the member by web push only
+    # (`reach/push_channel.py`). `reminder_due` is `urgent`: it may break
+    # quiet hours, with its own cap of 10 a day (D114.3). `reminder_check` is
+    # `interrupt`, inside the interrupt cap and never in quiet hours.
+    # `reminder_unconfirmed` is `brief`, so it sends no push in quiet hours.
+    # ⚠️ A class does not keep a card off WhatsApp. `NOT_ON_WHATSAPP` below
+    # does that, so the Reach loop never sends a reminder (D114.7).
+    "reminder_due": "urgent",
+    "reminder_check": "interrupt",
+    "reminder_unconfirmed": "brief",
+    # WS-ALN ALN-2a (project_alignment.md §3.2, §7.4): a question that waits on
+    # the member by name. It may interrupt, inside the budget. ALN-2b adds the
+    # provider. DECISIONS_ORGS (off by default) keeps the table empty until then.
+    "decision": "interrupt",
     # "Tell me on WhatsApp" (RE-5, §11.3). A rule or a workflow at ``normal``
     # interrupts. The member's own request, and a rule at ``urgent``, are
     # ``urgent`` (below).
     "notify_me": "interrupt",
+    # AO-2 (customer_console.md §6A.17b): the AI vendor alert. `gateway.
+    # provider_alerts` sends its own push through the one sender, once an
+    # hour at most, so the Reach loop never sends it a second time.
+    "provider_alert": "none",
 }
+
+#: The kinds that never go on WhatsApp: no brief, no template parameter, no
+#: interrupt and no preview names them (D114.7). They are the member's own
+#: reminders, which can hold private text, and RM-9 lifts this. The chat
+#: brief (``routes/chat_brief.py``) still shows them: the chat is a channel
+#: that D114.7 allows. ``plan.on_whatsapp`` applies it, and
+#: ``tests/unit/test_reach_loop.py`` holds it.
+NOT_ON_WHATSAPP = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
 
 #: The notification reasons that interrupt. A comment or a change does not.
 INTERRUPTING_NOTIFICATIONS = frozenset({"assigned", "mention"})

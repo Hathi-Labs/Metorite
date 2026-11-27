@@ -143,13 +143,14 @@ def _subscription(body: SubscriptionBody) -> store.Subscription:
 
 
 @router.get("/public-key")
-async def push_public_key(user: UserContext = Depends(get_current_user)) -> dict[str, str]:
-    """The VAPID public key that the browser subscribes with."""
-    _scope(user)
+async def push_public_key(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
+    """The VAPID public key that the browser subscribes with, and ``prompt``:
+    true when ``PUSH_PROMPT_ORGS`` holds the session's org (OB-8)."""
+    org, _ = _scope(user)
     key = flags.public_key()
     if key is None or flags.subject() is None:
         raise HTTPException(status_code=503, detail=NOT_CONFIGURED)
-    return {"public_key": key}
+    return {"public_key": key, "prompt": flags.prompt_allowed(org)}
 
 
 @router.post("/subscriptions")

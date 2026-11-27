@@ -48,6 +48,20 @@ export const MIN_GAP = 1e-6;
 /** What a first, unordered sibling set is spread across. */
 export const POSITION_SPAN = 65536;
 
+/**
+ * A root that only DRAWS at the top level: it has a parent the member cannot
+ * see, so the tree shows it as a root because of visibility, not because it is
+ * one. Moving it to the top level would silently pull it out of that parent,
+ * and ordering against it would write a rank among nodes it does not belong
+ * with. So it takes no part in a top-level drag. (H-257)
+ */
+export function hasHiddenParent(node: ProjectNode): boolean {
+  return Boolean(node.parent_project_id);
+}
+
+const HIDDEN_PARENT_REFUSAL =
+  "This node sits inside a parent you cannot see. It cannot move to the top level.";
+
 /** The children of a parent id, in the order the tree draws them. */
 export function siblingsOf(
   roots: readonly ProjectNode[],
@@ -134,6 +148,17 @@ export function planTreeDrop(
   const refusal = moveRefusal(roots, movingId, parentId);
   if (refusal) return { refusal };
 
+  // H-257: a hidden-parent root is neither a top-level drop target nor a
+  // top-level sibling anchor, and its own drag refuses a top-level drop.
+  const root = roots.find((r) => r.id === movingId);
+  if (parentId === null && root && hasHiddenParent(root)) {
+    return { refusal: HIDDEN_PARENT_REFUSAL };
+  }
+  if (target.kind === "onto") {
+    const onto = roots.find((r) => r.id === target.nodeId);
+    if (onto && hasHiddenParent(onto)) return { refusal: HIDDEN_PARENT_REFUSAL };
+  }
+
   if (target.kind === "onto") {
     // Landing INTO a row appends. Asking for a position as well would mean
     // guessing where in a list the user has not looked at, and "at the end"
@@ -147,18 +172,23 @@ export function planTreeDrop(
 
   const siblings = siblingsOf(roots, parentId);
   const index = dropIndexFor(siblings, movingId, target.index);
-  const others = siblings.filter((n) => n.id !== movingId);
+  const allOthers = siblings.filter((n) => n.id !== movingId);
+  // At the top level the hidden-parent roots are drawn but never anchor a
+  // rank. `index` counts drawn rows, so map it onto the true roots.
+  const anchored = (n: ProjectNode) => parentId !== null || !hasHiddenParent(n);
+  const others = allOthers.filter(anchored);
+  const rankIndex = allOthers.slice(0, index).filter(anchored).length;
 
   // Dropping a node back into the slot it already occupies.
   const from = siblings.findIndex((n) => n.id === movingId);
-  if (from !== -1 && others[index - 1]?.id === siblings[from - 1]?.id
-      && others[index]?.id === siblings[from + 1]?.id) {
+  if (from !== -1 && allOthers[index - 1]?.id === siblings[from - 1]?.id
+      && allOthers[index]?.id === siblings[from + 1]?.id) {
     return null;
   }
 
-  const position = positionAt(others, index);
+  const position = positionAt(others, rankIndex);
   if (position === null) {
-    const spread = spreadPositions(others, movingId, index);
+    const spread = spreadPositions(others, movingId, rankIndex);
     const mine = spread.find((row) => row.id === movingId);
     return {
       plan: { parentId, position: mine ? mine.position : POSITION_SPAN / 2 },

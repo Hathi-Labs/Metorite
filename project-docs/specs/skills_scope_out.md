@@ -128,7 +128,7 @@ toggling optional families, which at best saves ≈3.8k (19.3k → 15.4k).
 [`yc-software/qm`](https://github.com/yc-software/qm) has already implemented, read
 2026-08-01. Recorded here so whoever picks up the diet knows what "good" looks
 like; full write-up in
-[`multiplayer_prior_art_qm_2026-08.md` §QM-2](multiplayer_prior_art_qm_2026-08.md).
+`multiplayer_prior_art_qm_2026-08.md` §QM-2.
 
 Four parts, each independently adoptable:
 

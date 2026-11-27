@@ -1,0 +1,535 @@
+/**
+ * The real data door of a Studio package (`ai_studio.md` §14, slice STU-D2b-1).
+ *
+ * It is the first `StudioDataDoor` that talks to the gateway. It posts to
+ * `/api/studio/apps/<package id>/actions/<action id>`. The package declares
+ * each action in its manifest as `{id, uses}`, and the route takes the `id`.
+ * A block names the verb, as `object:visit.list`, so the door maps the verb
+ * to the declared id.
+ *
+ * ⚠️ THE READ GUARD. The BFF (`api/studio/[[...path]]`) signs the direct proof for
+ * EVERY same-origin POST to `apps/<id>/actions/<id>`. It cannot tell a read from a
+ * write. So a read that reached a write action would run as the member's own click.
+ * Two guards hold, and each one alone is not enough.
+ *
+ * 1. The client guard: `door.read` accepts only `object:<name>.list`,
+ *    `object:<name>.get`, `object:<name>.aggregate` (STU-D4b) and `object:<name>.tree`
+ *    (STU-D18-2b), and refuses every
+ *    other source with no network call. It
+ *    holds for the manifest that the page read at open. The door maps a verb to the
+ *    action id of that manifest. A later draft can re-point an id at a write, and the
+ *    page does not know until it reads the package again.
+ * 2. The body marker: each `.get` body is `{id, read: true}`. The door ignores the
+ *    marker for a get, and it refuses a body with that key for a create, an update and
+ *    a delete (`_write_input` takes exactly the keys of the write). So a re-pointed id
+ *    still cannot delete a record. A list body cannot name a delete either, because
+ *    the list takes only filter, sort, limit and offset.
+ * 3. The aggregate body: the door sends only `filter`, `group_by` and `measures` of
+ *    `source.args` (`AGGREGATE_KEYS`). So an aggregate body never holds `id` or
+ *    `data`, and a re-pointed id cannot match the keys of a write.
+ *
+ * A page reads on mount, on focus and on refresh, and none of those may write.
+ * Fence: `realDoor.test.ts`.
+ *
+ * ⚠️ A refusal never shows the raw text of an error. The member reads one of
+ * the sentences below.
+ *
+ * Pure of React, so a test drives it in the node environment.
+ */
+import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
+import type { NavSection, PageDef, ViewDef } from "./manifest";
+import { ACTION_FAILED } from "./TypedActionButton";
+
+/** The one shape of a source that a read may name. */
+const READ_SOURCE = /^object:[a-z][a-z0-9_]{0,47}\.(?:list|get|aggregate|tree)$/;
+/**
+ * The keys of an aggregate body: the C2b input schema (`AGGREGATE_INPUT_KEYS` of
+ * `gateway/routes/studio/invoke.py`). `realDoor.test.ts` holds the two equal.
+ */
+export const AGGREGATE_KEYS = ["filter", "group_by", "measures"] as const;
+/**
+ * The keys of a tree body: `TREE_INPUT_KEYS` of `gateway/routes/studio/invoke.py` (D18-2a).
+ * `realDoor.test.ts` holds the two equal.
+ */
+export const TREE_KEYS = ["root_id", "depth", "limit"] as const;
+/** A write that a click may name. */
+const WRITE_ACTION = /^object:[a-z][a-z0-9_]{0,47}\.(?:create|update|delete)$/;
+/** A declared action id (A2). */
+const ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
+const PACKAGE_ID = /^[0-9a-fA-F-]{36}$/;
+
+export const NOT_DECLARED_SENTENCE =
+  "This app does not declare that action yet, so it cannot run here. Ask Mira to add the action to the app.";
+export const NEEDS_CONNECTION_SENTENCE =
+  "This app needs a connection first. Connect it on the card at the top of the app, then try again.";
+export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
+export const APPROVAL_SENTENCE =
+  "Direct edits are not on for your workspace yet, so this change was not saved.";
+/**
+ * A 202 of the door: the change waits for an approval card, and nothing is
+ * written yet (STU-B2c-2a). It is never a save.
+ */
+export const WAITING_SENTENCE = "This change waits for an approval, so it is not saved yet.";
+export const GONE_SENTENCE = "That record is gone. Reload the list.";
+export const UNPUBLISHED_SENTENCE = "This package has no such object yet. Publish the package first.";
+export const SIGN_IN_SENTENCE = "Your session ended. Sign in again.";
+/**
+ * J2a. A viewer reads an app that another member owns, through an install. The door
+ * refuses each write of a viewer with 403 `read_only`.
+ */
+export const READ_ONLY_SENTENCE = "You can read this app. Only its owner can change it.";
+
+/** Does `source` name a read? The only test the guard makes. */
+export function isReadSource(action: unknown): action is string {
+  return typeof action === "string" && READ_SOURCE.test(action);
+}
+
+/** One action that the manifest of the package declares. */
+export interface DeclaredAction {
+  id: string;
+  uses: string;
+  /** An action that fills values by itself. The door never uses it for a verb. */
+  set?: unknown;
+}
+
+/**
+ * The declared action id for each verb. An action with a `set` is left out,
+ * because it writes values that the block did not send. The first plain
+ * action for a verb wins.
+ */
+export function verbMap(actions: readonly DeclaredAction[] | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const a of actions ?? []) {
+    if (!a || typeof a.id !== "string" || typeof a.uses !== "string") continue;
+    if (a.set !== undefined && a.set !== null) continue;
+    if (!ACTION_ID.test(a.id)) continue;
+    if (!READ_SOURCE.test(a.uses) && !WRITE_ACTION.test(a.uses)) continue;
+    if (!(a.uses in out)) out[a.uses] = a.id;
+  }
+  return out;
+}
+
+/**
+ * J2a. The actions that a viewer may use: the reads (`list` and `get`) only. A page
+ * builds the door of a viewer from them, so a write of a viewer never reaches the
+ * network, and the blocks offer no edit.
+ */
+export function readActions(actions: readonly DeclaredAction[] | undefined): DeclaredAction[] {
+  return (actions ?? []).filter((a) => !!a && typeof a.uses === "string" && READ_SOURCE.test(a.uses));
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * The rows of a list answer. A record is `{id, data:{...}}` on the wire. A
+ * row is `{id, ...data}`, and `id` is the record id even when `data` holds a key `id`.
+ * An answer with no `records` list gives `null`, so the caller can fail.
+ */
+export function flattenRecords(answer: unknown): Row[] | null {
+  if (!isObject(answer) || !Array.isArray(answer.records)) return null;
+  const rows: Row[] = [];
+  for (const rec of answer.records) {
+    if (!isObject(rec) || typeof rec.id !== "string") continue;
+    rows.push({ ...(isObject(rec.data) ? rec.data : {}), id: rec.id });
+  }
+  return rows;
+}
+
+/** The row of a get answer, `{record:{id,data}}`, or null. */
+export function flattenRecord(answer: unknown): Row | null {
+  if (!isObject(answer) || !isObject(answer.record)) return null;
+  return flattenRecords({ records: [answer.record] })?.[0] ?? null;
+}
+
+/** The body of an aggregate: the keys of `AGGREGATE_KEYS` of the args, and no other. */
+export function aggregateBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of AGGREGATE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
+  return out;
+}
+
+/** The body of a tree read: the keys of `TREE_KEYS` of the args, and no other. */
+export function treeBody(args: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of TREE_KEYS) if (args && args[k] !== undefined) out[k] = args[k];
+  return out;
+}
+
+/** The key of a tree row that holds the id of its parent in the read, or null. */
+export const TREE_PARENT = "__parent";
+/** The key of a tree row that holds its level in the read. A root is level 1. */
+export const TREE_LEVEL = "__level";
+
+/**
+ * The rows of a tree answer, `{nodes:[{record:{id,data}, level, parent_id}], truncated}`.
+ * A row is `{...data, id, __parent, __level}`. `__parent` is the `parent_id` of the node, the
+ * parent that the viewer reads (the door cuts a hidden subtree), or null for a root.
+ * An answer with no `nodes` list gives `null`, so the caller can fail. A node with no
+ * string id is left out.
+ */
+export function flattenTree(answer: unknown): Row[] | null {
+  if (!isObject(answer) || !Array.isArray(answer.nodes)) return null;
+  const rows: Row[] = [];
+  for (const node of answer.nodes) {
+    if (!isObject(node) || !isObject(node.record) || typeof node.record.id !== "string") continue;
+    const data = isObject(node.record.data) ? node.record.data : {};
+    const parent = typeof node.parent_id === "string" && node.parent_id !== "" ? node.parent_id : null;
+    rows.push({ ...data, id: node.record.id, [TREE_PARENT]: parent, [TREE_LEVEL]: typeof node.level === "number" ? node.level : 1 });
+  }
+  return rows;
+}
+
+const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v : null);
+
+/** `fieldErrors` of the gateway is a list of `{field, message}`. The Form reads a map. */
+function fieldMap(raw: unknown, single?: { field: unknown; message: unknown }): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (Array.isArray(raw)) {
+    for (const e of raw) {
+      if (isObject(e) && typeof e.field === "string" && text(e.message) && !(e.field in out)) {
+        out[e.field] = e.message as string;
+      }
+    }
+  } else if (isObject(raw)) {
+    for (const [k, v] of Object.entries(raw)) if (text(v)) out[k] = v as string;
+  }
+  if (single && typeof single.field === "string" && text(single.message) && !(single.field in out)) {
+    out[single.field] = single.message as string;
+  }
+  return out;
+}
+
+/** The detail of an error body: an object, or a string wrapped as a message. */
+function detailOf(body: unknown): Record<string, unknown> {
+  const d = isObject(body) ? body.detail : undefined;
+  if (isObject(d)) return d;
+  return typeof d === "string" ? { message: d } : {};
+}
+
+/**
+ * The store words a rule refusal as "Rule `name` of object `obj`: <message>".
+ * The Form and the Board already say "Refused by <rule>:", so keep only the
+ * message of the rule.
+ */
+export function ownMessage(message: string | null): string | null {
+  if (message === null) return null;
+  const m = /^Rule `[^`]+` of object `[^`]+`: ([\s\S]+)$/.exec(message);
+  return m ? m[1] : message;
+}
+
+/** The sentence of a 503 that carries a wait. */
+export function busySentence(retryAfter: string | null | undefined): string {
+  const n = retryAfter ? Number.parseInt(retryAfter, 10) : NaN;
+  const wait = Number.isFinite(n) && n > 0 && n <= 60 ? ` in ${n} second${n === 1 ? "" : "s"}` : " in a moment";
+  return `This app is busy now. Try again${wait}.`;
+}
+
+/**
+ * The answer of a write, as the blocks read it (`formModel.ts`, THE REFUSAL
+ * CONTRACT). `status` is the HTTP status. `body` is the parsed JSON, or `{}`.
+ */
+export function mapAnswer(status: number, body: unknown, retryAfter?: string | null): ActionResult {
+  // A 202 means a card waits and nothing is written, so it is not a save.
+  if (status === 202) return { ok: false, message: WAITING_SENTENCE };
+  if (status >= 200 && status < 300) return { ok: true, data: body };
+  const d = detailOf(body);
+  if (status === 422) {
+    const rule = text(d.rule);
+    const message = rule ? ownMessage(text(d.message)) : text(d.message);
+    const fieldErrors = fieldMap(d.fieldErrors, { field: d.field, message: d.message });
+    return {
+      ok: false,
+      message: message ?? ACTION_FAILED,
+      data: { fieldErrors, ...(rule ? { rule } : {}), ...(message ? { message } : {}) },
+    };
+  }
+  if (status === 503) return { ok: false, message: busySentence(retryAfter) };
+  if (status === 403) {
+    if (d.code === "approval_required") return { ok: false, message: APPROVAL_SENTENCE };
+    if (d.code === "read_only") return { ok: false, message: READ_ONLY_SENTENCE };
+    return { ok: false, message: d.code === "not_declared" ? NOT_DECLARED_SENTENCE : NOT_OPEN_SENTENCE };
+  }
+  if (status === 401) return { ok: false, message: SIGN_IN_SENTENCE };
+  if (status === 409 && d.code === "needs_connection") return { ok: false, message: NEEDS_CONNECTION_SENTENCE };
+  if (status === 404) return { ok: false, message: d.code === "object_missing" ? UNPUBLISHED_SENTENCE : GONE_SENTENCE };
+  return { ok: false, message: ACTION_FAILED };
+}
+
+export interface RealDoorOptions {
+  /** The package uuid. */
+  packageId: string;
+  /** The `actions` of the package manifest. */
+  actions: readonly DeclaredAction[] | undefined;
+  /** For a test. Default: the global `fetch`. */
+  fetchImpl?: typeof fetch;
+}
+
+/** The URL of one declared action of a package, through the BFF. */
+export function actionUrl(packageId: string, actionId: string): string {
+  return `/api/studio/apps/${packageId}/actions/${actionId}`;
+}
+
+/** A read that failed. The message is a plain sentence, and `status` is the HTTP status. */
+export class DoorReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "DoorReadError";
+  }
+}
+
+export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
+  if (!PACKAGE_ID.test(opts.packageId)) throw new Error("A package id is a uuid.");
+  const verbs = verbMap(opts.actions);
+  const declared = new Set((opts.actions ?? []).map((a) => a?.id).filter((x): x is string => typeof x === "string"));
+  const fetchImpl: typeof fetch = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+
+  async function post(actionId: string, body: Record<string, unknown>): Promise<{ status: number; body: unknown; wait: string | null }> {
+    const res = await fetchImpl(actionUrl(opts.packageId, actionId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const parsed: unknown = await res.json().catch(() => ({}));
+    return { status: res.status, body: parsed, wait: res.headers?.get?.("Retry-After") ?? null };
+  }
+
+  return {
+    scope: `${opts.packageId}:live`,
+
+    async read(source: StudioSource): Promise<Row[]> {
+      // THE READ GUARD. No other source reaches the network (see the file header).
+      if (!isReadSource(source?.action)) throw new DoorReadError(NOT_OPEN_SENTENCE, 0);
+      const id = verbs[source.action];
+      if (!id) throw new DoorReadError(NOT_DECLARED_SENTENCE, 403);
+      // The marker is the second guard (see the file header). Only a get carries it.
+      const isGet = source.action.endsWith(".get");
+      const isAggregate = source.action.endsWith(".aggregate");
+      const isTree = source.action.endsWith(".tree");
+      // A tree body holds `root_id`, `depth` and `limit` only, as the aggregate body holds its keys.
+      const out = await post(id, isGet ? { ...(source.args ?? {}), read: true }
+        : isAggregate ? aggregateBody(source.args) : isTree ? treeBody(source.args) : (source.args ?? {}));
+      if (out.status < 200 || out.status >= 300) {
+        const failed = mapAnswer(out.status, out.body, out.wait);
+        throw new DoorReadError(failed.message ?? ACTION_FAILED, out.status);
+      }
+      if (source.action.endsWith(".get")) {
+        const one = flattenRecord(out.body);
+        if (!one) throw new DoorReadError(GONE_SENTENCE, 404);
+        return [one];
+      }
+      // An aggregate answers ONE row, the C2b result, as `parseAggregate` reads it.
+      if (isAggregate) {
+        if (!isObject(out.body) || !Array.isArray(out.body.measures)) throw new DoorReadError(ACTION_FAILED, 502);
+        return [out.body];
+      }
+      // A tree answers its nodes, each with the id of its parent in the read.
+      if (isTree) {
+        const nodes = flattenTree(out.body);
+        if (!nodes) throw new DoorReadError(ACTION_FAILED, 502);
+        return withMeta(nodes, { truncated: isObject(out.body) && out.body.truncated === true });
+      }
+      const rows = flattenRecords(out.body);
+      if (!rows) throw new DoorReadError(ACTION_FAILED, 502);
+      const b = isObject(out.body) ? out.body : {};
+      return withMeta(rows, {
+        ...(typeof b.total === "number" ? { total: b.total } : {}),
+        ...(typeof b.total_at_least === "number" ? { atLeast: b.total_at_least } : {}),
+      });
+    },
+
+    async run(action: string, args?: Record<string, unknown>): Promise<ActionResult> {
+      // A write is a verb of an object, or an action that the package declares.
+      let id: string | undefined;
+      if (WRITE_ACTION.test(action)) id = verbs[action];
+      else if (declared.has(action)) id = action;
+      if (!id) return { ok: false, message: WRITE_ACTION.test(action) ? NOT_DECLARED_SENTENCE : NOT_OPEN_SENTENCE };
+      try {
+        const out = await post(id, args ?? {});
+        return mapAnswer(out.status, out.body, out.wait);
+      } catch {
+        return { ok: false, message: ACTION_FAILED };
+      }
+    },
+  };
+}
+
+/**
+ * Keep one door while the actions stay the same (STU-D2b fix round 1, P2-B). A page
+ * reads the package again on focus, and the read gives a new object each time. A new
+ * door would reset the edit store and the delete flow, so the door is keyed on the
+ * package id and the text of the actions.
+ */
+export function createDoorKeeper(
+  make: (opts: RealDoorOptions) => StudioDataDoor = createRealDoor,
+): (packageId: string, actions: readonly DeclaredAction[] | undefined) => StudioDataDoor {
+  let key = "";
+  let door: StudioDataDoor | null = null;
+  return (packageId, actions) => {
+    const next = `${packageId}\u0000${JSON.stringify(actions ?? [])}`;
+    if (door === null || next !== key) {
+      door = make({ packageId, actions });
+      key = next;
+    }
+    return door;
+  };
+}
+
+// --- the package routes (GET only) -----------------------------------------
+
+export interface PackageSummary {
+  id: string;
+  name: string;
+  status: string;
+  live_version: number | null;
+  /** The last change, as the gateway writes it. Null when the answer has none. */
+  updated_at: string | null;
+}
+
+export interface ObjectRow {
+  id: string;
+  name: string;
+  label: string | null;
+  fields: Array<{
+    key: string; type: string; label: string | null; required: boolean; many: boolean;
+    options: string[] | null; to: string | null; hot: boolean;
+    // STU-C14: the bounds of a rating, the units of a quantity, the format of a barcode.
+    min?: number | null; max?: number | null; units?: string[] | null; format?: string | null;
+    // STU-C15a: the parts of an autonumber.
+    prefix?: string | null; pad?: number | null; reset?: string | null;
+    // STU-C24a: the ranges and conversions of a quantity.
+    normal?: { low?: string | null; high?: string | null } | null;
+    critical?: { low?: string | null; high?: string | null } | null;
+    conversions?: Array<{ from: string; to: string; factor: string }> | null;
+    /** C13. A lines relation names the field of its line object that points back. */
+    lines?: string | null;
+  }>;
+  rules: Array<Record<string, unknown>>;
+}
+
+/**
+ * Who reads the package (J2a). `owner` is the member who owns it. `viewer` is a member
+ * who reads the installed version of an app that another member owns. A viewer
+ * writes nothing, deletes nothing and opens no IDE.
+ */
+export type PackageAccess = "owner" | "viewer";
+
+export interface PackageDetail {
+  id: string;
+  name: string;
+  access: PackageAccess;
+  actions: DeclaredAction[];
+  objects: ObjectRow[];
+  /** The views and the pages of the manifest (AF-1). Empty when the manifest has none. */
+  views: ViewDef[];
+  pages: PageDef[];
+  /** The rail of the manifest (AF-2a). Empty when the manifest has none. */
+  nav: NavSection[];
+  /** The `access` of each object of the manifest, by object name (C8a). Absent when the answer has none. */
+  objectAccess?: Record<string, Record<string, unknown>[] | null>;
+}
+
+/**
+ * The access of a package answer. The owner's answer names no `access`. Each other
+ * value reads as a viewer, so an answer that this page does not know offers no write.
+ */
+export function packageAccess(pkg: Record<string, unknown>): PackageAccess {
+  return pkg.access === undefined || pkg.access === "owner" ? "owner" : "viewer";
+}
+
+/** The studio is off for this org (404 on each route), or the member is out. */
+export const STUDIO_OFF = "studio_off";
+export class StudioOff extends Error {
+  constructor() { super(STUDIO_OFF); }
+}
+
+/**
+ * A package route answered with a status that is not 2xx and not 404. The message
+ * stays the plain sentence, and `status` lets a caller tell a refusal (401, 403)
+ * from a fault (STU-F5a: the records card draws no card on a 403).
+ */
+export class PackageReadError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "PackageReadError";
+  }
+}
+
+async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
+  const res = await fetchImpl(url);
+  if (res.status === 404) throw new StudioOff();
+  if (!res.ok) throw new PackageReadError(ACTION_FAILED, res.status);
+  return res.json().catch(() => ({}));
+}
+
+// The key rule of the live doors lives in `./liveKey` (no import, so the shell
+// can reach it through `lib/assistantWrites.ts`). It stays exported from here.
+export { isLiveDoorKey } from "./liveKey";
+
+export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
+  const body = await getJson("/api/studio/packages", fetchImpl);
+  const raw = isObject(body) && Array.isArray(body.packages) ? body.packages : [];
+  return raw.filter(isObject).map((p) => ({
+    id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
+    live_version: typeof p.live_version === "number" ? p.live_version : null,
+    updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
+  }));
+}
+
+/** One package in the admin view (J4). The gateway names the owner, and holds no manifest and no reason text. */
+export interface OrgPackage extends PackageSummary {
+  owner_email: string;
+  mine: boolean;
+  /** Action calls through the door. It is not a workflow run. */
+  action_calls: number;
+  /** True when the count stopped at its cap, so the real number is larger. */
+  action_calls_capped: boolean;
+  last_error: { action: string | null; outcome: string; at: string | null } | null;
+}
+
+/** The answer of `GET /api/studio/packages?scope=org`. `admin` is the gateway's word, never a guess. */
+export interface OrgPackages {
+  admin: boolean;
+  packages: OrgPackage[];
+  truncated: boolean;
+}
+
+/** The admin view. A caller without the right gets `admin: false` and their own packages, so the UI shows no view. */
+export async function listOrgPackages(fetchImpl: typeof fetch = fetch): Promise<OrgPackages> {
+  const body = await getJson("/api/studio/packages?scope=org", fetchImpl);
+  const o = isObject(body) ? body : {};
+  const raw = Array.isArray(o.packages) ? o.packages : [];
+  const admin = o.admin === true;
+  const packages = !admin ? [] : raw.filter(isObject).map((p): OrgPackage => {
+    const e = isObject(p.last_error) ? p.last_error : null;
+    return {
+      id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
+      live_version: typeof p.live_version === "number" ? p.live_version : null,
+      updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
+      owner_email: String(p.owner_email ?? ""), mine: p.mine === true,
+      action_calls: typeof p.action_calls === "number" ? p.action_calls : 0,
+      action_calls_capped: p.action_calls_capped === true,
+      last_error: e && typeof e.outcome === "string"
+        ? { action: typeof e.action === "string" ? e.action : null, outcome: e.outcome, at: typeof e.at === "string" ? e.at : null }
+        : null,
+    };
+  });
+  return { admin, packages, truncated: admin && o.truncated === true };
+}
+
+export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): Promise<PackageDetail> {
+  if (!PACKAGE_ID.test(id)) throw new StudioOff();
+  const body = await getJson(`/api/studio/packages/${id}`, fetchImpl);
+  const pkg = isObject(body) && isObject(body.package) ? body.package : {};
+  const manifest = isObject(pkg.manifest) ? pkg.manifest : {};
+  const objects = isObject(body) && Array.isArray(body.objects) ? (body.objects.filter(isObject) as unknown as ObjectRow[]) : [];
+  const actions = Array.isArray(manifest.actions) ? (manifest.actions.filter(isObject) as unknown as DeclaredAction[]) : [];
+  const views = Array.isArray(manifest.views) ? (manifest.views.filter(isObject) as unknown as ViewDef[]) : [];
+  const pages = Array.isArray(manifest.pages) ? (manifest.pages.filter(isObject) as unknown as PageDef[]) : [];
+  const nav = Array.isArray(manifest.nav) ? (manifest.nav.filter(isObject) as unknown as NavSection[]) : [];
+  const objectAccess: Record<string, Record<string, unknown>[] | null> = {};
+  for (const o of Array.isArray(manifest.objects) ? manifest.objects.filter(isObject) : []) {
+    if (typeof o.name === "string") objectAccess[o.name] = Array.isArray(o.access) ? o.access.filter(isObject) : null;
+  }
+  return { id, name: String(pkg.name ?? ""), access: packageAccess(pkg), actions, objects, views, pages, nav, objectAccess };
+}

@@ -16,6 +16,7 @@
  * an assignee column's quick-add exists to set.
  */
 
+import { dayKey } from "./calendar";
 import { UNSET, type GroupBy } from "./grouping";
 import { flagsForCell, flagsPatch } from "./matrix";
 
@@ -44,6 +45,19 @@ export const EMPTY_PLAN: QuickAddPlan = { create: {} };
 export function dueInstantForDay(day: string): string {
   const [y, m, d] = day.split("-").map(Number);
   return new Date(y, (m ?? 1) - 1, d ?? 1, 12, 0, 0, 0).toISOString();
+}
+
+/**
+ * The `<input type="date">` value of a due value: `dueInstantForDay` read back.
+ *
+ * A plain date stays as it is. An instant reads as a day of this browser, so a
+ * pick shows the day that was picked. The first ten characters are the UTC date,
+ * which is the day before for a member east of UTC+12.
+ */
+export function dueDayOf(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const at = value ? new Date(value) : null;
+  return at && !Number.isNaN(at.getTime()) ? dayKey(at) : "";
 }
 
 /**

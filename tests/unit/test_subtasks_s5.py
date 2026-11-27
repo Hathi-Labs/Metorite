@@ -27,6 +27,23 @@ import pytest
 from fastapi import HTTPException
 from gateway.routes.projects import bulk, cascade, core, move, personal, tasks
 
+@pytest.fixture(autouse=True)
+def _project_is_open(monkeypatch):
+    """ARC-2b. These tests pin the lifecycle cascades on faked helpers, so the
+    read of the project's ``archived_at`` is faked open here. The refusal is
+    pinned by ``test_projects_archived_readonly_r8.py``."""
+    async def open_(*_a, **_k):
+        return None
+
+    async def not_archived(*_a, **_k):
+        return False
+
+    for module in (tasks, move, personal):
+        monkeypatch.setattr(module, "assert_task_project_open", open_)
+    for module in (bulk, cascade):
+        monkeypatch.setattr(module, "project_is_archived", not_archived)
+
+
 # ── A tree, three levels deep, over two projects ───────────────────────────
 #
 #   parent (proj-a)
@@ -322,7 +339,10 @@ def patch_door(monkeypatch):
     async def load_visible_task(db, vis, task_id):
         return PARENT
 
-    async def apply_status_transition(db, task, status_id, *, created_by):
+    # `closer`: the PATCH names its caller, so a close ends the task's open
+    # agent run (H-409 item 1, task 748). This fake ends none.
+    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None,
+                                      closer=None):
         return {
             "row": task,
             "from": SimpleNamespace(name="To do"),
@@ -404,6 +424,40 @@ async def test_archive_cascade_shelves_every_visible_descendant(subtree, shelf):
     assert [w[0] for w in shelf if w[0] != "activity"] == got.ids
     assert ("activity", "great-1", {"cascade_from": "parent"}) in shelf
     assert [e[0] for e in got.events] == ["pm.task.archived"] * 4
+
+
+@pytest.fixture
+def proj_b_filed(monkeypatch):
+    """ARC-2b: proj-b carries ``archived_at``. Records each project asked."""
+    asked: list[str] = []
+
+    async def project_is_archived(db, project_id):
+        asked.append(project_id)
+        return project_id == "proj-b"
+
+    monkeypatch.setattr(cascade, "project_is_archived", project_is_archived)
+    return asked
+
+
+async def test_complete_cascade_skips_a_subtask_in_a_filed_project(
+    subtree, done_lanes, proj_b_filed,
+):
+    """ARC-2b (spec one_projects_app.md 9b.6 rule 2). A subtask in an archived
+    project is skipped, as a hidden one is. Its set is never asked for a Done
+    lane, so a filed set with no Done lane cannot refuse the cascade."""
+    got = await cascade.complete_subtree(None, VIS, "parent", by="me@x.in")
+    assert got.ids == ["child-1"]
+    assert [c for c in done_lanes if c[0] != "moved"] == [("owner-proj-a", "done")]
+    # One read for each project.
+    assert proj_b_filed == ["proj-a", "proj-b"]
+
+
+async def test_archive_cascade_skips_a_subtask_in_a_filed_project(
+    subtree, shelf, proj_b_filed,
+):
+    got = await cascade.archive_subtree(None, VIS, "parent", by="me@x.in")
+    assert got.ids == ["child-1", "child-2"]
+    assert proj_b_filed == ["proj-a", "proj-b"]
 
 
 @pytest.fixture
@@ -509,6 +563,8 @@ def mover(monkeypatch, subtree):
     monkeypatch.setattr(tasks, "touch_task", noop)
     monkeypatch.setattr(tasks, "record_activity", noop)
     monkeypatch.setattr(tasks, "record_drops", noop)
+    # WS-39 SP-1: the cycle rule of a move. Its SQL runs in test_sprint_store_r8.py.
+    monkeypatch.setattr(tasks, "detach_moved_tasks", noop)
     monkeypatch.setattr(tasks, "row_to_dict", lambda row, model: {"id": row.id})
     return written
 

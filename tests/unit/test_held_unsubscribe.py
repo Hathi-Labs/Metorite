@@ -30,6 +30,7 @@ from gateway.routes.email.automation import senders
 from pydantic import ValidationError
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 SENDER = "news@list.example"
 LINK = "https://unsub.list.example/u?id=42"

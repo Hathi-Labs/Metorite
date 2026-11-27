@@ -39,6 +39,7 @@
  * rendered header, folds the coming-soon templates, splits the rail into
  * yours and shared, and offers Delete in edit mode.
  */
+import { displayRowProject } from "../lib/personalTree";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -1120,7 +1121,7 @@ export function RenderedBody({
                           >
                             <span className="text-foreground">{f.title}</span> ·{" "}
                             {focusWhy(f)}
-                            {f.project_name ? ` · ${f.project_name}` : ""}
+                            {f.project_name ? ` · ${displayRowProject(f)}` : ""}
                           </li>
                         ))}
                       </ul>
@@ -1180,7 +1181,7 @@ export function RenderedBody({
                             title={r.title}
                           >
                             <span className="text-foreground">{r.title}</span> ·{" "}
-                            {r.project_name}
+                            {displayRowProject(r)}
                             {kind === "stale_in_progress" && r.updated_at
                               ? ` · last change ${shortDate(r.updated_at)}`
                               : ""}
@@ -1535,7 +1536,10 @@ export function ReportBuilder({
   // edits a member's day leaves it about the member (R5b-1 repair). A lead
   // of one team starts Team pulse on that team (§6.5 item 7).
   const self = selfSubject(answer);
-  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const scopes = useMemo(
+    () => scopeOptions(roots, [draft.projectId]),
+    [roots, draft.projectId]
+  );
   const derived = startingTeam(
     builderSubject(draft, needs, self, isEdit),
     template,
@@ -2819,7 +2823,14 @@ export default function ReportsView({
   // same key the page uses, so this adds no request on a warm page.
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? [], [tree.data]);
-  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const scopes = useMemo(
+    () =>
+      scopeOptions(roots, [
+        ...(rows ?? []).map((r) => r.project_id),
+        overviewDraft.projectId,
+      ]),
+    [roots, rows, overviewDraft.projectId]
+  );
 
   // WS-27bn R2. The catalogue is the server's, through the one read cache.
   const catalogue = useCachedResource(projectsKey("reports/templates"), () =>
@@ -2835,7 +2846,7 @@ export default function ReportsView({
 
   function scopeName(row: ReportRow): string {
     if (row.project_id === null) return "Whole organization";
-    return scopes.find((s) => s.value === row.project_id)?.label ?? "Project";
+    return scopes.find((s) => s.value === row.project_id)?.label ?? "In a project";
   }
 
   function authorName(row: ReportRow): string {

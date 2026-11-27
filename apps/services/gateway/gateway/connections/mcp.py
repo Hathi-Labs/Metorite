@@ -24,11 +24,24 @@ and §7.3. The shape follows :mod:`gateway.connections.github`.
 * **Always confirm (H-300).** ``provider_meta.always_confirm`` is the admin's
   switch: with it ``true``, every tool of the server needs the member's card,
   whatever its hints say (``orchestrator._maf_mcp.McpPermissionGate``). A new
-  server gets ``true`` (:func:`save`). A row with no key reads as ``false``,
-  so a server that was stored before H-300 keeps its behaviour, and the move
-  of an old row writes ``false`` for the same reason. Any value but a real
-  ``false`` reads as ``true``, so a damaged value fails closed.
+  server gets ``false`` (:func:`save`, MCP-NC1, owner directive 2026-11-16):
+  with the switch off, a member's run calls each tool with no card. A row
+  that a save stored ``true`` keeps ``true`` until an admin turns it off, and
+  a re-register that names no switch keeps it too. A row with no key reads
+  as ``false``, and the move of an old row writes ``false``. Any value but a
+  real ``false`` reads as ``true``, so a damaged value fails closed.
   :func:`set_always_confirm` changes it on one row.
+* **The read-only key (MCP-C2, item 32).** ``provider_meta.read_only_key`` is
+  the admin's statement that the key of the server can only read: with it,
+  no tool of the server needs the card. After MCP-NC1 it changes only a run
+  that is not a verified member's own run in Metorite, such as a WhatsApp
+  run, which then runs each tool. :func:`_read_only_key` is the ONE
+  parse, into ``StoredServer.read_only_key``. It is true only for a real
+  ``true`` on a row that is not an OAuth row and does not read as always
+  confirm. A new server gets ``false``, and so does a row with no key.
+  :func:`_check_switches` is the one rule of a write: the two switches are
+  never both on AFTER the change, and an OAuth row refuses the key.
+  :func:`set_switches` changes either switch or both on one row.
 * **OAuth rows (IN-8a).** A row with ``provider_meta.auth = "oauth"`` holds
   tokens, not headers. A register keeps them (:func:`save`). A delete
   revokes the refresh token after the commit (:func:`remove`).
@@ -112,6 +125,23 @@ class OAuthUrlChange(ValueError):
     first, because its token is for the old URL (review of #931, P2 1)."""
 
 
+#: :class:`McpSwitchRefused` reasons (MCP-C2, item 32).
+SWITCHES_BOTH_ON = "both_on"
+SWITCHES_OAUTH = "oauth"
+
+
+class McpSwitchRefused(ValueError):
+    """A write would leave the row with a switch state that item 32 forbids.
+
+    ``reason`` is :data:`SWITCHES_BOTH_ON` when "always confirm" and the
+    read-only key would both be on, and :data:`SWITCHES_OAUTH` when the
+    read-only key would go on an OAuth row (D98). The row stays as it was."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class StoredServer:
     """One MCP server of one org. ``headers`` is empty unless asked for."""
@@ -129,6 +159,10 @@ class StoredServer:
     updated_at: datetime | None = None
     #: H-300. False is the reading of a row with no key.
     always_confirm: bool = False
+    #: MCP-C2, item 32: the ONE parse of the admin's read-only key
+    #: (:func:`_read_only_key`). The gate, the index and the read model read
+    #: this field, and nothing parses the key again.
+    read_only_key: bool = False
     #: IN-8a: the row holds OAuth tokens, not a header map. The admin in
     #: ``connected_by`` is who the connection acts as (D98).
     oauth: bool = False
@@ -183,7 +217,7 @@ def _scope(raw: Any) -> tuple[str, ...]:
 
 def _meta(
     name: str, label: str, description: str, transport: str, url: str,
-    agent_scope: Sequence[str], *, always_confirm: bool,
+    agent_scope: Sequence[str], *, always_confirm: bool, read_only_key: bool,
 ) -> dict[str, Any]:
     """The non-secret fields. No header name or value goes here."""
     return {
@@ -194,6 +228,7 @@ def _meta(
         "url": url,
         "agent_scope": list(agent_scope),  # [] stays [], no agent
         "always_confirm": bool(always_confirm),
+        "read_only_key": bool(read_only_key),
     }
 
 
@@ -206,11 +241,35 @@ def _always_confirm(meta: dict[str, Any]) -> bool:
     return meta["always_confirm"] is not False
 
 
+def _read_only_key(meta: dict[str, Any], *, oauth: bool) -> bool:
+    """The ONE parse of the MCP-C2 switch of one row (item 32).
+
+    True only when the key is a real ``true``, the row is not an OAuth row
+    (an OAuth row acts as the admin who connected it, with that admin's own
+    scopes, D98), and "always confirm" reads false. So a row with no key, a
+    value that is not a real ``true``, and a row with both switches on all
+    read as false: a damaged row asks for the card."""
+    return meta.get("read_only_key") is True and not oauth and not _always_confirm(meta)
+
+
+def _check_switches(*, always_confirm: bool, read_only_key: bool, oauth: bool) -> None:
+    """The one rule of a write of the two switches (MCP-C2, item 32).
+
+    The arguments are the row as it would be AFTER the write. The read-only
+    key on an OAuth row raises :data:`SWITCHES_OAUTH`. Both switches on
+    raise :data:`SWITCHES_BOTH_ON`."""
+    if read_only_key and oauth:
+        raise McpSwitchRefused(SWITCHES_OAUTH)
+    if read_only_key and always_confirm:
+        raise McpSwitchRefused(SWITCHES_BOTH_ON)
+
+
 def _server(
     conn: store.Connection, headers: dict[str, str], *, with_headers: bool,
 ) -> StoredServer:
     meta = conn.provider_meta or {}
     name = conn.provider[len(PREFIX):]
+    oauth = _is_oauth(conn)
     return StoredServer(
         name=name,
         label=str(meta.get("label") or name),
@@ -224,7 +283,8 @@ def _server(
         created_at=conn.created_at,
         updated_at=conn.updated_at,
         always_confirm=_always_confirm(meta),
-        oauth=_is_oauth(conn),
+        read_only_key=_read_only_key(meta, oauth=oauth),
+        oauth=oauth,
         connected_by=conn.connected_by,
         status=conn.status,
         last_error=conn.last_error,
@@ -280,10 +340,11 @@ async def migrate_legacy(db: Any, org: str) -> int:
         saved = await store.save_headers(
             db, org, provider_for(name), OWNING_APP, _str_map(row.headers),
             # H-300: a moved server keeps its behaviour, so the switch is off.
+            # MCP-C2: no old row holds a read-only key, so it is off too.
             provider_meta=_meta(
                 name, str(row.label or name), str(row.description or ""),
                 str(row.transport), str(row.url), _scope(row.agent_scope),
-                always_confirm=False,
+                always_confirm=False, read_only_key=False,
             ),
             connected_by=MIGRATED_BY, enabled=bool(row.enabled), only_if_absent=True,
         )
@@ -338,6 +399,9 @@ REFRESH_SLOTS_PER_ORG = 1
 REFRESH_BACKOFF_S = 60.0
 #: IN-8b: the ``last_error`` of a row whose refreshed token got a 401.
 UNAUTHORIZED = "unauthorized"
+#: The ``last_error`` of a row with no sign-in whose server answered a connect
+#: with an OAuth challenge (task 3866). The console offers Connect for it.
+NEEDS_SIGNIN = "needs_signin"
 
 #: One semaphore for each event loop: an ``asyncio.Semaphore`` binds to the
 #: loop that first waits on it.
@@ -664,6 +728,42 @@ async def mark_unauthorized(
     return outcome
 
 
+async def mark_needs_signin(org: str, name: str, url: str) -> str:
+    """A 401 or 403 with an OAuth challenge on the connect of a row with no
+    sign-in (task 3866, §3.6.7).
+
+    The row was added by URL, so it holds no OAuth tokens and shows
+    ``connected``. Under the row lock, a row that is not OAuth, is still
+    ``connected``, still holds *url* (the URL that the run connected) and
+    holds no header gets ``needs_reconnect`` with :data:`NEEDS_SIGNIN`,
+    through the same store helper as :func:`mark_unauthorized`. Any other row
+    stays (:data:`MARK_UNCHANGED`). With ``MCP_OAUTH_ENABLED`` off the console
+    has no Connect, so nothing is marked. *org* is the run binding.
+    """
+    from gateway.connections import mcp_oauth
+
+    if not NAME_RE.match(name or "") or not url or not mcp_oauth.oauth_enabled():
+        return MARK_UNCHANGED
+    org = _org(org)
+    provider = provider_for(name)
+    async with tenant_session(org) as db:
+        locked = await store.lock_row(db, org, provider, OWNING_APP)
+        if locked is None:
+            return MARK_UNCHANGED
+        conn, _credential = locked
+        if (_is_oauth(conn) or conn.status != store.STATUS_CONNECTED
+                or str((conn.provider_meta or {}).get("url") or "") != url):
+            return MARK_UNCHANGED
+        # A header row is a key connection. A blob that does not open counts
+        # as a header row too (``None``).
+        sealed = (await store.load_headers_by_prefix(db, org, PREFIX, OWNING_APP)).get(provider, {})
+        if sealed is None or sealed:
+            return MARK_UNCHANGED
+        await store.mark_needs_reconnect(db, org, conn.id, NEEDS_SIGNIN)
+    _log.warning("mcp.needs_signin", name=name, code=NEEDS_SIGNIN)
+    return MARK_NEEDS_RECONNECT
+
+
 #: The answers of :func:`oauth_test_header`.
 TEST_BEARER_OK = "ok"
 TEST_BEARER_EXPIRED = "token_expired"
@@ -776,6 +876,36 @@ async def servers_for_org(
                        oauth_wanted=oauth_wanted)
 
 
+async def enabled_meta(org: str) -> list[StoredServer]:
+    """The connected servers of *org*, as metadata only (WS-67 OA-7i).
+
+    The orchestrator's lookahead asks whether a registry server may attach to
+    a run. It needs the name, scope, transport and url, and nothing else. So
+    this read opens no header blob and refreshes no OAuth token. It opens
+    ``tenant_session(org)`` as :func:`_read` does, so row level security and an
+    org predicate bind it, and it moves an old row first, as :func:`_read` does.
+    ``headers`` is empty on every row."""
+    org = _org(org)
+    async with tenant_session(org) as db:
+        await migrate_legacy(db, org)
+        conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
+    return [_server(conn, {}, with_headers=False) for conn in conns
+            if conn.status == store.STATUS_CONNECTED]
+
+
+async def needs_reconnect_meta(org: str) -> list[StoredServer]:
+    """The MCP servers of *org* in ``needs_reconnect``, as metadata only.
+
+    The chat names them (CSY-5, reason ``reconnect``) and never attaches
+    their tools. Like :func:`enabled_meta`: no header blob, no token, and the
+    same ``tenant_session(org)``. ``headers`` is empty on every row."""
+    org = _org(org)
+    async with tenant_session(org) as db:
+        conns = await store.list_by_prefix(db, org, PREFIX, OWNING_APP)
+    return [_server(conn, {}, with_headers=False) for conn in conns
+            if conn.status == store.STATUS_NEEDS_RECONNECT]
+
+
 async def list_servers(org: str) -> list[StoredServer]:
     """Every server of *org*, enabled and disabled. Header NAMES only."""
     return await _read(org, enabled_only=False, with_headers=False)
@@ -806,13 +936,20 @@ async def save(
     transport: str = "http-sse",
     agent_scope: Sequence[str] = ("*",),
     enabled: bool = True,
-    always_confirm: bool = True,
+    always_confirm: bool | None = None,
+    read_only_key: bool = False,
 ) -> StoredServer:
     """Add a server of *org*, or replace the one of that name.
 
     The caller checks the name, the transport and the URL first. The headers
-    go into the blob only. *always_confirm* is the H-300 switch, and a new
-    server gets ``True`` unless the caller says otherwise.
+    go into the blob only. *always_confirm* is the H-300 switch. ``None``
+    keeps the switch of a row that exists, as :func:`_always_confirm` reads
+    it, and gives a new server ``False`` (MCP-NC1, task 3603). So a
+    re-register that names no switch never turns a stored ``true`` off.
+    *read_only_key* is the MCP-C2 switch, and a new server gets ``False``. A
+    save is a full register for the key, so a caller that names no
+    *read_only_key* turns it off. Both on, or the key on an OAuth row,
+    raises :class:`McpSwitchRefused`, and nothing is written.
 
     An OAuth row (IN-8a) is not replaced. Its public keys merge in, and its
     tokens, ``auth`` and ``connected_by`` stay. A new *url* for it raises
@@ -823,10 +960,17 @@ async def save(
     if transport not in _HTTP_TRANSPORTS or not url:
         raise ValueError("an MCP server in the registry is http-sse with a url")
     org = _org(org)
-    meta = _meta(name, label, description, transport, url, agent_scope,
-                 always_confirm=always_confirm)
     async with tenant_session(org) as db:
         locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if always_confirm is None:
+            # MCP-NC1 review (F7): keep the stored switch, under the row lock.
+            always_confirm = locked is not None and _always_confirm(
+                locked[0].provider_meta or {})
+        meta = _meta(name, label, description, transport, url, agent_scope,
+                     always_confirm=always_confirm, read_only_key=read_only_key)
+        # MCP-C2: the row after the save holds exactly these two switches.
+        _check_switches(always_confirm=bool(always_confirm), read_only_key=bool(read_only_key),
+                        oauth=locked is not None and _is_oauth(locked[0]))
         if locked is not None and _is_oauth(locked[0]):
             # Review of #931, P2 1. An OAuth row keeps its tokens and its
             # ``auth`` key, and only the public keys change. A new URL is
@@ -849,22 +993,70 @@ async def save(
 
 async def set_always_confirm(org: str, name: str, value: bool) -> StoredServer | None:
     """Set the H-300 switch of the server *name* of *org*. ``None`` when *org*
-    holds no such server.
+    holds no such server. It is :func:`set_switches` with that one key."""
+    return await set_switches(org, name, always_confirm=value)
 
-    It changes the one key in ``provider_meta`` and nothing else: the headers,
-    the status and the other fields stay. A disabled server can change too.
-    An old ``mcp_servers`` row of *org* moves first, so the console can set the
-    switch of a server that it listed. The statement names the org, and
-    ``tenant_session(org)`` binds row level security, so another org's server
-    of the same name is never changed.
+
+async def set_switches(
+    org: str, name: str, *,
+    always_confirm: bool | None = None, read_only_key: bool | None = None,
+    description: str | None = None,
+) -> StoredServer | None:
+    """Set the H-300 switch, the MCP-C2 switch, the description (CSY-7), or
+    any of them, of the server *name* of *org*. ``None`` when *org* holds no
+    such server. A field that is ``None`` stays as it is, and at least one
+    must be named. The description goes into ``provider_meta.description``,
+    where the register puts it.
+
+    It changes the two switch keys in ``provider_meta`` and nothing else: the
+    headers, the status and the other fields stay. A disabled server can
+    change too. An old ``mcp_servers`` row of *org* moves first, so the
+    console can set the switch of a server that it listed. The statements
+    name the org, and ``tenant_session(org)`` binds row level security, so
+    another org's server of the same name is never changed.
+
+    MCP-C2, item 32: the row is read with ``FOR UPDATE``, and
+    :func:`_check_switches` checks the row as it would be AFTER the change,
+    not the request alone. So ``read_only_key=True`` on a row that reads as
+    always confirm raises :class:`McpSwitchRefused`, and so does the key on
+    an OAuth row.
+
+    A switch that the change does not name keeps its EFFECTIVE state: the
+    write stores the value that :func:`_always_confirm` or
+    :func:`_read_only_key` reads now, never the raw stored value (review of
+    MCP-C2, P3). So a damaged row with both keys stored true, which reads as
+    always confirm, keeps the key off after ``always_confirm=False``. The
+    stored row then matches what the gate reads, and only a change that
+    names the key can turn it on.
     """
+    if always_confirm is None and read_only_key is None and description is None:
+        raise ValueError("name always_confirm, read_only_key, description, or any of them")
     if not NAME_RE.match(name or ""):
         return None
     org = _org(org)
+    change: dict[str, Any] = {}
+    if description is not None:
+        change["description"] = description
+    if always_confirm is not None:
+        change["always_confirm"] = bool(always_confirm)
+    if read_only_key is not None:
+        change["read_only_key"] = bool(read_only_key)
     async with tenant_session(org) as db:
         await migrate_legacy(db, org)
+        locked = await store.lock_row(db, org, provider_for(name), OWNING_APP)
+        if locked is None:
+            return None
+        meta = locked[0].provider_meta or {}
+        oauth = _is_oauth(locked[0])
+        # A description-only change leaves both switches as stored (CSY-7).
+        if always_confirm is not None or read_only_key is not None:
+            # An unnamed switch keeps the state that the one parse reads now.
+            change.setdefault("always_confirm", _always_confirm(meta))
+            change.setdefault("read_only_key", _read_only_key(meta, oauth=oauth))
+            _check_switches(always_confirm=change["always_confirm"],
+                            read_only_key=change["read_only_key"], oauth=oauth)
         conn = await store.merge_meta_by_key(
-            db, org, provider_for(name), OWNING_APP, {"always_confirm": bool(value)},
+            db, org, provider_for(name), OWNING_APP, change,
         )
     if conn is None:
         return None

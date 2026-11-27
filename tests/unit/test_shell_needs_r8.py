@@ -109,7 +109,9 @@ def _one_instant(monkeypatch):
 
 
 #: The sources of a member with Projects and Email, and no Approvals.
-SOURCES = {"tasks": "ok", "approvals": "absent", "projects": "ok", "email": "ok"}
+#: WS-66 RM-2b: `reminders` is a needs source, absent while the flag is off.
+SOURCES = {"tasks": "ok", "reminders": "absent", "studio": "absent", "approvals": "absent",
+           "projects": "ok", "email": "ok", "providers": "absent"}
 
 
 def _member(email: str, *extra: str, is_admin: bool = False) -> UserContext:
@@ -562,3 +564,161 @@ class TestTheMembersZone:
         got = [r["id"] for r in answer["rows"]]
         assert zoned["in"] in got
         assert zoned["out"] not in got
+
+
+# ── WS-66 RM-2b: the reminders, on a real database ──────────────────────────
+
+
+@pytest.fixture
+def reminders_on(monkeypatch):
+    from types import SimpleNamespace
+
+    from gateway.routes.projects import reminders as rm
+
+    monkeypatch.setattr(rm, "get_settings", lambda: SimpleNamespace(calendar_reminders=True))
+
+
+def _reminder(c, *, org: str, member: str, title: str, state: str = "due",
+              step: str | None = "fired") -> str:
+    """One reminder as the superuser, with the ledger row that sets its card."""
+    rid = str(c.execute(text(
+        "INSERT INTO reminders (organization_id, member_email, title, kind, fire_at, "
+        "state, cycles) VALUES (CAST(:o AS uuid), :m, :t, 'action', :at, :s, 0) "
+        "RETURNING id"),
+        {"o": org, "m": member, "t": title, "at": NOW - timedelta(minutes=5),
+         "s": state}).scalar_one())
+    if step:
+        c.execute(text(
+            "INSERT INTO reminder_events (organization_id, reminder_id, at, event) "
+            "VALUES (CAST(:o AS uuid), CAST(:r AS uuid), :at, :e)"),
+            {"o": org, "r": rid, "at": NOW - timedelta(minutes=5), "e": step})
+    return rid
+
+
+@pytest.fixture
+def world_reminders(promoted):  # noqa: F811
+    p = promoted
+    ids: dict[str, str] = {}
+    with p.admin_engine.begin() as c:
+        ids["due"] = _reminder(c, org=p.org_b, member=ME, title=f"Due {TAG}")
+        ids["check"] = _reminder(c, org=p.org_b, member=ME, title=f"Check {TAG}",
+                                 step="check_back")
+        ids["lost"] = _reminder(c, org=p.org_b, member=ME, title=f"Lost {TAG}",
+                                state="unconfirmed", step="gave_up")
+        ids["scheduled"] = _reminder(c, org=p.org_b, member=ME, title=f"Later {TAG}",
+                                     state="scheduled", step=None)
+        ids["other"] = _reminder(c, org=p.org_b, member=OTHER, title=f"Other {TAG}")
+        # The same address in ANOTHER org (org A): a different company.
+        ids["elsewhere"] = _reminder(c, org=p.org_a, member=ME, title=f"Elsewhere {TAG}")
+    yield ids
+    with p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM reminders WHERE id = ANY(CAST(:i AS uuid[]))"),
+                  {"i": list(ids.values())})
+
+
+class TestTheReminderBell:
+    async def test_the_member_sees_only_their_own_open_reminders(
+        self, promoted, world_reminders, reminders_on, monkeypatch,  # noqa: F811
+    ):
+        w = world_reminders
+        answer = await _needs(promoted, monkeypatch, _member(ME))
+        assert answer["sources"]["reminders"] == "ok"
+        rows = {i["id"]: i for i in answer["items"] if i["app"] == "calendar"}
+        # Member B (OTHER), org A (the same address) and a scheduled row never show.
+        assert set(rows) == {f"reminders:{w[k]}" for k in ("due", "check", "lost")}
+        assert rows[f"reminders:{w['due']}"]["kind"] == "reminder_due"
+        assert rows[f"reminders:{w['due']}"]["href"] == (
+            f"/chat?do=new-chat&reminder={w['due']}")
+        assert rows[f"reminders:{w['check']}"]["kind"] == "reminder_check"
+        assert rows[f"reminders:{w['lost']}"]["kind"] == "reminder_unconfirmed"
+        assert answer["totals"]["reminders"] == 3
+
+    async def test_member_b_never_sees_member_as_reminder(
+        self, promoted, world_reminders, reminders_on, monkeypatch,  # noqa: F811
+    ):
+        w = world_reminders
+        answer = await _needs(promoted, monkeypatch, _member(OTHER))
+        rows = [i["id"] for i in answer["items"] if i["app"] == "calendar"]
+        assert rows == [f"reminders:{w['other']}"]
+        titles = " ".join(i["title"] for i in answer["items"])
+        assert f"Due {TAG}" not in titles and f"Elsewhere {TAG}" not in titles
+
+    async def test_org_b_never_sees_org_as_reminder(
+        self, promoted, world_reminders, reminders_on, monkeypatch,  # noqa: F811
+    ):
+        w = world_reminders
+        answer = await _needs(promoted, monkeypatch, _member(ME), org=promoted.org_a)
+        rows = [i["id"] for i in answer["items"] if i["app"] == "calendar"]
+        assert rows == [f"reminders:{w['elsewhere']}"]
+
+    async def test_with_the_flag_off_nothing_shows(
+        self, promoted, world_reminders, monkeypatch,  # noqa: F811
+    ):
+        answer = await _needs(promoted, monkeypatch, _member(ME))
+        assert answer["sources"]["reminders"] == "absent"
+        assert not [i for i in answer["items"] if i["app"] == "calendar"]
+
+
+# ── Studio: a share that waits for approval (WS-STU J2b-4a) ─────────────────
+#
+# The source adds no SQL. It calls `packages.list_approvals`, which reads the
+# bound org through `packages_store.list_pending_versions`. This runs the real
+# route and store as the app role, on the J2b-1 world (org A has Owen the
+# owner and Ada a holder, org B has Zed a holder).
+
+from acb_auth import build_access  # noqa: E402
+from acb_common.db import bind_tenant, release_tenant  # noqa: E402
+
+from tests.unit._tenant_ladder import tenant_engine_scope  # noqa: E402
+from tests.unit.test_studio_package_approval_routes_r8 import (  # noqa: E402,F401
+    ADA,
+    OWEN,
+    PUBLISHER,
+    ZED,
+    _ask,
+    _decide,
+    _live,
+    world,
+)
+
+
+class TestTheStudioApprovalSource:
+    @staticmethod
+    async def _read(org: str, email: str) -> dict:
+        user = UserContext(email=email, role=UserRole.EMPLOYEE,
+                           access=build_access(list(PUBLISHER)), organization_id=org)
+        token = bind_tenant(org)
+        try:
+            return await shell.shell_needs(limit=50, user=user)
+        finally:
+            release_tenant(token)
+
+    async def test_the_holder_sees_the_pending_version_and_it_leaves_after_the_move(
+        self, world, monkeypatch,  # noqa: F811
+    ):
+        monkeypatch.setattr(shell, "PROVIDER_TIMEOUT_S", 30.0)
+        monkeypatch.setattr(shell, "TOTAL_BUDGET_S", 90.0)
+        url = world.p.app_url.render_as_string(hide_password=False)
+        async with tenant_engine_scope(url):
+            pid = await _live(world.a, OWEN)
+            assert (await _ask(world.a, pid, 1))[0] == 202
+            want = f"studio-approval:{pid}:1"
+
+            ada = await self._read(world.a, ADA)
+            assert ada["sources"]["studio"] == "ok"
+            rows = [i for i in ada["items"] if i["app"] == "studio"]
+            assert [r["id"] for r in rows] == [want]
+            assert rows[0]["kind"] == "approval" and rows[0]["href"] == shell.STUDIO_HREF
+            assert "manifest" not in rows[0]
+            # The owner holds the right here, and still gets no row of their own.
+            owen = await self._read(world.a, OWEN)
+            assert owen["sources"]["studio"] == "ok"
+            assert not [i for i in owen["items"] if i["app"] == "studio"]
+            # Org B: the same right, and none of org A's rows.
+            zed = await self._read(world.b, ZED)
+            assert not [i for i in zed["items"] if i["app"] == "studio"]
+            # After the approval the row is gone.
+            assert (await _decide("approve", world.a, pid, 1))[0] == 200
+            after = await self._read(world.a, ADA)
+            assert after["sources"]["studio"] == "ok"
+            assert not [i for i in after["items"] if i["app"] == "studio"]

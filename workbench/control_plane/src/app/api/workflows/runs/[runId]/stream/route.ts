@@ -9,6 +9,7 @@
  */
 import { NextRequest } from "next/server";
 import { GATEWAY_URL, currentIdentity, gatewayHeaders, gatewayFetch } from "@/lib/gateway";
+import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +27,8 @@ export async function GET(
     });
   }
   const { runId } = await ctx.params;
+  const refused = refuseUnsafePath([runId]);
+  if (refused) return refused;
   let upstream: Response;
   try {
     upstream = await gatewayFetch(

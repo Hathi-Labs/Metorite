@@ -52,7 +52,7 @@ def test_the_real_board_parses_and_is_much_shorter() -> None:
     rows = board.rows(text)
     assert len(rows) > 30
     index = "\n".join(board.index_line(r) for r in rows)
-    assert len(index) * 10 < len(board.section_two(text))
+    assert len(index) < len(board.section_two(text)) < 40_000  # D118: §2 holds short rows only
 
 
 def test_a_done_row_with_open_work_stays_open() -> None:

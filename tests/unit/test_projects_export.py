@@ -268,6 +268,12 @@ def test_the_path_cannot_be_shadowed_by_the_single_task_route() -> None:
 
 #: List parameters the export deliberately does NOT take, and why.
 NOT_ON_THE_EXPORT = {
+    # MCP-G19a. `compact` is a row shape for the agent door, not a filter. The
+    # CSV has its own columns.
+    "compact",
+    # MCP-G19c. The type filters and the task number of the agent door. The
+    # board never sends them, and the export of them is a later slice.
+    "type_id", "type_name", "task_number",
     # A page is a screen's unit. Half a filter's tasks in a file IS the silent
     # truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",
@@ -277,6 +283,9 @@ NOT_ON_THE_EXPORT = {
     # a second would make the file's row order depend on who last dragged a
     # card. Excluded rather than added, deliberately.
     "view_id",
+    # WS-64 OP-11. `with_overlay` adds the caller's own GTD columns to the
+    # list rows for the My tasks screen. A CSV has fixed columns of its own.
+    "with_overlay",
     # MCP-G5. An outside agent reads a subtree in one call. The export reads
     # subtasks through task_detail, and no screen sends this.
     "include_descendants",
@@ -284,6 +293,15 @@ NOT_ON_THE_EXPORT = {
     # no other AI session holds. The board never sends it, and a file of
     # "tasks no agent holds" is a snapshot that is stale on download.
     "unheld",
+    # #918. Not a filter: it asks the list to also answer the size of each
+    # status lane for the board's column heads. The rows are the same.
+    "with_status_counts",
+    # WS-39 SP-3a. Only the Backlog canvas sends `cycle=none`, from its own
+    # query (`lib/backlogCanvas.ts`). The page filters never hold it, so
+    # `lib/export.ts`, which builds the file's query from those filters, never
+    # sends it. Like `unheld`, who sits in an open cycle changes by the hour,
+    # and no saved view pins the filter.
+    "cycle",
 }
 
 
@@ -565,3 +583,12 @@ def test_the_cap_is_a_stated_number_not_a_magic_literal() -> None:
     assert f"{MAX_EXPORT_ROWS}" not in SOURCE.read_text(encoding="utf-8").split(
         "MAX_EXPORT_ROWS = ", 1,
     )[1].split("\n", 1)[1]
+
+
+def test_the_export_takes_the_mine_scope_like_the_list() -> None:
+    """⚠️ WS-64 OP-11. An export of My tasks that dropped `scope=mine` would
+    hand over every task the member can read."""
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "scope: str | None = None" in source
+    assert "check_scope(scope)" in source
+    assert "mine_scope(db, vis)" in source

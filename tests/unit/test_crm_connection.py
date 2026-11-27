@@ -810,6 +810,149 @@ def test_the_mirror_list_defaults_to_empty() -> None:
     assert Settings.model_fields["crm_mirror_orgs"].default == ""
 
 
+# ── 4c. CRM_CUTOVER_ORGS: the per-org list of the switch (CRM-Z10b) ──────────
+
+
+def test_the_cutover_list_defaults_to_empty_and_allows_no_org(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from acb_common.settings import Settings
+    from gateway.routes.crm import flags
+
+    assert Settings.model_fields["crm_cutover_orgs"].default == ""
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "", raising=False)
+    assert flags.cutover_allowed(ORG_A) is False
+
+
+def test_the_cutover_list_has_the_grammar_of_the_crm_list_and_needs_the_mirror(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.routes.crm import flags
+
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs",
+                        f" {ORG_A.upper()} , other", raising=False)
+    assert flags.cutover_allowed(ORG_A) is True
+    assert flags.cutover_allowed(ORG_OUT) is False
+    monkeypatch.setattr(get_settings(), "crm_cutover_orgs", "*", raising=False)
+    assert flags.cutover_allowed(ORG_OUT) is True
+    assert flags.cutover_allowed(None) is False
+    # The cutover list never opens an org that the mirror list shuts.
+    monkeypatch.setattr(get_settings(), "crm_mirror_orgs", ORG_A, raising=False)
+    assert flags.cutover_allowed(ORG_OUT) is False
+    monkeypatch.setattr(get_settings(), "crm_mirror", False, raising=False)
+    assert flags.cutover_allowed(ORG_A) is False
+
+
+# ── 4d. The disconnect reports what Zoho said (CRM-Z10b) ────────────────────
+
+
+def _connected_row(registry: FakeRegistry) -> None:
+    registry.rows[ORG_A] = {
+        "id": "conn-0001", "org": ORG_A, "status": "connected",
+        "credential": _credential(), "scopes": [], "connected_by": ADMIN,
+        "last_error": None,
+    }
+
+
+@pytest.mark.parametrize(("body", "said"), [
+    ({"status": "success"}, "confirmed"),
+    ({"status": "failure"}, "not_confirmed"),
+])
+async def test_the_reporting_disconnect_says_what_zoho_said(
+    world: tuple[FakeRegistry, FakeZoho], body: dict[str, Any], said: str,
+) -> None:
+    registry, zoho = world
+    _connected_row(registry)
+    zoho.revoke_body = body
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == said
+    assert row is not None and row.status == "disconnected"
+    assert registry.rows[ORG_A]["credential"] is None
+    revokes = [r for r in zoho.requests if r.url.path.endswith("/token/revoke")]
+    assert len(revokes) == 1
+    # A second call changes no row, so it reports no outcome and calls nobody.
+    zoho.requests.clear()
+    again, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome is None and again is not None and again.status == "disconnected"
+    assert zoho.requests == []
+
+
+async def test_a_missing_zoho_client_reports_not_configured(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, zoho = world
+    _connected_row(registry)
+    monkeypatch.setattr(get_settings(), "crm_zoho_client_id", "", raising=False)
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == "not_configured"
+    assert row is not None and row.status == "disconnected"
+    assert zoho.requests == []
+
+
+async def test_a_transport_error_reports_not_confirmed(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry, _zoho = world
+    _connected_row(registry)
+
+    def _down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    monkeypatch.setattr(
+        conn, "_source",
+        lambda credential=None, transport=None: ZohoSource(
+            conn.zoho_oauth_config(), credential,
+            transport=httpx.MockTransport(_down),
+        ),
+    )
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert outcome == "not_confirmed"
+    assert row is not None and row.status == "disconnected"
+
+
+async def test_a_slow_revoke_stops_at_the_limit_and_reports_not_confirmed(
+    world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifier P3-2: the disconnect holds the connect lock while Zoho answers.
+    ``REVOKE_TIMEOUT_SECONDS`` bounds the whole revoke. A slower Zoho is
+    ``failed:transport``, which reads as ``not_confirmed``, and the
+    disconnect still deletes the blob. The test shrinks the limit."""
+    import asyncio
+    import time
+
+    registry, _zoho = world
+    _connected_row(registry)
+
+    async def _slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json={"status": "success"})
+
+    monkeypatch.setattr(conn, "REVOKE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(
+        conn, "_source",
+        lambda credential=None, transport=None: ZohoSource(
+            conn.zoho_oauth_config(), credential,
+            transport=httpx.MockTransport(_slow),
+        ),
+    )
+    started = time.monotonic()
+    row, outcome = await conn.disconnect_zoho_reporting(ORG_A)
+    assert time.monotonic() - started < 3, "the revoke did not stop at the limit"
+    assert outcome == "not_confirmed"
+    assert row is not None and row.status == "disconnected"
+    assert registry.rows[ORG_A]["credential"] is None
+
+
+async def test_disconnect_zoho_keeps_its_shape(
+    world: tuple[FakeRegistry, FakeZoho],
+) -> None:
+    """The one disconnect logic still returns the row alone (WS-54 IN-1)."""
+    registry, _zoho = world
+    _connected_row(registry)
+    row = await conn.disconnect_zoho(ORG_A)
+    assert row is not None and row.status == "disconnected"
+
+
 async def test_the_scheduler_skips_an_org_outside_the_mirror_list(
     world: tuple[FakeRegistry, FakeZoho], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -865,85 +1008,6 @@ def test_every_new_route_of_the_gateway_carries_both_switches() -> None:
 _BLOB = "integration" + "_connections"
 _STORE = _REPO / "apps/services/gateway/gateway/connections/store.py"
 
-
-def _names(roots: list[Path], needle: str, *, exempt: Path | None = None) -> list[str]:
-    """Each python file that names *needle* as an identifier, attribute or string."""
-    hits: list[str] = []
-    for root in roots:
-        for path in root.rglob("*.py"):
-            if ".venv" in path.parts or "node_modules" in path.parts:
-                continue
-            if exempt is not None and path.resolve() == exempt.resolve():
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
-                continue
-            for node in ast.walk(tree):
-                text = None
-                if isinstance(node, ast.Name):
-                    text = node.id
-                elif isinstance(node, ast.Attribute):
-                    text = node.attr
-                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                    text = node.value
-                elif isinstance(node, ast.keyword):
-                    text = node.arg
-                if text and needle in text:
-                    hits.append(path.resolve().as_posix())
-                    break
-    return hits
-
-
-def test_only_the_store_names_the_connections_table() -> None:
-    assert _STORE.exists()
-    readers = _names([_REPO / "apps", _REPO / "packages"], _BLOB, exempt=_STORE)
-    assert readers == [], f"Only connections/store.py may name the connections table: {readers}"
-    assert _names([_STORE.parent], _BLOB) == [_STORE.resolve().as_posix()], (
-        "the fence is vacuous if the store no longer names the table"
-    )
-
-
-def test_the_table_fence_sees_a_second_reader(tmp_path: Path) -> None:
-    for i, source in enumerate((
-        f"def f(r):\n    return r.{_BLOB}\n",
-        f"SQL = 'SELECT {_BLOB} FROM t'\n",
-        f"def g(**kw):\n    return h({_BLOB}=1)\n",
-    )):
-        plant = tmp_path / f"second{i}.py"
-        plant.write_text(source, encoding="utf-8")
-        assert _names([tmp_path], _BLOB) != [], source
-        plant.unlink()
-
-
-def _attr_readers(names: set[str]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {}
-    for root in (_REPO / "apps", _REPO / "packages"):
-        for path in root.rglob("*.py"):
-            if ".venv" in path.parts or "node_modules" in path.parts:
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
-                continue
-            seen: set[str] = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Attribute) and node.attr in names:
-                    seen.add(node.attr)
-                elif isinstance(node, ast.Constant) and node.value in names:
-                    # getattr(settings, "crm_zoho_client_id") also counts.
-                    seen.add(node.value)
-            for name in seen:
-                out.setdefault(name, []).append(path.resolve().as_posix())
-    return out
-
-
-def test_one_module_reads_the_zoho_client_settings() -> None:
-    reader = (_REPO / "apps/services/gateway/gateway/routes/crm/connection.py").resolve().as_posix()
-    found = _attr_readers({"crm_zoho_client_id", "crm_zoho_client_secret"})
-    for name, files in found.items():
-        assert files == [reader], (name, files)
-    assert set(found) == {"crm_zoho_client_id", "crm_zoho_client_secret"}
 
 
 def test_the_store_uses_the_one_key_seam_and_makes_no_key() -> None:

@@ -20,6 +20,8 @@ implementer's report as a set of *claims to be checked*, not as findings.
 2. **Re-run the verification commands from the spec** — the ones the spec-auditor
    quoted, not the ones the implementer chose. Quote real output. If the spec's
    commands and the implementer's differ, that discrepancy is itself a finding.
+   For a small slice (`AUDIT: skipped`), the Metorite task quoted in the
+   contract names the criteria. Choose the commands yourself, and say which.
 3. **Run the tests this diff can affect, not the whole suite.**
    `uv run python scripts/affected_tests.py --run` picks them from the diff
    against `origin/main`. It also prints one `vitest related` command for
@@ -35,6 +37,11 @@ implementer's report as a set of *claims to be checked*, not as findings.
    how you confirmed it. "The implementer says so" is not confirmation. If a
    criterion cannot be checked by any command you can run, that is a finding:
    the ticket was not actually verifiable.
+   **Check behaviour in the running app.** Run `bash scripts/dev_up.sh` in the
+   worktree (it reuses a stack that runs), then `bash scripts/dev_up.sh --check`.
+   Then exercise each behaviour criterion: `curl` the URLs that `--env` prints,
+   or capture the page. Quote the output or the capture path. Do not run
+   `--down` or `--reset` on a stack that you did not start.
 5. **Check the discipline items** that a reviewer would otherwise catch late:
    - No absolute future migration numbers introduced (R1). If a migration was
      added, confirm the number was genuinely free.
@@ -56,9 +63,10 @@ implementer's report as a set of *claims to be checked*, not as findings.
    compact density, a changed accent and 390 px. Do the skill's capture,
    keyboard and rank steps only. Do not fix. Delete your rig file before you
    report, and confirm that `git status --short` shows no new file. Use the
-   skill's P0–P3 scale. A P0 or a P1 is a FAIL. If
-   you could not run the rig, write "VISUAL: not looked at" and say why. Never
-   report a surface as checked from the source alone.
+   skill's P0–P3 scale. A P0 or a P1 is a FAIL. For a UI diff, "VISUAL: not
+   looked at" is a FAIL, in build mode too (`DESIGN_SYSTEM.md` §11). If you
+   cannot run the rig, report the FAIL and say why. Never report a surface as
+   checked from the source alone.
 
 ## Output
 
@@ -72,8 +80,9 @@ VERIFICATION RUN:
 ACCEPTANCE:
   <criterion> → met / not met — <how you personally confirmed it>
 
+LOCAL: <dev_up --check result, then each behaviour criterion with its evidence> | not run — <why>
 DISCIPLINE: R1 / R4 / placement / scope — pass or the specific violation
-VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why> | no surface change
+VISUAL: <contexts captured and the P0–P3 findings> | not looked at — <why>, a FAIL for a UI diff | no surface change
 UNVERIFIABLE: <criteria no command can settle, if any>
 FINDINGS: <each defect: file:line, what is wrong, what it breaks>
 ```

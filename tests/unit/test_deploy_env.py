@@ -17,7 +17,7 @@ What this file fences:
    with the SAME block, and the block survives ``set -euo pipefail``.
 2. On staging the release ref is ``staging``, both for the pull and for the
    apply's default target.
-3. ``Caddyfile.staging`` serves the three staging hosts and nothing else, and its
+3. ``Caddyfile.staging`` serves the four staging hosts and nothing else, and its
    api block strips the same identity headers as production's.
 4. On staging the apply installs ``Caddyfile.staging`` and runs two timers.
 5. The watchdog probes the ``api.`` host of the Caddyfile its box serves.
@@ -186,9 +186,9 @@ def _sites(path: pathlib.Path) -> dict[str, list[str]]:
     return sites
 
 
-def test_staging_serves_three_hosts_and_no_production_name() -> None:
+def test_staging_serves_four_hosts_and_no_production_name() -> None:
     hosts = set(_sites(_CADDY_STAGING))
-    assert hosts == {"api.dev.metorite.com", "dev.metorite.com", "accounts.dev.metorite.com"}
+    assert hosts == {"api.dev.metorite.com", "dev.metorite.com", "accounts.dev.metorite.com", "aroh.dev.metorite.com"}
     raw = _CADDY_STAGING.read_text(encoding="utf-8")
     code = "\n".join(ln for ln in raw.splitlines() if not ln.lstrip().startswith("#"))
     for name in ("app.metorite.com", "api.metorite.com", "operator.metorite.com",
@@ -210,6 +210,12 @@ def test_the_account_switcher_block_only_proxies_to_loopback() -> None:
     """The owner tool gets no identity header and no path rule, only a proxy."""
     block = _sites(_CADDY_STAGING)["accounts.dev.metorite.com"]
     assert block == ["encode zstd gzip", "reverse_proxy 127.0.0.1:4777", "}"]
+
+
+def test_the_aroh_block_only_proxies_to_loopback() -> None:
+    """The Aroh demo gets no identity header, no path rule and no compressor, only a proxy."""
+    block = _sites(_CADDY_STAGING)["aroh.dev.metorite.com"]
+    assert block == ["reverse_proxy 127.0.0.1:8787", "}"]
 
 
 def test_ci_validates_both_caddyfiles() -> None:

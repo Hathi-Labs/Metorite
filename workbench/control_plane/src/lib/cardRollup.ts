@@ -18,8 +18,14 @@
  * 2. A manual open or close wins until the member toggles the card again.
  *    The choice lives for the page's life, keyed by the card's id, so a
  *    re-render or a reconnect replay keeps it. A reload forgets it.
- * 3. The NEWEST card in the transcript stays open.
- * 4. Every older LONG card folds by itself. A short card never folds by
+ * 3. A RECEIPT folds to its header. It reports a write that already
+ *    happened and needs nothing from the member, so it is FYI. It comes after
+ *    rules 1 to 2 (a waiting card, a manual choice, an answer and a held
+ *    focus all beat it), and before the newest rule. Owner directive,
+ *    2026-10-29: "show the notes closed by default, unless you actually want
+ *    the user to read a particular AGUI card or note."
+ * 4. The NEWEST card in the transcript stays open.
+ * 5. Every older LONG card folds by itself. A short card never folds by
  *    itself, and the member may still fold it by hand: every card with a
  *    body draws the toggle ({@link showRollupToggle}).
  *
@@ -51,9 +57,14 @@ export interface RollupInputs {
   answered?: boolean;
   /** What the member chose by hand, if anything (rule 2). */
   manual?: ManualState;
-  /** The card is the newest in the transcript (rule 3). */
+  /**
+   * The card reports a write that already happened and needs nothing from
+   * the member (rule 3). A failed write is not a receipt, so it never sets it.
+   */
+  receipt?: boolean;
+  /** The card is the newest in the transcript (rule 4). */
   newest: boolean;
-  /** The body is long (rule 4). */
+  /** The body is long (rule 5). */
   long: boolean;
   /**
    * The focus is inside the card, and this is whether the card was open when
@@ -71,11 +82,12 @@ export interface RollupInputs {
 }
 
 /** Is the card open? The rules, in order. */
-export function rollupOpen({ pending, answered, manual, newest, long, held }: RollupInputs): boolean {
+export function rollupOpen({ pending, answered, manual, receipt, newest, long, held }: RollupInputs): boolean {
   if (pending) return true;
   if (manual) return manual === "open";
   if (answered) return false;
   if (held !== undefined) return held;
+  if (receipt) return false;
   if (newest) return true;
   return !long;
 }

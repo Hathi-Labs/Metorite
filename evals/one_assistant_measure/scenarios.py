@@ -140,6 +140,9 @@ class Check:
     arg: Any = None
     #: The name in the report. The kind, when empty.
     label: str = ""
+    #: TS-5b. The arms that run this check. Empty: every arm. A turn at the pack cap
+    #: has one outcome on the ``search`` arm and another on the ``pack`` arm.
+    arms: tuple[str, ...] = ()
 
     @property
     def name(self) -> str:
@@ -152,6 +155,26 @@ class Plan:
 
     calls: tuple[tuple[str, dict[str, Any]], ...] = ()
     answer: str = ""
+    #: OA-8e. On the ``pack`` arm the calls go to the OWNER's specialist by a
+    #: hand-off, because no pack of the owner fits the request beside the packs
+    #: that are loaded (the cap of 110 tools). The ``delegation`` arm is the same.
+    handoff: bool = False
+    #: OA-8e phase 3. The calls of the arm that holds no ``spawn_subagents``.
+    #: Empty: that arm plays :attr:`calls`. A research turn plays one spawn call
+    #: on the spawn arm, and the same reads one by one on the others.
+    solo: tuple[tuple[str, dict[str, Any]], ...] = ()
+    #: TS-5b. The queries that the model passes to ``find_tools`` on the ``search``
+    #: arm, one call each, BEFORE the tool calls of the turn. Empty: the turn makes no
+    #: search (the plain chat). Each query must rank its tool in the top 5 of the real
+    #: ranker (``tool_search.rank``), and a test holds it.
+    find: tuple[str, ...] = ()
+    #: TS-5b. The calls of the ``search`` arm after the find, when they differ from
+    #: :attr:`calls`. None: the same calls. ``()``: the model heeds an empty find and
+    #: calls no tool (the member without ``feature:studio``).
+    search_calls: tuple[tuple[str, dict[str, Any]], ...] | None = None
+    #: TS-5b. The answer of the ``search`` arm, when it differs from :attr:`answer`
+    #: (the cap chat: the search arm finds the tool, the pack arm cannot). None: the same.
+    search_answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +182,11 @@ class Turn:
     words: str
     checks: tuple[Check, ...]
     plan: Plan
+    #: Task 2874. How the member answers a card of this turn: ``approve`` (the default: a
+    #: reply card saves, a rows card ticks every row), ``send`` (a reply card sends), or
+    #: ``discard`` (the answer ``REJECT``, as the Discard button posts it). See
+    #: ``run.Member`` for the grammar and its source.
+    card: str = "approve"
 
 
 @dataclass(frozen=True)
@@ -171,6 +199,23 @@ class Scenario:
     #: Earlier turns of the chat, as the browser sends them, before turn 1.
     history: tuple[dict[str, str], ...] = ()
     tags: tuple[str, ...] = field(default_factory=tuple)
+    #: OA-8e. The set of the chat: ``email``, ``crm``, ``projects``, ``mixed``,
+    #: ``fanout`` or ``studio`` (TS-5a). Only ``email`` runs with the email pack alone.
+    set: str = "email"
+    #: OA-8e. The app the member is in, as the dock sends it: ``crm``,
+    #: ``projects``, ``tasks``, ``calendar``, ``email``, or "" for none. The
+    #: run binds it as the surface of the turn (layer (a), input 2).
+    surface: str = ""
+    #: OA-8e. ``native`` or ``mirror``: the CRM mode of the organization.
+    mode: str = "native"
+    #: OA-8e. A reason to leave the chat out of a run, or "". A skipped chat
+    #: is listed and never run. The fan-out chats wait for OA-9b.
+    skip: str = ""
+    #: TS-5a. Features that the member of this chat LACKS, for example
+    #: ``("studio",)``. The harness grants every feature of a pane
+    #: (``evals/routing/harness.py``, ``_member_features``), and the run takes these
+    #: out after it. The measure never edits the harness for this.
+    without_features: tuple[str, ...] = ()
 
 
 def _link(m: Mail) -> str:
@@ -367,7 +412,34 @@ SCENARIOS: tuple[Scenario, ...] = (
 
 
 def scenario(sid: str) -> Scenario:
-    for s in SCENARIOS:
+    """The chat *sid*, from the email set or the work set (OA-8e)."""
+    for s in all_scenarios():
         if s.id == sid:
             return s
     raise KeyError(sid)
+
+
+def all_scenarios() -> tuple[Scenario, ...]:
+    """The email chats, then the CRM, Projects, mixed and fan-out chats, then the
+    Studio chats (TS-5a), the chats of task 2874, the connected-systems chats (CSY-3) and
+    the held-out chats. The Studio chats are in no work set: the delegation arm never runs
+    them."""
+    from evals.one_assistant_measure.scenarios_2874 import SCENARIOS_2874
+    from evals.one_assistant_measure.scenarios_mcp import MCP_SCENARIOS
+    from evals.one_assistant_measure.scenarios_studio import STUDIO_SCENARIOS
+    from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
+
+    return (*SCENARIOS, *WORK_SCENARIOS, *STUDIO_SCENARIOS, *SCENARIOS_2874, *MCP_SCENARIOS,
+            *_held_out())
+
+
+def _held_out() -> tuple[Scenario, ...]:
+    """The held-out chats (task 3649): ``HOLDOUT_SCENARIOS`` of ``scenarios_holdout.py``,
+    each tagged ``holdout``. The file may not exist yet, and then there are none."""
+    try:
+        from evals.one_assistant_measure.scenarios_holdout import HOLDOUT_SCENARIOS
+    except ModuleNotFoundError as exc:
+        if exc.name != "evals.one_assistant_measure.scenarios_holdout":
+            raise
+        return ()
+    return tuple(HOLDOUT_SCENARIOS)

@@ -74,6 +74,45 @@ export function isIos(f: Pick<BrowserFacts, "userAgent" | "platform" | "maxTouch
   return f.platform === "MacIntel" && f.maxTouchPoints > 1;
 }
 
+/** The parts of the browser that `isPhone` reads. */
+export interface PhoneFacts extends Pick<BrowserFacts, "userAgent" | "platform" | "maxTouchPoints"> {
+  /** `matchMedia("(pointer: coarse)").matches`. */
+  coarsePointer: boolean;
+  /** `window.innerWidth`, in CSS px. */
+  width: number;
+}
+
+/** Below this width, in CSS px, a coarse pointer counts as a phone (OB-8). */
+export const PHONE_WIDTH_PX = 768;
+
+/**
+ * A phone: an iOS or Android device, or a coarse pointer under 768 px. A
+ * desktop is never a phone (`calendar_events_reminders.md` §10.4 item 2).
+ */
+export function isPhone(f: PhoneFacts): boolean {
+  if (isIos(f)) return true;
+  if (/Android/i.test(f.userAgent)) return true;
+  return f.coarsePointer && f.width < PHONE_WIDTH_PX;
+}
+
+/** Is this browser a phone. It reads only. */
+export function isPhoneNow(): boolean {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+  let coarse = false;
+  try {
+    coarse = window.matchMedia?.("(pointer: coarse)").matches === true;
+  } catch {
+    coarse = false;
+  }
+  return isPhone({
+    userAgent: navigator.userAgent ?? "",
+    platform: navigator.platform ?? "",
+    maxTouchPoints: navigator.maxTouchPoints ?? 0,
+    coarsePointer: coarse,
+    width: window.innerWidth,
+  });
+}
+
 /** The pure rule. A Safari tab on iOS is `ios-tab` even where the Push API
  * exists, because iOS delivers push to a Home Screen app only. */
 export function supportOf(f: BrowserFacts): PushSupport {
@@ -149,7 +188,8 @@ function sameKey(sub: PushSubscription, key: Uint8Array): boolean {
 
 /** The gateway's answer to `GET /push/public-key`. */
 export type KeyAnswer =
-  | { kind: "key"; key: string }
+  /** `prompt`: `PUSH_PROMPT_ORGS` holds the org (OB-8). Absent reads false. */
+  | { kind: "key"; key: string; prompt: boolean }
   | { kind: "off" }
   | { kind: "not-configured" }
   | { kind: "error" };
@@ -160,9 +200,9 @@ export async function fetchPublicKey(): Promise<KeyAnswer> {
     if (res.status === 404) return { kind: "off" };
     if (res.status === 503) return { kind: "not-configured" };
     if (!res.ok) return { kind: "error" };
-    const body = (await res.json()) as { public_key?: unknown };
+    const body = (await res.json()) as { public_key?: unknown; prompt?: unknown };
     return typeof body.public_key === "string" && body.public_key
-      ? { kind: "key", key: body.public_key }
+      ? { kind: "key", key: body.public_key, prompt: body.prompt === true }
       : { kind: "error" };
   } catch {
     return { kind: "error" };

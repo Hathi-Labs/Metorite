@@ -48,6 +48,43 @@ export function resolvePipeline(
   return fallback ? fallback.id : null;
 }
 
+/**
+ * The place of each stage in the pipeline on screen (D137): status id to its
+ * `position` in that pipeline. `orderLanes` reads it.
+ *
+ * The pipeline is the one `pipelineId` names, else the default, else the
+ * first in order. With one pipeline the board sends no `pipeline_id`, so the
+ * default pipeline gives the places. No pipeline list (null, or a 404 from an
+ * older gateway) gives an empty map, and the board keeps its other keys.
+ */
+export function placesOf(
+  pipelines: readonly DealPipeline[] | null | undefined,
+  pipelineId: string | null | undefined,
+): Map<string, number> {
+  const places = new Map<string, number>();
+  if (!pipelines || pipelines.length === 0) return places;
+  const chosen = pipelineId ? pipelines.find((p) => p.id === pipelineId) : undefined;
+  const pipeline =
+    chosen ?? pipelines.find((p) => p.is_default) ?? orderedPipelines(pipelines)[0];
+  for (const stage of pipeline?.stages ?? []) places.set(stage.id, stage.position);
+  return places;
+}
+
+/**
+ * The stages a deal may move to: those of its own pipeline, plus its current
+ * stage (CRM-M3). `places` is `placesOf` for the deal's pipeline, and the
+ * default pipeline when the deal has none. No places (a pipeline that lists no
+ * stage, or no pipeline list) offers every stage.
+ */
+export function stagesInPlaces<T extends { id: string }>(
+  stages: readonly T[],
+  places: ReadonlyMap<string, number> | null | undefined,
+  currentId?: string | null,
+): T[] {
+  if (!places || places.size === 0) return [...stages];
+  return stages.filter((s) => places.has(s.id) || s.id === currentId);
+}
+
 type Store = Pick<Storage, "getItem" | "setItem">;
 
 /** The browser's local store, or null where reading it throws. */

@@ -42,6 +42,64 @@ export function isSpecialistTool(name: string | null | undefined, agentName: str
 }
 
 /**
+ * Is `name` the orchestrator's `spawn_subagents` tool? Each child it starts
+ * streams `SUB_AGENT_*` events into the parent stream, so its row is a hand-off
+ * (OA-9b). Its children's answers are item JSON for the parent model, never
+ * text for the member, so the row keeps their steps and drops their text.
+ */
+export function isSpawnTool(name: string | null | undefined): boolean {
+  return String(name ?? "").toLowerCase().includes("spawn_subagents");
+}
+
+/**
+ * Does the tool `name` hand the work to another agent, so that the
+ * `SUB_AGENT_*` events between its start and its end belong on its row?
+ * `call_agent` and `call_agents_parallel`, `delegate_to_agent` and
+ * `spawn_subagents` do. The specialist tools are found by
+ * {@link isSpecialistTool}, which needs the agent name of the event.
+ * The server twin is the delegate test in `app/api/agent/chat/route.ts`.
+ */
+export function isHandoffTool(name: string | null | undefined): boolean {
+  const n = String(name ?? "").toLowerCase();
+  return n.includes("call_agent") || n.includes("delegate_to_agent") || isSpawnTool(n);
+}
+
+/** The sub-agent events that streamed since the last hand-off ended. */
+export interface SubAgentAccumulator<Step> {
+  name: string;
+  text: string;
+  tools: Step[];
+}
+
+/**
+ * The saved-message half of a hand-off: what the tool row `toolName` takes
+ * from the accumulator when it ends, and the accumulator that stays.
+ * `route.ts` calls it at `TOOL_CALL_END`. A hand-off row (see
+ * {@link isHandoffTool} and {@link isSpecialistTool}) takes the name, the text
+ * and the steps, and the accumulator starts again, so the steps of one child
+ * never land on a later row. A spawn row takes no text. Any other tool row
+ * takes nothing and leaves the accumulator alone.
+ */
+export function takeHandoff<Step>(
+  toolName: string,
+  acc: SubAgentAccumulator<Step>,
+): { fields: Record<string, unknown>; rest: SubAgentAccumulator<Step> } {
+  const isDelegate = isHandoffTool(toolName) || isSpecialistTool(toolName, acc.name);
+  if (!isDelegate) return { fields: {}, rest: acc };
+  const has = !!(acc.name || acc.text || acc.tools.length > 0);
+  return {
+    fields: has
+      ? {
+          subAgentName: acc.name,
+          subAgentText: isSpawnTool(toolName) ? "" : acc.text,
+          subAgentTools: acc.tools,
+        }
+      : {},
+    rest: { name: "", text: "", tools: [] },
+  };
+}
+
+/**
  * Fold pre-tool narration into the reasoning blocks and compute the timeline
  * cutoff for a starting tool (VS Code-style interleaved thinking).
  *
@@ -165,8 +223,72 @@ export function parseReasoning(raw: string | null | undefined): string[] | undef
  * `null` for a turn with no segments.
  */
 export function withCustomEvent(m: ChatMessage, name: string, value: unknown): ChatMessage {
+  // HRD-6: the line of a slow step is live only. It is never kept on the
+  // message, so no save posts it as a custom event.
+  if (name === PROGRESS_EVENT) return m;
+  // CS-3a: the phase of the run is live only too.
+  if (name === RUN_PHASE_EVENT) return m;
   const event = { name, value, segmentCutoff: m.segments?.length ?? 0 };
   return { ...m, customEvents: [...(m.customEvents ?? []), event] };
+}
+
+/**
+ * HRD-6 (`chat_failure_modes.md` §4 row B6): the CUSTOM event of a slow
+ * tool's line (`acb_skills.progress_notice`). The live loop shows it under
+ * the running step. The replay ignores it, and no save keeps it.
+ */
+export const PROGRESS_EVENT = "progress";
+
+/**
+ * CS-3a (`chat_failure_modes.md` §6 row CS-3): the CUSTOM event of the
+ * server's phase of a run (`acb_skills.run_phase`). The BFF route forwards
+ * it (CS-3b, task 3462), and no loop keeps one on the message. The hook
+ * turns it into fixed words (`phaseWordOf`).
+ */
+export const RUN_PHASE_EVENT = "run_phase";
+
+/** The longest line the chat draws. The server sends one line. */
+const NOTICE_MAX = 300;
+
+/** Show the line of a slow tool on the message. A new line replaces the old
+ *  one, so parallel steps never stack two lines. An empty line takes away
+ *  the line of the step it names: that step ended, or it shows a card. */
+export function withProgressNotice(m: ChatMessage, value: unknown): ChatMessage {
+  if (!value || typeof value !== "object") return m;
+  const v = value as Record<string, unknown>;
+  const text = String(v.text ?? "").replace(/\s+/g, " ").trim().slice(0, NOTICE_MAX);
+  const toolId = typeof v.tool_call_id === "string" && v.tool_call_id ? v.tool_call_id : undefined;
+  if (!text) {
+    if (!m.progressNotice) return m;
+    if (toolId && m.progressNotice.toolId && m.progressNotice.toolId !== toolId) return m;
+    return withoutNotice(m);
+  }
+  return { ...m, progressNotice: { text, ...(toolId ? { toolId } : {}) } };
+}
+
+/** True while a step of the message, or a step of a hand-off, still runs. */
+function anyStepRunning(m: ChatMessage): boolean {
+  return (m.toolEvents ?? []).some(
+    (t) => t.status === "running" || (t.subAgentTools ?? []).some((st) => st.status === "running"),
+  );
+}
+
+/** Take the line away when its step ended, or when no step runs. */
+function settleNotice(m: ChatMessage, endedId: string): ChatMessage {
+  const n = m.progressNotice;
+  if (!n) return m;
+  if (n.toolId === endedId || !anyStepRunning(m)) {
+    const { progressNotice: _gone, ...rest } = m;
+    return rest;
+  }
+  return m;
+}
+
+/** Take the line away, whatever step it names. */
+function withoutNotice(m: ChatMessage): ChatMessage {
+  if (!m.progressNotice) return m;
+  const { progressNotice: _gone, ...rest } = m;
+  return rest;
 }
 
 /** Per-stream fold cursor threaded through {@link applyStreamEvent}. */
@@ -176,6 +298,14 @@ export interface StreamFold {
    *  as `content` at run end if no further answer text followed the last tool
    *  call.  -1 = nothing to un-fold. */
   foldedAnswerIdx: number;
+}
+
+/** CSY-10: the `mcp` stamp of a `tool_start`, or undefined when it is not two strings. */
+function mcpOfEvent(raw: unknown): ToolEvent["mcp"] {
+  const r = raw as { server?: unknown; label?: unknown } | null | undefined;
+  return r && typeof r.server === "string" && typeof r.label === "string"
+    ? { server: r.server, label: r.label }
+    : undefined;
 }
 
 /**
@@ -214,8 +344,10 @@ export function applyStreamEvent(
         else cur.push({ id: segId, text: deltaText });
         segments = cur;
       }
+      // HRD-6: answer text came, so the slow step's line goes.
+      const base = deltaText.trim() ? withoutNotice(m) : m;
       return {
-        ...m,
+        ...base,
         content: m.content + deltaText,
         segments,
         streaming: true,
@@ -250,7 +382,7 @@ export function applyStreamEvent(
       // a replayed stream re-sends it).  Never add a second row for an id we
       // already have — keeps the consciousness timeline from duplicating.
       if ((m.toolEvents ?? []).some((t) => t.id === toolId)) return m;
-      const isDelegate = String(evt.name ?? "").toLowerCase().includes("call_agent");
+      const isDelegate = isHandoffTool(String(evt.name ?? ""));
       const hasSegments = (m.segments?.length ?? 0) > 0;
       // Phase 3c (VS Code parity): when the runtime supplied real segment ids,
       // EVERY assistant text segment is answer body — including text emitted
@@ -290,6 +422,8 @@ export function applyStreamEvent(
         // and fall back to the reasoning fold.
         ...(hasSegments ? { segmentCutoff: m.segments!.length } : {}),
         ...(isDelegate ? { subAgentActive: true } : {}),
+        // CSY-10: the connected server of an MCP tool, so its row reads "<label>: <tool>".
+        ...(mcpOfEvent(evt.mcp) ? { mcp: mcpOfEvent(evt.mcp) } : {}),
       };
       return {
         ...m,
@@ -300,7 +434,8 @@ export function applyStreamEvent(
     }
     case "tool_end": {
       const status: ToolEvent["status"] = evt.success ? "done" : "error";
-      return {
+      // HRD-6: the line of a slow step goes when that step ends.
+      return settleNotice({
         ...m,
         toolEvents: (m.toolEvents ?? []).map((t) =>
           t.id === String(evt.id)
@@ -317,7 +452,7 @@ export function applyStreamEvent(
               }
             : t,
         ),
-      };
+      }, String(evt.id ?? ""));
     }
     case "tool_args": {
       // The running step's arguments, once whole (route.ts). The trail then
@@ -369,7 +504,7 @@ export function applyStreamEvent(
         if (lastText.trim()) content = lastText;
       }
       return {
-        ...m,
+        ...withoutNotice(m),
         content,
         reasoningBlocks: u.reasoningBlocks,
         streaming: false,
@@ -402,7 +537,7 @@ export function applySubAgentEvent(
    *  not know it was a hand-off. */
   const lastDelegate = (): number => {
     const idx = [...evts].reverse().findIndex(
-      (t) => (t.subAgentActive && (t.name.toLowerCase().includes("call_agent") || t.subAgentName))
+      (t) => (t.subAgentActive && (isHandoffTool(t.name) || t.subAgentName))
         || (t.status === "running" && isSpecialistTool(t.name, eventAgent)),
     );
     return idx === -1 ? -1 : evts.length - 1 - idx;
@@ -412,6 +547,9 @@ export function applySubAgentEvent(
     case "sub_agent_delta": {
       const ri = lastDelegate();
       if (ri === -1) return m;
+      // A spawn child ends with item JSON for the parent model. It is no text
+      // for the member, so the spawn row keeps the steps and drops the text.
+      if (isSpawnTool(evts[ri].name)) return m;
       const agent = String(evt.agentName ?? "");
       return {
         ...m,
@@ -438,7 +576,8 @@ export function applySubAgentEvent(
     }
     case "sub_agent_tool_end": {
       const stId = String(evt.id ?? "");
-      return {
+      // HRD-6: a slow step of a hand-off takes its line away when it ends.
+      return settleNotice({
         ...m,
         toolEvents: evts.map((t) => !t.subAgentTools ? t : {
           ...t,
@@ -446,12 +585,32 @@ export function applySubAgentEvent(
             st.id === stId ? { ...st, result: String(evt.result ?? ""), status: evt.success ? "done" as const : "error" as const } : st,
           ),
         }),
-      };
+      }, stId);
     }
     case "sub_agent_error": {
       const idx = [...evts].reverse().findIndex((t) => t.subAgentActive);
       if (idx === -1) return m;
       const ri = evts.length - 1 - idx;
+      if (isSpawnTool(evts[ri].name)) {
+        // One child of a spawn failed. The other children go on, so the row
+        // stays active until its own tool_end. A worker is a batch run: it
+        // sends no step before it fails. So the failure is its own step, keyed
+        // by the child's run id (route.ts forwards it), and no step of a
+        // sibling changes.
+        const steps = evts[ri].subAgentTools ?? [];
+        const failId = `err-${String(evt.runId ?? "") || steps.length}`;
+        if (steps.some((st) => st.id === failId)) return m;
+        const failed = {
+          id: failId,
+          name: String(evt.agentName ?? "") || "worker",
+          status: "error" as const,
+          result: String(evt.error ?? "Sub-agent error"),
+        };
+        return {
+          ...m,
+          toolEvents: evts.map((t2, k) => k === ri ? { ...t2, subAgentTools: [...steps, failed] } : t2),
+        };
+      }
       return {
         ...m,
         toolEvents: evts.map((t, i) => i === ri

@@ -74,6 +74,14 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
+    // CP-APP (task 1105): apps a customer can have beside Metorite. The page
+    // connects the app's hub; each customer page gives the app and its seats.
+    title: "Apps",
+    items: [
+      { href: "/aroh", label: "Aroh", icon: I("M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20ZM8 12h8M12 8v8") },
+    ],
+  },
+  {
     title: "Team & setup",
     items: [
       { href: "/operators", label: "Operators", icon: I("M9 12l2 2 4-4M12 3l7 4v5c0 4.4-3 8.4-7 9.5C8 20.4 5 16.4 5 12V7l7-4Z") },

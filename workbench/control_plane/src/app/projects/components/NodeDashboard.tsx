@@ -58,24 +58,19 @@ import {
   emptyCopy,
   rowsReconcile,
 } from "../lib/dashboardRows";
-import { REPORT_ON_THIS, nodeReportLink } from "../lib/reportEntry";
+import { REPORT_ON_THIS, myDayLink, nodeReportLink } from "../lib/reportEntry";
+import { doneThisWeek, openCount } from "../lib/myTasks";
 import {
   closableCount,
   completion,
   completionPercent,
 } from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
-import { CATEGORY_LABEL } from "@/lib/statusCategory";
+import { ProjectUpdateLine } from "./ProjectUpdateLine";
+import { CATEGORY_LABEL, STATUS_CATEGORIES } from "@/lib/statusCategory";
 
-/** The order lanes read in — the same left-to-right a board uses. */
-const CATEGORY_ORDER = [
-  "triage",
-  "backlog",
-  "todo",
-  "in_progress",
-  "done",
-  "cancelled",
-] as const;
+/** The order lanes read in: the one lifecycle order of `lib/statusCategory.ts`. */
+const CATEGORY_ORDER = STATUS_CATEGORIES;
 
 /** The labels are `lib/statusCategory.ts`'s. One place names a category. */
 const CATEGORY_LABELS: Record<string, string> = CATEGORY_LABEL;
@@ -193,6 +188,8 @@ function CompletionFigure({
  * real affordance and it belongs on the board, not disguised as a row here.
  */
 function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; level: NodeSummary["level"] }) {
+  // WS-64 OP-11 — on My tasks, "own" is the work in no project the member may open.
+  const mine = level === "mine";
   const noun = level === "space" || level === "folder" ? "here" : "this project";
   return (
     <div
@@ -200,7 +197,11 @@ function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; l
       // shape says "same list, different kind of thing" without a second
       // colour or a badge (AGENTS.md rule 5).
       className="flex w-full flex-col gap-1.5 rounded-lg border border-dashed border-border bg-card px-3 py-2.5 text-left"
-      title={`${row.tasks} tasks sit directly on ${noun}, in no subproject. The figures above count these as well.`}
+      title={
+        mine
+          ? `${row.tasks} of your tasks sit in no project you can open. The figures above count these as well.`
+          : `${row.tasks} tasks sit directly on ${noun}, in no subproject. The figures above count these as well.`
+      }
     >
       <div className="flex min-w-0 items-center gap-2">
         <Icon
@@ -208,7 +209,7 @@ function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; l
           className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
         />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
-          Direct work
+          {mine ? "In no project you can open" : "Direct work"}
         </span>
         {row.overdue > 0 ? (
           <span className={`shrink-0 text-xs ${statusAccent({ category: "cancelled" }).text}`}>
@@ -276,12 +277,53 @@ function ChildRow({
   );
 }
 
+/**
+ * WS-64 OP-11 — the KPI strip of My tasks. The same six-tile grid and the same
+ * `Stat` as a node, with the figures a member asks of their own work: how
+ * much is open, what is due soon, what is late, and what got done this week.
+ * "Done this week" is the current week of Throughput with `subject=me`. With
+ * no Throughput it is a dash, never a zero.
+ */
+function MineStrip({
+  summary,
+  throughput,
+}: {
+  summary: NodeSummary;
+  throughput?: ThroughputReport | null;
+}) {
+  const days = summary.due_soon_days ?? 7;
+  const late = summary.overdue ?? 0;
+  return (
+    <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" data-mine-kpis="">
+      <Stat label="Projects" value={summary.projects} title="Projects that hold a task of yours." />
+      <Stat label="Open" value={openCount(summary)} title="Your tasks that are not done or cancelled." />
+      <Stat
+        label="Due soon"
+        value={summary.due_soon}
+        title={`Open tasks of yours due in the next ${days} days.`}
+      />
+      <Stat
+        label="Overdue"
+        value={late}
+        tone={late > 0 ? statusAccent({ category: "cancelled" }).text : undefined}
+      />
+      <Stat
+        label="Done this week"
+        value={doneThisWeek(throughput) ?? undefined}
+        title="Tasks you hold that closed this week, from Throughput."
+      />
+      <Stat label="Done" value={summary.by_category?.done ?? 0} />
+    </div>
+  );
+}
+
 const LEVEL_TITLES: Record<NodeSummary["level"], string> = {
   portfolio: "Every space",
   space: "Space overview",
   folder: "Folder overview",
   project: "Project overview",
   subproject: "Subproject overview",
+  mine: "My tasks overview",
 };
 
 /**
@@ -356,8 +398,14 @@ export default function NodeDashboard({
   finished,
   outlook,
   onReport,
+  personal = false,
+  personalPlaces,
 }: {
   summary: NodeSummary;
+  /** OP-12b — the summary is the private space. Its empty state names a folder. */
+  personal?: boolean;
+  /** The live folders and projects under the personal root, from the tree the page holds. */
+  personalPlaces?: number;
   /** Drill into a child. The tree selection and this view stay in step. */
   onOpen: (id: string) => void;
   /**
@@ -424,18 +472,31 @@ export default function NodeDashboard({
             icon="FileText"
             className="shrink-0"
             aria-label={`${REPORT_ON_THIS}: ${summary.name}`}
-            onClick={() => onReport(nodeReportLink(summary.id))}
+            // WS-64 OP-11 — My tasks is no node, so its report is "My day",
+            // the report about its reader (`myDayLink`).
+            onClick={() => onReport(level === "mine" ? myDayLink() : nodeReportLink(summary.id))}
           >
             {REPORT_ON_THIS}
           </Button>
         ) : null}
       </div>
 
+      {/* WS-39 LP-1a: the newest update of a project, from the same read as
+          the roll-up (`summary.latest_update`), so nothing moves when it
+          arrives. No key (the flag is off) and null (no update) draw nothing
+          and keep no space. */}
+      {(level === "project" || level === "subproject") && summary.latest_update ? (
+        <ProjectUpdateLine update={summary.latest_update} />
+      ) : null}
+
       {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
           neither 2 nor 3, so the last tile used to sit alone on its own row
           at phone and tablet width — an orphan, which reads as a tile that
           failed to load. Six divides by both, and the `col-span` patch that
           papered over it is deleted rather than kept beside the real fix. */}
+      {level === "mine" ? (
+        <MineStrip summary={summary} throughput={throughput} />
+      ) : (
       <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Stat
           label={
@@ -443,33 +504,39 @@ export default function NodeDashboard({
               ? "Spaces"
               : level === "project" || level === "subproject"
                 ? "Subprojects"
-                : "Projects"
+                : // OP-12b — the private space holds folders AND projects.
+                  personal
+                  ? "Folders and projects"
+                  : "Projects"
           }
           value={
             level === "portfolio"
               ? // `children` is typed as present and is not guaranteed to be.
                 // Absent means the server did not say, which is a dash, not 0.
                 (hasChildren ? children.length : undefined)
+              : personal
+                ? // OP-12b: every live folder and project under the root, at any depth.
+                  personalPlaces
               : summary.projects
           }
         />
-        {/* ⚠️ The TOTAL, and it is not decoration. The rows below add up to
-            this — Direct work plus every child — and until there was a total
-            on screen a reader had no way to check that, which is the whole
-            reason the Direct work row exists. The portfolio strip has carried
-            a Tasks tile since it shipped; a node had none. */}
+        {/* ⚠️ OPEN work, and it matches the sidebar. The row beside a node there
+            counts open tasks (not done, not cancelled), and this tile used to
+            count EVERY task, so one node showed two numbers (owner,
+            2026-10-30). The rows below still add up to the total of the node:
+            Open, Done and cancelled together. The title says so. */}
         <Stat
-          label="Tasks"
-          value={summary.tasks}
+          label="Open"
+          value={summary.tasks == null ? undefined : openCount(summary)}
           title={
             hasChildren && children.length > 0
-              ? "Every task in this subtree, the node's own included. The rows below add up to this."
-              : "Every task in this scope."
+              ? "Tasks not done or cancelled, the node's own included. Open, Done and cancelled add up to the rows below."
+              : "Tasks not done or cancelled in this scope."
           }
         />
         <Stat label="To do" value={todo} />
         <Stat label="In progress" value={inProgress} />
-        <Stat label="Done" value={done} />
+        <Stat label="Done" value={done} title="Tasks that are delivered." />
         <Stat
           label="Overdue"
           value={summary.overdue}
@@ -480,6 +547,7 @@ export default function NodeDashboard({
           }
         />
       </div>
+      )}
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-5">
         <div className="md:col-span-3">
@@ -512,7 +580,7 @@ export default function NodeDashboard({
             </div>
           ) : (
             <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-              {emptyCopy(summary)}
+              {emptyCopy(summary, { personal })}
             </p>
           )}
         </div>

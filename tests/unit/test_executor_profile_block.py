@@ -56,9 +56,9 @@ EXAMPLE: dict[str, Any] = {
 #: The block of §5.1, byte for byte.
 GOLDEN = (
     "## About the member (their own profile — they can see and change it)\n"
-    'Address them as "VJ". Tone: casual. Greeting: brief. In the first reply of a chat '
-    "only, open with one short greeting for the time of day. Never greet again in that "
-    "chat.\n"
+    'Address them as "VJ". Tone: casual. Greeting: brief. Follow the greeting rule '
+    "of the part-of-day line. When it allows a greeting, open with one short "
+    "greeting. Otherwise do not greet.\n"
     "Answer length: short. Use about half the usual length. Language: en-IN. Answer in "
     "it, unless they write in another language. Notes: Hinglish is fine on WhatsApp.\n"
     'People they name: "Raj" = raj@fracktal.in.\n'
@@ -90,6 +90,7 @@ def run(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ex, "_read_member_display_name", lambda org, m: "Ana Rao")
     monkeypatch.setattr(ex, "_read_number_system", lambda org, m: "indian")
     monkeypatch.setattr(ex, "_run_org_display_name", lambda: "Acme Tools")
+    monkeypatch.setattr(ex, "_member_zones", lambda: ("", ""))
     ex._PROFILE_CACHE.clear()
     ex._MEMBER_NAME_CACHE.clear()
     ns.forget()
@@ -822,12 +823,16 @@ def test_no_name_forbids_a_placeholder() -> None:
 
 @pytest.mark.parametrize(("greeting", "text"), [
     ("none", "Greeting: none. Open with the answer."),
-    ("brief", "Greeting: brief. In the first reply of a chat only, open with one short "
-              "greeting for the time of day. Never greet again in that chat."),
-    ("warm", "Greeting: warm. In the first reply of a chat only, open with a greeting and "
-             "one personal line from a fact in this block. Do this at most once a day."),
-    (None, "Greeting: brief. In the first reply of a chat only, open with one short "
-           "greeting for the time of day. Never greet again in that chat."),
+    ("brief", "Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    ("warm", "Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal line "
+             "from a fact in this block. Do this at most once a day. Otherwise do "
+             "not greet."),
+    (None, "Greeting: brief. Follow the greeting rule of the part-of-day line. "
+           "When it allows a greeting, open with one short greeting. Otherwise "
+           "do not greet."),
 ])
 def test_each_greeting_line_is_golden(greeting, text) -> None:
     address = {"name": "VJ"} if greeting is None else {"name": "VJ", "greeting": greeting}
@@ -849,7 +854,7 @@ def test_each_length_line_is_golden(length, text) -> None:
 
 def test_the_language_line_lets_the_member_switch() -> None:
     assert _line({"style": {"language": "hi"}}, "VJ", at=2) == (
-        "Language: hi. Answer in it, unless they write in another language.")
+        "Language: Hindi (hi). Answer in it, unless they write in another language.")
 
 
 def test_the_house_voice_line_needs_a_style_key_or_a_formality() -> None:
@@ -900,10 +905,59 @@ def test_the_part_of_day_bands(hour, part) -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from acb_common.today import part_of_day_line
+    from acb_common.today import greeting_for, part_of_day_line
 
     now = datetime(2026, 10, 24, hour, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
-    assert part_of_day_line("Asia/Kolkata", now) == f"Part of the day for the member: {part}."
+    # Decided no: do not greet. Due: "Greet now." and the word.
+    assert part_of_day_line("Asia/Kolkata", now, greet=False) == (
+        f"Part of the day for the member: {part}. Do not greet in this reply.")
+    due = part_of_day_line("Asia/Kolkata", now, greet=True)
+    assert due.startswith(f"Part of the day for the member: {part}. Greet now.")
+    assert f'"{greeting_for("Asia/Kolkata", now)}"' in due
+    if part == "night":
+        assert '"Hello"' in due
+        # F7: "Good evening" is offered from 21:00 to 23:59 only.
+        assert ('"Good evening"' in due) == (hour >= 21)
+        assert "Never say \"Good night\"" in due
+    else:
+        assert "Good night" not in due
+
+
+def test_a_non_english_language_asks_for_the_common_hello() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_common.today import part_of_day_line
+
+    now = datetime(2026, 10, 24, 9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    hi = part_of_day_line("Asia/Kolkata", now, greet=True, language="hi-IN")
+    assert "Greet now." in hi and "common hello of that language" in hi
+    assert "Namaste" in hi and "Good morning" not in hi
+    # F7: a good-night phrase is barred in any language.
+    assert "good-night phrase in any language" in hi and "Shubha" in hi
+    for tag in ("en", "en-IN", "EN-gb", "", None):
+        assert "Good morning" in part_of_day_line("Asia/Kolkata", now, greet=True, language=tag)
+    # Decided no: the language changes nothing.
+    assert "Greet now." not in part_of_day_line("Asia/Kolkata", now, greet=False, language="hi")
+
+
+def test_a_run_with_no_decision_keeps_the_old_rule() -> None:
+    """F6: WhatsApp, delegated, batch and group runs bind no decision. Their
+    line says to greet only in the first reply of the conversation, and it
+    never says "Greet now."."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from acb_common.today import part_of_day_line
+
+    now = datetime(2026, 10, 24, 9, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    line = part_of_day_line("Asia/Kolkata", now)
+    assert "Greet only in the first reply of the conversation" in line
+    assert "never again in it" in line
+    assert "Greet now." not in line and "Do not greet" not in line
+    assert line == part_of_day_line("Asia/Kolkata", now, greet=None)
+    assert "Greet now." in part_of_day_line("Asia/Kolkata", now, greet=True)
+    assert "Do not greet in this reply." in part_of_day_line("Asia/Kolkata", now, greet=False)
 
 
 def test_the_part_of_day_reads_the_member_zone_and_a_bad_zone_falls_back() -> None:
@@ -985,22 +1039,37 @@ def test_the_part_of_day_line_follows_today_only_when_the_block_greets(
 
     seen: list[Any] = []
     monkeypatch.setattr(today, "part_of_day_line",
-                        lambda zone, now=None: seen.append(zone) or "Part of the day: X.")
+                        lambda zone, now=None, **kw: seen.append(zone) or "Part of the day: X.")
     run.update(zone="Europe/Berlin")
     parts = _parts()
     assert parts[-1] == "Part of the day: X."
-    assert parts[-2].startswith("Today is ")
+    assert parts[-2].startswith("Now: ")
     assert seen == ["Europe/Berlin"]
 
     for raw in ({"address": {"name": "VJ", "greeting": "none"}},):
         ex._PROFILE_CACHE.clear()
         run["raw"] = raw
         parts = _parts()
-        assert _blocks(parts) and parts[-1].startswith("Today is ")
+        assert _blocks(parts) and parts[-1].startswith("Now: ")
     ex._PROFILE_CACHE.clear()
     run.update(raw={"address": {"name": "VJ", "greeting": "warm"}}, zone="")
     assert _parts()[-1] == "Part of the day: X."
-    assert seen[-1] is None
+    assert seen[-1] == "Asia/Kolkata"  # resolve_zone default
+
+
+def test_the_line_follows_the_run_decision_on_both_paths(run, monkeypatch) -> None:
+    """F6: a decided run says "Greet now." or "Do not greet". A run with no
+    decision keeps the old rule. The zone is the resolved one (F4 of D2)."""
+    run.update(zone="Europe/Berlin")
+    seen: dict[str, str] = {}
+    for label, value in (("yes", True), ("no", False), ("none", None)):
+        monkeypatch.setattr(ex, "_greet_due_now", lambda v=value: v)
+        ex._PROFILE_CACHE.clear()
+        seen[label] = _parts()[-1]
+    assert "Greet now." in seen["yes"]
+    assert "Do not greet in this reply." in seen["no"]
+    assert "Greet only in the first reply of the conversation" in seen["none"]
+    assert "Greet now." not in seen["none"] and "Greet now." not in seen["no"]
 
 
 def test_the_cached_entry_keeps_the_zone_and_the_greeting(run, monkeypatch) -> None:
@@ -1031,7 +1100,7 @@ def test_a_failed_read_gives_no_part_of_day(run) -> None:
     run["fail"] = True
     parts = _parts()
     assert _blocks(parts) == []
-    assert parts[-1].startswith("Today is ")
+    assert parts[-1].startswith("Now: ")
 
 
 def test_the_address_sql_names_the_org_on_both_sides() -> None:
@@ -1041,3 +1110,74 @@ def test_the_address_sql_names_the_org_on_both_sides() -> None:
     assert "lower(u.email) = lower(:m)" in sql
     assert "::" not in sql and "{org}" not in sql
     assert ap.ADDRESS_SQL_TEMPLATE.count("{org}") == 1
+
+
+# ── PZ-20c: "what do you know about me" ────────────────────────────────────
+#
+# These tests prove ONE thing: the instruction reaches the model, on the
+# right turns only. No offline test can prove that the model obeys it. The
+# eval prompt in the PZ-10 list of the spec is ADVISORY (R7) until PZ-10
+# ships. Known tension: with Mem0 text in ``memory_context``, the footer
+# still says "this block only". The footer does not change.
+
+
+def _footers(parts: list[str]) -> list[str]:
+    return [p for p in parts if ap.BLOCK_FOOTER in p]
+
+
+def test_a_solo_turn_holds_the_footer_as_the_last_line_of_the_block(run) -> None:
+    payload = {"memory_context": "Mem0 says: likes tea", "system_context": "persona"}
+    parts = _parts(payload=payload)
+    (block,) = _blocks(parts)
+    assert block.splitlines()[-1] == ap.BLOCK_FOOTER
+    # One footer in the whole context, and it sits in the block.
+    assert _footers(parts) == [block]
+
+
+@pytest.mark.parametrize("case", ["shared_room", "no_member", "flag_off", "other_org_off"])
+def test_a_turn_with_no_block_holds_no_footer(run, monkeypatch, case: str) -> None:
+    token = None
+    if case == "shared_room":
+        token = ex._RUN_SOLO_ROOM.set(False)
+    elif case == "no_member":
+        run["member"] = ""  # a webhook run has no verified member
+    elif case == "flag_off":
+        _flag(monkeypatch, False)
+    else:
+        monkeypatch.setattr(get_settings(), "assistant_profile_orgs",
+                            "99999999-9999-4999-8999-999999999999", raising=False)
+    try:
+        parts = _parts(payload={"memory_context": "a fact"})
+    finally:
+        if token is not None:
+            ex._RUN_SOLO_ROOM.reset(token)
+    assert _footers(parts) == []
+    assert run["reads"] == []
+
+
+def test_the_block_holds_only_the_members_own_text(run) -> None:
+    """The block equals ``render_block`` of the one stored row that the
+    member's read returned. The text of another member never enters."""
+    run["raw"] = {**EXAMPLE, "facts": [
+        {"id": "f9", "text": "Owns a boat in Goa", "kind": "about",
+         "source": "chat", "at": "2026-10-24T09:00:00Z"}]}
+    other_marker = "Secret of bo@alpha.example"
+    parts = _parts(payload={"message": other_marker})
+    (block,) = _blocks(parts)
+    assert block == ap.render_block(run["raw"], "")
+    assert block == ap.member_block(run["raw"], "", "")
+    assert "Owns a boat in Goa" in block
+    assert run["reads"] == [(ORG, MEMBER)]
+    # The payload is client input. Its text is not a part of the block.
+    assert other_marker not in block
+
+
+def test_the_executor_and_the_settings_view_share_one_builder(run) -> None:
+    """PZ-20a: the route calls ``member_block``, and so does the executor."""
+    run["preferred"], run["display"] = "Viju", "Ana Rao"
+    run["raw"] = {"v": 1, "facts": [{"id": "f1", "text": "Likes tea", "kind": "preference",
+                                     "source": "chat", "at": "2026-10-23T11:00:00Z"}]}
+    (block,) = _blocks(_parts())
+    assert block == ap.member_block(run["raw"], "Viju", "Ana Rao")
+    assert 'Address them as "Viju"' not in block  # a directory name is only a name
+    assert 'Their directory name is "Viju"' in block

@@ -163,7 +163,7 @@ describe("a refused edit changes nothing (review of #795)", () => {
   it("sendMessage leaves the thread alone until the server answers, then settles it once", () => {
     const src = readFileSync(join(__dirname, "..", "hooks", "useAgentChat.ts"), "utf8");
     // The first state change of an edit moves only the loading state.
-    expect(src).toMatch(/if \(supersedes\) \{\s*return \{ \.\.\.prev, isLoading: true, error: null, abortController: controller \};/);
+    expect(src).toMatch(/if \(supersedes\) \{\s*return \{ \.\.\.prev, isLoading: true, error: null, abortController: controller, stopError: null \};/);
     // The answer decides the thread, through the one pure helper.
     expect(src).toMatch(/const accepted = res\.status !== 202 && res\.ok && !!res\.body;/);
     expect(src).toMatch(/settleEditAnswer\(\s*threadId, prev\.messages, supersedes, res\.status, accepted, body,/);
@@ -176,7 +176,8 @@ describe("a refused edit changes nothing (review of #795)", () => {
     const route = readFileSync(join(__dirname, "..", "app", "api", "agent", "chat", "route.ts"), "utf8");
     expect(route).toMatch(/\.\.\.\(userMessageId\s*\?\s*\{\s*user_message_id: userMessageId,/);
     expect(route).not.toMatch(/supersedes, user_message_id/);
-    expect(src).toMatch(/stopGeneration = useCallback\(\(\): Promise<void> =>/);
+    // The stop resolves with the reason of a failed cancel (UXD-4).
+    expect(src).toMatch(/stopGeneration = useCallback\(\(\): Promise<string \| null> =>/);
     // A stale poll must not resurrect a superseded row.
     expect(src).toMatch(/if \(isSuperseded\(threadId, rm\.id\)\) continue;/);
   });

@@ -15,6 +15,7 @@
 //
 // Spec: project-docs/specs/crm_app.md §5.1 system 2 (WS-26g).
 
+import { money } from "./format";
 import type {
   CrmDigest,
   DigestNumbers,
@@ -41,6 +42,20 @@ export function barWidth(value: number, values: number[]): number {
   const max = Math.max(0, ...values);
   if (!max || value <= 0) return 0;
   return Math.round((value / max) * 100);
+}
+
+/**
+ * "plus $1,000" - the other currencies of a figure, or "" when it has none.
+ *
+ * The routes never add two currencies (HANDOFF H-333), so the primary figure
+ * is in one currency and the rest are named here, each with its own code.
+ */
+export function plusLabel<T extends { currency: string }>(
+  others: readonly T[] | undefined,
+  pick: (other: T) => number
+): string {
+  if (!others || others.length === 0) return "";
+  return `plus ${others.map((o) => money(pick(o), o.currency)).join(", ")}`;
 }
 
 /** The funnel's bars are scaled against the widest `entered`. */

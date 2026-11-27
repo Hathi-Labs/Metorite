@@ -26,7 +26,6 @@ words are vague.
 | Commit messages, PR titles, PR bodies | Yes | Strict tier |
 | Code comments and docstrings | Advisory | No fence. Write them this way anyway |
 | Product UI copy | **No** | Owner decision, 2026-08-26. See the note below |
-| `skills/upstream/` | No | Synced from Anthropic. We do not own the words |
 
 **STE stops at the repo.** It binds the documentation we write and the agents we
 run. It does not bind the app. No string a customer reads is in scope, in the

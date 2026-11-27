@@ -49,10 +49,17 @@ INJECTABLE_PLATFORM_TOOLS = {
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
     "crm_get_module_record",
+    # WS-CRM CRM-M1 (2026-11-02): the read of the CRM Change history. It is
+    # in the `crm` family, so a scope may name it. Today only the CRM
+    # assistant's own scope and the `crm-records` pack hold it.
+    "crm_change_history",
     # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
     "make_document",
     # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a PDF.
     "make_report",
+    # SBX-19: Python over stored tool results. A run of an org off the compute
+    # flag drops it (_compute_withheld).
+    "compute_run",
     # WS-53 CRM-Q32-5 (2026-10-18): the org facts of a listed org. The run
     # drops it when the org is not on CRM_QUESTIONS_ORGS (_add_crm_facts_block).
     "org_facts",
@@ -84,7 +91,12 @@ SCOPED_AGENTS = {
     # 25 since CRM-Q33 (2026-10-18): the chat answers first and keeps a
     # business rule that the member says, so it holds crm_propose_rule. A run
     # of an org off CRM_ANSWER_FIRST_ORGS drops it.
-    "agent-orchestrator": 25,
+    # Still 25 after CRM-M1 (2026-11-03): the chat reaches the read of the
+    # CRM Change history, crm_change_history, through the `crm-records` pack.
+    # The orchestrator's tool_scope does not hold it, because the base was at
+    # the 110-tool cap (tests/unit/test_projects_packs.py).
+    # 26 since SBX-19 (2026-11-19): compute_run. A run of an org off the flag drops it.
+    "agent-orchestrator": 26,
 }
 
 

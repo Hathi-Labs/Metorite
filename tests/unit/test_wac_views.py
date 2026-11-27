@@ -161,7 +161,9 @@ async def test_my_day_lists_the_feed_by_kind(reads: dict) -> None:
     (lst,) = v.ui
     sections = lst.interactive["action"]["sections"]
     assert [s["title"] for s in sections] == ["🔴 Overdue", "✋ Approvals", "📅 Due today"]
-    assert sections[0]["rows"][0]["description"].startswith("Snowflake X1 · 3 days ago")
+    # A due date is a day, so a due row of this view names no span of time (RX-5).
+    assert sections[0]["rows"][0]["description"] == "Snowflake X1 · overdue"
+    assert sections[2]["rows"][0]["description"] == "Snowflake X1 · due today"
 
 
 async def test_due_today_and_overdue_split_the_due_work(reads: dict) -> None:
@@ -170,7 +172,10 @@ async def test_due_today_and_overdue_split_the_due_work(reads: dict) -> None:
     assert due.text.startswith("*Due today* — 1 task")
     assert late.text.startswith("*Overdue* — 1 task")
     row = late.ui[0].interactive["action"]["sections"][0]["rows"][0]
-    assert row["title"] == "Fix the extruder" and "late" in row["description"]
+    assert row["title"] == "Fix the extruder" and "3 days late" in row["description"]
+    # A due date is a day, so no row names a clock (RX-5).
+    today = due.ui[0].interactive["action"]["sections"][0]["rows"][0]
+    assert today["title"] == "Order nozzles" and "due today" in today["description"]
     assert "Someday thing" not in repr(due.ui[0].interactive), "a Someday task showed"
 
 
@@ -208,8 +213,12 @@ class TestTheClock:
 
     async def test_the_split_follows_the_views_clock(self, reads, monkeypatch):
         # Non-vacuity: the freeze reaches the split. Four hours on, the task
-        # due in three hours is late, and none is due today.
+        # due in three hours is still due today, because a due date is a day
+        # (RX-5). One day on, it is late.
         monkeypatch.setattr(views, "_now", lambda: NOW + timedelta(hours=4))
+        late = await views.run("overdue", reads["ctx"])
+        assert late.text.startswith("*Overdue* — 1 task"), late.text
+        monkeypatch.setattr(views, "_now", lambda: NOW + timedelta(days=1))
         late = await views.run("overdue", reads["ctx"])
         assert late.text.startswith("*Overdue* — 2 tasks"), late.text
 
@@ -228,6 +237,55 @@ async def test_an_empty_day_says_so_with_buttons(reads: dict) -> None:
     v = await views.run("my_day", reads["ctx"])
     (buttons,) = v.ui
     assert "Nothing needs you" in buttons.interactive["body"]["text"]
+
+
+@pytest.mark.parametrize("kind", ["provider_alert", "reminder_due"])
+async def test_a_feed_of_only_kinds_with_no_section_links_to_my_day(reads: dict, kind: str) -> None:
+    """AO-2 review: a feed of only rows with no section (an AI vendor alert, a
+    fired reminder) raised IndexError in `_list`. The rows need the member, so
+    the view links to My Day and never says the all-clear. Mutation: drop the
+    `_KINDS` filter, and this raises. Drop the `hidden` branch, and the
+    all-clear comes back."""
+    reads["feed"] = {"items": [
+        {"kind": kind, "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    assert v.text == "*My day* — 1 item in Metorite."
+    (link,) = v.ui
+    assert link.interactive["body"]["text"] == "Open My Day to see them."
+    assert "Nothing needs you" not in v.text + link.interactive["body"]["text"]
+
+
+async def test_a_row_with_no_section_is_left_out_beside_known_rows(reads: dict) -> None:
+    """AO-2 review: the known rows draw, the summary names only them, and the
+    link counts the hidden row. Mutation: drop `hidden` from `total`, and the
+    link goes."""
+    reads["feed"] = {"items": [
+        {"kind": "provider_alert", "title": "Anthropic is out of credit.", "detail": None,
+         "at": NOW.isoformat()},
+        {"kind": "due_today", "title": "Send the quote", "detail": "P",
+         "at": (NOW + timedelta(hours=1)).isoformat()}], "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    assert v.text.startswith("*My day* — 1 due today")
+    lst, link = v.ui
+    titles = [r["title"] for r in lst.interactive["action"]["sections"][0]["rows"]]
+    assert titles == ["Send the quote"]
+    assert link.interactive["body"]["text"] == "1 more in Metorite."
+
+
+async def test_the_more_link_counts_hidden_rows_past_ten_shown(reads: dict) -> None:
+    """AO-2 review: twelve due rows and two hidden rows. Ten rows show, and
+    the link counts the two other due rows and the two hidden ones."""
+    reads["feed"] = {"items": [
+        *({"kind": "reminder_due", "title": f"Reminder {i}", "detail": None,
+           "at": NOW.isoformat()} for i in range(2)),
+        *({"kind": "due_today", "title": f"Task {i}", "detail": "P",
+           "at": (NOW + timedelta(hours=1)).isoformat()} for i in range(12))],
+        "sources": {}}
+    v = await views.run("my_day", reads["ctx"])
+    lst, link = v.ui
+    assert len(lst.interactive["action"]["sections"][0]["rows"]) == 10
+    assert link.interactive["body"]["text"] == "4 more in Metorite."
 
 
 async def test_more_than_ten_rows_adds_a_link(reads: dict) -> None:

@@ -8,8 +8,8 @@
  * switch, "Board options" (a board), "Columns" and "Export" (a list). They
  * used to sit in the app bar. The app bar keeps only Refresh and New.
  *
- * `Board options` holds the two board toggles in one panel: the stages that
- * hold no deal, and the order of the cards. Each toggle is a pressed button.
+ * `Board options` holds the board choices in one panel: the stages that
+ * hold no deal, and the order of the cards ("Sort cards"). Each choice is a pressed button.
  */
 
 import { useRef, useState, type ReactNode } from "react";
@@ -22,13 +22,15 @@ import { useViewMode } from "@/components/ViewModeProvider";
 import { useDismiss } from "@/hooks/useDismiss";
 
 import type { ViewActions } from "../lib/useViewActions";
+import { CARD_SORT_CHOICES, type CardSort } from "../lib/nextActivity";
 import type { CrmLayout } from "../lib/urlState";
 
 export type BoardOptions = {
   showEmpty: boolean;
   onToggleEmpty: () => void;
-  nextActivity: boolean;
-  onToggleNextActivity: () => void;
+  /** The order of the cards in a lane (CRM-U14). */
+  cardSort: CardSort;
+  onPickCardSort: (next: CardSort) => void;
 };
 
 export type CrmViewBarProps = {
@@ -124,21 +126,27 @@ export default function CrmViewBar({
               >
                 Empty stages
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start"
-                icon="CalendarClock"
-                selected={board.nextActivity}
-                title={
-                  board.nextActivity
-                    ? "Cards are in order of next activity. Click to order them by time in stage"
-                    : "Cards are in order of time in stage. Click to order them by next activity"
-                }
-                onClick={board.onToggleNextActivity}
+              <div
+                role="group"
+                aria-label="Sort cards"
+                className="mt-1 flex flex-col border-t border-border pt-1"
               >
-                Next activity
-              </Button>
+                <span className="px-2 py-1 text-xs text-muted">Sort cards</span>
+                {CARD_SORT_CHOICES.map((choice) => (
+                  <Button
+                    key={choice.value}
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start"
+                    selected={board.cardSort === choice.value}
+                    aria-pressed={board.cardSort === choice.value}
+                    title={choice.hint}
+                    onClick={() => board.onPickCardSort(choice.value)}
+                  >
+                    {choice.label}
+                  </Button>
+                ))}
+              </div>
             </div>
           </AnchoredPanel>
         </>

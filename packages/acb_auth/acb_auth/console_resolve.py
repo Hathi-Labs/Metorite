@@ -144,6 +144,7 @@ reading it as one is what F5 was. Fence:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -172,9 +173,13 @@ __all__ = [
     "BILLING_READ_DOORS",
     "CAPABILITY_REFUSAL_PREFIX",
     "CONSOLE_UNAVAILABLE",
+    "RUN_CEILING_HEADER",
+    "RUN_SPEND_DOOR",
+    "TRANSCRIBE_TIER",
     "WORKSPACE_CHOOSER_REQUIRED",
     "ConsoleBillingUnavailable",
     "ConsoleMemberWriteUnavailable",
+    "ConsoleProviderHealthUnavailable",
     "ConsoleProvisionUnavailable",
     "ConsoleRouterUnavailable",
     "ConsoleSeatWriteUnavailable",
@@ -189,15 +194,19 @@ __all__ = [
     "invalidate",
     "invite_member_on_console",
     "is_wired",
+    "provider_health_on_console",
     "provision_org_on_console",
     "read_order_on_console",
     "reconcile",
     "redeem_code_on_console",
     "release_seat_on_console",
     "remove_member_on_console",
+    "rename_org_on_console",
     "resolve_for_signin",
     "router_is_wired",
+    "run_spend_on_console",
     "seat_overview_on_console",
+    "transcribe_on_console",
 ]
 
 #: Auth.js v5's vocabulary is FIXED — returning `false` from the `signIn`
@@ -1001,6 +1010,43 @@ async def remove_member_on_console(
     )
 
 
+async def rename_org_on_console(
+    *,
+    actor_email: str,
+    name: str,
+) -> tuple[int, dict[str, Any]]:
+    """Mirror an organization rename onto the Customer Console (CP-8, 2026-10-27).
+
+    The same ``member_admin`` door family as the two member doors above:
+    ``POST /registry/orgs/rename``. The Console writes ``organization.name``,
+    the only name it stores, so the Operator Console shows the name the
+    customer's admin chose.
+
+    The body carries ``name`` and ``actor_email`` only. The org is the ANSWER,
+    derived Console-side from placement and membership (R11), exactly as at
+    the member doors. An actor in two organizations on this box gets a 409,
+    which is a verdict and is returned.
+
+    It goes through :func:`_post_deployment_door`, the ONE deployment-key
+    transport. It allocates no seat and never touches
+    :func:`resolve_for_signin`.
+
+    Returns the Console's ``(status_code, body)``.
+
+    Raises:
+        ConsoleMemberWriteUnavailable: the box is not wired, or the Console
+            produced no answer. Never raised for a verdict.
+    """
+    if not is_wired():
+        # Ship-dark, the member mirrors' posture: an unwired box makes no hop.
+        raise ConsoleMemberWriteUnavailable("unwired")
+    return await _post_deployment_door(
+        "/registry/orgs/rename",
+        {"name": name, "actor_email": actor_email},
+        unavailable=ConsoleMemberWriteUnavailable,
+    )
+
+
 # ── The customer BILLING client (H-152, the billing half) ───────────────────
 #
 # ⚠️ **Still the ONE Console httpx client.** These functions are the gateway's
@@ -1084,6 +1130,112 @@ async def billing_read_on_console(
     return await _post_deployment_door(
         endpoint, payload, unavailable=ConsoleBillingUnavailable
     )
+
+
+#: The Console door of the spend of ONE run (AUTO-8b-2d,
+#: ``proactive_agent.md`` §4.4). ⚠️ It is NOT in :data:`BILLING_READ_DOORS`,
+#: because each entry there has a browser route (``gateway/routes/billing.py``,
+#: fence ``test_billing_proxy_route.py``). Only the headless turn's meter
+#: calls this door, from the job worker.
+RUN_SPEND_DOOR = "/registry/usage/run"
+
+
+async def run_spend_on_console(
+    *, actor_email: str, run_id: str
+) -> tuple[int, dict[str, Any]]:
+    """Read the credits that run *run_id* spent, for *actor_email*'s org.
+
+    The body is ``{"actor_email", "run_id"}`` and nothing else. The Console
+    derives the org from this box's deployment key and the member (R11), the
+    way the Router metered the call. A 200 answers ``{"credits": "7.5000"}``.
+
+    The caller passes the PROVEN member of the run (``job_member_scope``),
+    never a value from a payload. Returns the Console's ``(status_code,
+    body)``. Raises :class:`ConsoleBillingUnavailable` on an unwired box or a
+    no-answer status, the transport rule of the billing reads. Non-allocating:
+    a read, and it never touches ``resolve_for_signin``.
+    """
+    if not is_wired():
+        raise ConsoleBillingUnavailable("unwired")
+    return await _post_deployment_door(
+        RUN_SPEND_DOOR,
+        {"actor_email": actor_email, "run_id": run_id},
+        unavailable=ConsoleBillingUnavailable,
+    )
+
+
+# ── The vendor alert read (AO-2, customer_console.md §6A.17b) ───────────────
+#
+# The Console judges each vendor, and this box tells the admins of the
+# operator org. The box asks, as `bootstrap_placed_orgs` does: every arrow
+# runs from the box to the Console. Its one caller is
+# `gateway/provider_alerts.py`.
+
+#: The Console door of the vendor alert words. Capability ``serve``.
+PROVIDER_HEALTH_DOOR = "/registry/providers/health"
+
+#: The words that the Console may send. A row with another word is dropped.
+PROVIDER_ALERT_SIGNALS = frozenset({"out", "low", "serving", "clear", "other"})
+
+#: A vendor id is short and plain: the catalog prefix of a model.
+_PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+#: The longest display name kept. The registry's longest is under 20.
+_LABEL_MAX = 40
+#: A days-left value is a short decimal string, as the Console sends money.
+_DAYS_LEFT = re.compile(r"^\d{1,5}(\.\d{1,2})?$")
+
+
+class ConsoleProviderHealthUnavailable(Exception):
+    """The Console gave no vendor alert answer that this box can read.
+
+    The box is not wired, the network failed, or the door answered with any
+    status other than 200. A 403 means the deployment key lacks ``serve``.
+    The message is ours, never a vendor's: an HTTP status or a transport
+    error class.
+    """
+
+
+def _alert_row(raw: Any) -> dict[str, Any] | None:
+    """One checked row, or None. Only four keys survive, each in a closed
+    shape, so no free text that a vendor wrote can pass through."""
+    if not isinstance(raw, dict):
+        return None
+    provider = raw.get("provider")
+    signal = raw.get("signal")
+    label = raw.get("label")
+    days = raw.get("days_left")
+    if not isinstance(provider, str) or not _PROVIDER_ID.match(provider):
+        return None
+    if signal not in PROVIDER_ALERT_SIGNALS:
+        return None
+    if not isinstance(label, str) or not label.strip() or len(label) > _LABEL_MAX:
+        label = provider
+    if not (isinstance(days, str) and _DAYS_LEFT.match(days)):
+        days = None
+    return {"provider": provider, "label": " ".join(label.split()),
+            "signal": signal, "days_left": days}
+
+
+async def provider_health_on_console() -> list[dict[str, Any]]:
+    """Read one alert word per vendor from the Console.
+
+    Returns rows of ``{"provider", "label", "signal", "days_left"}``, each
+    checked by :func:`_alert_row`. Raises
+    :class:`ConsoleProviderHealthUnavailable` on an unwired box, a transport
+    fault, or any status other than 200. Non-allocating: a read, with no
+    member and no org in the body. It never touches ``resolve_for_signin``.
+    """
+    if not is_wired():
+        raise ConsoleProviderHealthUnavailable("unwired")
+    status, body = await _post_deployment_door(
+        PROVIDER_HEALTH_DOOR, {}, unavailable=ConsoleProviderHealthUnavailable
+    )
+    if status != 200:
+        raise ConsoleProviderHealthUnavailable(f"HTTP {status}")
+    rows = body.get("providers")
+    if not isinstance(rows, list):
+        raise ConsoleProviderHealthUnavailable("a body with no providers list")
+    return [row for row in (_alert_row(r) for r in rows) if row is not None]
 
 
 # ── The customer CHECKOUT client (H-152, the checkout half) ─────────────────
@@ -2379,6 +2531,12 @@ def router_is_wired() -> bool:
     return router_credential() is not None
 
 
+#: The ceiling of one run (AUTO-8b-2b). ``acb_llm.attribution.RUN_CEILING``
+#: spells the same name. This package does not import ``acb_llm``, so a test
+#: pins the two (``tests/unit/test_run_ceiling_header.py``).
+RUN_CEILING_HEADER = "X-CC-Run-Ceiling"
+
+
 def _attribution_headers(
     *,
     member: str | None,
@@ -2386,6 +2544,7 @@ def _attribution_headers(
     module_slug: str | None,
     run_id: str | None,
     member_proven: bool = False,
+    run_ceiling: str | None = None,
 ) -> dict[str, str]:
     """The ``X-CC-*`` headers that let a ``usage_event`` answer *who burned it*.
 
@@ -2396,6 +2555,13 @@ def _attribution_headers(
     ``None``. An EMPTY value is therefore omitted rather than sent, because
     sending it would record the empty string as a member — which reads as an
     attribution nobody made rather than as the absence of one.
+
+    🔴 **``run_ceiling`` is the one exception** (AUTO-8b-2b). It is a limit on
+    money, not attribution. It travels EXACTLY as the caller sent it, the
+    empty string too, and only ``None`` (no header) omits it. This side
+    parses nothing. The Console parses it, takes the min with its own ceiling,
+    and answers 400 ``run_ceiling_invalid`` to a bad value. Dropping a bad
+    value here would serve the call at the default ceiling.
     """
     pairs = (
         ("X-CC-Member", member),
@@ -2414,7 +2580,10 @@ def _attribution_headers(
         # party that could forge this header could simply spend directly.
         ("X-CC-Member-Proven", "1" if (member_proven and member) else ""),
     )
-    return {name: value for name, value in pairs if value}
+    headers = {name: value for name, value in pairs if value}
+    if run_ceiling is not None:
+        headers[RUN_CEILING_HEADER] = run_ceiling
+    return headers
 
 
 def _require_proven_member_on_deployment(
@@ -2457,6 +2626,9 @@ async def chat_completion_on_console(
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
+    #: ``X-CC-Run-Ceiling`` as the caller sent it (AUTO-8b-2b). Not parsed
+    #: here. :func:`_attribution_headers` states why.
+    run_ceiling: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Serve one completion through the Console Router, on OUR provider account.
 
@@ -2498,7 +2670,7 @@ async def chat_completion_on_console(
     headers.update(
         _attribution_headers(
             member=member, agent=agent, module_slug=module_slug, run_id=run_id,
-            member_proven=member_proven,
+            member_proven=member_proven, run_ceiling=run_ceiling,
         )
     )
 
@@ -2692,6 +2864,103 @@ async def embeddings_on_console(
     return status, body
 
 
+#: The ONE tier the chat's voice input names (`projects_ai_chat.md` §31,
+#: VOX-1). The Console's `016_tier_task.sql` binds it to `transcribe`, so the
+#: door declares the task and the operator's binding picks the model.
+TRANSCRIBE_TIER = "tier-stt"
+
+#: A clip is not a chat turn. The Console gives each step of the chain 120 s
+#: (`main.py::audio_transcriptions`), and a 120 s clip that fails over to a
+#: second step passes `_ROUTER_TIMEOUT_SECONDS`. This bound is longer, so the
+#: gateway does not drop an answer that the Console has already billed. It is
+#: still finite, so a wedged Console cannot hold a gateway worker for ever.
+_TRANSCRIBE_TIMEOUT_SECONDS = 180.0
+
+
+async def transcribe_on_console(
+    audio: bytes,
+    *,
+    filename: str,
+    content_type: str,
+    member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
+    agent: str | None = None,
+    module_slug: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Ask the Console's ``POST /v1/audio/transcriptions`` door for one transcript.
+
+    WS-31 §6A.10a is the door, and ``projects_ai_chat.md`` §31 VOX-1 is its
+    first tenant caller: the chat's mic. The body is multipart. It holds the
+    field ``file``, whose name carries the extension (an OpenAI-family
+    provider reads the format from it), and the form field
+    ``model=tier-stt``. It never sends ``stream``: the door answers 400 to a
+    truthy one. No ``run_id`` travels, because a gateway route is not a run.
+
+    Returns the Console's ``(status_code, body)`` for EVERY answer, a 5xx
+    included. ⚠️ **This is the one difference from the chat client.** The
+    caller maps each status to one sentence for the member, and a 503 that
+    says "no provider credential" is a setup fault, not an outage. The chat
+    client's rule, which turns each 5xx into "unavailable", would hide that.
+    It raises :class:`ConsoleRouterUnavailable` only when no answer came: the
+    box is unwired, the member is not proven on a deployment key, or the
+    network failed or timed out.
+
+    🔴 **The credential path is the chat client's, exactly.** The same
+    :func:`router_is_wired` gate, the same :func:`router_credential` pick, the
+    same :func:`_require_proven_member_on_deployment` refusal and the same
+    :func:`_attribution_headers`. A second credential picker here would be the
+    second Console client this module forbids.
+
+    ⚠️ **THERE IS NO RETRY**, for the chat client's reason. The Console meters
+    and CHARGES a transcript per minute on the way through.
+
+    ⚠️ **The audio is held in memory only.** httpx builds the multipart body
+    from ``audio``, and nothing here writes it to disk.
+    """
+    if not router_is_wired():
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    # 🔴 **The credential is CHOSEN, never assumed to be the org key** (H-152).
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # The same local refusal the chat, decide and embed clients make.
+    _require_proven_member_on_deployment(kind, member, member_proven)
+
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=None,
+            member_proven=member_proven,
+        )
+    )
+
+    try:
+        client = _new_http_client(_TRANSCRIBE_TIMEOUT_SECONDS)
+        async with client:
+            response = await client.post(
+                f"{base}/v1/audio/transcriptions",
+                headers=headers,
+                data={"model": TRANSCRIBE_TIER},
+                files={"file": (filename, audio, content_type)},
+            )
+    except Exception as exc:
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return response.status_code, body
+
+
 class ConsoleRouterVerdict(Exception):
     """The Router ANSWERED a streamed request, and the answer was not 200.
 
@@ -2723,6 +2992,9 @@ async def stream_completion_on_console(
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
+    #: ``X-CC-Run-Ceiling`` as the caller sent it (AUTO-8b-2b). Not parsed
+    #: here. :func:`_attribution_headers` states why.
+    run_ceiling: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream one completion through the Console Router, on OUR account.
 
@@ -2764,7 +3036,7 @@ async def stream_completion_on_console(
     headers.update(
         _attribution_headers(
             member=member, agent=agent, module_slug=module_slug, run_id=run_id,
-            member_proven=member_proven,
+            member_proven=member_proven, run_ceiling=run_ceiling,
         )
     )
 

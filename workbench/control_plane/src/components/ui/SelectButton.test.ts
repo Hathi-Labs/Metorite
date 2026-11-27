@@ -29,6 +29,7 @@ import {
   SelectButton,
   SelectList,
   arrowFor,
+  claimEscape,
   filterOptions,
   groupOptions,
   selectPanelReducer,
@@ -269,7 +270,7 @@ describe("(6) an option shows its icon or its colour (task #417)", () => {
     const html = render([{ value: "a", label: "A" }], "a");
     expect(html).toBe(
       '<button type="button" role="option" aria-selected="true" ' +
-        'class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted bg-muted font-medium">' +
+        'class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs glass:rounded-lg hover:bg-muted bg-muted font-medium">' +
         '<span class="min-w-0 flex-1 truncate pr-px">A</span></button>'
     );
     expect(html).not.toContain("<svg");
@@ -309,5 +310,73 @@ describe("(6) an option shows its icon or its colour (task #417)", () => {
     // Only the arrow glyph.
     expect(html.match(/<svg/g)?.length).toBe(1);
     expect(html).not.toContain("data-swatch");
+  });
+});
+
+/**
+ * (7) Task 2299: one Escape on an open list closes the list, never the task
+ * panel or the dialog around it.
+ *
+ * The panel closes on Escape from its `onKeyDown`, and the Projects page
+ * closes it from a `window` listener. Before the fix, one Escape on an open
+ * Status list closed the list AND the panel. `claimEscape` is the rule, and
+ * these tests hold it with a fake event that records each call. Only a real
+ * browser shows how far the stop reaches. `e2e/projects-select-escape.spec.ts`
+ * holds that part.
+ */
+describe("(7) Escape on an open list closes the list only (task 2299)", () => {
+  const press = (key: string) => {
+    const calls: string[] = [];
+    const event = {
+      key,
+      preventDefault: () => void calls.push("preventDefault"),
+      stopPropagation: () => void calls.push("stopPropagation"),
+    };
+    return { calls, event };
+  };
+
+  it("an open list takes Escape, and stops it there", () => {
+    const { calls, event } = press("Escape");
+    expect(claimEscape(event, true)).toBe(true);
+    expect(calls).toEqual(["preventDefault", "stopPropagation"]);
+  });
+
+  it("a closed list lets Escape through, so the next one closes the panel", () => {
+    const { calls, event } = press("Escape");
+    expect(claimEscape(event, false)).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("any other key passes, open or not", () => {
+    for (const key of ["Enter", "Tab", "ArrowDown", "Esc", "escape"]) {
+      const { calls, event } = press(key);
+      expect(claimEscape(event, true)).toBe(false);
+      expect(calls).toEqual([]);
+    }
+  });
+
+  const source = async (rel: string) => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf-8");
+  };
+
+  it("the root wrapper takes a key from inside the control, the portalled list too", async () => {
+    const text = await source("./SelectButton.tsx");
+    const root = text.match(/<div\s+ref=\{root\}[\s\S]*?>\s*<button/)?.[0] ?? "";
+    expect(root).toContain("onKeyDown=");
+    expect(root).toContain("claimEscape(event, open)");
+  });
+
+  it("the document listener takes a key from elsewhere, and stops it too", async () => {
+    const text = await source("./SelectButton.tsx");
+    const listener = text.match(/const onKey = \(event: KeyboardEvent\) => \{[\s\S]*?\n {4}\};/)?.[0] ?? "";
+    expect(listener).toContain("claimEscape(event, true)");
+  });
+
+  it("the tag list of the task panel takes Escape only while it is on screen", async () => {
+    const text = await source("../../app/projects/components/TagPicker.tsx");
+    expect(text).toContain("claimEscape(e, listShown)");
+    expect(text).toContain("open={listShown}");
   });
 });

@@ -24,11 +24,10 @@ runs in the sandbox needs a package that the image does not hold.
   scripts and ``python`` blocks of each prebuilt agent skill
   (``skills/<domain>/<skill>/`` and ``apps/agents/*/skills/``).
 
-``skills/upstream/`` is out of scope on purpose. It is a review mirror, and
-nothing loads it (``skills/upstream/README.md``). Its ``pdf``, ``docx``,
-``pptx`` and ``xlsx`` skills ask for LibreOffice, Poppler, Tesseract and npm
-packages too. A skill that is adopted into ``skills/<domain>/`` comes under
-this fence.
+``skills/upstream/`` is out of scope on purpose. It held a vendored review
+mirror that nothing loaded, and the cleanup of 2026-10-27 deleted it. The
+exclusion stays so a copy that comes back is not judged as ours. A skill that
+is adopted into ``skills/<domain>/`` comes under this fence.
 
 Each checker also runs on synthetic bad input, so a checker that goes blind
 is a red test.
@@ -48,6 +47,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+from acb_common.studio_runtime import SANDBOX_MODULES
 
 from tests.unit.test_coding_sandbox_image import (  # noqa: F401 — a fixture, used by name
     _ORCH,
@@ -62,39 +62,10 @@ _LOCK = _ORCH / "sandbox" / "requirements.txt"
 _LIST_REL = "apps/services/orchestrator/sandbox/requirements.in"
 
 #: Each package of ``requirements.in``, by its normalised distribution name,
-#: and the module that it imports as. A new package needs a reviewed PR that
-#: adds it here AND to ``requirements.in`` (§7.2).
-_SANDBOX_MODULES: dict[str, str] = {
-    # The first set of §7.2.
-    "pandas": "pandas",
-    "numpy": "numpy",
-    "openpyxl": "openpyxl",
-    "matplotlib": "matplotlib",
-    "pypdf": "pypdf",
-    "fpdf2": "fpdf",
-    "markdown": "markdown",
-    "tabulate": "tabulate",
-    "pyyaml": "yaml",
-    "python-dateutil": "dateutil",
-    "requests": "requests",
-    # The second set (2026-10-05): business documents.
-    "python-docx": "docx",
-    "python-pptx": "pptx",
-    "xlsxwriter": "xlsxwriter",
-    "reportlab": "reportlab",
-    "pdfplumber": "pdfplumber",
-    "pillow": "PIL",
-    # Analysis and charts.
-    "scipy": "scipy",
-    "seaborn": "seaborn",
-    "networkx": "networkx",
-    # HTML, XML and templates.
-    "beautifulsoup4": "bs4",
-    "lxml": "lxml",
-    "jinja2": "jinja2",
-    # The data toolkit (WS-43y1a): the SQL engine of sandbox/data_engine.py.
-    "duckdb": "duckdb",
-}
+#: and the module that it imports as. The one map lives in
+#: ``acb_common.studio_runtime`` (STU-B7a), which the Studio import scan reads.
+#: A new package needs a reviewed PR that adds it there AND to ``requirements.in`` (§7.2).
+_SANDBOX_MODULES: dict[str, str] = dict(SANDBOX_MODULES)
 
 #: Packages that the image must not pin, directly or as a dependency, and why.
 #: To take one in is a decision for a reviewed PR that edits this table.
@@ -112,8 +83,8 @@ _LEFT_OUT: dict[str, str] = {
     "pdf2image": "needs the Poppler binaries; pypdfium2 renders a page instead",
 }
 
-#: The roots of the prebuilt agent skills. ``skills/upstream`` is a mirror that
-#: nothing loads (see the module docstring).
+#: The roots of the prebuilt agent skills. ``skills/upstream`` is reserved for
+#: vendored copies, which are not ours (see the module docstring).
 _SKILL_ROOTS = (_REPO / "skills", _REPO / "apps" / "agents")
 _NOT_A_SKILL_ROOT = (_REPO / "skills" / "upstream",)
 

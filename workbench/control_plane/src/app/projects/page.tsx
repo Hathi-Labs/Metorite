@@ -11,7 +11,12 @@
  * hand-edited slug shows nothing the caller could not already reach (R9, and
  * `lib/tree.filterByCenter`'s own test says so).
  */
-import Icon from "@/components/Icon";
+
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
+import { useBarTap } from "@/lib/phoneBarTap";
+import Icon, { themedIcon } from "@/components/Icon";
+import { ContextMenu } from "@/components/ContextMenu";
+import RailRow from "@/components/ui/RailRow";
 import Button from "@/components/ui/Button";
 import AssistantToggle from "@/components/AssistantToggle";
 import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
@@ -51,12 +56,26 @@ import {
   projectWatchersApi,
   type ProjectWatchState,
   PROJECTS_CACHE,
+  ProjectsApiError,
+  templatesApi,
 } from "./lib/api";
+import {
+  appliedMessage,
+  newApplyKey,
+  refusalText,
+  type TemplateRow,
+} from "./lib/templates";
+import { NewFromTemplateDialog } from "./components/NewFromTemplateDialog";
+import { SaveAsTemplateDialog } from "./components/SaveAsTemplateDialog";
 import { FieldManager } from "./components/FieldManager";
 import { ConvertFolderDialog } from "./components/ConvertFolderDialog";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { AgentWorkStrip } from "./components/AgentWorkStrip";
+import { useAgentLensesOn } from "@/lib/shell/shellPrefs";
+import { AgentsAtWorkView, useAgentMap, useAgentsAtWork } from "./components/AgentsAtWork";
+import { AgentsCanvas } from "./components/AgentsCanvas";
+import { LENS_LABEL as AGENTS_LENS_LABEL } from "./lib/agentsAtWork";
 import { NeedsAttentionList } from "./components/NeedsAttentionList";
 import { type AttentionPage, LENS_LABEL, badgeText } from "./lib/needsAttention";
 import { AskAgentDialog } from "./components/AskAgentDialog";
@@ -68,30 +87,68 @@ import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
 import ImportDialog from "./components/ImportDialog";
 import ProjectsSettings, { type SettingsSection } from "./components/ProjectsSettings";
+import {
+  type SettingsSeed,
+  nextSettingsSeed,
+  plainSettingsSeed,
+  settingsSeedKey,
+} from "./lib/settingsSeed";
 import { canImport, importEnabled } from "./lib/importFlow";
 import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
-import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
-import { isMyWorkId, landingApp, myWorkCounts, myWorkEnabled, projectsUndoScope } from "./lib/myWork";
+import { ViewTabs } from "./components/ViewTabs";
+import { BacklogCanvas } from "./components/BacklogCanvas";
+import { WorkStyleDialog } from "./components/WorkStyleDialog";
+import { probeSprints } from "./lib/backlogCanvas";
+import { WORK_STYLE_LABEL } from "./lib/projectMenu";
+import { backlogOffered, canvasOnScreen, canvasesFor, stylePickerOffered } from "./lib/viewTabs";
+import { savedStyleTitle, workStyleOf } from "./lib/workStyle";
+import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import {
+  isMyTasksApp,
+  isMyWorkId,
+  landingApp,
+  linkKeepsApp,
+  myWorkEnabled,
+  myWorkNavCounts,
+  projectsUndoScope,
+} from "./lib/myWork";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
+import MyTasksSpace, {
+  DEFAULT_MY_TASKS_VIEW,
+  MyTasksActionRow,
+  type MyTasksView,
+  useMyAttention,
+  useMySummary,
+} from "./components/MyTasksSpace";
 import {
   MIXED_MOVE_HINT,
   PERSONAL_ARCHIVED_FOLD_ID,
   PERSONAL_SECTION_HINT,
   PERSONAL_SECTION_LABEL,
+  displayNodeName,
   isPersonalNode,
+  isPersonalRoot,
+  personalEmptyLine,
+  personalHeading,
+  personalPlaceCount,
+  PERSONAL_SPACE_NOTE,
   lookupRoots,
   moveDestinationRoots,
   personalRoots,
+  rememberPersonalRoot,
   splitPersonal,
 } from "./lib/personalTree";
+import { openCount } from "./lib/progressWheel";
 import MyWorkHost from "./components/MyWorkHost";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
 import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
+import { TASK_CARD_FRAME } from "@/lib/layers";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
 import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
@@ -109,17 +166,22 @@ import { TaskBoard } from "./components/TaskBoard";
 import { TaskList } from "./components/TaskList";
 import {
   type AgentFocus,
+  type AnyAgentFocus,
+  type HoldFocus,
+  isHoldFocus,
   type AgentSummary,
   isAgentWork,
   isWaitingOnMe,
   matchesAgentFocus,
 } from "./lib/agentRuns";
+import { epicOptions, filterByEpic } from "./lib/epicFilter";
 import { TaskPanel } from "./components/TaskPanel";
 import type { TaskWhere } from "@/components/TaskPanelHeader";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import SidePanelEditor from "@/components/SidePanelEditor";
+import SidePanelMotion from "@/components/ui/SidePanelMotion";
 import {
   getState as getSidePanelState,
   subscribe as subscribeSidePanel,
@@ -131,7 +193,7 @@ import {
 } from "@/lib/sidePanelFit";
 import { drawerStep } from "./lib/drawerOwner";
 import { moveFollowUp } from "./lib/moveRefresh";
-import { useLiveRefresh } from "./lib/liveRefresh";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
 import {
@@ -140,7 +202,10 @@ import {
   orderBearingView,
   type planDrop,
 } from "./lib/board";
-import { appendTasks, boardReadParams, nextTaskPage } from "./lib/paging";
+import {
+  appendTasks, boardReadParams, columnReadFilter, columnSizes, nextBoardPage, nextTaskPage,
+  type StatusCounts,
+} from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -152,6 +217,10 @@ import {
   type CommandActions,
   type CommandContext,
   SEQUENCE_TIMEOUT_MS,
+  DARK_GATED_MODES,
+  type SettledRead,
+  agentsOffered,
+  resolveMode,
   VIEW_MODES,
   type ViewMode,
   availableCommands,
@@ -193,7 +262,9 @@ import {
   visibleTasks,
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
-import { inversePatch } from "@/lib/undo";
+import { type UndoEntry, inversePatch } from "@/lib/undo";
+import { type MovedRow, moveUndoPlan } from "./lib/taskUndo";
+import { useTaskUndo } from "./components/useTaskUndo";
 import {
   CASCADE_DEFAULTS,
   archiveReceipt,
@@ -209,7 +280,7 @@ import { SkeletonBoard, SkeletonTree } from "@/components/ui/Skeleton";
 import { useUndoScope } from "@/components/UndoProvider";
 import UndoControls from "@/components/UndoControls";
 import { EXPORT_FILENAME, exportPath } from "./lib/export";
-import { DEFAULT_SHOWN } from "./lib/shownFields";
+import { DEFAULT_SHOWN, sameFieldSet } from "./lib/shownFields";
 import { toggleLane } from "./lib/swimlanes";
 import type { TableSort } from "./lib/table";
 import {
@@ -222,6 +293,7 @@ import {
 import { fetchAccess } from "@/lib/access";
 import {
   type ChildOption,
+  childCreationOptions,
   filterByCenter,
   flatten,
   levelOf,
@@ -235,14 +307,23 @@ import {
   taskWhere,
 } from "./lib/tree";
 import { forgetFold, markHidden, openFolds, resumeFold, toggleFold, useFoldOpen } from "./lib/treeFold";
-import { ARCHIVED_FOLD_ID, splitArchived } from "./lib/archivedRoots";
+import {
+  ARCHIVED_FOLD_ID,
+  type ArchivedEntry,
+  groupByPath,
+  splitArchived,
+} from "./lib/archivedRoots";
+import { archiveBar } from "./lib/archiveBar";
 import { lanesAfter, planShowView } from "./lib/chatView";
 import ReportsView from "./components/ReportsView";
+import { QuestionsView } from "./components/QuestionsView";
+import { useQuestionsBadge } from "./components/useQuestionsBadge";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
   chatEnabled,
   projectAppSections,
+  resolveAppChip,
   resolveAppLink,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
@@ -377,6 +458,54 @@ function renderState(
 }
 
 /**
+ * The rows of an Archived section, under the path each one came from
+ * (ARC-BUG-1). A filed project leaves its parent, so without the path a
+ * member cannot tell which "Phase 2" this is. Filed siblings share one label.
+ * A filed space has no parent, so it has no label.
+ */
+function ArchivedTree({
+  entries,
+  selectedId,
+  onSelect,
+  actions,
+  rootParentGen,
+}: {
+  entries: readonly ArchivedEntry[];
+  selectedId: string | null;
+  onSelect: (project: ProjectRow) => void;
+  actions?: ProjectMenuHandlers;
+  rootParentGen: (node: ProjectRow) => number;
+}) {
+  return (
+    <>
+      {groupByPath(entries).map((group) => {
+        const where = group.path.join(" › ");
+        return (
+          <div key={group.entries[0].node.id}>
+            {where ? (
+              <p
+                className="truncate px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground"
+                title={`From ${where}`}
+                data-testid="archived-path"
+              >
+                {where}
+              </p>
+            ) : null}
+            <ProjectTree
+              roots={group.entries.map((entry) => entry.node)}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              actions={actions}
+              rootParentGen={rootParentGen}
+            />
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/**
  * The project nav — the collapsible rail on desktop, the drawer sheet on a
  * phone. ONE component, so tree-vs-drawer cannot drift into two navigations
  * with two active states; `onPicked` is only how the drawer closes itself.
@@ -401,7 +530,9 @@ function ProjectNav({
   onManageFields,
   onManageTags,
   onManageLifecycle,
+  onWorkStyle,
   counts,
+  questionsOn = false,
   personal = NO_ROOTS,
 }: {
   roots: ProjectRow[];
@@ -413,6 +544,8 @@ function ProjectNav({
   onApp: (id: ProjectAppId) => void;
   /** WS-64 OP-2 — the count beside each My work entry (`lib/myWork.ts`). */
   counts?: Partial<Record<ProjectAppId, number>>;
+  /** WS-55 EA-18b — Questions shows only while its route answers (flag on). */
+  questionsOn?: boolean;
   onSelect: (project: ProjectRow) => void;
   onAddChild: (parent: ProjectRow, option: ChildOption) => void;
   /** Open Space Settings for a space (migration 194). */
@@ -440,6 +573,11 @@ function ProjectNav({
   onManageFields: (space: ProjectRow) => void;
   onManageTags: (space: ProjectRow) => void;
   onManageLifecycle: (space: ProjectRow) => void;
+  /**
+   * WS-39 SP-3a — "How this team works", on any row. Absent while the org is
+   * off `PROJECTS_SPRINTS_ORGS` (`stylePickerOffered`), so no row offers it.
+   */
+  onWorkStyle?: (node: ProjectRow) => void;
 }) {
   // Filed work leaves the live tree and waits in one collapsed section at the
   // foot (owner, 2026-10-21; ClickUp, Linear and Notion all do this).
@@ -447,7 +585,10 @@ function ProjectNav({
   const archivedOpen = useFoldOpen(ARCHIVED_FOLD_ID);
   // A personal Area that is archived leaves the live Personal tree and waits in
   // its own fold inside the Personal section (never in the team fold above).
-  const personalSplit = useMemo(() => splitPersonal(personal), [personal]);
+  // OP-12b — the PERSONAL heading IS the first root, so it never draws as a row.
+  const [personalAdd, setPersonalAdd] = useState<{ x: number; y: number } | null>(null);
+  const personalHead = useMemo(() => personalHeading(personal), [personal]);
+  const personalSplit = useMemo(() => splitPersonal(personalHead.rows), [personalHead]);
   const personalArchivedOpen = useFoldOpen(PERSONAL_ARCHIVED_FOLD_ID);
   const personalArchivedGen = useMemo(
     () => new Map(personalSplit.archived.map((entry) => [entry.node.id, entry.parentGen])),
@@ -496,7 +637,9 @@ function ProjectNav({
             </p>
           ) : null}
           <div className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
+            {section.items
+              .filter((item) => item.id !== "questions" || questionsOn)
+              .map((item) => {
               const preview = item.launch === "preview";
               const active = !preview && app === item.id;
               return (
@@ -554,16 +697,106 @@ function ProjectNav({
           (`projectMenu.ts`). */}
       {personal.length > 0 ? (
         <div className="mb-2" data-testid="personal-section">
-          <p
-            className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
-            title={PERSONAL_SECTION_HINT}
-          >
-            <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
-            <Icon name="Lock" className="h-3 w-3 shrink-0" />
-            <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
-          </p>
+          {personalHead.root ? (
+            // OP-12b — the heading IS the private space: a press opens its
+            // board, list and overview. The open count is the root's own.
+            <div data-testid="personal-heading-row">
+              <RailRow
+                label={PERSONAL_SECTION_LABEL}
+                tier="group"
+                selected={!app && selectedId === personalHead.root.id}
+                onSelect={() => {
+                  onSelect(personalHead.root as ProjectRow);
+                  onPicked?.();
+                }}
+                // No `title` on a rail row (AGENTS.md rule 12): the lock carries the hint for a screen reader.
+                icon={<Icon name="Lock" className="h-4 w-4 shrink-0" role="img" aria-label={PERSONAL_SECTION_HINT} />}
+                meta={
+                  openCount(personalHead.root) ? (
+                    <>
+                      {openCount(personalHead.root)}
+                      <span className="sr-only"> open tasks</span>
+                    </>
+                  ) : null
+                }
+                pinned={personalAdd != null}
+                actions={<Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="Plus"
+                  aria-label="New folder or project in Personal"
+                  title="New project / New folder"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />}
+                phoneActions={<Button
+                  variant="ghost"
+                  size="icon-xs"
+                  radius="keep"
+                  className="rounded"
+                  icon="Plus"
+                  aria-label="New folder or project in Personal"
+                  title="New project / New folder"
+                  onClick={(e) => {
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                  }}
+                />}
+                buttonProps={{
+                  "aria-current": !app && selectedId === personalHead.root.id ? "page" : undefined,
+                }}
+              />
+              {personalAdd ? (
+                <ContextMenu
+                  x={personalAdd.x}
+                  y={personalAdd.y}
+                  items={childCreationOptions("project", 1).map((option) => ({
+                    kind: "item" as const,
+                    label: option.label,
+                    icon: themedIcon(option.kind === "folder" ? "Folder" : "Plus"),
+                    onSelect: () => onAddChild(personalHead.root as ProjectRow, option),
+                  }))}
+                  onClose={() => setPersonalAdd(null)}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <p
+              className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground"
+              title={PERSONAL_SECTION_HINT}
+            >
+              <span className="min-w-0 truncate">{PERSONAL_SECTION_LABEL}</span>
+              <Icon name="Lock" className="h-3 w-3 shrink-0" />
+              <span className="sr-only"> — {PERSONAL_SECTION_HINT}</span>
+            </p>
+          )}
+          {personalEmptyLine(personal) && !(creating && creating.parentId === personalHead.root?.id) ? (
+            <p
+              data-testid="personal-empty"
+              className="flex flex-wrap items-center gap-x-1.5 px-3 py-1.5 text-xs text-muted-foreground"
+            >
+              <span>{personalEmptyLine(personal)}</span>
+              <button
+                type="button"
+                className="text-primary hover:underline"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setPersonalAdd({ x: rect.left, y: rect.bottom + 2 });
+                }}
+              >
+                Add one
+              </button>
+            </p>
+          ) : null}
+          {personalSplit.active.length > 0 || (creating && creating.parentId === personalHead.root?.id) ? (
           <ProjectTree
             roots={personalSplit.active}
+            // The root is the heading, so its children start one generation down.
+            rootParentGen={() => (personalHead.root ? 1 : 0)}
             selectedId={app ? null : selectedId}
             onSelect={(project) => {
               onSelect(project);
@@ -579,9 +812,12 @@ function ProjectNav({
               onPicked?.();
             }}
             creating={
-              creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
-                ? creating
-                : null
+              creating && creating.parentId && creating.parentId === personalHead.root?.id
+                ? // The root is the heading, so its draft draws at the top of the list.
+                  { ...creating, parentId: null }
+                : creating && creating.parentId && pathTo(personal, creating.parentId).length > 0
+                  ? creating
+                  : null
             }
             onCommitCreate={onCommitCreate}
             onCancelCreate={onCancelCreate}
@@ -602,7 +838,16 @@ function ProjectNav({
               onManageLifecycle(space);
               onPicked?.();
             }}
+            onWorkStyle={
+              onWorkStyle
+                ? (node) => {
+                    onWorkStyle(node);
+                    onPicked?.();
+                  }
+                : undefined
+            }
           />
+          ) : null}
           {personalSplit.count > 0 ? (
             <div className="mt-1" data-testid="personal-archived-section">
               <button
@@ -627,15 +872,17 @@ function ProjectNav({
               </button>
               {personalArchivedOpen ? (
                 <div id="projects-personal-archived-list" className="opacity-75">
-                  <ProjectTree
-                    roots={personalSplit.archived.map((entry) => entry.node)}
+                  <ArchivedTree
+                    entries={personalSplit.archived}
                     selectedId={app ? null : selectedId}
                     onSelect={(project) => {
                       onSelect(project);
                       onPicked?.();
                     }}
                     actions={navActions}
-                    rootParentGen={(node) => personalArchivedGen.get(node.id) ?? 0}
+                    rootParentGen={(node) =>
+                      (personalArchivedGen.get(node.id) ?? 0) + (personalHead.root ? 1 : 0)
+                    }
                   />
                 </div>
               ) : null}
@@ -710,6 +957,14 @@ function ProjectNav({
           onManageLifecycle(space);
           onPicked?.();
         }}
+        onWorkStyle={
+          onWorkStyle
+            ? (node) => {
+                onWorkStyle(node);
+                onPicked?.();
+              }
+            : undefined
+        }
       />
 
       {/* Archived — its own section, closed until asked for. No section when
@@ -739,8 +994,8 @@ function ProjectNav({
           </button>
           {archivedOpen ? (
             <div id="projects-archived-list" className="opacity-75">
-              <ProjectTree
-                roots={split.archived.map((entry) => entry.node)}
+              <ArchivedTree
+                entries={split.archived}
                 selectedId={app ? null : selectedId}
                 onSelect={(project) => {
                   onSelect(project);
@@ -766,6 +1021,14 @@ const MODE_OPTIONS: readonly ModeOption<ViewMode>[] = VIEW_MODES.map((entry) => 
   icon: entry.icon,
 }));
 
+/** #918. The lane sizes of a task-list answer, or null when it sent none. */
+function countsOf(res: {
+  status_counts?: Record<string, number> | null;
+  status_categories?: Record<string, string | null> | null;
+}): StatusCounts | null {
+  return res.status_counts ? { counts: res.status_counts, categories: res.status_categories ?? {} } : null;
+}
+
 function ProjectsWorkspace() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -781,8 +1044,8 @@ function ProjectsWorkspace() {
   // beside a five-mode canvas, plus a third column when a task opened, inside
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
-  const { isMobile } = useViewMode();
-  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
+  const { isMobile, mounted: viewMounted } = useViewMode();
+  const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen, shows: drawerShows } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
   // `localStorage`, which the server render cannot see.
@@ -811,7 +1074,11 @@ function ProjectsWorkspace() {
   // WS-64 OP-3 — the caller's own tree, empty with the flag off. `roots` stays
   // the TEAM tree (Spaces, the grants fan-out, the drag). `allRoots` is where a
   // node is looked up, so a selected personal node resolves like any project.
-  const personal = useMemo(() => personalRoots(tree.data, MY_WORK_LIVE), [tree.data]);
+  const personal = useMemo(() => {
+    // The seam learns the stored name first, so server rows read "Personal" too.
+    if (MY_WORK_LIVE) rememberPersonalRoot(tree.data?.personal);
+    return personalRoots(tree.data, MY_WORK_LIVE);
+  }, [tree.data]);
   const allRoots = useMemo(() => lookupRoots(roots, personal), [roots, personal]);
   const [grants, setGrants] = useState<GrantRow[]>([]);
   const [selected, setSelected] = useState<ProjectRow | null>(null);
@@ -835,6 +1102,17 @@ function ProjectsWorkspace() {
   const [taskTotal, setTaskTotal] = useState<number | null>(null);
   /** A `Load more` read is in flight. Separate from the board's own loading. */
   const [loadingMore, setLoadingMore] = useState(false);
+  /** #918. The true size of each status lane across the whole filtered set. */
+  const [statusCounts, setStatusCounts] = useState<StatusCounts | null>(null);
+  /** #918. Rows that only a column read brought. The board's own pages have
+   *  not reached them, so the board's next page leaves them out
+   *  (`paging.nextBoardPage`). */
+  const [laneOnly, setLaneOnly] = useState<ReadonlySet<string>>(() => new Set());
+  /** #918. The column whose own read is in flight, or null. */
+  const [loadingColumn, setLoadingColumn] = useState<string | null>(null);
+  /** #918. Moves on each `loadProject`, so a column read of the old
+   *  question drops its rows. */
+  const readGen = useRef(0);
   /**
    * How many tasks are on the shelf for the board in view, or null.
    *
@@ -889,12 +1167,120 @@ function ProjectsWorkspace() {
    * sections now).
    */
   const [app, setApp] = useState<ProjectAppId | null>(null);
+  // WS-64 OP-11 — My tasks: its tab, its lens and its chip, and a counter the
+  // task panel bumps so the roll-up reads its rows again.
+  // PJP-13 — the tab is `null` until the member picks one. Then a desktop opens
+  // the Board and a phone the List. Until the viewport is known it reads List,
+  // so a phone never flashes a board. A pick, and the legacy `?app=my-today`
+  // link, count as a choice: they differ from the tab on screen.
+  const [myTasksRaw, setMyTasksRaw] = useState<MyTasksRaw>(() => ({
+    attention: DEFAULT_MY_TASKS_VIEW.attention,
+    chip: DEFAULT_MY_TASKS_VIEW.chip,
+    // The page remounts when the viewport crosses the phone line, so a pick
+    // lives in sessionStorage too. My tasks is not drawn at first paint.
+    chosen: typeof window === "undefined" ? null : readPickedMode(window.sessionStorage),
+  }));
+  useEffect(() => {
+    if (myTasksRaw.chosen) writePickedMode(window.sessionStorage, myTasksRaw.chosen);
+  }, [myTasksRaw.chosen]);
+  const myTasks = useMemo<MyTasksView>(
+    () => ({
+      mode: myTasksMode(myTasksRaw.chosen, isMobile || !viewMounted),
+      attention: myTasksRaw.attention,
+      chip: myTasksRaw.chip,
+    }),
+    [myTasksRaw, isMobile, viewMounted],
+  );
+  const setMyTasks = useCallback(
+    (update: MyTasksView | ((v: MyTasksView) => MyTasksView), pick = false) => {
+      setMyTasksRaw((raw) => applyMyTasksUpdate(raw, isMobile || !viewMounted, update, pick));
+    },
+    [isMobile, viewMounted],
+  );
+  const [myTasksVersion, setMyTasksVersion] = useState(0);
+  const appRef = useRef(app);
+  useEffect(() => {
+    appRef.current = app;
+  }, [app]);
   // `null` = nobody has chosen yet, which is a different state from "board":
   // the right default depends on the viewport, and a board of fixed-width
   // columns is the wrong first screen on a 390px one. An explicit pick wins on
   // both, and survives a resize.
   const [chosenMode, setChosenMode] = useState<ViewMode | null>(null);
-  const mode: ViewMode = chosenMode ?? (isMobile ? "list" : "board");
+  /**
+   * WS-39 SP-3a — the canvases this node offers. The Backlog shows only on a
+   * Sprints node, and only while `PROJECTS_SPRINTS_ORGS` holds the org: the
+   * cycle list answers 404 while it does not (`lib/backlogCanvas.probeSprints`).
+   * `canvasesFor` is the one answer, and the tab row, the toolbar, the phone
+   * sheet and the palette all read `offeredModes`.
+   *
+   * The flag holds a whole org, so the first answer holds for each node. The
+   * page asks with the selected node, of any style, until one read answers.
+   * The picker "How this team works" reads the same answer
+   * (`stylePickerOffered`), so an org off the flag sees no picker.
+   */
+  const [sprintsFlag, setSprintsFlag] = useState<boolean | null>(null);
+  const probeNode = selected && sprintsFlag === null ? selected.id : null;
+  const sprintsProbe = useCachedResource(
+    probeNode ? projectsKey(`nodes/${probeNode}/cycles`) : null,
+    () => probeSprints(() => projectsApi.cycles(probeNode as string)),
+  );
+  const probed = probeNode && sprintsProbe.data ? sprintsProbe.data.on : null;
+  useEffect(() => {
+    if (probed !== null) setSprintsFlag(probed);
+  }, [probed]);
+  const sprintsOn = sprintsFlag ?? probed;
+  const pickerOn = stylePickerOffered(sprintsOn);
+  const offeredModes: ViewMode[] = useMemo(
+    () =>
+      canvasesFor(VIEW_MODES, backlogOffered(workStyleOf(selected), sprintsOn)).map(
+        (entry) => entry.id as ViewMode,
+      ),
+    [selected, sprintsOn],
+  );
+  const offeredKey = offeredModes.join("|");
+  // SW-112 — the Agents canvas. The map read of the selected project says if it
+  // is on offer: a 404, 401 or 403 is dark, and dark means absent. It re-reads
+  // each 30 s only while the canvas is on screen.
+  const [mapQuiet, setMapQuiet] = useState(false);
+  const [mapRetry, setMapRetry] = useState(0);
+  // AMR-1: the lenses count idle sessions with their task, so they read the quiet runs.
+  const agentLenses = useAgentLensesOn();
+  const agentMapRead = useAgentMap(
+    Boolean(selected) && !isMyTasksApp(app),
+    chosenMode === "agents",
+    agentLenses || mapQuiet,
+    selected?.id,
+    mapRetry,
+    // AMR-4: the lenses read the summary, and one session's rows when it opens.
+    agentLenses,
+  );
+  // The last read that settled, for this organization. A load after a ready
+  // read keeps the tab and the canvas, so a switch of project does not flash them.
+  const settledRead = useRef<SettledRead>(null);
+  const agentsOn = agentsOffered(agentMapRead.kind, settledRead.current);
+  if (agentMapRead.kind !== "loading") settledRead.current = agentMapRead.kind;
+  // A pick that this node does not offer (the Backlog of a Sprints project,
+  // then a Flow project) falls back to the default canvas. Then a chosen
+  // `agents` that is dark (or still unread) resolves to the default canvas
+  // too. It never draws a blank pane.
+  const defaultMode: ViewMode = isMobile ? "list" : "board";
+  const mode: ViewMode = resolveMode(
+    canvasOnScreen(chosenMode, offeredModes, defaultMode),
+    agentMapRead.kind,
+    defaultMode,
+    settledRead.current,
+  );
+  const hiddenModes: readonly ViewMode[] = useMemo(() => (agentsOn ? [] : DARK_GATED_MODES), [agentsOn]);
+  const modeOptions = useMemo(
+    () =>
+      MODE_OPTIONS.filter(
+        (option) => offeredKey.split("|").includes(option.id) && !hiddenModes.includes(option.id),
+      ),
+    [offeredKey, hiddenModes],
+  );
+  /** WS-39 SP-3a — the node whose "How this team works" dialog is open. */
+  const [workStyleFor, setWorkStyleFor] = useState<ProjectRow | null>(null);
   /**
    * The Overview canvas (owner ask 2026-08-31): the SAME dashboard a space
    * shows, offered beside a project's task views. It reads `summary`, which
@@ -903,6 +1289,15 @@ function ProjectsWorkspace() {
    * hide — none of them acts on a roll-up.
    */
   const overview = mode === "overview";
+  // The Agents canvas shows no task chrome, as the Overview shows none.
+  const agentsCanvas = mode === "agents";
+  /**
+   * WS-39 SP-3a — the Backlog canvas reads its own query, so the filter bar,
+   * the agent strip, the bulk bar and the triage rail hide, as on the
+   * Overview: none of them acts on it.
+   */
+  const backlogCanvas = mode === "backlog";
+  const ownChrome = overview || backlogCanvas;
   /**
    * ⚠️ `loading` means NOTHING TO SHOW — it is not "a request is running".
    *
@@ -956,31 +1351,35 @@ function ProjectsWorkspace() {
   const [importRunId, setImportRunId] = useState<string | null>(null);
   // WS-42 (D81) — where Projects settings opens. The sidebar row and a
   // `?app=settings` link clear it, so they start at the selected space.
-  const [settingsSeed, setSettingsSeed] = useState<{
-    section?: SettingsSection | null;
-    spaceId?: string | null;
-  }>({});
+  // Each open with a place bumps `run`, so the same place opens again
+  // (`lib/settingsSeed.ts`, the PST-1 fix round).
+  const [settingsSeed, setSettingsSeed] = useState<SettingsSeed<SettingsSection>>({});
   // Bumped when the wizard closes, so the pane's list of imports reads again.
   const [importsVersion, setImportsVersion] = useState(0);
   const openSettings = useCallback((section: SettingsSection | null, spaceId?: string | null) => {
-    setSettingsSeed({ section, spaceId: spaceId ?? null });
+    setSettingsSeed((prev) => nextSettingsSeed(prev, section, spaceId ?? null));
     setApp("settings");
   }, []);
   /** The sidebar's app rows: a plain open of Settings starts afresh. */
   const chooseApp = useCallback((id: ProjectAppId | null) => {
-    if (id === "settings") setSettingsSeed({});
+    if (id === "settings") setSettingsSeed(plainSettingsSeed);
     setApp(id);
   }, []);
-  // WS-64 OP-2 — the My work counts are the ones `/tasks` draws (`myWorkCounts`).
-  // They read the task store, which loads when a My work view opens, so a
-  // count shows once the store holds rows.
-  const myWorkItems = useTaskStore((s) => s.items);
-  const myWorkFrom = useTaskStore((s) => s.fromProjectIds);
-  const myWorkToday = useTaskStore((s) => s.myToday);
-  const myWorkTimezone = useTaskStore((s) => s.myTimezone);
-  const myWorkNavCounts = useMemo(
-    () => (MY_WORK_LIVE ? myWorkCounts(myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone) : undefined),
-    [myWorkItems, myWorkFrom, myWorkToday, myWorkTimezone],
+  // WS-64 OP-11 — the My work counts come from the server summary of mine
+  // (`myWorkNavCounts`), not from the task store, so they show at once and
+  // need no whole-list hydrate. My tasks reads the same cache key.
+  const mySummary = useMySummary(MY_WORK_LIVE);
+  // OP-11 fix round, item 11: the count on the Needs attention lens of My
+  // tasks. The space reads the same cache key for the lens itself.
+  const myAttention = useMyAttention(MY_WORK_LIVE && isMyTasksApp(app));
+  // WS-55 EA-18b — the Questions entry and its badge (the "mine" count).
+  const questions = useQuestionsBadge();
+  const navCounts = useMemo(
+    () => ({
+      ...(MY_WORK_LIVE ? myWorkNavCounts(mySummary.data) : {}),
+      ...(questions.count ? { questions: questions.count } : {}),
+    }),
+    [mySummary.data, questions.count],
   );
   const { access, loading: accessLoading } = useAccess();
   const mayImport = IMPORT_LIVE && canImport(access, accessLoading);
@@ -1005,6 +1404,19 @@ function ProjectsWorkspace() {
   const [convertingNode, setConvertingNode] = useState<ProjectRow | null>(null);
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState<string | null>(null);
+  //: WS-39 TPL-1b — project templates. `templates` is null while the flag
+  //: `PROJECTS_TEMPLATES_ORGS` does not hold the org (the list answers 404),
+  //: and then the menu item and the picker do not exist. The two dialogs
+  //: hold their own refusal, shown in place.
+  const [templates, setTemplates] = useState<TemplateRow[] | null>(null);
+  const [templatesOn, setTemplatesOn] = useState(false);
+  const [templatesFailed, setTemplatesFailed] = useState(false);
+  const [savingTemplateOf, setSavingTemplateOf] = useState<ProjectRow | null>(null);
+  const [saveTemplateBusy, setSaveTemplateBusy] = useState(false);
+  const [saveTemplateError, setSaveTemplateError] = useState<string | null>(null);
+  const [pickingUnder, setPickingUnder] = useState<{ parent: ProjectRow; noun: string } | null>(null);
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   //: WS-27bl — the tasks whose move card is open. One state for both entry
   //: points: a single row from its menu, and the whole bulk selection.
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
@@ -1025,6 +1437,24 @@ function ProjectsWorkspace() {
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
+
+  // TPL-1b — one read tells whether the flag holds the org. A failure other
+  // than 404 leaves the feature hidden: a menu item must not appear on a guess.
+  const loadTemplates = useCallback(async () => {
+    try {
+      const rows = await templatesApi.list();
+      setTemplatesFailed(false);
+      setTemplatesOn(rows !== null);
+      setTemplates(rows);
+    } catch {
+      setTemplatesFailed(true);
+      setTemplatesOn(false);
+      setTemplates(null);
+    }
+  }, []);
+  useEffect(() => {
+    void loadTemplates();
+  }, [loadTemplates]);
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
   // is only a highlight: applying a view copies its config into these two, so
@@ -1053,6 +1483,9 @@ function ProjectsWorkspace() {
    * then offers no button.
    */
   const [waitingOnMe, setWaitingOnMe] = useState(false);
+  // SP-2a — the Epic filter. Page state like "Waiting on me": it narrows the
+  // loaded rows in the browser (`lib/epicFilter`).
+  const [epicId, setEpicId] = useState("");
   const [agentRunsOn, setAgentRunsOn] = useState(false);
   /**
    * WS-55 EA-13e (EA3-43, EA3-49) — "Agent work" and the count button of the
@@ -1062,7 +1495,7 @@ function ProjectsWorkspace() {
    * open "Ask an agent" dialog, or null while it is closed.
    */
   const [agentWork, setAgentWork] = useState(false);
-  const [agentFocus, setAgentFocus] = useState<AgentFocus | null>(null);
+  const [agentFocus, setAgentFocus] = useState<AnyAgentFocus | null>(null);
   const [agentSummary, setAgentSummary] = useState<{
     projectId: string;
     counts: AgentSummary;
@@ -1077,6 +1510,13 @@ function ProjectsWorkspace() {
    * the last answer, and the header badge and the toggle read its total.
    */
   const [attentionFor, setAttentionFor] = useState<string | null>(null);
+  /**
+   * WS-AGA AGA-8 — the "Agents at work" lens. Page state like the lens above.
+   * `agentsRead` is one read of the overview. A dark read (404) draws neither
+   * the toggle nor the section.
+   */
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const agentsRead = useAgentsAtWork();
   const [attention, setAttention] = useState<{
     projectId: string;
     page: AttentionPage;
@@ -1295,6 +1735,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
+  // UNDO-1 — one helper for every plain task edit on this page.
+  const taskUndo = useTaskUndo();
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -1308,33 +1750,54 @@ function ProjectsWorkspace() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
-  // WS-27ag — the phone's bottom bar (AppShell's `isProjectsPage` branch) talks
-  // to this page over the same `cc-mobile-nav` channel Tasks, Notes and the App
-  // Workshop use. Tapping the tab that is already showing closes its sheet.
+  // WS-27ag — the phone's bottom bar (the registry, `lib/shell/phoneBar.ts`)
+  // talks to this page over the same `cc-mobile-nav` channel Tasks, Notes and
+  // the App Workshop use. Tapping the tab that is already showing closes its
+  // sheet. The Projects tab is a place: it shows selected while its sheet
+  // is open (MOB-12).
+  usePhoneBar({ active: sheet === "tree" ? "projects-tree" : null });
+  // A second tap on Search closes it. The bar tap closes the overlay before
+  // the tab's event arrives, so read whether Search was open AT the tap, from
+  // the committed state, and let the event close and not reopen (MOB-9 fix).
+  const searchingRef = useRef(false);
+  useEffect(() => {
+    searchingRef.current = searching;
+  });
+  const searchTapClosed = useRef(false);
+  useBarTap((tab) => {
+    searchTapClosed.current = tab === "projects-search" && searchingRef.current;
+  });
   useEffect(() => {
     const handler = (event: Event) => {
       const tab = (event as CustomEvent<string>).detail;
-      if (tab === "projects-tree") setSheet((s) => (s === "tree" ? null : "tree"));
-      else if (tab === "projects-views") setSheet((s) => (s === "views" ? null : "views"));
-      else if (tab === "projects-mywork") {
-        // WS-64 OP-4 — the phone's "My work" tab opens the Projects sheet
-        // (`ProjectNav`: My work on top, then Personal, then Spaces). The
-        // shell's "Menu" tab keeps the global drawer.
-        setSheet((s) => (s === "tree" ? null : "tree"));
+      // MOB-10: each tab closes the page's other overlays first, so two never
+      // stack. The shell has closed its own drawer and the assistant's sheet.
+      if (tab === "projects-tree" || tab === "projects-views") {
+        setSearching(false);
+        useTaskStore.getState().closeQuickCapture();
+        const which = tab === "projects-tree" ? "tree" : "views";
+        setSheet((s) => (s === which ? null : which));
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
         // capture lives in the task store and `MyWorkHost` mounts it, so open
-        // the Inbox when no My work view shows, then set the store's flag. The
-        // flag survives until the host mounts. The smallest change: no
-        // second capture host.
+        // My task inbox, then set the store's flag. The flag survives until
+        // the host mounts. OP-11: My tasks mounts no capture host, so it
+        // opens the inbox too. The smallest change: no second capture host.
         setSheet(null);
-        setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+        setSearching(false);
+        setApp("my-inbox");
         useTaskStore.getState().openQuickCapture("single");
       }
       else if (tab === "projects-search") {
         // ⌘K has no phone equivalent, so the palette needs a control. It is a
         // full-screen overlay of its own — the drawer would be a second one.
+        if (searchTapClosed.current) {
+          searchTapClosed.current = false;
+          setSearching(false);
+          return;
+        }
         setSheet(null);
+        useTaskStore.getState().closeQuickCapture();
         setSearching(true);
       }
     };
@@ -1537,7 +2000,7 @@ function ProjectsWorkspace() {
             key: `project-archive:${project.id}`,
             loading: `Restoring ${project.name}…`,
             success: () => `Restored ${project.name}`,
-            error: "Couldn't restore the project",
+            error: "Couldn't restore the project. Check your connection and try again.",
           }
         );
       },
@@ -1586,8 +2049,23 @@ function ProjectsWorkspace() {
         setConvertError(null);
         setConvertingNode(project);
       },
+      // WS-39 TPL-1b. Present only with the flag, so the entries are absent
+      // otherwise. Each raises a dialog and writes nothing.
+      ...(templatesOn
+        ? {
+            onSaveAsTemplate: (project: ProjectRow) => {
+              setSaveTemplateError(null);
+              // On a phone the tree sheet would sit over the dialog.
+              setSheet(null);
+              setSavingTemplateOf(project);
+            },
+            // Only a marker: the create option reaches `openTemplatePicker`
+            // through `onAddChild`, with the level's own word.
+            onNewFromTemplate: (parent: ProjectRow) => openTemplatePicker(parent, "project"),
+          }
+        : {}),
     }),
-    [toast]
+    [toast, templatesOn]
   );
 
   /**
@@ -1666,23 +2144,47 @@ function ProjectsWorkspace() {
   // An app pane (Reports, the AI chat, Settings) is not a view of the
   // selected project, so the board's view switcher and project actions go.
   // `ai-chat` was missing here, and the board's tabs sat above the chat.
+  const archiveBarNow = useMemo(
+    () =>
+      archiveBar(
+        selected
+          ? ((flatten(allRoots).find((e) => e.node.id === selected.id)?.node as
+              | ProjectRow
+              | undefined) ?? selected)
+          : null,
+        allRoots as ProjectRow[]
+      ),
+    [selected, allRoots]
+  );
   const noProjectChrome =
     dashboardOnly ||
     app === "reports" ||
     app === "ai-chat" ||
     app === "settings" ||
+    app === "questions" ||
     isMyWorkId(app);
   // WS-55 SW-11a — the project the Needs attention lens reads, and whether the
   // lens is on for it. A new project opens on its board, never on the lens of
   // the last one. While the lens is on, the view switch selects no mode.
   const attentionProject = selected && !dashboardOnly ? selected.id : null;
-  const attentionLens = attentionFor !== null && attentionFor === attentionProject;
-  const shownMode: ViewMode | null = attentionLens ? null : mode;
+  const agentsLens = agentsOpen && agentsRead.kind !== "dark" && Boolean(selected) && !dashboardOnly;
+  const attentionLens =
+    !agentsLens && attentionFor !== null && attentionFor === attentionProject;
+  const shownMode: ViewMode | null = attentionLens || agentsLens ? null : mode;
   /** A pick of a view mode leaves the lens, from every door. */
   const pickMode = (next: ViewMode) => {
     setAttentionFor(null);
+    setAgentsOpen(false);
     setChosenMode(next);
   };
+  // OP-12: the saved views of the tab row. The project's order-bearing board
+  // is withheld, as the filter chrome withholds it (it is not a saved filter).
+  const tabViews = views.filter((v) => v.id !== orderBearingView(views)?.id);
+  const viewsUntouched =
+    !isFiltered(filters) &&
+    groupBy === "status" &&
+    lanes.subGroupBy === "none" &&
+    sameFieldSet(shownFields, DEFAULT_SHOWN);
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -1777,7 +2279,9 @@ function ProjectsWorkspace() {
     const stillVisible =
       selected &&
       JSON.stringify(visibleRoots).includes(`"${selected.id}"`);
-    if (!stillVisible) setSelected(visibleRoots[0]);
+    // WS-64: the default is never a filed space. A member may still open one
+    // from the rail's Archived section, and `stillVisible` lets that stand.
+    if (!stillVisible) setSelected(visibleRoots.find((root) => !root.archived_at) ?? null);
   }, [visibleRoots, selected]);
 
   // The drawer holds a SNAPSHOT — AppShell keeps injected content in its own
@@ -1817,13 +2321,18 @@ function ProjectsWorkspace() {
             personal={personal}
             selectedId={selected?.id ?? null}
             app={app}
-            counts={myWorkNavCounts}
+            counts={navCounts}
+            questionsOn={questions.on === true}
             onApp={chooseApp}
             onSelect={(project) => {
               setApp(null);
               setSelected(project);
             }}
             onAddChild={(parent, option) => {
+              if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
               setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
             }}
             onOpenSettings={setSettingsFor}
@@ -1844,10 +2353,11 @@ function ProjectsWorkspace() {
             onManageFields={manageRoot(setManagingFields)}
             onManageTags={manageRoot(setManagingTags)}
             onManageLifecycle={manageSpace(setManagingLifecycle)}
+            onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
           />
         ) : (
           <ModeSwitch
-            modes={MODE_OPTIONS}
+            modes={modeOptions}
             mode={shownMode}
             layout="sheet"
             onPick={(next) => {
@@ -1863,7 +2373,7 @@ function ProjectsWorkspace() {
     // `creating` is here so the drawer re-injects when a draft opens or
     // closes. Without it, the "+" in the drawer drew nothing: the snapshot
     // kept the tree as it was before the tap (2026-10-10).
-  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer]);
+  }, [isMobile, sheet, shownMode, selected, visibleRoots, creating, openDrawer, closeDrawer, modeOptions]);
 
   // Dismissing the drawer from the outside (the backdrop, or the Menu tab
   // replacing the content) has to clear `sheet`, or the effect above reopens
@@ -1874,11 +2384,15 @@ function ProjectsWorkspace() {
   // and this is the subscribe half. The alternatives all reintroduce the bug
   // (a re-tap after a backdrop dismissal sets the same value, so React bails
   // out and the drawer never reopens).
+  //
+  // MOB-9: the Menu tab can also take the drawer over while a sheet shows. The
+  // sheet is gone then, and the drawer is not this page's to close.
   useEffect(() => {
-    if (!drawerOpen) ownsDrawer.current = false;
+    const gone = !drawerOpen || drawerShows === "menu";
+    if (gone) ownsDrawer.current = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!drawerOpen) setSheet(null);
-  }, [drawerOpen]);
+    if (gone) setSheet(null);
+  }, [drawerOpen, drawerShows]);
 
   // True once the page's own mount effects have run. ⚠️ The command bar's
   // "New space" waits for it. A child's effect runs BEFORE its parent's, so
@@ -1952,12 +2466,19 @@ function ProjectsWorkspace() {
         sort: tableSort,
         viewId: boardViewId,
         subtasks: storedMode,
+        // Task #986: the three agent filters are WHERE clauses on the server.
+        // They are part of the params, so they are part of every read key.
+        waitingOnMe,
+        agentFocus,
+        agentWork,
       }),
-    [filters, tableSort, boardViewId, storedMode]
+    [filters, tableSort, boardViewId, storedMode, waitingOnMe, agentFocus, agentWork]
   );
 
   const loadProject = useCallback(
     async (project: ProjectRow) => {
+      // #918: a column read that started before this one is stale now.
+      readGen.current += 1;
       setError(null);
       // Filters travel to the server, never applied to the page after it
       // arrives: paging happens in SQL, so a filter applied here would return
@@ -1979,13 +2500,23 @@ function ProjectsWorkspace() {
        * with another filter's rows.
        */
       const heldStatuses = peek<{ rows: StatusRow[] }>(statusesKey);
-      const heldTasks = peek<{ rows: TaskRow[] }>(tasksKey);
+      const heldTasks = peek<{
+        rows: TaskRow[];
+        status_counts?: Record<string, number> | null;
+        status_categories?: Record<string, string | null> | null;
+      }>(tasksKey);
       if (heldStatuses) setStatuses(heldStatuses.data.rows);
-      if (heldTasks) setTasks(heldTasks.data.rows);
+      if (heldTasks) {
+        setTasks(heldTasks.data.rows);
+        // The counts of the same answer, so a switch never shows the last
+        // project's counts over this project's rows (#918).
+        setStatusCounts(countsOf(heldTasks.data));
+      }
 
       // The shelf's size, under the same filters. `page_size: 1` because only
       // `total` is wanted — the rows are the board's job, not this read's.
-      const shelfParams = { ...taskParams, archived_only: true, page_size: 1 };
+      // The shelf wants `total` only, so it asks for no lane counts (#918).
+      const shelfParams = { ...taskParams, archived_only: true, page_size: 1, with_status_counts: false };
       const shelfKey = projectsKey("tasks", shelfParams);
 
       try {
@@ -1998,6 +2529,8 @@ function ProjectsWorkspace() {
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
+        setStatusCounts(countsOf(taskRes));
+        setLaneOnly(new Set());
         // ⚠️ Reset, never merge. This runs on a fresh project, a changed
         // filter and a changed sort — each of which is a DIFFERENT question,
         // so pages read for the old one must not survive into the new answer.
@@ -2019,9 +2552,13 @@ function ProjectsWorkspace() {
     [filters, tableSort, boardViewId, taskParamsFor]
   );
 
+  // OP-11 fix round, item 5: My tasks draws no board of `selected`, so the
+  // page does not read one behind it (three requests at first paint). The
+  // read runs when the member leaves My tasks.
+  const onMyTasks = isMyTasksApp(app);
   useEffect(() => {
-    if (selected) void loadProject(selected);
-  }, [selected, loadProject]);
+    if (selected && !onMyTasks) void loadProject(selected);
+  }, [selected, loadProject, onMyTasks]);
 
   /**
    * Fetch the next page of tasks and add it to what is on screen.
@@ -2041,12 +2578,21 @@ function ProjectsWorkspace() {
     try {
       const params = {
         ...taskParamsFor(selected),
-        page: nextTaskPage(tasks.length),
+        // #918: the rows a column read brought are not the board's pages.
+        page: nextBoardPage(tasks.length, laneOnly.size),
       };
       const res = await read(projectsKey("tasks", params), () =>
         projectsApi.tasks(params)
       );
       setTasks((current) => appendTasks(current, res.rows));
+      // The board's own page now holds these rows.
+      setLaneOnly((current) => {
+        if (!res.rows.some((r) => current.has(r.id))) return current;
+        const next = new Set(current);
+        for (const r of res.rows) next.delete(r.id);
+        return next;
+      });
+      if (res.status_counts) setStatusCounts(countsOf(res));
       // The count can have moved while the member read page 1. Take the
       // server's newest answer rather than keeping the one from the first read.
       setTaskTotal(res.total ?? null);
@@ -2055,7 +2601,49 @@ function ProjectsWorkspace() {
     } finally {
       setLoadingMore(false);
     }
-  }, [selected, loadingMore, tasks.length, taskParamsFor]);
+  }, [selected, loadingMore, tasks.length, laneOnly, taskParamsFor]);
+
+  /**
+   * #918. Read the next rows of ONE column. The column's rows held now are
+   * the first rows of that lane in the board's order, so the next page of
+   * the lane's own read follows on with no gap (`paging.columnReadFilter`).
+   * A column that one filter cannot name reads the board's next page.
+   */
+  const loadMoreInColumn = useCallback(async (columnKey: string, held: number) => {
+    if (!selected || loadingColumn) return;
+    const filter = columnReadFilter(groupBy, columnKey, statuses, statusCounts);
+    if (!filter) { void loadMoreTasks(); return; }
+    setLoadingColumn(columnKey);
+    setError(null);
+    try {
+      const params = { ...taskParamsFor(selected), ...filter, page: nextTaskPage(held) };
+      const gen = readGen.current;
+      const res = await read(projectsKey("tasks", params), () => projectsApi.tasks(params));
+      // A filter, sort or project change while this read ran: its rows
+      // answer the old question, so they never land (#918).
+      if (gen !== readGen.current) return;
+      const known = new Set(tasks.map((t) => t.id));
+      const added = res.rows.filter((r) => !known.has(r.id)).map((r) => r.id);
+      setTasks((current) => appendTasks(current, res.rows));
+      if (added.length) {
+        setLaneOnly((lo) => {
+          const next = new Set(lo);
+          for (const id of added) next.add(id);
+          return next;
+        });
+      }
+    } catch (err) {
+      setError(String((err as Error).message));
+    } finally {
+      setLoadingColumn(null);
+    }
+  }, [selected, loadingColumn, groupBy, statuses, statusCounts, tasks, taskParamsFor, loadMoreTasks]);
+
+  /** #918. The true size of each column, or null for another grouping. */
+  const columnTotals = useMemo(
+    () => columnSizes(groupBy, statuses, statusCounts),
+    [groupBy, statuses, statusCounts],
+  );
 
   // WS-27ae — export the filter that is on screen, with the columns it shows.
   //
@@ -2075,6 +2663,10 @@ function ProjectsWorkspace() {
           sort: tableSort,
           // D-PM-38 — a Hidden board exports its top-level rows only.
           subtasks: storedMode,
+          // Task #986: the file holds the rows the board shows.
+          waitingOnMe,
+          agentFocus,
+          agentWork,
         })
       );
       if (!res.ok) {
@@ -2101,7 +2693,7 @@ function ProjectsWorkspace() {
     } catch (err) {
       setError(String((err as Error).message));
     }
-  }, [selected, filters, shownFields, tableSort, storedMode]);
+  }, [selected, filters, shownFields, tableSort, storedMode, waitingOnMe, agentFocus, agentWork]);
 
   // WS-27q — the calendar's own fetch, because it reads a WINDOW rather than a
   // page. `grid` is derived so the effect re-runs when the period steps, and
@@ -2436,11 +3028,16 @@ function ProjectsWorkspace() {
   // D-PM-38 — Hidden drops the subtasks here too, not only in SQL. Rows held
   // from the read before the switch are painted first, and the selection
   // (`onScreen`) must not keep a row nobody can see.
+  const epics = useMemo(() => epicOptions(tasks, taskTypes), [tasks, taskTypes]);
+  // An epic from another project is not in the list, and then no filter applies.
+  const epicScoped = epics.some((o) => o.value === epicId) ? epicId : "";
   const groups = useMemo(
     () =>
       groupTasks(
         visibleTasks(
-          tasks.filter(
+          // Task #986: the server filters by these now (`boardReadParams`), so
+          // this is only a paint-time guard for rows held from before a switch.
+          filterByEpic(tasks, epicScoped).filter(
             (t) =>
               (!waitingOnMe || isWaitingOnMe(t, me)) &&
               (!agentWork || isAgentWork(t)) &&
@@ -2454,7 +3051,7 @@ function ProjectsWorkspace() {
           projectName,
         },
       ),
-    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me]
+    [tasks, subtaskMode, groupBy, statuses, projectName, waitingOnMe, agentWork, agentFocus, me, epicScoped]
   );
 
   const onScreen = useMemo(() => visibleIds(groups), [groups]);
@@ -2885,26 +3482,83 @@ function ProjectsWorkspace() {
       assignee: searchParams.get("assignee"),
       center: searchParams.get("center"),
     });
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (to) setApp(to);
+    if (to) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setApp(to);
+      // OP-11: the landing opened Today, so My tasks lands on the Today chip.
+      setMyTasks((v) => ({ ...v, chip: "today" }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (!appLink) return;
     const live = resolveAppLink(appLink, PROJECT_APP_SECTIONS);
     if (live) {
-      if (live === "settings") setSettingsSeed({});
+      if (live === "settings") setSettingsSeed(plainSettingsSeed);
       setApp(live);
     }
-    const rest = new URLSearchParams(searchParams.toString());
-    rest.delete("app");
+    // WS-64 OP-11 — My tasks keeps `?app=my-tasks&chip=…` in the address, so
+    // a reload and a shared link open the same chip. An old list id
+    // (`?app=my-today`) opens My tasks on its List with its chip.
+    if (live === "my-tasks") {
+      const chip = resolveAppChip(appLink, searchParams.get("chip")) ?? "all";
+      const legacy = appLink.trim().toLowerCase() !== "my-tasks";
+      setMyTasks((v) =>
+        legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+        legacy,
+      );
+      const target = myTasksHref(searchParams.toString(), chip);
+      if (legacy) router.replace(target);
+      return;
+    }
     // WS-64 OP-4 — `/tasks?do=capture&fill.*` arrives as `?app=my-inbox&do=capture&fill.*`.
     // `do` and `fill.*` stay in the address: the `capture` ShellJob below
-    // reads them, opens the box, and takes them out (the one door).
+    // reads them, opens the box, and takes them out (the one door). While a
+    // job waits, a My work `app` stays too, so the address ends on the view
+    // the box opened in: `?app=my-inbox` (OP-11 fix round, item 4).
+    if (linkKeepsApp(live, searchParams)) return;
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("app");
     const qs = rest.toString();
     router.replace(qs ? `/projects?${qs}` : "/projects");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appLink]);
+
+  // WS-64 OP-11 — the address follows My tasks: `?app=my-tasks&chip=next`
+  // while it shows, and neither key once the member leaves it. Only a move
+  // AWAY from My tasks takes the keys out: on the first render `app` is not
+  // yet read from the address, and the link effect above still owns it.
+  //
+  // OP-11 fix round, item 13: a member's chip click PUSHES, so Back and
+  // Forward walk the chips. Entering or leaving My tasks replaces, as an
+  // alias does, so Back never lands on a half-read address.
+  const appBefore = useRef(app);
+  useEffect(() => {
+    const was = appBefore.current;
+    appBefore.current = app;
+    if (!MY_WORK_LIVE) return;
+    const search = window.location.search;
+    const here = `/projects${search}`;
+    const target = isMyTasksApp(app)
+      ? myTasksHref(search, myTasks.chip)
+      : isMyTasksApp(was)
+        ? withoutMyTasks(search)
+        : here;
+    if (target === here) return;
+    const chipMove = isMyTasksApp(app) && isMyTasksApp(was) && searchParams.get("app") === "my-tasks";
+    if (chipMove) router.push(target);
+    else router.replace(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [app, myTasks.chip]);
+
+  // The other half of item 13: Back or Forward changes `?chip=` under a
+  // mounted page, and the chip follows the address. A link to a legacy id
+  // is the link effect's above, so this reads only `app=my-tasks`.
+  const linkChip = appLink === "my-tasks" ? asChip(searchParams.get("chip")) : null;
+  useEffect(() => {
+    if (!MY_WORK_LIVE || linkChip === null || !isMyTasksApp(appRef.current)) return;
+    setMyTasks((v) => (v.chip === linkChip ? v : { ...v, chip: linkChip }));
+  }, [linkChip]);
 
   // The chat's navigation (WS-27bm S6, H-164). `open_in_app` reads the row,
   // then dispatches one of these through a CUSTOM `frontend_tool` event.
@@ -2946,6 +3600,8 @@ function ProjectsWorkspace() {
       if (typeof plan === "string") return plan;
       const row = flatten(visibleRoots).find((e) => e.node.id === plan.projectId);
       if (!row) return "not visible";
+      // A dark map has no Agents canvas to show. Refuse, as for any view that is not there.
+      if (plan.mode === "agents" && !agentsOn) return "not available";
       setApp(null);
       setSelected(row.node as ProjectRow);
       if (plan.mode) {
@@ -2998,7 +3654,7 @@ function ProjectsWorkspace() {
     // My work reloads itself (`MyWorkHost`). The board reloads here, in the
     // mode the member is looking at.
     if (!myWorkOpen) void refreshRef.current();
-  });
+  }, "projects");
 
   // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
   // returns for a member who is not on this page. Consumed after the select,
@@ -3064,6 +3720,13 @@ function ProjectsWorkspace() {
     () => ({
       navigate: (href) => router.push(href),
       setMode: (next) => {
+        // MOB-1: with My tasks open the mode command switches ITS tab. It
+        // wrote the hidden project's mode before, so "List view" did nothing.
+        if (isMyTasksApp(app)) {
+          const tab = myTasksModeFor(next);
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }), true);
+          return;
+        }
         setAttentionFor(null);
         setChosenMode(next);
       },
@@ -3081,9 +3744,11 @@ function ProjectsWorkspace() {
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       // Not while it is open: a re-seed remounts the pane and drops an edit.
-      openSettings: () => {
-        if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
+      // A named section (PST-1, "Space default statuses") is a request to go
+      // there, so it re-seeds even when the pane is open.
+      openSettings: (section) => {
+        if (app === "settings" && !section) return;
+        openSettings(section ?? null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
@@ -3091,7 +3756,15 @@ function ProjectsWorkspace() {
   );
 
   const commandCtx: CommandContext = {
-    mode,
+    mode: isMyTasksApp(app) ? myTasks.mode : mode,
+    // SP-3a: a project offers its own canvases, so "Backlog view" shows on a
+    // Sprints node only.
+    modes: isMyTasksApp(app)
+      ? MY_TASKS_MODES.map((entry) => entry.id)
+      : selected
+        ? offeredModes
+        : undefined,
+    agentsOn,
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
@@ -3126,7 +3799,10 @@ function ProjectsWorkspace() {
     Boolean(managingFields) ||
     Boolean(managingTags) ||
     Boolean(managingStatuses) ||
-    Boolean(managingLifecycle);
+    Boolean(managingLifecycle) ||
+    Boolean(savingTemplateOf) ||
+    Boolean(pickingUnder) ||
+    Boolean(workStyleFor);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -3353,6 +4029,75 @@ function ProjectsWorkspace() {
    * because the level of every project inside it changed. A refusal stays in
    * the dialog: the 422 names the projects that are too deep.
    */
+  function openTemplatePicker(parent: ProjectRow, noun: string) {
+    setPickError(null);
+    setSheet(null);
+    setPickingUnder({ parent, noun });
+    void loadTemplates();
+  }
+
+  /** TPL-1b — save a project as a template. A refusal shows in the dialog. */
+  async function saveTemplate(project: ProjectRow, name: string, description: string) {
+    setSaveTemplateBusy(true);
+    setSaveTemplateError(null);
+    try {
+      const saved = await templatesApi.save({
+        project_id: project.id,
+        name,
+        description: description || null,
+      });
+      setSavingTemplateOf(null);
+      void loadTemplates();
+      toast.show({ variant: "success", title: `Saved the template “${saved.name}”` });
+    } catch (err) {
+      setSaveTemplateError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setSaveTemplateBusy(false);
+    }
+  }
+
+  /** TPL-1b — make a project from a template, or a blank one, under `parent`. */
+  async function makeFromPicker(
+    parent: ProjectRow,
+    template: TemplateRow | null,
+    name: string,
+    startDate: string,
+  ) {
+    setPickBusy(true);
+    setPickError(null);
+    try {
+      let createdName = name;
+      if (template) {
+        const res = await templatesApi.apply(template.id, {
+          idempotency_key: newApplyKey(),
+          parent_project_id: parent.id,
+          name: name || null,
+          start_date: startDate,
+        });
+        createdName = res.project.name;
+        toast.show({ variant: "success", title: appliedMessage(res, parent.name) });
+      } else {
+        await projectsApi.createProject({ name, parent_project_id: parent.id });
+        toast.show({ variant: "success", title: `Made “${createdName}”` });
+      }
+      setPickingUnder(null);
+      setTreeKey((k) => k + 1);
+      openFolds([parent.id]);
+    } catch (err) {
+      setPickError(
+        err instanceof ProjectsApiError
+          ? refusalText(err.status, err.message)
+          : refusalText(0, null),
+      );
+    } finally {
+      setPickBusy(false);
+    }
+  }
+
   async function convertNode(node: ProjectRow) {
     setConverting(true);
     setConvertError(null);
@@ -3444,7 +4189,40 @@ function ProjectsWorkspace() {
         await projectsApi.unarchiveTask(taskId);
         await refreshRef.current();
         setTreeKey((k) => k + 1);
-        toast.show({ variant: "success", title: "Task restored from the archive" });
+        // UNDO-1 — unarchive files the task again. One flag serves the toast
+        // and Ctrl+Z, as in the archive path below. The toast's Undo runs
+        // through the provider's gate (fix round 1, finding 6).
+        let back = true;
+        const refiled: UndoEntry = {
+          label: `restored ${row?.title ?? "a task"} from the archive`,
+          undo: async () => {
+            if (!back) return;
+            back = false;
+            await projectsApi.archiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+          redo: async () => {
+            if (back) return;
+            back = true;
+            await projectsApi.unarchiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+        };
+        undoApi.record(refiled);
+        toast.show({
+          key: `projects:archive:${taskId}`,
+          variant: "success",
+          title: "Task restored from the archive",
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void undoApi
+                .undoEntry(refiled)
+                .catch((err: Error) => setError(String(err.message))),
+          },
+        });
         return;
       }
       const include = Boolean(answer?.includeSubtasks);
@@ -3462,7 +4240,7 @@ function ProjectsWorkspace() {
         await refreshRef.current();
         setTreeKey((k) => k + 1);
       };
-      undoApi.record({
+      const archivedEntry: UndoEntry = {
         label: `archived ${row?.title ?? "a task"}`,
         undo: restore,
         redo: async () => {
@@ -3475,12 +4253,19 @@ function ProjectsWorkspace() {
           await refreshRef.current();
           setTreeKey((k) => k + 1);
         },
-      });
+      };
+      undoApi.record(archivedEntry);
       toast.show({
         key: `projects:archive:${taskId}`,
         variant: "success",
         title: archiveReceipt(res.subtasks_archived ?? 0),
-        action: { label: "Undo", onClick: () => void restore() },
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void undoApi
+              .undoEntry(archivedEntry)
+              .catch((err: Error) => setError(String(err.message))),
+        },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -3530,6 +4315,8 @@ function ProjectsWorkspace() {
     includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
+    // UNDO-1 — each task as it was before, for the way home and its checks.
+    const homes = tasks.filter((t) => ids.includes(t.id));
     setMovingTasksBusy(true);
     setMoveTasksError(null);
     try {
@@ -3563,7 +4350,10 @@ function ProjectsWorkspace() {
         openTaskId: openTask?.id ?? null,
         movedIds: ids,
       });
-      if (follow.reloadMyWork) {
+      if (follow.reloadMyWork && isMyTasksApp(app)) {
+        // OP-11 — My tasks reads the board endpoints, never the store.
+        setMyTasksVersion((v) => v + 1);
+      } else if (follow.reloadMyWork) {
         const store = useTaskStore.getState();
         void store.reloadItems().then(() => {
           if (useTaskStore.getState().selectedView === "done") void store.loadDone();
@@ -3577,12 +4367,79 @@ function ProjectsWorkspace() {
         res.subtasks_moved ?? 0,
         projectName(res.destination_project_id ?? destinationId),
       );
+      // UNDO-1 (fix round 1, finding 3) — offered only when the way home
+      // restores each task exactly: no subtask went along, no value dropped,
+      // and each task kept its space, number, type and done date. Otherwise
+      // the toast says why, and what to do instead.
+      const after: Record<string, MovedRow | null> = {};
+      if (res.dropped_fields.length === 0 && !(res.subtask_ids?.length ?? res.subtasks_moved)) {
+        const movedIds = res.task_ids ?? ids;
+        const rows = await Promise.all(
+          movedIds.map((id) => projectsApi.task(id).catch(() => null)),
+        );
+        movedIds.forEach((id, i) => (after[id] = rows[i]));
+      }
+      const way = moveUndoPlan(ids, homes, after, res);
+      let movedBack: UndoEntry | undefined;
+      if (way.ok && way.calls.length > 0) {
+        const sendHome = async () => {
+          for (const call of way.calls) {
+            await projectsApi.moveTasks({
+              task_ids: call.taskIds,
+              destination_project_id: call.projectId,
+              status_map: call.statusMap,
+              accept_drops: true,
+            });
+          }
+          setTreeKey((k) => k + 1);
+          await refreshRef.current();
+        };
+        let moved_ = true;
+        movedBack = {
+          label: `moved ${homes.length === 1 ? homes[0].title : `${homes.length} tasks`}`,
+          undo: async () => {
+            if (!moved_) return;
+            moved_ = false;
+            await sendHome();
+          },
+          redo: async () => {
+            if (moved_) return;
+            moved_ = true;
+            // No subtask went along the first time (the plan's rule), so the
+            // replay takes none either.
+            await projectsApi.moveTasks({
+              task_ids: [...(res.task_ids ?? ids)],
+              destination_project_id: destinationId,
+              status_map: statusMap,
+              accept_drops: true,
+            });
+            setTreeKey((k) => k + 1);
+            await refreshRef.current();
+          },
+        };
+        undoApi.record(movedBack);
+      }
+      // The toast's Undo runs through the provider's gate, as Ctrl+Z does
+      // (fix round 1, finding 6).
+      const entry = movedBack;
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
+        ...(way.ok ? {} : { description: way.reason }),
+        ...(entry
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  void undoApi
+                    .undoEntry(entry)
+                    .catch((err: Error) => setError(String(err.message))),
+              },
+            }
+          : {}),
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -3861,7 +4718,21 @@ function ProjectsWorkspace() {
       setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
-      if (patch) await projectsApi.patchTask(task.id, patch);
+      if (patch) {
+        const fresh = await projectsApi.patchTask(task.id, patch);
+        // UNDO-1 — a plain status change (reopen included) or any other drop
+        // field can be taken back. The slot write below is not undone.
+        taskUndo.edited(task, patch, fresh, {
+          label: `moved ${task.title}`,
+          receipt: status
+            ? `Moved to ${statuses.find((s) => s.id === status)?.name ?? "a new lane"}`
+            : "Task moved",
+          after: async () => {
+            if (selected) await loadProject(selected);
+            else await refreshRef.current();
+          },
+        });
+      }
       const rootViews = await projectsApi.views(task.root_project_id);
       const board = orderBearingView(rootViews.rows);
       if (board) await projectsApi.setPositions(board.id, writes);
@@ -3875,14 +4746,18 @@ function ProjectsWorkspace() {
   /** Every visible node, for the chat's focus picker (`lib/chatScope.ts`). */
   const chatScopes = useMemo(
     () =>
-      flatten(visibleRoots).map((e) => ({
+      flatten(visibleRoots)
+        // WS-64: a filed node is not offered as a scope. The one the member
+        // has open stays, so its own chat still finds its focus.
+        .filter((e) => !(e.node as ProjectRow).archived_at || e.node.id === selected?.id)
+        .map((e) => ({
         id: e.node.id,
         name: e.node.name,
         level: levelOf(visibleRoots, e.node.id),
         depth: e.depth,
         archived: Boolean((e.node as ProjectRow).archived_at),
       })),
-    [visibleRoots],
+    [visibleRoots, selected?.id],
   );
 
   // WS-27bm S8 visual review — may a document open in the side panel beside
@@ -3932,20 +4807,22 @@ function ProjectsWorkspace() {
             node: selected
               ? {
                   id: selected.id,
-                  name: selected.name,
+                  name: displayNodeName(selected),
                   level: assistantLevel(selectedLevel, selected),
                   archived: Boolean(selected.archived_at),
                   personal: isPersonalNode(selected),
                 }
               : null,
-            view: mode,
+            // OP-11 — on My tasks the facts name its own tab and chip.
+            view: isMyTasksApp(app) ? (myTasks.attention ? "Needs attention" : myTasks.mode) : mode,
             app,
-            filterSummary: describeFilters(filters),
+            chip: isMyTasksApp(app) ? myTasks.chip : null,
+            filterSummary: isMyTasksApp(app) ? undefined : describeFilters(filters),
             openTask: openTask ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null } : null,
             selectedTaskIds: Array.from(picked),
           })
         : null,
-    [selected, selectedLevel, mode, app, filters, openTask, picked],
+    [selected, selectedLevel, mode, app, filters, openTask, picked, myTasks],
   );
   useAssistantFacts(assistantFacts);
   if (loading) return renderState("loading", LOADING_COPY, "page");
@@ -3994,7 +4871,11 @@ function ProjectsWorkspace() {
    * WS-39 S1). Metorite is the system of record — nothing to import from.
    */
   const projectActions = (compact: boolean) =>
-    selected ? (
+    // OP-11 fix round, item 12: My tasks is not the selected project. It
+    // offers its own undo scope, and only while a step can be undone.
+    isMyTasksApp(app) ? (
+      <UndoControls hideWhenIdle />
+    ) : selected ? (
       <>
       {/* Undo/redo sits with the VIEW ACTIONS, not in the filter bar: it acts
           on the project, not on what is on screen, and the filter bar is
@@ -4109,6 +4990,22 @@ function ProjectsWorkspace() {
                 Lifecycle policy
               </button>
             ) : null}
+            {/* WS-39 SP-3a — the work style of this node: any level. Only
+                while the org holds PROJECTS_SPRINTS_ORGS (`stylePickerOffered`). */}
+            {pickerOn ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+                onClick={() => {
+                  setManageOpen(false);
+                  setWorkStyleFor(selected);
+                }}
+              >
+                <Icon name="Workflow" className="h-3.5 w-3.5 text-muted-foreground" />
+                {WORK_STYLE_LABEL}
+              </button>
+            ) : null}
             <div className="my-1 h-px bg-border" role="separator" />
             <button
               type="button"
@@ -4131,7 +5028,11 @@ function ProjectsWorkspace() {
   const title = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
         ?.label ?? "Projects"
-    : selected?.name ?? "No project selected";
+    : selected
+      ? displayNodeName(selected)
+      : "No project selected";
+  // OP-12b — the private space says what it is under its title.
+  const selectedIsPersonalRoot = !app && selected != null && isPersonalRoot(selected);
   // A parent project says what it is AGGREGATING (owner directive
   // 2026-08-31: *"when a project contains sub-projects, selecting the
   // project will aggregate the sub-project data into the project view"*).
@@ -4148,7 +5049,9 @@ function ProjectsWorkspace() {
   const subtitle = app
     ? PROJECT_APP_SECTIONS.flatMap((s) => s.items).find((i) => i.id === app)
         ?.note ?? null
-    : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
+    : selectedIsPersonalRoot
+      ? PERSONAL_SPACE_NOTE
+      : [selected?.description, aggregateNote].filter(Boolean).join(" · ") || null;
 
   /**
    * WS-27am — which canvas is on screen, in the user's words. It labels the
@@ -4171,6 +5074,85 @@ function ProjectsWorkspace() {
   // WS-64 OP-1 — the compact chrome. Off by default: the page then draws the old
   // filter row, the old strip and the old banner, exactly as before.
   const compactChrome = compactChromeEnabled();
+  // WS-64 OP-12: the lens and the project actions. With the compact chrome they
+  // sit at the right of the title line, and the tab row owns the line below.
+  const headerTools = () => (
+    <>
+        {selected ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="TriangleAlert"
+            selected={attentionLens}
+            // OP-12: in a narrow row the word folds away, so the tabs
+            // keep their room. The name and the tooltip stay.
+            aria-label={
+              compactChrome
+                ? `${LENS_LABEL}${attentionHere && attentionHere.total > 0 ? ` ${attentionHere.total}` : ""}`
+                : undefined
+            }
+            data-attention-toggle=""
+            title={
+              attentionLens
+                ? "Back to the board"
+                : "Show the work that stopped and waits for a person"
+            }
+            onClick={() => {
+              setAgentsOpen(false);
+              setAttentionFor(attentionLens ? null : selected.id);
+            }}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{LENS_LABEL}</span>
+            ) : (
+              LENS_LABEL
+            )}
+            {attentionHere && attentionHere.total > 0 ? (
+              <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
+            ) : null}
+          </Button>
+        ) : null}
+        {selected && (agentsRead.kind === "ready" || agentsRead.kind === "error") ? (
+          <Button
+            className="shrink-0"
+            variant="ghost"
+            size="sm"
+            icon="Bot"
+            selected={agentsLens}
+            data-agents-toggle=""
+            title={agentsLens ? "Back to the board" : "Show the agents and what they did last"}
+            onClick={() => setAgentsOpen(!agentsLens)}
+          >
+            {compactChrome ? (
+              <span className="hidden @[56rem]:inline">{AGENTS_LENS_LABEL}</span>
+            ) : (
+              AGENTS_LENS_LABEL
+            )}
+          </Button>
+        ) : null}
+        <div
+          className={`flex shrink-0 items-center gap-1${
+            compactChrome ? "" : " ml-auto"
+          }`}
+        >
+          {projectActions(false)}
+        </div>
+    </>
+  );
+  // The server takes ONE focus (`agent_focus`), so the toggle and the strip
+  // clear each other, as `onAgentFocus` already does.
+  const onWaitingOnMe = (next: boolean) => {
+    setWaitingOnMe(next);
+    if (next) setAgentFocus(null);
+  };
+  // SW-5: "Held by an agent" and "Free" ride the same one focus.
+  const holdFocus = isHoldFocus(agentFocus) ? agentFocus : null;
+  const onHoldFocus = (next: HoldFocus | null) => {
+    if (next) setWaitingOnMe(false);
+    // Clearing the hold filter never clears a strip focus.
+    setAgentFocus((current) => (next === null && !isHoldFocus(current) ? current : next));
+  };
   const onAgentFocus = (next: AgentFocus | null) => {
     setWaitingOnMe(next === "waiting");
     setAgentFocus(next === "waiting" ? null : next);
@@ -4187,7 +5169,7 @@ function ProjectsWorkspace() {
     node: selected
       ? {
           id: selected.id,
-          name: selected.name,
+          name: displayNodeName(selected),
           level: assistantLevel(selectedLevel, selected),
           archived: Boolean(selected.archived_at),
           personal: isPersonalNode(selected),
@@ -4202,7 +5184,60 @@ function ProjectsWorkspace() {
     scopeRoots: visibleRoots,
   };
 
-  const workArea = isMyWorkId(app) ? (
+  // WS-64 OP-11 — the three doors of My tasks into the rest of the page.
+  // Capture opens My task inbox, where the capture host lives. A row's chip
+  // names its project's path. An Overview row opens that node, filtered to me.
+  const openInboxCapture = () => {
+    setApp("my-inbox");
+    useTaskStore.getState().openQuickCapture("single");
+  };
+  // OP-12b — a task is private when its project is the personal root or one of
+  // its folders. The tree already says so: every node of `personal` is private.
+  const personalPlacesOf = (node: ProjectRow | null | undefined) =>
+    node && isPersonalRoot(node)
+      ? // The tree the page holds, not the selected row: that row may be a stale copy.
+        personalPlaceCount(personal.find((r) => r.id === node.id) ?? node)
+      : undefined;
+  const personalHeadRootId = personalHeading(personal).root?.id ?? null;
+  const personalIds = new Set(flatten(personal).map((e) => e.node.id));
+  const myTasksPath = (projectId: string) => taskWhere(allRoots, projectId).map((n) => n.name);
+  // ARC-1 — a task of an archived project cannot be restored alone.
+  const myTasksProjectArchived = (projectId: string) =>
+    pathTo(allRoots, projectId).some((node) => Boolean((node as ProjectRow).archived_at));
+  const openMineIn = (id: string) => {
+    const row = flatten(visibleRoots).find((e) => e.node.id === id);
+    if (!row) return;
+    setApp(null);
+    setSelected(row.node as ProjectRow);
+    if (me) changeFilters({ ...EMPTY_FILTERS, assignee: me });
+  };
+
+  const workArea = isMyTasksApp(app) ? (
+    // WS-64 OP-11 — My tasks, the roll-up space: a project's canvases over mine.
+    <MyTasksSpace
+      view={myTasks}
+      onView={setMyTasks}
+      onOpenProjects={() => {
+        // PJP-12a — the project tree, the way the sidebar opens it.
+        if (isMobile) setSheet("tree");
+        else setRailOpen(true);
+      }}
+      phone={isMobile}
+      compactChrome={compactChrome}
+      me={me}
+      people={people}
+      personLabels={personLabels}
+      projectPath={myTasksPath}
+      projectArchived={myTasksProjectArchived}
+      isPrivateProject={(id) => personalIds.has(id)}
+      personalRootId={personal[0]?.id ?? null}
+      onOpenTask={(task) => void openWithStatuses(task, true)}
+      onOpenTaskId={(id) => void openTaskById(id, true)}
+      onOpenProject={openMineIn}
+      onReport={(href) => router.push(href)}
+      version={myTasksVersion}
+    />
+  ) : isMyWorkId(app) ? (
     // WS-64 OP-2 — a My work view: the task store's views, mounted once.
     <MyWorkHost
       app={app}
@@ -4212,7 +5247,7 @@ function ProjectsWorkspace() {
     // WS-42 (D81) — every setting of the Projects app in one pane.
     <div className="min-w-0 flex-1 overflow-hidden">
       <ProjectsSettings
-        key={`${settingsSeed.section ?? ""}:${settingsSeed.spaceId ?? ""}`}
+        key={settingsSeedKey(settingsSeed)}
         spaces={allRoots}
         initialSpaceId={settingsSeed.spaceId ?? (selected ? spaceOf(allRoots, selected).id : null)}
         initialSection={settingsSeed.section ?? null}
@@ -4234,6 +5269,14 @@ function ProjectsWorkspace() {
           setTreeKey((k) => k + 1);
         }}
         importsVersion={importsVersion}
+        // PST-1: a row of "projects that keep their own statuses" opens that
+        // project's Statuses editor. `manageSpace` leaves the pane, selects
+        // the project and opens the dialog, as the row menu does.
+        onOpenStatuses={(project) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === project.id);
+          if (row) manageSpace(setManagingStatuses)(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(project.id)}`);
+        }}
         // The pane edits ANY space, so it never writes the board's own lanes,
         // fields or tags. It re-reads them from the server instead: the tree
         // key drives fields and tags, and `loadProject` the lanes and tasks.
@@ -4252,6 +5295,21 @@ function ProjectsWorkspace() {
     <div className="min-w-0 flex-1 overflow-hidden">
       <AssistantRail {...railPlace} view={null} />
     </div>
+  ) : app === "questions" ? (
+    // WS-55 EA-18b (`external_agent_access.md` §12.8) — the agent questions
+    // that wait on the reader. The pane reads its own list. A project name
+    // opens that project, and "Open task" opens the task, as a deep link does.
+    <QuestionsView
+      projects={flatten(visibleRoots).map((e) => ({
+        id: e.node.id,
+        label: displayNodeName(e.node),
+        depth: e.depth,
+      }))}
+      personLabels={personLabels}
+      onOpenTask={(taskId) => router.push(`/projects?task=${encodeURIComponent(taskId)}`)}
+      onOpenProject={(id) => router.push(`/projects?project=${encodeURIComponent(id)}`)}
+      onChanged={questions.refresh}
+    />
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
     // WS-27bn R5f: Reports is also where the Analytics app went. It opens on
@@ -4293,10 +5351,23 @@ function ProjectsWorkspace() {
           finished={finished}
           outlook={outlook}
           onReport={(href) => router.push(href)}
+          personal={selected ? isPersonalRoot(selected) : false}
+          personalPlaces={personalPlacesOf(selected)}
         />
       ) : (
         renderState("loading", "Counting the work below…")
       )}
+    </>
+  ) : agentsLens && selected ? (
+    // WS-AGA AGA-8 — the Agents at work lens. It takes the place of the
+    // canvas, as the Needs attention lens does, and it only reads.
+    <>
+      {shownError ? renderState("error", shownError) : null}
+      <AgentsAtWorkView
+        read={agentsRead}
+        onBack={() => setAgentsOpen(false)}
+        onOpenTask={(id) => void openTaskById(id)}
+      />
     </>
   ) : attentionLens && selected ? (
     // WS-55 SW-11a — the Needs attention lens. It takes the place of the
@@ -4312,6 +5383,16 @@ function ProjectsWorkspace() {
         error={attentionErrorHere}
         personLabels={personLabels}
         onOpenTask={(id) => void openTaskById(id)}
+        // SW-44: a `no_lead` row opens its project. A project the tree does
+        // not hold yet goes through the `?project=` deep link.
+        onOpenProject={(id) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === id);
+          // Leave the lens first. A row of the open project would otherwise
+          // keep the lens on the screen, and the click would do nothing.
+          setAttentionFor(null);
+          if (row) setSelected(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(id)}`);
+        }}
         onBack={() => setAttentionFor(null)}
         onChanged={() => setAttentionVersion((v) => v + 1)}
       />
@@ -4336,16 +5417,19 @@ function ProjectsWorkspace() {
         </div>
       ) : null}
 
-      {selected && !overview ? (
+      {selected && chromeKind({ overview: ownChrome || agentsCanvas, phone: isMobile, compact: compactChrome }) !== "none" ? (
         <FilterChrome
           compact={compactChrome}
+          // MOB-1: a phone's Overview keeps the View button, the way back.
+          // SP-3a: so does the Backlog canvas.
+          viewOnly={ownChrome || agentsCanvas}
           phone={isMobile}
-          modes={MODE_OPTIONS}
+          modes={modeOptions}
           onMode={(next) => setChosenMode(next)}
           resultCount={taskTotal}
           loadedLabel={loadedOfTotal(tasks.length, taskTotal)}
           agentSummary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
-          agentFocus={waitingOnMe ? "waiting" : agentFocus}
+          agentFocus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onAgentFocus={onAgentFocus}
           filters={filters}
           onFilters={changeFilters}
@@ -4377,9 +5461,14 @@ function ProjectsWorkspace() {
           onSubtasks={(next) => void changeSubtasks(next)}
           me={me}
           waitingOnMe={waitingOnMe}
-          onWaitingOnMe={agentRunsOn ? setWaitingOnMe : undefined}
+          onWaitingOnMe={agentRunsOn ? onWaitingOnMe : undefined}
+          epic={epicScoped}
+          epics={epics}
+          onEpic={setEpicId}
           agentWork={agentWork}
           onAgentWork={agentRunsOn ? setAgentWork : undefined}
+          holdFocus={agentRunsOn ? holdFocus : null}
+          onHoldFocus={agentRunsOn ? onHoldFocus : undefined}
           people={people}
           tags={tags}
           shownFields={shownFields}
@@ -4401,18 +5490,18 @@ function ProjectsWorkspace() {
 
       {/* OP-1: on a phone with the compact chrome, the strip folds to one chip
           in the active-filter row of the tool bar above. */}
-      {selected && !overview && agentRunsOn && !(compactChrome && isMobile) ? (
+      {selected && !ownChrome && !agentsCanvas && agentRunsOn && !(compactChrome && isMobile) ? (
         <AgentWorkStrip
           summary={agentSummary?.projectId === selected.id ? agentSummary.counts : null}
           // The "waiting" button IS the "Waiting on me" filter, so the two
           // never disagree about what is on.
-          focus={waitingOnMe ? "waiting" : agentFocus}
+          focus={waitingOnMe ? "waiting" : isHoldFocus(agentFocus) ? null : agentFocus}
           onFocus={onAgentFocus}
           hideZero={compactChrome}
         />
       ) : null}
 
-      {selected && !overview && picked.size > 0 ? (
+      {selected && !ownChrome && !agentsCanvas && picked.size > 0 ? (
         <BulkBar
           personLabels={personLabels}
           count={picked.size}
@@ -4446,6 +5535,7 @@ function ProjectsWorkspace() {
 
       {selected &&
       !overview &&
+      !agentsCanvas &&
       nodeKind(selected) !== "folder" &&
       (mode === "timeline" || prefillAssignee) ? (
         // Capture-first, but WHERE work lands (owner ask 2026-08-31,
@@ -4483,8 +5573,8 @@ function ProjectsWorkspace() {
             onChange={(e) => setNewTask(e.target.value)}
             placeholder={
               prefillAssignee
-                ? `New task for ${prefillAssignee} in ${selected.name}…`
-                : `New task in ${selected.name}…`
+                ? `New task for ${prefillAssignee} in ${displayNodeName(selected)}…`
+                : `New task in ${displayNodeName(selected)}…`
             }
             aria-label="New task title"
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
@@ -4494,7 +5584,7 @@ function ProjectsWorkspace() {
 
       {/* WS-27u — the front door. Renders nothing when the queue is empty;
           a ruling reloads the board because an accept just added a card. */}
-      {selected && !overview ? (
+      {selected && !ownChrome && !agentsCanvas ? (
         <TriageRail
           projectId={selected.id}
           statuses={statuses}
@@ -4525,6 +5615,7 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
+      {/* The Agents canvas fills the pane, so its host is a flex column with a definite height. Other canvases stay block. */}
       <div className="min-h-0 flex-1 overflow-auto">
         <LayoutBoundary key={canvasKey} layout={canvasLabel}>
           {!selected ? (
@@ -4532,6 +5623,28 @@ function ProjectsWorkspace() {
               "empty",
               "Nothing here yet. Projects appear once a space is granted to you."
             )
+          ) : mode === "backlog" ? (
+            <BacklogCanvas
+              node={selected}
+              phone={isMobile}
+              statuses={statuses}
+              onOpenTask={(id) => void openTaskById(id)}
+            />
+          ) : mode === "agents" ? (
+            <AgentsCanvas
+              read={agentMapRead}
+              showQuiet={mapQuiet}
+              onShowQuiet={setMapQuiet}
+              onOpenTask={(id) => void openTaskById(id)}
+              onRetry={() => setMapRetry((n) => n + 1)}
+              projectId={selected.id}
+              personLabels={personLabels}
+              onPeopleSeen={notePeopleSeen}
+              onOpenProject={(id) => {
+                const row = flatten(visibleRoots).find((e) => e.node.id === id);
+                if (row) setSelected(row.node as ProjectRow);
+              }}
+            />
           ) : mode === "overview" ? (
             summary ? (
               <NodeDashboard
@@ -4546,6 +5659,8 @@ function ProjectsWorkspace() {
                 finished={finished}
                 outlook={outlook}
                 onReport={(href) => router.push(href)}
+                personal={isPersonalRoot(selected)}
+                personalPlaces={personalPlacesOf(selected)}
               />
             ) : (
               renderState("loading", "Counting the work below…")
@@ -4629,7 +5744,11 @@ function ProjectsWorkspace() {
             />
           ) : mode === "board" ? (
             <TaskBoard
+              onManageStatuses={() => setManagingStatuses(selected)}
           personLabels={personLabels}
+              columnTotals={columnTotals}
+              loadingColumn={loadingColumn}
+              onLoadColumn={(key, held) => void loadMoreInColumn(key, held)}
               phone={compactChrome && isMobile}
               groups={groups}
               groupBy={groupBy}
@@ -4705,6 +5824,17 @@ function ProjectsWorkspace() {
               onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
+              // MOB-2: the phone row. Same flag as the board above.
+              phone={compactChrome && isMobile}
+              onDrop={handleDrop}
+              // The project shows only when it is not the one that is open,
+              // so the rows of one project do not repeat its name. A row of
+              // a child project still names its project.
+              projectPath={
+                compactChrome && isMobile
+                  ? (t) => (t.project_id === selected?.id ? null : [projectName(t.project_id)])
+                  : undefined
+              }
             />
           )}
           {/* OP-1: with the compact chrome the load-more row sits at the END of
@@ -4769,6 +5899,7 @@ function ProjectsWorkspace() {
     <TaskPanel
       where={openWhere(openTask)}
       myWork={isMyWorkId(app)}
+      serverOverlay={isMyTasksApp(app)}
       personLabels={personLabels}
       me={me}
       /**
@@ -4797,12 +5928,15 @@ function ProjectsWorkspace() {
       onOpenTask={(id) => void openTaskById(id, isMyWorkId(app))}
       onClose={() => setOpenTask(null)}
       onTaskAdded={() => {
-        if (selected) void loadProject(selected);
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
+        else if (selected) void loadProject(selected);
       }}
       onChanged={(fresh) => {
+        // OP-11 — My tasks reads the board endpoints, so it reads them again.
+        if (isMyTasksApp(app)) setMyTasksVersion((v) => v + 1);
         // OP-2b — the My work list reads the task store, so a change in the
         // panel (status, fields) is read back into it. One source, no loop.
-        if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
+        else if (isMyWorkId(app)) void useTaskStore.getState().refreshItem(fresh.id);
         setOpenTask(fresh);
         setTasks((current) =>
           current.map((t) => (t.id === fresh.id ? { ...t, ...fresh } : t))
@@ -4847,7 +5981,8 @@ function ProjectsWorkspace() {
         id="capture"
         ready={!loading && mountSettled}
         onOpen={(f) => {
-          if (MY_WORK_LIVE) setApp((a) => (isMyWorkId(a) ? a : "my-inbox"));
+          // OP-11: the capture host is My task inbox's, so the box opens there.
+          if (MY_WORK_LIVE) setApp("my-inbox");
           useTaskStore.getState().openQuickCapture("single", f.title ?? "", true);
         }}
       />
@@ -4886,14 +6021,25 @@ function ProjectsWorkspace() {
           }}
         />
       ) : null}
+      {/* WS-27bk §9.12.4 — "Move to…". In `overlays`, which BOTH page returns
+          render, so "Move to…" opens the dialog on a phone too (H-120). */}
+      {movingNode ? (
+        <MoveDialog
+          open
+          moving={movingNode}
+          // OP-3: a personal node picks among the personal tree alone, with
+          // no "Top level" row, so it cannot leave for a team space.
+          roots={movingNode.personal ? personal : roots}
+          topLevel={!movingNode.personal}
+          busy={moving}
+          onClose={() => setMovingNode(null)}
+          onMove={(parentId) => void moveNodeTo(movingNode, parentId)}
+        />
+      ) : null}
+
       {/* H-8 — the delete confirmation.
-          ⚠️ **Here, and NOT beside `MoveDialog`, on purpose.** This page has
-          two returns: the phone branch above and the desktop one below. Only
-          `overlays` is rendered by both. `MoveDialog` is mounted in the
-          desktop return alone, so "Move to…" opens nothing at all on a phone —
-          the menu entry is there, the click lands, and no dialog exists to
-          render. That is a defect on an existing feature and is filed rather
-          than fixed here; this one simply does not repeat it. */}
+          In `overlays`, which BOTH page returns render: the phone branch and
+          the desktop one. */}
       {/* ⚠️ `key` IS THE SAFETY MECHANISM, not a list-rendering habit.
           This dialog is mounted unconditionally and returns null when closed,
           so it never unmounts and its state survives a close. Its reset lives
@@ -4903,9 +6049,8 @@ function ProjectsWorkspace() {
           One paint, on the one act in this app that cannot be undone.
           Keying on the id makes the reset structural: a different row, or the
           same row opened again, is a new instance with fresh state. */}
-      {/* WS-27bl §9.13.4. In `overlays`, which BOTH page returns render —
-          `MoveDialog` is in the desktop return alone and opens nothing on a
-          phone (H-120). Keyed on the selection so reopening never shows the
+      {/* WS-27bl §9.13.4. In `overlays`, which BOTH page returns render.
+          Keyed on the selection so reopening never shows the
           previous set's plan. */}
       {/* ⚠️ `tasks`, not the whole project. The card offers what the board
           has loaded, which is what the member can see and therefore what
@@ -4958,6 +6103,34 @@ function ProjectsWorkspace() {
         }}
         onConfirm={(destinationId, statusMap, acceptedDrops, _promote, includeSubtasks) =>
           void moveTasksTo(destinationId, statusMap, acceptedDrops, Boolean(includeSubtasks))
+        }
+      />
+
+      <SaveAsTemplateDialog
+        project={savingTemplateOf}
+        error={saveTemplateError}
+        busy={saveTemplateBusy}
+        onClose={() => {
+          setSavingTemplateOf(null);
+          setSaveTemplateError(null);
+        }}
+        onSave={(project, name, description) => void saveTemplate(project, name, description)}
+      />
+
+      <NewFromTemplateDialog
+        parent={pickingUnder?.parent ?? null}
+        noun={pickingUnder?.noun ?? "project"}
+        templates={templates}
+        loadFailed={templatesFailed}
+        error={pickError}
+        busy={pickBusy}
+        onClose={() => {
+          setPickingUnder(null);
+          setPickError(null);
+        }}
+        onBlank={(name) => pickingUnder && void makeFromPicker(pickingUnder.parent, null, name, "")}
+        onTemplate={(template, name, startDate) =>
+          pickingUnder && void makeFromPicker(pickingUnder.parent, template, name, startDate)
         }
       />
 
@@ -5060,6 +6233,7 @@ function ProjectsWorkspace() {
         onOpenTask={(id) => void openTaskById(id)}
         actions={actions}
         context={commandCtx}
+        personalRootId={personalHeadRootId}
       />
 
       {/* WS-27ab — `?`, and the palette's own Keyboard-shortcuts command. The
@@ -5096,6 +6270,32 @@ function ProjectsWorkspace() {
           // task rows on screen are stale until they reload.
           onTasksTouched={() => {
             if (selected) void loadProject(selected);
+          }}
+        />
+      ) : null}
+
+      {/* WS-39 SP-3a — "How this team works". A save changes which canvases
+          the node offers, so the selected row takes the fresh style at once
+          and the tree reads again. */}
+      {workStyleFor ? (
+        <WorkStyleDialog
+          node={workStyleFor}
+          level={levelOf(visibleRoots, workStyleFor.id)}
+          onClose={() => setWorkStyleFor(null)}
+          onSaved={(fresh) => {
+            setSelected((current) =>
+              current && current.id === fresh.id ? { ...current, work_style: fresh.work_style } : current
+            );
+            setTreeKey((k) => k + 1);
+            toast.show({
+              key: `project-style:${fresh.id}`,
+              variant: "success",
+              title: savedStyleTitle(
+                fresh.name,
+                workStyleOf(fresh),
+                levelOf(visibleRoots, workStyleFor.id),
+              ),
+            });
           }}
         />
       ) : null}
@@ -5157,6 +6357,40 @@ function ProjectsWorkspace() {
     slotOpen: app === "ai-chat",
   });
 
+  // ⚠️ Not `noProjectChrome`: that also hides the header actions on a space
+  // or folder dashboard, and a filed SPACE must still say it is filed (rule 1
+  // names spaces). Only the app's own pages, which show no node, drop it.
+  const onAppPage =
+    app === "reports" ||
+    app === "ai-chat" ||
+    app === "settings" ||
+    app === "questions" ||
+    isMyWorkId(app);
+  const archiveBarEl =
+    !onAppPage && selected && archiveBarNow ? (
+      <div
+        role="status"
+        data-archive-bar=""
+        className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border bg-muted px-3 py-1.5 text-xs text-muted-foreground glass:px-4"
+      >
+        <span className="min-w-0 flex-1">{archiveBarNow.text}</span>
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="ArchiveRestore"
+          className="shrink-0"
+          onClick={() =>
+            projectMenuActions.onUnarchive(
+              archiveBarNow.root ?? (selected as ProjectRow)
+            )
+          }
+        >
+          Restore
+        </Button>
+      </div>
+    ) : null;
+
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -5167,14 +6401,18 @@ function ProjectsWorkspace() {
           tools={dockOn ? undefined : <NotificationBell onOpenTask={(id) => void openTaskById(id)} />}
         />
 
+        {archiveBarEl}
+
         {workArea}
 
         {taskPanel ? (
           // The panel's own `max-w-sm` (384px) is a docked-column width; on a phone the
           // surface IS the screen, so the cap is lifted here rather than in the
-          // panel, which knows nothing about the shell. `z-[60]` clears the
-          // bottom nav (z-50); the panel closes from its own ✕.
-          <div className="fixed inset-0 z-[60] flex bg-background pt-safe pb-safe [&>aside]:max-w-none">
+          // panel, which knows nothing about the shell. TC-1 (2026-11-03): the card
+          // ends ABOVE the bottom nav, so the Ask tab stays in reach, and it sits
+          // below the nav and the assistant sheet (`lib/layers.ts`). The panel
+          // closes from its own ✕.
+          <div className={`${TASK_CARD_FRAME.phone} flex bg-background pt-safe [&>aside]:max-w-none`}>
             {taskPanel}
           </div>
         ) : null}
@@ -5240,14 +6478,19 @@ function ProjectsWorkspace() {
               personal={personal}
               selectedId={selected?.id ?? null}
               app={app}
-              counts={myWorkNavCounts}
+              counts={navCounts}
+              questionsOn={questions.on === true}
               onApp={chooseApp}
               onSelect={(project) => {
                 setApp(null);
                 setSelected(project);
               }}
               onAddChild={(parent, option) => {
-                setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
+                if (option.template) {
+                openTemplatePicker(parent, option.level);
+                return;
+              }
+              setCreating({ parent, kind: option.kind, label: option.label, level: option.level });
               }}
               onOpenSettings={setSettingsFor}
               onMove={setMovingNode}
@@ -5266,6 +6509,7 @@ function ProjectsWorkspace() {
               onManageFields={manageSpace(setManagingFields)}
               onManageTags={manageSpace(setManagingTags)}
               onManageLifecycle={manageSpace(setManagingLifecycle)}
+              onWorkStyle={pickerOn ? setWorkStyleFor : undefined}
             />
           </nav>
         ) : null}
@@ -5284,9 +6528,21 @@ function ProjectsWorkspace() {
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
-            <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
-              <h2 className="min-w-0 truncate text-sm font-medium text-foreground" title={title}>
-                {title}
+            <div
+              className={`flex min-w-0 gap-2 px-3 pt-2 glass:px-4 glass:pt-3.5 glass:pb-1${
+                compactChrome && !isMyTasksApp(app) && !noProjectChrome
+                  ? " @container items-center"
+                  : " items-baseline"
+              }`}
+            >
+              <h2
+                className="flex min-w-0 items-center gap-1.5 truncate text-sm font-medium text-foreground glass:text-subhead glass:font-semibold"
+                title={title}
+              >
+                <span className="min-w-0 truncate">{title}</span>
+                {selectedIsPersonalRoot ? (
+                  <Icon name="Lock" className="h-3 w-3 shrink-0 text-muted-foreground" role="img" aria-label={PERSONAL_SECTION_HINT} />
+                ) : null}
               </h2>
               {subtitle ? (
                 <p className="min-w-0 truncate text-xs text-muted-foreground">
@@ -5309,49 +6565,76 @@ function ProjectsWorkspace() {
                   {attentionBadge}
                 </Button>
               ) : null}
+              {compactChrome && !isMyTasksApp(app) && !noProjectChrome ? (
+                <div className="ml-auto flex shrink-0 items-center gap-1">{headerTools()}</div>
+              ) : null}
             </div>
+            {/* ARC-2a (§9b.6 rule 1) — one bar for an archived space, project
+                or subproject. `selected` is a snapshot, so the bar reads the
+                row again from the tree: Restore then clears it with no
+                reload. Restore is the rail menu's Unarchive, run on the row
+                whose archive filed this one. */}
+            {archiveBarEl}
             {/* Action row — how you look at it (left) and what you can do to
                 it (right). */}
             {/* A space and a folder have no views to switch between and no
                 project actions to offer, so the whole action row goes —
                 leaving an empty strip would look like a surface that failed
                 to load. */}
-            {noProjectChrome ? null : (
+            {isMyTasksApp(app) ? (
+              // WS-64 OP-11 — My tasks has a project's tabs in the same row.
+              <MyTasksActionRow
+                view={myTasks}
+                onView={setMyTasks}
+                attentionCount={myAttention.data?.total ?? null}
+                onReport={(href) => router.push(href)}
+                onCapture={openInboxCapture}
+              />
+            ) : noProjectChrome ? null : (
               // `flex-wrap`: with the chat docked the canvas loses 26rem, and
               // an action row that cannot wrap paints its right half over the
               // chat column (measured at 1440, 2026-09-23).
-              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
-                <ModeSwitch
-                  modes={MODE_OPTIONS}
-                  mode={shownMode}
-                  layout="toolbar"
-                  onPick={pickMode}
-                />
+              <div
+                className={`flex items-center gap-1 px-3 pb-2 pt-1.5 glass:px-4 glass:pb-2.5${
+                  compactChrome ? "" : " flex-wrap"
+                }`}
+              >
+                {compactChrome ? (
+                  // WS-64 OP-12 (D-OP-17) — the canvases and the saved views
+                  // are one tab row. The View popover no longer holds them.
+                  <ViewTabs
+                    canvas={shownMode}
+                    canvases={offeredModes}
+                    onCanvas={pickMode}
+                    views={tabViews}
+                    activeViewId={activeViewId}
+                    onView={(view) => {
+                      // A saved view filters a list. From the Overview or the
+                      // lens, it opens on the canvas it was saved from.
+                      setAttentionFor(null);
+                      setAgentsOpen(false);
+                      if (ownChrome || agentsCanvas || attentionLens || agentsLens) {
+                        setChosenMode(view.view_type === "board" ? "board" : "list");
+                      }
+                      applyView(view);
+                    }}
+                    onAddView={(name) => void saveView(name)}
+                    onDeleteView={(view) => void deleteView(view)}
+                    hiddenModes={hiddenModes}
+                    canAddView={Boolean(selected) && !viewsUntouched}
+                    addViewHint="Filter, regroup or change the fields first. An untouched view is the board."
+                  />
+                ) : (
+                  <ModeSwitch
+                    modes={modeOptions}
+                    mode={shownMode}
+                    layout="toolbar"
+                    onPick={pickMode}
+                  />
+                )}
                 {/* WS-55 SW-11a — the lens beside the board's other lenses.
                     Pressed while the list is on screen. */}
-                {selected ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="TriangleAlert"
-                    selected={attentionLens}
-                    data-attention-toggle=""
-                    title={
-                      attentionLens
-                        ? "Back to the board"
-                        : "Show the work that stopped and waits for a person"
-                    }
-                    onClick={() => setAttentionFor(attentionLens ? null : selected.id)}
-                  >
-                    {LENS_LABEL}
-                    {attentionHere && attentionHere.total > 0 ? (
-                      <span className="ml-1 tabular-nums opacity-70">{attentionHere.total}</span>
-                    ) : null}
-                  </Button>
-                ) : null}
-                <div className="ml-auto flex shrink-0 items-center gap-1">
-                  {projectActions(false)}
-                </div>
+                {compactChrome ? null : headerTools()}
               </div>
             )}
           </header>
@@ -5361,8 +6644,11 @@ function ProjectsWorkspace() {
 
         {/* Peek and side DOCK — a third column beside the canvas, narrow or
             wide. Full does not: it is mounted over the board below, because a
-            docked column cannot be wider than the space left over. */}
-        {isOverlayMode(panelMode) ? null : taskPanel}
+            docked column cannot be wider than the space left over. The docked
+            panel opens and closes with the one side-panel motion (task 7).
+            A switch to full drops the frame at once, so no second panel stays
+            on screen while it closes. */}
+        {isOverlayMode(panelMode) ? null : <SidePanelMotion docked>{taskPanel}</SidePanelMotion>}
 
         {/* WS-27bm — the AI chat DOCKED beside the canvas (`lib/chatDock.ts`).
             It shares the right-hand column with the docked task panel: while
@@ -5390,12 +6676,14 @@ function ProjectsWorkspace() {
       </div>
       </SidePanelFitContext.Provider>
 
-      {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same
+      {/* TC-1 (2026-11-03): the card fills the page column, not the window, so the
+          shell bar, the Ask bar and the docked assistant stay in view (D172.4).
+          WS-27ab — the `full` stop. A scrim plus the same panel, at the same
           `max-w-3xl` reading width `/tasks`' maximise-out-of-the-pane uses.
           Clicking the scrim closes it; the panel keeps its own ✕ and Escape. */}
       {taskPanel && isOverlayMode(panelMode) ? (
         <div
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-background/70 p-4 sm:p-8"
+          className={`${TASK_CARD_FRAME.desktop} flex items-stretch justify-center bg-background/70 p-4 sm:p-8`}
           role="presentation"
           onClick={() => setOpenTask(null)}
         >
@@ -5417,23 +6705,6 @@ function ProjectsWorkspace() {
         onClose={() => setSettingsFor(null)}
         onSave={(space, values) => void saveSpaceSettings(space, values)}
       />
-
-      {/* WS-27bk §9.12.4 — "Move to…". Mounted here for the same reason Space
-          Settings is: the tree is drawn twice (rail and drawer), and a dialog
-          inside it would be too. */}
-      {movingNode ? (
-        <MoveDialog
-          open
-          moving={movingNode}
-          // OP-3: a personal node picks among the personal tree alone, with
-          // no "Top level" row, so it cannot leave for a team space.
-          roots={movingNode.personal ? personal : roots}
-          topLevel={!movingNode.personal}
-          busy={moving}
-          onClose={() => setMovingNode(null)}
-          onMove={(parentId) => void moveNodeTo(movingNode, parentId)}
-        />
-      ) : null}
 
       {overlays}
     </div>

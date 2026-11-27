@@ -64,6 +64,20 @@ describe("PUT /api/settings/branding", () => {
     expect(sent).toEqual({ logoBase64: "AAAA", logoDarkBase64: "CCCC", darkStyle: "own" });
   });
 
+  it("forwards the square mark when one is sent (owner, 2026-11-01)", async () => {
+    const { PUT } = await import("./route");
+    const res = await PUT(put({ logoBase64: "AAAA", logoDarkBase64: null, darkStyle: "same", logoMarkBase64: "MMMM" }));
+    expect(res.status).toBe(200);
+    expect(sent).toEqual({ logoBase64: "AAAA", logoDarkBase64: null, darkStyle: "same", logoMarkBase64: "MMMM" });
+  });
+
+  it("refuses a square mark that is not a string", async () => {
+    const { PUT } = await import("./route");
+    const res = await PUT(put({ logoBase64: "AAAA", darkStyle: "same", logoMarkBase64: 7 }));
+    expect(res.status).toBe(400);
+    expect(sent).toBeNull();
+  });
+
   it("refuses a style it does not know, before the gateway", async () => {
     const { PUT } = await import("./route");
     const res = await PUT(put({ logoBase64: "AAAA", darkStyle: "neon" }));

@@ -95,6 +95,12 @@ export interface RollupCardProps {
    */
   answered?: boolean;
   /**
+   * The card reports a write that already happened and needs nothing from the
+   * member. It opens folded, and `summary` says what happened
+   * (`lib/cardRollup.ts` rule 3). A failed write is not a receipt.
+   */
+  receipt?: boolean;
+  /**
    * A RESULT card: a long body opens cut at {@link CLAMP_PX}, with a
    * "Show all" under it (`lib/cardRollup.ts` `clampShows`). A card that
    * waits, or a receipt, never sets it.
@@ -145,6 +151,7 @@ function RollupCardIn({
   summary,
   pending: pendingProp = false,
   answered = false,
+  receipt = false,
   clamp = false,
   askTarget,
   header = "frame",
@@ -215,7 +222,7 @@ function RollupCardIn({
   // Every card with a body may fold by hand (owner feedback, 2026-10-11).
   const hasBody = filled || (rows ?? 0) > 0;
   const toggle = showRollupToggle({ pending, hasBody });
-  const open = rollupOpen({ pending, answered, manual, newest, long, held });
+  const open = rollupOpen({ pending, answered, manual, receipt, newest, long, held });
   // A long result card opens cut (`clampShows`). The wrapper is ALWAYS in
   // the tree when `clamp` is set, and only its style changes: a swap of
   // element types remounted the card's body, so a sandbox reloaded and a

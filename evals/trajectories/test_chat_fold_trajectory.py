@@ -102,6 +102,11 @@ def test_sub_agent_timeline_attaches_to_delegate_tool():
     ]
 
 
+# The four-hand-off turn and the parity check of the fold rule with
+# ``lib/chatStream.ts`` live in ``tests/unit/test_chat_fold_handoffs.py``.
+# pr-check runs ``tests/unit/``, and it does not run this folder.
+
+
 def test_todos_and_custom_events_persist():
     todos = [{"id": "1", "title": "Plan", "status": "completed"}]
     events = [
@@ -287,6 +292,20 @@ def test_extraction_conv_empty_without_user_anchor():
 def test_empty_run_folds_to_none():
     assert fold_run_events([]) is None
     assert fold_run_events([_ev("RUN_FINISHED", 1000)]) is None
+
+
+def test_a_turn_the_ai_could_not_answer_folds_to_none():
+    """AO-3, incident 2026-11-17: the Router refused every step. The run
+    sent its tier label and then its error, and no answer. The fold saved a
+    row of the label alone, and the member saw an empty reply. A label is no
+    answer, so the run folds to nothing, and the browser's checkpoint agrees
+    (``checkpointIsEmpty``)."""
+    events = [
+        _ev("RUN_STARTED", 1000, runId="r-ao3"),
+        _ev("CUSTOM", 1010, name="ai.route", value={"tier": "tier-balanced"}),
+        _ev("RUN_ERROR", 2000, code="ai_unavailable", ref="r-ao3", message="x"),
+    ]
+    assert fold_run_events(events) is None
 
 
 def test_reasoning_groups_on_paragraph_breaks():
@@ -488,9 +507,12 @@ async def test_detached_run_persists_final_message(monkeypatch):
     ]
     assert [e["type"] for e in events][-1] == "RUN_FINISHED"
 
-    # Give the drain task's finally a tick to run on_complete.
-    for _ in range(50):
-        if persisted:
+    # Give the drain task's finally a tick to run on_complete. Wait for the
+    # return value too (task 3586): the upsert runs in a thread, so `persisted`
+    # fills before on_complete returns, and a slow loop (Windows) read `returned`
+    # while it was still empty.
+    for _ in range(200):
+        if persisted and returned:
             break
         await asyncio.sleep(0.01)
 

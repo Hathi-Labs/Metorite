@@ -415,9 +415,16 @@ def test_the_default_run_deselects_sandbox_docker() -> None:
     doc = _workflow((_WORKFLOWS / "pr-check.yml").read_text(encoding="utf-8"))
     assert _UNIT_JOB in doc["jobs"], f"pr-check.yml has no `{_UNIT_JOB}` job"
     blocks = _run_blocks(doc, _UNIT_JOB)
-    assert any(re.search(r"\bpytest\s+tests/unit/?(\s|$)", b) for b in blocks), (
-        "the unit job no longer runs tests/unit"
-    )
+    # CIV-3: a full run sets SHARD_TARGETS to tests/unit/ and runs pytest on it.
+    def _runs_the_tree(b: str) -> bool:
+        if re.search(r"\bpytest\s+tests/unit/?(\s|$)", b):
+            return True
+        return bool(
+            re.search(r'\bSHARD_TARGETS="tests/unit/?"', b)
+            and re.search(r"\bpytest\s+\$SHARD_TARGETS\b", b)
+        )
+
+    assert any(_runs_the_tree(b) for b in blocks), "the unit job no longer runs tests/unit"
     # EVERY pytest command of the job counts, the continuation lines included.
     assert _marker_overrides(doc, _UNIT_JOB) == []
 

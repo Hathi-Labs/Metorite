@@ -42,7 +42,7 @@ from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Query
+from fastapi import Depends, HTTPException, Query
 from gateway.capacity import absences_for, horizon_window
 from gateway.routes.projects.agent_dispatch import AGENT_PREFIX
 from gateway.routes.projects.agent_worked import MCP_VIA_PREFIX, agent_worked_sql
@@ -54,20 +54,24 @@ from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
     load_visible_project,
+    reader_day_start,
     reportable_with_ancestors_clause,
     resolve_visibility,
     router,
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
 from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     attach_parent_context,
     unheld_clause,
 )
 from gateway.routes.projects.report_scope import (
+    NO_SUBJECT_REASON,
     filter_person_rows,
     reportable_people,
+    subject_me,
     subject_params,
     with_subject,
 )
@@ -244,6 +248,9 @@ def scope_params(project_id: str | None) -> dict[str, Any]:
 async def stuck(
     project_id: str | None = None,
     include_subtree: bool = True,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now. A word,
+    # never an address (`report_scope.subject_me`).
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Where work is stuck, under one node or across the portfolio.
@@ -257,8 +264,12 @@ async def stuck(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
 
         # The predicate every read below shares. Written once: three copies
         # would drift, and a dashboard whose panels disagree about what "open"
@@ -280,6 +291,7 @@ async def stuck(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "closed": sorted(CLOSING_CATEGORIES),
             "reportable_states": sorted(REPORTABLE_STATUSES),
         }
@@ -309,7 +321,8 @@ async def stuck(
         blocked_total, blocked = await blocked_body(db, vis, open_where, params)
 
         overdue_rows = (await db.execute(
-            text(overdue_by_project_sql(open_where)), params,
+            text(overdue_by_project_sql(open_where)),
+            {**params, "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
 
         return {
@@ -422,7 +435,7 @@ def overdue_by_project_sql(open_where: str) -> str:
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_projects pr ON pr.id = t.project_id"
         f" WHERE {open_where}"
-        f"   AND t.due_at IS NOT NULL AND t.due_at < now()"
+        f"   AND t.due_at IS NOT NULL AND {overdue_sql()}"
         f" GROUP BY 1, 2"
         # Worst first. A dashboard row the reader acts on is the top one.
         f" ORDER BY overdue DESC, name"
@@ -510,15 +523,15 @@ def load_sql(open_where: str) -> str:
     return (
         f"SELECT coalesce(lower(a.assignee), '') AS who,"
         f"       count(*) FILTER ("
-        f"         WHERE t.due_at IS NOT NULL AND t.due_at < now()"
+        f"         WHERE t.due_at IS NOT NULL AND {overdue_sql()}"
         f"       ) AS overdue,"
         f"       count(*) FILTER ("
-        f"         WHERE t.due_at >= now()"
-        f"           AND t.due_at < now() + interval '7 days'"
+        f"         WHERE {not_overdue_sql()}"
+        f"           AND t.due_at < CAST(:day_start AS timestamptz) + interval '7 days'"
         f"       ) AS due_next_7d,"
         f"       count(*) FILTER ("
         f"         WHERE t.due_at IS NULL"
-        f"            OR t.due_at >= now() + interval '7 days'"
+        f"            OR t.due_at >= CAST(:day_start AS timestamptz) + interval '7 days'"
         f"       ) AS later,"
         f"       count(*) AS open_tasks,"
         # ⚠️ ESTIMATED effort, never logged effort. Nothing in this product
@@ -624,6 +637,8 @@ async def load(
     project_id: str | None = None,
     include_subtree: bool = True,
     people_offset: int = 0,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Who is overloaded, under one node — §9.12.7(b).
@@ -655,6 +670,7 @@ async def load(
         vis = await resolve_visibility(db, user)
         body = await load_body(
             db, vis, project_id=project_id, include_subtree=include_subtree,
+            subject_people=await subject_me(db, user, vis, subject),
         )
         # WS-27bn R5a. The reader's rows, AFTER the body, with the filter
         # the report's `load` section runs too (§7.1 rule 3).
@@ -698,7 +714,8 @@ async def load_body(
     # one dashboard must not disagree about what "open" means. Named, so
     # the Capacity panel beside this one reads the SAME predicate.
     open_where = load_open_where(scope_sql, vis)
-    params = {**load_params(vis, project_id), **subject_params(subject_people)}
+    params = {**load_params(vis, project_id), **subject_params(subject_people),
+              "day_start": await reader_day_start(db, vis.email)}
 
     # ── Per person, bucketed by when it is due — see `load_sql`. ──────
     rows = (
@@ -1375,6 +1392,7 @@ def open_run_sql() -> str:
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "EXISTS (SELECT 1 FROM pm_agent_runs nr WHERE nr.task_id = t.id"
+        " AND nr.task_id IS NOT NULL"
         f" AND nr.status IN ({open_list}))"
     )
 
@@ -1670,6 +1688,8 @@ async def throughput(
     project_id: str | None = None,
     include_subtree: bool = True,
     weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Are we getting faster, under one node — §9.12.7(c).
@@ -1699,8 +1719,12 @@ async def throughput(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
 
         # ⚠️ Deliberately WITHOUT `archived_at IS NULL` and without the
         # open-only status arm — see the docstring. Visibility and triage stay,
@@ -1709,6 +1733,7 @@ async def throughput(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "weeks": weeks,
             "closing": sorted(CLOSING_CATEGORIES),
             "done_cat": COMPLETED_CATEGORY,
@@ -1838,6 +1863,8 @@ async def finished(
     include_subtree: bool = True,
     weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
     skip_current_week: bool = False,
+    # WS-64 OP-11. `me` narrows to the tasks the caller holds now.
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """What we finished, by project — §9.12.7(d).
@@ -1860,8 +1887,12 @@ async def finished(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        subject_people = await subject_me(db, user, vis, subject)
 
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        scope_sql = with_subject(
+            await scope_clause(db, vis, project_id, include_subtree),
+            subject_people,
+        )
         # The same predicate `throughput` uses, and deliberately without
         # `archived_at IS NULL` for the same reason: this describes the past,
         # and an archive sweep in September must not empty July.
@@ -1873,6 +1904,7 @@ async def finished(
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            **subject_params(subject_people),
             "weeks": weeks,
             "closing": sorted(CLOSING_CATEGORIES),
             "done_cat": COMPLETED_CATEGORY,
@@ -2139,6 +2171,10 @@ async def outlook(
     project_id: str | None = None,
     include_subtree: bool = True,
     weeks: int = FORECAST_WEEKS,
+    # WS-64 OP-11. Declared so `subject=me` gets the recorded refusal and is
+    # not dropped in silence (`projects_reports.md`: an outlook with a
+    # subject is a 422, "not available for a person or team scope").
+    subject: str | None = None,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Will this land, when, and what would have to be true — §9.12.7 wave 7.
@@ -2175,6 +2211,12 @@ async def outlook(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
+        # The shape check first: a value that is not `me` is a 422 of its
+        # own. Then `me` gets the section's refusal (NO_SUBJECT_SECTIONS).
+        if await subject_me(db, user, vis, subject) is not None:
+            raise HTTPException(
+                status_code=422, detail=f"outlook: {NO_SUBJECT_REASON}.",
+            )
         return await outlook_body(
             db, vis,
             hr_visible=can_read_hr_fields(user),

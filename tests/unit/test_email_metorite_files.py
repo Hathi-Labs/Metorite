@@ -38,6 +38,7 @@ from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.transport import metorite_files as mf
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 PAGE = "0a0a0a0a-1111-4000-8000-00000000000a"
 TASK_FILE = "0b0b0b0b-2222-4000-8000-00000000000b"
@@ -82,7 +83,7 @@ def stores(monkeypatch, tmp_path):
         state["reads"].append(("task-file", user.email, attachment_id))
         return state["task_files"].get(attachment_id)
 
-    def artifacts(refs: Any, email: str | None = None) -> list[dict[str, Any]]:
+    def artifacts(refs: Any, email: str | None = None, **_kw: Any) -> list[dict[str, Any]]:
         out = []
         for r in refs:
             state["reads"].append(("artifact", email, f"{r.agent}:{r.path}"))
@@ -313,6 +314,10 @@ async def test_the_free_card_names_each_file_and_its_size(monkeypatch) -> None:
     monkeypatch.setattr(agents, "_mailbox_name", name)
     monkeypatch.setattr(agents, "_usual_mailbox_note", lambda *_a: _empty())
     monkeypatch.setattr("acb_skills.ask_tools.request_confirmation", card)
+    # §18.10: these tests read the plain send card. A run that cannot draw the
+    # card to edit keeps it (WhatsApp, no channel). test_email_new_mail_card.py
+    # holds the edit card of a new mail.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     out = await agents.send_email(F.BOX, body="Prices attached.", to=[F.KNOWN],
                                   subject="Prices", attachments=[f"knowledge:{PAGE}"])
     [c] = cards

@@ -16,12 +16,19 @@ Fences: ``tests/unit/test_projects_sandbox_tools.py`` (WS43-F21) and
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent_framework import ChatMiddleware, FunctionMiddleware
+from acb_common import get_logger
+from agent_framework import ChatMiddleware, ContextProvider, FunctionMiddleware
 
-__all__ = ["RefuseTools", "WithholdTools", "tool_name"]
+__all__ = [
+    "LogRequestTools", "LogRequestToolsProvider", "RefuseTools", "WithholdTools",
+    "tool_digest", "tool_name",
+]
+
+_log = get_logger("acb_skills.tool_guard")
 
 #: Picks a tool. It gets the tool object, as MAF holds it.
 Picker = Callable[[Any], bool]
@@ -71,3 +78,58 @@ class RefuseTools(FunctionMiddleware):
             context.result = self._answer(tool_name(function))
             return
         await call_next()
+
+
+def tool_digest(tools: Any) -> tuple[int, int, str]:
+    """``(sent, distinct, hash)`` of a tool list as a model request holds it.
+
+    *sent* is the number of items, *distinct* the number of different names,
+    and *hash* the first 10 hex digits of the SHA-256 of the sorted names.
+    The hash shows that two requests hold the same tools without the names.
+    """
+    items = list(tools or [])
+    names = sorted({tool_name(t) for t in items if tool_name(t)})
+    digest = hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()[:10]
+    return len(items), len(names), digest
+
+
+class LogRequestTools(ChatMiddleware):
+    """Logs the tools of each model request of ONE run (WS-67 OA-8f).
+
+    It sees the request after MAF merged the agent's tools, the tools of a
+    context provider (the pack loader) and the tools of an MCP server. So the
+    count is what the model gets, not an estimate. It changes nothing.
+    """
+
+    def __init__(self, agent_name: str) -> None:
+        self._agent = agent_name
+        self._request = 0
+
+    async def process(self, context: Any, call_next: Callable[[], Any]) -> None:
+        options = context.options
+        tools = options.get("tools") if isinstance(options, dict) else None
+        self._request += 1
+        try:
+            sent, distinct, digest = tool_digest(tools)
+            _log.info(
+                "executor.request_tools", agent=self._agent, request=self._request,
+                tools=sent, distinct=distinct, names_hash=digest,
+            )
+        except Exception:  # a log never costs the request
+            pass
+        await call_next()
+
+
+class LogRequestToolsProvider(ContextProvider):
+    """Adds :class:`LogRequestTools` to ONE run of a native MAF agent."""
+
+    SOURCE_ID = "request_tools_log"
+
+    def __init__(self, agent_name: str) -> None:
+        super().__init__(self.SOURCE_ID)
+        self._agent = agent_name
+
+    async def before_run(
+        self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
+    ) -> None:
+        context.extend_middleware(self.SOURCE_ID, [LogRequestTools(self._agent)])

@@ -30,7 +30,8 @@ from acb_auth import UserContext, get_current_user, require_feature_router
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from gateway.reach import flags, loop, outbox, plan, requests
+from gateway.brief import flags as brief_flags
+from gateway.reach import exceptions, flags, loop, outbox, plan, requests
 from gateway.reach import whatsapp as channel
 
 router = APIRouter(
@@ -59,12 +60,17 @@ async def reach_preview(user: UserContext = Depends(get_current_user)) -> dict[s
     if not snap.complete:
         raise HTTPException(status_code=503, detail="My Day could not be read in full")
     logged = await outbox.logged_pairs(org, email)
-    candidates = plan.interrupt_candidates(snap.cards, logged, snap.now)
+    # The preview shows what WhatsApp would get, so no reminder (D114.7).
+    cards = plan.on_whatsapp(snap.cards)
+    marked = exceptions.with_notify(cards, await loop.block_notify(org, email))
+    candidates = plan.interrupt_candidates(marked, logged, snap.now,
+                                           rules=brief_flags.exceptions(org),
+                                           muted=await loop.muted_rules(org, email))
     wa_id, is_open = await channel.reach_state(org, email)
     held = (wa_id is not None and not is_open and bool(candidates)
             and flags.needs_you_template() is None)
     return {
-        "brief": plan.compose_brief(snap.cards, loop.app_url(), snap.local_date,
+        "brief": plan.compose_brief(cards, loop.app_url(), snap.local_date,
                                     now=snap.now),
         "interrupts": (plan.compose_interrupt(candidates, loop.app_url(), now=snap.now)
                        if candidates else None),

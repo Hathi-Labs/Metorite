@@ -51,11 +51,13 @@
  * `tabIndex={0}` canvas holding WS-27y's cursor.
  */
 
+import Button from "@/components/ui/Button";
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import Badge from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
 import { EditableTaskTitle, TaskHeaderRow, type TaskWhere } from "@/components/TaskPanelHeader";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
@@ -71,6 +73,8 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { useTaskUndo } from "./useTaskUndo";
+import { MineDispositionStrip } from "./MineDispositionStrip";
 import { MyWorkStrip } from "./MyWorkStrip";
 import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
@@ -138,6 +142,18 @@ interface Props {
    * it shows only when I hold an overlay row.
    */
   myWork?: boolean;
+  /**
+   * WS-64 OP-11 fix round, item 9: the panel opened from My tasks. Its strip
+   * then writes to the server (`MineDispositionStrip`), never the store, so
+   * the My tasks rows move to the new chip after a pick.
+   */
+  serverOverlay?: boolean;
+  /**
+   * PK-1 — the host's own icon buttons in the header, before the expand and
+   * the close (`TaskHeaderRow`'s `actions`). My Day puts "Open in Projects"
+   * here. The Projects page passes none.
+   */
+  actions?: ReactNode;
 }
 
 /** The viewer's own overlay on this task, or null when they hold none. */
@@ -159,6 +175,8 @@ export function TaskPanel({
   onPeopleSeen,
   where,
   myWork = false,
+  serverOverlay = false,
+  actions,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -169,6 +187,8 @@ export function TaskPanel({
   const twoColumn = mode === "full";
 
   const toast = useToast();
+  const startFocus = useStartFocus();
+  const taskUndo = useTaskUndo();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
@@ -184,11 +204,39 @@ export function TaskPanel({
     stored: !!stored,
     myWork,
     filedByMe: filedByMe(mine),
+    serverOverlay,
   }) ? (
     <MyWorkStrip taskId={task.id} />
   ) : null;
+  // WS-64 OP-11 — opened from My tasks, the store does not hold the task (My
+  // tasks runs no hydrate). The same row then writes to the server, and the
+  // page reads the task again, so the My tasks rows follow the new chip.
+  const serverStrip =
+    !strip && enabled && myWork && mine ? (
+      <MineDispositionStrip
+        disposition={mine.disposition}
+        onPick={(next) => {
+          setMine((m) => (m ? { ...m, disposition: next, isTriaged: true } : m));
+          void lensPatchItem(task.id, { disposition: next })
+            .then((item) => {
+              setMine(overlayOf(item));
+              return projectsApi.task(task.id);
+            })
+            .then((fresh) => onChanged(fresh))
+            .catch((err: unknown) => {
+              // Say so, then show what the server holds (item 9).
+              toast.show({
+                variant: "error",
+                title: `Could not change the disposition. ${String((err as Error).message)}`,
+              });
+              void lensMyOverlay(task.id).then(setMine);
+            });
+        }}
+      />
+    ) : null;
   const shownMine = pickMine({
     myWork,
+    serverOverlay,
     enabled,
     stored,
     mine,
@@ -254,7 +302,15 @@ export function TaskPanel({
    */
   async function rename(title: string) {
     try {
-      onChanged(await projectsApi.patchTask(task.id, { title }));
+      const prior = task;
+      const fresh = await projectsApi.patchTask(task.id, { title });
+      onChanged(fresh);
+      // UNDO-1 — a rename can be taken back.
+      taskUndo.edited(prior, { title }, fresh, {
+        label: `renamed ${prior.title}`,
+        receipt: "Task renamed",
+        after: async () => onChanged(await projectsApi.task(prior.id)),
+      });
     } catch {
       toast.show({
         key: `projects:task-title:${task.id}`,
@@ -269,9 +325,11 @@ export function TaskPanel({
     // arrangement and the reason the field cells below read as cards at all.
     // ⚠️ The root must stay an `<aside>`: `projects/page.tsx`'s phone branch
     // lifts the width cap with `[&>aside]:max-w-none`, and the `full` overlay
-    // rounds its corners the same way.
+    // rounds its corners the same way. In glass it is one opaque card
+    // surface: it lies over the board, and the board's text must not show
+    // through (owner, 2026-11-01).
     <aside
-      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background`}
+      className={`flex h-full w-full ${PANEL_WIDTH_CLASS[mode]} flex-col border-l border-border bg-background glass:bg-card`}
       // Escape belongs to the panel, not to the window: a global listener
       // would also fire for the search palette and the four dialogs that can
       // be open over it, closing two things with one key.
@@ -303,6 +361,7 @@ export function TaskPanel({
                 }
               : undefined
           }
+          actions={actions}
           onClose={onClose}
         />
         {/* Wraps rather than truncates: the title is the one thing on the
@@ -325,6 +384,7 @@ export function TaskPanel({
             clientVia={task.agent_client_via}
             memberEmail={task.agent_member_email}
             note={task.agent_note}
+            waiting={task.agent_waiting}
             viewerEmail={me}
             labels={personLabels}
           />
@@ -346,6 +406,20 @@ export function TaskPanel({
               {shownMine.context ? ` · ${shownMine.context}` : ""}
             </Badge>
           ) : null}
+          {/* CC-4: start focus on this task. One session at a time, and a
+              to-do task moves to In progress with an Undo. */}
+          {task.archived_at || task.completed_at ? null : (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Play"
+              className="ml-auto"
+              onClick={() => void startFocus(task.id)}
+              data-testid="task-start-focus"
+            >
+              Start focus
+            </Button>
+          )}
         </div>
         {/* My own focus on this task, private to me. Only when the task is
             in MY lens — `mine` is null for anybody else's task, so a
@@ -381,7 +455,7 @@ export function TaskPanel({
         personLabels={personLabels}
         onPeopleSeen={onPeopleSeen}
         twoColumn={twoColumn}
-        above={strip}
+        above={strip ?? serverStrip}
       />
     </aside>
   );

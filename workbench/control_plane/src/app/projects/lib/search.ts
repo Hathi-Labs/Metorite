@@ -11,6 +11,8 @@
 
 import type { ParentFact } from "@/lib/taskCard";
 
+import { displayProjectName } from "./personalTree";
+
 /** One hit, exactly as `GET /projects/search` returns it. */
 export interface Hit {
   id: string;
@@ -209,8 +211,9 @@ export function highlight(
 }
 
 /** "Ops · #42", the one line that says where a hit lives. */
-export function hitContext(hit: Hit): string {
-  const parts = [hit.project_name, hit.task_number ? `#${hit.task_number}` : null]
+export function hitContext(hit: Hit, personalRootId?: string | null): string {
+  // OP-12b — a hit in the private root reads "Personal", not its stored name.
+  const parts = [displayProjectName(hit.project_id, hit.project_name, personalRootId), hit.task_number ? `#${hit.task_number}` : null]
     .filter(Boolean);
   return parts.join(" · ");
 }

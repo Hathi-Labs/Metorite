@@ -37,6 +37,8 @@ import { ToolCardShell, DismissableCard } from "@/components/ToolCardShell";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { placementOf } from "@/lib/chatPlacement";
+import { memberLine } from "@/lib/receiptText";
+import { G_SETTLED, G_TINTED } from "@/components/glassCard";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -102,7 +104,7 @@ const PLAN_META: Record<string, { label: string; kind: "plan-today" | "replan-to
 
 /** Read-only tools that return a titled text blob. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
-  my_tasks_inbox_insights: { icon: "Inbox", label: "Inbox health" },
+  my_tasks_inbox_insights: { icon: "Inbox", label: "My task inbox health" },
   my_tasks_day_digest: { icon: "CalendarDays", label: "Day summary" },
   my_tasks_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
   my_tasks_accounts: { icon: "Milestone", label: "No connected tool" },
@@ -116,8 +118,8 @@ const INFO_TOOLS = new Set(Object.keys(INFO_META));
 
 /** Friendly label + icon for the generic confirmation card (mutating tools). */
 const ACTION_META: Record<string, { icon: string; label: string; danger?: boolean }> = {
-  my_tasks_capture: { icon: "Inbox", label: "Captured to inbox" },
-  my_tasks_capture_many: { icon: "Inbox", label: "Captured to inbox" },
+  my_tasks_capture: { icon: "Inbox", label: "Captured to my task inbox" },
+  my_tasks_capture_many: { icon: "Inbox", label: "Captured to my task inbox" },
   my_tasks_organize: { icon: "ListChecks", label: "Organized" },
   my_tasks_update: { icon: "PenLine", label: "Task updated" },
   my_tasks_complete: { icon: "CheckCircle2", label: "Task completed" },
@@ -254,10 +256,10 @@ function TaskRowView({ row }: { row: TaskRow }) {
   };
   const done = state === "done";
   return (
-    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors">
+    <div className="flex items-center gap-1 rounded-md border border-transparent hover:border-border transition-colors glass:rounded-[10px]">
       <button
         onClick={() => openTask(row.id)}
-        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
+        className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60 glass:rounded-[10px]"
         title="Open in My work"
       >
         <span
@@ -392,7 +394,7 @@ function PlanResultCard({ event: e }: { event: ToolEvent }) {
             <button
               onClick={apply}
               disabled={state === "busy"}
-              className="inline-flex items-center gap-1 rounded-md border border-primary/50 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 disabled:opacity-60"
+              className="inline-flex items-center gap-1 rounded-md border border-primary/50 bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary hover:bg-primary/20 disabled:opacity-60 glass:rounded-full glass:border-transparent glass:bg-primary/12 glass:px-2.5 glass:text-caption"
             >
               {state === "busy" ? (
                 <AppIcon name="Loader2" size={10} className="animate-spin" />
@@ -476,14 +478,14 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   // One look with the Projects receipts: a `RollupCard` whose title row is
   // the shared header, with the icon in the card's tone.
   return (
-    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={detail.split(/\r?\n/)[0]} header="own">
+    <RollupCard id={`tool:${e.id}`} title={meta.label} icon={iconName} summary={memberLine(detail.split(/\r?\n/)[0] ?? "")} receipt={!failed} header="own">
     <div
       className={`rounded-lg border px-2.5 py-2 ${
         failed
-          ? "border-destructive/40 bg-destructive/5"
+          ? "border-destructive/40 bg-destructive/5 "+G_TINTED
           : meta.danger
-            ? "border-warning/40 bg-warning/5"
-            : "border-sidebar-border bg-secondary/40"
+            ? "border-warning/40 bg-warning/5 "+G_TINTED
+            : "border-sidebar-border bg-secondary/40 "+G_SETTLED
       }`}
     >
       <RollupHeader className={`text-[11px] ${tone}`} />

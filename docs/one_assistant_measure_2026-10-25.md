@@ -19,8 +19,8 @@ This report is input for the owner's decision at OA-6. It does not make
 that decision.
 
 Spec: `project-docs/specs/one_assistant_context.md`, §4 and §5, slice OA-5
-(D116). Board: WS-67. Code: `evals/one_assistant_measure/`. Raw data:
-`evals/one_assistant_measure/results_2026-10-25.json`.
+(D116). Board: WS-67. Code: `evals/one_assistant_measure/`. Raw data: git history,
+commit `63550a052` (#1348).
 
 ## 1. The two shapes
 

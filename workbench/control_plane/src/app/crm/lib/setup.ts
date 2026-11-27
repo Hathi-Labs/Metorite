@@ -79,11 +79,13 @@ export const ACTIONS: Record<HubActionId, HubAction> = {
     explain:
       "Connect the same Zoho account again, so the records stay and the sync starts again.",
   },
+  // The owner's decision of 2026-10-29 (D133, amended): two switches, and
+  // each name says what happens to the records. This one removes them.
   "switch-to-metorite": {
     id: "switch-to-metorite",
-    label: "Switch to Metorite",
+    label: "Switch to Metorite, start empty",
     explain: "Every record goes, and Metorite becomes your CRM with new pipeline stages.",
-    dialog: { then: "native", title: "Switch to Metorite" },
+    dialog: { then: "native", title: "Switch to Metorite, start empty" },
   },
   "start-over": {
     id: "start-over",
@@ -99,6 +101,18 @@ export const ACTIONS: Record<HubActionId, HubAction> = {
     dialog: { then: "mirror", title: "Start over with the new Zoho account" },
   },
 };
+
+/**
+ * The switch that keeps the records (CRM-Z10b, D133 as amended 2026-10-29).
+ * The cutover card draws it, with `ACTIONS["switch-to-metorite"]` under it,
+ * and opens `CutoverDialog`. Its words live here, with every other change
+ * of setup, so `components/crmX0.test.ts` keeps the rule that only the
+ * hub's files name one. The label is also the title of the dialog.
+ */
+export const KEEP_RECORDS_SWITCH = {
+  label: "Switch to Metorite, keep the Zoho records",
+  explain: "Every Zoho record stays and you can edit it here, and Zoho stops syncing.",
+} as const;
 
 /** Connect Zoho from Native mode: the records go first (§19.11 item 5). */
 export const CONNECT_FROM_NATIVE: HubAction = {
@@ -129,30 +143,32 @@ export type HubPlan = {
  *
  * `mirrorOn` is false when the gateway answers 404 for the mirror routes.
  * Then the hub offers no action that needs Zoho.
+ *
+ * `switchInCard` is true when the cutover card shows both switches
+ * (`switchesInCard`). Then the hub leaves out "Switch to Metorite, start
+ * empty", so no action shows twice on the screen (D133 as amended
+ * 2026-10-29).
  */
-export function hubActions(state: HubState, mirrorOn: boolean): HubPlan {
+export function hubActions(state: HubState, mirrorOn: boolean, switchInCard = false): HubPlan {
   const zoho = (action: HubAction): HubAction[] => (mirrorOn ? [action] : []);
+  const startEmpty = switchInCard ? [] : [ACTIONS["switch-to-metorite"]];
   switch (state) {
     case "none":
       return { main: [ACTIONS["use-metorite"], ...zoho(ACTIONS["connect-zoho"])], other: [] };
     case "mirror-connected":
       return {
         main: [ACTIONS["sync-now"]],
-        other: [ACTIONS.disconnect, ACTIONS["switch-to-metorite"], ACTIONS["start-over"]],
+        other: [ACTIONS.disconnect, ...startEmpty, ACTIONS["start-over"]],
       };
     case "mirror-disconnected":
       return {
         main: zoho(ACTIONS["reconnect-zoho"]),
-        other: [ACTIONS["switch-to-metorite"], ACTIONS["start-over"]],
+        other: [...startEmpty, ACTIONS["start-over"]],
       };
     case "mirror-needs-reset":
       return {
         main: zoho(ACTIONS["start-over-new-account"]),
-        other: [
-          ...zoho(ACTIONS["reconnect-zoho"]),
-          ACTIONS["switch-to-metorite"],
-          ACTIONS["start-over"],
-        ],
+        other: [...zoho(ACTIONS["reconnect-zoho"]), ...startEmpty, ACTIONS["start-over"]],
       };
     case "native":
       return { main: [], other: [...zoho(CONNECT_FROM_NATIVE), ACTIONS["start-over"]] };

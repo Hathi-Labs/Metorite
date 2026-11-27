@@ -26,8 +26,8 @@ critique and leave the palette.
 **Where the skill is free:** a marketing page, a pitch deck or a standalone
 artifact outside the product. Nothing there reads `globals.css`.
 
-*Metorite note, added at adoption. A refresh from `skills/upstream/anthropics/`
-removes this block. Put it back. See `skills/upstream/README.md`.*
+*Metorite note, added at adoption. A refresh from github.com/anthropics/skills
+removes this block. Put it back.*
 
 
 # Frontend Design

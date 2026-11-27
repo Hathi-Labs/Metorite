@@ -544,7 +544,8 @@ else
   # apply of origin/main ships the day's untested merges to customers.
   #
   # So the target is ONE NAMED COMMIT, and never the tip of a moving branch:
-  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its GITHUB_SHA,
+  #   • DEPLOY_REF, when a caller names one. deploy.yml sends its release
+  #     commit (CIV-30: `green/main` on a slot run, else its GITHUB_SHA),
   #     and vps_pull.sh sends origin/$RELEASE_REF as a sha.
   #   • origin/$RELEASE_REF otherwise (default `release`). That covers a hand
   #     run during an incident: it re-applies what production should serve.
@@ -711,6 +712,21 @@ if grep -qE '^GRAPHITI_ENABLED=true' "$ENV_FILE" 2>/dev/null; then
   echo "    Disabled GRAPHITI (Neo4j) — saves ~500MB RAM"
 fi
 
+# 2449 S1 (owner rule 2026-11-08, every AI call goes through the console): Mem0
+# and Graphiti call an embeddings vendor with their own key, and D132 item 4
+# keeps both off. A line with any value but false is written back as false on
+# EVERY release, also when an earlier line of the same key says false (the last
+# line wins in the env file). The guard compares the number of lines of the key
+# with the number of lines that say false. env_edit_in_place keeps the inode of
+# .env and keeps a full copy when the write fails.
+# Fence: tests/unit/test_no_direct_ai_vendor_calls_web.py.
+for _var in MEM0_ENABLED GRAPHITI_ENABLED; do
+  if [ "$(grep -cE "^${_var}=" "$ENV_FILE" 2>/dev/null)" != "$(grep -cxE "${_var}=false" "$ENV_FILE" 2>/dev/null)" ]; then
+    env_edit_in_place "$ENV_FILE" sed "s/^${_var}=.*/${_var}=false/"
+    echo "    = forced $_var=false in .env"
+  fi
+done
+
 echo "==> Ensuring public-URL env vars"
 # This block used to also seed MICROSOFT_TENANT_ID / AUTH_MICROSOFT_ENTRA_ID_TENANT
 # with one company's directory GUID — wrong on every deployment except that one
@@ -765,6 +781,39 @@ else
     mv "$WB_ENV.tmp" "$WB_ENV"
     echo "    updated .env.local token to match .env (sha8=$(printf %s "$SHARED_TOKEN" | sha256sum | cut -c1-8)); backup written"
   fi
+fi
+
+# STU-B2c-1: the direct proof key follows the same rule. The workbench BFF signs
+# the direct proof of a Studio write under STUDIO_DIRECT_KEY, and the gateway
+# checks it, so both files must hold ONE value. .env is the source. This step
+# copies the key when .env has one. It NEVER generates a key: setting it on a
+# box is the env-write act. With no key in .env it removes any stale copy from
+# .env.local, so the workbench signs nothing and no write is direct.
+# ⚠️ It reads the LAST line of the key in .env, because systemd and dotenv use
+# the last line. The first line would copy a value that no service uses.
+# Fence: tests/unit/test_studio_direct_proof.py (test_the_deploy_line_syncs_the_key_from_env_to_env_local).
+echo "==> Reconciling the workbench's STUDIO_DIRECT_KEY (.env.local <- .env, STU-B2c-1)"
+DIRECT_KEY="$(grep -E '^STUDIO_DIRECT_KEY=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ -z "$DIRECT_KEY" ]; then
+  if grep -q '^STUDIO_DIRECT_KEY=' "$WB_ENV"; then
+    ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    - removed a STUDIO_DIRECT_KEY line from .env.local (.env has none, so no write is direct)"
+  else
+    echo "    STUDIO_DIRECT_KEY not set in .env: no write is direct (the slice is dark)"
+  fi
+elif [ "$(grep -E '^STUDIO_DIRECT_KEY=' "$WB_ENV" 2>/dev/null | head -1 | cut -d= -f2-)" = "$DIRECT_KEY" ] \
+     && [ "$(grep -c '^STUDIO_DIRECT_KEY=' "$WB_ENV")" = "1" ]; then
+  echo "    already in sync (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
+else
+  # umask 077 and a write IN PLACE: .env.local holds secrets, and an `mv` would
+  # give the file the mode of the temp file.
+  ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  printf 'STUDIO_DIRECT_KEY=%s\n' "$DIRECT_KEY" >> "$WB_ENV.tmp"
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    updated .env.local STUDIO_DIRECT_KEY to match .env (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
 fi
 
 echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)"
@@ -1098,6 +1147,24 @@ if [ -n "$CC_DSN" ] && ! cc_reachable; then
   echo "       serve the Console -> ladder SKIPPED, deploy CONTINUES."
   echo "       ⚠️ Still a defect: the .env names a database that does not answer."
 elif [ -n "$CC_DSN" ]; then
+  # 🔴 H-170: back up the Console database BEFORE its ladder, and fail closed.
+  # The pre-migration backup of apply_migrations.sh never covered it: it has no
+  # Console DSN, and it does not run when no tenant migration is pending. So a
+  # Console migration ran with no restore point. Now a failed or refused dump
+  # stops the deploy here, and the ladder below never runs.
+  # The DSN is the libpq form that the applier uses, so the backup reads the
+  # same database that the ladder writes. backup_db.sh sends the stderr of
+  # pg_dump to a file, so no password reaches this log. It is not in the
+  # applier, because pr-check and dev_db.sh run that on throwaway databases.
+  # Fence: tests/unit/test_console_backup_gate.py.
+  cc_backup_dsn="${CC_DSN/+psycopg2/}"
+  cc_backup_dsn="${cc_backup_dsn/+psycopg/}"
+  if ! CUSTOMER_CONSOLE_DATABASE_URL="$cc_backup_dsn" bash scripts/backup_db.sh --console-only < /dev/null; then
+    echo "    !! ERROR: the Console backup FAILED, so the Console ladder did NOT run."
+    echo "       A Console migration runs only after a good dump of its database."
+    echo "       Read the backup lines above, fix the cause, then deploy again."
+    exit 1
+  fi
   CUSTOMER_CONSOLE_DATABASE_URL="$CC_DSN" \
     bash scripts/apply_customer_console_migrations.sh < /dev/null
 elif systemctl is-enabled --quiet acb-customer-console 2>/dev/null; then
@@ -2229,8 +2296,11 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   for oc_page in "$OC_DIR"/src/app/*/page.tsx; do
     [ -f "$oc_page" ] || continue
     oc_route="$(basename "$(dirname "$oc_page")")"
+    # One code, never two. `|| echo 000` inside the `$(...)` turns a 404
+    # that ends in a curl error into `404000`, and that hides a stale route.
+    # The same idiom hid an outage in vps-health.yml on 2026-10-03.
     oc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
-      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null || echo 000)"
+      "http://127.0.0.1:$OC_PORT/$oc_route" 2>/dev/null)" || true
     [ "$oc_code" = "404" ] && oc_stale="$oc_stale /$oc_route"
   done
   if [ -n "$oc_stale" ]; then

@@ -8,7 +8,7 @@
 # runs locally in seconds, and every red run cost about 30 minutes.
 # Two-speed CI contract: project-docs/specs/engineering_practice.md §7a.
 #
-# Not the merge gate. pr-check runs the whole suite on every PR.
+# Not the merge gate. pr-check runs the tests that the diff can affect (D176).
 set -u
 cd "$(dirname "$0")/.."
 harden=false; [ "${1:-}" = "--harden" ] && harden=true

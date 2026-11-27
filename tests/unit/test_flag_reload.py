@@ -1,0 +1,1105 @@
+"""A per-org flag flip with no restart (gateway/flag_reload.py, 2026-10-28).
+
+R7 fences named here:
+
+* ``flag-reload-applies``: a changed ``*_orgs`` flag reaches ``os.environ``,
+  ``get_settings()`` and a real flag reader.
+* ``flag-reload-allow-list``: only ``*_orgs`` and ``*_modes`` fields reload.
+  A loop switch, a security gate, ``PGPASSWORD`` and every other key wait for
+  a restart, and each reload names them (review of 2026-10-29).
+* ``flag-reload-no-other-key``: a restart-only key that the file gains after
+  the start stays out of the settings after a reload.
+* ``flag-reload-bad-value``: settings that do not validate change nothing.
+* ``flag-reload-signal`` (Linux): SIGHUP to the process runs the reload.
+* ``flag-reload-per-call``: no module reads a reloadable flag at import, no
+  start function of the lifespan reads one, no module keeps
+  ``get_settings()`` in a module name, and no new cached function reads it.
+"""
+from __future__ import annotations
+
+import ast
+import asyncio
+import os
+import re
+import signal
+import sys
+from pathlib import Path
+
+import pytest
+from acb_common import get_settings
+from acb_common.settings import Settings
+from gateway import flag_reload as fr
+from gateway.routes.crm import flags as crm_flags
+
+_ROOT = Path(__file__).resolve().parents[2]
+_START = {"CRM_ORGS": "acme", "CRM_ENABLED": "true", "DATABASE_URL": "postgresql://a/b"}
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """An env file and a process environment that agree, as at a start. The
+    test works in the file's folder, as the unit does (``WorkingDirectory``),
+    so ``Settings`` reads this file as its ``env_file``."""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".env"
+
+    def write(**values: str) -> None:
+        path.write_text("".join(f"{k}={v}\n" for k, v in values.items()),
+                        encoding="utf-8")
+
+    write(**_START)
+    for key in ("CRM_ORGS", "CRM_ENABLED", "DATABASE_URL", "DB_POOL_SIZE",
+                "PGPASSWORD", "DECIDE_FEATURE_MODES"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in _START.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(fr, "_state", {"installed": False, "path": path,
+                                       "loaded": fr._read(path), "at": None})
+    get_settings.cache_clear()
+    yield write
+    get_settings.cache_clear()
+
+
+def test_only_per_org_and_mode_flags_reload() -> None:
+    assert len(fr.RELOADABLE) >= 20
+    assert all(re.fullmatch(r"[A-Z0-9_]+_(ORGS|MODES)", k) for k in fr.RELOADABLE)
+    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs",
+                "STATUS_SET_GUARD_ORGS", "status_set_guard_orgs"):
+        assert fr.reloadable(key), key
+    for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
+                "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",
+                "EMAIL_SYNC_ENABLED", "TOOL_RESULT_SPILL", "GATEWAY_INTERNAL_TOKEN",
+                "FIND_CLAIM_CHECK"):
+        assert not fr.reloadable(key), key
+
+
+def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-55 EA-18a, spec §12.8. The reload list holds the key, and the one
+    reader sees a change with no restart. So the list, the write rule, the
+    audience and the focus move together."""
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    assert fr.reloadable("AGENT_QUESTIONS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("AGENT_QUESTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not agent_questions_allowed("acme")
+    env(**{**_START, "AGENT_QUESTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AGENT_QUESTIONS_ORGS",)
+    assert agent_questions_allowed("acme")
+    assert not agent_questions_allowed("globex")
+
+
+def test_tool_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-67 TS-2a, one_assistant_context.md §4.2.9. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from acb_skills.tool_packs import tool_search_on
+
+    assert fr.reloadable("TOOL_SEARCH_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("TOOL_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not tool_search_on("acme")
+    env(**{**_START, "TOOL_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("TOOL_SEARCH_ORGS",)
+    assert tool_search_on("acme")
+    assert not tool_search_on("globex")
+
+
+def test_chat_packs_batch_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """chat_reach.md G2 (task 3494). The reload list holds the key, and the
+    one reader sees a change with no restart."""
+    from acb_skills.tool_packs import packs_batch_on
+
+    assert fr.reloadable("CHAT_PACKS_BATCH_ORGS")
+    monkeypatch.setenv("CHAT_PACKS_BATCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not packs_batch_on("acme")
+    env(**{**_START, "CHAT_PACKS_BATCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PACKS_BATCH_ORGS",)
+    assert packs_batch_on("acme")
+    assert not packs_batch_on("globex")
+
+
+def test_waiting_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-AP AP-1a, waiting_on_me.md §7.3. The reload list holds the key, and
+    the one reader sees a change with no restart."""
+    from gateway.routes.shell.waiting import waiting_allowed
+
+    assert fr.reloadable("WAITING_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("WAITING_ORGS", "")
+    get_settings.cache_clear()
+    assert not waiting_allowed("acme")
+    env(**{**_START, "WAITING_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("WAITING_ORGS",)
+    assert waiting_allowed("acme")
+    assert not waiting_allowed("globex")
+
+
+def test_app_owner_root_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-44, agent_coordination.md §3.10.1. The reload list holds the
+    key, and the one reader sees a change with no restart."""
+    from gateway.routes.projects.needs_attention import app_roots_of
+
+    root = "11111111-2222-4333-8444-555555555555"
+    assert fr.reloadable("APP_OWNER_ROOT_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("APP_OWNER_ROOT_ORGS", "")
+    get_settings.cache_clear()
+    assert app_roots_of("acme") == ()
+    env(**{**_START, "APP_OWNER_ROOT_ORGS": f"acme={root}"})
+    assert fr.reload_flags().applied == ("APP_OWNER_ROOT_ORGS",)
+    assert app_roots_of("acme") == (root,)
+    assert app_roots_of("globex") == ()
+
+
+def test_my_day_learn_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-58 LOOP-4a, proactive_loop.md §7.2. The reload list holds the key,
+    and the one reader sees a change with no restart."""
+    from gateway.routes.shell.state import learn_allowed
+
+    assert fr.reloadable("MY_DAY_LEARN_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("MY_DAY_LEARN_ORGS", "")
+    get_settings.cache_clear()
+    assert not learn_allowed("acme")
+    env(**{**_START, "MY_DAY_LEARN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("MY_DAY_LEARN_ORGS",)
+    assert learn_allowed("acme")
+    assert not learn_allowed("globex")
+
+
+def test_github_app_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-MCP SW-53, agent_coordination.md. The reload list holds the key, and
+    the one reader sees a change with no restart. The master stays a restart
+    key, and it gates the list."""
+    from gateway.connections.github_app import github_app_org_allowed
+
+    assert fr.reloadable("GITHUB_APP_ORGS")
+    assert not fr.reloadable("GITHUB_APP_ENABLED")
+    # `setenv` records each key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("GITHUB_APP_ORGS", "")
+    monkeypatch.setenv("GITHUB_APP_ENABLED", "true")
+    env(**{**_START, "GITHUB_APP_ENABLED": "true"})
+    fr._state["loaded"] = fr._read(fr._state["path"])
+    get_settings.cache_clear()
+    assert not github_app_org_allowed("acme"), "an empty list is off (fail closed)"
+    env(**{**_START, "GITHUB_APP_ENABLED": "true", "GITHUB_APP_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("GITHUB_APP_ORGS",)
+    assert github_app_org_allowed("acme")
+    assert not github_app_org_allowed("globex")
+    monkeypatch.setattr(get_settings(), "github_app_enabled", False)
+    assert not github_app_org_allowed("acme"), "the master off is off for all"
+
+
+def test_workflow_studio_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU J1-3, ai_studio.md §14 J1-3. The reload list holds the key, and
+    the one reader of the authoring gate sees a change with no restart."""
+    from gateway.routes.workflows.core import author_gate_on
+
+    assert fr.reloadable("WORKFLOW_STUDIO_GATE_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("WORKFLOW_STUDIO_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not author_gate_on("acme")
+    env(**{**_START, "WORKFLOW_STUDIO_GATE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("WORKFLOW_STUDIO_GATE_ORGS",)
+    assert author_gate_on("acme")
+    assert not author_gate_on("globex")
+
+
+def test_studio_door_ops_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU B2b-2b, ai_studio.md §14 B2b-2. The reload list holds the key, and
+    the one reader of the door op switch sees a change with no restart."""
+    from gateway.routes.studio.flags import door_ops_allowed
+
+    assert fr.reloadable("STUDIO_DOOR_OPS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("STUDIO_DOOR_OPS_ORGS", "")
+    get_settings.cache_clear()
+    assert not door_ops_allowed("acme")
+    env(**{**_START, "STUDIO_DOOR_OPS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_DOOR_OPS_ORGS",)
+    assert door_ops_allowed("acme")
+    assert not door_ops_allowed("globex")
+
+
+def test_chat_no_shrink_orgs_reload_and_their_reader_follows(env, monkeypatch) -> None:
+    """HRD-17e-1, chat_failure_modes.md §6. The reload list holds both keys,
+    and the one reader of the guard sees each change with no restart."""
+    from gateway.chat_no_shrink import ON, SHADOW, no_shrink_mode
+
+    assert fr.reloadable("CHAT_NO_SHRINK_ORGS")
+    assert fr.reloadable("CHAT_NO_SHRINK_SHADOW_ORGS")
+    monkeypatch.setenv("CHAT_NO_SHRINK_ORGS", "")
+    monkeypatch.setenv("CHAT_NO_SHRINK_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert no_shrink_mode("acme") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_SHADOW_ORGS",)
+    assert no_shrink_mode("acme") == SHADOW
+    assert no_shrink_mode("globex") == "off"
+    env(**{**_START, "CHAT_NO_SHRINK_SHADOW_ORGS": "acme", "CHAT_NO_SHRINK_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_NO_SHRINK_ORGS",)
+    assert no_shrink_mode("acme") == ON
+    assert no_shrink_mode(None) == "off"
+
+
+def test_chat_pin_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11, chat_organization.md §18. The reload list holds the key,
+    and the one reader of the pin switch sees a change with no restart."""
+    from gateway.chat_session_member import pin_allowed
+
+    assert fr.reloadable("CHAT_PIN_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert pin_allowed("acme")
+    assert not pin_allowed("globex")
+    assert not pin_allowed(None)
+
+
+def test_chat_pin_tool_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-11b, chat_organization.md §18 (owner, 2026-11-21, task 3563).
+    The reload list holds the key. The one reader of the tool switch sees a
+    change with no restart, and it needs the pin switch too."""
+    from gateway.chat_session_member import pin_tool_allowed
+
+    assert fr.reloadable("CHAT_PIN_TOOL_ORGS")
+    monkeypatch.setenv("CHAT_PIN_ORGS", "")
+    monkeypatch.setenv("CHAT_PIN_TOOL_ORGS", "")
+    get_settings.cache_clear()
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_ORGS",)
+    assert not pin_tool_allowed("acme")
+    env(**{**_START, "CHAT_PIN_ORGS": "acme", "CHAT_PIN_TOOL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_PIN_TOOL_ORGS",)
+    assert pin_tool_allowed("acme")
+    assert not pin_tool_allowed("globex")
+    assert not pin_tool_allowed(None)
+
+
+def test_compute_run_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """SBX-18, agent_sandbox.md 0c. The reload list holds the key, and the one
+    reader of the compute switch sees a change with no restart."""
+    from orchestrator.sandbox_broker import compute_enabled
+
+    assert fr.reloadable("COMPUTE_RUN_ORGS")
+    monkeypatch.setenv("COMPUTE_RUN_ORGS", "")
+    monkeypatch.setenv("MAF_CODING_SCOPE", "compute:*")
+    get_settings.cache_clear()
+    assert not compute_enabled("acme")
+    env(**{**_START, "COMPUTE_RUN_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("COMPUTE_RUN_ORGS",)
+    assert compute_enabled("acme")
+    assert not compute_enabled("globex")
+    assert not compute_enabled(None)
+
+
+def test_chat_card_record_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-17, chat_organization.md §16.3. The reload list holds the key,
+    and the one reader of the card record switch sees a change with no restart."""
+    from orchestrator.card_record import record_allowed
+
+    assert fr.reloadable("CHAT_CARD_RECORD_ORGS")
+    monkeypatch.setenv("CHAT_CARD_RECORD_ORGS", "")
+    get_settings.cache_clear()
+    assert not record_allowed("acme")
+    env(**{**_START, "CHAT_CARD_RECORD_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_CARD_RECORD_ORGS",)
+    assert record_allowed("acme")
+    assert not record_allowed("globex")
+    assert not record_allowed(None)
+
+
+def test_chat_join_shadow_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-4, chat_organization.md §7. The reload list holds the key, and
+    the one reader of the shadow switch sees a change with no restart."""
+    from gateway.chat_join_shadow import shadow_allowed
+
+    assert fr.reloadable("CHAT_JOIN_SHADOW_ORGS")
+    monkeypatch.setenv("CHAT_JOIN_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert not shadow_allowed("acme")
+    env(**{**_START, "CHAT_JOIN_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_JOIN_SHADOW_ORGS",)
+    assert shadow_allowed("ACME ")
+    assert not shadow_allowed("globex")
+    assert not shadow_allowed(None)
+
+
+def test_core_events_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU E12a, ai_studio.md §14 E12a. The reload list holds the key, and
+    the one reader of the core events switch sees a change with no restart."""
+    from gateway.core_events import core_events_allowed
+
+    assert fr.reloadable("CORE_EVENTS_ORGS")
+    monkeypatch.setenv("CORE_EVENTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not core_events_allowed("acme")
+    env(**{**_START, "CORE_EVENTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CORE_EVENTS_ORGS",)
+    assert core_events_allowed("acme")
+    assert not core_events_allowed("globex")
+
+
+def test_crm_mirror_age_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q30c, crm_platform.md §18.11.2. The reload list holds the
+    key, and the one reader of the age line sees a change with no restart."""
+    assert fr.reloadable("CRM_MIRROR_AGE_ORGS")
+    monkeypatch.setenv("CRM_MIRROR_AGE_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.mirror_age_allowed("acme")
+    env(**{**_START, "CRM_MIRROR_AGE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MIRROR_AGE_ORGS",)
+    assert crm_flags.mirror_age_allowed("ACME ")
+    assert not crm_flags.mirror_age_allowed("globex")
+    assert not crm_flags.mirror_age_allowed(None)
+
+
+def test_crm_module_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 CRM-Q34-7, crm_platform.md §18.17. The reload list holds the key,
+    and the one reader of `q` across a module sees a change with no restart."""
+    assert fr.reloadable("CRM_MODULE_FIND_ORGS")
+    monkeypatch.setenv("CRM_MODULE_FIND_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.module_find_allowed("acme")
+    env(**{**_START, "CRM_MODULE_FIND_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MODULE_FIND_ORGS",)
+    assert crm_flags.module_find_allowed("acme")
+    assert not crm_flags.module_find_allowed("globex")
+
+
+def test_crm_module_reread_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-53 task 3869, crm_platform.md §18.7. The reload list holds the key,
+    and the one reader of the weekly module read sees a change with no
+    restart."""
+    assert fr.reloadable("CRM_MODULE_REREAD_ORGS")
+    monkeypatch.setenv("CRM_MODULE_REREAD_ORGS", "")
+    get_settings.cache_clear()
+    assert not crm_flags.module_reread_allowed("acme")
+    env(**{**_START, "CRM_MODULE_REREAD_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CRM_MODULE_REREAD_ORGS",)
+    assert crm_flags.module_reread_allowed("acme")
+    assert not crm_flags.module_reread_allowed("globex")
+
+
+def test_studio_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C5a, ai_studio.md §14 C5a. The reload list holds the key, and
+    the one reader of the search switch sees a change with no restart."""
+    from gateway.routes.studio.flags import search_allowed
+
+    assert fr.reloadable("STUDIO_SEARCH_ORGS")
+    monkeypatch.setenv("STUDIO_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not search_allowed("acme")
+    env(**{**_START, "STUDIO_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SEARCH_ORGS",)
+    assert search_allowed("acme")
+    assert not search_allowed("globex")
+
+def test_find_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-FIND FIND-2, find_engine.md section 8. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from gateway.retrieval.find import find_allowed
+
+    assert fr.reloadable("FIND_ORGS")
+    monkeypatch.setenv("FIND_ORGS", "")
+    get_settings.cache_clear()
+    assert not find_allowed("acme")
+    env(**{**_START, "FIND_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("FIND_ORGS",)
+    assert find_allowed("acme")
+    assert not find_allowed("globex")
+
+def test_chat_search_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-FIND HRD-21, find_engine.md section 8. The reload list holds the key,
+    and the one reader of the switch of the past chats sees a change with no
+    restart."""
+    from gateway.retrieval.find import chat_search_named
+
+    assert fr.reloadable("CHAT_SEARCH_ORGS")
+    monkeypatch.setenv("CHAT_SEARCH_ORGS", "")
+    get_settings.cache_clear()
+    assert not chat_search_named("acme")
+    env(**{**_START, "CHAT_SEARCH_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_SEARCH_ORGS",)
+    assert chat_search_named("acme")
+    assert not chat_search_named("globex")
+
+def test_studio_chat_tools_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1a, ai_studio.md §14 TOF-1a. The reload list holds the key,
+    and the one reader of the chat tool source sees a change with no restart."""
+    from gateway.routes.studio.flags import chat_tools_allowed
+
+    assert fr.reloadable("STUDIO_CHAT_TOOLS_ORGS")
+    monkeypatch.setenv("STUDIO_CHAT_TOOLS_ORGS", "")
+    get_settings.cache_clear()
+    assert not chat_tools_allowed("acme")
+    env(**{**_START, "STUDIO_CHAT_TOOLS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_CHAT_TOOLS_ORGS",)
+    assert chat_tools_allowed("acme")
+    assert not chat_tools_allowed("globex")
+
+def test_studio_skill_offer_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-1d, ai_studio.md §14 TOF-1d. The reload list holds the key,
+    and the one reader of the skill offer sees a change with no restart."""
+    from gateway.routes.studio.flags import skill_offer_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_OFFER_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_OFFER_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_offer_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_OFFER_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_OFFER_ORGS",)
+    assert skill_offer_allowed("acme")
+    assert not skill_offer_allowed("globex")
+    assert not skill_offer_allowed(None)
+
+def test_studio_skill_repair_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-3a F12b, ai_studio_rows/F12.md. The reload list holds the
+    key, and the one reader of the record of skill runs sees a change with
+    no restart."""
+    from gateway.routes.studio.flags import skill_repair_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_REPAIR_ORGS")
+    monkeypatch.setenv("STUDIO_SKILL_REPAIR_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_repair_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_REPAIR_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_REPAIR_ORGS",)
+    assert skill_repair_allowed("acme")
+    assert not skill_repair_allowed("globex")
+    assert not skill_repair_allowed(None)
+
+
+def test_studio_skill_tests_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-TOF TOF-3b F4b, ai_studio_rows/F4.md. The reload list holds the key,
+    and the one reader of the test run switch sees a change with no restart.
+    The credit cap is no ``*_ORGS`` key, so a reload never applies it."""
+    from gateway.routes.studio.flags import skill_tests_allowed
+
+    assert fr.reloadable("STUDIO_SKILL_TESTS_ORGS")
+    assert not fr.reloadable("STUDIO_SKILL_TESTS_CAP_CREDITS")
+    monkeypatch.setenv("STUDIO_SKILL_TESTS_ORGS", "")
+    get_settings.cache_clear()
+    assert not skill_tests_allowed("acme")
+    env(**{**_START, "STUDIO_SKILL_TESTS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_SKILL_TESTS_ORGS",)
+    assert skill_tests_allowed("acme")
+    assert not skill_tests_allowed("globex")
+    assert not skill_tests_allowed(None)
+
+def test_studio_logic_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU B4a, ai_studio.md §14 B4a. The reload list holds the key, and
+    the one reader of the logic module switch sees a change with no restart."""
+    from gateway.routes.studio.flags import logic_allowed
+
+    assert fr.reloadable("STUDIO_LOGIC_ORGS")
+    monkeypatch.setenv("STUDIO_LOGIC_ORGS", "")
+    get_settings.cache_clear()
+    assert not logic_allowed("acme")
+    env(**{**_START, "STUDIO_LOGIC_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LOGIC_ORGS",)
+    assert logic_allowed("acme")
+    assert not logic_allowed("globex")
+
+
+def test_studio_num_f8_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU C2c, ai_studio.md §14 C2c. The reload list holds the key, and
+    the one reader of the float8 switch sees a change with no restart."""
+    from acb_common.studio_flags import num_f8_allowed
+
+    assert fr.reloadable("STUDIO_NUM_F8_ORGS")
+    monkeypatch.setenv("STUDIO_NUM_F8_ORGS", "")
+    get_settings.cache_clear()
+    assert not num_f8_allowed("acme")
+    env(**{**_START, "STUDIO_NUM_F8_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_NUM_F8_ORGS",)
+    assert num_f8_allowed("acme")
+    assert not num_f8_allowed("globex")
+
+
+def test_studio_connection_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I1a, ai_studio.md §14 I1a. The reload list holds the key, and the
+    one reader of the connection gate sees a change with no restart."""
+    from acb_common.studio_flags import connection_gate_on
+
+    assert fr.reloadable("STUDIO_CONNECTION_GATE_ORGS")
+    monkeypatch.setenv("STUDIO_CONNECTION_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_gate_on("acme")
+    assert not connection_gate_on(None)
+    env(**{**_START, "STUDIO_CONNECTION_GATE_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_CONNECTION_GATE_ORGS",)
+    assert connection_gate_on("ACME ")
+    assert not connection_gate_on("globex")
+
+
+def test_studio_live_preview_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-STU I11a, ai_studio.md §14 I11a. The reload list holds the key, and the
+    one reader of the live preview sees a change with no restart."""
+    from acb_common.studio_flags import live_preview_on
+
+    assert fr.reloadable("STUDIO_LIVE_PREVIEW_ORGS")
+    monkeypatch.setenv("STUDIO_LIVE_PREVIEW_ORGS", "")
+    get_settings.cache_clear()
+    assert not live_preview_on("acme")
+    assert not live_preview_on(None)
+    env(**{**_START, "STUDIO_LIVE_PREVIEW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("STUDIO_LIVE_PREVIEW_ORGS",)
+    assert live_preview_on("ACME ")
+    assert not live_preview_on("globex")
+
+
+def test_chat_topics_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-CO CO-2a, chat_organization.md §6. The reload list holds the key, and
+    the one reader of the topic switch sees a change with no restart."""
+    from gateway.chat_topic import topics_allowed
+
+    assert fr.reloadable("CHAT_TOPICS_ORGS")
+    monkeypatch.setenv("CHAT_TOPICS_ORGS", "")
+    get_settings.cache_clear()
+    assert not topics_allowed("acme")
+    env(**{**_START, "CHAT_TOPICS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_TOPICS_ORGS",)
+    assert topics_allowed("ACME ")
+    assert not topics_allowed("globex")
+    assert not topics_allowed(None)
+
+
+def test_ai_turn_kind_nowait_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """Task 3592, ai_tier_routing.md §4.3. The reload list holds the key, and
+    the one reader of the delegated wait sees a change with no restart."""
+    from acb_skills.tier_policy import turn_kind_nowait_on
+
+    assert fr.reloadable("AI_TURN_KIND_NOWAIT_ORGS")
+    monkeypatch.setenv("AI_TURN_KIND_NOWAIT_ORGS", "")
+    get_settings.cache_clear()
+    assert not turn_kind_nowait_on("acme")
+    env(**{**_START, "AI_TURN_KIND_NOWAIT_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AI_TURN_KIND_NOWAIT_ORGS",)
+    assert turn_kind_nowait_on("ACME ")
+    assert not turn_kind_nowait_on("globex")
+
+
+def test_semantic_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-7, semantic_model.md §10.2. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from gateway.routes.crm.flags import semantic_model_allowed
+
+    assert fr.reloadable("SEMANTIC_MODEL_ORGS")
+    monkeypatch.setenv("SEMANTIC_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not semantic_model_allowed("acme")
+    env(**{**_START, "SEMANTIC_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("SEMANTIC_MODEL_ORGS",)
+    assert semantic_model_allowed("ACME ")
+    assert not semantic_model_allowed("globex")
+    assert not semantic_model_allowed(None)
+
+
+def test_api_connections_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """API-1, api_connections.md §4 (D-API-8). The reload list holds the key,
+    and the one reader of the switch sees a change with no restart."""
+    from acb_common.api_connections_flag import api_connections_allowed
+
+    assert fr.reloadable("API_CONNECTIONS_ORGS")
+    monkeypatch.setenv("API_CONNECTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not api_connections_allowed("acme")
+    env(**{**_START, "API_CONNECTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("API_CONNECTIONS_ORGS",)
+    assert api_connections_allowed("ACME ")
+    assert not api_connections_allowed("globex")
+    assert not api_connections_allowed(None)
+
+
+def test_integration_access_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """ACC-1, integrations_console.md §3.9.4. The reload list holds the key,
+    and the one reader of the switch of the two rule routes sees a change
+    with no restart."""
+    from gateway.routes.admin._common import integration_access_allowed
+
+    assert fr.reloadable("INTEGRATION_ACCESS_ORGS")
+    monkeypatch.setenv("INTEGRATION_ACCESS_ORGS", "")
+    get_settings.cache_clear()
+    assert not integration_access_allowed("acme")
+    env(**{**_START, "INTEGRATION_ACCESS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("INTEGRATION_ACCESS_ORGS",)
+    assert integration_access_allowed("ACME ")
+    assert not integration_access_allowed("globex")
+    assert not integration_access_allowed(None)
+
+
+def test_connection_model_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-SEM SEM-12, semantic_model.md §10.4. The reload list holds the key,
+    and the one reader of the switch sees a change with no restart.
+    Mutation: leave the flag out of the reload list (a name that does not end
+    in ``_orgs``), and the first assert fails."""
+    from gateway.connections.semantic_model import connection_model_allowed
+
+    assert fr.reloadable("CONNECTION_MODEL_ORGS")
+    monkeypatch.setenv("CONNECTION_MODEL_ORGS", "")
+    get_settings.cache_clear()
+    assert not connection_model_allowed("acme")
+    env(**{**_START, "CONNECTION_MODEL_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CONNECTION_MODEL_ORGS",)
+    assert connection_model_allowed("ACME ")
+    assert not connection_model_allowed("globex")
+    assert not connection_model_allowed(None)
+
+
+def test_chat_card_precondition_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """HRD-10a, chat_failure_modes.md section 6. The reload list holds the key,
+    and the one reader of the version check of a card sees a change with no
+    restart."""
+    from acb_skills.ask_tools import card_precondition_on
+
+    assert fr.reloadable("CHAT_CARD_PRECONDITION_ORGS")
+    monkeypatch.setenv("CHAT_CARD_PRECONDITION_ORGS", "")
+    get_settings.cache_clear()
+    assert not card_precondition_on("acme")
+    env(**{**_START, "CHAT_CARD_PRECONDITION_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CHAT_CARD_PRECONDITION_ORGS",)
+    assert card_precondition_on("ACME ")
+    assert not card_precondition_on("globex")
+
+
+def test_claim_gate_shadow_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """LBB-2, engineering_practice.md section 7b.2. The reload list holds the
+    key, and the one reader of the shadow of the claim gate sees a change with
+    no restart. The other flag of the gate does not move."""
+    from gateway.routes.projects.claim_gate import claim_gate_on, claim_gate_shadow_on
+
+    assert fr.reloadable("CLAIM_GATE_SHADOW_ORGS")
+    monkeypatch.setenv("CLAIM_GATE_SHADOW_ORGS", "")
+    monkeypatch.setenv("CLAIM_GATE_ORGS", "")
+    get_settings.cache_clear()
+    assert not claim_gate_shadow_on("acme")
+    env(**{**_START, "CLAIM_GATE_SHADOW_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("CLAIM_GATE_SHADOW_ORGS",)
+    assert claim_gate_shadow_on("ACME ")
+    assert not claim_gate_shadow_on("globex")
+    assert not claim_gate_shadow_on(None)
+    assert not claim_gate_on("acme")
+
+
+def test_claim_gate_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """LBB-2, engineering_practice.md section 7b.2. The reload list holds the
+    key, and the one reader of the claim gate sees a change with no restart.
+    ``*`` names every org."""
+    from gateway.routes.projects.claim_gate import claim_gate_on, claim_gate_shadow_on
+
+    assert fr.reloadable("CLAIM_GATE_ORGS")
+    monkeypatch.setenv("CLAIM_GATE_ORGS", "")
+    monkeypatch.setenv("CLAIM_GATE_SHADOW_ORGS", "")
+    get_settings.cache_clear()
+    assert not claim_gate_on("acme")
+    env(**{**_START, "CLAIM_GATE_ORGS": "*"})
+    assert fr.reload_flags().applied == ("CLAIM_GATE_ORGS",)
+    assert claim_gate_on("acme") and claim_gate_on("globex")
+    assert not claim_gate_on("")
+    assert not claim_gate_shadow_on("acme")
+
+
+def test_each_reloadable_field_is_named_by_its_env_key() -> None:
+    """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
+    break that map, and ``str`` keeps every value valid."""
+    for key in fr.RELOADABLE:
+        info = Settings.model_fields[key.lower()]
+        assert info.alias is None and info.validation_alias is None, key
+
+
+def test_settings_rebuild_from_their_own_dump(env) -> None:
+    current = get_settings()
+    assert Settings(**current.model_dump()) == current
+
+
+def test_a_changed_flag_reaches_the_settings_and_its_reader(env) -> None:
+    assert crm_flags.crm_orgs() == frozenset({"acme"})
+    env(**{**_START, "CRM_ORGS": "acme,globex"})
+
+    res = fr.reload_flags()
+
+    assert (res.applied, res.restart, res.error) == (("CRM_ORGS",), (), None)
+    assert os.environ["CRM_ORGS"] == "acme,globex"
+    assert crm_flags.crm_orgs() == frozenset({"acme", "globex"})
+    assert fr.last_reload() is not None
+
+
+def test_a_removed_flag_takes_its_default_again(env) -> None:
+    env(CRM_ENABLED="true", DATABASE_URL="postgresql://a/b")
+    assert fr.reload_flags().applied == ("CRM_ORGS",)
+    assert "CRM_ORGS" not in os.environ
+    assert get_settings().crm_orgs == Settings.model_fields["crm_orgs"].default
+
+
+def test_any_other_key_waits_for_a_restart(env) -> None:
+    env(**{**_START, "DATABASE_URL": "postgresql://new/db", "PGPASSWORD": "x"})
+    first = fr.reload_flags()
+    assert (first.applied, first.restart) == ((), ("DATABASE_URL", "PGPASSWORD"))
+    assert os.environ["DATABASE_URL"] == "postgresql://a/b"
+    assert "PGPASSWORD" not in os.environ
+    assert fr.last_reload() is None, "a reload that applied nothing moved the time"
+    # They still differ, so the next reload names them again.
+    assert fr.reload_flags().restart == ("DATABASE_URL", "PGPASSWORD")
+
+
+def test_a_key_the_file_gains_stays_out_of_the_settings(env) -> None:
+    """Review finding P2. A rebuild from the environment would read the new
+    key from the env file of ``Settings``. The reload rebuilds from the
+    running settings, so only the applied flag moves."""
+    running_pool = get_settings().db_pool_size
+    env(**{**_START, "CRM_ORGS": "globex", "DB_POOL_SIZE": str(running_pool + 3)})
+
+    res = fr.reload_flags()
+
+    assert (res.applied, res.restart) == (("CRM_ORGS",), ("DB_POOL_SIZE",))
+    assert get_settings().crm_orgs == "globex"
+    assert get_settings().db_pool_size == running_pool
+    assert "DB_POOL_SIZE" not in os.environ
+
+
+def test_settings_that_do_not_validate_change_nothing(env, monkeypatch) -> None:
+    class _Refuses(Settings):
+        def __init__(self, **_kw):
+            raise ValueError("no")
+
+    before = get_settings()
+    monkeypatch.setattr(fr, "Settings", _Refuses)
+    env(**{**_START, "CRM_ORGS": "globex"})
+
+    res = fr.reload_flags()
+
+    assert res.error == "ValueError" and res.applied == ()
+    assert os.environ["CRM_ORGS"] == "acme"
+    assert get_settings() is before, "a refused reload replaced the settings"
+
+
+def test_a_decide_flag_runs_the_wiring_check_again(env, monkeypatch) -> None:
+    """Review round 2. The check runs once at start, and it is the only
+    alarm for a decide mode with no router. A reload that changes a decide
+    flag runs it again, and any other reload does not."""
+    from gateway.routes.email import scheduler_hooks
+
+    ran: list[int] = []
+    monkeypatch.setattr(scheduler_hooks, "check_decide_wiring", lambda: ran.append(1))
+    env(**{**_START, "CRM_ORGS": "globex"})
+    fr.reload_flags()
+    assert ran == []
+    env(**{**_START, "CRM_ORGS": "globex", "DECIDE_FEATURE_MODES": "email.x=on"})
+    assert fr.reload_flags().applied == ("DECIDE_FEATURE_MODES",)
+    assert ran == [1]
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="no SIGHUP on this platform")
+def test_sighup_runs_the_reload(env) -> None:
+    env(**{**_START, "CRM_ORGS": "initech"})
+
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        assert fr.install(loop, path=fr._state["path"])
+        # install() read the file afresh: put the start state back.
+        fr._state["loaded"] = dict(_START)
+        try:
+            os.kill(os.getpid(), signal.SIGHUP)
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if os.environ.get("CRM_ORGS") == "initech":
+                    break
+        finally:
+            loop.remove_signal_handler(signal.SIGHUP)
+
+    asyncio.run(_run())
+    assert fr.installed()
+    assert crm_flags.crm_orgs() == frozenset({"initech"})
+
+
+def test_install_on_a_platform_with_no_sighup(monkeypatch) -> None:
+    monkeypatch.delattr(signal, "SIGHUP", raising=False)
+    assert fr.install(loop=object()) is False  # type: ignore[arg-type]
+
+
+# ── The fences of "read per call" ───────────────────────────────────────────
+
+#: The code that runs in the gateway process.
+_SCAN = [_ROOT / "apps/services", _ROOT / "packages"]
+_MAIN = _ROOT / "apps/services/gateway/gateway/main.py"
+_FIELDS = {k.lower() for k in fr.RELOADABLE}
+
+#: The cached functions that may read ``get_settings()``: the accessor itself,
+#: and the sync engine, which a restart builds (``DB_`` keys need a restart).
+_CACHED_ALLOWED = {
+    ("packages/acb_common/acb_common/settings.py", "get_settings"),
+    ("packages/acb_graph/acb_graph/db.py", "get_engine"),
+}
+
+#: The module names that may keep a settings value. Each reads only a key
+#: that a reload never applies.
+_CAPTURED_ALLOWED = {
+    # The docs routes exist only in dev, and FastAPI mounts them at import.
+    ("apps/services/gateway/gateway/main.py", "_docs_enabled"),
+}
+
+
+def _trees() -> dict[str, ast.Module]:
+    out: dict[str, ast.Module] = {}
+    for root in _SCAN:
+        for p in root.rglob("*.py"):
+            if "tests" in p.parts or "node_modules" in p.parts:
+                continue
+            try:
+                out[p.relative_to(_ROOT).as_posix()] = ast.parse(p.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+    return out
+
+
+def _env_key(call: ast.Call) -> str | None:
+    """The constant key of ``os.environ.get(K)``, ``os.getenv(K)``."""
+    f = call.func
+    if isinstance(f, ast.Attribute) and f.attr in {"get", "getenv"} and call.args \
+            and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    return None
+
+
+def _flags_read_node(n: ast.AST) -> set[str]:
+    """The reloadable field that the one node *n* reads, as an attribute or
+    an env key. A bare string is a name, not a read."""
+    if isinstance(n, ast.Attribute) and n.attr in _FIELDS:
+        return {n.attr}
+    if isinstance(n, ast.Call) and (k := _env_key(n)) and k.lower() in _FIELDS:
+        return {k.lower()}
+    if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "getattr" \
+            and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) \
+            and isinstance(n.args[1].value, str) and n.args[1].value in _FIELDS:
+        return {n.args[1].value}
+    if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) \
+            and isinstance(n.slice.value, str) and n.slice.value.lower() in _FIELDS:
+        return {n.slice.value.lower()}
+    return set()
+
+
+def _flags_read(node: ast.AST) -> set[str]:
+    """The reloadable fields that *node* and its children read. A list of
+    names is no hit."""
+    out: set[str] = set()
+    for n in ast.walk(node):
+        out |= _flags_read_node(n)
+    return out
+
+
+def _calls(node: ast.AST) -> set[str]:
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            out.add(getattr(n.func, "id", getattr(n.func, "attr", "")))
+    return out
+
+
+def _import_time(node: ast.AST) -> list[ast.AST]:
+    """The parts of a module statement that run at import: all of a plain
+    statement, a class body less its methods, and the decorators and default
+    values of a function (review round 2)."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = node.args
+        return [*node.decorator_list, *a.defaults, *[d for d in a.kw_defaults if d]]
+    if isinstance(node, ast.ClassDef):
+        out: list[ast.AST] = [*node.decorator_list, *node.bases]
+        for stmt in node.body:
+            out += _import_time(stmt)
+        return out
+    return [node]
+
+
+def test_no_module_reads_a_reloadable_flag_at_import() -> None:
+    hits = []
+    for rel, tree in _trees().items():
+        for node in tree.body:
+            for part in _import_time(node):
+                for field in _flags_read(part):
+                    hits.append(f"{rel}:{getattr(part, 'lineno', node.lineno)} {field}")
+    assert hits == [], f"a module reads a reloadable flag at import: {hits}"
+
+
+#: How deep the start fence follows calls. ``start_reminder_loop`` reads its
+#: switch two calls down (``_enabled`` → ``reminders_enabled``).
+_START_DEPTH = 3
+
+#: A call whose argument is a coroutine to spawn. The spawned loop reads its
+#: flags on each tick, so it follows a reload: the fence does not enter it.
+_SPAWN = {"create_task", "ensure_future", "run_coroutine_threadsafe", "start_soon"}
+
+#: The functions of the start path that read a reloadable flag and gate
+#: nothing, with the reason.
+_START_READS_ALLOWED = {
+    # It logs `email.decide_not_wired` once when a decide feature is on and
+    # the router is not wired. It starts and skips nothing.
+    ("gateway.routes.email.scheduler_hooks", "check_decide_wiring"),
+}
+
+
+def _module_name(rel: str) -> str | None:
+    parts = rel[:-3].split("/")
+    if parts[:2] == ["apps", "services"] and len(parts) > 3:
+        parts = parts[3:]
+    elif parts[0] == "packages" and len(parts) > 2:
+        parts = parts[2:]
+    else:
+        return None
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _own_nodes(fn: ast.AST):
+    """The nodes of *fn*'s own body. Not a nested function, and not the
+    argument of a spawn call."""
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        yield n
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", getattr(n.func, "id", "")) in _SPAWN:
+            continue
+        stack.extend(ast.iter_child_nodes(n))
+
+
+def _bindings(nodes, module: str) -> dict[str, tuple[str, str | None]]:
+    """``name -> (module, attr)`` of each import in *nodes*. ``attr`` is None
+    when the name is a module."""
+    out: dict[str, tuple[str, str | None]] = {}
+    pkg = module.rsplit(".", 1)[0]
+    for n in nodes:
+        if isinstance(n, ast.ImportFrom):
+            base = n.module or ""
+            if n.level:
+                base = ".".join(pkg.split(".")[: len(pkg.split(".")) - n.level + 1] + ([base] if base else []))
+            for a in n.names:
+                out[a.asname or a.name] = (base, a.name)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                out[a.asname or a.name.split(".")[0]] = (a.name if a.asname else a.name.split(".")[0], None)
+    return out
+
+
+def _resolve(call: ast.Call, module: str, local: dict, top: dict, mods: dict):
+    """The ``(module, function)`` that *call* names, or None."""
+    f = call.func
+    if isinstance(f, ast.Name):
+        if f.id in local:
+            mod, attr = local[f.id]
+            return (mod, attr) if attr else None
+        if f.id in mods.get(module, {}).get("defs", {}):
+            return module, f.id
+        if f.id in top:
+            mod, attr = top[f.id]
+            return (mod, attr) if attr else None
+    elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+        bound = local.get(f.value.id) or top.get(f.value.id)
+        if bound:
+            mod, attr = bound
+            return (f"{mod}.{attr}" if attr else mod), f.attr
+    return None
+
+
+def test_no_start_function_of_the_lifespan_reads_a_reloadable_flag() -> None:
+    """A start function runs once. A loop that it starts or skips on a
+    reloadable flag would not follow a reload. The fence resolves the calls
+    of each start function as Python does (its own imports, its module, the
+    module's imports), :data:`_START_DEPTH` deep."""
+    mods: dict[str, dict] = {}
+    for rel, tree in _trees().items():
+        name = _module_name(rel)
+        if name:
+            mods[name] = {
+                "defs": {n.name: n for n in tree.body
+                         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))},
+                "top": _bindings(tree.body, name),
+            }
+    main = "gateway.main"
+    lifespan = mods[main]["defs"]["lifespan"]
+    # Only the start half: the calls after `yield` run at the stop.
+    stop_at = min(n.lineno for n in ast.walk(lifespan) if isinstance(n, ast.Yield))
+    starts = set()
+    local = _bindings(list(ast.walk(lifespan)), main)
+    for n in _own_nodes(lifespan):
+        if isinstance(n, ast.Call) and n.lineno < stop_at \
+                and (r := _resolve(n, main, local, mods[main]["top"], mods)):
+            starts.add(r)
+    hits = []
+    for start in sorted(s for s in starts if s[1] in mods.get(s[0], {}).get("defs", {})):
+        seen, frontier, found = {start}, {start}, set()
+        for _ in range(_START_DEPTH + 1):
+            nxt = set()
+            for mod, fname in frontier:
+                fn = mods.get(mod, {}).get("defs", {}).get(fname)
+                if fn is None or (mod, fname) in _START_READS_ALLOWED:
+                    continue
+                own = list(_own_nodes(fn))
+                found |= {f for n in own for f in _flags_read_node(n)}
+                local = _bindings(own, mod)
+                for n in own:
+                    if isinstance(n, ast.Call) and (r := _resolve(n, mod, local, mods[mod]["top"], mods)):
+                        nxt.add(r)
+            frontier = nxt - seen
+            seen |= nxt
+        hits += [f"{start[0]}.{start[1]} {f}" for f in sorted(found)]
+    assert starts, "the fence found no start function in the lifespan"
+    assert hits == [], f"a start function reads a reloadable flag: {hits}"
+
+
+def test_no_module_keeps_a_copy_of_the_settings() -> None:
+    captured, cached = [], []
+    for rel, tree in _trees().items():
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None \
+                    and "get_settings" in _calls(node.value):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if not all((rel, getattr(t, "id", "")) in _CAPTURED_ALLOWED for t in targets):
+                    captured.append(f"{rel}:{node.lineno}")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and any(getattr(d.func if isinstance(d, ast.Call) else d, "id",
+                                    getattr(d.func if isinstance(d, ast.Call) else d, "attr", ""))
+                            in {"lru_cache", "cache", "cached_property"}
+                            for d in node.decorator_list) \
+                    and "get_settings" in _calls(node) and (rel, node.name) not in _CACHED_ALLOWED:
+                cached.append(f"{rel}:{node.lineno} {node.name}")
+    assert captured == [], f"a module keeps get_settings() from its import: {captured}"
+    assert cached == [], f"a cached function keeps a settings value: {cached}"
+
+
+def test_the_fences_can_fail(tmp_path, monkeypatch) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "m.py").write_text(
+        "import os\n"
+        "from acb_common import get_settings\n"
+        "S = get_settings()\n"
+        "ORGS = os.environ.get('CRM_ORGS', '')\n"
+        "NAMES = frozenset({'CRM_ORGS'})\n"
+        "class Gate:\n"
+        "    ORGS = get_settings().knowledge_orgs\n"
+        "    def run(self):\n"
+        "        return get_settings().reach_orgs\n"
+        "def allowed(org, orgs=get_settings().tool_packs_orgs):\n"
+        "    return org in orgs\n", encoding="utf-8")
+    me = sys.modules[__name__]
+    monkeypatch.setattr(me, "_SCAN", [pkg])
+    monkeypatch.setattr(me, "_ROOT", tmp_path)
+    with pytest.raises(AssertionError) as got:
+        test_no_module_reads_a_reloadable_flag_at_import()
+    assert "pkg/m.py:4 crm_orgs" in str(got.value)
+    assert "pkg/m.py:5" not in str(got.value), "a list of names is not a read"
+    assert "pkg/m.py:7 knowledge_orgs" in str(got.value), "a class body runs at import"
+    assert "reach_orgs" not in str(got.value), "a method body runs per call"
+    assert "pkg/m.py:10 tool_packs_orgs" in str(got.value), "a default runs at import"
+    with pytest.raises(AssertionError) as got:
+        test_no_module_keeps_a_copy_of_the_settings()
+    assert "pkg/m.py:3" in str(got.value)

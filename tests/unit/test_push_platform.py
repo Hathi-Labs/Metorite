@@ -175,7 +175,7 @@ class TestTheKeys:
         assert flags.configured()
         res = _client().get("/push/public-key")
         assert res.status_code == 200
-        assert res.json() == {"public_key": push_on.public}
+        assert res.json() == {"public_key": push_on.public, "prompt": False}
         assert push_on.private not in res.text
 
     def test_a_pair_that_does_not_match_is_not_configured(self, push_on, monkeypatch):
@@ -499,3 +499,42 @@ class TestTheTestRoute:
         gate.set()
         await first
         assert set() == routes._IN_FLIGHT
+
+
+class TestThePrompt:
+    """WS-OB OB-8: ``prompt`` in the public-key answer follows ``PUSH_PROMPT_ORGS``."""
+
+    @pytest.mark.parametrize("raw,org,want", [
+        ("", "org-a", False),
+        ("org-b", "org-a", False),
+        ("org-a", "org-a", True),
+        (" ORG-A , org-b ", "org-a", True),
+        ("*", "org-a", True),
+        ("*", "", False),
+    ])
+    def test_the_reader(self, monkeypatch, raw, org, want):
+        monkeypatch.setattr(get_settings(), "push_prompt_orgs", raw)
+        assert flags.prompt_allowed(org) is want
+
+    def test_the_route_answers_prompt_for_the_session_org(self, push_on, monkeypatch):
+        monkeypatch.setattr(get_settings(), "push_prompt_orgs", "")
+        assert _client().get("/push/public-key").json() == {
+            "public_key": push_on.public, "prompt": False}
+        monkeypatch.setattr(get_settings(), "push_prompt_orgs", "*")
+        assert _client().get("/push/public-key").json()["prompt"] is True
+
+    def test_push_off_gives_no_prompt(self, monkeypatch):
+        monkeypatch.setattr(get_settings(), "push_prompt_orgs", "*")
+        monkeypatch.setattr(get_settings(), "web_push_enabled", False)
+        assert _client().get("/push/public-key").status_code == 404
+
+    def test_the_route_reads_the_session_org_and_the_prefix_is_guarded(self, push_on, monkeypatch):
+        from acb_common.env_guard import PLATFORM_ENV_PREFIXES, is_platform_env
+        from acb_common.settings import Settings
+
+        monkeypatch.setattr(get_settings(), "push_prompt_orgs", ORG)
+        assert _client().get("/push/public-key").json()["prompt"] is True
+        assert _client(org="other-org").get("/push/public-key").json()["prompt"] is False
+        assert Settings.model_fields["push_prompt_orgs"].default == ""
+        assert "PUSH_PROMPT_" in PLATFORM_ENV_PREFIXES
+        assert is_platform_env("PUSH_PROMPT_ORGS")

@@ -6,7 +6,15 @@ read seam. This spec owns what goes INTO the seam: the stamp, the recency
 rule, the digest, the connectors, their health and the sweep.
 
 **Built.** CX-1 BUILT 2026-10-18 (branch `ws61-cx1-recency`, no migration).
-It is dark behind `CONTEXT_RECENCY`. CX-1b to CX-7 are not built.
+It is dark behind `CONTEXT_RECENCY`. CX-2 is SUPERSEDED by KG-1 (2026-10-28, WS-KG),
+which is built (`evals/search_company/`). KG-3a is BUILT 2026-10-28 (migration
+314, no flag), and its backfill has not run on staging or production. KG-2 is
+BUILT (WS-KG, Metorite #787, dark), and its backfill has not run. CX-1b,
+CX-3 to CX-7 and KG-3b are not built.
+
+**PROPOSED, task 3500 (2026-11-16).** The chat digest table is
+`chat_session_digest`, and CX-4 adds no second pass (§8.1). Where §5.3, §7,
+§8.2, §10, §11 or CX-4 differ, §8.1 wins until metorite-a3 confirms.
 
 **Read first.** `knowledge_base.md` §0, §6 and §20. `work_plan.md` D104 and
 D105. This spec changes neither decision. It adds the rules that make the
@@ -490,15 +498,29 @@ derived from one: chunks, digests and judgments.
 
 ### 8.1 The session digest
 
-A pass writes a session's digest, with the shape of §5.1, when the session
-is idle for 30 minutes and holds at least 4 messages. The atoms catch what
-the member decided with the assistant. They also catch the fixes that worked
-and the numbers that were agreed.
+**PROPOSED, task 3500 (2026-11-16).** metorite-a3, the owner of the FIND and
+CX side, must confirm it before CX-4 builds. `chat_organization.md` §10.1
+holds the reasons.
 
-**What it skips.** It skips a session that ran with `no_egress` and a
-session whose turns read mail bodies. It also skips each session of an org
-that has not turned the digest on. These are the rules `_extract_run_memory` already applies to
-Mem0 (`routes/agent.py`).
+- **One table: `chat_session_digest`.** It holds one row for each chat.
+  `chat_organization.md` §10.2 owns its columns. CX-4 adds no second table. It
+  adds the segments and atoms of §5.1 as columns of that row, in its own
+  expand migration.
+- **One pass.** The summary job of PZ-33b writes the row, and CO-1 extends that
+  job (`chat_organization.md` §5). CX-4 adds no second pass. The flags of the
+  pass are in `chat_organization.md` §5.5. `CHAT_DIGEST_ORGS` then opens only
+  the `chat` source of §8.2.
+- **One source rule.** The pass reads the member's own typed rows only
+  (D-PZ-37). It covers a solo chat that is idle for 30 minutes and holds 2
+  typed rows of the member. So an atom holds what the member typed, and never
+  an assistant turn, a tool output or a mail body.
+- **Who reads it.** Only the member of the chat, while the chat is solo. A share
+  clears the row.
+
+A digest that reads the turns of the assistant needs an owner decision first.
+
+**What it skips.** It skips each chat that the rule above leaves out. The
+skip of a session that ran with `no_egress` stays open for metorite-a3.
 
 ### 8.2 The source
 
@@ -510,6 +532,11 @@ joined later sees only what `query_history` lets them see today
 
 The `chat` source is not in the command bar. A member finds a conversation
 by its title in the sessions list, as today.
+
+**As built (HRD-21, task 3225).** The first slice of the source is built, with
+the scope of D-FIND-5 (`find_engine.md` §6). It reads the member's own solo
+chats with Mira, with no digest and no new index. Rooms and `since_join` stay
+for CX-4.
 
 ### 8.3 From atom to page
 
@@ -563,7 +590,7 @@ question to one cheap call per record version.
 
 | Flag | Default | What it opens | Gate |
 |---|---|---|---|
-| `CONTEXT_RECENCY` | off | §3, §4.1, §4.2 and §4.5 in `GET /search/company`, the stamp on its hits, and the three persona sentences of §4.3. Off gives today's output byte for byte, and `Hit.as_dict` emits no `stamp`. Default off because `COMPANY_SEARCH_ENABLED` is on in production, so a default of on would reach members with the next release | AGENT-SAFE. It spends nothing. Turn on after staging shows CX-2's eval holds |
+| `CONTEXT_RECENCY` | off | §3, §4.1, §4.2 and §4.5 in `GET /search/company`, the stamp on its hits, and the three persona sentences of §4.3. Off gives today's output byte for byte, and `Hit.as_dict` emits no `stamp`. Default off because `COMPANY_SEARCH_ENABLED` is on in production, so a default of on would reach members with the next release | AGENT-SAFE. It spends nothing. Turn on after staging shows the KG-1 eval holds |
 | `KNOWLEDGE_DISTILL` | off | §5 for Knowledge pages. Already named by `knowledge_base.md` §13 | owner, it spends credits |
 | `CHAT_DIGEST_ORGS` | empty | §8 for the named orgs. A star is every org | owner, it spends credits and reads conversations |
 | `CONNECTOR_FRESHNESS` | off | the `connector_quiet` card | AGENT-SAFE to build. MD-10's rule for the card kind |
@@ -578,14 +605,18 @@ Each ticket ships dark behind §11, on its own branch.
 |---|---|---|---|
 | **CX-1** ✅ BUILT 2026-10-18 | The stamp of §3 on every source (the task search returns `updated_at`, and the Knowledge read returns `review_at`), the decay of §4.1 in `company.py`, the review factor of §4.2 on the `GET /search/company` path only, the `after` filter of §4.5, the searched and skipped header and the stamp in the `search_company` output (§4.3), and grounding sentences 1 to 3. Behind `CONTEXT_RECENCY`. `/knowledge/search` and the command bar keep today's `fuse` | An older task with a higher rank and a newer task with a lower rank swap places when the flag turns on, so the fence proves the decay and not the existing tie-break. An old exact match still shows. A page past its review date ranks below a current page with the same text. `after` drops an older hit. The header names a skipped app. `test_shell_search.py` is unchanged and green. The flag off gives byte-identical output | AGENT-SAFE |
 | **CX-1b** | The Knowledge lexical half asks for any of the words (§4.6), and supersession (§4.4): the `superseded_by` link, its factor, the banner and the page menu act | A question with one word that is not in the page still finds the page. An exact token still ranks its page first. A replaced page ranks below its replacement and shows the banner | AGENT-SAFE |
-| **CX-2** | The eval of §9: the seed, 40 questions, the hit@5 report, as an R8 suite | The suite prints hit@5 for the seam with `CONTEXT_RECENCY` off and on, and fails when "on" scores lower than "off" | AGENT-SAFE |
+| **CX-2** ⛔ SUPERSEDED by KG-1, 2026-10-28 | The eval of §9: the seed, 40 questions, the hit@5 report, as an R8 suite. Not built. KG-1 is the eval of §9, and it has no file `test_context_eval_r8.py`. To compare "off" and "on", run KG-1 twice, once for each value of `CONTEXT_RECENCY`, and write both numbers in the pull request | Replaced. See KG-1 | AGENT-SAFE |
+| **KG-1** ✅ BUILT 2026-10-28 (WS-KG, Metorite #785, epic 783) | The retrieval eval of `GET /search/company`, in `evals/search_company/`. A synthetic set of 50 questions (10 for each of email, CRM, tasks, Knowledge and people) with gold ids from the seed. It scores recall at 5, p50 and p95 latency by nearest rank, the empty sources and the skipped sources. It has three modes: `--check`, `--fixture` (in process, R8 database) and `--live URL --as EMAIL --set PATH` (HTTP, the real set off the repo). No model runs and no embedding call goes out | `uv run python -m evals.search_company.run --fixture` prints the score and exits 0. The unit test fails when the scorer is mutated. The R8 suite fails when a source returns nothing for its 10 questions. The report holds no question text in live mode. CI runs `--check` in `skill-eval.yml` and the tests in pr-check. The baseline of the real set is a comment on epic 783 | AGENT-SAFE to build and to run on the fixture. The run on the real set reads staging only, and the set stays in `~/.metorite/evals/kg1/` |
+| **KG-3a** ✅ BUILT 2026-10-28 (WS-KG, Metorite #788, epic 783) | Email search inside the time budget of a source. Under FORCE RLS, Postgres uses a clause as an index condition only when each of its functions is LEAKPROOF. `to_tsvector` and `@@` are not, so no index served the app role, and each search parsed every body (2.5 to 5.0 s per COUNT on staging). Migration 314 adds the nullable column `email_messages.fts` and a trigger that fills it. The search reads `COALESCE(em.fts, <the expression>)` for the Email app and for company retrieval. Company retrieval skips the COUNT (`with_total=False`). `scripts/backfill_email_fts.py` fills the old rows in batches through the tenant seam. `docs/rls_and_indexes.md` holds the rule | On 20 000 rows as the NOSUPERUSER NOBYPASSRLS role, the email source answers in under 0.75 s, the median of 5 runs, and the plan tests the stored column first (`test_email_fts_column_r8.py`). The Email app gets the same rows, ranks, snippets and total with the column filled and with it NULL. The backfill is idempotent and resumable, and it stays in its org. `--fixture` exits 0 with recall 1.000. After the deploy and the backfill, the `--live` run on staging shows email above 0/10 and p50 under 1.5 s, as a comment on epic 783 | AGENT-SAFE to build. The migration ships with the nightly deploy. The backfill on staging and production is a run on the box |
+| **KG-2** ✅ BUILT (WS-KG, Metorite #787, D128, dark, backfill pending) | Email embeddings go through the embed door (`gateway.kb_index.embed.embed`) and the Router, in place of a direct `litellm.aembedding` call. Production holds no `OPENAI_API_KEY`, so the table `email_embeddings` held 0 rows. The move replaces H-168 and H-329 (task #683). `email_embeddings` stays `vector(1536)`, so no migration. A background sweep binds the mailbox owner with `job_member_scope(app="email")`. `select_pending_embeddings` takes `force=True`, which skips the flag `email_semantic_search_enabled` and serves the backfill only. `scripts/backfill_email_embeddings.py --org <uuid>` fills old rows per org, and `--estimate` prints the row count, the token estimate and the rate, with no embed call. Out of scope: WhatsApp (D115), `capability.py` and the `/v1/embeddings` door of the gateway | `test_no_embed_outside_door.py` (R7) names the allowed exceptions. The ratchet `test_no_direct_ai_vendor_calls.py` loses the `email_embeddings.py` entry. `test_email_embeddings_backfill_r8.py` fills two orgs, writes 0 on a second run and leaves the other org alone | AGENT-SAFE to build. THIRD-PARTY REACH: subject and body head (8000 characters at most) go to the AI/ML API account through the Router, new in production, owner-approved 2026-10-29. The flag `email_semantic_search_enabled` is GLOBAL, so the owner flips it. The backfill run on staging and production is an owner-approved act on the box |
+| **KG-3b** | Moved on 2026-10-29 to `knowledge_graph.md` §9, which owns every KG slice from KG-0 on. The KG rows above stay as the as-built record | See `knowledge_graph.md` §9 | See `knowledge_graph.md` §9 |
 | **CX-3** | Knowledge digests (replaces the text of KB-8). The digest pass in `kb_index/sweep.py`, the digest rows of §5.3, the atom check, the mask and the cost card of §5.2, the cap, on `tier-fast`, and the two-list fusion of §4.6 | A published page of 400 words gets its digest rows after 10 still minutes. A question in other words, which shares no word with the body, finds the page lexically. An atom whose quote is not in the page is dropped. A draft gets no digest. An edit writes a new digest and removes the old one. With the flag off, nothing calls the model | AGENT-SAFE to build. The flip: owner |
 | **CX-4** | Session digests and the `chat` source of §8: the migration for `chat_session_digests` and the full-text index, the idle pass, the source, the skip rules | A member finds last month's decision by a question in other words. A member who is not a participant finds nothing. A `no_egress` session gets no digest | AGENT-SAFE to build. The flip: owner |
 | **CX-5** | The connector contract of §6: `last_new_at` on the connection rows, the `expected_every` table, the freshness check and the `connector_quiet` card, the freshness half of the §4.3 header, and grounding sentence 4 | A connected mailbox with no new mail for 7 days makes one card for an admin, and no second card that week | AGENT-SAFE to build. The card kind: MD-10's rule |
 | **CX-6** | Atom to proposal (§8.3), after KB-5 | A `decision` atom in a session digest offers a proposal card. Accepting it writes a draft page with the session as its origin | AGENT-SAFE |
 | **CX-7** | Sources prefer a digest's summary as the snippet (§5.3), app by app, as each app's digest ships | The email source shows the insight's summary when the message has one | AGENT-SAFE, in each app's slice |
 
-The order is CX-1 and CX-1b, CX-2, CX-3, then CX-5, CX-4, CX-6. CX-7 follows each app.
+The order is CX-1 and CX-1b, KG-1 (in place of CX-2), CX-3, then CX-5, CX-4, CX-6. CX-7 follows each app.
 
 ---
 
@@ -597,7 +628,11 @@ The order is CX-1 and CX-1b, CX-2, CX-3, then CX-5, CX-4, CX-6. CX-7 follows eac
   and the supersession factor.
 - `tests/unit/test_context_mask.py` (CX-3): the mask and the skip list.
 - `tests/unit/test_shell_search.py`: unchanged, and green.
-- `tests/unit/test_context_eval_r8.py` (CX-2): the hit@5 rule of §9.
+- `tests/unit/test_search_company_eval.py` and `test_search_company_eval_r8.py`
+  (KG-1, which supersedes CX-2): the recall rule of §9, the percentiles, the
+  empty-source report, and the route on a real database.
+- `tests/unit/test_email_fts_column_r8.py` (KG-3a): the trigger, the same
+  answer filled or NULL, the backfill, the plan and the 0.75 s budget.
 - `tests/unit/test_kb_digest.py` (CX-3): the atom check, the draft rule, the
   rewrite on change, and no model call with the flag off.
 - `tests/unit/test_company_search_sources.py`: every source, `chat`
@@ -613,10 +648,11 @@ uv run pytest tests/unit/test_company_search_recency.py tests/unit/test_kb_query
   tests/unit/test_company_search_sources.py tests/unit/test_company_search_tool.py \
   tests/unit/test_shell_search.py tests/unit/test_kb_one_index.py -q
 
-# The R8 suites and the eval (CX-2), with a real database
+# The R8 suites and the eval (KG-1, in place of CX-2), with a real database
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_company_search_r8.py tests/unit/test_kb_search_r8.py \
-  tests/unit/test_context_eval_r8.py -q
+  tests/unit/test_search_company_eval_r8.py tests/unit/test_email_fts_column_r8.py -q -p no:xdist
+uv run python -m evals.search_company.run --fixture
 
 # CX-3
 uv run pytest tests/unit/test_kb_digest.py tests/unit/test_context_mask.py -q
@@ -657,4 +693,52 @@ It changes no price and no product surface. D104 and D105 stand unchanged.
 | CQ1 | Should the digest run on `tier-fast`? | Yes. It is the cheap tier that exists |
 | CQ2 | Should session digests be on for every org? | No. Off until the owner names orgs, because they read conversations and spend credits |
 | CQ3 | On production, turn on digests before vectors? | Yes. Digests first, then vectors where the eval shows a gain |
-| CQ4 | The decay constants of §4.1 | As written, until the eval of CX-2 says otherwise |
+| CQ4 | The decay constants of §4.1 | As written, until the eval of KG-1 says otherwise |
+
+## 16. Company content from the chat (WS-CON, D216, 2026-11-12)
+
+**Status: PLANNED.** Epic task 3039. Planning task 3038 wrote this section. No slice is built.
+
+**The owner's ask (2026-11-12).** A member drops decks, PDFs, documents and links in the chat. Metorite files each one in the right place, reads it, and reuses its text, images and logo in later decks and reports. Over time Metorite knows the company better and makes more customized output.
+
+### 16.1 What exists today
+
+- **Upload.** The chat takes pdf, docx, pptx, xlsx, odt, odp and images up to 25 MB (`gateway/routes/workspace.py`). The file lands in the chat's workspace, and a chat delete removes it.
+- **Read.** `read_attachment` reads the text of pdf, docx, xlsx, pptx and odp in a bounded parser (`acb_skills/attachment_text.py`). `analyze_image` reads an image.
+- **Stores.** Files are artifacts with one writer (`artifact_management.md`, D162). Knowledge pages hold text, and a file on a page is an artifact with a join (`knowledge_base.md` §4.3). An agent writes Knowledge only as a draft (D-KB-4).
+- **Search.** `search_company` reads artifacts and Knowledge (`knowledge_base.md` §20). The text index of a file inside the registry is AM-7 (task 206), not built.
+- **Output.** One builder makes a deck or a report as a PDF (`acb_skills/documents.py`, `reports.py`, `gateway/pdf_render.py`). Its spec refuses an image on purpose.
+- **Identity.** The org logo exists (`organization_identity.md`, OI-1).
+
+### 16.2 The shape
+
+1. **No new store.** A file is an artifact. Text that people read is a Knowledge page. Metorite can take an image, a logo or a slide from a file. Each one is a derived artifact. It links to its source and takes the scope of its source. Search stays `search_company`, and output stays the one builder.
+2. **AI proposes, and a person confirms.** After an upload, Mira shows one card. It proposes one of three places. The first is this chat only. The second is Files, for me, my team or the company. The third is Files and a Knowledge draft page, whose summary links to the file. The member picks. With no answer, the file stays in the chat.
+3. **The filing rule.** Mira proposes a Knowledge draft for a document that explains the company. Examples are a sales deck, a brochure, a price list, a policy and a proposal. A one-off input goes to Files or stays in the chat. Examples are a screenshot, a form and a file for one task.
+4. **The parts.** A filed pptx, docx or pdf gives its images and a picture of each slide or page. Each one is a derived artifact. Mira labels each image once, and writes a caption. The labels are logo, product photo, people, chart, diagram and other. The label and the caption are searchable. The parser runs in a killable child with time and size limits, because a file is untrusted.
+5. **The brand kit.** The organization identity gains a brand kit. It holds the logo, a main colour and one or two accent colours. It also holds the names of a heading font and a body font. Mira drafts it from the filed decks. An admin confirms it, and nothing applies before that.
+6. **The builder reuses parts.** The deck and report spec takes `object:<artifact id>` for an image. Code checks the member's read right for each reference, and the model never sees a bytes path. The output uses the confirmed brand kit. Rung 3 adds a pptx output of the same spec, with a filed deck as the template.
+7. **Ship dark.** `COMPANY_CONTENT_ORGS`, default empty. It also needs `ARTIFACT_REGISTRY_ENABLED` for the org.
+
+### 16.3 The slices
+
+| Slice | Task | Rung | What it does | Fence |
+|---|---|---|---|---|
+| CON-0 | 3040 | 1 | This section and D216 | `tests/unit/test_doc_names_resolve.py`, `tests/unit/test_decision_ids.py` |
+| CON-1 | 3041 | 1 | The filing card: register the upload, propose the place, a Knowledge draft | R8 tests of the owner, the scope and another org, chat parity rows, a card vitest |
+| AM-7 | 206 | 1 | The text index of pdf, docx and pptx, with the slide or page of each part | R8 tests of recall under the member's rights |
+| CON-2 | 3042 | 2 | The parts of a document as derived artifacts, with labels (HIGH) | R8 tests of the scope, extractor tests, a hostile-file test |
+| CON-3 | 3043 | 2 | The brand kit, drafted by Mira, confirmed by an admin | R8 tests of the admin confirm, a colour and font test |
+| CON-4 | 3044 | 2 | The builder places parts and uses the brand kit | Reference-check tests, a golden PDF, an eval case |
+| CON-5 | 3045 | 3 | A pptx output in a filed template, with reused slides | A pptx test, an eval case |
+
+The demo tasks are 3046 (rung 1), 3047 (rung 2) and 3048 (rung 3).
+
+### 16.4 Later rungs, one line each
+
+- Save a web page from a link into Knowledge, through the WS-WEB reader.
+- Sync a Drive or OneDrive folder (KC-5b, task 463).
+- A company profile that the filed content keeps current (OB-11 and OB-12, tasks 1352 and 1353), always as a draft for an admin.
+- A member's own writing style from their documents (`personalization.md`).
+- Document templates in AI Studio (STU-D13, task 1421).
+- The same reads and writes through the MCP (KS-5 and KS-6, tasks 2719 and 2720).

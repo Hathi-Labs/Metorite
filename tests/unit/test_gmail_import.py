@@ -572,10 +572,10 @@ async def test_the_storage_limit_stops_the_import_with_no_fetch_in_flight(
         yield SimpleNamespace()
 
     async def _write(db: Any, account_id: str, batch: list[EmailMessage],
-                     floor: datetime, **_kw: Any) -> tuple[list[Any], list[Any]]:
+                     floor: datetime, **_kw: Any) -> tuple[list[Any], list[Any], int]:
         writes.append(([m.provider_message_id for m in batch], gmail.in_flight,
                        len(_open_fetches())))
-        return list(batch), []
+        return list(batch), [], len(batch)
 
     async def _meter(db: Any, account_id: str) -> int:
         return 10 ** 12

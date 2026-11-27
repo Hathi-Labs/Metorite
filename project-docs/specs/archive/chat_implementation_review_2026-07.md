@@ -10,7 +10,7 @@
 > refactors that eliminate whole bug classes rather than instances.
 >
 > **Scope of truth:** file:line refs are as of `main` @ 2026-07-02. Sibling
-> docs: [`chat_ux.md`](chat_ux.md) (UX spec + AG-UI backlog),
+> docs: `chat_ux.md` (UX spec + AG-UI backlog, deleted 2026-10-27),
 > [`../system_architecture.md`](../system_architecture.md) (ADRs — see §6
 > drift corrections).
 >
@@ -44,7 +44,7 @@
 >   (Phase 3a; segment-native rendering = 3b, pending).
 >
 > Still open: P1-2, P1-5, P1-6, P1-7, the P2 list, §5 refactor 3's client
-> half (3b in [`core_loop_unification.md`](core_loop_unification.md)),
+> half (3b in `core_loop_unification.md`, deleted 2026-10-27),
 > unified watchdog policy, §6 doc drift.
 
 ---

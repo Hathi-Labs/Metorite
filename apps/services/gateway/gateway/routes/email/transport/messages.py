@@ -3,18 +3,22 @@ hydration, and the full-body endpoint."""
 
 from __future__ import annotations
 
+import functools
 import json
 import time
+import uuid
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import db_busy
 from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+from acb_common.tool_refusals import strip_id_label
 from email_ingestion import html_tier
 from email_ingestion import storage as ingest_storage
 from email_ingestion.body_backfill import _html_to_text
 from email_ingestion.providers.base import local_folder_after_move
 from fastapi import Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from gateway.routes.email.account_ref import resolve_account_filter
 from gateway.routes.email.core import (
     ATTACHMENT_CACHE_TTL_SECS,
@@ -37,6 +41,7 @@ from gateway.routes.email.core import (
     _persist_rotated_creds,
     _provider_for_message,
     _row_to_message,
+    _savepoint,
     _tenant_session,
     _truncate_body,
     folder_scope,
@@ -58,6 +63,10 @@ from gateway.routes.email.provider_errors import (
 )
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.attachments import _canonical_uuid
+from gateway.routes.email.transport.recipient_filters import (
+    attachment_name_clause,
+    recipient_clause,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -214,12 +223,18 @@ async def list_messages(
     has_attachments: bool | None = Query(None),
     importance: str | None = Query(None),       # high | normal | low
     from_email: str | None = Query(None),       # substring match on sender address
+    to_addr: str | None = Query(None),          # substring on any To/Cc recipient (LOOP-19)
+    attachment_name: str | None = Query(None),  # substring on a file name (LOOP-19)
     sender_category: str | None = Query(None),  # email_senders category
     sort: str = Query("newest"),                # newest | oldest | importance
     collapse: bool = Query(False),              # one row per conversation
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     user: UserContext = Depends(get_current_user),
+    # HRD-18b. A plain default, so a direct call that leaves it out gets False.
+    # Only the chat's `query_inbox` sends it. The Mail UI never does, so its
+    # list keeps the exact sender filter.
+    near_sender: bool = False,
 ):
     """List/search emails across accounts.
 
@@ -237,6 +252,9 @@ async def list_messages(
     level, matching the one-classification-per-conversation invariant); the
     assistant's inbox-query tools leave it off so their counts stay per-message.
     Ignored when ``thread_id`` is set (the conversation view wants every message).
+
+    ``near_sender`` (HRD-18b) opts in to the near spelling of a sender filter
+    that finds no mail. It acts only when ``FIND_ORGS`` holds the org too.
     """
     # Chat speed (2026-10-25): the assistant's `query_inbox` waited a median
     # 7.5 s on this route, and the page itself reads in about 0.1 s. One log
@@ -260,6 +278,9 @@ async def list_messages(
         mailbox_sql = _mailbox_clause(account_id, thread_id, params)
         if mailbox_sql:
             where_clauses.append(mailbox_sql)
+        # HRD-18b: the mailboxes of the read and nothing else. The near retry
+        # of a sender asks them whether the sender has any mail at all.
+        scope = list(where_clauses)
         if thread_id:
             # Conversation view: every message in the thread, ignore the folder
             # filter (a thread spans inbox/sent/etc.).
@@ -299,17 +320,14 @@ async def list_messages(
             # AND-ed, but "OR" and quoted phrases are honoured. plainto_tsquery
             # (the old call here) AND-s EVERYTHING, so the agent's find_urgent
             # ("urgent OR deadline OR ASAP OR action required") could only match
-            # a message containing every one of those words — i.e. never. The
-            # vector below is byte-identical to search._FTS_VECTOR and the GIN
-            # index (72_email_search_fts.sql); keep the three in lock-step.
+            # a message containing every one of those words — i.e. never.
+            # The match is search._FTS_MATCH, the stored vector of migration
+            # 314 first (WS-KG KG-3a), so the list and the search cannot drift.
+            # Imported here: search.py imports this module.
+            from gateway.routes.email.transport.search import _FTS_MATCH
+
             where_clauses.append(
-                """to_tsvector('english',
-                   coalesce(em.subject,'') || ' ' ||
-                   coalesce(em.body_text,'') || ' ' ||
-                   coalesce(em.from_address->>'name','') || ' ' ||
-                   coalesce(em.from_address->>'email',''))
-                   @@ websearch_to_tsquery('english', :query)"""
-            )
+                f"{_FTS_MATCH} @@ websearch_to_tsquery('english', :query)")
             params["query"] = query
         # Date range (received_at).
         dt_after, dt_before = _parse_dt(received_after), _parse_dt(received_before)
@@ -329,10 +347,16 @@ async def list_messages(
         if has_attachments is not None:
             where_clauses.append("em.has_attachments = :has_attachments")
             params["has_attachments"] = has_attachments
+        for clause in (recipient_clause(params, to_addr),
+                       attachment_name_clause(params, attachment_name)):
+            if clause:
+                where_clauses.append(clause)
         if importance:
             where_clauses.append("LOWER(em.importance) = LOWER(:importance)")
             params["importance"] = importance
+        from_at: int | None = None
         if from_email:
+            from_at = len(where_clauses)
             where_clauses.append(
                 "LOWER(em.from_address->>'email') LIKE :from_email")
             params["from_email"] = f"%{from_email.strip().lower()}%"
@@ -375,19 +399,17 @@ async def list_messages(
             order_sql, order_plain = "em.received_at DESC, em.id DESC", "received_at DESC, id DESC"
 
         # Count total — conversations when collapsing, else messages.
-        count_sql = (
-            f"""SELECT COUNT(DISTINCT {conv_key})
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-            if do_collapse else
-            f"""SELECT COUNT(*)
-                FROM email_messages em
-                JOIN email_accounts ea ON em.account_id = ea.id
-                WHERE {where_sql}"""
-        )
-        count_result = await db.execute(text(count_sql), params)
+        count_sql = functools.partial(_count_sql, conv_key=conv_key, collapse=do_collapse)
+        count_result = await db.execute(text(count_sql(where_sql)), params)
         total = count_result.scalar() or 0
+        # HRD-18b: a sender filter that found no mail tries the near spelling
+        # of the sender, when the caller asks (`near_sender`) and FIND_ORGS is
+        # on. The answer names the spelling.
+        where_sql, total, near = await _near_sender_retry(
+            db, user, from_email, account_id, clauses=where_clauses, at=from_at,
+            params=params, where_sql=where_sql, total=total, count_sql=count_sql,
+            listing=near_sender is True and not thread_id, scope=scope,
+        )
         _counted = time.monotonic()
 
         _COLS = """em.id, em.provider_message_id, em.thread_id,
@@ -490,7 +512,131 @@ async def list_messages(
             "total": total,
             "page": page,
             "page_size": page_size,
+            **near,
         }
+
+
+def _count_sql(where_sql: str, *, conv_key: str, collapse: bool) -> str:
+    """The COUNT of :func:`list_messages`: conversations when it collapses,
+    else messages."""
+    if collapse:
+        return f"""SELECT COUNT(DISTINCT {conv_key})
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+    return f"""SELECT COUNT(*)
+                FROM email_messages em
+                JOIN email_accounts ea ON em.account_id = ea.id
+                WHERE {where_sql}"""
+
+
+#: The names that the near retry of ``from_email`` weighs, and the most
+#: sender addresses that it reads (HRD-18b).
+NEAR_FROM_NAMES = 5
+NEAR_FROM_MAX = 20
+
+
+async def _near_sender_retry(
+    db: Any, user: UserContext, from_email: str | None, account_id: str | None, *,
+    clauses: list[str], at: int | None, params: dict[str, Any], where_sql: str,
+    total: int, count_sql: Any, listing: bool, scope: list[str],
+) -> tuple[str, int, dict[str, Any]]:
+    """The list's WHERE and total after the near retry of a sender filter.
+
+    It runs only when *listing* is true: the caller sent ``near_sender`` and
+    the read is no thread load. The whole read must have found no mail, and
+    then the sender ALONE must have no mail either (:func:`_sender_has_mail`,
+    review of 2026-11-16). So "unread mail from Vijay" with Vijay's mail all
+    read tries no near spelling, and a sender whose name holds the word is
+    never replaced by another. An exact total of 0 is 0 on each page, so each
+    page retries, and the pages agree. With a near spelling
+    (:func:`_near_from`), the filter's clause becomes the addresses of the
+    near senders, and the count runs again. The third value is
+    ``{"near": ...}`` for the answer, else ``{}``: a closed shape of the
+    filter as the member gave it and one token of a sender that the member
+    may read.
+    """
+    if total or at is None or not listing or not _near_wanted(user, from_email or ""):
+        return where_sql, total, {}
+    if await _sender_has_mail(db, scope, params, from_email or ""):
+        return where_sql, total, {}
+    found = await _near_from(db, user, from_email or "", account_id)
+    if found is None:
+        return where_sql, total, {}
+    clauses[at] = "LOWER(em.from_address->>'email') = ANY(:from_near)"
+    params.pop("from_email", None)
+    params["from_near"] = found[1]
+    where_sql = " AND ".join(clauses)
+    total = (await db.execute(text(count_sql(where_sql)), params)).scalar() or 0
+    return where_sql, total, {"near": {"word": (from_email or "").strip()[:80], "as": found[0]}}
+
+
+def _near_wanted(user: UserContext, wanted: str) -> bool:
+    """True when ``FIND_ORGS`` holds the member's org and the sender filter
+    is one word of 4 letters or more, so a near spelling may be tried."""
+    from acb_common import name_match
+    from gateway.retrieval.find import find_allowed
+
+    if not find_allowed(getattr(user, "organization_id", None)):
+        return False
+    asked = name_match.words(wanted)
+    return len(asked) == 1 and name_match.near_eligible(asked[0])
+
+
+#: A sender whose address or name holds the filter (HRD-18b review, P1-a).
+_HELD_SENDER = (
+    "(LOWER(em.from_address->>'email') LIKE :held_sender"
+    " OR LOWER(em.from_address->>'name') LIKE :held_sender)"
+)
+
+
+async def _sender_has_mail(db: Any, scope: list[str], params: dict[str, Any],
+                           wanted: str) -> bool:
+    """True when a mail of the read's mailboxes (*scope*) comes from a sender
+    whose address or name holds *wanted*, in any folder and with no other
+    filter: no folder, no read state, no date and no words. Then the word has
+    mail of its own, and no near spelling stands in for it."""
+    sql = (
+        "SELECT 1 FROM email_messages em JOIN email_accounts ea ON em.account_id = ea.id "
+        "WHERE " + " AND ".join([*scope, _HELD_SENDER]) + " LIMIT 1"
+    )
+    held = {**params, "held_sender": f"%{wanted.strip().lower()}%"}
+    return (await db.execute(text(sql), held)).first() is not None
+
+
+async def _near_from(
+    db: Any, user: UserContext, wanted: str, account_id: str | None,
+) -> tuple[str, list[str]] | None:
+    """The near spelling of a sender filter that found no mail, and the
+    addresses of the senders that hold it (HRD-18b, ``find_engine.md`` §5.3).
+
+    ``None`` unless ``FIND_ORGS`` holds the member's org, the filter is one
+    word of 4 letters or more, and a sender of the mailboxes of the read is
+    near it. The senders come from ``contacts.sender_rows``, the reader of
+    the company search, and ``acb_common.name_match`` judges them. So a
+    sender of another member's mailbox never gives a spelling.
+    """
+    import asyncio
+
+    from acb_common import name_match
+    from gateway.routes.email.transport.contacts import sender_names, sender_rows
+
+    if not _near_wanted(user, wanted):
+        return None
+    asked = name_match.words(wanted)
+    rows = await sender_rows(db, user.email or "anonymous", account_id)
+    found = await asyncio.to_thread(
+        name_match.near_names, asked[0], sender_names(rows), NEAR_FROM_NAMES,
+        deadline=name_match.scoring_deadline())
+    best = name_match.best_spelling(asked[0], found)
+    if best is None:
+        return None
+    spelt = name_match.words(best.spelling)[0]
+    addresses = [
+        address for name, address in rows
+        if spelt in name_match.words(name) or spelt in name_match.words(address)
+    ][:NEAR_FROM_MAX]
+    return (best.spelling, addresses) if addresses else None
 
 
 # Sender categories that are bulk/automated and never "important to check".
@@ -589,9 +735,60 @@ async def priority_inbox(
         return {"emails": out, "count": len(out), "days": days}
 
 
+async def _insert_attachments(db: Any, message_id: str, attachments: Any) -> None:
+    """Store the attachment metadata of one fetched message. A repeat is a no-op."""
+    for att in attachments:
+        await db.execute(
+            text(
+                """INSERT INTO email_attachments
+                   (message_id, filename, mime_type, size_bytes,
+                    provider_attachment_id)
+                   VALUES (:mid, :filename, :mime_type, :size_bytes,
+                           :provider_attachment_id)
+                   ON CONFLICT (message_id, provider_attachment_id)
+                       DO NOTHING"""
+            ),
+            {
+                "mid": message_id,
+                "filename": att.filename,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "provider_attachment_id": att.provider_attachment_id,
+            },
+        )
+
+
+async def _rekey(db: Any, message_id: str, old: str, new: str) -> None:
+    """Store the new provider id of a re-keyed mail (Outlook /move).
+
+    The push runs after the local write committed (2026-10-28), so another
+    writer can change the row first. The write runs only while the row still
+    holds ``old``. It runs in a savepoint: a sweep that stored ``new`` first
+    makes the unique key refuse it, and the rest of the block, a rotated
+    token too, still commits.
+    """
+    try:
+        async with _savepoint(db):
+            res = await db.execute(
+                text(
+                    """UPDATE email_messages
+                       SET provider_message_id = :pid, updated_at = now()
+                       WHERE id = :id AND provider_message_id = :old"""
+                ),
+                {"pid": new, "id": message_id, "old": old},
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("email.rekey_skipped", message_id=message_id,
+                     reason=type(exc).__name__)
+        return
+    if getattr(res, "rowcount", 1) == 0:
+        _log.warning("email.rekey_skipped", message_id=message_id,
+                     reason="row_changed")
+
+
 async def _hydrate_attachments(
-    db: Any, message_id: str, user_email: str
-) -> list[AttachmentModel]:
+    message_id: str, user_email: str
+) -> tuple[list[AttachmentModel], bool]:
     """Fetch a message from its provider and persist its attachment metadata,
     then return it.
 
@@ -600,48 +797,72 @@ async def _hydrate_attachments(
     message whose body arrived via sync (or was hydrated before attachment
     support shipped) would never get its attachments stored. This closes that
     gap: when a message advertises attachments but none are stored, fetch and
-    store them regardless of the body state."""
+    store them regardless of the body state.
+
+    Returns ``(files, ok)``. ``ok`` is False only when the provider call
+    failed (an expired token, a rate limit), so the reader can say so. An
+    empty list with ``ok`` True is a mail whose parts are all inline pictures.
+
+    ⚠️ No session is open across the provider call (2026-10-28). Block A
+    builds the provider and closes. Block B writes the rows after the fetch.
+    """
     try:
-        provider, provider_msg_id, account_id, store = await _provider_for_message(
-            db, message_id, user_email
-        )
-        if not await provider.authenticate():
-            return []
-        full = await provider.get_message(provider_msg_id)
-        for att in full.attachments:
-            await db.execute(
-                text(
-                    """INSERT INTO email_attachments
-                       (message_id, filename, mime_type, size_bytes,
-                        provider_attachment_id)
-                       VALUES (:mid, :filename, :mime_type, :size_bytes,
-                               :provider_attachment_id)
-                       ON CONFLICT (message_id, provider_attachment_id)
-                           DO NOTHING"""
-                ),
-                {
-                    "mid": message_id,
-                    "filename": att.filename,
-                    "mime_type": att.mime_type,
-                    "size_bytes": att.size_bytes,
-                    "provider_attachment_id": att.provider_attachment_id,
-                },
+        async with _tenant_session() as db:
+            provider, provider_msg_id, account_id, store = await _provider_for_message(
+                db, message_id, user_email
             )
-        await _persist_rotated_creds(db, store, account_id, provider)
-        # No commit here: the only caller is the converted get_message (H2),
-        # whose `_tenant_session` commits on clean exit — a mid-block commit
-        # would end that transaction and drop the tenant GUC.
-        return await _fetch_attachments(db, message_id)
+        if not await provider.authenticate():
+            return [], False
+        full = await provider.get_message(provider_msg_id)
+        async with _tenant_session() as db:
+            await _insert_attachments(db, message_id, full.attachments)
+            await _persist_rotated_creds(db, store, account_id, provider)
+            return await _fetch_attachments(db, message_id), True
     except Exception as exc:  # noqa: BLE001
         _log.warning(
             "get_message.attach_hydrate_failed",
             message_id=message_id, error=str(exc)[:200],
         )
-        return []
+        return [], False
 
 
 class MessageSummariesRequest(BaseModel):
     ids: list[str]
+
+
+def summary_ids(raw: list[str] | None) -> list[str]:
+    """The valid message ids of a summaries request, canonical, in order.
+
+    A client may send ``id=<uuid>``, the label that the list tools print, so
+    the label drops first. An id that is not a UUID drops out. One bad id
+    must never fail the batch: asyncpg raised ``DataError`` for it, and the
+    route answered 500 for every row (task 3863).
+    """
+    out: list[str] = []
+    for item in raw or []:
+        try:
+            out.append(str(uuid.UUID(strip_id_label(item))))
+        except ValueError:
+            continue
+    return out
+
+
+def _summary_extra(row: Any) -> dict[str, Any]:
+    """The mailbox, the folder, the To addresses and the snippet of one
+    summaries row (task 3977). A row without a column gives an empty value."""
+    to = getattr(row, "to_addresses", None)
+    if isinstance(to, str):
+        try:
+            to = json.loads(to or "[]")
+        except ValueError:
+            to = []
+    account = getattr(row, "account_id", None)
+    return {
+        "account_id": str(account) if account else None,
+        "folder": getattr(row, "folder", None),
+        "to_addresses": to if isinstance(to, list) else [],
+        "snippet": getattr(row, "snippet", None) or "",
+    }
 
 
 @router.post("/messages/summaries")
@@ -657,14 +878,15 @@ async def message_summaries(
     server-side, so the card is self-contained regardless of which list tool
     (or none) surfaced the id. Owner-scoped; unknown/foreign ids are omitted.
     Order follows the input ``ids`` so the agent's grouping is preserved."""
-    ids = [i for i in (req.ids or []) if i]
+    ids = summary_ids(req.ids)
     if not ids:
         return {"summaries": []}
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
                 """SELECT em.id, em.thread_id, em.subject, em.from_address,
-                          em.received_at, em.is_read, em.has_attachments
+                          em.received_at, em.is_read, em.has_attachments,
+                          em.account_id, em.folder, em.to_addresses, em.snippet
                    FROM email_messages em
                    JOIN email_accounts ea ON em.account_id = ea.id
                    WHERE """
@@ -686,10 +908,88 @@ async def message_summaries(
                 "received_at": r.received_at.isoformat() if r.received_at else None,
                 "is_read": r.is_read,
                 "has_attachments": r.has_attachments,
+                # Task 3977 (§18.13): the chat trash tells a draft from a
+                # mail, and matches drafts, with no read of each message.
+                **_summary_extra(r),
             }
         # Preserve caller order (and drop ids the user doesn't own).
         summaries = [by_id[i] for i in ids if i in by_id]
         return {"summaries": summaries}
+
+
+async def _hydrate_opened_body(
+    msg: EmailMessageModel, row: Any, built: tuple[Any, str, str, Any],
+    message_id: str, store_body: bool, org_id: Any,
+) -> None:
+    """Fetch the body of an opened mail that synced headers only, and store it.
+
+    ⚠️ No session is open across the provider call (2026-10-28). Block B
+    opens after the fetch. It writes the body, the attachment rows and a
+    token that the provider rotated. A failure is logged, and the open
+    answers with what it has.
+    """
+    provider, provider_msg_id, account_id, store = built
+    try:
+        if not await provider.authenticate():
+            return
+        full = await provider.get_message(provider_msg_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("get_message.hydrate_failed", message_id=message_id, error=str(exc)[:200])
+        return
+    body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
+    body_html = (
+        _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
+        if full.body_html else None
+    )
+    # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 3). With
+    # `html_tier.hot_only()` true, a cold row stores its text
+    # only. The answer below still carries the HTML, and the
+    # cache of the HTML route keeps it for the next open.
+    # An HTML-only mail gets a text made from its HTML first,
+    # as the upsert does. Else the row stays empty, and each
+    # open fetches it again (fix round 1).
+    cold = html_tier.drops_html(row.received_at)
+    if cold and full.body_html and not body_text.strip():
+        body_text = _truncate_body(
+            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
+    try:
+        async with _tenant_session() as db:
+            if store_body:
+                await db.execute(
+                    text(
+                        f"""UPDATE email_messages
+                           SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
+                               has_attachments = :ha, updated_at = now()
+                           WHERE id = :id"""
+                    ),
+                    {
+                        "id": message_id,
+                        "bt": body_text,
+                        "bh": body_html,
+                        "html_cold_before": html_tier.cold_before(),
+                        "ha": full.has_attachments,
+                    },
+                )
+            else:
+                _log.info("get_message.body_not_stored_at_limit",
+                          message_id=message_id)
+            # Persist attachment metadata fetched with the full message.
+            await _insert_attachments(db, message_id, full.attachments)
+            await _persist_rotated_creds(db, store, account_id, provider)
+        if cold:
+            await _remember_html(org_id, row.id, body_html)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("get_message.hydrate_failed", message_id=message_id, error=str(exc)[:200])
+    msg.body_text = body_text
+    msg.body_html = body_html
+    msg.has_attachments = full.has_attachments
+    # The answer now holds the HTML, so it is not remote
+    # (EM-S1 fix round 1). `_row_to_message` read the row
+    # before the fetch. Under EM-S3 a cold row stores no HTML,
+    # and this answer still carries the HTML that it fetched.
+    msg.html_remote = _html_remote(msg.body_html, row.received_at)
 
 
 @router.get("/messages/{message_id}", response_model=EmailMessageModel)
@@ -716,6 +1016,12 @@ async def get_message(
     behaviour. ``is not False`` holds that default for a direct Python call,
     where the ``Query`` default does not resolve.
     """
+    owner = user.email or "anonymous"
+    built: tuple[Any, str, str, Any] | None = None
+    # Block A: the owner read and the mark-read. It commits BEFORE any
+    # provider call (2026-10-28). Held across a Graph fetch, its row lock
+    # made each other write of this mail wait, up to the statement timeout,
+    # and the fetch held one pooled connection of the gateway.
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -734,7 +1040,7 @@ async def get_message(
                    WHERE em.id = :message_id AND """
                 + mailbox_predicate("ea", uid="user_id", level="read")
             ),
-            {"message_id": message_id, "user_id": user.email or "anonymous"},
+            {"message_id": message_id, "user_id": owner},
         )
         row = result.fetchone()
         if not row:
@@ -759,102 +1065,37 @@ async def get_message(
         # Some providers (notably Outlook/Graph) sync message *headers* only, so
         # the stored body is empty.  When the user opens such a message, fetch the
         # full body from the provider once and persist it so subsequent opens are
-        # instant.  Mark as read on the provider too (two-way sync).
+        # instant. The build reads the credentials and makes no network call.
         if not msg.body_text and not msg.body_html:
             try:
-                provider, provider_msg_id, account_id, store = await _provider_for_message(
-                    db, message_id, user.email or "anonymous"
-                )
-                if await provider.authenticate():
-                    full = await provider.get_message(provider_msg_id)
-                    body_text = _truncate_body(full.body_text or "", MAX_BODY_TEXT_BYTES)
-                    body_html = (
-                        _truncate_body(full.body_html, MAX_BODY_HTML_BYTES)
-                        if full.body_html else None
-                    )
-                    # 🔴 No cold HTML (WS-17 EM-S3, §14.4.3 item 3). With
-                    # `html_tier.hot_only()` true, a cold row stores its text
-                    # only. The answer below still carries the HTML, and the
-                    # cache of the HTML route keeps it for the next open.
-                    # An HTML-only mail gets a text made from its HTML first,
-                    # as the upsert does. Else the row stays empty, and each
-                    # open fetches it again (fix round 1).
-                    cold = html_tier.drops_html(row.received_at)
-                    if cold and full.body_html and not body_text.strip():
-                        body_text = _truncate_body(
-                            _html_to_text(full.body_html), MAX_BODY_TEXT_BYTES)
-                    if store_body:
-                        await db.execute(
-                            text(
-                                f"""UPDATE email_messages
-                                   SET body_text = :bt, {html_tier.COLD_SAFE_HTML_SET},
-                                       has_attachments = :ha, updated_at = now()
-                                   WHERE id = :id"""
-                            ),
-                            {
-                                "id": message_id,
-                                "bt": body_text,
-                                "bh": body_html,
-                                "html_cold_before": html_tier.cold_before(),
-                                "ha": full.has_attachments,
-                            },
-                        )
-                    else:
-                        _log.info("get_message.body_not_stored_at_limit",
-                                  message_id=message_id)
-                    if cold:
-                        await _remember_html(user.organization_id, row.id, body_html)
-                    # Persist attachment metadata fetched with the full message.
-                    for att in full.attachments:
-                        await db.execute(
-                            text(
-                                """INSERT INTO email_attachments
-                                   (message_id, filename, mime_type, size_bytes,
-                                    provider_attachment_id)
-                                   VALUES (:mid, :filename, :mime_type, :size_bytes,
-                                           :provider_attachment_id)
-                                   ON CONFLICT (message_id, provider_attachment_id)
-                                       DO NOTHING"""
-                            ),
-                            {
-                                "mid": message_id,
-                                "filename": att.filename,
-                                "mime_type": att.mime_type,
-                                "size_bytes": att.size_bytes,
-                                "provider_attachment_id": att.provider_attachment_id,
-                            },
-                        )
-                    await _persist_rotated_creds(db, store, account_id, provider)
-                    msg.body_text = body_text
-                    msg.body_html = body_html
-                    msg.has_attachments = full.has_attachments
-                    # The answer now holds the HTML, so it is not remote
-                    # (EM-S1 fix round 1). `_row_to_message` read the row
-                    # before the fetch. Under EM-S3 a cold row stores no HTML,
-                    # and this answer still carries the HTML that it fetched.
-                    msg.html_remote = _html_remote(msg.body_html, row.received_at)
+                built = await _provider_for_message(db, message_id, owner)
             except HTTPException:
                 raise
             except Exception as exc:  # noqa: BLE001
                 _log.warning("get_message.hydrate_failed", message_id=message_id, error=str(exc)[:200])
 
-        if msg.has_attachments:
+    if built is not None:
+        await _hydrate_opened_body(msg, row, built, message_id, store_body,
+                                   user.organization_id)
+
+    if msg.has_attachments:
+        async with _tenant_session() as db:
             msg.attachments = await _fetch_attachments(db, message_id)
-            # Body came from sync (so the hydration block above didn't run) but
-            # the attachments were never stored — fetch + store them now.
-            if not msg.attachments:
-                msg.attachments = await _hydrate_attachments(
-                    db, message_id, user.email or "anonymous"
-                )
-        # After the hydration and its write, so the store keeps the whole
-        # body (WS-17, 2026-10-09). `is True`, as `mark_read` above, holds the
-        # default for a direct Python call.
-        if trim is True and msg.body_text:
-            trimmed = strip_for_reading(msg.body_text)
-            if trimmed != msg.body_text:
-                msg.body_text = trimmed
-                msg.body_trimmed = True
-        return msg
+        # Body came from sync (so the hydration block above didn't run) but
+        # the attachments were never stored — fetch + store them now.
+        if not msg.attachments:
+            msg.attachments, ok = await _hydrate_attachments(message_id, owner)
+            if not ok:
+                msg.attachments_status = "failed"
+    # After the hydration and its write, so the store keeps the whole
+    # body (WS-17, 2026-10-09). `is True`, as `mark_read` above, holds the
+    # default for a direct Python call.
+    if trim is True and msg.body_text:
+        trimmed = strip_for_reading(msg.body_text)
+        if trimmed != msg.body_text:
+            msg.body_text = trimmed
+            msg.body_trimmed = True
+    return msg
 
 
 def _move_target(name: str | None) -> str | None:
@@ -993,15 +1234,26 @@ async def update_message(
                 {"id": message_id, "cats": cats},
             )
 
-        # ── Two-way sync: push the change to the provider (best-effort) ──
-        # The local DB is already updated; if the provider write fails we keep the
-        # local state and log, rather than failing the user's action.
-        try:
-            provider, provider_msg_id, account_id, store = (
-                built or await _provider_for_message(
+        # The provider for the push. The build makes no network call. A failed
+        # build keeps the push best-effort, as a failed push does.
+        push_error: Exception | None = None
+        if built is None:
+            try:
+                built = await _provider_for_message(
                     db, message_id, user.email or "anonymous"
                 )
-            )
+            except Exception as exc:  # noqa: BLE001
+                push_error = exc
+
+    # ── Two-way sync: push the change to the provider (best-effort) ──
+    # The local change committed with the block above, BEFORE the push
+    # (2026-10-28). No session is open across the provider calls. If the
+    # provider write fails we keep the local state and log, rather than
+    # failing the user's action.
+    if built is not None:
+        provider, provider_msg_id, account_id, store = built
+        new_pid: str | None = None
+        try:
             if await provider.authenticate():
                 if (
                     updates.is_read is not None
@@ -1018,41 +1270,46 @@ async def update_message(
                     # The name keeps its case, so a new label or Outlook
                     # folder reads as the member wrote it (EM-G3b item 9).
                     # It is the string that the helper read (review round 1).
-                    new_pid = await provider.move_to_folder(
+                    moved = await provider.move_to_folder(
                         provider_msg_id, target
                     )
                     # Outlook /move re-keys the message — persist the new id so
                     # later actions don't hit a stale (404) provider id, and use
                     # it for the set_labels call below.
-                    if new_pid and new_pid != provider_msg_id:
-                        await db.execute(
-                            text(
-                                """UPDATE email_messages
-                                   SET provider_message_id = :pid, updated_at = now()
-                                   WHERE id = :id"""
-                            ),
-                            {"pid": new_pid, "id": message_id},
-                        )
-                        provider_msg_id = new_pid
+                    if moved and moved != provider_msg_id:
+                        new_pid = provider_msg_id = moved
                 if updates.add_labels or updates.remove_labels:
                     await provider.set_labels(
                         provider_msg_id,
                         add=updates.add_labels or [],
                         remove=updates.remove_labels or [],
                     )
-                await _persist_rotated_creds(db, store, account_id, provider)
         except Exception as exc:  # noqa: BLE001
-            # Best-effort: the local change lands at the tenant session's
-            # clean-exit commit either way, so a provider
-            # failure (incl. an HTTPException from the provider lookup/write) must
-            # NOT fail the user's action — just log it.
-            _log.warning(
-                "update_message.provider_sync_failed",
-                message_id=message_id, error=str(exc)[:200],
-            )
+            push_error = exc
+        # The second block: the new id of a re-keyed mail, and a rotated token.
+        if new_pid or provider.credentials_dirty():
+            try:
+                async with _tenant_session() as db:
+                    if new_pid:
+                        await _rekey(db, message_id, built[1], new_pid)
+                    await _persist_rotated_creds(db, store, account_id, provider)
+            except Exception as exc:  # noqa: BLE001
+                push_error = push_error or exc
+    if push_error is not None:
+        # Best-effort: the local change committed above, so a provider
+        # failure (incl. an HTTPException from the provider lookup/write) must
+        # NOT fail the user's action — just log it.
+        _log.warning(
+            "update_message.provider_sync_failed",
+            message_id=message_id, error=str(push_error)[:200],
+        )
 
-        # Return updated message
-        return await get_message(message_id, user)
+    # Return updated message. It runs after the local write committed. Inside
+    # that block its mark-read waited on the block's own row lock, until the
+    # statement timeout (production, 2026-10-28). It reads with no mark-read:
+    # after the commit, a mark-read would undo a "Mark as unread", and a star
+    # or a move of an unread mail would mark it read with no push.
+    return await get_message(message_id, user, mark_read=False)
 
 
 class SnoozeRequest(BaseModel):
@@ -1105,12 +1362,27 @@ async def snooze_message(
         }
 
 
+#: The values of ``provider`` in the answer of ``DELETE ...?report=true``
+#: (task 3977, ``email_app_master_plan.md`` §18.13).
+TRASH_CONFIRMED = "confirmed"
+TRASH_NOT_CONFIRMED = "not_confirmed"
+
+
 @router.delete("/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_message(
     message_id: str,
     user: UserContext = Depends(get_current_user),
+    report: bool = False,
 ):
-    """Move email to trash (locally and on the provider)."""
+    """Move email to trash (locally and on the provider).
+
+    The answer is 204 with no body, as before. Task 3977 (§18.13): with
+    ``?report=true`` the answer is 200 and says what the provider did.
+    ``provider`` is ``confirmed`` only when the provider accepted the trash.
+    It is ``not_confirmed`` when no provider loads, when it does not
+    authenticate, or when its trash raises. The local row then reads Trash,
+    and the next sync can bring the message back. ``reason`` is one fixed
+    word, and never the text of an error."""
     async with _tenant_session() as db:
         result = await db.execute(
             text(
@@ -1127,39 +1399,68 @@ async def delete_message(
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail="Message not found")
 
-        # ── Two-way sync: trash on the provider too (best-effort) ──
+        # The provider for the push. The build makes no network call.
+        built: tuple[Any, str, str, Any] | None = None
+        push_error: Exception | None = None
         try:
-            provider, provider_msg_id, account_id, store = await _provider_for_message(
+            built = await _provider_for_message(
                 db, message_id, user.email or "anonymous"
             )
+        except Exception as exc:  # noqa: BLE001
+            push_error = exc
+
+    # ── Two-way sync: trash on the provider too (best-effort) ──
+    # The local trash committed with the block above, BEFORE the push
+    # (2026-10-28). No session is open across the provider call.
+    confirmed = False
+    reason = "no_provider" if built is None else "not_authenticated"
+    discarded = False
+    if built is not None:
+        provider, provider_msg_id, account_id, store = built
+        new_pid = None
+        try:
             if await provider.authenticate():
                 new_pid = await provider.trash_message(provider_msg_id)
-                if provider_msg_id in getattr(provider, "discarded_drafts", ()):
-                    # Gmail discards a draft for good (``drafts.delete``), so
-                    # no copy stays in Trash here either (WS-17 EM-G3a, E-A5).
-                    await db.execute(
-                        text("DELETE FROM email_messages WHERE id = :id"),
-                        {"id": message_id},
-                    )
-                # Outlook trash = /move to Deleted Items, which re-keys the
-                # message; persist the new id so it stays addressable.
-                elif new_pid and new_pid != provider_msg_id:
-                    await db.execute(
-                        text(
-                            """UPDATE email_messages
-                               SET provider_message_id = :pid, updated_at = now()
-                               WHERE id = :id"""
-                        ),
-                        {"pid": new_pid, "id": message_id},
-                    )
-                await _persist_rotated_creds(db, store, account_id, provider)
+                confirmed = True
+                discarded = provider_msg_id in getattr(provider, "discarded_drafts", ())
         except Exception as exc:  # noqa: BLE001
-            # Best-effort: local trash already committed; never fail the user's
-            # action on a provider error (incl. provider-raised HTTPException).
-            _log.warning(
-                "delete_message.provider_sync_failed",
-                message_id=message_id, error=str(exc)[:200],
-            )
+            push_error = exc
+            reason = "provider_error"
+        rekeyed = bool(new_pid) and new_pid != provider_msg_id
+        if discarded or rekeyed or provider.credentials_dirty():
+            try:
+                async with _tenant_session() as db:
+                    if discarded:
+                        # Gmail discards a draft for good (``drafts.delete``), so
+                        # no copy stays in Trash here either (WS-17 EM-G3a, E-A5).
+                        await db.execute(
+                            text("DELETE FROM email_messages WHERE id = :id"),
+                            {"id": message_id},
+                        )
+                    # Outlook trash = /move to Deleted Items, which re-keys the
+                    # message; persist the new id so it stays addressable.
+                    elif rekeyed:
+                        await _rekey(db, message_id, provider_msg_id, new_pid)
+                    await _persist_rotated_creds(db, store, account_id, provider)
+            except Exception as exc:  # noqa: BLE001
+                push_error = push_error or exc
+    if push_error is not None:
+        # Best-effort: local trash already committed; never fail the user's
+        # action on a provider error (incl. provider-raised HTTPException).
+        _log.warning(
+            "delete_message.provider_sync_failed",
+            message_id=message_id, error=str(push_error)[:200],
+        )
+    if not report:
+        return None
+    # A failure AFTER the provider accepted (the local re-key or the saved
+    # tokens) does not undo the trash, so it stays confirmed.
+    return JSONResponse({
+        "id": message_id,
+        "provider": TRASH_CONFIRMED if confirmed else TRASH_NOT_CONFIRMED,
+        "reason": "" if confirmed else reason,
+        "discarded": discarded,
+    })
 
 
 @router.get("/messages/{message_id}/full-body")

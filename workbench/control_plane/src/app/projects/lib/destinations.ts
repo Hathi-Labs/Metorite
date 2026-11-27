@@ -36,18 +36,26 @@ export function isTeamSpace(node: ProjectNode & { personal?: boolean }, depth: n
   );
 }
 
+/**
+ * An ARCHIVED node, and everything under it, is not a destination: the server
+ * refuses a placement there (`core.assert_not_archived`), and the archive
+ * stamps the whole subtree. `includeArchived` is for a caller that must still
+ * NAME a node it already holds, such as a filter set on a project filed since.
+ */
 export function destinations(
   roots: readonly ProjectNode[],
   depth = 0,
+  includeArchived = false,
 ): DestinationRow[] {
   const out: DestinationRow[] = [];
   for (const node of roots) {
+    if (!includeArchived && node.archived_at) continue;
     out.push({
       node,
       depth,
       legal: nodeLevel(nodeKind(node), depth) !== "folder" && !isTeamSpace(node, depth),
     });
-    if (node.children?.length) out.push(...destinations(node.children, depth + 1));
+    if (node.children?.length) out.push(...destinations(node.children, depth + 1, includeArchived));
   }
   return out;
 }

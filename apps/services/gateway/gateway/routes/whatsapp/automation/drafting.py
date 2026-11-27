@@ -33,6 +33,18 @@ _log = get_logger("gateway.whatsapp.drafting")
 
 _DRAFT_MODEL = "tier-powerful"
 _FALLBACK_MODEL = "tier-fast"
+
+#: What the composer reads when the model gave no draft text (task 1128).
+#: It is not the 422 of a NO_DRAFT verdict: the model said nothing at all.
+NO_MODEL_ANSWER = "Could not draft a reply right now. Try again."
+
+
+class DraftUnavailable(Exception):
+    """The model call failed, or it gave no text (task 1128).
+
+    A NO_DRAFT verdict is a decision and returns None. This is no decision,
+    so the route must not say "not enough to say".
+    """
 _THREAD_LIMIT = 12
 _THREAD_MSG_MAX = 500
 
@@ -118,8 +130,9 @@ async def draft_reply(db: Any, account_id: str, chat_id: str) -> str | None:
     """Generate a reply draft for a chat, or None on any failure / NO_DRAFT.
 
     Loads the thread, builds the prompt, calls the account's draft model, and
-    returns the text. Never fabricates — LLM failure or a NO_DRAFT verdict both
-    return None. Does NOT commit; the route caches the result.
+    returns the text. Never fabricates. A NO_DRAFT verdict or an empty thread
+    returns None. A failed model call or an answer with no text raises
+    :class:`DraftUnavailable`. Does NOT commit; the route caches the result.
     """
     chat = (await db.execute(
         text("SELECT name, category FROM wa_chats WHERE id = :cid"),
@@ -151,16 +164,19 @@ async def draft_reply(db: Any, account_id: str, chat_id: str) -> str | None:
         from acb_llm.context import acompletion_with_fallback
         resp, _used = await acompletion_with_fallback(
             model=_DRAFT_MODEL, fallback_model=_FALLBACK_MODEL,
-            messages=messages, temperature=0.4, max_tokens=350,
-            feature="whatsapp.draft",
+            messages=messages, temperature=0.4, max_tokens=600,
+            feature="whatsapp.draft", job="writing",
         )
         content = (resp.choices[0].message.content or "").strip()
     except Exception as exc:
         _log.warning("whatsapp.draft.llm_failed", chat_id=chat_id,
                      error=str(exc)[:200])
-        return None
+        raise DraftUnavailable("the draft call failed") from exc
 
-    if not content or content.strip().upper() == "NO_DRAFT":
+    if not content:
+        _log.warning("whatsapp.draft.empty_answer", chat_id=chat_id)
+        raise DraftUnavailable("the draft call gave no text")
+    if content.upper() == "NO_DRAFT":
         return None
     return content
 
@@ -178,7 +194,10 @@ async def generate_draft(
     """Generate (and cache) an AI reply draft for a chat."""
     async with _tenant_session() as db:
         account_id = await assert_chat_owned(db, chat_id, user.email or "anonymous")
-        draft = await draft_reply(db, account_id, chat_id)
+        try:
+            draft = await draft_reply(db, account_id, chat_id)
+        except DraftUnavailable as exc:
+            raise HTTPException(status_code=502, detail=NO_MODEL_ANSWER) from exc
         if draft is None:
             raise HTTPException(
                 status_code=422, detail="No draft — not enough to say confidently")

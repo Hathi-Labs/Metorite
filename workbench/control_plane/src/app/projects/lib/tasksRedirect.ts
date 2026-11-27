@@ -6,7 +6,7 @@
  *
  * | From                               | To                                 |
  * |------------------------------------|------------------------------------|
- * | `/tasks`, `/tasks#today`           | `/projects?app=my-today`           |
+ * | `/tasks`, `/tasks#today`           | `/projects?app=my-tasks&chip=today` (OP-11) |
  * | `/tasks?do=capture`                | `/projects?app=my-inbox&do=capture`|
  * | `/tasks?task=<id>` or `?item=<id>` | `/projects?task=<id>`              |
  *
@@ -40,7 +40,7 @@ export function tasksRedirectTarget(
     ? `task=${encodeURIComponent(task)}`
     : action === CAPTURE_DO
       ? `app=my-inbox&do=${CAPTURE_DO}`
-      : "app=my-today";
+      : "app=my-tasks&chip=today";
   const tail = rest.toString();
   const q = tail ? `${head}&${tail}` : head;
   // `#today` names the view the target already opens. Another fragment stays.

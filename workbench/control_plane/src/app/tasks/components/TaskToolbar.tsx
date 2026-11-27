@@ -39,12 +39,12 @@ import { filterWord, shellBarOn } from "@/lib/shell/registry";
 // every toggle is a `Button`. The look is Projects'. The options and what they
 // do are My Tasks' own, unchanged.
 // The Filter popover holds every facet (Context / Priority / Energy, + Assignee
-// off My Next Actions) as MULTI-select checklists — a task matches ANY value
+// off My tasks) as MULTI-select checklists — a task matches ANY value
 // within a facet (OR) and must pass EVERY active facet (AND). Active values show
 // as removable chips inline, so the state is always visible without opening the
 // popover. This scales to more facets without stacking pill rows (no cognitive
 // overload — one control, progressive disclosure).
-// Per-view exceptions: Assignee is hidden on My Next Actions (all mine), and
+// Per-view exceptions: Assignee is hidden on My tasks (all mine), and
 // Sort is hidden on Waiting For (that view derives its own order).
 
 // SORT_LABEL moved to lib/ordering.ts — the board's drop-refusal overlay names
@@ -94,7 +94,7 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
   const groupBy = useTaskStore((s) => s.groupBy);
   const setGroupBy = useTaskStore((s) => s.setGroupBy);
   const view = useTaskStore((s) => s.selectedView);
-  // My Next Actions is only ever tasks assigned to me, so an assignee facet
+  // My tasks is only ever tasks assigned to me, so an assignee facet
   // there is meaningless. It's offered on the other views (e.g. Waiting For).
   const showAssignee = view !== "next";
   // Waiting For orders itself: WaitingForView re-derives the whole order

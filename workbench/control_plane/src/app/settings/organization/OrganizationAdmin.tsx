@@ -40,11 +40,14 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { usePhoneBar } from "@/lib/shell/phoneBarEvent";
 import { ShellJob } from "@/lib/shell/doJob";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
@@ -79,6 +82,7 @@ import {
   interpretSeatAction,
 } from "@/app/settings/billing/lib/manage";
 import SeatsTab from "./SeatsTab";
+import { orgTabFromSearch } from "./lib/orgTab";
 import type {
   AccessRequest,
   Member,
@@ -135,14 +139,34 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
+  // WS-CO CO-11: the member's own row on a chat, the pin today.
+  chat_member_rows: "personal chat setting",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   // WS-53 CRM-Q33: the member's own business rules of the CRM.
   crm_member_rules: "own CRM business rule",
+  // WS-CRM CRM-M1: a Change history row that only the member reads.
+  crm_private_changes: "private CRM change record",
+  // Task 1570 (D175.5): a CRM saved view that only the member reads.
+  crm_private_views: "private CRM saved view",
   // WS-61 KB-2f: the member's starred Knowledge pages.
   knowledge_favorites: "starred Knowledge page",
   // WS-66 RM-1: the member's private reminders, with their ledger.
   reminders: "private reminder",
+  // WS-BRIEF BR-4: a brief or close-out of the member, with its claims.
+  brief_runs: "daily brief",
+  // WS-MDC CC-5a: the member's focus sessions, with their minutes.
+  focus_sessions: "focus session",
+  // Each label is a singular noun that takes a plain "s". The fence
+  // `test_every_purge_count_has_a_label` holds the gateway's keys to this map.
+  goal_records: "personal goal",
+  calendar_entries: "calendar event",
+  calendar_attendances: "event attendance",
+  private_app_installs: "private app install",
+  shared_app_installs: "shared app install",
+  shared_private_app_installs: "privately shared app install",
+  // WS-STU F1: the member's own AI Studio skills, with their versions.
+  studio_skills: "AI Studio skill",
   // WS-63 PZ-9: the member's settings row, with the assistant profile.
   member_settings: "personal settings record",
   // WS-66 PN-1: a browser or Home Screen app that gets the member's pushes.
@@ -158,6 +182,23 @@ const PURGE_LABELS: Record<string, string> = {
   knowledge_proposals: "proposed Knowledge edit",
   // WS-55 SW-10a: a nudge or a recovery record of the member's agent run, kept.
   agent_run_strands: "stranded agent run record",
+  // WS-39 SP-1: the member's review minutes in a started cycle's capacity snapshot, kept.
+  cycle_capacity: "cycle capacity record",
+  // The keys that came to the purge before its fence held them to this map.
+  chat_card_rows: "approved chat card record",
+  chat_join_rows: "chat join record",
+  failure_event_rows: "tool failure record",
+  studio_skill_runs: "AI Studio skill run",
+  studio_private_views: "private AI Studio saved view",
+  connection_asks: "connection request",
+  chat_topics: "private chat topic",
+  chat_pending_asks: "chat card question",
+  studio_shared_views: "shared AI Studio saved view",
+  studio_shared_skills: "shared AI Studio skill",
+  // SBX-1a, SBX-4b1 and SBX-2: the member's tool gaps, tool runs and sandbox tokens.
+  tool_gaps: "tool gap",
+  user_tool_runs: "tool run",
+  sandbox_capabilities: "sandbox run token",
 };
 
 function purgeLabel(key: string, n: number): string {
@@ -234,8 +275,41 @@ export default function OrganizationAdmin() {
    */
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState("members");
+  // PAR-1: a link may name the tab (`?tab=seats`). The tab is read after the first
+  // paint, so the server and the client draw the same first tab, and it is read again
+  // each time the query changes: the chat moves a page that is already open with
+  // `router.push`, which keeps this component mounted.
+  const search = useSearchParams()?.toString() ?? "";
+  useEffect(() => {
+    const named = orgTabFromSearch(search);
+    if (named) setTab(named);
+  }, [search]);
   const [filter, setFilter] = useState("all");
   const [inviting, setInviting] = useState(false);
+  // The phone bar (MOB-12) holds Members, Requests and Invite. The page keeps
+  // the other tabs in its strip, and the top Invite tool leaves. Invite hides
+  // where the page hides it: above the branding, seats and email forms.
+  const { isMobile } = useViewMode();
+  const rosterTab = !(tab === "branding" || tab === "seats" || tab === "email");
+  // A member who is not an admin sees the admin-only card, so no tab shows.
+  const notAdmin = !access.is_admin && !loading;
+  usePhoneBar({
+    active: tab === "members" ? "org-members" : tab === "requests" ? "org-requests" : null,
+    hide: notAdmin
+      ? ["org-members", "org-requests", "org-invite"]
+      : rosterTab ? [] : ["org-invite"],
+    counts: { "org-requests": queueError ? 0 : requests.length },
+  });
+  useEffect(() => {
+    const h = (e: Event) => {
+      const t = (e as CustomEvent<string>).detail;
+      if (t === "org-members") setTab("members");
+      else if (t === "org-requests") setTab("requests");
+      else if (t === "org-invite") setInviting(true);
+    };
+    window.addEventListener("cc-mobile-nav", h);
+    return () => window.removeEventListener("cc-mobile-nav", h);
+  }, []);
   /**
    * The person an off-boarding is being confirmed for. Removal drops every
    * role assignment and is not a toggle — Activate does not undo it — so it
@@ -491,7 +565,7 @@ export default function OrganizationAdmin() {
              no sense above the branding form, and an Invite button that is
              always there is one an admin eventually clicks on the wrong
              screen. */
-          tab === "branding" || tab === "seats" || tab === "email" ? null : (
+          !rosterTab ? null : (
             <>
               <Button
                 variant="ghost"
@@ -513,9 +587,25 @@ export default function OrganizationAdmin() {
               >
                 Roles
               </Link>
-              <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
-                Invite
-              </Button>
+              {/* SW-31b: the written rules for agents (Settings → Agents). */}
+              <Link
+                href="/settings/agents"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Agents
+              </Link>
+              {/* PKG-17c-2: the org default of the Home layout. */}
+              <Link
+                href="/settings/layout"
+                className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+              >
+                Home layout
+              </Link>
+              {!isMobile && (
+                <Button size="sm" icon="Plus" onClick={() => setInviting(true)}>
+                  Invite
+                </Button>
+              )}
             </>
           )
         }
@@ -561,7 +651,7 @@ export default function OrganizationAdmin() {
             icon: "Mail",
             note: "Approve Microsoft 365 for all members, and see how many connected a mailbox",
           },
-        ]}
+        ].filter((t) => !(isMobile && (t.id === "members" || t.id === "requests")))}
       />
 
       {tab === "members" && (
@@ -780,13 +870,13 @@ function MemberRow({
       <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/settings/members/${encodeURIComponent(member.email)}`}
-          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground glass:rounded-full glass:px-3"
         >
           Manage access
         </Link>
         {actions.isSelf && (
           <span
-            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground glass:rounded-full glass:px-3"
             title="You cannot suspend or remove your own access. Another owner or admin can."
           >
             This is you
@@ -805,7 +895,7 @@ function MemberRow({
         {actions.canRemove && (
           <button
             onClick={() => onRemove(member)}
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10 glass:rounded-full glass:px-3"
           >
             <Icon name="UserMinus" size={12} />
             {actions.removeLabel}
@@ -818,7 +908,7 @@ function MemberRow({
           <button
             onClick={() => onPurge(member)}
             title="Delete this person and every credential and access grant they hold. Their work and the audit trail are kept."
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90 glass:rounded-full glass:bg-destructive/15 glass:px-3 glass:text-destructive glass:hover:bg-destructive/25 glass:hover:opacity-100"
           >
             <Icon name="Trash2" size={12} />
             Delete permanently
@@ -1363,8 +1453,8 @@ function InviteDialog({
               <Icon name="UserPlus" size={15} /> Invite a member
             </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Sign-in is Microsoft SSO — this provisions their access, it does
-              not send an email.
+              They get an email with a button that opens the sign-in page. They
+              sign in with the same address you enter here.
             </p>
           </div>
           <button

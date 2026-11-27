@@ -458,6 +458,9 @@ class TestProvisioningPlacesTheOrganization:
         with db.begin() as c:
             c.execute(text("DELETE FROM deployment_key"))
             c.execute(text("DELETE FROM org_placement"))
+            # Migration 038: the app twin of `org_placement` names a box too.
+            # The Aroh suite rebuilds its box and its rows per test.
+            c.execute(text("DELETE FROM org_app"))
             c.execute(text("DELETE FROM deployment"))
             ensure_deployment(c, label="sole-box")
             assert c.execute(

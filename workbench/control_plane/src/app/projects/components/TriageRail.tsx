@@ -17,6 +17,7 @@
  * count that matters.
  */
 
+import { displayRowProject } from "../lib/personalTree";
 import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -264,7 +265,7 @@ export function TriageRail({ projectId, statuses, onOpenTask, onResolved }: Prop
                         <span className="truncate">{hit.title}</span>
                         {hit.project_name ? (
                           <span className="ml-auto shrink-0 text-muted-foreground">
-                            {hit.project_name}
+                            {displayRowProject(hit)}
                           </span>
                         ) : null}
                       </button>

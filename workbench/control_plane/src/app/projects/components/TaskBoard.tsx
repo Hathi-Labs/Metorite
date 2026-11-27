@@ -37,10 +37,13 @@
  * many are subtasks. A drag moves only the card dragged: a parent's status
  * never follows its subtask (`board.optimisticDrop`, fenced).
  */
+import { useStartFocus } from "@/app/tasks/lib/focusStart";
 import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { Board } from "@/components/board/Board";
 import { BoardColumn, BoardHeaderCell } from "@/components/board/BoardColumn";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
+import { agentCardLook, splitPlanProgress } from "../lib/agentCardLook";
+import { holderLine } from "../lib/agentHolder";
 import { AgentPill } from "./AgentPill";
 import { DropGap } from "@/components/DropGap";
 import { EmptyState } from "@/components/EmptyState";
@@ -55,7 +58,7 @@ import { accentForGroup, accentForStatus } from "../lib/accent";
 import type { StatusRow, TagRow,
   TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
-import { AGENT_WORK_EMPTY, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
+import { AGENT_WORK_EMPTY, isHeldByAgent, WAITING_ON_ME_EMPTY } from "../lib/agentRuns";
 import {
   buildCellDropPatch,
   buildColumnDropUpdate,
@@ -78,6 +81,7 @@ import {
 } from "../lib/grouping";
 import { mergePlans, quickAddPrefill } from "../lib/quickAdd";
 import { columnCountTitle, visibleTasks } from "../lib/subtaskView";
+import { columnMoreCount } from "../lib/paging";
 import {
   type Swimlane,
   buildSwimlanes,
@@ -100,8 +104,12 @@ import {
   stepTab,
   swipeDirection,
 } from "../lib/compactChrome";
+import { ProjectPathChip } from "./ProjectPathChip";
 import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
+import { useTaskUndo } from "./useTaskUndo";
+import { useToast } from "@/components/ui/Toast";
+import { epicTypeOf, isEpicTask, makeEpicTarget, typeRefusal } from "../lib/taskEpic";
 import { useAccess } from "@/components/AccessProvider";
 
 const NOBODY: ReadonlySet<string> = new Set();
@@ -223,6 +231,42 @@ interface Props {
    * what every surface showed before 2026-09-21.
    */
   personLabels?: ReadonlyMap<string, string>;
+  /**
+   * WS-64 OP-11 — the path of the project a card sits in. My tasks passes it,
+   * because its cards come from many projects. Absent, no card draws a chip.
+   */
+  projectPath?: (task: TaskRow) => readonly string[] | null;
+  /** OP-12b — true when the task sits in the private space. The chip then wears a lock. */
+  projectPrivate?: (task: TaskRow) => boolean;
+  /**
+   * WS-64 OP-11 fix round. The statuses a card's menu and its Mark-done tick
+   * pick from: the card's OWN project. My tasks passes it, because its cards
+   * come from many projects. Absent, every card reads `statuses`.
+   */
+  statusesFor?: (task: TaskRow) => readonly StatusRow[];
+  /**
+   * Task 1792. Opens the Statuses dialog, where the order of the columns is
+   * edited. Shown above a board grouped by status, so the control sits one
+   * click from the columns it changes. Absent in My tasks, which spans many
+   * projects and has no one status set to edit.
+   */
+  onManageStatuses?: () => void;
+  /**
+   * WS-64 OP-11 fix round. False hides the per-column quick add: My tasks
+   * spans many projects, so a column names no home for a new task. Its one
+   * add is the top Capture. Default true.
+   */
+  canQuickAdd?: boolean;
+  /**
+   * #918. The true size of each column across the whole filtered set, from
+   * the server, or null. A column counts these and not only the rows it
+   * holds. `paging.columnSizes` builds it.
+   */
+  columnTotals?: ReadonlyMap<string, number> | null;
+  /** #918. Read the next rows of one column. `held` is the rows it holds. */
+  onLoadColumn?: (columnKey: string, held: number) => void;
+  /** #918. The column whose own read is in flight. */
+  loadingColumn?: string | null;
 }
 
 export function TaskBoard({
@@ -257,6 +301,14 @@ export function TaskBoard({
   onSelect,
   onDrop,
   personLabels,
+  projectPath,
+  projectPrivate,
+  statusesFor,
+  onManageStatuses,
+  canQuickAdd = true,
+  columnTotals = null,
+  onLoadColumn,
+  loadingColumn = null,
 }: Props) {
   // A copied link names this organization, so it opens in the right account.
   const orgId = useAccess().access.organization?.id ?? null;
@@ -280,6 +332,9 @@ export function TaskBoard({
    * drop does on its own schedule. Held in the parent, a reload redraws the
    * card with the half-typed title still in it.
    */
+  // UNDO-1 — an inline rename offers Undo.
+  const taskUndo = useTaskUndo();
+  const toast = useToast();
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(
     null
   );
@@ -342,6 +397,30 @@ export function TaskBoard({
     [columns, groupBy, statuses]
   );
 
+  /**
+   * #918. The foot of a column that holds fewer rows than the server counts:
+   * one control that reads the next rows of that column alone.
+   */
+  const columnMore = (columnKey: string, held: number) => {
+    const total = columnTotals?.get(columnKey);
+    const next = columnMoreCount(held, total);
+    if (!onLoadColumn || next === 0) return null;
+    return (
+      <li className="list-none" data-column-more={columnKey}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full"
+          loading={loadingColumn === columnKey}
+          disabled={loadingColumn !== null}
+          onClick={() => onLoadColumn(columnKey, held)}
+        >
+          {`Load ${next} more`}
+        </Button>
+      </li>
+    );
+  };
+
   // WS-64 OP-1 — the status tabs of the phone board, and the one status it shows.
   const [chosenTab, setChosenTab] = useState<string | null>(null);
   const tabs = useMemo<StatusTab[]>(
@@ -349,9 +428,9 @@ export function TaskBoard({
       columns.map((column) => ({
         key: column.key,
         label: column.label,
-        count: column.tasks.length,
+        count: columnTotals?.get(column.key) ?? column.tasks.length,
       })),
-    [columns]
+    [columns, columnTotals]
   );
   const shownTab = activeTabKey(tabs, chosenTab);
   const swipe = useRef<{ x: number; y: number } | null>(null);
@@ -597,6 +676,8 @@ export function TaskBoard({
    * end of that column". `buildColumnDropUpdate` builds the patch rather than an
    * inline `{ status_id }`, so the menu and the drag write the same shape.
    */
+  // CC-4: the board card menu starts focus through the one start door.
+  const startFocus = useStartFocus();
   const menuActions: TaskMenuActions = {
     open: (task) => onSelect(task),
     copyLink: (task) => {
@@ -620,6 +701,8 @@ export function TaskBoard({
     moveToProject: (task) => onMoveTask?.(task.id),
     mergeInto: (task) => onMergeTask?.(task.id),
     askAgent: (task) => onAskAgent?.(task.id),
+    makeEpic: (task) => void makeEpic(task),
+    focus: (task) => void startFocus(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -648,7 +731,9 @@ export function TaskBoard({
 
   const menuFor = (task: TaskRow): TaskMenuContext => ({
     task,
-    statuses,
+    // OP-11 fix round: the card's OWN project's lanes, where the page knows
+    // them, so the tick and the Status block name statuses this task can take.
+    statuses: statusesFor?.(task) ?? statuses,
     // The checkbox and the menu row agree by construction: both are the
     // presence of `onToggle`, so a surface that cannot select cannot offer it.
     canSelect: Boolean(onToggle),
@@ -661,9 +746,15 @@ export function TaskBoard({
     // An archived task takes no new run, and the gateway refuses it, so the
     // entry drops rather than offering a click that ends in an error.
     canAskAgent: Boolean(onAskAgent) && !task.archived_at,
+    // An open task takes a session. An archived or finished one does not.
+    canFocus: !task.archived_at && !task.completed_at,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
+    // SP-6 — the epic command needs the project's types and a place to send
+    // the result, so a board without either does not offer it.
+    epicTypeId: onRenamed ? epicTypeOf(taskTypes)?.id ?? null : null,
+    isEpic: isEpicTask(task, taskTypes),
     canEditInline: Boolean(onRenamed),
     canArchive: Boolean(onArchive),
     // WS-64 OP-8 — the server's `can_delete`. Only an explicit `false` hides
@@ -671,6 +762,36 @@ export function TaskBoard({
     canDelete: Boolean(onDeleteTask) && task.can_delete !== false,
     selected: selected?.has(task.id) ?? false,
   });
+
+  /**
+   * SP-6 — "Make it an epic". A subtask is refused here, before the request,
+   * with the reason. A refusal from the server (a 422) is shown with the
+   * next step. A success offers Undo, as the other inline edits do.
+   */
+  async function makeEpic(task: TaskRow) {
+    const epic = makeEpicTarget(task, taskTypes);
+    if (!epic) return;
+    const refusal = typeRefusal(task, epic);
+    if (refusal) {
+      toast.show({ variant: "error", title: refusal });
+      return;
+    }
+    try {
+      const fresh = await projectsApi.patchTask(task.id, { type_id: epic.id });
+      taskUndo.edited(task, { type_id: epic.id }, fresh, {
+        label: `made ${task.title} an epic`,
+        receipt: "Now an epic",
+        after: () => onRenamed?.(),
+      });
+      onRenamed?.();
+    } catch (err) {
+      toast.show({
+        variant: "error",
+        title: "Couldn't make this an epic",
+        description: `${String((err as Error).message)} Check the task and try again.`,
+      });
+    }
+  }
 
   /**
    * Close a field ONLY if it is still the one this write belongs to.
@@ -695,8 +816,14 @@ export function TaskBoard({
     setRenameBusyId(task.id);
     setRenameError(null);
     try {
-      await projectsApi.patchTask(task.id, { title });
+      const fresh = await projectsApi.patchTask(task.id, { title });
       closeRenameOf(task.id);
+      // UNDO-1 — an inline rename can be taken back.
+      taskUndo.edited(task, { title }, fresh, {
+        label: `renamed ${task.title}`,
+        receipt: "Task renamed",
+        after: () => onRenamed?.(),
+      });
       onRenamed?.();
     } catch (err) {
       // The field stays open with what was typed still in it, AND the reason
@@ -775,6 +902,19 @@ export function TaskBoard({
     // and the click that put the caret back also opens the task panel.
     const editing = renamingThis || composingHere;
 
+    // EA-13g: one look for each run state. `globals.css` draws the edge.
+    const agentLook = agentCardLook(task.agent_state, {
+      clientVia: task.agent_client_via,
+      // SW-7b: the label of the agent session, beside the client name.
+      agentLabel: task.agent_label,
+      memberEmail: task.agent_member_email,
+      note: task.agent_note,
+      waiting: task.agent_waiting,
+      plan: task.agent_plan,
+      viewerEmail: me,
+      labels: personLabels,
+    });
+
     return (
     // ⚠️ `data-card`, not a Tailwind group. The strip's reveal cannot use
     // `group-hover:` at all — Tailwind v4 wraps that in
@@ -792,6 +932,7 @@ export function TaskBoard({
     <li
       key={task.id}
       data-card
+      data-agent-edge={agentLook.edge ?? undefined}
       className="rounded-md"
       // WS-64 OP-1: a finger that rests on a touch card opens its menu.
       onTouchStart={
@@ -947,12 +1088,55 @@ export function TaskBoard({
               clientVia={task.agent_client_via}
               memberEmail={task.agent_member_email}
               note={task.agent_note}
+              waiting={task.agent_waiting}
               viewerEmail={me}
               labels={personLabels}
             />
           </div>
         ) : null}
+        {agentLook.line ? (
+          <p
+            data-agent-line
+            className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground"
+            title={agentLook.line}
+          >
+            {agentLook.edge === "live" ? (
+              <span aria-hidden className="agent-live-dot h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            ) : null}
+            {/* SW-32: the count "3 of 7" never truncates, the step does. */}
+            {(() => {
+              const split = splitPlanProgress(agentLook.line, task.agent_plan);
+              return split ? (
+                <>
+                  <span className="truncate">{split.head}</span>
+                  <span className="shrink-0 whitespace-nowrap">{split.tail}</span>
+                </>
+              ) : (
+                <span className="truncate">{agentLook.line}</span>
+              );
+            })()}
+          </p>
+        ) : null}
+        {/* SW-5: who holds the task, and since when. */}
+        {task.held_by && isHeldByAgent(task) ? (
+          <p
+            data-agent-holder
+            className="mt-1 min-w-0 truncate text-[10px] text-muted-foreground"
+            // The live line above already names the session. The tooltip keeps
+            // the session label too, and the visible text keeps the part that
+            // truncation must not cut: who holds the task, and since when.
+            title={holderLine(task.held_by, personLabels, undefined, undefined, task.agent_label)}
+          >
+            {holderLine(task.held_by, personLabels)}
+          </p>
+        ) : null}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
+        {/* WS-64 OP-11 — My tasks names the project of each card. */}
+        {projectPath ? (
+          <div className="mt-1 flex min-w-0">
+            <ProjectPathChip path={projectPath(task)} isPrivate={projectPrivate?.(task) ?? false} />
+          </div>
+        ) : null}
         {composingHere ? (
           <CardInput
             value={subtaskTitle}
@@ -1045,6 +1229,22 @@ export function TaskBoard({
       className="outline-none"
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
+      {/* MOB-11 (task 2004): a phone draws no Statuses row. The status tabs are
+          its first row, and "Manage this project" in the title row holds the
+          Statuses item. Desktop keeps the button. */}
+      {onManageStatuses && groupBy === "status" && !phone ? (
+        <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="Columns3"
+            onClick={onManageStatuses}
+          >
+            Statuses
+          </Button>
+        </div>
+      ) : null}
+
       {laned ? (
         <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
@@ -1079,7 +1279,11 @@ export function TaskBoard({
             if (dir) setChosenTab(stepTab(tabs, shownTab, dir));
           }}
         >
-          <div className="sticky top-0 z-10 border-b border-border bg-background px-3 py-1.5">
+          {/* z-[5], not z-10: the header row (AppTopBar, relative z-10 in the glass
+              look) holds the "Manage this project" menu. An equal layer, later in
+              the tree, painted this strip over the menu's Custom fields and
+              Statuses rows on a phone (MOB-11, task 2004). */}
+          <div className="sticky top-0 z-[5] border-b border-border bg-background px-3 py-1.5">
             <ScrollStrip label="Statuses" className="gap-1.5" revealKey={shownTab ?? ""}>
               {tabs.map((tab) => (
                 <Button
@@ -1118,9 +1322,10 @@ export function TaskBoard({
                             : "Nothing here"
                   }
                   addLabel={`Add to ${column.label}`}
-                  onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
+                  onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
                 >
                   {cellCards(column.key, column.tasks, null)}
+                  {columnMore(column.key, column.tasks.length)}
                 </BoardColumn>
               ))}
           </div>
@@ -1138,7 +1343,8 @@ export function TaskBoard({
               header={{
                 accent: columnAccents[columnIndex],
                 title: column.label,
-                count: column.tasks.length,
+                // #918: the server's count of the lane, not the rows held.
+                count: columnTotals?.get(column.key) ?? column.tasks.length,
                 countTitle: columnCountTitle(column.tasks, column.label),
               }}
               dropTarget={isDropTarget(null, column.key)}
@@ -1158,9 +1364,10 @@ export function TaskBoard({
               }
               // No composer on the shelf — see `shelf` above.
               addLabel={`Add to ${column.label}`}
-              onAdd={shelf ? undefined : (title) => quickAdd(title, column.key, null)}
+              onAdd={shelf || !canQuickAdd ? undefined : (title) => quickAdd(title, column.key, null)}
             >
               {cellCards(column.key, column.tasks, null)}
+              {columnMore(column.key, column.tasks.length)}
             </BoardColumn>
           ))}
         </Board>
@@ -1177,7 +1384,7 @@ export function TaskBoard({
                   header={{
                     accent: columnAccents[columnIndex],
                     title: column.label,
-                    count: column.tasks.length,
+                    count: columnTotals?.get(column.key) ?? column.tasks.length,
                     countTitle: columnCountTitle(column.tasks, column.label),
                   }}
                 />
@@ -1226,7 +1433,7 @@ export function TaskBoard({
                             }
                             addLabel={`Add to ${column.label} · ${lane.label}`}
                             onAdd={
-                              shelf
+                              shelf || !canQuickAdd
                                 ? undefined
                                 : (title) => quickAdd(title, column.key, lane.key)
                             }

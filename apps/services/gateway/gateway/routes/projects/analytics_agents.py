@@ -20,7 +20,7 @@ Three things live here.
 
 ⚠️ **Each rule is a rule that already exists, joined.** The labels are RA-1's
 (`analytics.finish_labels_sql`, over Throughput's ``cyc``). "Working" is
-`filters.AGENT_RUN_STATE_SQL` with `agent_summary.WORKING_STATES`, the rule of
+`filters.AGENT_RUN_STATE_SQL` with `filters.WORKING_STATES`, the rule of
 the board strip. "Agent work" on a pull request is
 `agent_worked.AGENT_WORKED_SQL`. The agent of a finish and its member come
 from `analytics_waiting.agent_of`. "An agent act" is `analytics.agent_act_sql`.
@@ -46,7 +46,6 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
-from gateway.routes.projects.agent_summary import WORKING_STATES
 from gateway.routes.projects.agent_worked import agent_worked_sql
 from gateway.routes.projects.analytics import (
     FINISH_AGENT,
@@ -68,7 +67,7 @@ from gateway.routes.projects.analytics_waiting import (
     answered_at_sql,
     percentile_cont,
 )
-from gateway.routes.projects.filters import AGENT_RUN_STATE_SQL, agent_runs_enabled
+from gateway.routes.projects.filters import AGENT_RUN_STATE_SQL, WORKING_STATES, agent_runs_enabled
 from gateway.routes.projects.report_scope import filter_person_rows
 from sqlalchemy import text
 
@@ -352,7 +351,8 @@ def agent_members_sql(scope_where: str, *, skip_current_week: bool = False) -> s
         f"  FROM ({labels}) l"
         f"  LEFT JOIN LATERAL ("
         f"    SELECT x.client_via, x.member_email FROM pm_agent_runs x"
-        f"     WHERE x.task_id = l.task_id AND x.created_at <= l.done_at"
+        f"     WHERE x.task_id = l.task_id AND x.task_id IS NOT NULL"
+        f"       AND x.created_at <= l.done_at"
         f"     ORDER BY x.created_at DESC, x.id DESC LIMIT 1"
         f"  ) nr ON TRUE"
         f"  LEFT JOIN LATERAL ("
@@ -517,7 +517,7 @@ def runs_now_sql(open_where: str) -> str:
     member: how many work, and how many are silent.
 
     "Working" is the board strip's rule: the run state of
-    `filters.AGENT_RUN_STATE_SQL` is one of `agent_summary.WORKING_STATES`.
+    `filters.AGENT_RUN_STATE_SQL` is one of `filters.WORKING_STATES`.
     A silent run (:func:`silent_run_sql`) is not working. It binds
     ``:working_states`` and ``:silent_s``.
     """
@@ -532,6 +532,7 @@ def runs_now_sql(open_where: str) -> str:
         f"  JOIN pm_tasks t ON t.id = r.task_id"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f" WHERE {open_where}"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND r.status = '{SILENT_STATUS}'"
         f" GROUP BY 1, 2"
     )
@@ -551,6 +552,7 @@ def failed_today_sql(past_where: str) -> str:
         f"  FROM pm_agent_runs r"
         f"  JOIN pm_tasks t ON t.id = r.task_id"
         f" WHERE {past_where}"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND r.status = 'failed'"
         f"   AND coalesce(r.ended_at, r.last_activity_at) >= {_TODAY_UTC}"
     )
@@ -790,7 +792,7 @@ def run_time_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
         f"     SELECT sum({RUN_AGENT_SECONDS_SQL}) / 3600.0 AS hours"
         f"       FROM pm_agent_runs r"
         f"      {run_time_joins_sql()}"
-        f"      WHERE r.task_id = c.task_id"
+        f"      WHERE r.task_id = c.task_id AND r.task_id IS NOT NULL"
         f"        AND {RUN_MEASURED_SQL}"
         f"        AND r.created_at <= c.finished_at"
         f"   ) x ON TRUE"

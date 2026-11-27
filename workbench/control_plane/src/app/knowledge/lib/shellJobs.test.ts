@@ -22,7 +22,7 @@ const KNOWLEDGE = PANES.find((p) => p.href === "/knowledge")!;
 
 describe("the Knowledge jobs (KB-12)", () => {
   // KC-8e changed this on purpose: the list holds four jobs, not two.
-  it("are four, of a live pane, each opening a Knowledge route", () => {
+  it("are five, of a live pane, each opening a Knowledge route", () => {
     expect(KNOWLEDGE.launch).toBe("live");
     const mine = JOBS.filter((j) => j.app === "/knowledge").map((j) => [j.id, j.href]);
     expect(mine).toEqual([
@@ -30,6 +30,7 @@ describe("the Knowledge jobs (KB-12)", () => {
       ["write-page", "/knowledge?do=write-page"],
       ["add-product", "/knowledge?do=add-product"],
       ["add-topic", "/knowledge?do=add-topic"],
+      ["new-space", "/knowledge?do=new-space"],
     ]);
   });
 
@@ -49,6 +50,11 @@ describe("the Knowledge jobs (KB-12)", () => {
     // `canAdd` is false with no writable space or a refused types read.
     expect(LAYOUT).toMatch(/const canAdd = useMemo\(\(\) => canAddEntity\(spaces\) && typesAnswered/);
     expect(canAddEntity([])).toBe(false);
+  });
+
+  it("the layout opens the KB-2q form only for a holder of knowledge:manage", () => {
+    expect(LAYOUT).toMatch(/<ShellJob\s+id="new-space"\s+onOpen=\{\(\) => manager && openNewSpace\(\)\}/);
+    expect(LAYOUT).toMatch(/onNewSpace: manager \? openNewSpace : undefined/);
   });
 
   it("the bar finds each job by the words a member types", () => {

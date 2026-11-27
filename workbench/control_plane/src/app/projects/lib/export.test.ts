@@ -167,3 +167,29 @@ describe("exportQuery and the Subtasks mode", () => {
     }
   });
 });
+
+// ── Task #986: the file holds the rows the board shows ─────────────────────
+
+describe("exportQuery and the agent filters", () => {
+  const BASE = { projectId: "p1", filters: EMPTY_FILTERS, shownFields: ["status"], sort: null };
+
+  it("sends agent_focus for every focus, and 'waiting' for Waiting on me", () => {
+    for (const agentFocus of ["queued", "working", "waiting", "review", "merged"] as const) {
+      expect(exportQuery({ ...BASE, agentFocus }).agent_focus).toBe(agentFocus);
+    }
+    expect(exportQuery({ ...BASE, waitingOnMe: true, agentFocus: "working" }).agent_focus).toBe("waiting");
+  });
+
+  it("sends agent_worked for Agent work, and nothing while all three are off", () => {
+    expect(exportQuery({ ...BASE, agentWork: true }).agent_worked).toBe("true");
+    const off = exportQuery(BASE);
+    expect(off).not.toHaveProperty("agent_focus");
+    expect(off).not.toHaveProperty("agent_worked");
+  });
+
+  it("reads the same builder as the board's read", () => {
+    expect(exportQuery({ ...BASE, agentFocus: "review", agentWork: true })).toMatchObject({
+      agent_focus: "review", agent_worked: "true",
+    });
+  });
+});

@@ -23,12 +23,13 @@ tree.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.authority import (
     assert_may_change_lead,
     assert_may_convert_node,
@@ -58,6 +59,7 @@ from gateway.routes.projects.core import (
     assert_grant_group_exists,
     assert_no_project_cycle,
     assert_node_grammar,
+    assert_not_archived,
     assert_project_move_keeps_privacy,
     assert_run_state_allowed,
     clean_payload,
@@ -72,11 +74,13 @@ from gateway.routes.projects.core import (
     node_level,
     org_groups,
     personal_tree_owner,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_task_statuses,
     require_done_status,
     require_organization,
+    require_precondition,
     resolve_visibility,
     root_project_id,
     router,
@@ -88,9 +92,49 @@ from gateway.routes.projects.core import (
     validate_grant_subject,
     validate_icon_slot,
     validate_lifecycle_settings,
+    validate_work_style,
+    wire,
 )
+from gateway.routes.projects.cycles import detach_moved_tasks
+from gateway.routes.projects.due_day import overdue_sql
+from gateway.routes.projects.notifications import project_audience
+from gateway.routes.projects.tasks import _narrow_agent_body
+from gateway.routes.projects.updates import latest_update, updates_allowed
 from pydantic import BaseModel
 from sqlalchemy import text
+
+#: WS-55 MCP-G1 (spec ``external_agent_access.md`` §9.2). The body keys that
+#: a signed agent write of a node may send, by route. The MCP edge sends no
+#: other key (``create_project`` and ``update_project``), and the route
+#: refuses any other key with 422 when ``UserContext.agent`` is set. So an
+#: agent names no ``lead``, which is a grant write (D-OP-11), no kind, no
+#: setting of a space and no source. A member's request is not narrowed.
+AGENT_NODE_CREATE_FIELDS: frozenset[str] = frozenset({
+    "name", "description", "parent_project_id",
+})
+AGENT_NODE_PATCH_FIELDS: frozenset[str] = frozenset({"name", "description", "status"})
+
+#: WS-55 MCP-G1. The 403 of a new space from a connection with pins. A pinned
+#: connection reaches its pinned projects and the nodes below them only, and
+#: a new space is below none of them. The edge holds a copy, and
+#: ``test_mcp_edge_projects.py`` pins the two equal.
+AGENT_SPACE_PINNED = "A connection with pinned projects cannot make a new space."
+
+
+def _refuse_pinned_space(user: UserContext, parent_id: object) -> None:
+    """403 when a signed agent with pins makes a node with no parent (MCP-G1).
+
+    A node under a parent passes here: the parent must be visible, and the
+    visibility seam narrows it to the pins (``core._narrow_for_agent``). A
+    no-op for a member and for a connection with no pins. The test reads the
+    pins alone on purpose (D-EA-12, spec §10.8): a connection with only a
+    left-out list reaches wide, and a new space is under no left-out mark.
+    """
+    agent = getattr(user, "agent", None)
+    if agent is None or parent_id or not agent.pinned_projects:
+        return
+    raise HTTPException(status_code=403, detail=AGENT_SPACE_PINNED)
+
 
 #: Fields whose change is worth a timeline entry. Deliberately not every column:
 #: `updated_at` moves on every write, and a diff that always has an entry is a
@@ -104,6 +148,8 @@ _TRACKED_PROJECT_FIELDS: tuple[str, ...] = (
     # is the same "who did that" question, and the icon is how people find
     # the space in a long sidebar.
     "icon", "icon_slot",
+    # WS-39 SP-3a. "Who turned on sprints here" is the same question.
+    "work_style",
 )
 
 
@@ -173,6 +219,42 @@ async def _project_generation(db, node_id: str) -> int:
         ),
         {"pid": node_id},
     )).scalar() or 0)
+
+
+#: WS-64 OP-11 (audit P1-4). The PROJECT generations of many nodes in one
+#: read: the batch form of :func:`_project_generation`, with the same count.
+#: The walk goes UP each node's ancestry over ``pm_projects``, because the
+#: generation is a structural fact. A node whose parent the caller cannot
+#: see is still a project or a subproject, not a space.
+_GENERATIONS_SQL = (
+    "WITH RECURSIVE lineage AS ("
+    "  SELECT id AS node_id, id, parent_project_id, kind FROM pm_projects"
+    "    WHERE id = ANY(CAST(:ids AS uuid[]))"
+    "  UNION ALL"
+    "  SELECT l.node_id, p.id, p.parent_project_id, p.kind FROM pm_projects p"
+    "    JOIN lineage l ON p.id = l.parent_project_id"
+    ") SELECT node_id, count(*) FILTER ("
+    "    WHERE coalesce(kind, 'project') = 'project') AS generation"
+    "  FROM lineage GROUP BY node_id"
+)
+
+
+async def attach_levels(db: Any, nodes: list[dict[str, Any]]) -> None:
+    """Stamp ``level`` on each node, by the one rule ``core.node_level``.
+
+    One read for every node. A node the read does not answer keeps
+    ``level`` null: the client then falls back to the kind, as before.
+    """
+    ids = [str(n["id"]) for n in nodes if n.get("id")]
+    gens: dict[str, int] = {}
+    if ids:
+        rows = (await db.execute(text(_GENERATIONS_SQL), {"ids": ids})).fetchall()
+        gens = {str(r.node_id): int(r.generation or 0) for r in rows}
+    for node in nodes:
+        gen = gens.get(str(node.get("id")))
+        node["level"] = (
+            None if gen is None else node_level(node_kind(node.get("kind")), gen)
+        )
 
 
 #: WS-64 OP-10, fix round 1. A share lock on each node of the ancestor
@@ -412,6 +494,31 @@ def _nest(nodes: dict[str, dict]) -> list[dict]:
     return roots
 
 
+async def grantable_project_ids(user: UserContext) -> frozenset[str]:
+    """The project ids that the member of the session may mark on one of
+    their own agent connections (WS-55 EA-17c-1, D-EA-13,
+    ``external_agent_access.md`` §10.8).
+
+    Each team project that :func:`_visible_projects` returns, and each root
+    of the member's own personal tree, as ``GET /projects/tree`` nests it in
+    ``personal``. Change access refuses any other id with 422.
+
+    ⚠️ It is the MEMBER's sight. The visibility drops ``user.agent``, so the
+    narrowing of an agent never decides what its member may grant. The
+    session is the request's own tenant (``_tenant_session``).
+    """
+    async with _tenant_session() as db:
+        vis = dataclasses.replace(await resolve_visibility(db, user), agent=None)
+        team = await _visible_projects(db, user, vis)
+        own = await _own_personal_projects(db, vis)
+    own_ids = {str(r.id) for r in own}
+    personal_roots = {
+        str(r.id) for r in own
+        if str(r.parent_project_id or "") not in own_ids
+    }
+    return frozenset({str(r.id) for r in team} | personal_roots)
+
+
 @router.get("/tree")
 async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     """The caller's forest, nested.
@@ -457,6 +564,8 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
         # WS-64 OP-6b — a personal space is not shared (D-OP-2).
         for node in personal.values():
             await attach_can_write_grants(db, user, node)
+        # WS-64 OP-11 (audit P1-4) — the level of each node, additive (R6).
+        await attach_levels(db, [*nodes.values(), *personal.values()])
 
     roots = _nest(nodes)
     _attach_progress(roots, counts)
@@ -538,6 +647,7 @@ async def _open_and_done(db: Any, vis: Any) -> dict[str, tuple[int, int, int]]:
 
 def _attach_progress(
     nodes: list[dict], counts: dict[str, tuple[int, int, int]],
+    parent_archived: bool = False,
 ) -> tuple[int, int, int]:
     """Stamp `tasks`, `done` and `cancelled` on every node, for its subtree.
 
@@ -563,12 +673,21 @@ def _attach_progress(
         own_total, own_done, own_cancelled = counts.get(
             str(node["id"]), (0, 0, 0),
         )
+        archived = node.get("archived_at") is not None
         kid_total, kid_done, kid_cancelled = _attach_progress(
-            node.get("children") or [], counts,
+            node.get("children") or [], counts, parent_archived or archived,
         )
         node["tasks"] = own_total + kid_total
         node["done"] = own_done + kid_done
         node["cancelled"] = own_cancelled + kid_cancelled
+        # OP-12b. An archived child of a LIVE parent stamps its OWN subtree
+        # (the Archived fold draws it), but its tasks leave the parent's count.
+        # The summary walk (`NODE_DESCENDANTS_SQL`) skips it, so the sidebar
+        # number and the Overview "Open" must agree. Under an ARCHIVED parent
+        # the walk keeps archived children (`NODE_DESCENDANTS_ARCHIVED_SQL`),
+        # because an archive stamps the whole subtree, so they count there.
+        if archived and not parent_archived:
+            continue
         subtotal += node["tasks"]
         subdone += node["done"]
         subcancelled += node["cancelled"]
@@ -594,6 +713,11 @@ async def get_node(
         # team space holds no tasks (`core.assert_holds_tasks`), and the
         # member's own root holds the Inbox. Additive (R6).
         result["personal"] = bool(getattr(row, "personal_owner", None))
+        # WS-64 OP-11 (audit P1-4) — the level, by `core.node_level`. Additive.
+        result["level"] = node_level(
+            node_kind(getattr(row, "kind", None)),
+            await _project_generation(db, project_id),
+        )
         # WS-64 OP-8 — the chat refuses before its card where this is false.
         await attach_can_delete(db, user, [result], kind="project")
         # WS-64 OP-6b — the chat refuses before its grant card where this is false.
@@ -620,7 +744,13 @@ async def get_portfolio_summary(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user)
+        # WS-64: an archived project is out of the portfolio — its row, its
+        # count and its tasks. The sidebar tree still returns archived rows
+        # on purpose (it splits them out), so the filter lives here.
+        rows = [
+            r for r in await _visible_projects(db, user)
+            if getattr(r, "archived_at", None) is None
+        ]
 
         by_parent: dict[str, list] = {}
         for row in rows:
@@ -645,7 +775,7 @@ async def get_portfolio_summary(
                 f"SELECT t.project_id, s.category, count(*) AS n,"
                 f"       count(*) FILTER ("
                 f"         WHERE t.due_at IS NOT NULL"
-                f"           AND t.due_at < now()"
+                f"           AND {overdue_sql()}"
                 f"           AND s.category <> ALL(CAST(:closed AS text[]))"
                 f"       ) AS overdue"
                 f"  FROM pm_tasks t"
@@ -654,7 +784,8 @@ async def get_portfolio_summary(
                 f"   AND ({task_visibility_clause(vis, 't')})"
                 f" GROUP BY t.project_id, s.category"
             ),
-            {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
+            {**vis.params, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
 
     totals: dict[str, int] = {}
@@ -719,6 +850,9 @@ async def get_portfolio_summary(
 #: that node it sits under. ``branch_id`` rides down the recursion so the
 #: dashboard can group a grandchild's tasks onto the row a user clicks.
 #:
+#: ⚠️ An ARCHIVED project, and everything below it, is not walked (WS-64): the
+#: dashboard neither lists nor counts it.
+#:
 #: ⚠️ The walk starts BELOW ``:pid`` — the node is never among its own
 #: descendants. :func:`fold_node_summary` carries the consequence.
 NODE_DESCENDANTS_SQL = (
@@ -727,13 +861,22 @@ NODE_DESCENDANTS_SQL = (
     "         archived_at, id AS branch_id"
     "    FROM pm_projects WHERE parent_project_id ="
     "         CAST(:pid AS uuid)"
+    "     AND archived_at IS NULL"
     "  UNION ALL"
     "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
     "         p.status, p.archived_at, s.branch_id"
     "    FROM pm_projects p JOIN sub s"
     "      ON p.parent_project_id = s.id"
+    "   WHERE p.archived_at IS NULL"
     ") SELECT * FROM sub"
 )
+
+#: The same walk for a node that is ITSELF archived. Archiving stamps the whole
+#: subtree, so the filter above would hide every child of a node opened from
+#: the sidebar's Archived section. Here the filter is dropped.
+NODE_DESCENDANTS_ARCHIVED_SQL = NODE_DESCENDANTS_SQL.replace(
+    "     AND archived_at IS NULL", "",
+).replace("   WHERE p.archived_at IS NULL", "")
 
 
 def node_counts_sql(visibility_clause: str) -> str:
@@ -749,7 +892,7 @@ def node_counts_sql(visibility_clause: str) -> str:
         # the closed set must not leave this one counting finished work late.
         "       count(*) FILTER ("
         "         WHERE t.due_at IS NOT NULL"
-        "           AND t.due_at < now()"
+        f"           AND {overdue_sql()}"
         "           AND s.category <> ALL(CAST(:closed AS text[]))"
         "       ) AS overdue"
         "  FROM pm_tasks t"
@@ -868,7 +1011,15 @@ async def get_node_summary(
     a space but only one project inside it therefore gets a dashboard whose
     totals match what they could reach by clicking, which is the property
     that keeps a roll-up from becoming a disclosure channel.
+
+    WS-39 LP-1a (``project_management_app.md`` §14.2a). A project and a
+    subproject also carry ``latest_update``: their newest live update, or
+    null. The key is there only while ``PROJECTS_UPDATES_ORGS`` holds the
+    org, so the Overview draws the line with the roll-up, and a dark org gets
+    the answer it got before.
     """
+    latest: dict[str, Any] | None = None
+    with_latest = False
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         node = await load_visible_project(db, vis, project_id)
@@ -876,12 +1027,21 @@ async def get_node_summary(
             node_kind(getattr(node, "kind", None)),
             await _project_generation(db, project_id),
         )
+        if level in ("project", "subproject") and updates_allowed(
+                getattr(user, "organization_id", None)):
+            with_latest = True
+            latest = await latest_update(db, user, str(node.id))
 
         # Every visible PROJECT under this node (folders excluded — they
         # hold no work), each with the id of the child of `project_id` it
         # sits under, so the dashboard can group by the row a user clicks.
         descendants = (await db.execute(
-            text(NODE_DESCENDANTS_SQL), {"pid": project_id},
+            text(
+                NODE_DESCENDANTS_ARCHIVED_SQL
+                if getattr(node, "archived_at", None) is not None
+                else NODE_DESCENDANTS_SQL
+            ),
+            {"pid": project_id},
         )).fetchall()
 
         # The node itself counts too: a project that carries subprojects
@@ -895,6 +1055,7 @@ async def get_node_summary(
                 **vis.params,
                 "ids": scope_ids,
                 "closed": sorted(CLOSING_CATEGORIES),
+                "day_start": await reader_day_start(db, vis.email),
             },
         )).fetchall()
 
@@ -910,6 +1071,7 @@ async def get_node_summary(
             if node_kind(getattr(r, "kind", None)) == "project"
         ),
         **folded,
+        **({"latest_update": latest} if with_latest else {}),
     }
 
 
@@ -961,6 +1123,28 @@ async def create_node(
     payload: ProjectIn, user: UserContext = Depends(get_current_user),
 ) -> dict:
     values = clean_payload(payload)
+    kind = check_node_values(user, values)
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        row = await create_node_in(db, user, vis, values, kind)
+        project_id = str(row.id)
+        result = row_to_dict(row, ProjectModel)
+
+    await emit("pm.project.created", {"project_id": project_id, "name": values["name"]})
+    return result
+
+
+def check_node_values(user: UserContext, values: dict[str, Any]) -> str:
+    """The checks of a new node that need no database. Returns its kind.
+
+    It sets ``name`` (trimmed) and ``created_by`` on *values*. The route and
+    ``templates.apply_template`` (WS-39 TPL-1a) both call it before
+    :func:`create_node_in`, so a node has one set of rules on every door.
+    """
+    # WS-55 MCP-G1. A signed agent sends only the keys of `create_project`,
+    # and a connection with pins makes no space.
+    _narrow_agent_body(user, values, AGENT_NODE_CREATE_FIELDS)
+    _refuse_pinned_space(user, values.get("parent_project_id"))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A project needs a name.")
@@ -975,129 +1159,154 @@ async def create_node(
     validate_choice(values.get("kind"), NODE_KINDS, "node kind")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. A new node may name its style. With none, the column
+    # DEFAULT gives `flow`.
+    validate_work_style(values)
     _refuse_lifecycle_on_child(values, values.get("parent_project_id"))
     values["name"] = name
     values["created_by"] = actor(user)
-    kind = node_kind(values.get("kind"))
+    return node_kind(values.get("kind"))
 
-    async with _tenant_session() as db:
-        vis = await resolve_visibility(db, user)
-        parent_id = values.get("parent_project_id")
-        parent_row = None
-        if parent_id:
-            # Creating INSIDE a project requires seeing it — otherwise a caller
-            # could graft a subtree onto another department by guessing an id,
-            # and inherit that department's grants for it.
-            parent_row = await load_visible_project(db, vis, str(parent_id))
 
-        # WS-64, task #304. A child of a private tree is private too, so it
-        # takes the tree owner's `personal_owner`. Every read tests the node's
-        # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
-        # checks), so an unstamped child read as a team node: an orphan root
-        # in each `data:org:read` tree, open to an agent with
-        # `include_personal=false`, and free to move into a team space.
-        #
-        # Only the tree owner may add a node here. `/projects/my/areas` is
-        # the personal seam, but the Projects app's Personal space (OP-3)
-        # files through this route, so the owner is allowed. Anyone else,
-        # an org reader too, gets the same 404 as an unseen parent: a node
-        # filed in another member's private tree is a taking act, and a
-        # different answer would confirm that the tree exists.
-        #
-        # Fix round 2. `personal_tree_owner` is the one walk, with the stop
-        # rule of migration 297. A team node that 297 kept under a private
-        # tree answers None, so its team files nodes under it as team work.
-        tree_owner = (
-            await personal_tree_owner(db, str(parent_id)) if parent_id else None
-        )
-        if tree_owner is not None:
-            if tree_owner != actor(user).lower():
-                raise HTTPException(status_code=404, detail="Project not found")
-            values["personal_owner"] = tree_owner
+async def create_node_in(
+    db: Any, user: UserContext, vis: Any, values: dict[str, Any], kind: str,
+) -> Any:
+    """THE one creator of a ``pm_projects`` row on a member's request.
 
-        # The tree grammar (migration 193): space → [folder] → project →
-        # [folder] → subproject, and stop. Checked before the org resolve so
-        # a bad shape is refused as a shape, not as a permission.
-        parent_kind = None
-        if parent_id:
-            # OP-10 fix round 1: serialize with a convert above the parent.
-            await _lock_ancestor_chain(db, str(parent_id))
-            # Fix round 2: the parent's kind from after the lock. A convert
-            # of the parent that committed while this waited changed it.
-            parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
-        parent_gen = (
-            await _project_generation(db, str(parent_id)) if parent_id else 0
-        )
-        assert_node_grammar(
-            kind=kind,
-            parent_kind=parent_kind,
-            parent_generation=parent_gen,
-            subtree_depth=1 if kind == "project" else 0,
-        )
+    It runs in the caller's transaction and returns the new row. It emits
+    nothing: the caller emits ``pm.project.created`` after the commit.
+    *values* passed :func:`check_node_values` first. ``POST /nodes`` and the
+    apply of a template (WS-39 TPL-1a) both create through it.
+    """
+    name = values["name"]
+    parent_id = values.get("parent_project_id")
+    parent_row = None
+    if parent_id:
+        # Creating INSIDE a project requires seeing it — otherwise a caller
+        # could graft a subtree onto another department by guessing an id,
+        # and inherit that department's grants for it.
+        parent_row = await load_visible_project(db, vis, str(parent_id))
+        # WS-64: nothing is filed under an archived project.
+        assert_not_archived(parent_row, then="Create it in")
 
-        # Level-gated fields, checked once the level is knowable.
-        level = node_level(
-            kind, parent_gen + (1 if kind == "project" else 0),
-        )
-        if values.get("status") is not None:
-            assert_run_state_allowed(level)
-        _refuse_identity_off_a_space(values, level)
-        # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
-        # naming one is a grant write. After the parent's 404.
-        await assert_may_name_lead(db, user, parent_row, values.get("lead"))
+    # WS-64, task #304. A child of a private tree is private too, so it
+    # takes the tree owner's `personal_owner`. Every read tests the node's
+    # OWN column (`_visible_projects`, `_AGENT_NOT_PERSONAL_SQL`, the move
+    # checks), so an unstamped child read as a team node: an orphan root
+    # in each `data:org:read` tree, open to an agent with
+    # `include_personal=false`, and free to move into a team space.
+    #
+    # Only the tree owner may add a node here. `/projects/my/areas` is
+    # the personal seam, but the Projects app's Personal space (OP-3)
+    # files through this route, so the owner is allowed. Anyone else,
+    # an org reader too, gets the same 404 as an unseen parent: a node
+    # filed in another member's private tree is a taking act, and a
+    # different answer would confirm that the tree exists.
+    #
+    # Fix round 2. `personal_tree_owner` is the one walk, with the stop
+    # rule of migration 297. A team node that 297 kept under a private
+    # tree answers None, so its team files nodes under it as team work.
+    tree_owner = (
+        await personal_tree_owner(db, str(parent_id)) if parent_id else None
+    )
+    if tree_owner is not None:
+        if tree_owner != actor(user).lower():
+            raise HTTPException(status_code=404, detail="Project not found")
+        values["personal_owner"] = tree_owner
 
-        # WS-29a. This is the ONE place in the package that decides a tenant:
-        # `pm_projects` is the root of every other `pm_*` row, and migration
-        # 158's trigger derives the key for all of them from here. Written for
-        # a child project too, not just a root — the trigger then REFUSES it if
-        # it disagrees with the parent's, which turns "the caller's org and the
-        # parent's org differ" into a refused write rather than a silent graft.
-        #
-        # AFTER the parent check, deliberately: a caller with no organization
-        # asking to create inside a project they cannot see must still get R5's
-        # 404. Answering 403 first would confirm the project exists.
-        values["organization_id"] = require_organization(vis)
+    # The tree grammar (migration 193): space → [folder] → project →
+    # [folder] → subproject, and stop. Checked before the org resolve so
+    # a bad shape is refused as a shape, not as a permission.
+    parent_kind = None
+    if parent_id:
+        # OP-10 fix round 1: serialize with a convert above the parent.
+        await _lock_ancestor_chain(db, str(parent_id))
+        # Fix round 2: the parent's kind from after the lock. A convert
+        # of the parent that committed while this waited changed it.
+        parent_kind = node_kind(await _locked_kind(db, str(parent_id)))
+    parent_gen = (
+        await _project_generation(db, str(parent_id)) if parent_id else 0
+    )
+    assert_node_grammar(
+        kind=kind,
+        parent_kind=parent_kind,
+        parent_generation=parent_gen,
+        subtree_depth=1 if kind == "project" else 0,
+    )
 
-        # A SPACE owns its statuses; everything below it inherits until somebody
-        # says otherwise (migration 196). Written here rather than defaulted in
-        # the table because the default has to be false — the common row is a
-        # child — and a root that owns nothing resolves to no statuses at all,
-        # which that migration's CHECK refuses outright.
-        values["owns_statuses"] = parent_id is None
+    # Level-gated fields, checked once the level is knowable.
+    level = node_level(
+        kind, parent_gen + (1 if kind == "project" else 0),
+    )
+    if values.get("status") is not None:
+        assert_run_state_allowed(level)
+    _refuse_identity_off_a_space(values, level)
+    # WS-64 OP-8 (D-OP-11). The lead IS delete and grant authority, so
+    # naming one is a grant write. After the parent's 404.
+    await assert_may_name_lead(db, user, parent_row, values.get("lead"))
 
-        row = await insert_row(db, "pm_projects", values)
-        project_id = str(row.id)
-        if tree_owner is not None:
-            # The grant every personal node carries (`mint_personal_child`).
-            await grant_personal_owner(db, project_id, tree_owner)
+    # WS-29a. This is the ONE place in the package that decides a tenant:
+    # `pm_projects` is the root of every other `pm_*` row, and migration
+    # 158's trigger derives the key for all of them from here. Written for
+    # a child project too, not just a root — the trigger then REFUSES it if
+    # it disagrees with the parent's, which turns "the caller's org and the
+    # parent's org differ" into a refused write rather than a silent graft.
+    #
+    # AFTER the parent check, deliberately: a caller with no organization
+    # asking to create inside a project they cannot see must still get R5's
+    # 404. Answering 403 first would confirm the project exists.
+    values["organization_id"] = require_organization(vis)
 
-        if parent_id is None:
-            await _seed_root(db, project_id, actor(user))
-            # A root project starts org-visible so a solo org is not immediately
-            # locked out of the thing it just created. It is an ordinary grant
-            # row: the importer writes `group:<slug>` instead (§7.1), and
-            # removing this one is how scoping starts.
-            await insert_row(db, "pm_project_grants", {
-                "project_id": project_id, "subject": "org",
-                "created_by": actor(user),
-            })
+    # A SPACE owns its statuses; everything below it inherits until somebody
+    # says otherwise (migration 196). Written here rather than defaulted in
+    # the table because the default has to be false — the common row is a
+    # child — and a root that owns nothing resolves to no statuses at all,
+    # which that migration's CHECK refuses outright.
+    values["owns_statuses"] = parent_id is None
 
-        await record_activity(
-            db, activity_type="system", created_by=actor(user),
-            project_id=project_id, body=f"Project '{name}' created",
-        )
-        result = row_to_dict(row, ProjectModel)
+    row = await insert_row(db, "pm_projects", values)
+    project_id = str(row.id)
+    if tree_owner is not None:
+        # The grant every personal node carries (`mint_personal_child`).
+        await grant_personal_owner(db, project_id, tree_owner)
 
-    await emit("pm.project.created", {"project_id": project_id, "name": name})
-    return result
+    if parent_id is None:
+        await _seed_root(db, project_id, actor(user))
+        # A root project starts org-visible so a solo org is not immediately
+        # locked out of the thing it just created. It is an ordinary grant
+        # row: the importer writes `group:<slug>` instead (§7.1), and
+        # removing this one is how scoping starts.
+        await insert_row(db, "pm_project_grants", {
+            "project_id": project_id, "subject": "org",
+            "created_by": actor(user),
+        })
+
+    await record_activity(
+        db, activity_type="system", created_by=actor(user),
+        project_id=project_id, body=f"Project '{name}' created",
+    )
+    return row
 
 
 @router.patch("/nodes/{project_id}")
+# WS-39 SP-3a: the style picker writes here. A deadlock or a lock timeout of
+# the UPDATE answers 409 and writes nothing, as the other tree writes do.
+@_tree_race_as_409
 async def patch_node(
     project_id: str, payload: ProjectIn,
     user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> dict:
+    """Change the fields of one node.
+
+    WS-55 MCP-G1. ``If-Match`` is the version rule of the task PATCH
+    (``core.require_precondition``). A node has no ``fields_at``, so the
+    version is ``updated_at`` with strict equality. An absent header passes
+    (D-PM-20), so each app call, which sends none, is unchanged. A signed
+    agent sends only the keys of ``update_project``.
+    """
     values = clean_payload(payload)
+    _narrow_agent_body(user, values, AGENT_NODE_PATCH_FIELDS)
     # RUN_STATES, not PROJECT_STATUSES: the latter still carries the retained
     # `archived` so the pre-restart gateway keeps validating through the deploy
     # window (R6), but accepting it HERE would let a caller set the run state to
@@ -1108,6 +1317,9 @@ async def patch_node(
     validate_choice(values.get("source"), PROJECT_SOURCES, "source")
     validate_icon_slot(values.get("icon_slot"))
     validate_lifecycle_settings(values)
+    # WS-39 SP-3a. The work style of this node only: no inheritance, and a
+    # change deletes nothing (§13.1 rule 2). It writes the one column.
+    validate_work_style(values)
     # Re-parenting is a MOVE, with its own cycle check and root re-stamping.
     # Accepting it here as an ordinary field would skip both.
     if "parent_project_id" in values:
@@ -1127,6 +1339,10 @@ async def patch_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_project(db, vis, project_id)
+        # MCP-G1. After the visibility load, before any write: a caller who
+        # cannot see the node gets 404 and never learns from a 412 that it
+        # exists (R5).
+        require_precondition(before, if_match, row_to_dict(before, ProjectModel))
         # WS-64 OP-8 (D-OP-11). A change of lead is a grant write.
         await assert_may_change_lead(db, user, before, values)
         _refuse_lifecycle_on_child(
@@ -1222,7 +1438,11 @@ async def move_node(
         if new_parent:
             # The 404 for a destination the caller cannot see. Its kind is
             # read after the lock, below.
-            await load_visible_project(db, vis, str(new_parent))
+            destination = await load_visible_project(db, vis, str(new_parent))
+            # WS-64: nothing is moved under an archived project. Moving
+            # OUT of one, and a reorder under the same parent, still work.
+            if str(new_parent) != str(getattr(moved, "parent_project_id", None) or ""):
+                assert_not_archived(destination, then="Move it into")
         await assert_no_project_cycle(db, project_id, new_parent)
         # WS-39 S6b. The line between the company tree and a private one is
         # not crossable in either direction, and nothing checked it before the
@@ -1330,6 +1550,9 @@ async def move_node(
             project_id=project_id,
             owner_id=await status_owner_id(db, project_id),
         )
+        # WS-39 SP-1. After the re-stamp above, which locks each task of the
+        # subtree: a task that left the node of its open cycle leaves it.
+        await detach_moved_tasks(db, node_id=project_id, by=actor(user))
 
         await record_activity(
             db, activity_type="system", created_by=actor(user),
@@ -1568,6 +1791,11 @@ class ArchiveResponse(BaseModel):
     #: Open tasks in the subtree at the moment of archiving. Reported, not acted
     #: on: **no `pm_tasks` row is written by this endpoint** (D-PM-26).
     open_tasks: int
+    #: The new ``updated_at`` of the ROOT row, when this call stamped the root.
+    #: None when the root was already in the target state. WT-6a: the chat
+    #: receipt sends it as ``If-Match`` on its Undo, so the Undo matches this
+    #: archive and no later one.
+    updated_at: str | None = None
 
 
 async def _subtree_open_tasks(db: Any, project_id: str) -> int:
@@ -1605,20 +1833,35 @@ async def archive_node(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        if getattr(row, "personal_owner", None) and not getattr(row, "parent_project_id", None):
+            raise HTTPException(
+                status_code=422, detail="Your own task root cannot be archived.",
+            )
 
         # Counted BEFORE the write, for `delete_node`'s reason: afterwards the
         # honest number is unobtainable and a destructive-ish route ends up
         # reporting zero.
         open_tasks = await _subtree_open_tasks(db, project_id)
 
-        stamped = (await db.execute(
+        # WT-6a: the ROOT row's `updated_at` moves, as each other node write
+        # moves it (`update_row`, `personal.py`'s rename). The If-Match of an
+        # Undo is then this archive's own version, and a later archive by
+        # another member gets a new one. The descendants keep their stamp.
+        touched = (await db.execute(
             text(
                 f"UPDATE pm_projects SET archived_at = now(), "
-                f"    archived_root_id = CAST(:pid AS uuid) "
-                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL"
+                f"    archived_root_id = CAST(:pid AS uuid), "
+                f"    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                f"        THEN now() ELSE updated_at END "
+                f"WHERE id IN ({_SUBTREE_SQL}) AND archived_at IS NULL "
+                f"RETURNING id, updated_at"
             ),
             {"pid": project_id},
-        )).rowcount or 0
+        )).fetchall()
+        stamped = len(touched)
+        root_stamp = next(
+            (wire(r.updated_at) for r in touched if str(r.id) == project_id), None,
+        )
 
         if stamped:
             await record_activity(
@@ -1629,6 +1872,7 @@ async def archive_node(
         result = ArchiveResponse(
             project_id=project_id, archived=True,
             projects=int(stamped), open_tasks=int(open_tasks),
+            updated_at=root_stamp,
         )
 
     if stamped:
@@ -1639,6 +1883,7 @@ async def archive_node(
 @router.post("/nodes/{project_id}/unarchive")
 async def unarchive_node(
     project_id: str, user: UserContext = Depends(get_current_user),
+    if_match: str | None = Header(None, alias="If-Match"),
 ) -> ArchiveResponse:
     """Bring a project and everything its archive filed back.
 
@@ -1654,10 +1899,21 @@ async def unarchive_node(
     need explaining forever. Refusing it and naming the ancestor is the same
     move ``_refuse_lifecycle_on_child`` makes: keep the incoherent case
     unreachable rather than merely documented.
+
+    ``If-Match`` (one_assistant_context.md §9.4 WT-6a) is the rule of
+    :func:`patch_node`. A node has no ``fields_at``, so the version is
+    ``updated_at`` with strict equality. :func:`archive_node` and this route
+    both stamp ``updated_at`` on the root row. The Undo of a chat receipt
+    sends the stamp that its archive answered. So a later restore, a later
+    archive or a field change answers 412 and restores nothing. An absent
+    header passes (D-PM-20).
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         row = await load_visible_project(db, vis, project_id)
+        # After the visibility load: a caller who cannot see the node gets
+        # 404 and never learns from a 412 that it exists (R5).
+        require_precondition(row, if_match, row_to_dict(row, ProjectModel))
 
         if getattr(row, "archived_at", None) is None:
             return ArchiveResponse(
@@ -1676,10 +1932,14 @@ async def unarchive_node(
                 ),
             )
 
+        # WT-6a: as in `archive_node`, the root row's `updated_at` moves, so
+        # an Undo token of the archive before this restore answers 412.
         cleared = (await db.execute(
             text(
                 "UPDATE pm_projects SET archived_at = NULL, "
-                "    archived_root_id = NULL "
+                "    archived_root_id = NULL, "
+                "    updated_at = CASE WHEN id = CAST(:pid AS uuid) "
+                "        THEN now() ELSE updated_at END "
                 "WHERE archived_root_id = CAST(:pid AS uuid)"
             ),
             {"pid": project_id},
@@ -1736,6 +1996,33 @@ async def list_grants(
             "you_see_all": bool(vis.unrestricted),
             "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
+
+
+@router.get("/nodes/{project_id}/audience")
+async def read_project_audience(
+    project_id: str,
+    people: str = Query(default="", max_length=4000),
+    beyond: str = Query(default="", max_length=64),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Who can open a project, and who a change would open it to (WS-67 RX-1).
+
+    The chat reads it before a card in a chat that read outside mail, because a
+    grant row does not answer this: a grant on a parent counts, and so does a
+    group. *people* is a comma list of addresses. *beyond* is the project that a
+    move leaves. The caller must see each project, and the 404 is the same for
+    each (R5). It writes nothing.
+    """
+    asked = list(dict.fromkeys(p.strip().lower() for p in people.split(",") if p.strip()))
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        if beyond:
+            await load_visible_project(db, vis, beyond)
+        return await project_audience(
+            db, str(node.id), vis.organization_id, people=asked,
+            beyond=str(beyond).strip().lower(),
+        )
 
 
 @router.post("/nodes/{project_id}/grants", status_code=201)

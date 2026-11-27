@@ -6,9 +6,9 @@ Skill definitions and SKILL.md patterns. Each skill is a domain-specific capabil
 ## Skill Structure
 - skills/{category}/{skill_name}/SKILL.md -- skill instructions
 - skills/{category}/{skill_name}/scripts/ -- Python scripts
-- Categories: delivery/, maintenance/, reconciler/, sales/, triage/, upstream/
-  (maintenance/ = dev-velocity skills that operate ON this codebase, e.g.
-  codebase_health_audit — see project-docs/specs/archive/dev_velocity_tooling_2026-07.md)
+- Categories: delivery/, maintenance/, reconciler/, sales/, triage/
+  (maintenance/ = dev-velocity skills that operate ON this codebase, for
+  example codebase_health_audit)
 
 ## Conventions
 - SKILL.md has YAML frontmatter with name and description

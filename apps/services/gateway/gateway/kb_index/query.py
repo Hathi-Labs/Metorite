@@ -22,7 +22,9 @@ on. ``/knowledge/search`` and the command bar keep the age decay.
 a session, with a limit of :data:`QUERY_EMBED_TIMEOUT_S`, and only when
 ``KNOWLEDGE_EMBED`` names the org. A query with no vector returns the
 lexical half and says so in ``degraded``. The lexical half never fails
-because the vector half did.
+because the vector half did. Inside a company-search turn that started its
+one embed task (KR-ZERO), it waits for that task within the same limit, and
+makes no call of its own.
 
 **The one visibility rule.** Each read of ``kb_chunks`` joins
 ``kb_pages p ON p.id = c.source_id AND p.state = 'published'`` and puts in
@@ -36,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -46,6 +48,7 @@ from sqlalchemy import text
 
 from gateway.kb_index import embed as embed_door
 from gateway.kb_index.index import vector_literal
+from gateway.retrieval import turn_vector
 from gateway.routes.knowledge import core
 from gateway.routes.knowledge.flags import knowledge_embed_allowed
 
@@ -88,6 +91,14 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     words = " ".join(str(q or "").split())
     if not words or not knowledge_embed_allowed(organization_id):
         return None
+    # KG-3b: inside a company-search turn, the vector that Email made is reused.
+    kept = turn_vector.recall(organization_id, words)
+    if kept is not None:
+        return kept
+    # KR-ZERO: the route started the one embed of this turn at its start. Wait
+    # for that task within this limit, and make no second call of the door.
+    if turn_vector.started(organization_id, words):
+        return await turn_vector.wait(organization_id, words, QUERY_EMBED_TIMEOUT_S)
     try:
         vectors = await asyncio.wait_for(
             embed_door.embed([words], org=organization_id, timeout=QUERY_EMBED_TIMEOUT_S),
@@ -96,6 +107,21 @@ async def embed_query(organization_id: str | None, q: str) -> list[float] | None
     except Exception as exc:  # a timeout is an answer: degraded
         _log.warning("knowledge.query_embed_failed", error=type(exc).__name__)
         return None
+    vector = vectors[0] if vectors else None
+    turn_vector.remember(organization_id, words, vector)
+    return vector
+
+
+async def turn_embed(
+    organization_id: str | None, words: str, *, timeout: float,
+) -> list[float] | None:
+    """The vector of *words* for one company-search turn (KR-ZERO), or ``None``.
+
+    One call of the embed door, the same model and size as :func:`embed_query`
+    and the email vector half. It checks no gate: ``GET /search/company``
+    checks each gate before it starts the task. It never raises.
+    """
+    vectors = await embed_door.embed([words], org=organization_id, timeout=timeout)
     return vectors[0] if vectors else None
 
 
@@ -130,6 +156,28 @@ def review_factor(review_at: Any, now: datetime) -> float:
     return 1.0
 
 
+def rrf_scores(
+    lists: Sequence[Sequence[Any]],
+    *,
+    key: Callable[[Any], Any],
+    rrf_k: int = RRF_K,
+) -> tuple[dict[Any, float], dict[Any, Any]]:
+    """Reciprocal rank fusion: ``1 / (rrf_k + rank)`` summed over the lists.
+
+    The one place that holds the sum (§6.3). *key* names an item. The rank
+    starts at 1. Returns the score of each key and the first item seen for it,
+    both in order of first sight. Pure. Company search reuses it (KG-3b).
+    """
+    scores: dict[Any, float] = {}
+    items: dict[Any, Any] = {}
+    for ranked in lists:
+        for rank, item in enumerate(ranked, start=1):
+            ident = key(item)
+            scores[ident] = scores.get(ident, 0.0) + 1.0 / (rrf_k + rank)
+            items.setdefault(ident, item)
+    return scores, items
+
+
 def fuse(
     lexical: Sequence[dict[str, Any]],
     semantic: Sequence[dict[str, Any]],
@@ -154,13 +202,7 @@ def fuse(
     with, and its default is the midnight UTC of *today*. A row of another kind keeps the
     age decay, which is the rule of a source document (KB-7, §4.2).
     """
-    scores: dict[Any, float] = {}
-    rows: dict[Any, dict[str, Any]] = {}
-    for ranked in (lexical, semantic):
-        for rank, row in enumerate(ranked, start=1):
-            cid = row["chunk_id"]
-            scores[cid] = scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
-            rows.setdefault(cid, row)
+    scores, rows = rrf_scores((lexical, semantic), key=lambda row: row["chunk_id"], rrf_k=rrf_k)
     clock = now or datetime(today.year, today.month, today.day, tzinfo=UTC)
     for cid, row in rows.items():
         if reviewed and row.get("source_kind", "page") == "page":

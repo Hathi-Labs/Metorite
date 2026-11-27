@@ -19,11 +19,19 @@ export function money(
   currency = "INR"
 ): string {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: currency || "INR",
-    maximumFractionDigits: 0,
-  }).format(amount);
+  const code = (currency || "").trim().toUpperCase() || "INR";
+  try {
+    return new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  } catch {
+    // The gateway keeps a free text code, and Intl throws a RangeError for
+    // one that is not three letters ("US", "RUPEES"). A bad code on any deal
+    // must not blank the board, so the code is printed as it is.
+    return `${code} ${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(amount)}`;
+  }
 }
 
 /**
@@ -41,7 +49,8 @@ export function compactMoney(
   system: "indian" | "international" = "indian",
 ): string {
   if (amount === null || amount === undefined || Number.isNaN(amount)) return "—";
-  const symbol = currency === "INR" || !currency ? "₹" : `${currency} `;
+  const code = (currency || "").trim().toUpperCase();
+  const symbol = code === "INR" || !code ? "₹" : `${code} `;
   // Whole rupees below a thousand, as before: a lane total is never ₹600.45.
   const abs = Math.abs(amount) < 1e3 ? Math.round(Math.abs(amount)) : Math.abs(amount);
   const sign = amount < 0 ? "-" : "";

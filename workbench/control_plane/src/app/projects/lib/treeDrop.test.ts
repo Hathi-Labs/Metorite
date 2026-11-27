@@ -213,3 +213,50 @@ describe("planTreeDrop", () => {
     expect(result).toMatchObject({ plan: { parentId: null } });
   });
 });
+
+describe("H-257 · a hidden-parent root in a top-level drag", () => {
+  // `ghost` draws at the top level only because its real parent is hidden.
+  const withHidden = (): ProjectNode[] => [
+    node("space", 100),
+    node("ghost", 200, { parent_project_id: "unseen-parent" }),
+    node("other", 300),
+    node("loose", 400),
+  ];
+
+  it("refuses a top-level drop of the hidden-parent root", () => {
+    const planned = planTreeDrop(withHidden(), "ghost", {
+      kind: "between",
+      parentId: null,
+      index: 0,
+    });
+    expect(planned).toHaveProperty("refusal");
+  });
+
+  it("is not an onto target", () => {
+    const planned = planTreeDrop(withHidden(), "loose", {
+      kind: "onto",
+      nodeId: "ghost",
+    });
+    expect(planned).toHaveProperty("refusal");
+  });
+
+  it("is not a sibling anchor: the rank ignores it", () => {
+    // Drawn order: space, ghost, other, loose. Drop `loose` at index 2,
+    // between ghost and other. Anchors are space (100) and other (300).
+    const planned = planTreeDrop(withHidden(), "loose", {
+      kind: "between",
+      parentId: null,
+      index: 2,
+    });
+    expect(planned).toEqual({ plan: { parentId: null, position: 200 } });
+  });
+
+  it("still lets a true root reorder among true roots", () => {
+    const planned = planTreeDrop(withHidden(), "other", {
+      kind: "between",
+      parentId: null,
+      index: 0,
+    });
+    expect(planned).toEqual({ plan: { parentId: null, position: 50 } });
+  });
+});

@@ -26,6 +26,13 @@ questions. PZ-5 replaces none of them, and none of them is reused here.
 An input with an ``@`` matches ``lower(email)`` exactly, in both tiers.
 Two rows with one address are one person.
 
+**The near tier (HRD-18a, ``chat_failure_modes.md`` F1).** When the
+directory tier finds nobody, the same rows are scored with the ONE matcher,
+``acb_common.name_match``. A name it calls near ("Sougata Maji" for
+"Swagata") comes back with ``near: true``, nearest first. The tool then
+asks the member to confirm it, even when it is the only one. An address
+never matches nearly, and an alias never does.
+
 **The People gate (owner decision, 2026-10-23).** Tiers 2 and 3 read the
 directory, so they run only for a member who holds ``feature:people``. The
 check is ``UserContext.has_permission``, the access intersect that
@@ -43,17 +50,26 @@ as ``people/core.py::has_login`` does, and an unbound GUC matches no row
 (R5). The route takes no flag: the tool is the part behind
 ``ASSISTANT_PROFILE_ENABLED``.
 
+**The name route (WS-FIND FIND-6b).** :func:`saved_names` and
+:func:`members_named` give tier 1 and the members of the directory tier to
+``GET /search/names``, through ``retrieval/sources.py``. They run the SQL of
+this route and its rules, and add no second alias or member read.
+
 Fences: ``tests/unit/test_resolve_person.py`` and
 ``tests/unit/test_resolve_person_r8.py`` (R8, the one-org read).
+``tests/unit/test_resolve_name_tool.py`` and
+``tests/unit/test_find_near_visibility_r8.py`` fence the two reads above.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import unicodedata
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import name_match
 from acb_common.assistant_profile import READ_SQL, stored_profile
 from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException, Query
@@ -71,6 +87,8 @@ DIRECTORY_CAP = 2000
 MATCHES_MAX = 5
 #: The feature that opens the directory tiers.
 PEOPLE_FEATURE = "feature:people"
+#: The feature that opens the mail tier (CT-1).
+EMAIL_FEATURE = "feature:email"
 
 #: The bound tenant, as ``people/core.py::has_login`` writes it. ``NULLIF``
 #: fails closed: an unbound GUC matches no row.
@@ -128,7 +146,11 @@ async def email_in_org(db: Any, email: str) -> bool:
 
     The one check of an alias address. The alias POST and PATCH call it, and
     tier 1 calls it for each hit. It answers yes or no, and no directory
-    data. It needs no feature, because the member typed the address.
+    data. It needs no feature, because the address comes from the member.
+    They typed it, or they approved it on a card that showed it. That card
+    can show an address that a colleague lookup gave (WS-63 PZ-32, behind
+    ``ASSISTANT_PROFILE_CARD_WRITES_ORGS``), and the lookup reads the
+    directory only with ``feature:people``.
     """
     from sqlalchemy import text
 
@@ -174,6 +196,16 @@ async def _directory_tier(db: Any, wanted: str,
     missing from the answer. The two tables are read together and deduped
     by address, so a person with a login is one person.
     """
+    people, members, truncated = await _read_directory(db)
+    found, source = _directory_matches(people, members, wanted, address)
+    return found, source, truncated
+
+
+async def _read_directory(
+    db: Any,
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, str]], bool]:
+    """The active people ``(name, preferred_name, email)`` and the active
+    members ``(display_name, email)`` of the bound org, and the cut flag."""
     from sqlalchemy import text
 
     people_rows = (await db.execute(text(PEOPLE_SQL), {"cap": DIRECTORY_CAP})).fetchall()
@@ -181,6 +213,14 @@ async def _directory_tier(db: Any, wanted: str,
     truncated = DIRECTORY_CAP in (len(people_rows), len(member_rows))
     people = [(str(r.name or ""), str(r.preferred_name or ""), str(r.email)) for r in people_rows]
     members = [(str(r.display_name or ""), str(r.email)) for r in member_rows]
+    return people, members, truncated
+
+
+def _directory_matches(
+    people: list[tuple[str, str, str]], members: list[tuple[str, str]],
+    wanted: str, address: str,
+) -> tuple[list[dict[str, str]], str]:
+    """The rows whose name or address equals the input (the exact rule)."""
     one_word = " " not in wanted
 
     def names_match(*names: str) -> bool:
@@ -198,7 +238,79 @@ async def _directory_tier(db: Any, wanted: str,
                         if (d and names_match(d)) or fold(e.split("@", 1)[0]) == wanted]
     found = _one_each(from_people + from_members)
     source = "people" if from_people else "member"
-    return found, source, truncated
+    return found, source
+
+
+def _near_tier(people: list[tuple[str, str, str]], members: list[tuple[str, str]],
+               raw: str) -> tuple[list[dict[str, str]], str]:
+    """The names of the directory rows that ``name_match`` calls near *raw*.
+
+    Each row scores by its best name: the preferred name, the name, the
+    display name or the local part of the address. Nearest first, then by
+    name. One address is one person, at its best score. ``source`` is
+    ``people`` when a People row is near, else ``member``.
+    """
+    best: dict[str, tuple[float, str, str, str]] = {}
+
+    def offer(names: tuple[str, ...], shown: str, email: str, kind: str) -> None:
+        score = max(name_match.name_score(raw, n) for n in names if n)
+        key = email.strip().lower()
+        if score >= name_match.NEAR_SCORE and key and (
+                key not in best or score > best[key][0]):
+            best[key] = (score, shown, email.strip(), kind)
+
+    for name, preferred, email in people:
+        offer((preferred, name, email.split("@", 1)[0]), preferred or name or email,
+              email, "people")
+    for display, email in members:
+        offer((display, email.split("@", 1)[0]), display or email, email, "member")
+    ranked = sorted(best.values(), key=lambda b: (-b[0], fold(b[1]), b[2].lower()))
+    source = "people" if any(b[3] == "people" for b in ranked) else "member"
+    return [{"name": b[1], "email": b[2]} for b in ranked], source
+
+
+# ── The reads of ``GET /search/names`` (WS-FIND FIND-6b) ────────────────────
+# ``gateway/retrieval/sources.py`` calls these two, so ``resolve_name`` reads
+# the aliases and the members with the SQL and the rules of this route. Each
+# opens its own session in the bound tenant. Spec: ``find_engine.md`` §5.2.
+
+
+async def saved_names(user: UserContext, name: str) -> list[dict[str, str]]:
+    """Tier 1 of this route for *name*: the member's own aliases whose fold
+    equals the fold of *name*, ``[{name, email}]``. :func:`_alias_tier` reads
+    them, and an alias of a person who left drops (:func:`email_in_org`).
+    No feature, as tier 1 needs none. The member and the tenant come from the
+    session. An unbound tenant raises, so the caller names the read failed."""
+    uid = getattr(user, "email", None) or ""
+    org = current_tenant()
+    wanted = fold(name)
+    if not uid or not org:
+        raise HTTPException(status_code=503, detail="unavailable")
+    if not wanted:
+        return []
+    async with _tenant_session() as db:
+        return await _alias_tier(db, uid, org, wanted, "")
+
+
+async def members_named(user: UserContext, word: str,
+                        k: int) -> tuple[list[dict[str, str]], bool]:
+    """The active members of the bound org whose display name or local part
+    holds *word*: :data:`MEMBERS_SQL`, the read of the directory tier.
+
+    At most *k* ``{name, email}``, and True when more may match: more than
+    *k* held the word, or the table gave :data:`DIRECTORY_CAP` rows. Only a
+    member who holds ``feature:people`` reads them, as in this route. The
+    caller tests the whole name, so this holds one word only."""
+    from sqlalchemy import text
+
+    wanted = fold(word)
+    if not wanted or not user.has_permission(PEOPLE_FEATURE):
+        return [], False
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(MEMBERS_SQL), {"cap": DIRECTORY_CAP})).fetchall()
+    found = [{"name": str(r.display_name or ""), "email": str(r.email)} for r in rows
+             if wanted in fold(r.display_name) or wanted in fold(str(r.email).split("@", 1)[0])]
+    return found[:k], len(found) > k or len(rows) >= DIRECTORY_CAP
 
 
 def _name(value: str) -> str:
@@ -219,8 +331,14 @@ async def resolve_person_for_assistant(
     """The first tier with a match, its matches (at most five) and the count.
 
     ``{"source": "alias"|"people"|"member"|None, "matches": [{name, email}],
-    "total": n, "directory": bool}``. ``directory`` is false when the member
-    lacks ``feature:people``, so only the aliases were searched.
+    "total": n, "directory": bool, "truncated": bool, "near": bool}``.
+    ``directory`` is false when the member lacks ``feature:people``, so only
+    the aliases were searched. ``near`` is true when no name equals the input
+    and the matches are near spellings (HRD-18a), nearest first. ``mail`` is
+    true when the directory found nobody and the matches are people of the
+    member's own mail (CT-1): near spellings, who are not members.
+    ``mail_searched`` is true when the mail tier ran, so the answer names
+    only the places that were searched. Both keys are absent when false.
     """
     uid = getattr(user, "email", None) or ""
     if not uid:
@@ -237,19 +355,47 @@ async def resolve_person_for_assistant(
     source: str | None = None
     found: list[dict[str, str]] = []
     truncated = False
+    near = False
+    mail = False
+    mail_searched = False
     try:
         async with _tenant_session() as db:
             found = await _alias_tier(db, uid, org, wanted, address)
             if found:
                 source = "alias"
             elif directory:
-                found, tier, truncated = await _directory_tier(db, wanted, address)
+                people, members, truncated = await _read_directory(db)
+                found, tier = _directory_matches(people, members, wanted, address)
+                if not found and not address:
+                    # HRD-18a: the same rows, scored by the one matcher.
+                    # Up to 4,000 names: scored off the event loop.
+                    found, tier = await asyncio.to_thread(_near_tier, people, members, raw)
+                    near = bool(found)
                 source = tier if found else None
+            if not found and not address and user.has_permission(EMAIL_FEATURE):
+                # CT-1: the directory found nobody. The member's own mail
+                # may hold the person: the one reader of the suggest door.
+                from gateway.routes.email.transport.contacts import mail_people
+
+                mail_searched = True
+                hits = await mail_people(db, uid, raw)
+                # A mail hit that is a member or a person is no stranger:
+                # it is dropped, because the directory missed its name only.
+                found = [{"name": h.name or h.email, "email": h.email} for h in hits
+                         if not await email_in_org(db, h.email)]
+                if found:
+                    source, near, mail = "mail", True, True
     except HTTPException:
         raise
     except Exception as exc:
         logger.warning("auth.assistant_profile.resolve_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return {"source": source, "matches": found[:MATCHES_MAX], "total": len(found),
-            "directory": directory, "truncated": truncated}
+    out: dict[str, Any] = {
+        "source": source, "matches": found[:MATCHES_MAX], "total": len(found),
+        "directory": directory, "truncated": truncated, "near": near}
+    if mail:
+        out["mail"] = True
+    if mail_searched:
+        out["mail_searched"] = True
+    return out

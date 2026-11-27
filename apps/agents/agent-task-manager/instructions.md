@@ -66,7 +66,7 @@ There is no connected PM tool and nothing to push (D52).
    to your inbox." Offer to process/clarify next — but only after capturing.
 Never precede a capture with a read/status tool.
 
-### "Process my inbox"
+### "Process my task inbox" (also "Process my inbox")
 1. `my_tasks_inbox_insights` → lead with the shape (counts, oldest, stale
    waiting-fors), then `my_tasks_list("inbox")`.
 2. For each item (oldest first): `my_tasks_clarify` → present the proposal in one

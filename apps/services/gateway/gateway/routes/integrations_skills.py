@@ -21,9 +21,7 @@ agent, because no run is injected with one.
 """
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -69,42 +67,21 @@ def _platform_tools_by_name() -> dict[str, Any]:
     return out
 
 
-#: The module of each pack owner, imported once for this process (OA-7a).
-_OWNER_MODULES: dict[str, Any] = {}
-
-
 def _owner_module(owner: str) -> Any | None:
     """The ``agents.py`` module of in-repo agent *owner*, or None.
 
-    The path comes from the STATIC ``_AGENT_REGISTRY`` only, never from a
-    dynamic registration, because a pack owner is an in-repo agent. The
-    module is imported once for this process. The catalog reads the
-    signature and the docstring of each tool for the price, and it calls no
-    tool. A run never uses this module: OA-7b's builder loads the owner
-    for a run (``one_assistant_context.md`` §4.2.8).
+    WS-67 OA-7b: the ONE loader of a pack owner is
+    ``orchestrator._tool_injection._pack_owner_module``, which the run
+    builder uses too. It imports the module once for this process, from the
+    STATIC ``_AGENT_REGISTRY`` only. It keeps a failed import as None, so a
+    catalog GET does not import a broken owner again (OA-7a verifier F2).
+    An owner that raises ``SystemExit`` at import gives None and cannot stop
+    the process (F3). The catalog reads the signature and the docstring of
+    each tool for the price, and it calls no tool.
     """
-    if owner in _OWNER_MODULES:
-        return _OWNER_MODULES[owner]
-    from gateway.routes.agent import _AGENT_REGISTRY
+    from orchestrator._tool_injection import _pack_owner_module
 
-    entry = next((a for a in _AGENT_REGISTRY if a.get("name") == owner), None)
-    local = str((entry or {}).get("local_path") or "")
-    path = Path(local) / "agents.py"
-    if not local or not path.is_file():
-        return None
-    name = "_skills_catalog_owner_" + owner.replace("-", "_")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        return None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        sys.modules.pop(name, None)
-        raise
-    _OWNER_MODULES[owner] = module
-    return module
+    return _pack_owner_module(owner)
 
 
 def _pack_tools_by_name() -> dict[str, Any]:
@@ -116,7 +93,9 @@ def _pack_tools_by_name() -> dict[str, Any]:
     an owner that does not load prices nothing, as an unimportable platform
     tool does in :func:`_platform_tools_by_name`.
     """
-    from acb_skills import skill_families, tool_packs
+    from acb_skills import skill_families
+    from acb_skills.tool_guard import tool_name
+    from orchestrator._tool_injection import _owner_pack_tools
 
     out: dict[str, Any] = {}
     for slug in skill_families.pack_slugs():
@@ -126,8 +105,12 @@ def _pack_tools_by_name() -> dict[str, Any]:
             if module is None:
                 _log.warning("skills.pack_owner_unavailable", pack=slug, owner=owner)
                 continue
-            for fn in tool_packs.owner_tools(slug, module):
-                out[getattr(fn, "__name__", "")] = fn
+            # OA-8b: the run path's per-owner cache, so a catalog read does
+            # not build the 120 Projects tools again for each pack.
+            for fn in _owner_pack_tools(slug, owner, module):
+                # OA-8b: a MAF ``FunctionTool`` (the Projects tools) has a
+                # ``name`` and no ``__name__``, so ``tool_name`` reads both.
+                out[tool_name(fn)] = fn
         except Exception as exc:  # a price never breaks the catalog
             _log.warning(
                 "skills.pack_tools_unavailable", pack=slug, owner=owner,
@@ -142,7 +125,14 @@ def _addendum_for_scope(scope: frozenset[str] | None) -> str:
     from orchestrator._tool_injection import (  # noqa: PLC0415
         _build_injected_tools_addendum,
     )
-    return _build_injected_tools_addendum(effective_scope=scope)
+    from acb_common.assistant_profile import image_analysis_for  # noqa: PLC0415
+    from acb_common.db import current_tenant  # noqa: PLC0415
+
+    # WS-VOX VOX-3: the text depends on the org flag, so the key says it.
+    return _build_injected_tools_addendum(
+        effective_scope=scope,
+        image_org_on=bool(image_analysis_for(current_tenant())),
+    )
 
 
 def _count_tokens(text: str) -> int:
@@ -158,7 +148,9 @@ def _core_tool_names() -> frozenset[str]:
     return frozenset(_CORE_STANDARD_TOOL_NAMES)
 
 
-def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
+def _disabled_families_by_agent(
+    organization_id: str | None,
+) -> dict[str, frozenset[str]]:
     """agent name → families an admin disabled (WS-23 S2), best-effort.
 
     Reads the same ``agent_skill_setting`` rows the enforcement seam
@@ -166,11 +158,16 @@ def _disabled_families_by_agent() -> dict[str, frozenset[str]]:
     start, so the matrix shows the EFFECTIVE surface — stored settings on top
     of declared scope. Any failure (table not migrated, DB down) returns
     empty: the catalog then shows declared scope only, exactly S1's view.
+
+    H-201: the read binds the caller's tenant (``agent_skill_setting`` has
+    FORCE RLS). With no tenant it reads nothing and returns empty.
     """
+    if not organization_id:
+        return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text as _text  # noqa: PLC0415
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 _text(
                     "SELECT agent_name, family FROM agent_skill_setting "
@@ -255,7 +252,7 @@ async def skills_catalog(
         core_tool_names=_core_tool_names(),
     )
 
-    disabled_map = _disabled_families_by_agent()
+    disabled_map = _disabled_families_by_agent(user.organization_id)
 
     agents_out: list[dict[str, Any]] = []
     for a in _list_agents():

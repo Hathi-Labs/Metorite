@@ -21,13 +21,23 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Options as MarkdownOptions } from "react-markdown";
+import type { McpStamp } from "@/lib/chatStore";
 import remarkTextOnly from "@/lib/remarkTextOnly";
 import ChatEntityPill from "@/components/ChatEntityPill";
 import ChatTaskRef from "@/components/ChatTaskRef";
 import { FencedName } from "@/components/FencedText";
 import { ControlLink } from "@/components/ControlLink";
 import MarkdownImage from "@/components/MarkdownImage";
-import { markdownUrlTransform } from "@/lib/markdownMedia";
+import Badge from "@/components/ui/Badge";
+import { useOverflowTip } from "@/components/ui/OverflowTip";
+import Button from "@/components/ui/Button";
+import {
+  LOCAL_FILE_ATTR,
+  LOCAL_FILE_TIP,
+  localFileName,
+  markdownUrlTransform,
+  remarkLocalFiles,
+} from "@/lib/markdownMedia";
 import { stripDsmlMarkup } from "@/lib/dsmlMarkup";
 import rehypeStreamCaret from "@/lib/streamCaret";
 import EntityPill, { isInAppPath } from "@/components/ui/EntityPill";
@@ -70,6 +80,8 @@ export interface ToolEvent {
   /** Number of message segments that existed when this tool started (Phase 3b)
    *  — drives segment↔tool interleaving when the runtime sent real ids. */
   segmentCutoff?: number;
+  /** CSY-10: the connected MCP server of this tool (`chatStore.McpStamp`). */
+  mcp?: McpStamp;
   /** Set when this tool is a call_agent delegation — the target agent name. */
   subAgentName?: string;
   /** Live streaming text from the sub-agent (appended as it streams). */
@@ -88,8 +100,14 @@ interface MarkdownMessageProps {
   toolEvents?: ToolEvent[];
   /** Live tool-name status lines for the ThinkingContainer. */
   progressLines?: string[];
+  /** HRD-6: the line of a slow step, shown under the running step. */
+  progressNotice?: string;
   /** True while the agent run is in progress (drives shimmer/working state). */
   isThinkingActive?: boolean;
+  /** CS-1: the message is the placeholder that Send put in the thread (see `ChatMessage.firstLine`). */
+  firstLine?: boolean;
+  /** CS-3b: the fixed words of the server's phase (see `ChatMessage.phaseWord`). */
+  phaseWord?: string;
   /** Sequential reasoning blocks — each its own timeline entry. */
   reasoningBlocks?: string[];
   /** Real assistant-message segments (Phase 3b, message-id-native). When
@@ -299,6 +317,10 @@ function nodeText(node: ReactNode): string {
 }
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  // `markdownUrlTransform` blanks an unsafe target (`javascript:`, `vbscript:`,
+  // a `data:` page, `file:`). A link with no target is plain text, so it does
+  // not look like a link.
+  if (!href) return <>{children}</>;
   // A link to a workspace file opens the app's viewer, never the raw file in
   // a new tab (owner report, 2026-10-16, `components/ArtifactLink.tsx`).
   const file = workspaceFileOfHref(href);
@@ -325,6 +347,49 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
         </span>
       )}
     </a>
+  );
+}
+
+// ─── A file on the agent's computer ─────────────────────────────────────────
+//
+// A `file:///` URL or a `C:\…` / `/c/…` path is not a link: a browser never
+// opens it from this page. It draws as one chip with the file name and a Copy
+// path button (task 3031). An image path draws the same chip and nothing more.
+
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+
+function LocalFileChip({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(path).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
+  // The one tip, from the design system's tip primitive, on the whole chip.
+  const { attachLabel, onPointerEnter, onPointerLeave, onFocus, onBlur, tip } = useOverflowTip(
+    LOCAL_FILE_TIP,
+    { always: true },
+  );
+  return (
+    <span
+      ref={attachLabel}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onFocus={onFocus}
+      onBlur={onBlur}
+      data-local-file-chip=""
+      className="inline-flex max-w-full items-center gap-0.5 align-middle"
+    >
+      <Badge size="md" icon={IMAGE_FILE.test(path) ? "Image" : "FileText"}
+        className="min-w-0 max-w-full">
+        <span className="min-w-0 truncate">{localFileName(path)}</span>
+        <span className="shrink-0 text-muted-foreground">local file</span>
+      </Badge>
+      <Button variant="ghost" size="icon-xs" icon={copied ? "Check" : "Copy"}
+        aria-label="Copy path" onClick={copy} />
+      {tip}
+    </span>
   );
 }
 
@@ -441,7 +506,7 @@ export function MarkdownBody({
             : refsOnly
               ? [remarkGfm, [remarkEntityPills, { names: false, emails: false, taskRefs: true }]]
               : [remarkGfm]) as NonNullable<MarkdownOptions["remarkPlugins"]>,
-        ...(textOnly ? [remarkTextOnly] : []),
+        ...(textOnly ? [remarkTextOnly] : [remarkLocalFiles]),
       ]}
       rehypePlugins={caret ? [rehypeStreamCaret] : []}
       urlTransform={markdownUrlTransform}
@@ -453,6 +518,9 @@ export function MarkdownBody({
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         span: ({ node: _node, children, ...rest }) => {
           const attrs = rest as Record<string, unknown>;
+          if (typeof attrs[LOCAL_FILE_ATTR] === "string") {
+            return <LocalFileChip path={attrs[LOCAL_FILE_ATTR] as string} />;
+          }
           if ((refs || refsOnly) && typeof attrs[TASK_REF_ATTR] === "string") {
             return (
               <ChatTaskRef refText={attrs[TASK_REF_ATTR] as string}
@@ -662,7 +730,10 @@ export default function MarkdownMessage({
   streaming,
   toolEvents,
   progressLines,
+  progressNotice,
   isThinkingActive,
+  firstLine,
+  phaseWord,
   reasoningBlocks,
   segments,
   onChoice,
@@ -716,7 +787,7 @@ export default function MarkdownMessage({
   const showThinking = isThinkingActive || hasTools || hasReasoning || hasNarration;
 
   return (
-    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0">
+    <div className="text-[12px] sm:text-[13px] text-foreground leading-relaxed min-w-0 glass:text-body glass:sm:text-body glass:leading-normal glass:glass-prose">
       {/* Thinking container — groups the whole working phase (reasoning + tool calls + status) */}
       {showThinking && (
         <div className="mb-3">
@@ -726,7 +797,11 @@ export default function MarkdownMessage({
             reasoningBlocks={reasoningBlocks}
             narrationSegments={narrationSegments}
             isActive={!!isThinkingActive}
+            firstLine={firstLine}
+            phaseWord={phaseWord}
+            answerStarted={!!content?.trim() || (segments ?? []).some((s) => s.text.trim().length > 0)}
             evidenceFor={evidenceFor}
+            notice={progressNotice}
           />
         </div>
       )}

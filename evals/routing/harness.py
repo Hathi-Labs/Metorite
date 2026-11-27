@@ -22,6 +22,9 @@ What the harness replaces, and nothing more:
   It answers none. It reads the database.
 * The Redis relay. ``executor._push_sse_to_stream`` records each line with
   its thread, in :attr:`RoutingHarness.relayed`.
+* Scripted: Redis. Every command stays in memory
+  (:mod:`evals.routing.memory_redis`), and :attr:`RoutingHarness.redis` holds
+  it. So no scripted run writes to the Redis of a machine.
 * Scripted (``models`` given): the model of each agent. :class:`ReplyModel`
   replays turns under the real client. Every other host HTTP send raises,
   and :attr:`RoutingHarness.sent` records it.
@@ -74,6 +77,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+
+from evals.routing import memory_redis
+from evals.routing.memory_redis import MemoryRedis
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = "orchestrator"
@@ -193,6 +199,11 @@ class ModelCall:
     #: The model that the response names, for example the vendor's model id.
     served: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    #: ``time.time()`` at the start. 0 is the epoch, which is off peak.
+    wall: float = 0.0
+    #: The model that the agent asked for, when the eval rewrote it (``model``
+    #: is then the model that went on the wire). Empty when nothing changed.
+    requested: str = ""
 
 
 class _TapStream(httpx.AsyncByteStream):
@@ -263,6 +274,25 @@ class _TapStream(httpx.AsyncByteStream):
                 self._call.usage = dict(body["usage"])
 
 
+#: EVAL ONLY. A map from the model a request names to the model the eval sends
+#: instead, for example ``{"tier-balanced": "tier-fast"}``. It is empty, so the
+#: tap changes nothing, until the live measure sets it for one run
+#: (``--tier-map``). No product code reads it.
+MODEL_REWRITE: dict[str, str] = {}
+
+
+def _rewritten(request: httpx.Request, body: dict[str, Any], raw: bytes) -> bytes:
+    """Put the mapped model in *request*, and change nothing else in the body."""
+    target = MODEL_REWRITE.get(str(body.get("model") or ""))
+    if not target:
+        return raw
+    raw = json.dumps({**body, "model": target}, ensure_ascii=False).encode("utf-8")
+    request._content = raw
+    request.stream = httpx.ByteStream(raw)
+    request.headers["content-length"] = str(len(raw))
+    return raw
+
+
 class _WireTap(httpx.AsyncBaseTransport):
     """A transport that records each model request of one agent, and passes it on."""
 
@@ -281,11 +311,16 @@ class _WireTap(httpx.AsyncBaseTransport):
         except ValueError:
             body = {}
         body = body if isinstance(body, dict) else {}
+        asked = str(body.get("model") or "")
+        if asked in MODEL_REWRITE:
+            raw = _rewritten(request, body, raw)
+            body = {**body, "model": MODEL_REWRITE[asked]}
         call = ModelCall(
             agent=self._agent, model=str(body.get("model") or ""),
+            requested=asked if asked != str(body.get("model") or "") else "",
             stream=bool(body.get("stream")), messages=len(body.get("messages") or []),
             tools=len(body.get("tools") or []), request_chars=len(raw),
-            started=time.monotonic(),
+            started=time.monotonic(), wall=time.time(),
         )
         self._sink.append(call)
         response = await self._inner.handle_async_request(request)
@@ -466,8 +501,12 @@ def _finish(record: RunRecord, calls: dict[str, dict[str, str]], agents: frozens
 class RoutingHarness:
     """One sweep: the patches, the state root, and the models of this run."""
 
-    def __init__(self, *, live: bool = False, real_specialists: bool = False) -> None:
+    def __init__(self, *, live: bool = False, real_specialists: bool = False,
+                 guide: bool = True) -> None:
         self.live = live
+        #: WS-OB GD-7: the guide tools are on (``GUIDE_ORGS`` open). The runner
+        #: sends the guide line with them (``shell.system_context(guide=...)``).
+        self.guide = guide
         #: Live: each specialist runs for real, and no stand-in answers.
         self.real_specialists = real_specialists
         #: Live with real specialists: the URL prefixes that a host HTTP send
@@ -489,6 +528,8 @@ class RoutingHarness:
         self.relayed: list[tuple[str, str]] = []
         #: Each host HTTP send of a scripted run. It must stay empty.
         self.sent: list[str] = []
+        #: Scripted: the Redis of the run, in memory. None on a live run.
+        self.redis: MemoryRedis | None = None
         #: Live: each delegation the stand-in took, ``(agent, message)``.
         self.delegated: list[tuple[str, str]] = []
         #: The member's mailboxes, as ``GET /email/accounts`` lists them.
@@ -514,6 +555,11 @@ class RoutingHarness:
         # WS-62 CF-3: the eval runs with the page tool on, so S1 to S3 can
         # drive it. Production ships it dark (settings.chat_first_tools).
         mp.setattr(settings, "chat_first_tools", True, raising=False)
+        if self.live:
+            # Task 3554: a call that the Router does not take runs on a dev
+            # box only. The executor's error recovery calls `complete` in
+            # process, so a live run says dev, as `one_assistant_measure`.
+            mp.setattr(settings, "acb_env", "dev", raising=False)
         mp.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
         mp.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
         # WS-17 EM-G11d: the upward-egress mark in memory, as in the unit
@@ -522,6 +568,9 @@ class RoutingHarness:
         from tests.unit._egress_mark_store import install_memory_mark_store
 
         install_memory_mark_store(mp)
+        # Every other Redis command of a scripted run (the active mark, the
+        # live-run registry, the activity writes) stays in memory too.
+        self.redis = None if self.live else memory_redis.install(mp)
         # WS-62 CF-3: the panes the member holds, for show_in_app. The real
         # read is acb_auth.resolve_access, and CI has no database, so it
         # would fail closed and refuse every page. The stand-in holds every
@@ -534,6 +583,20 @@ class RoutingHarness:
             return held
 
         mp.setattr(in_app_path, "member_features", _member_features)
+        # WS-OB GD-7: the guide tools, with GUIDE_ORGS open for the run's org and
+        # the member no admin. Production ships them dark (settings.guide_orgs).
+        # With guide=False they stay off, as in a build with the flag off.
+        from orchestrator import guide_tools
+
+        from evals.routing.dataset import ORG as _ORG
+
+        mp.setattr(settings, "guide_orgs", "*" if self.guide else "", raising=False)
+        mp.setattr(guide_tools, "run_org", lambda: _ORG)
+
+        async def _no_admin() -> bool:
+            return False
+
+        mp.setattr(guide_tools, "member_is_admin", _no_admin)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()

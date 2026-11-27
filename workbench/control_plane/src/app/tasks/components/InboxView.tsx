@@ -32,11 +32,7 @@ import {
 } from "../lib/utils";
 import {
   type InboxScope,
-  type InboxSource,
-  SOURCE_PILLS,
-  filterBySource,
   inboxKind,
-  inboxKindCounts,
   inboxRows,
   orderInbox,
 } from "../lib/inbox";
@@ -93,11 +89,10 @@ type SortOrder = "newest" | "oldest";
 /**
  * The Inbox (my_tasks_cutover.md §5 S6g — one inbox).
  *
- * ONE list with ONE row component for both kinds of task: my captures and the
- * board rows a colleague put on my plate. Board rows come first, then the
- * captures, each block in the member's sort. `inbox.ts` is the rule for what
- * the list holds, and the sidebar badge reads the same rule, so the header's
- * "N to process" equals the badge. Search, the date pills, the source pills,
+ * ONE list of what I captured (D170, INB-1, 2026-11-03). Work a colleague
+ * assigned to me is in My tasks as New, not here. `inbox.ts` is the rule for
+ * what the list holds, and the sidebar badge reads the same rule, so the
+ * header's "N to process" equals the badge. Search, the date pills,
  * selection, the keyboard and "Clarify next" all walk this one list.
  *
  * ⚠️ The Inbox is NEVER scoped by an Area (S6b repair, 2026-09-23). A capture
@@ -123,9 +118,6 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
   const processed = useTaskStore((s) => s.processedThisSession);
   const clarifyModalOpen = useTaskStore((s) => s.clarifyModalOpen);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
-  const sourceFilter = useTaskStore((s) => s.sourceFilter);
-  const setSourceFilter = useTaskStore((s) => s.setSourceFilter);
-  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const personalRootId = useTaskStore((s) => s.personalRootId);
   const areas = useTaskStore((s) => s.areas);
   const projects = useTaskStore((s) => s.projects);
@@ -138,24 +130,20 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
     [personalRootId, areaIds],
   );
   const kindOf = useCallback((i: MyTask) => inboxKind(i, scope), [scope]);
-  const allRows = useMemo(() => inboxRows(items, fromProjectIds), [items, fromProjectIds]);
-  const kindCounts = useMemo(() => inboxKindCounts(allRows, scope), [allRows, scope]);
-  const activeInbox = useMemo(
-    () => filterBySource(allRows, sourceFilter, scope),
-    [allRows, sourceFilter, scope],
-  );
-  // Tickler = deferred captures, and board rows whose start date is ahead.
+  const allRows = useMemo(() => inboxRows(items), [items]);
+  const activeInbox = allRows;
+  // Tickler = deferred captures.
   const tickler = useMemo(
     () =>
       items
         .filter(
           (i) =>
             !i.archivedAt &&
-            (i.disposition === "INBOX" || fromProjectIds.has(i.id)) &&
+            i.disposition === "INBOX" &&
             isTickled(i),
         )
         .sort((a, b) => (resurfacesAt(a) ?? "").localeCompare(resurfacesAt(b) ?? "")),
-    [items, fromProjectIds],
+    [items],
   );
 
   const oldest = useMemo(() => {
@@ -226,8 +214,8 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
       if (q && !i.title.toLowerCase().includes(q)) return false;
       return true;
     });
-    return orderInbox(filtered, scope, sortOrder);
-  }, [activeInbox, search, dateFilter, sortOrder, scope]);
+    return orderInbox(filtered, sortOrder);
+  }, [activeInbox, search, dateFilter, sortOrder]);
 
   const pills = [
     // "Any date", not "All": the source pills beside it already say All.
@@ -237,9 +225,6 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
     { id: "week", label: "This week", count: bucketCounts.week },
     { id: "older", label: "Older", count: bucketCounts.older },
   ].filter((p) => p.id === "all" || p.count > 0);
-  // S6g — the source filter, the store's `sourceFilter` (it had no setter
-  // anywhere before). Each pill says how many rows it holds.
-  const sourcePills = SOURCE_PILLS.map((p) => ({ ...p, count: kindCounts[p.id] }));
 
   // WS-27ad — the same transition /projects' board and the rest of /tasks use:
   // a plain pick toggles and becomes the anchor, a shift-pick adds the range
@@ -386,7 +371,7 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
       <div className={`flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden${embedded ? " hidden" : ""}`}>
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
-        <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+        <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
@@ -403,7 +388,7 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
         <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-medium text-foreground">Inbox</h2>
+            <h2 className="text-sm font-medium text-foreground">My task inbox</h2>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
@@ -611,16 +596,6 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
                 </span>
               )}
               {!showTickler && (
-                /* S6g — the source filter: both kinds, mine, or From
-                   Projects. It scrolls sideways on a phone, never the page. */
-                <FilterPills
-                  items={sourcePills}
-                  activeId={sourceFilter}
-                  onChange={(id) => setSourceFilter(id as InboxSource)}
-                  className="!min-w-0 max-w-full !shrink !border-0 !px-0 !py-0"
-                />
-              )}
-              {!showTickler && (
                 <FilterPills
                   items={pills}
                   activeId={dateFilter}
@@ -638,9 +613,9 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
                       <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder={`${filterWord()} the inbox…`}
-                        aria-label={`${filterWord()} the inbox`}
-                        data-page-filter={shellBarOn() ? "the inbox" : undefined}
+                        placeholder={`${filterWord()} my task inbox…`}
+                        aria-label={`${filterWord()} my task inbox`}
+                        data-page-filter={shellBarOn() ? "my task inbox" : undefined}
                         className="min-w-0 flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none sm:text-xs"
                       />
                     </div>
@@ -725,7 +700,7 @@ export function InboxView({ embedded = false }: { embedded?: boolean } = {}) {
             <InboxEmptyState empty={!hasRows} processed={processed} />
           ) : (
             <>
-              {(search || dateFilter !== "all" || sourceFilter !== "all") && (
+              {(search || dateFilter !== "all") && (
                 <p className="mb-2 text-[11px] text-muted-foreground">
                   Showing {visible.length} of {allRows.length}
                 </p>
@@ -803,7 +778,7 @@ function TicklerList({
   return (
     <>
       <p className="mb-3 text-[11px] text-muted-foreground">
-        Deferred items — hidden from the inbox until they resurface.
+        Deferred items — hidden from my task inbox until they resurface.
       </p>
       <div className="flex flex-col gap-2">
         {items.map((item) => (

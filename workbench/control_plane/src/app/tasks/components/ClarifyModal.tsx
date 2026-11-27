@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect } from "react";
@@ -23,6 +24,8 @@ export function ClarifyModal() {
   // alone closed the modal on its first render (audit 2026-09-24).
   const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const done = useTaskStore((s) => s.clarifiedThisSession);
+  // A tap on a tab of the phone's bar closes it, and the tab then acts.
+  useCloseOnBarTap(close, open);
   const selectItem = useTaskStore((s) => s.selectItem);
   // S6g — a promote decided here waits to be sent. The app's toast sits
   // under this overlay, so the modal carries the same line and its Undo.
@@ -34,7 +37,7 @@ export function ClarifyModal() {
   const item = selectedItemId
     ? items.find((i) => i.id === selectedItemId)
     : undefined;
-  const queue = clarifyQueue(items, fromProjectIds, done);
+  const queue = clarifyQueue(items, done);
   const inboxLeft = queue.length;
   const total = processed + inboxLeft;
   const pct = total ? Math.round((processed / total) * 100) : 0;
@@ -96,11 +99,11 @@ export function ClarifyModal() {
         <div className="shrink-0 border-b border-border">
           <div className="flex items-center justify-between px-4 py-2">
             <span className="text-xs font-medium text-muted-foreground">
-              Processing inbox · {inboxLeft} left
+              Processing my task inbox · {inboxLeft} left
             </span>
             <div className="flex items-center gap-1">
               {inboxLeft > 1 && (
-                <Button variant="ghost" size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={skip} title="Leave it in the inbox to decide later" className="gap-1 rounded-md px-2 py-1 text-[11px]">
+                <Button variant="ghost" size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={skip} title="Leave it in my task inbox to decide later" className="gap-1 rounded-md px-2 py-1 text-[11px]">
                   <Icon name="SkipForward" className="h-3.5 w-3.5" />
                   Skip
                 </Button>

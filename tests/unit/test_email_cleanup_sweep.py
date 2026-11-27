@@ -499,7 +499,7 @@ def test_the_sweep_never_scans_outbound_mail() -> None:
     # Both conditions moved into _CLEANUP_SCOPE, the one definition the sweep
     # and the Cleaner's badge now share.
     src = c._CLEANUP_SCOPE
-    assert "<> 'sent'" in src, "the sweep no longer excludes the Sent folder"
+    assert c.NOT_OUTBOUND_SQL in src, "the sweep no longer excludes the Sent folder"
     assert "FROM email_accounts" in src, (
         "the sweep no longer excludes mail from the user's own address"
     )

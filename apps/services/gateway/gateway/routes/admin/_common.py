@@ -60,9 +60,8 @@ from fastapi import APIRouter, Depends, HTTPException
 # caller's `app_user` row (`_with_resolved_access` → `bind_tenant`), which is
 # the SAME source `get_org_id` below resolves — S1-1's explicit
 # `organization_id` predicates stay as defense in depth on top of it.
-# `get_db` (unbound) remains re-exported ONLY for `routes/agent_skills.py`,
-# which reaches the seam through this module and is not this package's to
-# convert.
+# `get_db` (unbound) is still re-exported, but nothing reads it here: the last
+# user, `routes/agent_skills.py`, moved to `tenant_session` (H2, task 566).
 from gateway.db import get_db  # noqa: F401
 from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
@@ -814,6 +813,117 @@ async def provision_member(
     return member, [slug for _rid, slug in role_ids]
 
 
+# ── Integration access rules (ACC-1, integrations_console.md §3.9) ──────────
+
+#: The rules of one org. ``organization`` carries no row security, so the
+#: statement names the org, and the org comes from :func:`get_org_id` (R5).
+#: ``routes/admin/integration_access.py`` and the group gates read it here.
+#: The resolver reads the same key with the member's groups
+#: (``acb_auth.access._INTEGRATION_RULES_SQL``).
+ORG_INTEGRATION_RULES_SQL = (
+    "SELECT settings -> 'integration_access' AS rules "
+    "  FROM organization WHERE id = CAST(:org AS uuid)"
+)
+
+
+#: The row locks that a read of the rules can take (ACC-1 fix round 1).
+#:
+#: * ``share`` is for a write that a rule can name: a member write to a group,
+#:   and a group delete. Many such writes can run at once.
+#: * ``update`` is for a write of the rules: the PUT, and the scrub of a
+#:   member purge. It waits for each ``share`` holder, and each waits for it.
+#:
+#: Each caller takes the lock as the FIRST row lock of its transaction. So
+#: the order is always the org row, then the other rows, and no deadlock
+#: cycle can form. ``FOR NO KEY UPDATE`` is the lock of a plain ``UPDATE``,
+#: so the later write of the same row takes no stronger lock. The app role
+#: holds ``UPDATE`` on ``organization``, and a row lock needs it.
+ORG_RULE_LOCKS = {"share": " FOR SHARE", "update": " FOR NO KEY UPDATE"}
+
+
+async def org_integration_rules(db: Any, org_id: str, *, lock: str | None = None) -> Any:
+    """The stored rules of *org_id* (raw JSONB, or ``None``). Raises on a fault.
+
+    *lock* is a key of :data:`ORG_RULE_LOCKS`, or ``None`` for a plain read.
+    The lock holds to the end of the caller's transaction.
+    """
+    sql = ORG_INTEGRATION_RULES_SQL + (ORG_RULE_LOCKS[lock] if lock else "")
+    row = (
+        await db.execute(text(sql), {"org": org_id})
+    ).mappings().first()
+    return None if row is None else row["rules"]
+
+
+def integration_access_allowed(organization_id: str | None) -> bool:
+    """True when ``INTEGRATION_ACCESS_ORGS`` holds the org, or holds ``*``.
+
+    The one reader of the flag. It gates the two routes of
+    ``integration_access.py`` only: the resolver applies a rule that exists,
+    whatever the flag says, so a flag change never widens access. The org
+    comes from the session. A fault reads as off. Default empty, so OFF.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    try:
+        from acb_common import get_settings
+
+        raw = str(getattr(get_settings(), "integration_access_orgs", "") or "")
+    except Exception:
+        return False
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+async def assert_group_rule_gate(
+    db: Any, org_id: str, slug: str, admin: UserContext, *, deleting: bool = False,
+) -> None:
+    """The two group-write rules of §3.9.2, for a group that a rule names.
+
+    1. A member write to such a group also needs ``admin:access:manage``,
+       because the team then decides who keeps an integration (403).
+    2. Nobody deletes such a group (409).
+
+    A value that the code cannot read counts as naming the group, and a failed
+    read is 503. Neither rule depends on ``INTEGRATION_ACCESS_ORGS``, because a
+    stored rule binds whatever the flag says.
+
+    ACC-1 fix round 1: the read takes ``FOR SHARE`` on the org row, and the
+    lock holds until the caller's transaction ends. The caller does the group
+    write on the same session. So a PUT that names the group waits for that
+    commit, and it then reads the new members. Call this before any other row
+    lock of the transaction (:data:`ORG_RULE_LOCKS` says why).
+    """
+    from acb_auth.integration_access import rules_name_group
+
+    try:
+        raw = await org_integration_rules(db, org_id, lock="share")
+    except Exception as exc:
+        _log.warning("group_rule_gate_read_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read who can use each integration. Try again.",
+        ) from exc
+    if not rules_name_group(raw, slug):
+        return
+    if deleting:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}'. "
+                "Change that rule first."
+            ),
+        )
+    if not admin.has_permission("admin:access:manage"):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"A rule of who can use an integration names the team '{slug}', "
+                "so a change of its members needs 'admin:access:manage'."
+            ),
+        )
+
+
 def invalidate_for(*emails: str | None) -> None:
     """Drop cached access so an admin change lands immediately, not in 60s."""
     for email in emails:
@@ -821,7 +931,14 @@ def invalidate_for(*emails: str | None) -> None:
             invalidate_access(email)
 
 
-def record_admin_change(actor: str | None, action: str, target: str, **payload: Any) -> None:
+def record_admin_change(
+    actor: str | None,
+    action: str,
+    target: str,
+    *,
+    organization_id: str | None = None,
+    **payload: Any,
+) -> None:
     """Append an access change to the audit log.
 
     Every write in this package goes through here. "Who could see what, and
@@ -829,20 +946,32 @@ def record_admin_change(actor: str | None, action: str, target: str, **payload: 
     first thing an access review needs; structlog alone does not survive as a
     queryable record.
 
+    The row lands in the org of the change (task 2221). An admin route passes
+    no ``organization_id``, and this reads ``current_tenant()``, which
+    ``get_current_user`` bound from the identity. A caller with no bound
+    tenant (the operator door) passes the org of the row that it wrote,
+    never a request field (R5). With no org and ``ACB_GRAPH_TENANT_BIND`` on,
+    ``refuse_tenantless`` skips the row, so it never lands under the operator
+    org. Fence: ``tests/unit/test_admin_audit_org_r8.py`` (R8).
+
     Best-effort by contract (``acb_audit.record`` logs always, DB-writes if it
     can) — an audit backend that is down must not block an admin from
     revoking someone's access.
     """
     try:
-        from acb_audit import AuditEvent, record
+        import acb_audit
+        from acb_common.db import current_tenant
 
-        record(
-            AuditEvent(
-                actor=f"user:{actor}" if actor else "system:internal",
-                action=action,
-                target=target,
-                payload=payload,
-            )
+        org = organization_id or current_tenant()
+        event = acb_audit.AuditEvent(
+            actor=f"user:{actor}" if actor else "system:internal",
+            action=action,
+            target=target,
+            payload=payload,
+            organization_id=str(org) if org else None,
         )
+        if acb_audit.refuse_tenantless(event):
+            return
+        acb_audit.record(event)
     except Exception as exc:
         _log.warning("admin_audit_failed", action=action, error=str(exc))

@@ -1,0 +1,13 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "workflows",
+  "contributes": {
+    "gates": [
+      {
+        "href": "/workflows",
+        "feature": "workflows"
+      }
+    ]
+  }
+}

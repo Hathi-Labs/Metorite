@@ -19,9 +19,11 @@
  * does nothing is worse than no entry.
  */
 
+import { QUESTIONS_LABEL, QUESTIONS_NOTE } from "./agentQuestions";
 import { MY_WORK_VIEWS, myWorkEnabled, type MyWorkId } from "./myWork";
+import { LEGACY_CHIP, asChip, chipForApp, type MyTasksChip } from "./myTasks";
 
-export type ProjectAppId = "reports" | "ai-chat" | "settings" | MyWorkId;
+export type ProjectAppId = "reports" | "questions" | "ai-chat" | "settings" | MyWorkId;
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -58,6 +60,18 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
         note: "Look now, or save to deliver",
         // §9.12.8 slice 1 renders in the app. Delivery is built and DARK —
         // `PROJECT_REPORT_EMAIL_ENABLED` is off, and arming it is the owner's.
+        launch: "live",
+      },
+      {
+        // WS-55 EA-18b (`external_agent_access.md` §12.8). The agent questions
+        // that wait on the reader. The row carries a count badge (the "mine"
+        // count). The page draws the row only while `GET
+        // /projects/agent-questions` answers: with `AGENT_QUESTIONS_ORGS` off
+        // for the org the route answers 404 and the row is absent.
+        id: "questions",
+        label: QUESTIONS_LABEL,
+        icon: "MessageCircleQuestion",
+        note: QUESTIONS_NOTE,
         launch: "live",
       },
       {
@@ -131,7 +145,7 @@ export function projectAppSections(
 /** The heading of the section in `one_projects_app.md` §4.1 (D-OP-3). */
 export const MY_WORK_SECTION_LABEL = "My work";
 
-/** The My work section: six views, all live. */
+/** The My work section: My task inbox and My tasks, both live (OP-11). */
 function myWorkSection(): ProjectAppSection {
   return {
     id: "my-work",
@@ -152,7 +166,26 @@ function myWorkSection(): ProjectAppSection {
  */
 const APP_ALIASES: Readonly<Record<string, ProjectAppId>> = {
   analytics: "reports",
+  // WS-64 OP-11. The five old My work lists are chips of My tasks now. A feed
+  // link, `/tasks`, the phone tab or a chat card may still name one, and it
+  // opens My tasks with its chip (`resolveAppChip`).
+  ...Object.fromEntries(Object.keys(LEGACY_CHIP).map((id) => [id, "my-tasks" as const])),
 };
+
+/**
+ * The chip an `?app=` id opens My tasks with, or null. An old list id names
+ * its own chip (`LEGACY_CHIP`). For `my-tasks` itself the `?chip=` value of
+ * the same link decides, and the caller passes it as `chip`.
+ */
+export function resolveAppChip(
+  id: string | null | undefined,
+  chip?: string | null,
+): MyTasksChip | null {
+  const legacy = chipForApp(id);
+  if (legacy) return legacy;
+  if (String(id ?? "").trim().toLowerCase() !== "my-tasks") return null;
+  return chip ? asChip(chip) : null;
+}
 
 /**
  * The live app an `?app=` link or a `projects.open_app` call opens, or

@@ -1,9 +1,9 @@
 """The ``idempotency_key`` of a write tool (WS-55 EA-6d and EA-6c, spec §9.2).
 
 Spec ``project-docs/specs/external_agent_access.md`` §9.2, "Rules of
-``create_task``" and "Rules of ``add_comment``". Two tools use a slot:
-``create_task`` (the key is optional) and ``add_comment`` (the key is
-required).
+``create_task``" and "Rules of ``add_comment``". Three tools use a slot:
+``create_task`` (the key is optional), ``add_comment`` (the key is
+required) and, since MCP-G1, ``create_project`` (the key is optional).
 
 **What it does.** The same key from the same connection, sent to the same
 tool, gives the first result and makes one row. The edge keeps one slot for
@@ -209,6 +209,17 @@ class Slot:
                          error=type(exc).__name__, connection_id=self._connection)
 
 
+async def first_time(caller: TokenLookup, namespace: str, parts: tuple[str, ...], *,
+                     ttl_s: int) -> bool:
+    """PB-4. True the first time this connection sets the key of *namespace* and
+    *parts* (one ``SET NX``). It keeps edge rule 17: this is the one module that
+    reaches Redis. A store failure raises, and the caller decides what it means."""
+    client = tenant_redis.get_tenant_redis()
+    with tenant_redis.organization_scope(str(caller.organization_id)):
+        slot = tenant_redis.key(namespace, str(caller.connection_id), *parts)
+        return bool(await client.set(slot, "1", nx=True, ex=ttl_s))
+
+
 __all__ = [
     "DONE",
     "KEY_PATTERN",
@@ -221,4 +232,5 @@ __all__ = [
     "Slot",
     "StoreUnavailable",
     "fingerprint",
+    "first_time",
 ]

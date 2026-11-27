@@ -1,0 +1,69 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "people",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "find-person",
+        "label": "Find a colleague",
+        "position": 140,
+        "words": [
+          "people",
+          "person",
+          "colleague",
+          "directory",
+          "who",
+          "team",
+          "contact"
+        ],
+        "icon": "Users",
+        "app": "/people",
+        "href": "/people",
+        "meaning": "find a colleague, or who knows or does something",
+        "feature": "people"
+      },
+      {
+        "id": "edit-profile",
+        "label": "Update my profile",
+        "position": 190,
+        "words": [
+          "profile",
+          "skills",
+          "cv",
+          "resume",
+          "hours",
+          "me"
+        ],
+        "icon": "UserPen",
+        "app": "/people/me",
+        "href": "/people/me",
+        "meaning": "change their own profile, skills, CV or working hours",
+        "feature": null
+      }
+    ],
+    "nav": [
+      {
+        "href": "/people",
+        "feature": "people"
+      },
+      {
+        "href": "/people/me"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/people",
+        "source": "people"
+      }
+    ],
+    "always_allowed": [
+      {
+        "href": "/people/access"
+      },
+      {
+        "href": "/people/me"
+      }
+    ]
+  }
+}

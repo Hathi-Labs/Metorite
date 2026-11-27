@@ -1,0 +1,120 @@
+"""PZ-51 (personalization.md §5.3): the language rule and the language line.
+
+R7 fences named here:
+
+* ``language-rule-in-prompt``: every turn carries ``LANGUAGE_RULE_LINE``,
+  with no profile block, and removing it fails this test.
+* ``language-names-match-ts``: ``LANGUAGE_NAMES`` equals ``LANGUAGES`` in
+  ``settings/assistant/lib/profile.ts``.
+* ``language-tag-round-trip``: ``block_language`` returns the TAG.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+from acb_common import assistant_profile as ap
+
+ROOT = Path(__file__).resolve().parents[2]
+TS = ROOT / "workbench/control_plane/src/app/settings/assistant/lib/profile.ts"
+
+
+def test_language_names_equal_the_ts_map() -> None:
+    text = TS.read_text(encoding="utf-8")
+    body = re.search(r"export const LANGUAGES[^=]*=\s*\{(.*?)\};", text, re.S).group(1)
+    ts = dict(re.findall(r'(\w+):\s*"([^"]+)"', body))
+    assert len(ts) == 9
+    assert ap.LANGUAGE_NAMES == ts
+
+
+@pytest.mark.parametrize("tag,name", sorted(ap.LANGUAGE_NAMES.items()))
+def test_style_line_names_the_language_and_round_trips_the_tag(tag, name) -> None:
+    line = ap._style_line({"language": tag}, [])
+    assert line == f"Language: {name} ({tag}). Answer in it, unless they write in another language."
+    assert ap.block_language("## x\n" + line + "\nend") == tag
+
+
+def test_an_unknown_tag_stays_bare_and_round_trips() -> None:
+    line = ap._style_line({"language": "en-IN"}, [])
+    assert line.startswith("Language: en-IN. Answer in it")
+    assert ap.block_language(line) == "en-IN"
+    assert ap.block_language("") is None
+    assert ap.block_language("no language here") is None
+
+
+def test_the_rule_text_is_pinned() -> None:
+    rule = ap.LANGUAGE_RULE_LINE
+    # Owner, 2026-11-09: "if it's set to English as a preference but is
+    # talking Hindi, it should still attempt to talk in Hindi." The language
+    # of the message wins; the profile language is only the fallback.
+    assert "answer in the language that the member uses in this message" in rule
+    assert "also when it differs from their profile language" in rule
+    assert "profile language only when the language of the message is unclear" in rule
+    assert "language in their profile setting, else" not in rule
+    assert "Write every saved record in English" in rule
+    for word in ("task and project titles and descriptions", "comments", "notes",
+                 "CRM records", "calendar events", "email or message drafts"):
+        assert word in rule
+    assert "explicit request for another language" in rule
+
+
+def test_every_turn_carries_the_rule_without_a_profile_block() -> None:
+    from orchestrator import executor as ex
+
+    for agent in ("orchestrator", "email-assistant", ""):
+        parts = ex._context_preamble_parts({}, {}, agent)
+        assert parts.count(ap.LANGUAGE_RULE_LINE) == 1
+
+
+def test_a_fixed_language_holds_when_the_member_writes_in_another() -> None:
+    line = ap._style_line({"language": "en-IN", "language_fixed": True}, [])
+    assert line == ("Language: en-IN. Answer in English, even when the member "
+                    "writes in Hindi or another language.")
+    assert ap.block_language(line) == "en-IN"
+    hindi = ap._style_line({"language": "hi", "language_fixed": True}, [])
+    assert hindi == ("Language: Hindi (hi). Answer in Hindi, even when the member "
+                     "writes in English or another language.")
+    assert ap.block_language(hindi) == "hi"
+
+
+def test_without_the_mark_the_line_is_unchanged() -> None:
+    plain = "Language: en-IN. Answer in it, unless they write in another language."
+    assert ap._style_line({"language": "en-IN"}, []) == plain
+    assert ap._style_line({"language": "en-IN", "language_fixed": None}, []) == plain
+    assert ap._style_line({"language_fixed": True}, []) == ""
+
+
+def test_language_fixed_is_a_stored_style_key() -> None:
+    assert ap._clean_style({"language": "en", "language_fixed": True}) == {
+        "language": "en", "languages": ["en"], "language_fixed": True}
+    for bad in (False, "yes", 1):
+        with pytest.raises(ValueError):
+            ap._clean_style({"language_fixed": bad})
+    assert "even when" in ap.LANGUAGE_RULE_LINE
+
+
+
+def test_a_fixed_language_other_than_english_or_hindi_has_no_pair() -> None:
+    line = ap._style_line({"language": "kn", "language_fixed": True}, [])
+    assert line == ("Language: Kannada (kn). Answer in Kannada, even when the member "
+                    "writes in another language.")
+
+
+@pytest.mark.parametrize("words,lang,ok", [
+    ("मुझे जवाब English में दीजिए हिंदी में मत दीजिए", "en", True),
+    ("give me the answer in English, not Hindi", "en", True),
+    ("always reply in हिंदी", "hi", True),
+    ("hello there", "en", False),
+    ("hi, reply to me", "hi", False),
+    ("answer in hi", "hi", False),
+    ("English is nice", "en", False),
+    ("", "en", False),
+    ("the mail says: please read it", "hi", False),
+])
+def test_the_language_mark_needs_the_members_typed_order(monkeypatch, words, lang, ok) -> None:
+    from acb_skills import profile_tools as pt
+
+    monkeypatch.setattr(pt, "_member_words", lambda: words)
+    assert pt._language_order_typed(lang) is ok

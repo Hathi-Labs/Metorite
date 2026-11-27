@@ -1,5 +1,6 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState, useEffect, useRef } from "react";
@@ -73,6 +74,9 @@ interface ComposePanelProps {
    *  user doesn't silently lose what they'd attached before undoing. */
   initialAttachments?: SendAttachment[];
   initialArtifacts?: ArtifactAttachmentRef[];
+  /** Why the last send of this message failed. It shows next to Send when
+   *  the composer opens again (UXD-2). */
+  initialSendError?: string;
 }
 
 export function ComposePanel({
@@ -93,6 +97,7 @@ export function ComposePanel({
   messageId,
   initialAttachments,
   initialArtifacts,
+  initialSendError,
 }: ComposePanelProps) {
   const [to, setTo] = useState(defaultTo);
   const [cc, setCc] = useState(defaultCc);
@@ -239,6 +244,9 @@ export function ComposePanel({
     // compose passes none, so this stays empty as before.
     setAttachments(initialAttachments ?? []);
     setArtifacts(initialArtifacts ?? []);
+    // A failed send opens again with its reason, and Send tries again.
+    setSendError(initialSendError ?? null);
+    setSending(false);
     setAiOpen(false);
     setAiInstruction("");
     ai.reset(); // a new compose window starts a fresh drafting session
@@ -399,6 +407,14 @@ export function ComposePanel({
     };
   }, [to, cc, open, accounts.length]);
 
+  // A bar tap closes the window as the X does: the pending save runs first,
+  // so the draft is kept (MOB-9). ⚠️ Above the early return, as every hook
+  // must be: after it, opening the window adds a hook and React throws.
+  useCloseOnBarTap(() => {
+    autosave.flush();
+    onClose();
+  }, open);
+
   if (!open) return null;
 
   const fromAccount = accounts.find((a) => a.id === fromId) ?? null;
@@ -535,14 +551,14 @@ export function ComposePanel({
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={closeComposer} />
 
-      {/* Compose window — height-capped (viewport minus the pt-12 offset and
-          the safe-area inset) with the fields scrolling inside, so the footer
+      {/* Compose window — height-capped (the layer, which ends at the phone bar's
+          top edge, minus its pt-12 offset) with the fields scrolling inside, so the footer
           with Send/Discard is always on screen, even on short phone viewports. */}
-      <div className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-5rem-env(safe-area-inset-bottom,0px))] sm:max-h-[85vh]">
+      <div data-ask-clear="" className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-full sm:max-h-[85vh]">
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/50">
           <span className="text-sm font-medium text-foreground">New Message</span>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} className="rounded">
+          <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={closeComposer} aria-label="Close the draft" className="rounded">
             <Icon name="X" size={16} />
           </Button>
         </div>

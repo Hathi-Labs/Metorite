@@ -1,6 +1,8 @@
 "use client";
 
+import { useCloseOnBarTap } from "@/lib/phoneBarTap";
 import Button from "@/components/ui/Button";
+import Switch from "@/components/ui/Switch";
 import Icon from "@/components/Icon";
 import { useEffect, useRef, useState } from "react";
 
@@ -27,6 +29,8 @@ export function Modal({
   footer?: React.ReactNode;
   maxWidth?: string;
 }) {
+  // A bar tap closes the window (MOB-9).
+  useCloseOnBarTap(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -70,34 +74,29 @@ export function Toggle({
   onChange,
   disabled = false,
   title,
+  label,
 }: {
   enabled: boolean;
   onChange: (enabled: boolean) => void;
   disabled?: boolean;
   title?: string;
+  /**
+   * The accessible name. Leave it out when a `<label>` wraps the toggle, as
+   * on the onboarding rules step: that label names it, and an `aria-label`
+   * would override it.
+   */
+  label?: string;
 }) {
+  // The shared switch (D143, GL-2). `compact` is this toggle's classic shape.
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={enabled}
+    <Switch
+      checked={enabled}
+      onChange={onChange}
+      label={label}
       title={title}
       disabled={disabled}
-      onClick={() => onChange(!enabled)}
-      // OFF is `bg-muted-foreground/30`, not `bg-secondary`. In light mode
-      // `--secondary` is about 96% light, so on a white card the OFF track
-      // and its white knob vanished (EM-T6d visual review, 2026-10-03).
-      className={`relative flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
-        enabled ? "bg-primary" : "bg-muted-foreground/30"
-      }`}
-      style={{ height: 18, width: 32 }}
-    >
-      <span
-        className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${
-          enabled ? "left-[15px]" : "left-0.5"
-        }`}
-      />
-    </button>
+      classic="compact"
+    />
   );
 }
 

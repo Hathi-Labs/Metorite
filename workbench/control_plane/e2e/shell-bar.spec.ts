@@ -99,6 +99,13 @@ const appBar = (page: Page) => page.locator('[data-app-bar="desktop"]');
 const commandBar = (page: Page) => page.getByRole("dialog", { name: "Search or ask" });
 const field = (page: Page) => commandBar(page).getByRole("combobox", { name: "Search or ask anything" });
 const mod = process.platform === "darwin" ? "Meta" : "Control";
+/**
+ * With both shell flags on, the top bar is gone (GL-12, 30e72d332, 2026-11-01)
+ * and the sidebar's head holds the logo and the fold (GL-11, 8f497e7b8).
+ * The bar-only frame, with the nav flag off, still draws `[data-shell-bar]`.
+ */
+const head = (page: Page) => page.locator("aside[data-collapsed] [data-sidebar-head]");
+const brandZone = (page: Page) => head(page).locator("[data-head-brand]");
 
 /** The root font size each density gives, as `globals.css` computes it. */
 const ROOT_PX: Record<string, string> = { "0.875": "14px", "1": "16px", "1.125": "18px" };
@@ -122,6 +129,7 @@ test.describe("desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("flag off: no shell bar, and My Tasks draws its own row", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await stub(page);
     await page.goto("/tasks");
     await expect(appBar(page).getByRole("heading", { level: 1, name: "My Tasks" })).toBeVisible();
@@ -147,6 +155,7 @@ test.describe("desktop", () => {
   });
 
   test("My Tasks' title and tools sit in its own title bar, and the shell bar holds none of them", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await shellOn(page);
     await stub(page);
     await page.goto("/tasks");
@@ -163,26 +172,18 @@ test.describe("desktop", () => {
     await expect(page.getByRole("button", { name: "Search", exact: true })).toHaveCount(0);
   });
 
-  test("the shell bar is the same on every app, but for the command bar's chip", async ({ page }) => {
+  test("the shell's head is the same on every app, and no top bar draws", async ({ page }) => {
     await shellOn(page);
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
     await stub(page);
+    // Projects draws its title bar only once its first read answers.
+    await stubProjects(page);
     const shapes: string[] = [];
     for (const path of ["/projects", "/email", "/people", "/settings/appearance"]) {
       await page.goto(path);
-      await expect(appBar(page)).toBeVisible();
-      shapes.push(
-        await bar(page).evaluate((el) => {
-          const copy = el.cloneNode(true) as HTMLElement;
-          // The chip is the command bar's own scope ("in My Tasks"), §6.4.
-          for (const chip of Array.from(copy.querySelectorAll("button span"))) {
-            if (/^in /.test(chip.textContent ?? "")) chip.textContent = "in ·";
-          }
-          // Each comet's gradient id comes from React's `useId`, so it differs
-          // per render (`MetoriteMark.tsx`). The id is not the bar's shape.
-          return copy.innerHTML.replace(/metorite-comet-[A-Za-z0-9_-]+/g, "metorite-comet-·");
-        }),
-      );
+      await expect(appBar(page), path).toBeVisible();
+      await expect(bar(page)).toHaveCount(0);
+      shapes.push(await head(page).evaluate((el) => el.innerHTML));
       // Each app's name is its own title bar's h1.
       await expect(appBar(page).getByRole("heading", { level: 1 })).toHaveCount(1);
     }
@@ -213,7 +214,7 @@ test.describe("desktop", () => {
     await page.keyboard.press("Enter");
     await page.waitForURL((u) => u.pathname === "/projects");
     if (!MY_WORK_ON) return; // the box below needs My work (see `MY_WORK_ON`)
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toBeVisible();
     // The job left the address, so a reload does not open Capture again.
     await expect.poll(() => new URL(page.url()).search).toBe("");
   });
@@ -287,7 +288,7 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects");
-    const capture = page.getByRole("textbox", { name: "Capture to inbox" });
+    const capture = page.getByRole("textbox", { name: "Capture to my task inbox" });
     for (let round = 0; round < 2; round++) {
       await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
       await field(page).fill("new task");
@@ -306,11 +307,11 @@ test.describe("desktop", () => {
     await stub(page);
     await stubProjects(page);
     await page.goto("/projects?app=my-inbox");
-    const filter = page.locator('[data-page-filter="the inbox"]');
+    const filter = page.locator('[data-page-filter="my task inbox"]');
     await expect(filter).toBeVisible();
     await bar(page).getByRole("button", { name: /Search or ask anything/ }).click();
     await field(page).fill("vendor review");
-    await commandBar(page).getByRole("option", { name: /Show all in the inbox/ }).click();
+    await commandBar(page).getByRole("option", { name: /Show all in my task inbox/ }).click();
     await expect(filter).toHaveValue("vendor review");
   });
 });
@@ -403,12 +404,15 @@ test.describe("the coordinator (NS-4b)", () => {
     await expect(row).toBeVisible();
     await expect(row).toContainText("Suggested by AI");
     await row.click();
-    await page.waitForURL((u) => u.pathname === "/tasks");
-    await expect(page.getByRole("textbox", { name: "Capture to inbox" })).toHaveValue("call the vendor");
+    // With My work on, /tasks hands over to Projects' inbox.
+    await page.waitForURL((u) => (MY_WORK_ON ? u.pathname === "/projects" : u.pathname === "/tasks"));
+    await expect(page.getByRole("textbox", { name: "Capture to my task inbox" })).toHaveValue("call the vendor");
     // §6.4 rule 2: the box says the AI filled it.
     await expect(page.getByText("Filled by AI. Check it, then press Enter to add it.")).toBeVisible();
     // The job and its fields left the address.
-    await expect.poll(() => new URL(page.url()).search).toBe("");
+    await expect
+      .poll(() => new URL(page.url()).search)
+      .toBe(MY_WORK_ON ? "?app=my-inbox" : "");
   });
 
   test("out of credits says so in one line, and the other groups keep working", async ({ page }) => {
@@ -446,69 +450,72 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(bar(page)).toBeVisible();
-    // Exactly the NS-1 frame: the bar starts where the rail ends.
-    expect(Math.round((await box(bar(page))).x)).toBe(Math.round((await box(aside(page))).width));
+    // The NS-1 frame: the bar starts where the rail ends. Since GL-11
+    // (8f497e7b8) the rail floats with an 8px margin on each side, so its
+    // slot is the margin, the 256px card and the margin again.
+    const rail = await box(aside(page));
+    expect(Math.round((await box(bar(page))).x)).toBe(Math.round(rail.x + rail.width + rail.x));
     await expect(aside(page).getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
     await expect(aside(page).locator("a[href='/']").first()).toBeVisible();
     await expect(bar(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
   });
 
-  test("both flags: one bar across the whole width, with the fold control and the logo", async ({ page }) => {
+  test("both flags: no top bar, and the sidebar's head holds the fold control and the logo", async ({ page }) => {
     await shellOn(page);
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
     await stub(page);
     await page.goto("/settings/appearance");
-    const b = await box(bar(page));
-    expect(b.x).toBe(0);
-    expect(Math.round(b.width)).toBe(1440);
-    // One row: the bar is its own height, nothing wraps under it.
-    expect(Math.round(b.height)).toBe(44);
-    const brand = bar(page).locator("[data-shell-brand]");
-    const fold = brand.getByRole("button", { name: "Collapse sidebar" });
+    // GL-12 (30e72d332) removed the full-width bar. The head holds both.
+    await expect(aside(page)).toBeVisible();
+    await expect(bar(page)).toHaveCount(0);
+    const fold = head(page).getByRole("button", { name: "Collapse sidebar" });
     await expect(fold).toHaveAttribute("aria-expanded", "true");
-    // The Menu glyph, never a panel glyph: an app's own rail toggle in this
-    // bar wears PanelLeftOpen/Close, and two look-alike controls with two
-    // jobs make a member guess (review, 2026-10-09).
-    await expect(fold.locator("svg.lucide-menu")).toHaveCount(1);
-    await expect(fold.locator("svg[class*='lucide-panel-left']")).toHaveCount(0);
-    await expect(brand.locator("a[href='/']")).toContainText("Acme");
-    // The rail has no head of its own now: no second logo, no second control.
-    // (Its Home link also goes to "/", so the logo is found by its name.)
-    await expect(aside(page).getByRole("link", { name: "Acme" })).toHaveCount(0);
-    await expect(aside(page).getByRole("button", { name: /sidebar/ })).toHaveCount(0);
-    // The sidebar starts under the bar.
-    expect(Math.round((await box(aside(page))).y)).toBe(Math.round(b.height));
+    // The chevron glyph of the rail's own control, never the bar's Menu glyph.
+    await expect(fold.locator("svg.lucide-chevrons-left")).toHaveCount(1);
+    await expect(fold.locator("svg.lucide-menu")).toHaveCount(0);
+    await expect(brandZone(page).locator("a[href='/']")).toContainText("Acme");
+    // One logo and one fold control in the whole sidebar.
+    await expect(aside(page).getByRole("link", { name: "Acme" })).toHaveCount(1);
+    await expect(aside(page).getByRole("button", { name: /sidebar/ })).toHaveCount(1);
+    // The rail runs the full height of the window, less its 8px margins.
+    const rail = await box(aside(page));
+    expect(Math.round(rail.y)).toBeLessThanOrEqual(8);
+    expect(Math.round(rail.y + rail.height)).toBeGreaterThanOrEqual(900 - 8);
   });
 
-  test("both flags: the logo stays in view when the sidebar folds, and the bar button opens it again", async ({ page }) => {
+  test("both flags: the logo stays in view when the sidebar folds, and the head's button opens it again", async ({ page }) => {
     await shellOn(page);
     await page.addInitScript(() => localStorage.setItem("cc-shell-nav", "1"));
     await stub(page);
     await page.goto("/settings/appearance");
-    const brand = bar(page).locator("[data-shell-brand]");
-    const logo = brand.locator("a[href='/']");
+    const logo = brandZone(page).locator("a[href='/']");
     const before = await box(logo);
 
-    await brand.getByRole("button", { name: "Collapse sidebar" }).click();
+    await head(page).getByRole("button", { name: "Collapse sidebar" }).click();
     await expect(aside(page)).toHaveAttribute("data-collapsed", "true");
     await expect.poll(async () => (await aside(page).boundingBox())?.width).toBeLessThan(60);
     // The owner's point: folded, the organization's logo is still there.
     await expect(logo).toBeVisible();
     expect(await box(logo)).toEqual(before);
-    expect(Math.round((await box(bar(page))).width)).toBe(1440);
-    // One glyph for both states. `aria-expanded` carries the state.
-    await expect(brand.getByRole("button", { name: "Expand sidebar" }).locator("svg.lucide-menu")).toHaveCount(1);
+    // `aria-expanded` carries the state.
+    await expect(head(page).getByRole("button", { name: "Expand sidebar" })).toHaveAttribute("aria-expanded", "false");
     // The state survives a reload, under the same key as before.
     expect(await page.evaluate(() => localStorage.getItem("cc-sidebar-collapsed"))).toBe("1");
 
-    await brand.getByRole("button", { name: "Expand sidebar" }).click();
+    // The head's button sits past the folded rail's edge. A move onto the
+    // rail peeks it open, and the press then lands on the button.
+    await aside(page).hover();
+    await head(page).getByRole("button", { name: "Expand sidebar" }).click();
     await expect(aside(page)).toHaveAttribute("data-collapsed", "false");
   });
 
-  // Owner, 2026-10-10: folded, the menu control must sit "in line with all
-  // the icons of the sidebar", and the logo must keep a gap from it.
+  // Owner, 2026-10-10: folded, the head's control must sit "in line with all
+  // the icons of the sidebar". The fold button sits past the folded rail's
+  // edge since GL-11 (8f497e7b8), so the head's mark is the thing that shows
+  // there, and it holds that column ("The mark sits on the icons' column",
+  // `Sidebar.tsx`).
   for (const density of ["1", "0.875", "1.125"]) {
-    test(`both flags: the menu control is centred over the folded rail's icons (scale ${density})`, async ({ page }) => {
+    test(`both flags: the head's mark is centred over the folded rail's icons (scale ${density})`, async ({ page }) => {
       await shellOn(page);
       await page.addInitScript(() => {
         localStorage.setItem("cc-shell-nav", "1");
@@ -522,9 +529,8 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       await expect(aside(page).locator("nav a").first()).toBeVisible();
       // After the load, never in `addInitScript` (`setScale` says why).
       await setScale(page, density);
-      const brand = bar(page).locator("[data-shell-brand]");
-      const fold = await box(brand.getByRole("button", { name: "Expand sidebar" }));
-      const foldCentre = fold.x + fold.width / 2;
+      const mark = await box(brandZone(page).locator("[data-our-mark]"));
+      const foldCentre = mark.x + mark.width / 2;
       // Every icon of the folded rail shares one centre line.
       const centres = await aside(page)
         .locator("nav a svg, nav button svg")
@@ -535,10 +541,7 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
             .map((r) => r.x + r.width / 2),
         );
       expect(centres.length).toBeGreaterThan(2);
-      for (const c of centres) expect(Math.abs(c - foldCentre), `an icon at ${c} vs the control at ${foldCentre}`).toBeLessThanOrEqual(1);
-      // The logo keeps a gap from the control.
-      const logo = await box(brand.locator("a[href='/']"));
-      expect(logo.x - (fold.x + fold.width)).toBeGreaterThanOrEqual(8);
+      for (const c of centres) expect(Math.abs(c - foldCentre), `an icon at ${c} vs the mark at ${foldCentre}`).toBeLessThanOrEqual(1);
     });
   }
 
@@ -563,12 +566,12 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       }),
     );
     await page.goto("/settings/appearance");
-    const brand = bar(page).locator("[data-shell-brand]");
+    const brand = brandZone(page);
     const img = brand.locator("img:visible");
     await expect(img).toBeVisible();
     // No caption: the lockup draws no words at all.
     expect((await brand.locator("a[href='/']").textContent())?.trim()).toBe("");
-    expect(await bar(page).textContent()).not.toMatch(/powered by/i);
+    expect(await head(page).textContent()).not.toMatch(/powered by/i);
     // 600×160 at 24px tall wants 90px. With the caption's 100px reserve the
     // cap was 76px, so a 90px logo proves the reserve is gone.
     expect(Math.round((await box(img)).width)).toBe(90);
@@ -582,10 +585,11 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
 
   // Measured 2026-10-09: at 1280px My Tasks' title, Capture and My day ran
   // under the command bar, because they shared its row. Since 2026-10-10 the
-  // app draws its own row under the shell bar (owner), so the rule is now:
-  // the shell bar's side zones hold nothing an app put there, and the app's
-  // title bar fits its own row, the name and the last tool both in view.
-  test("both flags at 1280: the app's title bar fits its own row, under the command bar", async ({ page }) => {
+  // app draws its own row (owner). The top bar is gone since GL-12
+  // (30e72d332), so the rule is now: no shell row sits over the page, and the
+  // app's title bar fits its own row, the name and the last tool both in view.
+  test("both flags at 1280: the app's title bar fits its own row, with no shell row over it", async ({ page }) => {
+    test.skip(MY_WORK_ON, "the page redirects into Projects when My work is on");
     await page.setViewportSize({ width: 1280, height: 800 });
     await shellOn(page);
     await page.addInitScript(() => {
@@ -605,10 +609,7 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
       // reads a detached row, and `boundingBox()` gives null. That failed CI
       // twice on #918. A real overflow still fails every run of the block.
       await expect(async () => {
-        const shell = await box(bar(page));
-        const app = await box(row);
-        // Under the shell bar, not beside the command bar.
-        expect(app.y, path).toBeGreaterThanOrEqual(shell.y + shell.height - 1);
+        await expect(bar(page), path).toHaveCount(0);
         // Nothing in the row runs past its right edge or out of the window.
         const fit = await row.evaluate((el) => {
           let hi = -Infinity;
@@ -625,12 +626,6 @@ test.describe("the full-width bar (owner, 2026-10-09)", () => {
         expect(fit.right).toBeLessThanOrEqual(1280);
       }).toPass({ timeout: 10_000 });
     }
-    // The shell bar's left zone is empty: no app put anything in it.
-    const left = await bar(page)
-      .locator(":scope > div")
-      .nth(1)
-      .evaluate((el) => el.childElementCount);
-    expect(left).toBe(0);
   });
 
   // ⚠️ KNOWN DEFECT, on main as well (measured 2026-10-12, #918). A cold

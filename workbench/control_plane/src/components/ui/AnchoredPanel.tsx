@@ -78,15 +78,19 @@ export function pointAnchor(x: number, y: number): PanelAnchor {
  *
  * - `popover` (the default) is `z-[60]`, above a `Modal` at `z-50`.
  * - `top` is `z-[90]`, for a panel raised from inside a hand-rolled overlay
- *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[80]`, so a
+ *   that paints above `z-50`. My Tasks' `TaskFocusModal` is `z-[15]`, so a
  *   `popover` panel opened from a focused task drew BEHIND it. `top` stays
  *   under `Modal`'s `alert` (`z-[100]`), so a confirmation still wins.
+ * - `guide` is `z-[98]`, for the guided tour only (MOB-9). It paints over the
+ *   phone's bottom bar (`z-[96]`), because the tour dims the bar and rings
+ *   its Ask tab. Still under `alert`.
  */
-export type PanelLayer = "popover" | "top";
+export type PanelLayer = "popover" | "top" | "guide";
 
-const PANEL_LAYERS: Record<PanelLayer, string> = {
+export const PANEL_LAYERS: Record<PanelLayer, string> = {
   popover: "z-[60]",
   top: "z-[90]",
+  guide: "z-[98]",
 };
 
 /**
@@ -103,7 +107,8 @@ export type PanelVariant = "panel" | "tip";
 
 /** The surface classes of each variant. Exported for the markup test. */
 export const PANEL_SURFACES: Record<PanelVariant, string> = {
-  panel: "overflow-y-auto rounded-md border border-border bg-card shadow-md",
+  panel:
+    "overflow-y-auto rounded-md border border-border bg-card shadow-md glass:rounded-2xl glass:border-transparent glass:glass-menu",
   tip: "pointer-events-none rounded-md bg-tooltip text-tooltip-foreground shadow-md",
 };
 
@@ -157,12 +162,30 @@ export interface PanelBox {
   height: number;
 }
 
+/**
+ * The top edge of the phone's bottom bar, or null when no bar shows. The bar
+ * paints above every panel (`LAYER_CLASS.bottomNav`), so a panel that opens
+ * downward must end above it (MOB-9). The phone layout sets `data-phone-nav`
+ * on <html>, and the bar wears `data-phone-nav-bar`.
+ */
+export function phoneBarTop(doc: Document = document): number | null {
+  if (!doc.documentElement.hasAttribute("data-phone-nav")) return null;
+  const bar = doc.querySelector("[data-phone-nav-bar]");
+  return bar ? bar.getBoundingClientRect().top : null;
+}
+
 export function panelBox(
   rect: { left: number; right: number; top: number; bottom: number; width: number },
-  viewport: { width: number; height: number },
+  /**
+   * `floor` is the lowest edge a panel may reach, when that is above the
+   * window's foot: on a phone, the top edge of the bottom bar (MOB-9). The
+   * room below the anchor ends there. A flipped panel still hangs from the
+   * window's real bottom, so `height` stays the window's.
+   */
+  viewport: { width: number; height: number; floor?: number },
   maxHeight: number,
 ): PanelBox {
-  const below = viewport.height - rect.bottom;
+  const below = Math.min(viewport.height, viewport.floor ?? viewport.height) - rect.bottom;
   const up = below < maxHeight && rect.top > below;
   const room = (up ? rect.top : below) - 2 - 8;
   const height = Math.max(0, Math.min(maxHeight, room));
@@ -215,7 +238,7 @@ export function AnchoredPanel({
     setBox(
       panelBox(
         anchor.getBoundingClientRect(),
-        { width: window.innerWidth, height: window.innerHeight },
+        { width: window.innerWidth, height: window.innerHeight, floor: phoneBarTop() ?? undefined },
         maxHeight,
       ),
     );

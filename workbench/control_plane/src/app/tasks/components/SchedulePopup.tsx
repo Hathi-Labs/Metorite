@@ -102,7 +102,7 @@ export function SchedulePopup() {
 
   // The shared `Modal` (continuity P3): one scrim, a focus trap, Escape and
   // focus return. The `alert` layer, because the Schedule nudge also opens
-  // this from inside the focused task (`TaskFocusModal`, z-[80]), and the
+  // this from inside the focused task (`TaskFocusModal`, z-[15] in the page column), and the
   // dialog layer (z-50) would paint under it. See `Modal`'s `LAYERS`.
   return (
     <Modal

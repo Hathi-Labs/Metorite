@@ -3,9 +3,10 @@
 A bare ``ON CONFLICT DO NOTHING`` on email_attachments was dead code: the only
 unique constraint was the primary key on a freshly generated ``id``, so it never
 fired and every re-hydration re-inserted the same files. Migration 88 adds
-UNIQUE (message_id, provider_attachment_id); these tests pin that all three
+UNIQUE (message_id, provider_attachment_id); these tests pin that both
 insert sites reference it as their arbiter, so the dedupe can never silently
-regress to the bare form again.
+regress to the bare form again. The two inserts of the open route are one
+helper, ``_insert_attachments``, since 2026-10-28.
 
 The ON CONFLICT *behaviour* itself is a Postgres guarantee exercised against the
 live database; here we guard the call sites, which is what regressed before.
@@ -46,7 +47,7 @@ def test_every_attachment_insert_names_the_arbiter() -> None:
                 f"(message_id, provider_attachment_id) arbiter — a bare "
                 f"ON CONFLICT DO NOTHING never dedupes:\n{block}"
             )
-    assert total == 3, f"expected 3 attachment insert sites, found {total}"
+    assert total == 2, f"expected 2 attachment insert sites, found {total}"
 
 
 def test_migration_88_creates_the_unique_index() -> None:

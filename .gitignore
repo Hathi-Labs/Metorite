@@ -9,6 +9,8 @@ build/
 # Re-include Next.js app route directories named "build" inside src/app
 !workbench/control_plane/src/app/build/
 !workbench/control_plane/src/app/build/**
+!workbench/control_plane/src/app/studio/build/
+!workbench/control_plane/src/app/studio/build/**
 # Re-include the App Workshop's platform-owned T2 build script (not a build
 # artifact — versioned source the app-builder agent shells out to)
 !apps/agents/agent-app-builder/build/
@@ -133,12 +135,12 @@ workbench/control_plane/ux-shots/
 # Vendored from github.com/dickwu/apple-design-skill @ d0bac1e (owner ask,
 # 2026-08-31): the HIG design-review skill every checkout must load.
 !.claude/skills/apple-design/
-# Adopted from skills/upstream/anthropics/ @ 53048666 (owner ask, 2026-09-03).
-# The mirror under skills/upstream/ is a REVIEW copy that nothing loads — Claude
-# Code reads .claude/skills/ only. Adoption is this line, and nothing else.
+# Adopted from github.com/anthropics/skills @ 53048666 (owner ask, 2026-09-03).
+# Claude Code reads .claude/skills/ only. Adoption is this line, and nothing else.
 # ⚠️ Three of the five carry a METORITE ADOPTION NOTE below their frontmatter,
 # because their advice fights DESIGN_SYSTEM.md §0. A refresh drops that note.
-# The adoption procedure lives in skills/upstream/README.md.
+# To adopt another: copy it flat into .claude/skills/<id>/, allow it here, add
+# its name to NOT_OURS in .claude/hooks/ste-lint.mjs, and record the SHA.
 !.claude/skills/webapp-testing/
 !.claude/skills/frontend-design/
 !.claude/skills/skill-creator/
@@ -165,3 +167,8 @@ dump.rdb
 evals/coding_engine/results/
 # WS-46 P3: the results of the Projects operations eval (evals/projects_ops/run.py)
 evals/projects_ops/results/
+# Task 2976: the results of the email-to-Projects eval (evals/email_to_projects/run.py)
+evals/email_to_projects/results/
+
+# scripts/dev_up.sh: per-worktree state, logs and the local token
+.dev_up/

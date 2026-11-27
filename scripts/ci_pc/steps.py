@@ -44,6 +44,8 @@ SKIP_STEPS = (
     "Install gitleaks",
     "Cache the browser",
     "Keep ",  # artifact uploads
+    "Point psql at the service container",  # CIV-23: the local lane keeps port 5432
+    "Point the tests at the service containers",  # CIV-23: the lane sets the DSNs with --set
 )
 
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
@@ -81,6 +83,9 @@ def render(
     job = jobs[job_name]
     workdir = (job.get("defaults", {}).get("run", {}) or {}).get("working-directory", ".")
     out = ["#!/usr/bin/env bash", f"# pr-check job `{job_name}`, rendered by scripts/ci_pc/steps.py", "set -u"]
+    # A step that writes a step output (`>> "$GITHUB_OUTPUT"`) needs the file.
+    # Here no later step reads it: --ctx gives `steps.<id>.outputs.*`.
+    out.append('export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"')
     job_env = {k: _sub(v, ctx, f"{job_name}.env") for k, v in (job.get("env") or {}).items()}
     for step in job.get("steps", []):
         name = step.get("name", "")

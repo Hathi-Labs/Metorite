@@ -39,12 +39,14 @@ export function lifecycleSteps(status: string): LifecycleStep[] {
   }));
 }
 
-export type TabKey = "overview" | "billing" | "people" | "access";
+export type TabKey = "overview" | "billing" | "people" | "aroh" | "access";
 
 export const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
   { key: "billing", label: "Billing & credits" },
   { key: "people", label: "People & seats" },
+  // CP-APP (task 1105): the Aroh app, its seats and its AI use.
+  { key: "aroh", label: "Aroh" },
   { key: "access", label: "Access & keys" },
 ];
 

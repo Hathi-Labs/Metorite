@@ -32,8 +32,10 @@ vi.mock("./api", () => ({
   getPipelineReport: vi.fn(async () => ({
     stages: [],
     count: 0,
+    currency: "INR",
     amount: 0,
     weighted: 0,
+    others: [],
   })),
   getFunnelReport: vi.fn(async () => ({
     stages: [],
@@ -47,8 +49,10 @@ vi.mock("./api", () => ({
     won: 0,
     lost: 0,
     win_rate: 0,
+    currency: "INR",
     won_amount: 0,
     lost_amount: 0,
+    others: [],
     average_cycle_days: null,
     closed_without_date: 0,
     lost_reasons: [],

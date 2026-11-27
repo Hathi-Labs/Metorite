@@ -38,6 +38,11 @@ export const STORAGE_KEYS = {
    * the built-in default.
    */
   orgDensity: "cc-density-org",
+  /**
+   * The member's Design choice (D143): `classic`, or absent for glass. Read
+   * only when the build carries the glass gate (`look.ts`).
+   */
+  look: "cc-look",
 } as const;
 
 // ⚠️ `cc-theme`, `cc-theme-org` and the `data-theme` attribute were removed
@@ -85,6 +90,14 @@ export const APPEARANCE_SCOPE_KEY = "cc-appearance-scope";
  * knows the email of the target and not its organization, so it reads this.
  */
 export const APPEARANCE_LAST_SCOPE_PREFIX = "cc-appearance-last:";
+
+/**
+ * The prefix of the unsent mark of one scope (PKG-20). The key is
+ * `cc-appearance-unsent:<email>|<orgId>`. The value is the time, in epoch ms,
+ * of the last member change that the server did not take yet.
+ * `syncAppearance.ts` writes it. A sign-out clears it (`scope.ts`).
+ */
+export const APPEARANCE_UNSENT_PREFIX = "cc-appearance-unsent:";
 
 /**
  * Set once the bare keys of a browser from before the scopes have moved into

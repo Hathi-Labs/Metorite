@@ -87,12 +87,21 @@ export function useSubtaskComplete() {
       changes = (await writeCompletion(io, task.id, statusId, include)).changes;
       await after();
     };
-    undoApi.record({ label: `completed ${task.title}`, undo: revert, redo });
+    const entry = { label: `completed ${task.title}`, undo: revert, redo };
+    undoApi.record(entry);
     toast.show({
       key: `projects:complete:${task.id}`,
       variant: "success",
       title: completeReceipt(fresh.subtasks_completed ?? 0),
-      action: { label: "Undo", onClick: () => void revert() },
+      action: {
+        label: "Undo",
+        // The same one-at-a-time gate as Ctrl+Z, so the entry moves to the
+        // redo stack and a double trigger runs once (UNDO-1 round 2).
+        onClick: () =>
+          void undoApi
+            .undoEntry(entry)
+            .catch((e: Error) => toast.show({ variant: "error", title: String(e.message) })),
+      },
     });
     await after();
     return fresh;

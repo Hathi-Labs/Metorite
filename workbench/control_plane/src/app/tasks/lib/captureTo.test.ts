@@ -364,7 +364,7 @@ describe("captureTo", () => {
     await vi.runAllTimersAsync();
     const s = useTaskStore.getState();
     expect(s.items.find((i) => i.id === "new-3")?.projectId).toBe("root-1");
-    expect(s.syncFailure?.message).toMatch(/Couldn't move it to Printer v3: You cannot see that project\. It stays in your Inbox\./);
+    expect(s.syncFailure?.message).toMatch(/Couldn't move it to Printer v3: You cannot see that project\. It stays in My task inbox\./);
   });
 
   it("an Area is a move inside my tree, sent at once", async () => {

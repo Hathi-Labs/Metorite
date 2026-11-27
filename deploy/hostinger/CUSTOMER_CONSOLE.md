@@ -69,15 +69,25 @@ box's `uv sync` updates the venv but does not restart this unit — run
 
 ## 4 — Wire the gateway to the Console
 
-Mint a deployment key with the gateway's capabilities, using the operator token:
+Mint a deployment key with the gateway's capabilities. `POST /keys` mints an
+organization key (`cc_live_`), not a deployment key, so use the CLI. The CLI
+needs the Console database URL, and only this box holds it:
 
 ```bash
-OP="$(grep '^CUSTOMER_CONSOLE_OPERATOR_TOKEN=' apps/services/customer_console/.env | cut -d= -f2-)"
-curl -fsS -X POST http://127.0.0.1:8090/keys \
-  -H "Authorization: Bearer $OP" -H 'Content-Type: application/json' \
-  -d '{"label":"gateway","capabilities":["resolve","provision","seat_admin"]}'
-# → returns a cc_depl_… key ONCE. Copy it.
+set -a
+. apps/services/customer_console/.env
+set +a
+cd apps/services/customer_console
+uv run python -m customer_console.deployment_keys mint \
+  --deployment-label <this box's label> \
+  --capabilities resolve,provision,seat_admin,member_admin,serve,billing_read,billing_purchase \
+  --label gateway --created-by <your email>
+# The CLI prints the token ONCE on stdout. Copy it.
 ```
+
+If the box is not registered yet, add `--base-url https://<host>`. To add a
+capability to a live key, run `deployment_keys grant --prefix cc_depl_<prefix>
+--capabilities <names>`. Give the prefix, never the token.
 
 Then add to the **gateway** env `/opt/acb/app/.env`:
 
@@ -110,6 +120,43 @@ account; email/OTP is CP-2d, unbuilt):
   any org directory).
 - **Google:** configure the Google OAuth app / consent screen and add the client
   id/secret the workbench expects.
+
+## 7 — The Aroh app (CP-APP)
+
+Aroh is a separate app on its own box. The operator gives an organization Aroh
+with N seats. Aroh's AI use comes from the credits of that organization. The
+contract is `customer_console.md` §6 "CP-APP".
+
+1. Apply migration `038_app_seats.sql`. Run step 2 again: the script applies
+   each new ladder file.
+2. Restart the Console and the Operator Console after the deploy.
+3. Make sure that `CUSTOMER_CONSOLE_ENCRYPTION_KEY` is set on the Console. It
+   encrypts the Aroh operator token.
+4. In the Operator Console, open **Aroh** (`/aroh`):
+   - Set **Aroh base URL**. The default is `https://aroh.dev.metorite.com`.
+   - Paste **Aroh operator token** one time, from the Aroh admin page. Press
+     **Save settings**.
+   - Type `aroh` and press **Connect Aroh**. The Console registers the Aroh box
+     with the label `aroh` and mints its key with `resolve,seat_admin,serve`.
+     It sends the key to `PUT <base URL>/hub/api/router-key`, and the page
+     shows the result.
+   - **Rotate key** mints a new key. It revokes the old key when Aroh has the
+     new one. **Disconnect** revokes the key, then calls
+     `DELETE <base URL>/hub/api/router-key`.
+5. To do it with no Operator Console, mint the key with the CLI. Then give it
+   to Aroh by hand:
+
+   ```bash
+   uv run python -m customer_console.deployment_keys mint \
+     --deployment-label aroh --base-url https://aroh.dev.metorite.com \
+     --app aroh --capabilities resolve,seat_admin,serve --label "aroh hub"
+   ```
+
+6. Open a customer, then the **Aroh** tab. Turn Aroh on, set the seats, type a
+   reason, and press **Save Aroh**.
+
+Each step that mints a key or turns Aroh on for a real organization is
+OWNER-GATE (`customer_console.md` §8 gates 4, 7 and 8).
 
 ## Manually onboarding a customer (bank transfer)
 

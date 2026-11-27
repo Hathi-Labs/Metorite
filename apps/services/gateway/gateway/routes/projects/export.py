@@ -91,6 +91,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     load_visible_project,
+    reader_day_start,
     resolve_visibility,
     root_project_id,
     router,
@@ -101,6 +102,7 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.custom_fields import load_definitions
 from gateway.routes.projects.filters import (
     SHOWN_FIELDS,
+    agent_filter_clauses,
     attach_assignees,
     attach_pr_chip,
     attach_relation_counts,
@@ -108,6 +110,7 @@ from gateway.routes.projects.filters import (
     normalise_view_config,
     split_csv,
 )
+from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.tasks.priority import task_level_label
 from sqlalchemy import text
 
@@ -309,6 +312,9 @@ async def export_tasks_csv(
     tags: str | None = None,
     tags_all: str | None = None,
     include_triage: bool = False,
+    #: WS-64 OP-11. `scope=mine` is the My tasks roll-up. The list takes it, so
+    #: the export takes it too, or an export of My tasks would hold every task.
+    scope: str | None = None,
     # WS-27bk §9.12.2. Carried because the docstring below promises this
     # endpoint takes `list_tasks`' parameters verbatim. A filter the board
     # applies and the export ignores hands somebody a file of the wrong rows,
@@ -316,6 +322,19 @@ async def export_tasks_csv(
     watching: bool = False,
     # D-PM-38. A view with subtasks hidden exports what it shows.
     top_level: bool = False,
+    # MCP-G19a. Parity with the list: an export of an audit set holds the
+    # same rows the audit read counted.
+    has_parent: bool | None = None,
+    is_epic: bool | None = None,
+    assigned: bool | None = None,
+    updated_before: str | None = None,
+    updated_after: str | None = None,
+    created_after: str | None = None,
+    title_prefix: str | None = None,
+    # Task #986. Parity with the list: the board's agent filters. "waiting" is
+    # the session's member (R11).
+    agent_focus: str | None = None,
+    agent_worked: bool = False,
     #: The view's field set, CSV, in the wire vocabulary `shown_fields` is
     #: stored under. Absent = the two unconditional columns only.
     shown_fields: str | None = None,
@@ -340,11 +359,20 @@ async def export_tasks_csv(
             detail=f"Unknown sort direction '{direction}'. One of: asc, desc.",
         )
 
+    agent_clauses, agent_params = agent_filter_clauses(
+        agent_focus, agent_worked, actor(user),
+    )
+
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         clauses: list[str] = [task_visibility_clause(vis)]
         params: dict[str, Any] = dict(vis.params)
         definitions: list[dict[str, Any]] = []
+        if check_scope(scope):
+            # ANDed beside the visibility clause: "mine" narrows, never widens.
+            mine_sql, mine_params = await mine_scope(db, vis)
+            clauses.append(mine_sql)
+            params.update(mine_params)
 
         if project_id:
             # Seeing the project is required to export it: an unreadable id is a
@@ -376,16 +404,22 @@ async def export_tasks_csv(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
             top_level=top_level,
+            has_parent=has_parent, is_epic=is_epic, assigned=assigned,
+            updated_before=updated_before, updated_after=updated_after,
+            created_after=created_after, title_prefix=title_prefix,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)
         if not include_triage:
             clauses.append(triage_exclusion_clause())
+        clauses.extend(agent_clauses)
+        params.update(agent_params)
 
         where = " WHERE " + " AND ".join(clauses)
         total = int((await db.execute(

@@ -27,6 +27,7 @@ from acb_skills import egress as eg
 from acb_skills import held_card as H
 
 from tests.unit import _held_card_fakes as F
+from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - OA-7b: owner and pack
 
 agents = F.load_email_agent("ea_held_settings")
 
@@ -108,10 +109,28 @@ async def test_a_closed_key_writes_behind_a_card(gw) -> None:
     assert gw.puts[0]["about"] == "old about"
 
 
+@pytest.mark.parametrize(("kw", "marked"), [
+    ({"auto_run": False}, True),
+    ({"auto_run": True, "cold_email_blocker": "label"}, True),
+    ({"cold_email_blocker": "label"}, False),
+    ({"draft_replies": True}, False),
+], ids=["off", "on-and-other", "other-only", "drafting-only"])
+async def test_the_held_path_marks_only_an_auto_run_change(gw, kw, marked) -> None:
+    """Task 2305 (§12.3.13.7): the held path sends the marker
+    ``auto_run_choice`` only when the model passed ``auto_run``. A change of
+    another key records no Auto-run choice."""
+    out = await agents.update_assistant_settings(account_id=F.BOX, **kw)
+    assert out.startswith("Assistant settings updated")
+    [body] = gw.puts
+    assert ("auto_run_choice" in body) is marked
+    if marked:
+        assert body["auto_run_choice"] is True and body["auto_run"] is kw["auto_run"]
+
+
 async def test_a_no_on_the_card_writes_nothing(gw) -> None:
     gw.approve = False
     out = await agents.update_assistant_settings(account_id=F.BOX, draft_replies=True)
-    assert out.startswith("Cancelled") and gw.puts == []
+    assert out.startswith("Declined:") and gw.puts == []  # HRD-7: the one table
 
 
 @pytest.mark.parametrize("key", ["about", "signature", "personal_instructions",
@@ -155,6 +174,12 @@ async def test_with_the_switch_off_the_tool_is_as_before(gw, monkeypatch) -> Non
     did before §21 (the held run does not even hold the tool then)."""
     F.flag_off(monkeypatch)
     assert eg.is_egress_tool(agents.update_assistant_settings) is True
+    if F.pack_mode():
+        # OA-7b: a held pack drops the tool with the switch off (H-374).
+        with pytest.raises(F.NotInPack):
+            await agents.update_assistant_settings(account_id=F.BOX, auto_run=False)
+        assert gw.cards == [] and gw.puts == []
+        return
     out = await agents.update_assistant_settings(account_id=F.BOX, auto_run=False)
     assert out.startswith("Assistant settings updated")
     assert gw.cards == []

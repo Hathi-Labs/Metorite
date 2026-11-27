@@ -322,8 +322,17 @@ export function shouldPoll(status: SyncStatus | null, watching: boolean): boolea
 
 type Row = Record<string, unknown>;
 
-export const LOCK_TIP = "Synced from Zoho. Change it in Zoho.";
-export const ONLY_IN_METORITE = "Only in Metorite";
+/** The line under a Mirror field that a member clicks (CRM-U15). */
+export const LOCK_TIP = "Edit this in Zoho.";
+export const ONLY_IN_METORITE = "Not in Zoho";
+
+/** The one sentence of the Mirror strip, drawn once under the app bar (CRM-U15). */
+export const MIRROR_LINE =
+  "This is a read-only copy of your Zoho. You can add notes, calls and tasks here. Create and edit records in Zoho.";
+/** Why New is greyed out in Mirror. */
+export const NEW_DISABLED_REASON = "Create records in Zoho";
+/** Why Convert is greyed out in Mirror. */
+export const CONVERT_DISABLED_REASON = "Convert leads in Zoho";
 
 /** The source a mirrored record came from, or `null` for a native record. */
 export function extSource(record: Row | null | undefined): string | null {
@@ -333,6 +342,44 @@ export function extSource(record: Row | null | undefined): string | null {
 
 export function isMirrored(record: Row | null | undefined): boolean {
   return extSource(record) !== null;
+}
+
+/**
+ * Whether a record is read-only here (CRM-Z10c). The lock follows the mode,
+ * not `ext_source`: only Mirror mode locks, and an unknown mode stays locked
+ * because the gateway is the boundary. A record that Zoho never owned is open
+ * in every mode, so the lock needs an `ext_source` too.
+ */
+export function isLocked(record: Row | null | undefined, mode: CrmMode): boolean {
+  if (mode === "native") return false;
+  return isMirrored(record);
+}
+
+/** "Imported from Zoho on 12 Oct 2026": Native mode, imported record, else null. */
+export function importedLine(record: Row | null | undefined, mode: CrmMode): string | null {
+  return zohoDateLine(record, mode, record?.created_at, "Imported from Zoho on");
+}
+
+/**
+ * "From Zoho, created there on 12 Oct 2026": a module record keeps only the
+ * date Zoho created it (`ext_created_at`), not the date of its import, so the
+ * line says what the date is.
+ */
+export function zohoCreatedLine(record: Row | null | undefined, mode: CrmMode): string | null {
+  return zohoDateLine(record, mode, record?.ext_created_at, "From Zoho, created there on");
+}
+
+function zohoDateLine(
+  record: Row | null | undefined,
+  mode: CrmMode,
+  value: unknown,
+  words: string,
+): string | null {
+  if (mode !== "native" || !isMirrored(record)) return null;
+  const at = typeof value === "string" ? new Date(value) : null;
+  if (!at || Number.isNaN(at.getTime())) return null;
+  const date = at.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  return `${words} ${date}`;
 }
 
 /**

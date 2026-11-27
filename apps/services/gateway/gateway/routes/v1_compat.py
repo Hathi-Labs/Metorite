@@ -8,6 +8,7 @@ Serves both /v1/chat/completions (OpenAI standard) and /chat/completions (some S
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from typing import Any
 
 from acb_auth import member_proof, require_llm_api_auth
 from acb_common import get_logger
+from acb_common.secret_shapes import REDACTION_BEARER, REDACTION_SHAPES
 from acb_common.settings import get_settings
 from acb_llm.client import _ensure_keys_loaded
 from fastapi import APIRouter, Depends, Request
@@ -283,6 +285,43 @@ def _eviction_units(messages: list[dict[str, Any]]) -> list[list[int]]:
     return units
 
 
+def _restore_cut_pastes(
+    before: list[dict[str, Any]], after: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """*after*, with each paste block that the char-trim cut made whole again
+    (HRD-14b, ``chat_failure_modes.md`` §4.7b, "The restore").
+
+    It acts ONLY when ``CHAT_PASTE_FRAME_ORGS`` holds ``*``
+    (``paste_frame.paste_frame_everywhere``). This door binds no tenant, and
+    it never reads an org from a header or the body (R5, R11). A list of org
+    ids restores nothing here. Production never runs this path: the Router
+    takes the call and nothing cuts. When the hygiene step of the trim
+    changed the number of messages, the pairs are unknown, and each changed
+    text is read alone. It never raises."""
+    try:
+        from acb_skills.paste_frame import paste_frame_everywhere
+        from acb_skills.untrusted import restore_cut_paste
+
+        if not paste_frame_everywhere():
+            return after
+        paired = len(before) == len(after)
+        out: list[dict[str, Any]] = []
+        for i, message in enumerate(after):
+            # A paste block lives only in a user turn (the seam frames no other).
+            user = isinstance(message, dict) and message.get("role") == "user"
+            content = message.get("content") if user else None
+            old = before[i].get("content") if paired and isinstance(before[i], dict) else None
+            if not isinstance(content, str) or (paired and content == old):
+                out.append(message)
+                continue
+            fixed = restore_cut_paste(old if isinstance(old, str) else None, content)
+            out.append(message if fixed == content else {**message, "content": fixed})
+        return out
+    except Exception:  # noqa: BLE001 — the guard must never break a working call
+        _log.warning("v1.paste_restore_failed", exc_info=True)
+        return after
+
+
 def _fit_context_window(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -350,11 +389,14 @@ def _fit_context_window(
 
         # 3 + 4. Shrink the output to the minimum, then char-trim what is
         # still too long.
+        _pre_cut = out
         out, _trimmed = fit_messages_to_context(
             out, model,
             max_output_tokens=_CONTEXT_FIT_MIN_OUTPUT,
             safety_margin=_CONTEXT_FIT_SAFETY_TOKENS,
         )
+        if _trimmed:
+            out = _restore_cut_pastes(_pre_cut, out)
         final_prompt = count_message_tokens(out, model) + tools_tokens
         _log.warning(
             "v1.context_fit_messages_evicted", model=model, window=window,
@@ -414,13 +456,21 @@ def _sanitize_messages_for_provider(
     1. Assistant messages with *neither* valid content nor valid tool_calls
        → dropped.
     2. Assistant messages with tool_calls but null/empty content → content
-       set to "" (all providers — null content violates the OpenAI spec).
+       set to None for an Anthropic-shaped provider, where litellm turns ""
+       into a visible placeholder (task 1787). Any other provider, and the
+       Router hop with no provider, keeps "".
     3. Tool messages with null/empty content → content set to "[tool result]".
     4. Malformed tool-call items (missing ``function`` / ``name``) → stripped.
     """
     if not messages:
         return messages
 
+    # None only for a provider we KNOW is Anthropic-shaped. An unknown or empty
+    # provider (the Router hop) keeps "": DeepSeek, Groq and Together refuse
+    # null beside tool_calls, and the Router re-applies the rule per step.
+    from acb_llm.message_hygiene import is_anthropic_shaped
+
+    null_ok = is_anthropic_shaped(provider)
     cleaned: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "")
@@ -477,7 +527,10 @@ def _sanitize_messages_for_provider(
             ):
                 if not isinstance(m, dict):
                     m = dict(m)
-                m["content"] = ""
+                # litellm turns "" into the sentence "[System: Empty message
+                # content sanitised ...]" for Anthropic, so only an
+                # Anthropic-shaped provider gets None.
+                m["content"] = None if null_ok else ""
 
         elif role == "tool":
             # Tool messages must have non-empty string content.
@@ -487,7 +540,11 @@ def _sanitize_messages_for_provider(
 
         cleaned.append(m)
 
-    return cleaned
+    # ONE shared pass (task 1787): no "" content, no empty text block, and no
+    # litellm placeholder line in a stored turn. See acb_llm.message_hygiene.
+    from acb_llm.message_hygiene import clean_model_messages
+
+    return clean_model_messages(cleaned, null_content_ok=null_ok)
 
 
 # ── Secret-stripping patterns for upstream error surfacing ─────────────────
@@ -496,10 +553,9 @@ def _sanitize_messages_for_provider(
 # Bearer token, or an ``sk-…`` key fragment. We surface the reason to the
 # operator (it's THEIR Metorite) but redact anything secret first.
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-[A-Za-z0-9_\-]{6,}"),          # OpenAI-style keys
-    re.compile(r"Bearer\s+[A-Za-z0-9._\-]+", re.I),  # bearer tokens
+    *REDACTION_SHAPES,                               # keys: list in acb_common.secret_shapes
+    REDACTION_BEARER,                                # bearer tokens
     re.compile(r"https?://\S+"),                     # endpoint URLs
-    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),      # GitHub tokens
 )
 
 
@@ -573,6 +629,24 @@ def _router_should_serve(body: dict[str, Any]) -> bool:
     return True
 
 
+def _run_ceiling(request: Request) -> str | None:
+    """``X-CC-Run-Ceiling`` EXACTLY as the caller sent it, or None with none.
+
+    AUTO-8b-2b (``proactive_agent.md`` §4.4). Both Router hops call it.
+
+    🔴 **The gateway does not parse or clamp it.** The Console is the one
+    place that does, and it answers 400 ``run_ceiling_invalid`` to a bad
+    value. So an empty value travels as empty. The ``or None`` of the other
+    headers would turn it into "no header", and the call would run at the
+    default ceiling.
+
+    ⚠️ It decides nothing here. ``/v1`` takes the LLM key, and the Console
+    sums the spend of the run for the org that ITS credential resolves. So a
+    forged value can only lower the ceiling of the forger's own run.
+    """
+    return request.headers.get("x-cc-run-ceiling")
+
+
 def _router_outbound(body: dict[str, Any]) -> dict[str, Any]:
     """The body both Router hops send. ONE builder, so they cannot drift.
 
@@ -630,15 +704,32 @@ async def _serve_via_router_stream(
         agent=request.headers.get("x-cc-agent") or None,
         module_slug=request.headers.get("x-cc-module") or None,
         run_id=request.headers.get("x-cc-run") or None,
+        # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+        run_ceiling=_run_ceiling(request),
     )
 
     first: bytes | None = None
     try:
         first = await frames.__anext__()
+        if _is_lone_done(first):
+            # AO-3: an old Console answers a stream that no step opened with
+            # 200 and a lone `[DONE]`. A new Console sends the same when a
+            # provider stream opens and yields no chunk. Read both as the
+            # outage that a 503 means, so the agent never reads an empty
+            # stream as a finished turn. The two units restart apart.
+            with contextlib.suppress(Exception):
+                await frames.aclose()
+            raise ConsoleRouterUnavailable("stream_never_opened")
     except StopAsyncIteration:
-        # The Router answered 200 and sent nothing. Rare, and not an error we
-        # can improve on: relay the empty stream.
-        first = None
+        # AO-3: the Router answered 200 and sent nothing. That is no answer,
+        # so it fails as an outage. Before AO-3 this relayed the empty
+        # stream, and the member saw an empty reply.
+        _router_failed()
+        _log.error(
+            "v1.router_unavailable", error="stream_empty", stream=True,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+        )
+        return _router_unavailable()
     except ConsoleRouterVerdict as verdict:
         # A VERDICT, relayed with its own status: 402 out of credits, 400 a
         # bare model id, 403 the breaker. Flattening these into one 502 would
@@ -654,14 +745,7 @@ async def _serve_via_router_stream(
             "v1.router_unavailable", error=str(exc), stream=True,
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     async def _relay() -> Any:
         if first is not None:
@@ -720,6 +804,8 @@ async def _serve_via_router(
             agent=request.headers.get("x-cc-agent") or None,
             module_slug=request.headers.get("x-cc-module") or None,
             run_id=request.headers.get("x-cc-run") or None,
+            # AUTO-8b-2b: raw, with no `or None`. `_run_ceiling` says why.
+            run_ceiling=_run_ceiling(request),
         )
     except ConsoleRouterUnavailable as exc:
         _router_failed()
@@ -727,14 +813,7 @@ async def _serve_via_router(
             "v1.router_unavailable", error=str(exc),
             elapsed_ms=round((time.monotonic() - started) * 1000),
         )
-        return JSONResponse(
-            status_code=502,
-            content={"error": {
-                "message": "the AI Router is unavailable",
-                "type": "ConsoleRouterUnavailable",
-                "code": 502,
-            }},
-        )
+        return _router_unavailable()
 
     # §6B.5 hazard 2: this adds one network hop to the interactive path. The
     # number is LOGGED rather than assumed. On a box where the Console is a
@@ -754,6 +833,49 @@ async def _serve_via_router(
     return payload
 
 
+def _is_lone_done(chunk: bytes | None) -> bool:
+    """True for a first chunk that is only the SSE end, ``data: [DONE]``.
+
+    A real stream's first chunk holds a frame of the answer. The Console
+    pulls that frame before it answers 200 (``main._open_stream_chain``).
+    """
+    if not chunk:
+        return False
+    return chunk.strip() == b"data: [DONE]"
+
+
+def _router_unavailable() -> JSONResponse:
+    """The 502 of the Router hops when no answer came. One body, three uses."""
+    return JSONResponse(
+        status_code=502,
+        content={"error": {
+            "message": "the AI Router is unavailable",
+            "type": "ConsoleRouterUnavailable",
+            "code": 502,
+        }},
+    )
+
+
+def _refuse_unrouted() -> JSONResponse | None:
+    """The 502 for a call that the Router did not take, outside a dev box.
+
+    Task 3554 (2449 S3). ``acb_llm.routed.refuse_direct_arm`` is the one
+    rule. On a dev box it allows the local arm, and this returns None.
+    Elsewhere it raises ``ConsoleRouterUnavailable``, and the door answers
+    as for a Router outage: the same 502 body, and :func:`_router_failed`.
+    """
+    from acb_auth.console_resolve import ConsoleRouterUnavailable
+    from acb_llm.routed import refuse_direct_arm
+
+    try:
+        refuse_direct_arm("v1_compat")
+    except ConsoleRouterUnavailable as exc:
+        _router_failed()
+        _log.error("v1.router_unavailable", error=str(exc), unrouted=True)
+        return _router_unavailable()
+    return None
+
+
 async def _handle_chat_completions(request: Request) -> StreamingResponse | dict[str, Any]:
     """OpenAI-compatible chat completions. Supports streaming and tools."""
     body = await request.json()
@@ -767,12 +889,19 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     # need to do. A routed call must touch none of it.
     if _router_should_serve(body):
         # One branch, not two: `_handle_chat_completions` already sits over
-        # ruff's complexity ceiling (C901, 20 > 15) and this must not add to
-        # it. The two hops are NOT interchangeable — the buffered one returns
-        # a dict and would silently de-stream a chat UI.
+        # ruff's complexity ceiling (C901, 21 > 15 with the refusal of task
+        # 3554) and this must not add to it. The two hops are NOT
+        # interchangeable — the buffered one returns a dict and would
+        # silently de-stream a chat UI.
         hop = (_serve_via_router_stream if body.get("stream", False)
                else _serve_via_router)
         return await hop(request, body)
+
+    # Task 3554: the local arm runs on a dev box only. Elsewhere the door
+    # answers the Router's 502, before any key loads (`_refuse_unrouted`).
+    refusal = _refuse_unrouted()
+    if refusal is not None:
+        return refusal
 
     # H4: the provider credential this call sends is process-global and this
     # route has no tenant to scope it with — `_auth` is `require_llm_api_auth`,
@@ -825,7 +954,11 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     provider = ensure_model_registered(model)
 
     # Sanitize messages for providers with strict validation (e.g. DeepSeek).
-    messages = _sanitize_messages_for_provider(messages, provider or model)
+    # litellm names the provider ("anthropic", "bedrock", "vertex_ai"), so pass
+    # the model too: a Claude model on Bedrock is Anthropic-shaped.
+    messages = _sanitize_messages_for_provider(
+        messages, f"{provider or ''} {model}",
+    )
 
     # Context-window guard (single-agent chat audit C1/CX1): fit prompt +
     # completion into the model's window BEFORE cache annotation, so an

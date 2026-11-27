@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 187
+-- Tables in this phase: 206
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -72,6 +72,21 @@ UPDATE apps SET organization_id = (SELECT id FROM organization WHERE slug = 'def
 UPDATE audit_event SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE calendar_entries SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE calendar_entry_attendees SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE calendar_task_links SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE chat_card_record SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE chat_join_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE chat_message SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -84,7 +99,16 @@ UPDATE chat_session SET organization_id = (SELECT id FROM organization WHERE slu
 UPDATE chat_session_agent SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE chat_session_member SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE chat_session_participant SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE chat_topic SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE connection_semantic_models SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE copilot_config SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -285,6 +309,9 @@ UPDATE maf_agent_session SET organization_id = (SELECT id FROM organization WHER
 UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE integration_attention SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE integration_connections SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
@@ -337,6 +364,12 @@ UPDATE pm_agent_run_activities SET organization_id = (SELECT id FROM organizatio
  WHERE organization_id IS NULL;
 
 UPDATE pm_agent_run_strands SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_sequences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_sequence_reservations SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE pm_agent_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -622,6 +655,138 @@ UPDATE kb_sync_runs SET organization_id = (SELECT id FROM organization WHERE slu
  WHERE organization_id IS NULL;
 
 UPDATE kb_node_access SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE jobs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE unattended_incidents SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE unattended_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE brief_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE brief_claims SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_skill_versions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_skill_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE package_install SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE package_contribution SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_objects SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_batch_items SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_batches SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_saved_views SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_object_counters SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_mcp_tool_approvals SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_object_fields SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_records SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_record_changes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_record_hot SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE studio_org_usage SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE goal_records SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_authorities SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_decisions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_agent_guidance SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_change_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE package_field_value SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_agent_policies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_tasks SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_committed SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_cycle_capacity SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE email_signature_images SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_updates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_templates SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_template_applies SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE crm_lead_pipeline_stages SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE email_signature_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_epic_contracts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_events SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE failure_org_days SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE focus_sessions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE tool_gaps SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE user_tool_runs SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE kb_documents SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

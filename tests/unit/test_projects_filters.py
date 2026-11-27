@@ -129,13 +129,13 @@ def test_overdue_excludes_finished_work():
     """Past due AND still open. Without the second half a done task stays red
     forever, and a board with permanent red is a board nobody reads."""
     clause = sql(overdue=True)
-    assert "t.due_at < now()" in clause
+    assert "t.due_at < :day_start" in clause
     assert "NOT EXISTS" in clause
     assert bound(overdue=True)["closed"] == list(CLOSED_CATEGORIES)
 
 
 def test_overdue_is_absent_unless_asked_for():
-    assert "due_at < now()" not in sql()
+    assert "due_at <" not in sql()
 
 
 # ── assignees ──────────────────────────────────────────────────────────────

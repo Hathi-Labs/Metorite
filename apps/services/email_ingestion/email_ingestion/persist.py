@@ -174,6 +174,12 @@ _ON_CONFLICT_NOTHING = (
     "\n   ON CONFLICT (account_id, provider_message_id) DO NOTHING"
 )
 
+# A row comes back only when the statement inserted or updated one. The sync
+# loop uses that to run its new-mail pipeline only on a real change: it counted
+# every listed message before, so the pipeline ran on each 5-minute cycle of
+# each mailbox (2026-10-28, about 92,000 sweep reads in nine days).
+_RETURNING = "\n   RETURNING id"
+
 _ATTACHMENT_INSERT = """INSERT INTO email_attachments
        (message_id, filename, mime_type, size_bytes, provider_attachment_id)
      VALUES (
@@ -278,8 +284,11 @@ def _message_params(account_id: str, msg: Any) -> dict[str, Any]:
 async def upsert_message(
     db: Any, account_id: str, msg: Any, *, on_conflict: str = "update",
     reclaim: bool = False,
-) -> None:
+) -> bool:
     """Insert or update one normalized provider message + its attachment metadata.
+
+    Returns True when it inserted or updated the message row, and False when
+    the row was already current (the guard skipped it) or ``DO NOTHING`` hit.
 
     The single ingest write path shared by manual sync, the background scheduler,
     the history backfill and the inbound handler.
@@ -333,7 +342,9 @@ async def upsert_message(
              "imid": imid})
 
     conflict = _ON_CONFLICT_UPDATE if on_conflict == "update" else _ON_CONFLICT_NOTHING
-    await db.execute(text(_INSERT + conflict), _message_params(account_id, msg))
+    res = await db.execute(text(_INSERT + conflict + _RETURNING),
+                           _message_params(account_id, msg))
+    written = _returned_a_row(res)
     for att in msg.attachments:
         await db.execute(
             text(_ATTACHMENT_INSERT),
@@ -346,3 +357,16 @@ async def upsert_message(
                 "provider_attachment_id": att.provider_attachment_id,
             },
         )
+    return written
+
+
+def _returned_a_row(res: Any) -> bool:
+    """True when the upsert returned its row: it inserted or updated one.
+
+    The guard of ``_ON_CONFLICT_UPDATE`` and ``DO NOTHING`` return no row
+    when they skip. A result with no rows API (a test fake) counts as
+    written, so a caller never misses a change because of it."""
+    try:
+        return res.first() is not None
+    except Exception:  # noqa: BLE001
+        return True

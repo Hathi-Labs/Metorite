@@ -54,10 +54,12 @@ export function readRemoveRequest(
 }
 
 // The Console's own ranks (`operator_roles._RANK`). An unknown role ranks
-// below viewer, never above, as it does there.
+// below viewer, never above, as it does there. `orgRename.ts` reads the same
+// helper, so the BFF holds one rank table.
 const RANK: Record<string, number> = { viewer: 0, editor: 1, admin: 2 };
-const rank = (role: string | null): number =>
+export const operatorRank = (role: string | null): number =>
   role !== null && Object.hasOwn(RANK, role) ? RANK[role] : -1;
+const rank = operatorRank;
 
 /** The rank each mode needs. `remove` matches the seat release (EDITOR).
  *  `purge` deletes a person's data, so it matches the org purge (ADMIN). */

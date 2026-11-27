@@ -1,0 +1,233 @@
+"""WS-64 — nothing is filed under an archived project (hermetic).
+
+A child created or moved under an archived parent kept ``archived_at`` NULL, so
+it showed in every list the archive hides. ``core.assert_not_archived`` is the
+one guard, and each write route calls it after its visibility load.
+SQL filters are fenced against Postgres in
+``test_projects_archived_filters_r8.py``.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+from gateway.routes.projects import core, me, tree
+from gateway.routes.projects import tasks as pm_tasks
+from gateway.routes.projects.core import assert_not_archived
+
+from tests.unit._projects_fakes import (
+    FakeProjectsDB,
+    bind_db,
+    projects_user,
+    silence_events,
+)
+
+USER = projects_user()
+
+ROUTES = Path(tree.__file__).parent
+
+
+def _src(name: str) -> str:
+    return (ROUTES / name).read_text(encoding="utf-8")
+
+
+def test_an_archived_node_is_refused_with_a_422_that_names_it():
+    node = SimpleNamespace(name="Old plan", archived_at="2026-10-01")
+    with pytest.raises(HTTPException) as err:
+        assert_not_archived(node, then="Create the task in")
+    assert err.value.status_code == 422
+    assert "Old plan is archived" in err.value.detail
+    assert "Create the task in an active project" in err.value.detail
+
+
+def test_an_active_node_passes():
+    assert_not_archived(SimpleNamespace(name="x", archived_at=None), then="Move")
+
+
+def test_a_row_with_no_archived_field_passes():
+    assert_not_archived(SimpleNamespace(name="x"), then="Move")
+
+
+@pytest.mark.parametrize("module,call", [
+    ("tree.py", 'assert_not_archived(parent_row, then="Create it in")'),
+    ("tree.py", 'assert_not_archived(destination, then="Move it into")'),
+    # ARC-2b: a task write into an archived project is a 409 with one sentence
+    # (`core.assert_project_open_for_writes`), no longer the 422 of a placement.
+    ("tasks.py", "assert_project_open_for_writes(target)"),
+    ("tasks.py", "assert_project_open_for_writes(dest)"),
+    ("move.py", "assert_project_open_for_writes(dest)"),
+    ("intake.py", "assert_project_open_for_writes(target)"),
+])
+def test_each_placing_route_calls_the_guard(module, call):
+    assert call in _src(module)
+
+
+@pytest.fixture
+def db(monkeypatch: pytest.MonkeyPatch) -> FakeProjectsDB:
+    fake = FakeProjectsDB()
+    mods = (core, tree, pm_tasks)
+    bind_db(monkeypatch, fake, mods)
+    silence_events(monkeypatch, mods)
+    return fake
+
+
+def _space_with_two_projects(db: FakeProjectsDB, *, first_archived: bool):
+    space = db.seed_project(name="Ops", personal_owner=None)
+    todo = db.seed_status(space.id, name="To do", category="todo", is_default=True)
+    first = db.seed_project(
+        name="Old plan", parent=space.id, personal_owner=None, owns_statuses=False,
+        archived_at="2026-10-01" if first_archived else None,
+    )
+    second = db.seed_project(
+        name="New plan", parent=space.id, personal_owner=None, owns_statuses=False,
+    )
+    return space, first, second, todo
+
+
+async def test_create_task_into_an_archived_project_is_a_409(db: FakeProjectsDB):
+    _space, old, _new, _todo = _space_with_two_projects(db, first_archived=True)
+    with pytest.raises(HTTPException) as err:
+        await pm_tasks.create_task(
+            pm_tasks.TaskIn(project_id=str(old.id), title="Late idea"), user=USER,
+        )
+    assert err.value.status_code == 409
+    assert err.value.detail == core.ARCHIVED_PROJECT_REFUSAL
+    assert db.rows("pm_tasks") == []
+
+
+async def test_a_task_cannot_move_out_of_an_archived_project(db: FakeProjectsDB):
+    """ARC-2b (spec 9b.6 rule 2) refuses a move OUT of a filed project too. The
+    member restores the project first. This test said the opposite before."""
+    space, old, new, todo = _space_with_two_projects(db, first_archived=True)
+    task = db.seed_task(old.id, todo.id, root=space.id, title="Rescue me")
+    with pytest.raises(HTTPException) as err:
+        await pm_tasks.move_task(
+            str(task.id), pm_tasks.MoveTask(project_id=str(new.id)), user=USER,
+        )
+    assert err.value.status_code == 409
+    assert err.value.detail == core.ARCHIVED_PROJECT_REFUSAL
+
+
+async def test_a_recurring_task_in_an_archived_project_spawns_no_successor(
+    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
+):
+    """``spawn_successor`` asks ``is_runnable_with_ancestors``, whose SQL tests
+    ``archived_at`` up the chain (R8 in ``test_projects_archived_filters_r8``).
+    Here the wiring: a False answer returns None before any read or write."""
+    from gateway.routes.projects import recurrence
+
+    async def archived(_db, _pid):
+        return False
+
+    monkeypatch.setattr(recurrence, "is_runnable_with_ancestors", archived)
+    task = SimpleNamespace(
+        id="t1", project_id="p1", recurrence_id="r1", recurrence_spawned_at=None,
+    )
+    assert await recurrence.spawn_successor(db, task, actor_id="a@x.io") is None
+    assert db.rows("pm_tasks") == []
+    assert "archived_at IS NULL" in core._ANCESTOR_RUNNABLE_SQL
+
+
+async def test_a_members_own_task_root_cannot_be_archived(db: FakeProjectsDB):
+    mine = db.seed_project(name="My tasks", personal_owner=USER.email)
+    with pytest.raises(HTTPException) as err:
+        await tree.archive_node(str(mine.id), user=USER)
+    assert err.value.status_code == 422
+    assert "own task root cannot be archived" in err.value.detail
+
+
+async def test_an_author_who_lost_sight_of_the_task_gets_404_on_a_comment_delete(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ARC-2b with R5. The author of a comment on a task in an archived project
+    who can no longer see the task gets 404, as the edit gives. A 409 would say
+    that the project is archived to a person who may not see it."""
+    from gateway.routes.projects import activities
+
+    comment = SimpleNamespace(id="c1", task_id="t1", body="Mine")
+    written: list[str] = []
+
+    class _Session:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def own_comment(db, activity_id, user):
+        return comment
+
+    async def visibility(db, user):
+        return SimpleNamespace()
+
+    async def hidden(db, vis, task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    async def filed(db, task_id):
+        raise HTTPException(status_code=409, detail=core.ARCHIVED_PROJECT_REFUSAL)
+
+    async def write(*_a, **_k):
+        written.append("write")
+
+    monkeypatch.setattr(activities, "_tenant_session", _Session)
+    monkeypatch.setattr(activities, "_load_own_comment", own_comment)
+    monkeypatch.setattr(activities, "resolve_visibility", visibility)
+    monkeypatch.setattr(activities, "load_visible_task", hidden)
+    monkeypatch.setattr(activities, "assert_task_id_project_open", filed)
+    monkeypatch.setattr(activities, "update_row", write)
+    monkeypatch.setattr(activities, "touch_task", write)
+    with pytest.raises(HTTPException) as err:
+        await activities.delete_comment("c1", user=USER)
+    assert err.value.status_code == 404
+    assert written == []
+
+
+def test_the_personal_capture_helper_guards_an_archived_target():
+    from gateway.routes.projects import personal
+
+    src = (ROUTES / "personal.py").read_text(encoding="utf-8")
+    at = src.index("async def create_personal_task(")
+    assert "assert_project_open_for_writes(target)" in src[at:at + 4500]
+    assert personal.assert_project_open_for_writes is core.assert_project_open_for_writes
+
+
+def test_the_portfolio_and_node_summaries_skip_archived_projects():
+    assert "archived_at IS NULL" in tree.NODE_DESCENDANTS_SQL
+    # Both arms of the recursive walk carry the filter.
+    assert tree.NODE_DESCENDANTS_SQL.count("archived_at IS NULL") == 2
+
+
+def test_the_archived_node_walk_drops_both_filters():
+    assert "archived_at IS NULL" not in tree.NODE_DESCENDANTS_ARCHIVED_SQL
+    assert "WITH RECURSIVE" in tree.NODE_DESCENDANTS_ARCHIVED_SQL
+    assert "NODE_DESCENDANTS_ARCHIVED_SQL" in _src("tree.py")
+
+
+def test_the_reports_open_predicate_walks_for_an_archived_project():
+    """Every Reports read (overdue by project, workload, pulse, capacity,
+    waiting, rebalance) takes its WHERE from ``load_open_where`` or the same
+    clause. That clause tests ``archived_at`` up the chain, so one rule keeps
+    an archived project out of all of them."""
+    from gateway.routes.projects.core import (
+        reportable_project_clause,
+        reportable_with_ancestors_clause,
+    )
+
+    assert "archived_at IS NULL" in reportable_project_clause("chain")
+    assert "archived_at" in reportable_with_ancestors_clause("t")
+    # load_open_where, the stuck route and the outlook each carry it.
+    assert _src("analytics.py").count("reportable_with_ancestors_clause('t')") >= 3
+
+
+def test_my_work_sql_filters_the_project():
+    from gateway.routes.projects.personal import MY_TASKS_FROM
+
+    assert "proj.archived_at IS NULL" in MY_TASKS_FROM
+
+
+def test_assigned_to_me_filters_the_project():
+    assert "pr.archived_at IS NOT NULL" in Path(me.__file__).read_text(
+        encoding="utf-8",
+    )

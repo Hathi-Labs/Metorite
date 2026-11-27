@@ -63,7 +63,6 @@ Work top down. Each step feeds the next.
   See `docs/style_ste.md` §7.
 - **Do not weaken a rule to pass the linter.** Add the domain word to
   `technicalAllowed` in `.claude/hooks/ste-words.json` and say so in the diff.
-- **Do not rewrite `skills/upstream/`.** A sync overwrites it every week.
 
 ---
 

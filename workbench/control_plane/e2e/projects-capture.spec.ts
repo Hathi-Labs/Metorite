@@ -6,13 +6,14 @@ import { expect, test, type Page } from "@playwright/test";
  *
  * ## The rules
  *
- * 1. With the flag on, at 390 px, the bar reads Menu, My work, Capture,
- *    Search, Ask. Menu opens the global drawer. My work opens the Projects
- *    sheet.
+ * 1. With the flag on, at 390 px, the bar reads Menu, My tasks, Capture,
+ *    Search, Ask. Menu opens the global drawer. My tasks opens the My tasks
+ *    space (WS-64 OP-11), and a second tap opens the Projects sheet.
  * 2. Capture opens the quick capture, and a capture is written to the Inbox
  *    (`POST my/tasks`), with no My work view open first.
  * 3. `/tasks?do=capture` lands on the Inbox with capture open, and `do` leaves
- *    the address. `/tasks` lands on Today, and `/tasks?item=<id>` on the task.
+ *    the address. `/tasks` lands on My tasks with the Today chip, and
+ *    `/tasks?item=<id>` on the task.
  *
  * ## How to run it
  *
@@ -66,7 +67,7 @@ async function mock(page: Page): Promise<string[]> {
     if (/(^|\/)my\/tasks\/c1$/.test(path)) {
       return route.fulfill({ json: row("c1", { title: written[0] ?? "" }) });
     }
-    if (path.includes("auth/me")) return route.fulfill({ json: { email: "you@example.com", name: "You" } });
+    if (path.includes("auth/me")) return route.fulfill({ json: { email: "you@example.com", name: "You", features: ["tasks", "projects"] } });
     if (path.includes("my/today")) {
       return route.fulfill({ json: { today: TODAY, timezone: "UTC", stored: true, valid: true } });
     }
@@ -79,9 +80,11 @@ async function mock(page: Page): Promise<string[]> {
   return written;
 }
 
-const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to inbox" });
+const CAPTURE_INPUT = (page: Page) => page.getByRole("textbox", { name: "Capture to my task inbox" });
 
-test("at 390 the bar reads Menu, My work, Capture, Search, Ask", async ({ page }) => {
+// MOB-10 (task 2003): the bar names the whole company, so "Projects" took the
+// place of "My tasks". My tasks is a row of the Projects sheet.
+test("at 390 the bar reads Menu, Projects, Capture, Search, Ask", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
@@ -89,7 +92,7 @@ test("at 390 the bar reads Menu, My work, Capture, Search, Ask", async ({ page }
   const bar = page.locator("nav").filter({ has: page.locator("[data-ask-tab]") }).last();
   await expect(bar.locator("[data-ask-tab]")).toBeVisible({ timeout: 60_000 });
   const labels = (await bar.locator("button").allInnerTexts()).map((t) => t.trim()).filter(Boolean);
-  expect(labels).toEqual(["Menu", "My work", "Capture", "Search", "Ask"]);
+  expect(labels).toEqual(["Menu", "Projects", "Capture", "Search", "Ask"]);
 });
 
 test("Capture writes to the Inbox with no My work view open", async ({ page }) => {
@@ -106,7 +109,7 @@ test("Capture writes to the Inbox with no My work view open", async ({ page }) =
   await expect.poll(() => written, { timeout: 15_000 }).toEqual(["Buy printer toner"]);
 });
 
-test("Menu opens the global drawer, and My work opens the Projects sheet", async ({ page }) => {
+test("Menu opens the global drawer, and Projects opens the Projects sheet at once", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
@@ -120,14 +123,18 @@ test("Menu opens the global drawer, and My work opens the Projects sheet", async
   await page.waitForLoadState("networkidle");
   await bar.getByRole("button", { name: "Menu" }).dispatchEvent("click");
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toBeVisible({ timeout: 30_000 });
-  // The tab "My work" is on the bar. The sheet entries (Today, Inbox) are not.
-  await expect(page.getByRole("button", { name: /^Today/ })).toHaveCount(0);
+  // The Menu is not the Projects sheet: the sheet row "My task inbox" is not there.
+  await expect(page.getByRole("button", { name: /^My task inbox/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Close", exact: true }).first().click();
   await expect(page.getByRole("button", { name: "Search or ask anything" })).toHaveCount(0);
-  // My work opens the Projects sheet, with the "My work" heading on top.
-  await bar.getByRole("button", { name: "My work" }).click();
-  await expect(page.getByRole("button", { name: /^Today/ }).first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("My work", { exact: true })).toHaveCount(2); // the tab and the sheet heading
+  // MOB-10: one tap on Projects opens the Projects sheet, with "My work" on top.
+  await bar.getByRole("button", { name: "Projects", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^My task inbox/ }).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText("My work", { exact: true }).first()).toBeVisible();
+  // Its "My tasks" row opens the My tasks space on its List, with the chip row (OP-11).
+  await page.getByRole("button", { name: /^My tasks/ }).first().click();
+  await expect(page.getByTestId("my-tasks-space")).toHaveAttribute("data-mode", "list", { timeout: 30_000 });
+  await expect(page.locator("[data-my-tasks-chips]")).toBeVisible();
 });
 
 test("/tasks?do=capture lands on the Inbox with capture open", async ({ page }) => {
@@ -143,13 +150,15 @@ test("/tasks?do=capture lands on the Inbox with capture open", async ({ page }) 
   await expect.poll(() => written, { timeout: 15_000 }).toEqual(["Call the lab"]);
 });
 
-test("/tasks lands on Today, and /tasks?item=<id> on the task", async ({ page }) => {
+test("/tasks lands on My tasks with the Today chip, and /tasks?item=<id> on the task", async ({ page }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1280, height: 800 });
   await mock(page);
   await page.goto("/tasks");
   await expect(page).toHaveURL(/\/projects/, { timeout: 60_000 });
-  await expect(page.getByTestId("my-work-host")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId("my-tasks-space")).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(/app=my-tasks&chip=today/);
+  await expect(page.locator('[data-chip="today"]')).toHaveAttribute("aria-pressed", "true");
   await page.goto("/tasks?item=abc-1");
   await expect(page).toHaveURL(/\/projects\?(.*&)?task=abc-1/, { timeout: 60_000 });
 });

@@ -65,6 +65,7 @@ from agent_edge import bearer, cursor, gateway_client, mcp, tools
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.unit.test_h3_rls_promotion_rehearsal import _clone_promoted_database  # noqa: E402
 from tests.unit._tenant_ladder import _LADDER_DIR, apply_ladder, tenant_engine_scope
 
 _ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -117,9 +118,18 @@ HTTPX_DEFAULT_HEADERS = {"host", "accept", "accept-encoding", "connection", "use
 NEVER_SENT = {"include_triage", "include_archived", "archived_only", "watching"}
 
 #: The seven tools of EA-3, in the order of ``tools/list`` (§15.1), then the
-#: two reads of EA-15 (§12.4).
-ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_tasks", "get_task",
-             "get_task_timeline", "search_tasks", "get_task_context", "my_work"]
+#: two reads of EA-15 (§12.4), then ``get_attachment`` of IMG-3.
+ALL_TOOLS = ["whoami", "list_projects", "get_project", "list_members", "list_tags",
+             "list_tasks", "board_stats",
+             "get_plan", "get_task",
+             "get_task_timeline", "search_tasks", "get_task_context", "my_work",
+             "get_attachment",
+             # WS-39 LP-1a: the updates of a project, newest first.
+             "list_project_updates",
+             # WS-39 TPL-1a: the templates of the organization.
+             "list_templates",
+             # WS-MCP SW-113: the agent map of SW-102.
+             "get_agent_map"]
 
 
 def _uuid(n: int) -> str:
@@ -603,11 +613,23 @@ class TestTheOrderOfTheChecks:
         assert armed.store.calls == 0
 
     async def test_a_body_over_one_mib_is_413_before_any_parse(self, armed):
+        """CIV-14b (§9.6 "The body size"): a large body runs the token check
+        first, from the headers only. With a token, a body that is not one
+        upload call is 413, and no gateway request goes out."""
         raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
-        r = await _post(None, token=None, raw=raw)
+        r = await _post(None, raw=raw)
         assert r.status_code == 413
         assert r.json()["id"] is None
+        assert not armed.gateway.requests
+
+    async def test_a_body_over_one_mib_with_no_token_is_401_before_any_read(self, armed):
+        """CIV-14b: a client with no token never makes the edge read or hold
+        a large body. So the answer is the 401 of check 6, and no 413."""
+        raw = b"[" + b" " * mcp.MAX_BODY_BYTES + b"]"
+        r = await _post(None, token=None, raw=raw)
+        _assert_error_body(r, 401, -32600)
         assert armed.store.calls == 0
+        assert mcp._LARGE_BODIES == [0]
 
     async def test_a_body_of_exactly_one_mib_is_read(self, armed):
         msg = json.dumps(_rpc("ping")).encode()
@@ -707,16 +729,31 @@ class TestTheChallenges:
     @pytest.mark.parametrize("scope,scopes,names", [
         ("projects:read", ("projects:read",), ALL_TOOLS),
         ("projects:write", ("projects:read",), ALL_TOOLS),
-        ("context:read", ("context:read",), ["whoami"]),
+        ("context:read", ("context:read",), ["whoami", "get_company_context"]),
         ("projects:read", ("context:read",), ["whoami"]),
         ("", ("projects:read",), ["whoami"]),
     ])
-    async def test_tools_list_varies_with_the_scope(self, armed, scope, scopes, names):
-        """D7, §9.6 tools rule 1. ``whoami`` needs only a live token (§8)."""
+    async def test_tools_list_varies_with_the_scope(self, armed, monkeypatch, scope, scopes,
+                                                    names):
+        """D7, §9.6 tools rule 1. ``whoami`` needs only a live token (§8).
+        EA-5: ``get_company_context`` needs ``context:read``. The org is on
+        ``agent_resources_orgs``, so the scope alone decides here."""
+        monkeypatch.setattr(get_settings(), "agent_resources_orgs", "*")
         armed.store.tokens[GOOD] = _lookup(scope=scope, scopes=scopes)
         r = await _post(_rpc("tools/list"))
         assert r.status_code == 200, r.text
         assert [t["name"] for t in r.json()["result"]["tools"]] == names
+
+    async def test_the_company_context_tool_is_dark_off_agent_resources_orgs(self, armed):
+        """EA-5. With the flag empty, a ``context:read`` token lists ``whoami``
+        only, and a call answers the off text with no gateway request."""
+        armed.store.tokens[GOOD] = _lookup(scope="context:read", scopes=("context:read",))
+        r = await _post(_rpc("tools/list"))
+        assert [t["name"] for t in r.json()["result"]["tools"]] == ["whoami"]
+        result = await _tool("get_company_context")
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == tools.TEXT_CONTEXT_OFF
+        assert not armed.gateway.requests
 
     async def test_an_outage_in_the_lookup_is_503_never_401(self, armed):
         """D18, EA3-10. ``ConnectionRefusedError`` is what asyncpg raises."""
@@ -777,8 +814,11 @@ class TestTheProtocolRules:
             result = r.json()["result"]
             assert result["protocolVersion"] == asked
             # EA-6e (EA3-39): the prompts capability, whatever the flags.
+            # SW-34a: the resources capability too, whatever the flags.
             assert result["capabilities"] == {"tools": {"listChanged": False},
-                                              "prompts": {"listChanged": False}}
+                                              "prompts": {"listChanged": False},
+                                              "resources": {"subscribe": False,
+                                                            "listChanged": False}}
             assert result["serverInfo"]["name"] == "metorite"
 
     @pytest.mark.parametrize("asked", ["2026-07-28", "2025-03-26", "garbage", None])
@@ -821,7 +861,8 @@ class TestTheProtocolRules:
         assert r.headers["www-authenticate"] == CHALLENGE_401
 
     # EA-6e serves prompts/list and prompts/get, so they leave this list.
-    @pytest.mark.parametrize("method", ["resources/list", "resources/templates/list",
+    # SW-34a serves resources/list, resources/templates/list and resources/read.
+    @pytest.mark.parametrize("method", ["resources/subscribe", "resources/unsubscribe",
                                         "completion/complete", "logging/setLevel",
                                         "prompts/unknown", "sampling/createMessage"])
     async def test_any_other_method_gets_minus_32601(self, armed, method):
@@ -994,9 +1035,21 @@ class TestTheToolResults:
                                    "tag": "bug", "assignee": "a@x.test", "text": "login",
                                    "limit": 7})
         assert armed.gateway.requests[0].path == "/projects/tasks"
+        # WS-64 OP-11 (audit P1-3): a project_id reads its subtree by default.
         assert armed.gateway.requests[0].pairs == {
-            "project_id": _uuid(1), "status_id": _uuid(9000), "tags": "bug",
-            "assignee": "a@x.test", "q": "login", "page": "1", "page_size": "7"}
+            "project_id": _uuid(1), "include_subtree": "true", "status_id": _uuid(9000),
+            "tags": "bug", "assignee": "a@x.test", "q": "login", "page": "1",
+            "page_size": "7"}
+
+    async def test_include_subtree_defaults_true_and_false_reads_the_node(self, armed):
+        """WS-64 OP-11, audit P1-3. list_projects counts a space's subtree, so
+        list_tasks with that space id reads the subtree too. False is the node."""
+        await _tool("list_tasks", {"project_id": _uuid(1)})
+        await _tool("list_tasks", {"project_id": _uuid(1), "include_subtree": False})
+        await _tool("list_tasks", {"text": "login"})
+        sent = [r.pairs.get("include_subtree") for r in armed.gateway.requests
+                if r.path == "/projects/tasks"]
+        assert sent == ["true", "false", None]
 
     async def test_the_edge_never_sends_the_hidden_parameters(self, armed):
         """D11. Over every request of both tools."""
@@ -1365,24 +1418,26 @@ def _structured(result: dict[str, Any]) -> dict[str, Any]:
 
 
 class TestWhoami:
-    """D9 for ``whoami``: exactly six keys, each from its source (§9.1)."""
+    """D9 for ``whoami``: exactly seven keys, each from its source (§9.1).
+    EA-17a added ``left_out_projects`` (D-EA-12)."""
 
-    async def test_whoami_returns_exactly_its_six_keys(self, armed):
+    async def test_whoami_returns_exactly_its_seven_keys(self, armed):
         armed.store.tokens[GOOD] = TokenLookup(
             connection_id=CONN, organization_id=ORG, kind="access",
             client_id="https://client.example/meta.json", resource=RESOURCE,
             scope="projects:write offline_access",
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             scopes=("projects:write", "context:read"), pinned_projects=(P_TEAM, P_SALES),
-            include_personal=True, client_origin=ORIGIN)
+            include_personal=True, left_out_projects=(P_SALES,), client_origin=ORIGIN)
         body = _structured(await _tool("whoami"))
         assert tuple(body) == tools.WHOAMI_KEYS
         assert set(body) == {"email", "organization_id", "scopes", "pinned_projects",
-                             "include_personal", "server_time"}
+                             "left_out_projects", "include_personal", "server_time"}
         assert body["email"] == "agent-member@x.test"
         assert body["organization_id"] == ORG, "from the token row, not /auth/me"
         assert body["scopes"] == ["projects:read", "projects:write"]
         assert body["pinned_projects"] == [P_TEAM, P_SALES]
+        assert body["left_out_projects"] == [P_SALES], "from the token row"
         assert body["include_personal"] is True
         stamp = datetime.fromisoformat(body["server_time"].replace("Z", "+00:00"))
         assert stamp.utcoffset() == timedelta(0)
@@ -1435,6 +1490,19 @@ class TestListProjects:
         flat = json.dumps(rows)
         for dropped in ("clickup", "lead", "about ", "icon", "archived_root_id"):
             assert dropped not in flat
+
+    async def test_each_row_carries_kind_and_level_from_the_tree(self, armed):
+        """WS-64 OP-11, audit P1-4. The edge copies the gateway's level
+        (``core.node_level``) and derives none. A value that is not one of
+        the four levels, or no value, reads as null."""
+        armed.gateway.tree[0]["level"] = "space"
+        armed.gateway.tree[0]["children"][0]["level"] = "project"
+        armed.gateway.tree[1]["level"] = "bogus"
+        rows = {p["id"]: p for p in _structured(await _tool("list_projects"))["projects"]}
+        assert (rows[P_TEAM]["kind"], rows[P_TEAM]["level"]) == ("project", "space")
+        assert rows[P_CHILD]["level"] == "project"
+        assert rows[P_SALES]["level"] is None
+        assert rows[P_UNDER_OLD]["level"] is None
 
     async def test_parent_id_keeps_the_direct_children(self, armed):
         body = _structured(await _tool("list_projects", {"parent_id": P_TEAM}))
@@ -1513,6 +1581,12 @@ class TestGetProject:
         for dropped in ("clickup", "lead", "task_count", "icon", "color", "created_by"):
             assert dropped not in flat, dropped
 
+    async def test_the_project_carries_its_level(self, armed):
+        """WS-64 OP-11, audit P1-4. ``GET /projects/nodes/{id}`` sends ``level``."""
+        armed.gateway.nodes[P_TEAM]["level"] = "space"
+        body = _structured(await _tool("get_project", {"project_id": P_TEAM}))
+        assert (body["project"]["kind"], body["project"]["level"]) == ("project", "space")
+
     async def test_every_free_text_value_is_untrusted(self, armed):
         body = _structured(await _tool("get_project", {"project_id": P_TEAM}))
         assert body["project"]["name"] == {"untrusted_text": "Team"}
@@ -1554,7 +1628,12 @@ class TestGetTask:
 
     async def test_the_task_has_exactly_the_pinned_keys(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
-        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs"}
+        # WS-39 SP-5a: `cycle` is always there, and null while the flag is off.
+        # SP-8a: `epic_contract`, null for a task that is not an epic.
+        assert set(body) == {"task", "subtasks", "links", "refs", "agent_runs", "cycle",
+                             "epic_contract"}
+        assert body["cycle"] is None
+        assert body["epic_contract"] is None
         assert tuple(body["task"]) == tools.GET_TASK_KEYS
         assert [tuple(s) for s in body["subtasks"]] == [tools.SUBTASK_KEYS]
         assert [tuple(link) for link in body["links"]] == [tools.LINK_KEYS]
@@ -1568,7 +1647,7 @@ class TestGetTask:
         assert task["assignees"] == ["a@x.test"]
         flat = json.dumps(body)
         for dropped in ("clickup", "lead", "time_spent_mins", "view_position", "merged_",
-                        "source", "link_id", "progress", "blocked_by"):
+                        "source", "progress", "blocked_by"):
             assert dropped not in flat, dropped
 
     async def test_f1_the_task_has_a_url_and_a_short_id_for_the_pull_request(self, armed):
@@ -1606,9 +1685,11 @@ class TestGetTask:
         assert [(c.kind, c.value) for c in body] == [("uuid", form["example_task"])]
 
     async def test_a_link_id_is_the_other_task(self, armed):
+        """``id`` is the OTHER task. SW-16a adds ``link_id``, the link row, which
+        ``remove_task_link`` takes."""
         link = _structured(await _tool("get_task", {"task_id": T_ONE}))["links"][0]
         assert link["id"] == T_OTHER
-        assert _uuid(8888) not in json.dumps(link)
+        assert link["link_id"] == _uuid(8888)
 
     async def test_free_text_and_custom_fields_follow_the_rules(self, armed):
         body = _structured(await _tool("get_task", {"task_id": T_ONE}))
@@ -2107,18 +2188,9 @@ def world():
         pytest.skip("TENANT_LADDER_DATABASE_URL unset")
     admin_url = make_url(_URL)
     dedicated = f"{admin_url.database}_mcpprotocol"
-    _drop_database(admin_url, dedicated)
-    with create_engine(admin_url, isolation_level="AUTOCOMMIT").connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dedicated}"'))
+    _clone_promoted_database(admin_url, dedicated)
     ded_admin_url = admin_url.set(database=dedicated)
     eng = create_engine(ded_admin_url, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
-    for phase in ("01_add_columns.sql", "02_backfill.sql",
-                  "03_constraints.sql", "04_policies.sql"):
-        with eng.begin() as conn, open(os.path.join(_GENERATED, phase),
-                                       encoding="utf-8") as fh:
-            _exec_sql_file(conn, fh.read())
     with create_engine(ded_admin_url, isolation_level="AUTOCOMMIT").connect() as c:
         c.execute(text(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE "
@@ -2542,6 +2614,7 @@ class TestTheFiveToolsOverMcp:
         assert body["organization_id"] == live.org
         assert body["scopes"] == ["projects:read"]
         assert body["pinned_projects"] == [live.p[p] for p in pins]
+        assert body["left_out_projects"] == []
         assert body["include_personal"] is personal
 
     @pytest.mark.parametrize("name", ["open", "pinned", "no_personal"])

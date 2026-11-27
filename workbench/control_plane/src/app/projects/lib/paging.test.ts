@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { EMPTY_FILTERS } from "./grouping";
 import {
   TASK_PAGE_SIZE,
+  agentFocusParam,
   appendTasks,
   boardReadParams,
   hasMoreTasks,
@@ -20,6 +21,9 @@ const BASE = {
   sort: null,
   viewId: "v1",
   subtasks: null,
+  waitingOnMe: false,
+  agentFocus: null,
+  agentWork: false,
 } as const;
 
 // ── D-PM-38 (S3): Hidden pages on the server, not on the client ─────────────
@@ -224,5 +228,56 @@ describe("the client page size agrees with the server's cap", () => {
     // `page_size: 1` for the archive count is fine; a page-sized literal is not.
     expect(page).not.toMatch(/page_size:\s*\d{2,}/);
     expect(boardReadParams(BASE).page_size).toBe(TASK_PAGE_SIZE);
+  });
+});
+
+
+// ── Task #986: the three agent filters are WHERE clauses on the server ─────
+
+describe("boardReadParams and the agent filters", () => {
+  const FOCI = ["queued", "working", "waiting", "review", "merged"] as const;
+
+  it("sends agent_focus for every focus of the strip", () => {
+    for (const agentFocus of FOCI) {
+      expect(boardReadParams({ ...BASE, agentFocus }).agent_focus).toBe(agentFocus);
+    }
+  });
+
+  it("sends 'waiting' for the Waiting on me toggle, and it wins", () => {
+    expect(boardReadParams({ ...BASE, waitingOnMe: true }).agent_focus).toBe("waiting");
+    expect(agentFocusParam(true, "working")).toBe("waiting");
+    expect(agentFocusParam(false, "review")).toBe("review");
+    expect(agentFocusParam(false, null)).toBeNull();
+  });
+
+  it("sends agent_worked for Agent work", () => {
+    expect(boardReadParams({ ...BASE, agentWork: true }).agent_worked).toBe(true);
+  });
+
+  it("sends neither while all three are off, so the read key is unchanged", () => {
+    const bag = boardReadParams(BASE);
+    expect(bag).not.toHaveProperty("agent_focus");
+    expect(bag).not.toHaveProperty("agent_worked");
+  });
+
+  it("a change of focus is a different read key", () => {
+    const keys = new Set(FOCI.map((agentFocus) => JSON.stringify(boardReadParams({ ...BASE, agentFocus }))));
+    expect(keys.size).toBe(FOCI.length);
+  });
+
+  it("the foci match the server's list, read from its own source", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../../../../../../apps/services/gateway/gateway/routes/projects/filters.py", import.meta.url)),
+      "utf8",
+    );
+    const m = /AGENT_FOCI: tuple\[str, \.\.\.\] = \(([^)]*)\)/.exec(src);
+    expect(m).not.toBeNull();
+    const server = (m as RegExpExecArray)[1].match(/"(\w+)"/g)?.map((x) => x.replace(/"/g, ""));
+    expect(server).toEqual([...FOCI]);
+  });
+
+  it("the page builds the bag from the three states", () => {
+    const page = readFileSync(fileURLToPath(new URL("../page.tsx", import.meta.url)), "utf8");
+    expect(page).toMatch(/boardReadParams\(\{[\s\S]{0,600}waitingOnMe,[\s\S]{0,40}agentFocus,[\s\S]{0,40}agentWork/);
   });
 });

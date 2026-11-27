@@ -140,3 +140,20 @@ describe("raw buttons that look like controls", () => {
     expect(looksLikeAControl("")).toBe(false);
   });
 });
+
+/**
+ * One switch (GL-2 review, D143). `components/ui/Switch.tsx` is the only
+ * `role="switch"` in the product. A hand-rolled switch passes every other
+ * fence and stays the classic shape under glass, which is how three copies
+ * grew before GL-2 moved them onto the primitive. Budget: zero.
+ */
+describe("one switch", () => {
+  it('no file but components/ui/Switch.tsx draws role="switch"', () => {
+    const src = path.join(__dirname, "..");
+    const own = path.join(src, "components", "ui", "Switch.tsx");
+    const offenders = tsxFiles(src).filter(
+      (f) => f !== own && !f.endsWith(".test.tsx") && /role=["']switch["']/.test(fs.readFileSync(f, "utf8")),
+    );
+    expect(offenders.map((f) => path.relative(src, f))).toEqual([]);
+  });
+});

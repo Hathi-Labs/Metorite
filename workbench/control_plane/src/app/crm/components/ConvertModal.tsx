@@ -75,7 +75,7 @@ export default function ConvertModal({
       open
       onClose={onClose}
       title="Convert lead"
-      description={`${lead.lead_name} becomes a deal, with a contact and a company behind it.`}
+      description="Convert this lead into a deal, a contact and a company."
       icon="ArrowRightLeft"
       size="lg"
       initialFocus={() => firstField(bodyRef.current)}
@@ -120,8 +120,7 @@ export default function ConvertModal({
           </h3>
           {!lead.organization_name?.trim() ? (
             <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-              This lead names no company, so no company is created —
-              minting one named after a person is how a CRM fills with noise.
+              No company on the lead, so none is created.
             </p>
           ) : (
             <>
@@ -219,8 +218,7 @@ export default function ConvertModal({
             />
           </div>
           <p className="text-[10px] text-muted-foreground">
-            The deal lands in the default stage and carries this lead as its
-            provenance, so its timeline keeps everything said before now.
+            The deal starts in the default stage. It keeps the notes and calls of this lead.
           </p>
         </section>
       </div>

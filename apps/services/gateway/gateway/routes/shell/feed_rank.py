@@ -15,7 +15,15 @@ The order is a score. Code owns time, and ``decide`` owns judgment::
   server matrix (``acb_common.priority``), as a level from 0 to 4, times 6.
   A signal with no task level weighs 0. A card with ``promise_due`` on it
   adds 10 (MD-3d, §5.9 item 8).
-* ``affinity`` is 0 until MD-9 builds it.
+* ``affinity`` is the member's own term for the main kind of the card (MD-9,
+  LOOP-4a, ``proactive_loop.md`` §7.2 P1): ``trunc((acted - not_useful) /
+  shown * 20)``, held between -20 and +20, and 0 for a kind shown fewer than
+  5 times in 30 days. :func:`affinity` is the formula. The counts come from
+  the one count read (``feed_decide._habits``), so only the state join adds
+  the term (``state.join``), beside fatigue, and only for an org in
+  ``MY_DAY_LEARN_ORGS``. With the org off, the term is 0. The join holds the
+  term of a needs card at 0 or more (P3), because :func:`order` cuts each app
+  by score before the group.
 * ``fatigue`` is -8 for each visit of the day with no act, to -24 at most
   (MD-2a). Only the state knows the visits, so the state join subtracts it
   (``state.join``), after the fold and before the order.
@@ -37,7 +45,7 @@ MD-6a, and rule 4 (the order holds while the member reads) is the client's
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -57,16 +65,32 @@ GROUPS: tuple[str, ...] = ("now", "needs_you", "ready", "fyi", "later", "handled
 #: change here changes the order, and the seed must change with it.
 BASE: dict[str, int] = {
     # The needs kinds, in the needs feed's own order (KIND_ORDER).
-    "overdue": 60,
-    "approval": 56,
-    "due_today": 52,
-    "notification": 48,
-    "needs_reply": 44,
+    # AO-2: the AI vendor alert of the operator org's admins. It gives no feed
+    # signal, so no card holds it today. The row keeps the needs order of
+    # KIND_ORDER, where it sits before `overdue`.
+    "provider_alert": 66,
+    "overdue": 63,
+    "approval": 59,
+    "due_today": 55,
+    "notification": 51,
+    "needs_reply": 47,
+    # WS-66 RM-2b (calendar_events_reminders.md §5.6 RM-2b item 4): the
+    # reminder kinds are needs kinds. They sit below the five others and
+    # above `agent_asks` (43), so the five bases rose by 3 to make room.
+    "reminder_due": 46,
+    "reminder_check": 45,
+    "reminder_unconfirmed": 44,
     # The Calendar kinds of MD-1 (§5.1) and the MD-3 kinds (§5.9 item 2),
     # each below every needs kind. MD-3c adds the rows of all eleven MD-3
     # kinds at once, so MD-3d to MD-3f add only their providers. This table
     # is also the vocabulary of kinds that the prefs accept (``prefs.py``).
     "agent_asks": 43,
+    # WS-ALN ALN-2b: a question that waits on the member by name. It ties
+    # with `agent_asks`, which also waits on an answer.
+    "decision": 43,
+    # WS-55 EA-18c: the agent questions that wait on the member (the "For me"
+    # list of Projects). It ties with `decision`, which also waits on an answer.
+    "agent_questions": 43,
     "promise_due": 42,
     "crm_followup_due": 41,
     "block_overlap": 40,
@@ -112,6 +136,13 @@ LATE_MAX = 20
 #: The fatigue terms (§7): -8 for each visit with no act, to -24 at most.
 FATIGUE_PER_VISIT = 8
 FATIGUE_MAX = 24
+
+#: The affinity terms (§7, ``proactive_loop.md`` §7.2 P1): the share of acts
+#: less "Not useful", times 20, from -20 to +20. A kind shown fewer than 5
+#: times gets 0, because the prior is 0 until LOOP-7 (§7.4 there).
+AFFINITY_SCALE = 20
+AFFINITY_MAX = 20
+AFFINITY_MIN_SHOWN = 5
 
 #: The weight of one level (§7: "the level from 0 to 4, times 6").
 WEIGHT_STEP = 6
@@ -168,9 +199,30 @@ def weight(facts: dict[str, Any], kinds: Iterable[str] = ()) -> int:
     return level + (PROMISE_WEIGHT if "promise_due" in kinds else 0)
 
 
-def affinity(_facts: dict[str, Any]) -> int:
-    """0 until MD-9 learns from the member's acts."""
-    return 0
+def _count(counts: Mapping[str, Any], name: str) -> int:
+    value = counts.get(name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def affinity(counts: Mapping[str, Any] | None) -> int:
+    """The member's affinity for one kind, from its counts over 30 days
+    (``{"shown", "acted", "not_useful"}``, the shape of
+    ``feed_decide._habits``). P1 of ``proactive_loop.md`` §7.2:
+
+    ``trunc((acted - not_useful) / shown * 20)``, held between -20 and +20.
+    A kind shown fewer than 5 times gives 0, and so do no counts. Integer
+    arithmetic, so 5 shown, 0 acted and 3 "Not useful" give exactly -12.
+    """
+    if not counts:
+        return 0
+    shown = _count(counts, "shown")
+    if shown < AFFINITY_MIN_SHOWN:
+        return 0
+    net = (_count(counts, "acted") - _count(counts, "not_useful")) * AFFINITY_SCALE
+    value = abs(net) // shown  # the truncation toward 0
+    return max(-AFFINITY_MAX, min(AFFINITY_MAX, -value if net < 0 else value))
 
 
 def fatigue(visits: int) -> int:
@@ -180,11 +232,11 @@ def fatigue(visits: int) -> int:
 
 def score(kind: str, facts: dict[str, Any], urgent_at: Any, now: datetime,
           kinds: Iterable[str] = ()) -> int:
-    """The score with no state: base + urgency + weight + affinity. The
-    state join subtracts ``fatigue`` (``state.join``). ``kinds`` are every
-    kind on the card, for the promise term of ``weight``."""
-    return (base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts, kinds)
-            + affinity(facts))
+    """The score with no state: base + urgency + weight. The state join adds
+    the member's ``affinity`` and subtracts ``fatigue`` (``state.join``),
+    because only the state knows the member. ``kinds`` are every kind on the
+    card, for the promise term of ``weight``."""
+    return base(kind) + urgency(kind, facts, urgent_at, now) + weight(facts, kinds)
 
 
 def _is_day(value: Any, today: date) -> bool:
@@ -201,9 +253,12 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
     """The old-path group of a kind (§4.3, and §5.9 item 3 for MD-3).
     ``today`` is the member's own date. An unknown kind raises, as ``base``
     does."""
-    if kind in ("overdue", "approval", "needs_reply", "no_plan_yet",
+    if kind in ("overdue", "due_today", "approval", "needs_reply", "no_plan_yet",
                 "waiting_quiet", "source_sync_failed", "absent_on_due", "no_answer",
-                "deal_close_passed", "agent_asks"):
+                "deal_close_passed", "agent_asks", "decision", "agent_questions",
+                "provider_alert"):
+        # A due date is a day, so no hour moves a due task into Now (RX-5).
+        # AO-2: an AI vendor alert waits on an admin of the operator org.
         return "needs_you"
     if kind == "unblocked":
         return "ready"
@@ -215,13 +270,13 @@ def group(kind: str, facts: dict[str, Any], now: datetime, today: date) -> str:
         return "needs_you" if facts.get("money") is True else "fyi"
     if kind in ("promise_due", "crm_followup_due"):
         return "now" if _due_within_soon(facts, now) else "needs_you"
-    if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        return "now" if due is not None and due - now <= SOON else "needs_you"
     if kind == "notification":
         return "needs_you" if facts.get("notification") in ASKING_NOTIFICATIONS else "fyi"
-    if kind == "block_soon":
+    if kind in ("block_soon", "reminder_due"):
         return "now"
+    if kind in ("reminder_check", "reminder_unconfirmed"):
+        # WS-66 RM-2: each one asks the member for an answer.
+        return "needs_you"
     if kind == "block_overlap":
         return "now" if _is_day(facts.get("overlap_day"), today) else "needs_you"
     if kind == "day_overbooked":

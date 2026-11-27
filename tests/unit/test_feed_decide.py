@@ -531,6 +531,18 @@ class TestRuleTwo:
     def test_no_needs_kind_is_ever_hidden(self, kind):
         assert feed_decide.apply_triage(_card("x:1", kind=kind), "drop") == "later"
 
+    @pytest.mark.parametrize("kind", ["reminder_due", "reminder_check", "reminder_unconfirmed"])
+    def test_drop_on_a_reminder_card_leaves_it_in_later(self, kind):
+        """WS-66 RM-2b, §5.6 decision 7. A reminder kind is a needs kind, so a
+        judged `drop` moves its card to Later. It never hides the card and
+        never resolves the reminder: this function only names a group.
+        Mutation: take the kind out of `needs.KIND_ORDER` and this fails."""
+        card = _card("reminders:r-1", kind=kind, app="calendar", group="now")
+        assert feed_decide.is_needs_card(card)
+        assert feed_decide.apply_triage(card, "drop") == "later"
+        answers = {"reminders:r-1": {feed_decide.TRIAGE: {"v": "drop"}}}
+        assert feed_decide.judged_rank([card], answers) == {"reminders:r-1": 1}
+
     def test_drop_on_another_card_hides_it(self):
         card = _card("calendar:2026-10-14", kind="no_plan_yet", app="calendar")
         assert feed_decide.apply_triage(card, "drop") is None
@@ -548,6 +560,38 @@ class TestRuleTwo:
                    "calendar:d": {feed_decide.TRIAGE: {"v": "drop"}}}
         ranks = feed_decide.judged_rank(cards, answers)
         assert ranks == {"tasks:1": 1}
+
+
+class TestTheCountReadNamesTheBoundOrg:
+    """LOOP-4a (``proactive_loop.md`` §7.2, R5). ``_habits`` is the one read of
+    the card counts, and the learned affinity of the feed reads it. Each
+    statement on ``my_day_card_state`` names the bound tenant beside RLS
+    (``state.py``), so an owner role that skips RLS still counts one org.
+    ``test_feed_decide_r8.py`` runs it as such a role.
+
+    Mutation: take ``organization_id = <bound org>`` out of ``_HABITS_SQL``,
+    or bind the org from a parameter, and this fails."""
+
+    def test_the_sql_holds_the_bound_org_predicate(self):
+        from gateway.routes.shell import state
+
+        assert f"WHERE organization_id = {state._BOUND_ORG} " in feed_decide._HABITS_SQL
+        assert "current_setting('app.tenant_id', true)" in feed_decide._HABITS_SQL
+
+    async def test_the_read_binds_the_member_and_nothing_else(self):
+        seen: list[tuple[str, dict]] = []
+
+        class _Db:
+            async def execute(self, sql, params=None):
+                seen.append((str(sql), dict(params or {})))
+                return SimpleNamespace(all=lambda: [SimpleNamespace(
+                    kind="stale_next", shown=5, acted=0, not_useful=3)])
+
+        got = await feed_decide._habits(_Db(), ME)
+        assert got == {"stale_next": {"shown": 5, "acted": 0, "not_useful": 3}}
+        assert feed_rank.affinity(got["stale_next"]) == -12
+        # The member is the one bind. The org is the session's setting, never a value.
+        assert [params for _sql, params in seen] == [{"m": ME}]
 
 
 # ── Done-when 4: the caps (§9.1 rule 8) ─────────────────────────────────────
@@ -889,6 +933,7 @@ class TestTheHelpers:
         assert "account_id" not in line and "message_id" not in line
 
     async def test_ask_takes_ids_and_module_slug(self, tenant, monkeypatch):
+        _modes(monkeypatch)  # DEC-1: `ask` reads the mode (shadow asks too)
         fake = _fake(monkeypatch)
         q = acb_llm.ChoiceQuestion(instructions="x", criteria={"a": "a", "b": "b"})
         with structlog.testing.capture_logs() as caps:

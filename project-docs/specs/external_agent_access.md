@@ -1,6 +1,77 @@
 # External agent access — Metorite as an MCP server
 
+> **Dated 2026-11-11, Aroh (D143 and D204.11).** Aroh is not a separate app. Task 2611 removes the Aroh seat kind from the Console. Read the Aroh text in this spec (line 5, D-EA-11, EA-16) as history.
+
 **Status: DECIDED (D97, 2026-10-10). Updated 2026-10-16 (EA-6e and EA-6g are MERGED and live). Updated 2026-10-26 (MCP-G5: `list_tasks` takes `parent_task_id` and `include_descendants`). EA-1 and EA-2a are BUILT, dark, and merged in #884 (commit `898cfbc89`).**
+
+**D-EA-11 is BUILT 2026-10-30 and not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark.** A first-party client signs a member in again with no consent click, and a new approval of it replaces the old connection (§10.7). The list `agent_first_party_client_ids` is empty by default, so nothing changes until an operator names a client. The fence is `tests/unit/test_agent_first_party.py`.
+
+**EA-5 is BUILT 2026-11-25 and not merged (branch `sw34d-company-context-code`, Metorite task 1051). It ships dark behind `agent_resources_orgs`.** The tool `get_company_context` and the resource `metorite://company/context` return the organization name and slug only (D-EA-6). The allowlist gets no new pair. The fences are `tests/unit/test_mcp_edge_resources.py` and `tests/unit/test_mcp_edge_company_context_r8.py`.
+
+**D-EA-5 is OPENED 2026-11-06 (owner, Metorite task 1819, choice A).** A member makes a per-box token in Integrations, AI agents, for a headless agent box. It has no refresh token, so sessions that refresh at once cannot revoke it.
+
+§10.9 holds the security review, and the client proof passed. Two Opus readers reviewed the first draft, and §10.9 holds the fixes. The slices are EA-19a to EA-19e. They ship dark behind `agent_box_tokens_enabled`.
+
+**MCP-G17f is BUILT 2026-11-26 and not merged (branch `devx-refresh-grace`, Metorite task 4032). It ships dark.** Owner directive 2026-11-26: a grace window on rule 5, the setting `agent_refresh_reuse_grace_s`, default 0. At 0 nothing changes. The fence is `tests/unit/test_agent_connection_tokens.py` (`TestTheGraceWindow`, R8).
+
+**EA-19a is MERGED (`334cdfa4c`, migration 348, Metorite task 1838).** **EA-19b is BUILT 2026-11-06 and not merged (branch `mt-109299c5-ea19b-box-token-store`, Metorite task 1839). It ships dark.** **EA-19c is BUILT 2026-11-07 and not merged (branch `mt-2112998d-ea19c-box-token-routes`, stacked on EA-19b, Metorite task 1840). It ships dark.** EA-19d is not built.
+
+**EA-19e is BUILT 2026-11-07 and not merged (branch `mt-19d828d7-ea19e-box-connect`, based on EA-19c, Metorite task 1842). It ships dark. Fix round 1 is BUILT 2026-11-07.** ⚠️ On a box whose settings enable the `metorite` entry of `.mcp.json`, the box token does nothing until an owner closes the project route (§15, EA-19e). That is an OWNER step.
+
+**EA-19g is BUILT 2026-11-26 and not merged (branch `devx-box-headers-helper`, Metorite task 1819).** The user entry gets its header from a `headersHelper`, so a lane does not load `box.env` (§10.9, "The header helper").
+
+**EA-19h is BUILT 2026-11-26 and not merged (branch `devx-org-switch`, Metorite task 4034).** An org switch is the one act that ends the sign-in of a machine (§10.9, "The org switch").
+
+**D-EA-12 and D-EA-13 are DECIDED 2026-11-04 (owner, Metorite task 1585).** A connection gains a left-out list, so the member can untick a subproject of a ticked parent. The member can change an agent's grant after the connect, up to the scopes that the agent asked for (§10.8). **EA-17a is MERGED 2026-11-05 (PR 1707, `9c18983a1`), dark (migration 344, Metorite task 1586).** **EA-17b is MERGED 2026-11-06 (`0dbb760d6`, Metorite task 1587).** The EA-17c audit (2026-11-06) split EA-17c into three slices. They are EA-17c-1, the route (task 1813), EA-17c-2, the view (task 1814), and EA-17c-3, the token mint (task 1815). **EA-17c-1 is MERGED 2026-11-06 (`21955b350`, Metorite task 1813). It ships dark behind `agent_change_access_orgs`.** **EA-17c-3 is BUILT 2026-11-11 and not merged (branch `mt-326c1ec5-ea17c3-mint-requested`, Metorite task 1815).** `approve` mints the token at the requested scopes, and every reader of the token scope takes the intersection with the grant (§10.8). EA-17c-2 is BUILT 2026-11-11 and not merged (branch `mt-b2464a98-ea17c2-change-access`, Metorite task 1814).
+
+**D-EA-14 and slices EA-18a to EA-18c (section 12.8, "Questions for me") are DECIDED 2026-11-06 (owner, in Metorite, task 1788).** One list of the agent questions that wait on a person, in Projects, My Day and Approvals. The task creator and a reader with the role owner, admin or manager may answer. **EA-18a is BUILT 2026-11-06 and not merged (branch `mt-181a56e0-questions-for-me`, Metorite task 1806). It ships dark:** `AGENT_QUESTIONS_ORGS` is empty by default, so each rule stays as it was until the owner flips the flag. **EA-18b is BUILT 2026-11-11 and not merged (branch `mt-553aa348-questions-section`, Metorite task 1807). It ships dark behind the same flag. EA-18c is BUILT 2026-11-11 and not merged (branch `mt-537a693d-question-doors`, Metorite task 1808). It ships dark behind the same flag, and the My Day card also needs `MY_DAY_PROVIDERS` to list `agent_questions`.**
+
+**EA-18d is BUILT 2026-11-11 and not merged (branch `mt-2b6a7bb7-chat-questions-tool`, Metorite task 1832).** The chat reads the list through `agent_questions`. It answers through `answer_agent_question`.
+
+**MCP-G1 is BUILT 2026-10-29 and not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355).** Four tools join the edge: `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (§9.2, EA3-53). Each tool calls the route that the Projects app uses, so the app decides who sees a new node and who may move a task. No tool writes a grant.
+
+**MCP-G1, the rules in short.** A connection with pins makes no space. A move commits only with the `preview_id` of a preview of the same selection. An agent never widens who sees a task: a move that shows a task to a new member gets 403 `audience_widens` (fix round 1). The four pairs join `MCP_WRITE_ROUTES`, and `PATCH /projects/nodes/{project_id}` takes `If-Match`, with no migration. The fence is `tests/unit/test_mcp_edge_projects.py`, and the mutations P1 to P5 are each red.
+
+**MCP-P1b-1 is BUILT 2026-11-04 and MERGED 2026-11-05 (branch `mcp-p1b1-store-mt-9ff56567`, commit `1605cb966`, #1695, Metorite task 1056). It ships dark.** An app request waits for its member on an agent run that names an app and no task (migration 342). The member approves or declines it on `AppRequestCard`, in the list "Waiting for you" of Integrations, AI agents. Fix round 1 of the review is BUILT 2026-11-04. The dark switch is `APP_REQUESTS_ORGS`, empty by default, because `AGENT_ACCESS_ENABLED` is on in production.
+
+**MCP-P1b-2 is BUILT 2026-11-11 and not merged (branch `mcp-p1b2-spend`, Metorite task 1722). It ships dark behind `APP_REQUESTS_ORGS`.** Branch 0 spends an approved request in place of the blanket refusal of AD-18. The edge asks, waits and sends the stored call once. A call with no approval still gets 403 `approval_required`. §19.13 holds the three rows of MCP-P1b and the build notes of MCP-P1b-2.
+
+**MCP-G21 is BUILT 2026-11-08 and not merged (branch `mt-dd15d215-g21-members-tags`, Metorite task 2216, Linear parity P8).** An agent can now ask who it may assign and which tags exist. The new read tools `list_members` and `list_tags` take the scope `projects:read`. `list_members` reads the new pair `GET /projects/assignable-members` of `MCP_ROUTES`, with no migration. The route asks `notifications.project_grant_holders`, the predicate that `set_assignees` applies to a signed agent (`tasks._refuse_agent_assignees`). So the list holds exactly the members whom `set_assignees` accepts for a task of the project. It holds the address and the directory name only. `list_tags` adds no route. It reads `GET /projects/nodes/{project_id}/tags`, or the tree and then the tags of each top project, so a pin narrows it. Fence: `tests/unit/test_mcp_edge_members_tags.py`. The chat tool for the member list is a later slice (task 2216).
+
+**SP-12 is BUILT 2026-11-08 and not merged (branch `mt-4d645fbc-sp12-get-plan`, Metorite task 2295).** The read tool `get_plan(root_task_id)` returns the order of work under a goal, epic or project: the ready set, the waves, the critical path with slack, one finish date, the next slice, the held slices, and the count of hidden slices. It reads the new pair `GET /projects/plan/analysis` of `MCP_ROUTES`, with no migration. The same read is the chat tool `get_plan`. Fence: `tests/unit/test_plan_analysis_r8.py`.
+
+**MCP-G19a is BUILT 2026-11-08 and not merged (branch `mt-c58312f2-g19a-board-reads`, Metorite task 1957, first slice).** An agent that audits a large board gets two things. `list_tasks` gains nine filters and `compact`, and the new read tool `board_stats` counts the tasks. The filters are `status_category`, `updated_before`, `updated_after`, `created_after`, `due_before`, `has_parent`, `is_epic`, `assigned` and `title_prefix`. `compact` returns small rows and a page of up to 500. `board_stats` groups by one or two of `project`, `status_category`, `is_epic`, `assignee`, `holder` and `updated_age`. It reads the new pair `GET /projects/tasks/stats` of `MCP_ROUTES`, with no migration. The list and the counts use one scope function (`tasks._task_scope`), so a count equals the rows of `list_tasks`. Fence: `tests/unit/test_board_stats_r8.py`. `export_tasks` and `find_duplicates` are later slices.
+
+**MCP-G19c is BUILT 2026-11-08 and not merged (branch `mcp-g19c`, Metorite task 2315).** A compact row of `list_tasks` also holds `type` (id and name), `tags` and `created_at`. `list_tasks` filters by `type_id`, `type_name` and `task_number`. These combine with `tag`, `status_category` and the other filters. `get_project` with `compact` true returns the project, its statuses and its types, and no fields or tags. It needs no migration and no new pair of `MCP_ROUTES`, and its fence is `tests/unit/test_mcp_g19c_r8.py`.
+
+**MCP-G19c, a task by its number:** `list_tasks` takes `task_number`, and `get_task` does not change, for this reason. A number is unique only in one root project (`UNIQUE (root_project_id, task_number)`). So one number can name a task in each root project, and only a list can give more than one. The list reads through the scope of the member. It leaves out a task that the member cannot see, and a hidden `project_id` is a 404. `get_task` keeps its one required `task_id`, so no caller of it changes.
+
+**MCP-G19c, the other choices.** Each new filter is a clause of `build_task_filters`, so `_task_scope` joins it to the visibility clause. `type_name` is not case sensitive, because each project has its own types. The gateway stamps `type_name` on a compact page in one read (`attach_type_name`), and a full row does not change. `compact` is an edge input of `get_project` (`NAMED_EDGE_INPUTS`). `search_tasks` does not change, because its ranked read selects no type, tags or creation time.
+**MCP-G20 is BUILT and MERGED (commit `9df381b08`, #1982, Metorite task 2212). It is live since 2026-11-08.** The write side of a large board clean-up. The new write tool `update_tasks` changes up to 50 tasks in one call, and each item is one call of `update_task` (§9.2).
+
+**The replan of 2026-11-09 (Metorite tasks 2518 and 2546) adds MCP-G22 to MCP-G29. It is SPECIFIED and not built.** A large plan stalls on the write cap. A bulk call saves round trips and not quota. Only about 45 of the 193 chat-manifest routes of Projects reach the MCP.
+
+§9.2 holds the new write limit and the plan document. §19.16 holds the Projects rule. §15 holds the slices. The order is task 2427, MCP-G28, then MCP-G26, MCP-G27, MCP-G29 and MCP-G3.
+
+**MCP-G24 is BUILT 2026-11-11 and not merged (branch `mcp-g24-door`, Metorite task 2520, D208). It ships dark.** `acb_common/app_manifests/projects.py` gives each of the 215 Projects routes a class and a door. 11 routes get a door op, for cycles and saved views. The table is not in `app_manifests.APPS`, so the door serves none of them yet. The fence is `tests/unit/test_projects_door_coverage.py`, and §19.16 names the later slices.
+
+The write cap is now two settings, `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S`, with the defaults 120 and 600. So nothing changes until the owner sets them. A move refusal says why and what to do next. An agent's subtask with no `status_id` starts in the default status. No migration, and no new pair. The fence is `tests/unit/test_mcp_edge_bulk_updates.py`.
+
+**MCP-G9 is BUILT 2026-11-08 and not merged (branch `mt-45010748-g9-comment-edit`, Metorite task 843).** An agent changes or deletes a comment that its own client wrote, with `update_comment` and `delete_comment` (§9.2). Its own client means that the member wrote the comment and that `meta.via` equals the stamp of the connection (`AgentScope.actor_via`). Any other comment gets 403, and a comment outside the reach of the connection gets 404. Fix round 1 adds two refusals with the same 403: a comment that a person edited, and a comment of an agent run (§9.2, rules 1 and 2). Fix rounds 2 and 3 add rule 3, the last word: the same 403 refuses a comment after which someone else wrote a comment on the task. Each change writes one `system` row with the actor and the stamp, and with no text of the comment. A person's delete does not change. A person's edit now also sets `meta.person_edited`. The two pairs join `MCP_WRITE_ROUTES`, with no migration. They go live at the merge under `agent_access_writes_enabled`. Fence: `tests/unit/test_mcp_edge_comment_edit_r8.py`.
+
+**WS-39 LP-1a is BUILT 2026-11-08 and not merged (branch `mt-a36e2698-lp1a-project-updates`, Metorite task 988, first slice of LP-1).** Two tools reach the updates of a project: `list_project_updates` (a read) and `post_project_update` (a write with an `idempotency_key`). An update holds a health that the member picks (`on_track`, `at_risk` or `off_track`) and a short text. `MCP_ROUTES` gains the GET pair, and `MCP_WRITE_ROUTES` gains the POST pair. Both answer 404 while `PROJECTS_UPDATES_ORGS` does not hold the organization, and the tools then say that the feature is off. Design: `project_management_app.md` §14.2a. Fence: `tests/unit/test_pm_project_updates_r8.py`.
+
+**MCP-G12, MCP-G14 and MCP-G10 are BUILT 2026-11-08 and not merged (branch `mt-5be99476-g12-write-clarity`, Metorite tasks 1023, 1208 and 844).** `update_task` takes null for `due_at`, `start_date` and `estimate_mins`, and null clears the field. `create_task` with the Epic type and a parent answers "An Epic cannot have a parent. Leave out type_id or parent_task_id." A refusal of the write cap holds `retry_after` in seconds, and the reply sends `Retry-After`. A busy answer does the same when the gateway names a wait. Every write tool carries one line that names the limit of 120 changes in 10 minutes. The batch write for comments (G10 item 3) is not built. The fence is `tests/unit/test_mcp_edge_write_clarity.py`.
+
+**WS-39 TPL-1a is BUILT 2026-11-08 and not merged (branch `mt-8d741fc0-tpl1a-templates`, Metorite task 18). It ships dark behind `PROJECTS_TEMPLATES_ORGS`.** One read joins the edge, `list_templates` (§9.1). The save and the apply of a template stay off the edge, because each is class C in the chat manifest. An MCP write of a template comes later, with a preview and a confirm step, as `move_tasks` has (EA3-53, §14). `project_management_app.md` §14.8 holds the design.
+
+**MCP-G18 is BUILT 2026-11-06 and merged (Metorite task 1727, first slice).** The read of the image itself is IMG-3 (task 1999, `projects_ai_chat.md` §30.4), by the owner request of 2026-11-07. `get_task_context` returns the metadata of the files on a task. Names are `untrusted_text`. It has no link, no bytes and no upload (§15, row MCP-G18).
+
+**2026-11-12:** the owner lifted the wait for images. CIV-14b (§12.9, task 1727) adds an image upload over the MCP and images on a question card. It is BUILT, not merged, dark behind `MCP_IMAGE_UPLOAD_ORGS`.
+
+**MCP-G15 is BUILT 2026-11-04 and not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567).** An agent records a decision that its member made outside Metorite, such as in the agent's own chat. The new tool is `record_outside_decision` (§12.1, "A decision made outside Metorite"). The run moves from `awaiting` to `in_progress`, and the task leaves each list that waits on the member. It goes live at the merge under `agent_runs_enabled`, which is ON. No migration.
+
+**MCP-P0 is SPECIFIED (2026-10-29, Metorite task #864), and nothing of it is built.** §19 is the design of D136: one manifest, two doors. Four fixed tools serve every app, and each write waits for the member's approval. Knowledge comes first, then CRM and Email. On 2026-10-29 the owner moved MCP-P0 to MCP-P2 forward (the D136 amendment).
 
 **MCP-G2 is BUILT 2026-10-25 and not merged (branch `g2-agent-fields-mt-61131dc3`, task #356).** `create_task` and `update_task` take the planning fields of the app: `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` also takes `assignees`, and the new tool `set_assignees` replaces the assignee set (§9.2, EA3-52). `update_task` takes `parent_task_id`, which moves a task inside its project. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and each route takes `If-Match`, with no migration. The fence is `tests/unit/test_mcp_edge_assignees.py`, and each rule is red under a named mutation.
 
@@ -8,7 +79,9 @@
 
 **MCP-G7 is BUILT and not merged (2026-10-25, branch `g7-link-version-mt-baa82d19`, task #367).** A comment, a link or an attachment on a task no longer stales the `version` that an agent holds. A field change still gives 412. `delete_task` keeps strict equality, so any change after the read gives 409. `project_management_app.md` §9.10.3 holds the decision, and migration 304 adds `pm_tasks.fields_at`.
 
-**EA-6h is BUILT and not merged (2026-10-23, branch `ea6h-delete-mt-709eaf47`).** An agent may delete a task after the member says yes in the agent (EA3-51). The member's switch is off by default, and migration 295 adds it. The member picks each subtask to delete or keep (D-OP-10, the owner, 2026-10-23). H1 to H14 pass on R8, and each is red under a named mutation in `test_mcp_edge_delete.py`.
+**EA-6i is BUILT 2026-10-30 and not merged (branch `mt-b0247f83-delete-default-on`, Metorite task 1102).** The member's delete switch is ON by default. The owner said: "Agents delete switch should default to on." Migration 316 makes the column nullable with no default, and NULL reads as on. Each old `false` became NULL, so every existing member reads on until they turn it off. The fence is `test_agent_delete_default_r8.py`.
+
+**EA-6h is MERGED (#1254, `3b8e412cb`, 2026-10-23).** An agent may delete a task after the member says yes in the agent (EA3-51). Migration 295 adds the member's switch. It was off by default until EA-6i made it on by default. The member picks each subtask to delete or keep (D-OP-10, the owner, 2026-10-23). H1 to H14 pass on R8, and each is red under a named mutation in `test_mcp_edge_delete.py`.
 
 **EA-13 is BUILT (2026-10-18).** It puts agent work on the board. §12.2 holds the design, §6.1 holds EA3-41 to EA3-50, and §15 holds the rows EA-13a to EA-13f. The PR and CI data come from `github_integration.md` (WS-54). The EA-13 anchors were read at `1625cca13`.
 
@@ -19,6 +92,8 @@
 The EA-13a stamp is `mcp:<host>:<slug>`, so Claude Code reads "Claude Code". The timeline names the client of each agent act. A claim by an agent opens its run while `agent_runs_enabled` is on.
 
 **EA-14a is MERGED and live (#1192, `ffc09bb68`, 2026-10-25), under `agent_runs_enabled`.** One AI session holds a task at a time (§12.3). The follow-ups are HANDOFF H-409.
+
+**H-409 items 1 to 3 are BUILT 2026-11-11 and not merged (branch `mt-0c413319-ea14a-harden`, Metorite task 748).** A task close ends its open run, the release rule reads `admin:members:manage`, and the holder reads name the org (§12.3, "H-409"). Fix round 1 adds the put-back. An Undo or an unarchive inside 15 minutes reopens the run. They go live at the merge, under `agent_runs_enabled`. No migration.
 
 **EA-15 is MERGED (#1295, `90e4d702e`, 2026-10-25).** `get_task_context`, `my_work` and one protocol for agents, built in the edge from the read routes it already has (§12.4). The fence is `test_mcp_edge_context.py`, and each rule is red under a named mutation.
 
@@ -83,6 +158,8 @@ Written 2026-10-10 from a read-only survey of the tree at commit `f62f2bb16`. Ev
 
 **Owner of the topic:** this file. `mcp_plugin_integration.md` owns the other direction, where Metorite is an MCP **client** that reads outside servers. Do not merge the two.
 
+**Agent coordination (D140, 2026-10-30).** `agent_coordination.md` owns the coordination model and the order of the SW slices. §12 here stays the record of what is built.
+
 ---
 
 ## 1. The answer in one screen
@@ -92,14 +169,14 @@ A member connects an outside agent to Metorite with one URL. The agent signs in 
 - **Protocol.** Standard MCP over Streamable HTTP, with OAuth 2.1. No custom protocol.
 - **Identity.** The agent is a **connection**. A connection belongs to one member in one organization. It holds a scope list, and that list is a ceiling.
 - **Authority.** The rule is `effective = member's live access ∩ the connection's scopes`. The member's access is read again on every call. A grant that shrinks takes effect at once.
-- **Surface.** About 14 tools for Projects and company context. No email, no WhatsApp, no CRM, no delete, no grant writes in version 1.
+- **Surface.** About 14 tools for Projects and company context. No email, no WhatsApp, no CRM, no delete, no grant writes in version 1. ⚠️ D124 and D136 widen this. §19 brings every app in through four fixed tools, with CRM and Email first.
 - **Provenance.** Every write carries `mcp:<client>` as its actor-via stamp. Every call writes one audit row.
 - **Ship dark.** One flag, default OFF. Then one organization-level switch, default OFF.
 
 The two use cases that started this spec both fit:
 
 1. **A coding agent works project 7.** It lists the coding backlog and claims a task. It moves the status. It records the branch, the commit IDs and the pull request on the task.
-2. **Claude designs a landing page from company context.** It reads the company profile and brand. It reads no project data, because the member did not grant it.
+2. **Claude designs a landing page from company context.** It reads the organization name and slug (D-EA-6). It reads no project data, because the member did not grant it.
 
 ## 2. What we learned from the Personal Agent Proxy
 
@@ -126,9 +203,9 @@ Source: `github.com/personalagentproxy/proxy` (MIT, early). It is a self-hosted 
 
 **Non-goals (version 1):**
 
-- Email, WhatsApp, CRM, meetings and the member's personal stores. D91.4 says a personal store never gets a direct read tool for a shared agent. This edge is an outside agent, so the rule binds harder.
+- Email, WhatsApp, CRM, meetings and the member's personal stores. D91.4 says a personal store never gets a direct read tool for a shared agent. This edge is an outside agent, so the rule binds harder. ⚠️ D124 amends D91.4 for this door, and §19 brings CRM and Email in through their manifests.
 - A hard delete, a grant write, a role write, billing, and any `admin:*` route. D-PM-35 and D-PM-40 refused the first two for the in-product chat. Since 2026-10-23 (D-OP-9) the in-product chat does both behind a card, and the server decides who may (D-OP-11, D-OP-12). This edge keeps the grant write out of version 1.
-- A personal access token and a device flow. See D-EA-5.
+- ~~A personal access token and a device flow.~~ D-EA-5 opened on 2026-11-06. The box token is in scope (§10.9). A personal token for CI and the device flow stay out.
 - Metorite's own agents calling this edge. They keep native tools (D91.1).
 - A local stdio server. Outside agents reach us over HTTPS only.
 - Automatic pull request linking from a GitHub webhook. See §14.
@@ -274,6 +351,7 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
 - **Allowlist:** `MCP_ROUTES` in `packages/acb_auth/acb_auth/agent_oauth.py` (EA-3a, §9.5). The edge client and branch 0 of the gateway both read it.
 - **Flag:** a `Settings` field `agent_access_enabled`, default false, which reads `AGENT_ACCESS_ENABLED`. The edge and the gateway read the same flag through `agent_oauth.enabled()`.
 - **EA-3 Settings:** `agent_edge_signing_key` and `agent_edge_signing_key_previous`, both default empty. `agent_edge_gateway_url`, default `http://127.0.0.1:8080`. §10.1 gives their rules.
+- **D-EA-11 Setting:** `agent_first_party_client_ids`, default empty, so no client is first-party. Only the gateway reads it. §10.7 gives its rules.
 - **Do not touch:** `routes/oauth.py` (a different OAuth client, retired by WS-54), `routes/integrations.py`, `integration_connections`, `outbound_guard.py`, `nav.ts` and `launch_surface.md`. Two exceptions. `CHROMELESS_ROUTES` in `nav.ts` gains `/connect` (EA-4a). The Integrations pane loses its `feature` in `nav.ts`, and its row in `launch_surface.md` §2 changes to match (EA-4b, D-EA-9). `/connect/authorize` gets no `PUBLIC_PAGES` entry in `proxy.ts`, because the page needs a signed-in member. Reuse `outbound_guard.py` and never edit it. Do not name a new module `oauth.py`.
 - **Lifetimes** are `Settings` defaults, so a test can assert them.
   - Access token: 3600 seconds.
@@ -281,9 +359,11 @@ The owner suggested on 2026-10-11 that the Integrations app should list inbound 
   - Authorization code: 60 seconds.
   - Idle connection: 90 days.
   - Unused registered client: 1 day.
-- **No grace window.** A client that sends two refreshes at once loses the connection. The client must serialize its refreshes.
+- ~~**No grace window.** A client that sends two refreshes at once loses the connection. The client must serialize its refreshes.~~ **Owner directive 2026-11-26 (MCP-G17f, Metorite task 4032): a grace window, setting `agent_refresh_reuse_grace_s`, default 0.** At 0 the old rule holds, and a client that sends two refreshes at once loses the connection. Above 0, the window applies to a spent refresh token that its own client presents again, for the same resource. If the spend was less than that many seconds ago, the client gets a new pair of the same connection. The database clock decides the age. The connection stays live, and the pair of the first rotation stays live too. The store keeps only hashes, so the second caller gets a sibling pair and not the same one. A dead connection, an expired token and an organization off the list get no pair. A token spent longer ago still revokes the connection. The reader `agent_oauth.refresh_reuse_grace_s` caps the value at 60 s, because the recorded collisions were 2 s apart. The store logs each pair of the window as a warning, `agent_tokens.refresh_reuse_in_grace`, with the connection id only.
+  - **The residual risk (not yet accepted: the owner decides it at the flip of `AGENT_REFRESH_REUSE_GRACE_S`).** Inside the window, a replay of a just-spent token mints a sibling chain each time, with no limit on the count. A later reuse outside the window, or a revoke, ends every chain of the connection. A cap of siblings for each token needs a new column, and it is not built.
+  - **A difference from RFC 6749 §6.** A reuse inside the window that asks for an extra scope gets 200 with the scope that the connection holds. It never gets a wider grant. The scope check of the edge finds no spent token, so it does not refuse the request with `invalid_scope`.
 
-## 6. Decisions D-EA-1 to D-EA-10 (D-EA-1 to D-EA-8 taken, D97. D-EA-9 and D-EA-10 taken 2026-10-14)
+## 6. Decisions D-EA-1 to D-EA-11 (D-EA-1 to D-EA-8 taken, D97. D-EA-9 and D-EA-10 taken 2026-10-14. D-EA-11 taken 2026-10-30)
 
 The owner accepted every default below in chat on 2026-10-10, with the words "go ahead with your recommendations for all". Nothing here re-opens D1 to D94. D97 in work_plan.md §3 records them.
 
@@ -292,13 +372,15 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | D-EA-1 | The edge host | `mcp.metorite.com` | No session cookie reaches it. §5.2 |
 | D-EA-2 | Edge in its own unit, or a gateway router | Own unit | Smaller blast radius for the internal bearer. §5.1. Since EA3-1 the edge holds a signing key, and no bearer |
 | D-EA-3 | Authorization server: a vetted library inside our code, or a hosted OAuth server | Library inside our code | We already own the member session and the tenant tables. A second identity system is a second seam |
-| D-EA-4 | May a connection reach the member's personal projects | **No by default.** The consent page offers an opt-in box, off | Personal projects are private to one member. A wrong default leaks private work |
-| D-EA-5 | A personal access token for headless agents (CI, a server) | Not in version 1 | An interactive OAuth flow covers Claude Code and desktop clients. A token is a long-lived secret and needs its own review |
-| D-EA-6 | What "company context" means | The organization name, domain, branding, and the `org:global` memory the member may read | No company profile route exists today. A richer profile is a separate spec. See H-15 in the org profile backlog |
+| D-EA-4 | May a connection reach the member's personal projects | **Yes by default (amended 2026-10-30).** The consent page offers the box "Include my personal projects", ticked. The member can untick it. The owner said: "by default, including personal projects would be on." The first answer was "No by default, an opt-in box, off" | The member connects their own agent to do their own work, and their personal projects and notes are part of that work. The box stays, so a member can keep them private. The server still reads a body that leaves out the field as false, so only a broken client falls back to private |
+| D-EA-5 | A personal access token for headless agents (CI, a server) | **Opened: owner, 2026-11-06, Metorite task 1819, choice A.** A per-box token, as a connection of `credential` `box`, with no refresh token. A personal token for CI and the device flow stay out. §10.9 holds the review and the eight answers | On 2026-11-06 a stale refresh token signed out nine sessions of one box (rule 5 of `agent_tokens.py`). A token with no rotation cannot do that. The cost is a long-lived secret, which §10.9 limits with a fixed expiry, the scope ceiling, the new-address mark and a pause switch. Claude Code sends a static bearer header and starts no OAuth (proof in §10.9) |
+| D-EA-6 | What "company context" means | **Amended 2026-11-25, corrected the same day (task 1051, lane decision, owner may change it).** The organization name and slug only. No domain, no logo, no brand field, no `updatedBy` and no memory | The first amendment promised brand colours, but `GET /settings/branding` holds no colour and no name field. It holds three logos, `darkStyle` and `updatedBy`. No member screen shows the domain, so the rule "no data the member could not read in the app" forbids it. D132.4 retires Mem0 and KG-11 removes its routes, and `org:global` has no writer since KG-9. The edge has no internal bearer for `/memory`. A richer profile is a separate spec (H-15). A brand field waits for a Settings slice that stores one |
 | D-EA-7 | Price | No charge. The agent uses the member's seat | CLAUDE.md says pricing and commercial calls need owner input first. The tool calls cost no AI credits |
 | D-EA-8 | Who may connect | An organization admin switches the feature on. Then any member may connect, unless the admin restricts clients to an allow list | Default OFF keeps a new tenant safe |
 | D-EA-9 | Where members and admins manage connections | **Decided: owner, 2026-10-14, in chat.** Integrations opens to all members. Each member sees an AI agents view. `integrations:manage` sees all agent connections. The two stores stay apart. §5.4 | The owner suggested it on 2026-10-11. One place to see and revoke every connection |
-| D-EA-10 | Agent runs on a task, and the question an agent asks a member | **Decided: owner, 2026-10-14, in chat.** Take Plane's run, activity and signal model (§12.1). (1) Any member who can see the task may answer, and the pill names the run's member. (2) The waiting state is a marker beside the task status, not a new status. (3) The bell and a "Waiting on me" filter tell the member. Browser push waits for WS-51 S7 | The owner asked that people and outside coding agents work together inside Metorite. The owner said "learn from Plane as much as possible" |
+| D-EA-10 | Agent runs on a task, and the question an agent asks a member | **Decided: owner, 2026-10-14, in chat.** Take Plane's run, activity and signal model (§12.1). (1) Any member who can see the task may answer, and the pill names the run's member. (2) The waiting state is a marker beside the task status, not a new status. (3) The bell and a "Waiting on me" filter tell the member. Browser push waits for WS-51 S7. **Amended by D-EA-14 (decided 2026-11-06):** point (1) narrows to the task creator, the assignees, the run's member, and the roles owner, admin and manager | The owner asked that people and outside coding agents work together inside Metorite. The owner said "learn from Plane as much as possible" |
+| D-EA-11 | May a first-party client sign a member in again with no consent click | **Decided: owner, 2026-10-30 (Metorite task 1109).** Yes, for a client that an operator names in `agent_first_party_client_ids`, and only when the member already holds a live connection of that client whose scopes cover the request. A new approval of such a client replaces the member's older connection of it. The list is empty by default. §10.7 holds the rules and the threat analysis. Every other client keeps the consent page and its approve gate | The owner asked for a sign-in to Aroh with no hiccups. A member who already approved Aroh should not click Approve again on each device, and the list of connected agents should show one Aroh. The list is an operator setting and not the admin allow list of D-EA-8: it widens trust, so only the operator of the box sets it |
+| D-EA-14 | Who sees an agent question, and who may answer it | **Decided: owner, 2026-11-06, in Metorite (task 1788).** (1) "For me" lists an open question when the reader created the task, is an assignee, or is the run's member. (2) Those people, and a reader with the role owner, admin or manager, may answer. This amends D-EA-10 point (1). (3) The "Everyone" tab shows only to owner, admin and manager. (4) The task creator also gets the `agent_question` notification. (5) Each answer names who gave it. §12.8 holds the design | The owner asked for one surface for all the questions that wait on a person, with the project path. The owner asked that the task creator answer, and that a person higher up may answer too |
 
 ### 6.1 The engineering decisions of the EA-3 audit (EA3-1 to EA3-8, 2026-10-11)
 
@@ -350,7 +432,7 @@ A spec audit of EA-3 on 2026-10-11 gave NO-GO. The spec had no testable done-whe
 |---|---|---|
 | EA3-28 | **The nonce.** A write carries the header `X-Agent-Nonce`, 16 random bytes in base64url with no padding (22 characters). It is a 9th line of the signed string on a request that is not GET, and only there. So the signed string of a GET stays byte-identical. The gateway runs `SET NX EX 120` on `tenant_redis.key("agent_nonce", <connection>, <nonce>)` inside `organization_scope` of the connection row's organization. A nonce that the key already holds is a replay, and it gets 401. A Redis outage gets 503 with `Retry-After: 2`. Branch 0 reads the body of a write to hash it. So the two fence layers of §10.1 each gain one name: the header `x-agent-nonce`, and one `await request.body()` in `_agent_user` for a listed write pair. A GET that reads the body stays a violation | §10.1, §15 (EA-6a) |
 | EA3-29 | **The write scope and the flag.** Branch 0 admits a method other than GET only for a pair in `MCP_WRITE_ROUTES`, and only when all three hold: the connection's scopes include `projects:write`, the nonce is fresh, and the Setting `agent_access_writes_enabled` (default false) is true. Otherwise the answer is 401, with one exception since fix round 1: a SIGNED write while the flag is off gets 403 with the detail `agent_writes_disabled`, which the edge maps to a tool error. Both units read the flag through `agent_oauth.writes_enabled()`. While it is off, the edge leaves the write tools out of `tools/list`, and a call of one answers "Changes are turned off for agents in this organization." with no gateway request. While it is on, the edge refuses a write tool without `projects:write`, as the existing `insufficient_scope` 403 of check 8 | §7.1, §9.5, §9.6, §10.1, §15.3 |
-| EA3-30 | **The cap.** After the nonce, the gateway runs `INCR` on the tenant key `agent_writes:<connection>`, with a life of 600 seconds from the first write. A connection makes at most 120 writes in that window. The 121st write gets 429 with `Retry-After`. The edge maps a 429 to the tool error "Too many changes. Wait a few minutes." | §9.6, §10.1 |
+| EA3-30 | **The cap.** After the nonce, the gateway runs `INCR` on the tenant key `agent_writes:<connection>`, with a life of 600 seconds from the first write. A connection makes at most 120 writes in that window. The 121st write gets 429 with `Retry-After`. The edge maps a 429 to the tool error "Too many changes. Wait a few minutes." MCP-G20: the cap and the window are the settings `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S`, with the defaults 120 and 600. `agent_oauth.write_cap` and `write_window_s` are the one readers. Both units read them, and a change needs a restart of each. 2026-11-09: the live cap of the HathiLabs connection is 250 writes in 600 seconds, and the default stays 120. MCP-G28 splits the limit into a call counter and a row counter (§9.2) | §9.6, §10.1 |
 | EA3-31 | **The split.** EA-6a builds `set_task_status`, `add_task_reference` and the references in `get_task`. EA-6b builds `claim_task`, which needs a new add-only route `POST /projects/tasks/{task_id}/assignees/self`, because the PUT of the assignees replaces the set. EA-6c builds `add_comment`, with a required `idempotency_key`. EA-6d builds `create_task`, `update_task` and the migration for the task source `mcp` | §9.2, §15 |
 
 **The EA-6c audit, 2026-10-15.** A spec audit of EA-6c gave GO-NARROWED after doc edits. The orchestrator took the decision below on the same day. It is not a product or pricing call.
@@ -386,7 +468,7 @@ The orchestrator took the two engineering decisions below from the audit. Neithe
 
 **EA3-39 in full.**
 
-1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag.
+1. **One prompt.** The edge serves one prompt, `work_on_task`, with one argument, `task`. The argument is optional while the runs flag is on, and required while it is off. So the `prompts/list` entry differs by flag. **PB-2 (D186) widens this:** the edge also serves five read-only playbook prompts for an organization on `playbook_orgs`, with `projects:read` (`orchestration_playbook.md` §5, `agent_coordination.md` §4.2 item 13).
 2. **The shapes.** The argument is a UUID, or `#N` or `N` (ASCII digits, at most 18). The edge refuses each other shape, `PRJ-42` included, until the product has a task key. Today `task_number` is unique only inside one root, and nothing checks `task_prefix`.
 3. **No gateway request.** `prompts/get` returns fixed server text and the validated argument only. It makes no gateway request. It never holds member text, because Claude Code puts the prompt into the session as a user turn.
 4. **The routine with an argument.** The message gives the agent these steps, in this order:
@@ -432,8 +514,9 @@ The orchestrator took the two engineering decisions below from the audit. Neithe
 | EA3-48 | **One PR chip, picked by one rule.** An open or draft pull request first, the newest by `pr_updated_at`. Else the newest merged one, else the newest closed one. A count shows the others | §12.2 item 2 |
 | EA3-49 | **"Agent work" is the agent-worked rule of `github_integration.md` §12.2,** the one copy of that SQL (`routes/projects/agent_worked.py`). The merge-to-Done rule and the filter cannot disagree | §12.2 item 4 |
 | EA3-50 | **"Needs you" names the viewer.** An `awaiting` run reads "Needs you" to the run's member, and "Waiting for <first name>" to anyone else, as EA-12c does now | §12.2 item 2 |
-| EA3-51 | **Owner, 2026-10-23. A connected agent may delete a task after the member says yes in the agent.** Verbatim: "a permission gated thing on Claude itself, that the connected LLM can delete [the task] after taking permission from the user". This amends EA3-33 ("the agent never deletes a task") for the MCP door only. D-PM-35 still binds the in-product chat. The gate has four layers. (1) The member's own switch "Let my AI agents delete tasks", default OFF, in Integrations → AI agents. With it off, `tools/list` leaves out the tool and the route refuses. (2) The tool `delete_task` carries `destructiveHint: true`, so the client asks the person before each call, and its description tells the agent to get an explicit yes in the conversation first. (3) The call sends `expected_version` and `confirm_title`, the exact current title, so the agent must read the task and name it. (4) The server deletes through `delete_task_in`, the one core: the subtasks move up one level (D-PM-38), the tombstone trigger of migration 168 records it, and `pm.task.deleted` carries the client stamp. `request_task_archive` stays the reversible path. EA-6h builds it | §15 (EA-6h) |
+| EA3-51 | **Owner, 2026-10-23. A connected agent may delete a task after the member says yes in the agent.** Verbatim: "a permission gated thing on Claude itself, that the connected LLM can delete [the task] after taking permission from the user". This amends EA3-33 ("the agent never deletes a task") for the MCP door only. D-PM-35 still binds the in-product chat. The gate has four layers. (1) The member's own switch "Let my AI agents delete tasks", in Integrations → AI agents. **Default ON (amended 2026-10-30, EA-6i).** The owner said: "Agents delete switch should default to on." The first answer was default OFF. A member who has not chosen reads as on, and only an explicit off turns it off. With it off, `tools/list` leaves out the tool and the route refuses. (2) The tool `delete_task` carries `destructiveHint: true`, so most clients ask the person before each call, and its description tells the agent to get an explicit yes in the conversation first. Metorite cannot make a client ask: a client set to allow the tool with no prompt asks nothing (EA-6i, 2026-10-30). (3) The call sends `expected_version` and `confirm_title`, the exact current title, so the agent must read the task and name it. (4) The server deletes through `delete_task_in`, the one core: the subtasks move up one level (D-PM-38), the tombstone trigger of migration 168 records it, and `pm.task.deleted` carries the client stamp. `request_task_archive` stays the reversible path. EA-6h builds it, and EA-6i makes the switch on by default | §15 (EA-6h, EA-6i) |
 | EA3-52 | **The audit of MCP-G2, 2026-10-25 (task #356), changed by fix round 1 on the same day. `set_assignees` shows no confirmation card, because an agent may only assign people who can already open the task.** It cannot widen access. Assigning someone outside the audience of the task stays a member's act in the app. Each NEW person gets one bell that names the client, so the person sees `assigned by <member> via Claude Code`. This amends the line of §9.2 that an unassign of another person needs a human confirmation step. The owner can overrule it | §9.2 |
+| EA3-53 | **The audit of MCP-G1, 2026-10-29 (task 355), after the owner directive of the same day: "extend the MCP system so that the MCP is completely capable".** An agent may make a space, a project or a subproject. It may change the name, the description and the status of a node, and move tasks to another project. Each tool calls the route of the app, so the rules of the app decide who sees a node and who may move a task (D-OP-14). The move is class C. Its human step is the preview: `move_tasks` needs the `preview_id` of `preview_move_tasks` for the same selection, and it has `destructiveHint: true`, so the client asks the person. Fix round 1: an agent never widens who sees a task, so the gateway refuses a move that shows a task to a member who cannot see it now. This amends the line of §9.2 that a move across projects is not exposed. The owner can overrule it | §9.2 |
 
 ## 7. The connection model
 
@@ -446,8 +529,10 @@ A **connection** is one agent client that one member has authorized in one organ
 | `client_id`, `client_name`, `client_origin` | Who the agent is. The origin comes from the verified metadata document, not from a self-reported name |
 | `scopes` | The ceiling. See §8 |
 | `pinned_projects` | Optional list of project ids. Empty means every project the member sees |
-| `include_personal` | Opt-in flag from D-EA-4. Default false |
-| `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use. `last_used_at` records the last token issue. EA-3 does not stamp it on a tool call (EA3-7) |
+| `include_personal` | The personal switch of D-EA-4. The column default is false. The consent page sends true unless the member unticks the box (since 2026-10-30) |
+| `left_out_projects` | The left-out list of D-EA-12 (§10.8, EA-17a). Empty means no project is left out |
+| `requested_scopes` | The scopes that the agent asked for at the connect (§10.8, EA-17a). The ceiling of Change access. NULL on an older connection |
+| `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use. `last_used_at` records the last token issue. EA-3 does not stamp it on a tool call (EA3-7). A box connection is the one exception: the edge stamps it on use, at most once a minute (§10.9) |
 
 ### 7.1 The authority rule
 
@@ -459,7 +544,7 @@ The rule is `member's live access ∩ effective scopes ∩ agent scope`. A scope
    - **An outage is a 503 (EA3-10).** `lookup_token` raises when the database fails (`agent_tokens._run` rolls back and raises again). When `acb_common.db_busy.is_db_outage` answers yes for that error, the edge answers HTTP 503 with `Retry-After: 2`. It never answers 401 for an outage. A 401 makes an MCP client drop a good token and sign in again.
    - Any other error of the lookup gives 401, as in branch 0 (§10.1).
 2. Check that `lookup.resource` equals `agent_oauth.resource()`. `lookup_token` does not check the audience, so the edge must. Another audience gives 401.
-3. Read the connection row in the same transaction as the lookup. EA-3a extended `_CONNECTION_LIVE_SQL` (`agent_tokens.py:393`). `lookup_token` (`agent_tokens.py:1044`) now returns `scopes`, `pinned_projects`, `include_personal` and `client_origin`.
+3. Read the connection row in the same transaction as the lookup. EA-3a extended `_CONNECTION_LIVE_SQL` (`agent_tokens.py:393`). `lookup_token` (`agent_tokens.py:1044`) now returns `scopes`, `pinned_projects`, `include_personal` and `client_origin`. EA-17a adds `left_out_projects`.
 4. Compute the effective scopes: the token scope intersected with the connection scopes. `projects:write` covers `projects:read`.
 5. Check that the effective scopes hold the scope of the tool. If not, answer 403 `insufficient_scope` (§9.6).
 6. Call the gateway with a signed request (§10.1). A gateway 401 becomes an MCP 401. §9.6 maps every other gateway answer (EA3-16).
@@ -497,10 +582,10 @@ SELECT id FROM pm_projects
  WHERE organization_id = CAST(:vis_org AS uuid)
    AND sealed_at IS NULL
    [AND personal_owner IS NULL]           -- when include_personal is false
-   [AND id IN (<recursive pin closure>)]  -- when pinned_projects is not empty
+   [AND id IN (<recursive reach>)]        -- when pins or a left-out list is not empty
 ```
 
-5. The pin closure starts at the pinned ids in `:vis_org` and walks `parent_project_id` down. `Visibility.params` adds `vis_pins` only when the scope has pins.
+5. The reach starts at the pinned ids in `:vis_org`, or with no pin, at each root of `:vis_org`. It walks `parent_project_id` down and stops at a left-out project (D-EA-12, §10.8). `Visibility.params` adds `vis_pins` and `vis_left_out` only when the scope has pins or a left-out list.
 6. Use a positive `IN`. Never use `NOT IN`, because one NULL row turns `NOT IN` into "no rows match".
 
 **Facts this rests on.** `personal_owner` is set at every depth of a personal tree (`personal.py:538-547`). A seal stamps every node of the tree (`seal.py:18-23`, `:134-156`). So a check on the task's own project is enough, and the clause needs no walk up the tree.
@@ -516,7 +601,7 @@ Scopes are coarse on purpose. A member must be able to read the consent page in 
 | Scope | Lets the agent | Tools |
 |---|---|---|
 | `projects:read` | Read projects, tasks, comments and the timeline the member can see | `list_projects`, `get_project`, `list_tasks`, `get_task`, `get_task_timeline`, `search_tasks` |
-| `projects:write` | Create tasks, change fields and status, comment, assign members, and add references | `create_task`, `update_task`, `set_task_status`, `add_comment`, `claim_task`, `set_assignees`, `add_task_reference` |
+| `projects:write` | Create tasks, change fields and status, comment, assign members, add references, make and change projects, and move tasks to another project | `create_task`, `update_task`, `update_tasks`, `set_task_status`, `add_comment`, `claim_task`, `set_assignees`, `add_task_reference`, `create_project`, `update_project`, `preview_move_tasks`, `move_tasks` |
 | `context:read` | Read the company context of D-EA-6 | `get_company_context`, plus the matching resources |
 | `offline_access` | Receive a refresh token | none. Per the MCP spec the server does not advertise this scope as a resource need |
 
@@ -536,10 +621,13 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 
 | Tool | Scope | Input | Gateway route, and its visibility seam | Returns |
 |---|---|---|---|---|
-| `whoami` | `None` (any live token) | none | `GET /auth/me` (`routes/admin/me.py:157`, router at `:26`), plus the connection row of §7.1 step 3 | Exactly six keys. `email` comes from `/auth/me`. `organization_id`, `scopes` (the effective scopes, sorted), `pinned_projects` and `include_personal` come from the token lookup (`Caller` and `TokenLookup`, `agent_tokens.py:126`). `server_time` is ISO-8601 UTC. The edge never reads `organization.id` from `/auth/me`, because that object can be `{}` (`me.py:199`) |
-| `list_projects` | `projects:read` | `parent_id?`, `text?`, `limit`, `cursor` | `GET /projects/tree` (`tree.py:253`), through `Visibility.project_clause`. The route takes no parameter. The edge flattens the tree, filters by `parent_id` and `text`, and pages it, after the gateway narrowed the rows. The route never returns a personal project (EA3-19). The edge drops each archived project (EA3-24). `parent_id`, `text`, `limit` and `cursor` are edge inputs (§9.5, rule 4) | `id`, `name`, `path` (the names from the root down), `parent_id` and `task_counts` (`tasks`, `done`, `cancelled`), plus `total` and `nextCursor`. The rules below the table say how the edge filters and orders the rows |
+| `whoami` | `None` (any live token) | none | `GET /auth/me` (`routes/admin/me.py:157`, router at `:26`), plus the connection row of §7.1 step 3 | Exactly seven keys. `email` comes from `/auth/me`. `organization_id`, `scopes` (the effective scopes, sorted), `pinned_projects`, `left_out_projects` (EA-17a) and `include_personal` come from the token lookup (`Caller` and `TokenLookup`, `agent_tokens.py:126`). `server_time` is ISO-8601 UTC. The edge never reads `organization.id` from `/auth/me`, because that object can be `{}` (`me.py:199`) |
+| `list_projects` | `projects:read` | `parent_id?`, `text?`, `limit`, `cursor` | `GET /projects/tree` (`tree.py:253`), through `Visibility.project_clause`. The route takes no parameter. The edge flattens the tree, filters by `parent_id` and `text`, and pages it, after the gateway narrowed the rows. The route never returns a personal project (EA3-19). The edge drops each archived project (EA3-24). `parent_id`, `text`, `limit` and `cursor` are edge inputs (§9.5, rule 4) | `id`, `name`, `path` (the names from the root down), `parent_id`, `kind`, `level` and `task_counts` (`tasks`, `done`, `cancelled`), plus `total` and `nextCursor`. `level` is `space`, `folder`, `project` or `subproject`. The rules below the table say how the edge filters and orders the rows |
 | `get_project` | `projects:read` | `project_id` | Five reads, each through `load_visible_project`: `GET /projects/nodes/{project_id}` (`tree.py:395`), and its `/statuses` (`admin.py:155`), `/types` (`admin.py:914`), `/fields` (`custom_fields.py:385`) and `/tags` (`tags.py:316`) | The pinned project fields, its statuses, task types, custom field definitions and tags. "Pinned output fields" below lists each key |
-| `list_tasks` | `projects:read` | `project_id?`, `status_id?`, `tag?`, `assignee?`, `text?`, `parent_task_id?`, `include_descendants?`, `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks` (`tasks.py:180`), through `task_visibility_clause`. `tag` maps to `tags`, `text` maps to `q`, and `limit` and `cursor` map to `page_size` and `page` | A page of tasks with `id`, `task_number`, `title`, `project_id`, `status`, `assignees`, `due_at`, `version`, `parent_task_id` and `depth`, plus `total` and `nextCursor` |
+| `list_members` | `projects:read` | `project_id?`, `limit`, `cursor` | `GET /projects/assignable-members` (`assignees.py`). The route loads the project through `load_visible_project`, so a hidden project gives the fixed not-found text. It lists the active members of the tenant that `project_grant_holders` reports for the project: a grant to the member, to `org` or to a group of the member, on the project or on a parent, and every shared project for a `data:org:read` holder. A personal project gives its owner only (`assert_assignable_here`). With no `project_id`, it is the union over the live, shared projects that the caller sees, and a pin narrows it. `limit` and `cursor` are edge inputs (§9.5, rule 4). `agent:<name>` is accepted by `set_assignees` without a check, and this list does not hold it | `members` (each row: `address`, `name`), `total` and `nextCursor`. `address` is a plain string for an address, and `name` is `untrusted_text` or null. No role, grant or contact fact leaves |
+| `list_tags` | `projects:read` | `project_id?`, `limit`, `cursor` | `GET /projects/nodes/{project_id}/tags` for one project. With no `project_id`, `GET /projects/tree` and then the same tags route for each top project that is not archived, eight at a time. The edge drops the `task_count`, as `get_project` does. It joins the names by case and sorts them by case. `limit` and `cursor` are edge inputs (§9.5, rule 4) | `tags` (each row: `name`, `untrusted_text`), `total` and `nextCursor` |
+| `list_tasks` | `projects:read` | `project_id?`, `status_id?`, `tag?`, `assignee?`, `text?`, `parent_task_id?`, `include_descendants?`, `include_subtree?`, `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks` (`tasks.py:180`), through `task_visibility_clause`. `tag` maps to `tags`, `text` maps to `q`, `include_subtree` passes through, and `limit` and `cursor` map to `page_size` and `page` | A page of tasks with `id`, `task_number`, `title`, `project_id`, `status`, `assignees`, `due_at`, `version`, `parent_task_id` and `depth`, plus `total` and `nextCursor` |
+| `get_plan` | `projects:read` | `root_task_id` | `GET /projects/plan/analysis` (`plan_analysis.py`), through `resolve_visibility`, `load_visible_task` and `task_visibility_clause`. SP-12. The engine is `acb_common.planning.analyze_plan` and the tool sorts no graph | `ready`, `waves`, `critical_path`, `slack` (minutes), `next_slice`, `finish` (`mins`, `working_days`, `date`), `held`, `outside_blockers`, `cycle`, `missing`, `not_enough`, `ignored_links`, `hidden` (counts) and `labels` (the number and the title as `untrusted_text` of each visible task that the answer names). A hidden slice is counted and never named. The root of a task outside a pin reads as the not-found text. One date for `finish` and no 50% or 85% forecast. Waits on a person are not in the answer yet |
 | `get_task` | `projects:read` | `task_id` | `GET /projects/tasks/{task_id}` (`tasks.py:335`), `GET /projects/tasks/{task_id}/relations` (`relations.py:193`) and, since EA-6a, `GET /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:336`), each through `load_visible_task` | The pinned task fields, with its `description`, `status`, `assignees`, subtasks, links, references and `version` |
 | `get_task_timeline` | `projects:read` | `task_id`, `kind?` (`all`, `comments` or `events`, default `all`), `limit` (1 to 100, default 50), `cursor` | `GET /projects/tasks/{task_id}/timeline` (`activities.py:159`), through `load_visible_task`. `kind` and the `Page` parameters pass through | Comments and events, newest first, with the pinned row fields and the `meta` allowlist, plus `total` and `nextCursor` |
 | `search_tasks` | `projects:read` | `query`, `limit` (1 to 50, default 50) | `GET /projects/search` (`search.py:353`), through `task_visibility_clause`. `query` maps to `q`. The route caps the hits at `MAX_HITS`, 50 (`search.py:111`), and has no pages | Ranked hits with `id`, `task_number`, `title`, `project_id`, `project_name`, `status` and `due_at`, plus `truncated` |
@@ -564,6 +652,10 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 - **`task_counts`.** The counts cover the whole subtree of the project (`tree.py:375-381`), as the route gives them.
 - **`total`.** The count of rows after the archived drop and the two filters.
 
+**Subprojects in `list_tasks` (OP-11).** `include_subtree` is a boolean. It is true by default when the call names a `project_id`. Then the list holds the tasks of that project and of every subproject under it. Send `include_subtree=false` for the tasks of that one node. Without a `project_id` the input has no effect.
+
+**Kind and level (OP-11).** `list_projects` rows and the `get_project` project carry `kind` and `level`. The gateway derives `level` from the kind and the place of the node (`core.node_level`), and the edge copies it.
+
 **Subtasks in `list_tasks` (MCP-G5).** `parent_task_id` lists the direct subtasks of one task. `include_descendants` is true only with `parent_task_id`. It lists the whole subtree to 10 levels, and a deeper task is not shown. Each row has `depth`, where 1 is a direct subtask. `depth` is null without `include_descendants`.
 
 **Order of the subtree (MCP-G5).** The order is `depth` first, then the sort of the route, which ends on `(created_at, id)`. So the order holds across pages.
@@ -582,14 +674,14 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 
 **Pinned output fields (EA3-15).** Each tool copies only the keys below from a gateway response, and drops every other key. A new column on a gateway model never reaches an agent until this list names it. In the lists, (U) marks a value that the edge wraps as `untrusted_text` (§9.4). The source models are in `gateway/routes/projects/core.py`.
 
-- **`whoami`.** `email`, `organization_id`, `scopes`, `pinned_projects`, `include_personal` and `server_time`, and no other key. The table row of `whoami` gives the source of each key.
-- **`get_project`, the project.** From `ProjectModel` (`core.py:596`): `id`, `name` (U), `description` (U), `parent_project_id` as `parent_id`, `kind`, `task_prefix` (S), `status`, `timezone` (S), `created_at`, `updated_at` and `archived_at`.
+- **`whoami`.** `email`, `organization_id`, `scopes`, `pinned_projects`, `left_out_projects`, `include_personal` and `server_time`, and no other key. The table row of `whoami` gives the source of each key. EA-17a added `left_out_projects` (D-EA-12).
+- **`get_project`, the project.** From `ProjectModel` (`core.py:596`): `id`, `name` (U), `description` (U), `parent_project_id` as `parent_id`, `kind`, `level`, `task_prefix` (S), `status`, `timezone` (S), `created_at`, `updated_at` and `archived_at`.
 - **(S), a shape check (fix round 1).** A member writes the value, and the gateway does not shape-check it. The edge sends it as a plain string only when it fullmatches its shape. Any other value is `untrusted_text`. `task_prefix` takes `[A-Za-z0-9_-]{1,16}`, because `ProjectIn.task_prefix` takes any text (`core.py:645`). `timezone` takes `[A-Za-z0-9_+/-]{1,64}`, because only the API checks it with `ZoneInfo` and the column has no CHECK. An assignee is a plain string only for an address or for `agent:<name>`, where the name passes `acb_skills.agent_paths.AGENT_NAME_RE` (64 characters at most). A plain address is at most 64 characters in total, its local part is at most 64 characters, and its domain has at most 4 labels (fix round 2). `AssigneesIn` takes any string.
 - **`get_project`, the parts.** Statuses, from `StatusModel` (`core.py:743`): `id`, `name` (U), `category`, `position` and `is_default`. Task types, from `TypeModel` (`core.py:753`): `id`, `name` (U) and `is_epic`. Custom field definitions (`custom_fields.py:385`): `id`, `field_key`, `name` (U), `description` (U), `field_type`, `options` (each item U) and `required`. Tags (`tags.py:301`): `id` and `name` (U).
 - **`list_tasks` and `get_task`, the task.** From `TaskModel` (`core.py:656`): `id`, `task_number`, `project_id`, `root_project_id`, `parent_task_id`, `type_id`, `title` (U), `importance`, `leveraged`, `estimate_mins`, `start_date`, `due_at`, `completed_at`, `tags` (each item U), `created_by`, `created_at` and `archived_at`. `version` is `updated_at`. `status` is the object of the rule above. `assignees` is the list that the route adds, and each item is (S). `list_tasks` returns only the keys of its row in the table.
 - **`get_task` only.** `description` (U) and `custom_fields`. `custom_fields` is a map from `field_key` to a value. A string value is U. A list keeps each number and wraps each string as U. A number, a boolean and null stay as they are. Any other shape becomes U, as its compact JSON text.
 - **`url` and `short_id` (EA-13f, EA3-46).** Each task that a tool returns holds both. `url` is `<app_public_url>/projects?task=<id>`. `short_id` is `mt-` and the first eight hex characters of the id. The edge builds them from the setting `app_public_url` and the task id, so no gateway field changes. The agent puts `url` in the pull request description and `short_id` in the branch name.
-- **`get_task`, the relations** (`relations.py:193`). A subtask keeps `id`, `task_number`, `title` (U), `status_id`, `status_name` (U), `category`, `due_at` and `completed_at`. A link (`relations.py:172`) keeps `id`, `link_type`, `direction`, `title` (U), `task_number`, `status_name` (U), `category` and `completed_at`. The `id` of a link is the id of the other task (`relations.py:174`). The edge drops `link_id`.
+- **`get_task`, the relations** (`relations.py:193`). A subtask keeps `id`, `task_number`, `title` (U), `status_id`, `status_name` (U), `category`, `due_at` and `completed_at`. A link (`relations.py:172`) keeps `id`, `link_id`, `link_type`, `direction`, `title` (U), `task_number`, `status_name` (U), `category` and `completed_at`. The `id` of a link is the id of the other task (`relations.py:174`). `link_id` is the id of the link row, and `remove_task_link` takes it (SW-16a).
 - **`get_task`, the references (EA-6a)** (`refs.py:129`). A reference keeps `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U) and `state`. A database CHECK shapes `kind`, `provider` and `state`. The shapes of (S) are these. A `url` is a plain string only when it is at most 160 characters and fullmatches `https?://[a-z0-9.-]{1,253}(:[0-9]{1,5})?([/?#][A-Za-z0-9._~%/:@!?&+=#-]*)?`. A `ref` is plain only at most 160 characters of `[A-Za-z0-9._~%/:@!?&+=#-]`. A `label` is plain only at most 64 characters, as one token of `[A-Za-z0-9._~%/:@!+=#-]` and at most two more words of letters. Any other value is `untrusted_text`. The edge drops `task_id`, `fetched_at`, `via`, `created_by`, `created_at` and `updated_at`.
 - **`get_task_timeline`, a row.** From `ActivityModel` (`core.py:772`): `id`, `type`, `parent_id`, `body` (U), `created_by`, `created_at`, `updated_at` and `meta`. `meta` is the allowlist below.
 - **`search_tasks`, a hit.** The keys of its row in the table, with `title` (U) and `project_name` (U).
@@ -606,12 +698,14 @@ EA-3 builds exactly these seven tools. Each one calls only GET routes in `MCP_RO
 | `status_change` | `from` (U) and `to` (U), the status names. `from_category` and `to_category`, the category strings |
 | `field_change` | `changes`, a list. Each item keeps `field`, a string key, and `old`, `new`, `old_label` and `new_label`, each with the custom field value rule above. For a foreign-key field, `resolve_fk_labels` (`core.py:3183-3190`) writes `old_id` and `new_id` in place of `old` and `new`. The edge keeps them as id strings, and it sends any other value as null |
 | `assignment` | `added` and `removed`, lists of assignees, each item (S). `bulk`, a boolean |
-| `link` | `target`, a task id. `type`, the link type |
+| `link` | `target`, a task id: the other task of the link. The gateway drops `target` when the reader cannot see that task, and the stored row keeps it. `type`, the link type. On a removal row (SW-16a), `link_action` is `removed`. `direction` is `outgoing` or `incoming`, the side of this task |
 | `merge` | `merged_into`, a task id. `merged_from`, a list of task ids |
 | `mention` | `mentioned`, a list of addresses, each item (S) |
 | `comment` | `author_name` (U), from a file import |
 
 On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via` and `automation`. Their other keys carry file names, import text and agent state. A free-text value never passes as a bare string.
+
+The timeline rule stays. MCP-G18 adds one separate key, by owner decision (2026-11-06). The `attachments` key of `get_task_context` carries each file name as `untrusted_text`. It has no link.
 
 **Personal projects (EA3-19).** `list_projects` never shows a personal project. `GET /projects/tree` reads `_visible_projects`, which adds `personal_owner IS NULL` (`tree.py:246`) for every caller. So `include_personal` has no effect on `list_projects`. No tool takes an `include_personal` input. The connection field still narrows the other read tools, through the seam (§7.3).
 
@@ -621,23 +715,37 @@ On `attachment`, `system`, `agent_run` and `sync` rows the edge keeps only `via`
 - `get_task` makes four: the task, its relations, its references, and the `/statuses` of its project. It made three before EA-6a.
 - `get_project` makes five.
 - `create_task` (EA-6d) makes three: the statuses, the POST and the re-read of the task. It makes one more for a parent and one more for a `type_id`. A call whose key holds a `done` record makes two reads and no write. `update_task` makes three: the PATCH, the re-read and the statuses. MCP-G2: a move of `update_task` makes four, the read of the new parent, the POST, the re-read and the statuses. `set_assignees` makes two, the PUT and the re-read.
-- `list_tasks` makes at most 1 + N. N is the count of distinct projects on the page, and the edge caps N at 10. The 10 are the first 10 distinct `project_id` values, in page order. The edge reads those statuses at most four at a time. A task in a project past the cap gets a status `name` of null, as a task in a project that the member cannot open does.
+- `update_tasks` (MCP-G20) makes the calls of `update_task` for each item, one item after the other. Each item has its own limit of 25 seconds. The call starts no item after 60 seconds (`BULK_START_BUDGET_S`), and its own limit is 100 seconds (`BULK_TOOL_TIMEOUT_S`).
+- `list_tasks` makes at most 1 + N. N is the count of distinct projects on the page, and the edge caps N at 10. The 10 are the first 10 distinct `project_id` values, in page order. The edge reads those statuses at most four at a time. A task in a project past the cap gets a status `name` of null, as a task in a project that the member cannot open does. Since OP-11 the default `include_subtree` brings many subprojects into one page. So the cap applies more often, and more status `name` values are null.
 
-`get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13).
+`get_company_context` is not in EA-3. EA-5 adds it, with the `context:read` scope (§13). It makes one call, `GET /auth/me`. It returns `name` (U) and `slug` (S, the shape of the signup slug rule), and no other key. The organization of the answer must be the organization of the token row, or the tool gives the busy text. It shows only for an organization of `agent_resources_orgs`.
+
+**`list_templates` (WS-39 TPL-1a).** It needs `projects:read`. It calls `GET /projects/templates` once, and returns each template of the organization with its id, its kind, its counts and the date it was made. The input `template_id` reads one template by its id. The name and the description leave as `untrusted_text`. The route answers 404 while `PROJECTS_TEMPLATES_ORGS` does not hold the organization. A connection with pins or a left-out list sees only a template whose source project it can see (`project_management_app.md` §14.8).
 
 ### 9.2 Writes (class B, undoable, and class C, hard to undo)
 
-EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). MCP-G2 builds `set_assignees`, and it adds inputs to `create_task` and `update_task` (EA3-52). Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
+EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `claim_task` (EA3-34). MCP-G2 builds `set_assignees`, and it adds inputs to `create_task` and `update_task` (EA3-52). MCP-G1 builds `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (EA3-53). MCP-G20 builds `update_tasks`. MCP-G9 builds `update_comment` and `delete_comment`. Each needs `projects:write`, and each write passes the nonce, the scope check, the flag and the cap of branch 0 (EA3-28 to EA3-30).
 
 | Tool | Class | Input | Gateway route | Returns |
 |---|---|---|---|---|
 | `set_task_status` | B | `task_id`, `status_id`, `expected_version` | First `GET /projects/tasks/{task_id}` and `GET /projects/nodes/{project_id}/statuses`, to find the category of the target status. Then `PATCH /projects/tasks/{task_id}` (`tasks.py:619`) with the body `{status_id}` only and `If-Match: <expected_version>`. It never sends `include_subtasks` | `id`, `status` (an object with `id` and `name` (U)) and `version` |
 | `add_task_reference` | B | `task_id`, `url`, `title?` | `POST /projects/tasks/{task_id}/refs?refresh=false` (`refs.py:418`) with the body `{url, title?}` | `id`, `kind`, `provider`, `ref` (S), `url` (S), `label` (S), `title` (U), `state` and `created` |
 | `create_task` (EA-6d) | B | `project_id`, `title`, `description?`, `parent_task_id?`, `type_id?`, `status_id?`, `tags?`, `due_at?`, `idempotency_key?`, and since MCP-G2 `importance?`, `leveraged?`, `estimate_mins?`, `start_date?` and `assignees?` | First `GET /projects/nodes/{project_id}/statuses`, `GET /projects/tasks/{parent_task_id}` when a parent is sent, and `GET /projects/nodes/{project_id}/types` when a type is sent. Then `POST /projects/tasks` with the sent keys of the input, except `idempotency_key`, and no other key. Then `GET /projects/tasks/{task_id}`, the re-read | `task`, the task of `get_task` (§9.1), and `created` |
-| `update_task` (EA-6d) | B | `task_id`, `expected_version`, and one or more of `title`, `description`, `tags`, `due_at`, `custom_fields`, `importance`, `leveraged`, `estimate_mins` and `start_date`. Or `parent_task_id` alone (MCP-G2) | `PATCH /projects/tasks/{task_id}` with the sent fields only and `If-Match: <expected_version>`. No query. For `parent_task_id`, first `GET /projects/tasks/{parent_task_id}`, then `POST /projects/tasks/{task_id}/move` with `{parent_task_id}` and `If-Match`. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task` without `assignees`, because the PATCH answer does not carry them |
+| `update_task` (EA-6d) | B | `task_id`, `expected_version`, and one or more of `title`, `description`, `tags`, `due_at`, `custom_fields`, `importance`, `leveraged`, `estimate_mins`, `start_date` and `type_id` (SP-6). Or `parent_task_id` alone (MCP-G2) | `PATCH /projects/tasks/{task_id}` with the sent fields only and `If-Match: <expected_version>`. No query. For `parent_task_id`, first `GET /projects/tasks/{parent_task_id}`, then `POST /projects/tasks/{task_id}/move` with `{parent_task_id}` and `If-Match`. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task` without `assignees`, because the PATCH answer does not carry them |
+| `update_tasks` (MCP-G20) | B | `updates`: 1 to 50 items. Each item is the input of `update_task`, `type_id` and `parent_task_id` too | For each item in turn, the calls of `update_task`. No route takes a list, and no new pair exists | `results`: for each item `task_id`, `ok`, `tried`, and `task` or `error`. Also `retry_after` after the cap. Then `changed` and `failed` |
 | `add_comment` (EA-6c) | B | `task_id`, `body`, `parent_id?`, `idempotency_key` | `POST /projects/tasks/{task_id}/comments` (`activities.py:231`) with the body `{body, parent_id?}` only. No read before or after it | `id`, `task_id`, `parent_id`, `body` (U), `created_by`, `created_at` and `created`. A replay returns `id`, `task_id` and `created` only |
+| `update_comment` (MCP-G9) | C | `comment_id`, `body`, `idempotency_key` | `PATCH /projects/comments/{activity_id}` (`activities.py`) with the body `{body}` only. No read before or after it | `id`, `task_id`, `parent_id`, `body` (U), `created_by`, `created_at`, `updated_at` and `updated`. A replay returns `id` and `updated` only |
+| `delete_comment` (MCP-G9) | C | `comment_id`, `idempotency_key` | `DELETE /projects/comments/{activity_id}` with the body `{}`. No read before or after it | `id` and `deleted` |
 | `claim_task` (EA-6b) | B | `task_id`, `expected_version` | `POST /projects/tasks/{task_id}/claim` with the body `{}` and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read, and `GET /projects/nodes/{project_id}/statuses` for the status name | `task`, the task of `get_task`, and `moved` |
 | `set_assignees` (MCP-G2) | B | `task_id`, `assignees` (at most 50), `expected_version` | `PUT /projects/tasks/{task_id}/assignees` with the body `{assignees}` and `If-Match: <expected_version>`. No query. Then `GET /projects/tasks/{task_id}`, the re-read | `id`, `assignees` (S) and `version` |
+| `add_task_link` (SW-16a) | B | `task_id`, `target_task_id`, `link_type` (`blocks` only) | First `GET /projects/tasks/{task_id}/relations`, to tell a new link from an old one. Then `POST /projects/tasks/{task_id}/links` with `{target_task_id, link_type}`. `task_id` blocks `target_task_id`. The route loads both tasks through the visibility helper, so a hidden task answers 404 | `link_id`, `task_id`, `target_task_id`, `link_type` and `created` |
+| `remove_task_link` (SW-16a) | B | `task_id`, `link_id` | First `GET /projects/tasks/{task_id}/relations`. A link that the read does not show answers not found. A link that is not `blocks` is refused, and nothing changes. Then `DELETE /projects/tasks/{task_id}/links/{link_id}` with the body `{}`. Either end of the link works. For a signed agent BOTH ends must be visible under its pin. The route answers 404 with the text of a missing link when the far end is outside, and it writes nothing | `link_id`, `task_id` and `removed` |
+| `create_project` (MCP-G1) | B | `name`, `level` (`space`, `project` or `subproject`), `description?`, `parent_id?` (required unless a space) and `idempotency_key?` | First `GET /projects/nodes/{parent_id}`, and for a folder the node above it, to check the level. Then `POST /projects/nodes` with `{name, description?, parent_project_id?}` and no other key. Then `GET /projects/nodes/{id}`, the re-read | `project`, the project of `get_project`, `version` and `created` |
+| `update_project` (MCP-G1) | B | `project_id`, `expected_version`, and one or more of `name`, `description` and `status` | `PATCH /projects/nodes/{project_id}` with the sent fields only and `If-Match: <expected_version>`. No query. Then the re-read | `project` and `version` |
+| `preview_move_tasks` (MCP-G1) | A, through a POST | `task_ids` (at most 50), `destination_project_id`, `include_subtasks?` (true when not sent), `status_map?` and `field_map?` | `GET /projects/nodes/{destination_project_id}`, then `POST /projects/tasks/move/preview` with the selection. It writes nothing | The plan of the rules below, `blocked`, `can_move` and `preview_id` |
+| `post_project_update` (WS-39 LP-1a) | B | `project_id`, `health` (`on_track`, `at_risk` or `off_track`), `body` (1 to 20000 characters), `idempotency_key` | `POST /projects/nodes/{project_id}/updates` (`updates.py`) with the body `{health, body}` only. No read before or after it | `update` (`id`, `project_id`, `health`, `body` (U), `author` (S), `posted_at`, `drafted_by_ai` and `via`), `id`, `project_id` and `created`. A replay returns `id`, `project_id` and `created` only |
+| `report_check` (SW-23) | B | `task_id`, `result` (`open`, `passed` or `cannot_run`), `evidence` (1 to 4000 characters), `expected_version` | `POST /projects/tasks/{task_id}/check-result` (`checks.py`) with the body `{result, evidence}` only and `If-Match: <expected_version>`. No read before or after it. It shows only while `agent_task_checks_enabled` is on | `task_id`, `result`, `last_run_at`, `closed`, `not_closed`, `status_id` and `version` |
+| `move_tasks` (MCP-G1) | C | The input of `preview_move_tasks`, and `preview_id` | The two calls of the preview again. Then `POST /projects/tasks/move` with the selection, `accept_drops` and `accepted_drops` | `moved`, `task_ids`, `destination_project_id`, `dropped_fields`, `subtasks_moved` and `subtask_ids` |
 
 **Rules of `set_task_status`.**
 
@@ -662,7 +770,7 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 **Rules of `create_task` (EA-6d).**
 
 - A sub-project is a project. The agent finds its id with `list_projects`, and it reads the status ids, the type ids and the tag names with `get_project`. The tool description says so.
-- The rules of `set_task_status` hold for `status_id`. A status outside the set of the project gets the bad-request text of §9.6. A status in `done` or `cancelled` gets "A new task cannot start in a done or cancelled status." (EA3-32 keeps both refused on a create.) Both refusals come before the POST. With no `status_id`, the route takes the default status, or the open lane of the parent (D-PM-38).
+- The rules of `set_task_status` hold for `status_id`. A status outside the set of the project gets the bad-request text of §9.6. A status in `done` or `cancelled` gets "A new task cannot start in a done or cancelled status." (EA3-32 keeps both refused on a create.) Both refusals come before the POST. With no `status_id`, the route takes the default status. MCP-G20: this holds for a subtask too. A member's subtask takes the open lane of its parent (D-PM-38). An agent's subtask does not, because the tool says to leave `status_id` out for the default status (`tasks.create_task`).
 - A parent must be a task of the same project. The edge reads the parent first. A parent that the member cannot see gets "Parent task not found." A parent of another project gets "The parent task is in another project. Send the project_id of the parent task." The route does not check this rule for a member, so the rule is the agent's only.
 - **The type (fix round 1).** A `type_id` must be a type of the project. The edge reads `GET /projects/nodes/{project_id}/types`, the read of `get_project`, before the POST. An id outside that set gets the bad-request text of §9.6, and a key stays free. The gateway checks the same rule for an agent create against `pm_task_types` in the vocabulary of the root (`core.vocabulary_scope`). So a made-up id gets 422 and never the 500 of the foreign key. The route does not check this rule for a member.
 - **The planning fields (MCP-G2).** `importance`, `leveraged`, `estimate_mins` and `start_date` have the names and the types of `TaskIn`. Their limits follow the app:
@@ -701,14 +809,57 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - `expected_version` goes out as `If-Match`. A stale version gets 412, and the edge gives "The task changed. Read it again."
 - After the PATCH, the edge reads the task again and returns that version, as `create_task` does (fix round 1). When the re-read fails, the tool returns the PATCH answer.
 - The edge cannot clear `due_at` or `description` with a null, because the input check drops a null. A later slice can add that.
+- **The type (SP-6).** `type_id` sets the type, and null clears it. The type must be in the vocabulary of the task's project. The edge reads the task and the types of its project first, and the gateway checks the same rule (`_refuse_agent_type`). An Epic type on a task that has a parent gets `TEXT_EPIC_TYPE_HAS_PARENT`.
 - **A move inside the project (MCP-G2).** `parent_task_id` moves the task under another task of its project, and a null moves it to the top level. The PATCH refuses `parent_task_id`, so the edge sends the move route. The tool record names that route in `alt_writes` (§9.5 rule 4).
   - The edge reads a new parent first. A parent that the member cannot see gets "Parent task not found." and no write.
   - Then the edge sends `POST /projects/tasks/{task_id}/move` with the body `{parent_task_id}` and `If-Match`, and reads the task again.
   - `parent_task_id` goes in a call of its own. A call that sends it with another field gets `TEXT_MOVE_ALONE` and no request. So one call is one write and one transaction.
   - The rules of the move route hold: the cycle check, the epic rule and the depth limit. Each refusal gets its own fixed text (`tools._MOVE_DETAILS`).
-  - A move to another project stays a step in the app. For a signed agent, the route takes `parent_task_id` only (`tasks.AGENT_MOVE_FIELDS`). A new parent in another project gets 422 (`_refuse_agent_parent`). The edge then gives "The new parent task is in another project. Move a task to another project in the Metorite app."
+  - A move to another project stays a step of its own. For a signed agent, the route takes `parent_task_id` only (`tasks.AGENT_MOVE_FIELDS`). A new parent in another project gets 422 (`_refuse_agent_parent`). The edge then gives `TEXT_MOVE_OTHER_PROJECT`: move the task with `preview_move_tasks` and `move_tasks` first, then send `parent_task_id` again.
+  - **An Epic under a parent (MCP-G20).** A task of the Epic type is always the top level (`project_management_app.md` §3.4, `core.assert_epic_has_no_parent`). So a plan epic that carries the Epic type cannot sit under a workstream epic. A plan epic with another type, or with no type, can. The edge gives `TEXT_MOVE_EPIC`, which names the next step: send `type_id` with another type, or null, first. The parent may have the Epic type. Each move refusal ends with "Nothing changed."
   - **The version.** The move route takes `If-Match` through `core.require_precondition`, so its rule is `precondition_holds` (MCP-G7). An absent header passes (D-PM-20), so no call of the app changes. A move changes `parent_task_id`, so a move stales a version.
 - `record_activity` stamps `meta.via` with `mcp:<slug>` on the field change, as for `set_task_status`.
+
+**Rules of `update_tasks` (MCP-G20).**
+
+- **One write path.** Each item is one call of `update_task` (`tools._update_task`). It is a request of its own through `gateway_client.write`, with its own nonce, its own `If-Match` and its own transaction. So branch 0 checks the scope and counts the cap for each item. The route checks for each task who may see it and change it. A hidden task answers 404, never 403, as for `update_task`.
+- **The input.** `updates` is the one input, and it is an edge input of §9.5 rule 4. Each item is the input of `update_task` and is checked against it, so a null means the same. An item of the wrong form refuses the whole call before any request. A `task_id` twice in one call gets `TEXT_BULK_DUPLICATE` before any request.
+- **A failed item never stops the others.** Each item comes back with `ok`. A failed item holds the fixed text of `update_task` as `error`, never a gateway text. A title in a result is `untrusted_text`, as in `update_task`.
+- **The cap.** Each item counts as one write. After the cap refuses an item, no later item can land. So the edge sends no more, and the items after it come back with `tried` false, the cap text and `retry_after`. The writes switch stops the call in the same way.
+- **The time.** The call starts no item after 60 seconds. The items after that come back with `tried` false and `TEXT_BULK_TIME`, so a landed write never comes back as busy.
+- **A 401.** A 401 before any item landed is the MCP 401. After an item landed, the call returns what landed, and the rest get `TEXT_BULK_STOPPED`.
+- **Fence.** `tests/unit/test_mcp_edge_bulk_updates.py`, with R8 classes through the real gateway app. The mutations B1 to B6 are each red.
+
+**The write limit (MCP-G20 today, MCP-G28 next).**
+
+- **Today.** Branch 0 runs `INCR` on the tenant key `agent_writes:<connection>` for each signed write. Each write counts once. Each item of `update_tasks` counts once too, because each item is one signed write (`deps.py`, `agent_oauth.write_cap`).
+- **The settings.** `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S` stay. The defaults are 120 writes and 600 seconds. The live cap of the HathiLabs connection is 250 writes in 600 seconds (owner, 2026-11-09).
+- **The problem.** A bulk call saves round trips and not quota. A plan of 500 tasks needs 500 writes, so it stalls on the cap.
+- **The change (MCP-G28).** The limit gets two counters. The call counter keeps `AGENT_WRITE_CAP`, default 120 in 600 seconds. The row counter reads the new setting `AGENT_WRITE_ROW_CAP`, default 5,000 in 600 seconds.
+- **The cost.** A batch of 50 rows costs 1 call and 50 rows. A single write costs 1 call and 1 row. `update_tasks` moves onto the batch path, so it costs 1 call and one row for each item.
+- **A member-approved bulk job.** It does not count its rows against the row counter. It still counts 1 call. A stolen token cannot start it, because the member approves it.
+- **A batch over the limit.** It gets a queued answer with `retry_after`. It no longer gets "Metorite is busy".
+- **Fence.** `tests/unit/test_mcp_write_limit_r8.py` (new) holds both counters, the approved bulk job and the queued answer.
+
+**The plan document (MCP-G29).** One JSON document holds epics, tasks, `blocks` links and moves. A task refers to another task by its local `key`. This is the shape. It is a sketch, and the slice fixes the field names.
+
+```json
+{
+  "epics": [{"key": "e1", "title": "Launch", "project_id": "<project id>"}],
+  "tasks": [
+    {"key": "t1", "title": "Write spec", "epic": "e1", "estimate_mins": 120,
+     "tags": ["spec"], "assignees": ["ana@example.com"]},
+    {"key": "t2", "title": "Build", "epic": "e1", "parent": "t1"}
+  ],
+  "links": [{"blocker": "t1", "blocked": "t2"}],
+  "moves": [{"task": "t2", "project_id": "<project id>"}]
+}
+```
+
+- **A dry run.** It returns the counts and the refused rows. It writes nothing.
+- **The approval.** One approve card shows the exact counts of the plan.
+- **The write.** One transaction applies the whole plan or nothing. A plan holds at most 2,000 rows.
+- **The export.** `plan_export` reads an epic tree back into the same document.
 
 **Rules of `add_comment` (EA-6c, EA3-35).**
 
@@ -728,6 +879,31 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - **The output leaves out `not_notified` (EA3-35, part 4).** That keeps the answer of the write narrow. It does not hide the fact. The `mention` row of the timeline names the people who got the notification, so an agent that mentions people and then reads `get_task_timeline` learns who of them cannot see the task. The member can learn the same in the app. This is an accepted residual (fix round 1). The timeline allowlist of §9.1 does not change.
 - ⚠️ **A comment can start a workflow (fix round 1).** The tool call itself calls no outside site. But the route emits `pm.task.comment_added` after the commit, and that event is a trigger of the workflow catalog (`routes/workflows/catalog.py`). So a published workflow of the organization can start on an agent's comment, and that workflow can call an integration or an HTTP endpoint. This is the same as for a member's own comment, and as for a status move (§9.2, "A write can reach an outside site through a workflow"). The tool description and `docs/external_agents_connect.md` say so.
 - **The residual of a cross-tool key (EA3-35).** The slot key of `create_task` gained the tool name in this slice. A `create_task` key sent before the deploy of EA-6c and sent again after it, inside 24 hours, finds no slot and makes a second task.
+
+**Rules of `update_comment` and `delete_comment` (MCP-G9, Metorite task 843).**
+
+- **The use.** An agent repairs or removes a comment that it wrote, such as a comment with no end after a rate-limit stop. Before MCP-G9 only a person could do that.
+- **Own client.** The author column holds the member, so the rule of a person would let an agent rewrite words that the member typed in the app. So for a signed agent, the route takes a comment only when the member wrote it AND its `meta.via` equals `AgentScope.actor_via`. That is the stamp that branch 0 computes from the connection row, and that `record_activity` writes on each comment of the agent. The stamp names the client, not the client id: `mcp:<host>:<slug>`, or `mcp:box:<slug>-<8 hex>` for a box. So two connections of one member through one OAuth client share their comments, and a box changes only its own.
+- **The fallback stamp.** A client whose client id gives no slug at the host of its origin gets the host stamp `mcp:<host>` (`agent_oauth.actor_via_for`). A DCR client is such a client. So two DCR clients of one member at one host have one stamp, and each can change the comments of the other.
+- **The order of the checks** (`activities._load_agent_comment`). First the comment: a missing id, a deleted comment and a comment of another tenant (RLS hides the row) answer 404. Then the task, through `load_visible_task`: a task outside the pins or the left-out list of the connection answers the same 404. Then the owner: a comment with another author, no `via`, a `chat:` stamp or the stamp of another client answers 403 with the detail "Only its author can change this comment in Metorite." Last, rules 1 to 3 below answer the same 403. The agent reaches the 403 only on a task that it can already read, and the timeline of that task already shows the author. So a marked comment or a run comment answers 404, not 403, after a delete or outside the pins.
+- **Rule 1: a person's edit ends the rights of the agent** (fix round 1). Each edit of a person sets `meta.person_edited` (`activities._mark_person_edit`). A jsonb merge sets it, so `via` and the other keys stay. The web app and the chat card `edit_comment` both reach that path. After a member edits a comment that the agent wrote, no agent session can change or delete the member's words. The mark stays for the life of the comment.
+- **Rule 2: a comment of an agent run stays as written** (fix round 1). A comment with `meta.agent_run_id` is the record of a run activity (`agent_runs._comment`). That is a question, an answer, an error, or the answer that `record_outside_decision` writes. The run reads it as the record of what the agent asked the member. So an agent may not reword "May I drop the staging rows?" to "production rows" after the member answered yes.
+- **Rule 3: the last word** (fix rounds 2 and 3). An agent changes its own comment only while nobody else has written a comment on the same task after it. A later comment may answer the words that the comment holds now. So the route refuses a comment when its task holds a later comment row that is not this client's own (`activities._has_later_comment`).
+  - Later means a greater `created_at`, and a greater `id` when two rows have the same `created_at`. The column default stamps the start of the writing transaction. The file importer keeps the date of an imported comment, so an imported comment counts by that date.
+  - A row is this client's own only when the member wrote it, its `meta.via` is the stamp of this client, no person edited it, and it has no `meta.agent_run_id` (fix round 4). So a question or an answer of an agent run always counts, also one with this client's stamp. An example is the answer of `record_outside_decision` after the member answered in another place. Each other comment row counts too: the member in the app or the chat, another member, another agent client, and a soft-deleted row, so the check fails closed. A row of another type does not count, such as the audit row of an edit.
+  - A reply is on the same task as its parent and always later, so the rule covers a reply. A comment with only later comments of this client stays open to both tools. An earlier comment of somebody else does not refuse it.
+  - The check runs after `core.lock_task` on the task row. `record_activity` bumps the task row before it inserts any comment. So a new comment on the task either commits first, and the check sees it, or it waits until the change commits. The comment lock is `FOR NO KEY UPDATE`, so the foreign key check of a reply never waits on it.
+  - The agent path locks the comment and then the task, and a task delete locks the task and then the comment. So the two can deadlock, and Postgres rolls one back. The agent path then answers 409 "The task changed while this ran, so nothing changed. Try again." (`activities._agent_comment_race_as_409`, fix round 4). The guard reads `core.is_transient`, so SQLSTATE 40P01, 40001 and 55P03 answer the 409. A person's request does not change. The edge maps the detail to "The task changed while this ran, so nothing changed. Send the same call again." The refusal frees the key, so the same key works again.
+  - This rule closes three cases of a question. The agent asks "May I drop the staging rows?" and somebody replies "Yes" to it, replies "Yes" beside the agent's own reply, or writes "Yes" as a new comment. The reply check of fix round 2 saw only the first case.
+- **The texts.** The edge maps a 404 to "Comment not found." It maps the 403 with that detail to "Only its author can change this comment in Metorite. An agent can change only a comment that its own client wrote. It cannot change a comment when a person edited it, it belongs to an agent run, or someone else wrote on the task after it. Nothing changed." The gateway sends the one detail for the owner check and for rules 1 to 3, so the text names all of them. The edge holds a copy of the detail (`tools.COMMENT_NOT_OWN_DETAIL`), and the R8 file pins the two equal.
+- **The audit row.** Each change writes one `pm_activities` row of the type `system`, with `created_by` the member, the body "Edited a comment" or "Deleted a comment", and `meta` `{via, action, comment_id}`. The action is `comment_edited` or `comment_deleted`. The row holds no text of the comment, old or new, so the words of a deleted comment stay gone. The type exists, so no migration touches the CHECK of `pm_activities.type`. The web timeline prints the body of a `system` row (`activityStream.ts`).
+- **The edit.** It has the body rules of `add_comment`: the edge refuses a blank body, a NUL and more than 20,000 characters, and the gateway caps a signed edit at `AGENT_MAX_COMMENT_CHARS`. The edit replaces the body in place, and Metorite keeps no copy of the old text. A mention that the edit adds notifies, as for a person.
+- **The delete.** It is the soft delete of a person: the route sets `deleted_at` and clears the body. The replies stay.
+- **The key.** Each tool requires `idempotency_key`, with the slot of `add_comment` and the tool name in the slot key. A replay returns `{id, updated: false}` or `{id, deleted: false}` and makes no request. The texts name a change: "This idempotency_key was used for a different change. Send a new key." and "A call with this idempotency_key got no answer, so Metorite cannot tell if it changed the comment. Read the comments with get_task_timeline before you use a new key."
+- **The class.** Both tools are class C and have `destructiveHint: true`, so a client can ask the person first. The chat manifest keeps its rows: the PATCH is class B (`edit_comment`) and the DELETE is class C (`delete_comment`). `CLASS_C_WRITES` of `test_mcp_edge_coverage.py` names the DELETE.
+- **A person does not change.** Without `UserContext.agent`, both routes run the author rule of `_load_own_comment` as before, and write no audit row. The one addition is the mark of rule 1 on each edit of a person. The chat sends `X-Actor-Via: chat:projects-assistant` with no signature, so it is a person here.
+- **The flag and the cap.** Both tools show only while `agent_access_writes_enabled` is on, and branch 0 refuses a signed write while it is off. Each call counts against the cap of 120 writes in 10 minutes.
+- **Not the delete switch.** The member's switch "Let my AI agents delete tasks" (EA3-51) governs `delete_task` only. `delete_comment` shows while that switch is off, and its entry names no task delete. The rule of this slice is that `delete_comment` needs no member switch, for three reasons. It removes only a comment that the agent's own client wrote, that no person edited, and after which nobody else wrote on the task (rules 1 and 3). It is a soft delete, and it writes an audit row. The chat already offers the same `DELETE` as class C, on a card. A task delete removes the words of people and the subtasks, so it keeps its switch. `test_mcp_edge_delete.py` (`test_h1_with_the_switch_off_no_text_names_a_delete`) holds that every other text of the edge still names no delete while the switch is off.
 
 **Rules of `claim_task` (EA-6b, EA3-34).**
 
@@ -777,6 +953,34 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - **Authority.** It is a write of `projects:write`. Branch 0 checks the nonce, the scope, the writes flag and the cap of EA3-30, as for each pair of `MCP_WRITE_ROUTES`. The edge refuses a connection without the scope at check 8. The gateway caps an agent at 50 assignees (`AGENT_MAX_ASSIGNEES`), the cap of the edge too. The record of each change is the timeline row with `meta.via`, as for each other write tool. Nobody has built EA-8 yet.
 - **Runs.** The hold of a task is its agent run (§12.3), not the assignee row. So a `set_assignees` that removes the caller does not end the run of the caller. The agent calls `release_task` to give the task back. A removed person who holds an open run keeps the run. The run holds the task until it ends or its lease runs out.
 
+**Rules of `create_project` and `update_project` (MCP-G1, EA3-53).**
+
+- **Who sees a new node.** The create of the app decides, and the edge writes no grant. A new space gets the one `org` grant of `tree.create_node`, as a space that a member makes in the app does. So each member of the organization sees it, and a member of another organization does not. A project or a subproject gets no grant. It has the access of its parent through the grant closure (`core._VISIBLE_PROJECTS_SQL`). A node in a personal tree takes the `personal_owner` of the tree, as in the app.
+- **The level.** `level` is an edge input (§9.5 rule 4). The edge reads the parent and refuses a level that the parent does not give. A space gives a project, and a project gives a subproject. A folder gives the level under the node above it. When the member cannot see the node above the folder, as under a pin on the folder, the edge does not refuse. The grammar of the gateway then decides the level, and the result gives it (fix round 1). A subproject holds no project. A folder is not a level of the tool, because a person groups the tree with folders in the app.
+- **The pins.** A connection with pins makes no space. The edge refuses with a fixed text, and `tree._refuse_pinned_space` answers 403 `AGENT_SPACE_PINNED` to a signed request. A parent outside the pins is "Project not found.", as a hidden record is (§7.1). So a new node always sits inside the pins.
+- **No grant writes.** No tool calls a grant route, the node move, the node archive or the node delete (`NEVER_ON_THE_EDGE` of the coverage fence). `tree.AGENT_NODE_CREATE_FIELDS` and `tree.AGENT_NODE_PATCH_FIELDS` refuse each other body key of a signed request with 422. So an agent names no `lead`, which is a grant write (D-OP-11), no kind and no setting of a space.
+- **The version.** `PATCH /projects/nodes/{project_id}` takes `If-Match` through `core.require_precondition`. A node has no `fields_at`, so the rule is strict equality on `updated_at`. An absent header passes (D-PM-20), so no call of the app changes. A stale version gives "The project changed. Read it again with get_project."
+- **No dates and no archive.** A node has no date column, so `update_project` takes no date. The archive of a project stays the act of a member in the app.
+- **The key.** The `idempotency_key` of `create_project` uses the slot of `create_task` (`tools._claim_slot` and `tools._keyed_write`), with the tool name in the slot key.
+
+**Rules of `preview_move_tasks` and `move_tasks` (MCP-G1, D-PM-29 to D-PM-31, EA3-53).**
+
+- **The rules of the app.** The two routes are the routes of the Move dialog. A move takes one source project (D-PM-30). The move authority of D-OP-14 holds: the creator of the task, a lead or a Projects admin. A team task does not move into a personal project (D62). The required fields of the destination hold. The pins and the personal opt-out narrow the tasks and the destination through the visibility seam (§7.3), so each one outside them is "not found".
+- **No move without a preview.** `preview_move_tasks` returns the plan as the agent sees it, and a `preview_id`. The id is the base64url HMAC-SHA256 of the connection, the selection and that plan. Its key is the HMAC-SHA256 of the signing key of the edge over the label `move-preview-v1`. `move_tasks` needs the id. It runs the preview again, and it moves only when the new id equals the sent id. So a change after the preview refuses the move, a new drop or a new subtask too, and nothing moves.
+- **The drops (D-PM-29).** The move sends `accept_drops` and `accepted_drops`, the drops of the preview that it just ran. When a field goes between that preview and the move, the route answers 409, and nothing moves. The gateway refuses a signed move with no `accepted_drops` (`move.AGENT_MOVE_NEEDS_DROPS`, 422).
+- **The keys (EA3-15).** The preview returns `task_ids`, `task_count`, `source_project_id`, `destination_project_id`, `include_subtasks`, `crosses_root`, `crosses_status_set`, `statuses`, `destination_statuses`, `types`, `field_map`, `orphan_fields`, `drops`, `tags`, `subtasks`, `required_missing`, `audience`, `blocked`, `can_move` and `preview_id` (`tools.PREVIEW_KEYS`). Each name and each dropped value is `untrusted_text`. A refusal of the gateway gives a fixed text, and its detail never reaches the agent.
+- **The mapping (D-PM-31).** The preview shows where each status, task type and field lands. `status_map` and `field_map` change that. The edge refuses a `status_map` target that is not in `destination_statuses`.
+- **The blocks.** `blocked` names each reason that holds the move back: `audience_widens`, `already_there`, `required_missing`, `subtasks_hidden`, `subtask_private`, `status_map_unknown` and `status_unmapped`. `move_tasks` refuses with the fixed text of the first one. A second call of a move that landed answers `already_there`.
+- **Subtasks.** `include_subtasks` is true when the call does not send it, as the box of the Move dialog is. Each subtask then moves along, through `tasks.move_task_in`. A subtask that the member cannot see refuses the move, so the tree does not split.
+- **An agent never widens who sees a task (fix round 1).** For an agent, the plan of `move._plan` holds `audience`: `same`, `narrower` or `wider`. A member's plan holds null, so the Move dialog does no extra read. `move._move_audience` compares the members who open each moved task now with the members who open it after the move.
+  - The grant arm of each side is `notifications.project_grant_holders`. It uses the one predicate `Visibility.project_clause` for each active member, through `resolve_visibility_for`, as `grant_holders` does.
+  - The assignees of a task count on both sides, because the assignee arm of `task_visibility_clause` moves with the task.
+  - A task of a personal project that moves into a project that is not personal is always `wider` (D-OP-15).
+  - `wider` means that a member who cannot see a moved task now could see it after. The gateway refuses such a move with 403 `{"error": "audience_widens"}`, before any write, so a member makes it in the app. The edge blocks it first, with the fixed text of `audience_widens`.
+  - A move to the same people or to fewer goes ahead. It drops values and can hide a task, so `move_tasks` stays class C with `destructiveHint: true`.
+  - Cost: one read of the members, then the visibility and one row for each member, for an agent only.
+- **The cap and the calls.** A call takes at most 50 tasks (`MAX_MOVE_TASKS`), and the route takes 500. The preview makes two calls, the read of the destination and the POST. The move makes three.
+
 **The gateway narrows an agent write (EA-6d).** This closes the follow-up of §17. For a request with `UserContext.agent` set, `routes/projects/tasks.py` answers 422 to each of these:
 
 - A body key of `POST /projects/tasks` outside `AGENT_CREATE_FIELDS`. The set is `project_id`, `title`, `description`, `parent_task_id`, `type_id`, `status_id`, `tags` and `due_at`. MCP-G2 adds `importance`, `leveraged`, `estimate_mins`, `start_date` and `assignees`.
@@ -790,10 +994,14 @@ EA-6a builds two write tools, and EA-6d builds two more (EA3-31). EA-6b builds `
 - A body key of `POST /projects/tasks/{task_id}/move` other than `parent_task_id`, and a new parent in another project (MCP-G2).
 - A NEW assignee without a project grant or the admin read right (`assignee_refused`, MCP-G2 fix round 1).
 - More than 50 assignees in one agent write (MCP-G2, fix round 1).
+- A body key of `POST /projects/nodes` outside `AGENT_NODE_CREATE_FIELDS` (`name`, `description` and `parent_project_id`), and a body key of `PATCH /projects/nodes/{project_id}` outside `AGENT_NODE_PATCH_FIELDS` (`name`, `description` and `status`). `routes/projects/tree.py` holds both (MCP-G1).
+- A new space from a connection with pins, with 403 and not 422 (MCP-G1).
+- A move of `POST /projects/tasks/move` with no `accepted_drops` (`routes/projects/move.py`, MCP-G1).
+- A move whose `audience` is `wider`, with 403 `audience_widens` (`routes/projects/move.py`, MCP-G1 fix round 1).
 
 A member's request is not narrowed. The narrowing lives in the route, not in branch 0, so the digest of §10.1 does not change.
 
-**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference`, `update_task`, `claim_task` and `set_assignees` are idempotent: a second call with the same input changes nothing more. `add_comment` (EA-6c) is idempotent, because the tool requires an `idempotency_key`. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time. `set_assignees` also has `destructiveHint: true` (fix round 1), because an empty list removes every assignee.
+**Annotations of a write tool.** `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. `set_task_status`, `add_task_reference`, `update_task`, `claim_task` and `set_assignees` are idempotent: a second call with the same input changes nothing more. `add_comment` (EA-6c) is idempotent, because the tool requires an `idempotency_key`. A second `update_task` with the same `expected_version` gets 412. **`create_task` has `idempotentHint: false`** (EA-6d). The hint is one value for every call, and a call with no `idempotency_key` makes a new task each time. `set_assignees` also has `destructiveHint: true` (fix round 1), because an empty list removes every assignee. MCP-G1: `create_project` has `idempotentHint: false`, as `create_task` has. `preview_move_tasks` has the hints of a read, because its POST writes nothing. `move_tasks` has `destructiveHint: true`.
 
 **A NUL character in a write (EA-6c fix round 1).** Postgres refuses a NUL (`\x00`) in text. So a write that carried one made the route answer 500, and the edge answered busy. With a key, `create_task` then marked its slot `unknown`, although no task existed. Now each write tool refuses a NUL in a body input first, before any claim and any request, with the text "The input '<name>' holds a character that Metorite cannot store." (`tools.text_nul`). `claim_task` (EA-6b) needs no such check, because its two inputs must match a UUID and a version pattern. The check reads the body keys of each tool: `CREATE_BODY_KEYS`, `UPDATE_BODY_KEYS` (also each string inside `custom_fields`, its keys too), `ADD_REF_BODY_KEYS` and `COMMENT_BODY_KEYS`. A refusal sends nothing, so a key stays free. The gateway has no NUL check of its own. A signed write that skips the edge still gets the 500, which changes nothing.
 
@@ -803,7 +1011,9 @@ A member's request is not narrowed. The narrowing lives in the route, not in bra
 
 EA-6b moved `claim_task` into the table above (EA3-34), and EA-6c moved `add_comment` (EA3-35). The later rows of EA3-31 are all built. EA-6d moved `create_task` and `update_task` into the table above. The spec named the inputs `type?` and `status?`, and the build names them `type_id` and `status_id`, as the route does.
 
-The edge has **no class C tool**. A move across projects and a bulk change are not exposed. A slice that adds one must add a human confirmation step too. MCP-G2 exposes the unassign of another person through `set_assignees`, and EA3-52 records why it needs no confirmation card. An agent may assign only a person who can already open the task, so it cannot widen access. `set_assignees` has `destructiveHint: true`, so a client may ask the person before a call.
+MCP-G1 adds `move_tasks`, a move across projects, as a class C tool (EA3-53). Its human confirmation step is the preview: the move needs the `preview_id` of the same selection, and `destructiveHint: true` makes the client ask the person. A bulk change is not exposed. A slice that adds one must add a human confirmation step too. MCP-G2 exposes the unassign of another person through `set_assignees`, and EA3-52 records why it needs no confirmation card. An agent may assign only a person who can already open the task, so it cannot widen access. `set_assignees` has `destructiveHint: true`, so a client may ask the person before a call.
+
+**The templates (WS-39 TPL-1a).** The save and the apply of a template are class C in the chat manifest, so rule 2 of §9.5 keeps both pairs off the edge. An apply makes a project with up to 500 tasks, and a save makes a row that each member reads. A slice that exposes either one must add a human confirmation step first, as the rule above says, such as the preview and the confirm of `move_tasks`. Until then a member makes a template, or a project from one, in the chat or in the app.
 
 The archive is the one class C act that an agent can reach, and only through a request (EA3-40). The tool `request_task_archive` is class B, because it only writes a question. The class C act is the archive itself, and only the member does it, on a route that the edge cannot call.
 
@@ -864,7 +1074,37 @@ EA-6b adds one write pair, `POST /projects/tasks/{task_id}/claim`, the route of 
 
 EA-6g adds one write pair, `POST /projects/tasks/{task_id}/archive-request`, the route of `request_task_archive` (EA3-40). The approval route `POST /projects/agent-runs/{run_id}/archive-approval` stays OUT of `MCP_ROUTES` and `MCP_WRITE_ROUTES`, and so does `POST /projects/tasks/{task_id}/archive`. Branch 0 refuses a signed request to either with 401. EA-6g does not change branch 0, so the digest of §10.1 does not change.
 
+SW-16a (`agent_coordination.md`) adds two write pairs: `POST /projects/tasks/{task_id}/links` and `DELETE /projects/tasks/{task_id}/links/{link_id}`, the routes of `add_task_link` and `remove_task_link`. The `DELETE` is the first `DELETE` of the set. The manifest holds both as class B already, for the chat tools `link_tasks` and `unlink_tasks`. The `links` rows of `get_task` carry `link_id`. SP-6 adds `type_id` to `update_task`.
+
+SP-8a (`project_management_app.md` §13.3, Metorite task 2291) adds one write pair, `PUT /projects/tasks/{task_id}/epic-contract`. It is the route of the `epic_contract` block of `update_task`, and the second `PUT` of the set. The manifest holds it as class B, for the chat tool `set_epic_contract`. The pair does not change branch 0, so the digest of §10.1 does not change. **BUILT 2026-11-08 and not merged (branch `mt-1cb9f2de-sp8-epic-contract`).**
+
+- **The read.** `get_task` and `get_task_context` return `epic_contract`: the contract of an epic, or null for a task that is not an epic. The keys are `outcome` (U), `acceptance`, `out_of_scope` (U), `risk_tier`, `appetite_credits`, `appetite_review_hours`, `workstream` (U), `spec_link` (U), `updated_by` and `updated_at`. Each check of `acceptance` holds `id` (S), `text` (U), `done` and `evidence` (U). `risk_tier` is `LOW`, `STANDARD` or `HIGH`, or null. The edge reads the contract from the task row, so neither tool makes a request more.
+- **The write.** `update_task` takes `epic_contract` in a call of its own, and sends it to the PUT with `If-Match: <expected_version>`, the version of the task. The match is strict: any change after the read gives the stale text. The block replaces the whole contract, so a part that the agent leaves out is cleared. The block holds 3 to 7 checks. The answer is the task, as for the PATCH, and `epic_contract`.
+- **The create.** `create_task` takes `epic_contract` with the `type_id` of the Epic type. The contract lands in the create's own transaction, so a refused contract makes no task.
+- **The refusals.** A task that is not an epic gets "This task is not an epic, so it takes no epic contract. Nothing changed." and the next step. The edge maps each 422 of the route by its `detail` (`tools._EPIC_DETAILS`). A refusal of `create_task` made no task, so its text names no `update_task` (`_CREATE_EPIC_DETAILS`).
+- **Dark.** While `EPIC_CONTRACT_ORGS` does not name the organization, the gateway answers 404 with its own detail. The edge then says "Epic contracts are not on for this organization." and never "Task not found." `get_task` and `get_task_context` give `epic_contract: null`. The edge reads no flag: the gateway answers for it. A pinned connection reaches only the epics of its pin: any other task reads "Task not found." The `GET` of the route stays off the edge, because `get_task` carries the contract.
+- **The fence.** `tests/unit/test_epic_contract_r8.py`.
+
 MCP-G2 adds two write pairs. `PUT /projects/tasks/{task_id}/assignees` is the route of `set_assignees`, and it is the first `PUT` of the set. `POST /projects/tasks/{task_id}/move` is the route of the `parent_task_id` of `update_task`. The manifest holds both as class B already. Neither pair changes branch 0, so the digest of §10.1 does not change. The tool `set_assignees` has `destructiveHint: true` (fix round 1), and its pair stays class B.
+
+MCP-G1 adds four write pairs: `POST /projects/nodes`, `PATCH /projects/nodes/{project_id}`, `POST /projects/tasks/move/preview` and `POST /projects/tasks/move`. The manifest holds each as class B already, for the chat tools `create_project`, `update_project` and `move_task`. The preview writes nothing. It is a write pair only because branch 0 admits a POST for a pair of `MCP_WRITE_ROUTES` only. `READ_ONLY_POST_TOOLS` of the fence gives its tool the hints of a read. The grant routes, the node move, the node archive and the node delete stay out (`NEVER_ON_THE_EDGE`). No pair changes branch 0, so the digest of §10.1 does not change.
+
+WS-39 LP-1a (`project_management_app.md` §14.2a) adds one read pair and one write pair: `GET /projects/nodes/{project_id}/updates` for `list_project_updates`, and `POST /projects/nodes/{project_id}/updates` for `post_project_update`. The manifest holds the GET as class A and the POST as class B, for the chat tools of the same names. The POST needs the right of a task write on the project, so a pinned connection posts only inside its pin. Neither pair changes branch 0, so the digest of §10.1 does not change.
+
+- **The read.** `list_project_updates` takes `project_id`, `limit` (1 to 50, default 20) and `before`, the `next_before` of the page before. Each input maps to a parameter of the route, so it adds no edge input. Each update holds `id`, `project_id`, `health`, `body` (U), `author` (S), `posted_at`, `drafted_by_ai` and `via`.
+- **The write.** `post_project_update` takes the `idempotency_key` in the slot of `add_comment`, so it adds one edge input. The write cap of branch 0 counts it. A space or a folder gets its own text, and an archived project gets a refusal.
+- **The flag.** While `PROJECTS_UPDATES_ORGS` does not hold the organization, both routes answer 404 with the detail `agent_oauth.PROJECT_UPDATES_OFF`. The edge maps that detail to the text that the feature is off. Any other 404 is `Project not found.`
+- **The delete stays off.** `DELETE /projects/nodes/{project_id}/updates/{update_id}` is a member's act in LP-1a. No pair of `MCP_ROUTES` names it, and `NEVER_ON_THE_EDGE` of the fence holds it out. An update that an agent posts has `drafted_by_ai` true.
+
+WS-MCP SW-23 (`agent_coordination.md` SW-23) adds one write pair: `POST /projects/tasks/{task_id}/check-result` for `report_check`. The manifest holds it as class B, for a chat tool in `PLANNED`. A pass closes the task only under the rule of a status move, and `open` and `cannot_run` never close it. The pair does not change branch 0, so the digest of §10.1 does not change. While `agent_task_checks_enabled` is off, the route answers 404 and the edge lists no tool. The tool adds no edge input, because each input maps to a parameter of the route.
+
+SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`. They are not Projects routes, so `NAMED_EXCEPTIONS` of the fence names each one (rule 2). The save and the history stay off the edge, because only a member writes guidance. Neither pair changes branch 0.
+
+- **The flag.** Both routes answer 404 while `AGENT_GUIDANCE_ORGS` does not name the organization. The edge then leaves out each guidance key.
+- **`guidance`.** `get_task_context` and `claim_task` gain the key `guidance`, the object `{blocks, dropped}`. The blocks come nearest first: the project, its parents, the space, then the organization.
+- **The wrap.** Each block body and each source name leaves as `{"untrusted_text": ...}` (§9.4). A block of a project that the member cannot see has the source `{"hidden": true}`, with no name and no project id.
+- **`dropped`.** It counts the farthest blocks that the cap of the gateway cut. A value above 0 tells the agent that the answer does not hold all the rules.
+- **`guidance_ref`.** Each `my_work` row gains `guidance_ref`: the id and the version of the nearest block, or null. It holds no body. A project that the member cannot see gets null, as an unknown id does.
 
 **What stays untouched.** Do not edit `apps/skills/skill-projects/skill_projects/manifest.py`, with one exception. Do not edit `tests/unit/test_projects_chat_coverage.py` or `tests/unit/test_projects_field_parity.py`.
 
@@ -872,9 +1112,14 @@ MCP-G2 adds two write pairs. `PUT /projects/tasks/{task_id}/assignees` is the ro
 
 **The second exception (EA-6g, EA3-40).** EA-6g adds two manifest rows in the same way. The request pair is class B, with the tool `request_task_archive`. The approval route is class C, with a row of its own. A fence holds that no class C row is in `MCP_ROUTES` (rule 2 below), so the approval route stays off the edge. Do not put the edge tools into `TOOL_ANNOTATIONS` of `acb_skills`. Exclusion is the default: branch 0 refuses every route that `MCP_ROUTES` does not list.
 
-**The third exception (EA-6h, EA3-51).** `POST /projects/tasks/{task_id}/agent-delete` is the one destructive pair of `MCP_WRITE_ROUTES`. Its manifest row is class X, because the chat never reaches it. The chat deletes through `delete_task` and its card. `CLASS_X_WRITES` of `test_mcp_edge_coverage.py` names it as the one class X pair that rule 2 allows. `GET /auth/me/agent-access` is a named exception, as `GET /auth/me` is. Its `PUT` and the plain `DELETE /projects/tasks/{task_id}` stay out of `MCP_ROUTES`.
+**The third exception (EA-6h, EA3-51).** `POST /projects/tasks/{task_id}/agent-delete` was the first destructive pair of `MCP_WRITE_ROUTES`. MCP-G9 adds the second, `DELETE /projects/comments/{activity_id}` (§9.2). That pair is class C and not class X, so `CLASS_C_WRITES` names it (rule 2 below). The manifest row of the agent-delete is class X, because the chat never reaches it. The chat deletes through `delete_task` and its card. `CLASS_X_WRITES` of `test_mcp_edge_coverage.py` names it as a class X pair that rule 2 allows. `GET /auth/me/agent-access` is a named exception, as `GET /auth/me` is. Its `PUT` and the plain `DELETE /projects/tasks/{task_id}` stay out of `MCP_ROUTES`. IMG-3 (`projects_ai_chat.md` §30.4) adds the one class X read, `GET /projects/attachments/{attachment_id}/{filename}`, for `get_attachment`. `CLASS_X_READS` of the fence names it. It is class X because the chat answers with text and never reads raw bytes.
+
+**The second class X write (SW-27b).** `agent_coordination.md` SW-27, task 3893, adds `POST /projects/nodes/{project_id}/sequences/{name}/reserve` for `reserve_number`. The chat has no need to reserve a number, so the pair is class X in both manifests, and `CLASS_X_WRITES` names it. Its `{name}` is not an id, so `MCP_PATH_SHAPES` gives it `SEQUENCE_NAME_PATTERN`. SW-27c1 (task 3938) adds the third, `POST /projects/reservations/{reservation_id}/mark`, for `mark_number`. It is dark behind `sequence_marks_orgs`.
 
 **The fourth exception (MCP-G2).** The move and the PUT of the assignees gain `If-Match`, and the create gains `assignees`. Each field needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends none of the three.
+
+**The fifth exception (MCP-G1).** The node PATCH gains `If-Match`. It needs an entry in `FIELD_EXEMPT` of the manifest, or `test_projects_field_parity.py` fails. The chat sends no `If-Match`.
+
 
 **The tool record.** Each tool in `agent_edge/tools.py` declares `name`, `title`, `required_scope`, `inputSchema`, `outputSchema`, `annotations` and its routes. `required_scope` is a scope string, or `None` for "any live token". A read has the annotations `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false`. A write (EA-6a) declares its `method`, and it has `readOnlyHint: false` with the other three the same.
 
@@ -882,14 +1127,19 @@ MCP-G2 adds two write pairs. `PUT /projects/tasks/{task_id}/assignees` is the ro
 
 **The fence.** `tests/unit/test_mcp_edge_coverage.py` fails when any of these rules breaks:
 
-1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH`, `POST` or `PUT` (MCP-G2) for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
-2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. No class C or X route appears.
+1. Each pair in `MCP_ROUTES` is a route that the gateway serves. Its method is `GET`, or it is `PATCH`, `POST`, `PUT` (MCP-G2) or `DELETE` (SW-16a, MCP-G9) for a pair in `MCP_WRITE_ROUTES`. `MCP_WRITE_ROUTES` holds no GET pair.
+2. Each pair is class A in `MANIFEST`, or it is a named exception. EA-3 has one exception, `GET /auth/me`. A pair in `MCP_WRITE_ROUTES` may be class B. A class C or X pair appears only by name. `CLASS_C_WRITES` names two class C pairs. MCP-G9 names `DELETE /projects/comments/{activity_id}`, because the route takes only a comment of the agent's own client. CIV-14b (§12.9) names `POST /projects/tasks/{task_id}/attachments`, because for an outside agent the upload is a class B write.
 3. Each tool declares a `required_scope` key, the four annotations, an `inputSchema` and an `outputSchema`. A write tool has `readOnlyHint: false` and needs `projects:write`.
-4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. A new edge input needs a spec amendment.
+4. Each tool input maps to a parameter of its route. The fence reads the parameters from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does: the path, query and header parameters, and the fields of each model in `dependant.body_params`. The tool record declares each map, such as `text` to `q` and `expected_version` to `If-Match`. An input that the edge applies itself is a named exception, and the tool record lists it in `edge_inputs`. EA-3 has four: `parent_id`, `text`, `limit` and `cursor` of `list_projects`, because `GET /projects/tree` takes no parameter. MCP-G21 adds `limit` and `cursor` of `list_members` and of `list_tags`, because the edge pages the whole answer. A new edge input needs a spec amendment.
    - EA-6d adds a fifth, `idempotency_key` of `create_task`. The edge keeps the key in its own slot, and the route takes no such field (§9.2).
    - EA-6c adds a sixth, `idempotency_key` of `add_comment` (EA3-35). The same slot keeps it, with the tool name in the slot key. The comment route takes no such field either.
    - EA-15b adds a seventh, `limit` of `my_work` (§12.4). The edge cuts its merged rows to that length. No route of `my_work` takes it.
    - MCP-G2 adds `alt_writes` to the tool record: a write that the tool sends in place of its own write. Rule 4 reads the parameters of that route too, and each pair is in `MCP_WRITE_ROUTES`. Only `update_task` has one, the move of `parent_task_id`.
+   - MCP-G1 adds three edge inputs: `level` and `idempotency_key` of `create_project`, and `preview_id` of `move_tasks`. The edge checks the level against the parent. The key uses the slot of `create_task`. The edge compares the preview id with the id of the preview that it runs again. `move_tasks` also sends a prior write, the preview, so the fence names it beside `ask_on_task`.
+   - MCP-G20 adds one edge input, `updates` of `update_tasks`. The edge sends each item as one call of `update_task`, and no route takes a list. Each item is the input of `update_task`, so rule 4 of that record covers each item. `update_tasks` has the `alt_writes` of `update_task` too. `test_rule_4_each_item_of_update_tasks_is_an_update_task_input` holds both facts.
+   - MCP-G9 adds two edge inputs: the `idempotency_key` of `update_comment` and of `delete_comment`. The slot of `add_comment` keeps each key, with the tool name in the slot key. The comment routes take no such field.
+   - WS-39 LP-1a adds one edge input: the `idempotency_key` of `post_project_update`. The slot of `add_comment` keeps it, with the tool name in the slot key. The update route takes no such field.
+   - CIV-14b (§12.9) adds one edge input: the `idempotency_key` of `upload_task_image`. The slot of `add_comment` keeps it, with the tool name in the slot key. The fingerprint holds the SHA-256 of the bytes, not the base64. The upload route takes a form with one file and no key.
 
 This is R7. The rule names its fence.
 
@@ -905,7 +1155,7 @@ This is R7. The rule names its fence.
 2. **Signing key.** When `agent_signing.signing_key()` is None, `/mcp` answers HTTP 503 with `Retry-After: 30` (EA3-18). Without a key the edge cannot call the gateway, so no later check can help. This check comes after the flag and before the method, because it is a fact of the transport and not of the request.
 3. **Method.** `GET /mcp` and `DELETE /mcp` answer 405.
 4. **Origin.** When `Origin` is present, it must equal the origin of `agent_oauth.issuer()`. Any other origin gets 403.
-5. **Body.** A body that is not JSON gets HTTP 400 with `-32700`. A JSON-RPC batch, or a body that is not a JSON-RPC message, gets HTTP 400 with `-32600`.
+5. **Body.** A body that is not JSON gets HTTP 400 with `-32700`. A JSON-RPC batch, or a body that is not a JSON-RPC message, gets HTTP 400 with `-32600`. A body that declares more than 1 MiB takes the order of "The body size" below (CIV-14b). Its token check comes before the read.
 6. **Token.** §7.1 steps 1 and 2. A failure gets 401. A database outage in the lookup gets 503 with `Retry-After: 2` (EA3-10).
 7. **Version.** The rule below. A value that the edge does not accept gets 400 with `-32600`.
 8. **Scope.** A `tools/call` of a known tool that the effective scopes do not cover gets 403. A write tool while the writes flag is off skips this check, and its call answers the tool error of §9.2 (EA-6a fix round 1).
@@ -927,7 +1177,20 @@ After the eight checks, the edge dispatches the method. A notification, or a JSO
 4. `2026-07-28` gets 400 in EA-3. EA-3c adds it.
 5. D8 sends `server/discover` with no header, and expects `-32601`.
 
-**The body size.** A request body over 1 MiB gets 413 before the edge parses it. A declared `Content-Length` over 1 MiB gets the 413 before the edge reads the body. Otherwise the edge reads the stream until the total passes 1 MiB, so it holds at most 1 MiB and one more ASGI chunk.
+**The body size.** A body of 1 MiB at most keeps the order of the eight checks. The edge reads the stream until the total passes 1 MiB, and then it answers 413. So a body with no declared `Content-Length` never passes 1 MiB. The edge holds at most 1 MiB and one more ASGI chunk.
+
+CIV-14b (§12.9) lets one `tools/call` of `upload_task_image` pass 1 MiB, up to 6 MiB. Such a body must declare its `Content-Length`. For a body that declares more than 1 MiB, the checks after check 4 come in this order (fix round 1):
+
+1. **Length.** A declared length over 6 MiB gets 413, and the edge reads no byte.
+2. **Token.** Check 6 runs here, from the headers only. A refusal answers as check 6 does: 401, or 503 for an outage. So a client with no token takes no slot, and the edge reads no byte of its body.
+3. **Flag.** The organization of the token row must be on `MCP_IMAGE_UPLOAD_ORGS`. Otherwise the body gets the 413 of the cap before CIV-14b, and the edge reads no byte of it. So a client with a valid token sees no change when its organization is off the flag. It cannot hold a slot (fix round 2). A request with no valid token gets the 401 of step 2 first. Before CIV-14b, such a body of 1 to 6 MiB got 413. Fix round 1 made that change on purpose, so that the token check comes before the read.
+4. **Slot.** The edge holds at most 4 such bodies at once, and at most 2 for one connection. One more gets 503 with `Retry-After: 5`, and the edge reads no byte of it.
+5. **Read.** The whole body must arrive in 30 seconds, or it gets 408. A body longer than its declared length gets 413.
+6. **Shape bytes.** Before the parse, the edge counts two kinds of bytes. The `{` and `[` bytes are 16 at most, and the `,` bytes are 32 at most. A body over either count gets 413, so a body of many small values never reaches the parser. An upload call is one object with one long base64 string, so it passes with room.
+7. **Parse.** The body must be JSON and one `tools/call` of `upload_task_image`, or it gets 413.
+8. **The rest.** Check 5 (the shape of the message), check 7 and check 8 then run as for any body. Check 6 does not run again, because the edge passes on the caller that it found.
+
+The slot goes back on every path: an answer, an error, a timeout and a client that goes away. `agent_edge/mcp.py` holds the numbers (`LARGE_BODIES_AT_ONCE`, `LARGE_BODIES_PER_CONNECTION`, `LARGE_BODY_READ_TIMEOUT_S`, `LARGE_BODY_MAX_BRACKETS` and `LARGE_BODY_MAX_COMMAS`). Fence: `test_mcp_upload_image_limits.py`, the classes `TestALargeBodyWaitsForItsToken`, `TestAnOrgOffTheFlagKeepsTheOldCap` and `TestALargeBodyIsCountedBeforeTheParse`.
 
 **Authorization errors.**
 
@@ -1050,7 +1313,7 @@ v1
 2. The `kid` names a usable key, and `hmac.compare_digest` matches the signature. The timestamp is within 60 seconds of the gateway clock, before or after.
 3. The pair of the method and the matched route template (`deps._matched_template` at `deps.py:959`, which has no URL fallback) is in `MCP_ROUTES`. Until EA-6a the method had to be `GET`. Since EA-6a a method other than GET needs a pair in `MCP_WRITE_ROUTES`, a nonce and the read of the body before the signature check. After this step, a signed write while the writes flag is off gets 403 with the detail `agent_writes_disabled` (fix round 1). After the stamp check it needs `projects:write` on the connection, a fresh nonce and room under the cap (EA3-28 to EA3-30).
 4. A function in `agent_tokens.py`, `read_live_connection`, reads the connection by its id. It reuses `_session` and `_BIND_SQL`, and it binds the signed organization. The connection must be live: not revoked, and not past `expires_at`. The read returns the organization of the ROW, and that organization must equal the signed one.
-5. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin, client_id=client_id)` for that row, and match `ACTOR_VIA_PATTERN` (EA-13a, EA3-47). `UserContext.agent.actor_via` holds that stamp. **H-356 closed the window of the legacy stamp (2026-10-20).** For one release, fix round 1 of EA-13a also accepted the legacy host stamp of the same row, `actor_via_for(client_origin, client_id=None)`, because the deploy restarts the gateway before the edge. Production has served EA-13a on the gateway and on the edge since that release. So when the row's client id gives a slug, branch 0 now gives 401 to a call signed with the legacy stamp. When it gives no slug (a DCR client, a client id that is not a URL, an IPv6 host, or a client id at another host), `mcp:<host>` IS the row's stamp, and branch 0 accepts it. Fence: `test_n4_branch_0_refuses_the_legacy_stamp_of_the_row` in `tests/unit/test_agent_client_stamp.py`.
+5. `X-Actor-Via` must equal `agent_oauth.actor_via_for(client_origin, client_id=client_id)` for that row, and match `ACTOR_VIA_PATTERN` (EA-13a, EA3-47). `UserContext.agent.actor_via` holds that stamp. **H-356 closed the window of the legacy stamp (2026-10-20).** For one release, fix round 1 of EA-13a also accepted the legacy host stamp of the same row, `actor_via_for(client_origin, client_id=None)`, because the deploy restarts the gateway before the edge. Production has served EA-13a on the gateway and on the edge since that release. So when the row's client id gives a slug, branch 0 now gives 401 to a call signed with the legacy stamp. When it gives no slug (a DCR client, a client id that is not a URL, an IPv6 host, or a client id at another host), `mcp:<host>` IS the row's stamp, and branch 0 accepts it. Fence: `test_n4_branch_0_refuses_the_legacy_stamp_of_the_row` in `tests/unit/test_agent_client_stamp.py`. **H-367 (2026-11-07):** an R8 test signs a call for a DCR row with no slug. Branch 0 answers 200 through the real edge. Fence: `test_a_slugless_dcr_connection_gets_200_through_branch_0` in the same file.
 6. The member email comes from that row, never from a header. Branch 0 then calls `_with_resolved_access` with that email.
 7. The resolved organization must equal the organization of the row, and `access.is_active` must be true.
 
@@ -1084,7 +1347,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 
 - an `mcp:*` request that carries a valid internal bearer and `X-User-Email`,
 - the same request with `GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS=1`,
-- the same request on a box where the internal token falls back to the LLM key.
+- the same request with the LLM key as the bearer. Since WS-24b (2026-11-06) the internal token has no fallback to the LLM key.
 
 **Replay.** A replay inside the 60 second window repeats an identical GET, and it changes nothing. A write needs more, so EA-6a adds the nonce of EA3-28. The gateway keeps each nonce for 120 seconds, twice the skew of the timestamp. So a replay of a write inside its window always finds its nonce, and it gets 401.
 
@@ -1099,6 +1362,8 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 3. The Caddy block of `api.metorite.com` strips `X-User-Email`, `X-User-Role` and `X-Actor-Via` from public requests. On 2026-10-11 it does not. The change edits `deploy/`, so it is an owner gate, and H-303 carries it.
 4. Before the edge goes live, a check proves that the box holds a value for `GATEWAY_INTERNAL_TOKEN`. The edge no longer holds the bearer, and EA-10 still needs this proof. The gateway itself falls back to the LLM key when that token is unset (`deps.py:104-149`).
 
+**The sandbox sibling of branch 0 (SBX-2, 2026-11-26).** `agent_sandbox.md` §12.2 adds a second identity step to `get_current_user`, for code in the sandbox. Any `X-Sandbox-` header triggers it, and it runs before branch 0. It never falls through to branch 0, 1a, 1b or 2. The member and the organization come from a row of `sandbox_capabilities`. Its allowlist is `SANDBOX_ROUTES`, from the app manifests. Its functions join `_BRANCH_ZERO`, so the scan, the tripwire, the one digest pin and the review rule of this section bind it. `agent_sandbox.md` §12.2 owns it.
+
 ### 10.2 Threat table
 
 | Threat | Control |
@@ -1112,8 +1377,9 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 | Consent phishing (a fake client with a trusted name) | Show the verified origin from the client metadata. Show the redirect host. An admin may restrict to an allow list (D-EA-8) |
 | Open registration abuse | Client ID Metadata Documents need a fetch with a size, time and address limit (no private addresses). Dynamic registration is rate limited and expires unused clients after one day |
 | Confused deputy | One consent per client and per member. State and PKCE are required. `iss` is checked by the client, and we send it |
+| A first-party client signs a member in with no click (D-EA-11) | Only an exact client id on the operator's list, on a live connection whose scopes cover the request, with `state`, to an `https` redirect at the client's own origin. §10.7 holds the full analysis |
 | A write by a read-only connection | Scope check before the call, and the fence in §9.5 |
-| Over-reading by a broad grant | Pins and the personal-project opt-in, inside the visibility seam (§7.3). A 100-row cap, and a per-connection quota |
+| Over-reading by a broad grant | Pins and the personal-project switch (D-EA-4), inside the visibility seam (§7.3). A 100-row cap, and a per-connection quota |
 | Prompt injection from a task text | §9.4 |
 | Cross-tenant read | The edge never takes the organization from the request. The gateway binds the tenant from the member (R5, R11), and branch 0 checks it against the signed organization. Fence: EA-9 |
 | Runaway agent loop | Rate limits, and an idempotency key on create |
@@ -1200,9 +1466,9 @@ The consent page is `/connect/authorize` on the control plane. A member sees it 
 - It also shows the verified origin, `redirect_display`, the organization name and each requested scope.
 - It takes a checkbox for each scope. A member can clear a box and never add a scope. The member cannot clear `offline_access`, so it shows with no box.
 - It takes a project pin picker. The picker lists up to 50 visible projects that are not personal. No pin means every project the member sees (§7).
-- It takes `include_personal`, a checkbox that is off by default (D-EA-4).
+- It takes `include_personal`, a checkbox that is on by default (D-EA-4, amended 2026-10-30). A body that leaves it out reads as false.
 - It has an Approve button and a Deny button. Deny navigates to `deny_redirect_to`.
-- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`.
+- ⚠️ **The approve gate (double-clickjacking).** An attacker's page can move its opener to this page between the two clicks of a double-click. So Approve stays off until the page is visible and has focus, and then for 500 ms more. A `blur` or a change to hidden starts the wait again. The click checks the gate again. Fences: `consent.test.ts` and `e2e/connect-authorize.spec.ts`. The gate binds every screen that the page draws, for a first-party client too. Only the check answer of §10.7 rule 1 draws no screen.
 
 ### 10.6 The organization allowlist (EA3-27, slice EA-10p)
 
@@ -1236,6 +1502,317 @@ The flag of §5.5 is global, so when it is on, each organization can connect an 
 Until both units restart, the old list stays in force on the unit that did not restart.
 
 **A replay still revokes.** The refresh path runs the reuse check before the list check (fix round 1). So a replay of a spent refresh token revokes its connection, also when the organization is off the list.
+
+### 10.7 First-party clients (D-EA-11, Metorite task 1109)
+
+**The problem.** Aroh is the owner's personal assistant app. It signs a member in through this server, as the CIMD client `https://aroh.dev.metorite.com/hub/oauth/client-metadata.json` with the redirect `https://aroh.dev.metorite.com/hub/auth/callback`. Before D-EA-11, the consent page asked for Approve on each authorization, and each approval added a connection. So a second device asked again, and the list of connected agents filled with Aroh rows.
+
+**The setting.** `AGENT_FIRST_PARTY_CLIENT_IDS` is the Setting `agent_first_party_client_ids`, a string with the default `""`.
+
+- It holds CIMD client id URLs with a comma between them. The parser removes the spaces around each entry and changes nothing else.
+- The match is exact, string for string. A change of case, a slash at the end, another path on the same host, or the host alone does not match.
+- The parser drops `*` and each entry that `is_cimd_client_id` refuses. So one entry trusts one client at most.
+- An empty value trusts no client. This is the default, and then every client gets the consent page as before.
+- `acb_auth.agent_oauth.is_first_party(client_id)` is the one reader. Only the gateway reads it.
+- The list is an operator setting, not the admin allow list of D-EA-8. It widens trust, so only the env file of the box sets it. `env_guard` refuses each `AGENT_*` name on an Integrations write. A change on a box is gate `enforcement-flip`, and a unit reads it at process start (§10.6).
+
+**Rule 1: the check with no click.** `POST /agent-access/authorize/check` runs every check of §10.5 and §10.6 first: the member check, the organization allowlist, the CIMD fetch, the redirect match, the response type, PKCE with S256 and the resource. Then, for a first-party client only, it answers `{"first_party": true, "redirect_to": ...}` with a new code and NO consent ticket, when ALL of these hold:
+
+1. The request carries a `state` that is not empty.
+2. The redirect URI is in the `redirect_uris` of the document as the exact string. The loopback rule of §10.4 does not apply here.
+3. `first_party_redirect_allowed` passes it. The URI is `https`, with a host and no user name or password, and at the origin of the client id: the same scheme, host and port.
+4. The member of the session holds a live connection of this client in the organization of the session, and its scopes cover each requested scope. `projects:write` covers `projects:read`, and `offline_access` must be held as itself.
+
+The code goes on that connection. So the pins and the personal switch stay as the member chose them, and the store adds no row. The code binds the requested scopes, the PKCE challenge of this request, the redirect and the resource, as an approval does. The answer carries `Cache-Control: no-store`. The page goes to `redirect_to` at once and draws no form.
+
+When one condition fails, the answer is the consent screen as before, never an error. A revoke that lands between the read and the mint gives the screen too.
+
+**Rule 2: one connection for each member and client.** `approve` for a first-party client calls `create_connection` with `replace_same_client=True`. In the transaction of the insert, the store revokes every connection of this member and this client in the bound organization, and every token of each. The lock order of `agent_tokens.py` rule 3 holds: the connection rows, then the tokens. For every other client the flag is false, and an approval adds a row as before.
+
+**Rule 3: nothing changes for another client.** A client off the list gets the screen, the ticket and the approve gate of §10.5 on each authorization. The page shows the screen for any answer that is not the exact first-party shape with an `https` redirect (`isContinueView` in `consent.ts`). The page never trusts a client by its name or its host. A client that calls itself "Aroh" at another host, or at the same host on another path, is not trusted.
+
+**Threat analysis.** The path with no click removes the human step for one class of request. Each threat below names the control that stays.
+
+| Threat | Control |
+|---|---|
+| Double-clickjacking or a hidden click (§10.5) | The path asks for no click, and it grants nothing new. It mints a code only on a connection that the member already approved, for scopes that the connection already holds. A client off the list keeps the approve gate. A first-party request with no covering connection gets the screen and its gate |
+| A page of an attacker sends the browser to `/connect/authorize` for Aroh, with a PKCE challenge that the attacker made, to get a code for the member (silent authorization, as OIDC `prompt=none`) | The code goes only to the redirect URI of the client's own document, as the exact `https` string at the client's own origin (rule 1, conditions 2 and 3). The attacker cannot read that redirect unless it controls the client's origin. The code lives 60 seconds and works once. ⚠️ **Residual.** The client must keep the code out of reach at its callback. It checks `state` against the browser's own session first, sends no `Referer` (`Referrer-Policy: no-referrer`), loads no outside script on the callback and has no open redirect. These are conditions to list a client (below) |
+| Login CSRF: the attacker gets the member's browser to land on the client with a code that the attacker started | Rule 1 condition 1 needs `state`. The client must bind `state` to the browser session and refuse a callback whose `state` it did not issue. This is the duty of the client, as in every OAuth flow |
+| A look-alike client with a trusted name | The match is the exact client id URL, never `client_name` and never the host alone. A near miss gets the screen, which names the verified host first (§10.5) |
+| A loopback or private-use redirect, which any local process could take | Rule 1 conditions 2 and 3 refuse each of them. Such a request gets the screen |
+| A stolen or changed document at the host of the client | The server trusts what the host of the client id serves. Rule 1 condition 3 keeps the redirect on that host, so a change of the document cannot send a code to another host with no click. A takeover of the host of the client is out of reach of this server. Revoke the connections and take the client off the list |
+| A replay of a code of the path | The code spend and `revoke_replayed_code` are as before. A replay revokes the whole connection. One connection can now hold the codes of more than one device, so a replay signs out every device of the member. That fails closed |
+| A member who left, or an organization off the list | The member check, the allowlist and the flag run before the path (a fence holds the order in `check_authorize`). The token endpoint and branch 0 check the seat and the list again on each call |
+| A replace that ends the connection of another member | The replace matches the organization, the member and the client id. Fence: `test_a_replace_touches_only_this_member_and_client` |
+| An operator lists a client by mistake | The list is empty by default and needs an env write on the box. Take the client off the list and restart the gateway to return to the screen |
+
+**What a client must do before an operator lists it.** The owner or a reviewer checks each item.
+
+1. It is our own app, and we control the host of its client id and of its redirect.
+2. Its document lists only `https` redirect URIs at its own origin.
+3. Its callback checks `state` against the browser session before it reads the code. It sends no `Referer`, loads no outside script and has no open redirect.
+4. It makes its own PKCE pair for each sign-in, and it serializes its refreshes (§5.5).
+
+**What D-EA-11 does not change.** The scopes, the token lifetimes, the CIMD checks and the consent page of every other client stay the same. The admin allow list of D-EA-8 and the organization switch (EA-4c) are still not built. A link to Aroh in the Metorite app is out of scope. The owner decided on 2026-10-30 that only a person who has the Aroh address uses Aroh.
+
+**Fences.** `tests/unit/test_agent_first_party.py`. Ten named mutations each turn it red: any client is first-party, no `state` check, no origin rule, no scope cover, no replace, a replace for every member, a replace that keeps the old tokens, `*` trusts every client, a case fold, and a check that never skips. `consent.test.ts` holds `isContinueView`. `e2e/connect-authorize.spec.ts` holds the page with no form, and the approve gate of §10.5 for every other client.
+
+### 10.8 The project tree and Change access (D-EA-12, D-EA-13, Metorite task 1585)
+
+**The owner's ask, 2026-11-04.** "The UI/UX for the MCP approval system can be made better." "Also need a mechanism where access can be modified." "When selecting a top level project, auto select lower levels, and then untick what is not needed should be possible." The owner approved the design and both recommendations below on the same day.
+
+**What was wrong.**
+
+- A pin covers the pinned project and every project beneath it (`_AGENT_PINS_SQL`). The consent page drew the subprojects of a pinned project with empty boxes, so the tree said the opposite of the rule.
+- The member could not leave one subproject out of a pinned parent.
+- The picker was a short scroll box that cut a row in half.
+- After the connect, the member could only remove the agent (EA-4b). The footer said "remove it in the agent, or ask an admin".
+
+**D-EA-12: the left-out list.** A connection gains `left_out_projects`, a list of project ids. The reach of a connection follows the nearest mark.
+
+1. With no pin, the reach starts from each root project of the organization. With pins, it starts from each pin. The member's live access then bounds the result.
+2. The reach goes down from each start, project by project. It stops at a project on the left-out list. That project and every project beneath it stay out.
+3. A pin beneath a left-out project starts its own reach. So the nearest mark wins: a pin under a left-out parent is in.
+4. A left-out id that no start reaches changes nothing. An id outside the organization of the connection changes nothing.
+5. A project that the member adds later is in when its nearest marked parent is a pin, or when no mark is above it and the connection has no pin. It is out when its nearest marked parent is on the left-out list.
+
+6. A sealed project is always out, as today. A pin or a left-out mark on it changes nothing.
+7. The personal switch of D-EA-4 comes last. With the switch off, a mark on a personal project changes nothing.
+8. With no pin and a left-out list, the reach is every project the member sees, less each left-out subtree. So `_narrow_for_agent` and the `vis_pins` binding run when the connection has pins OR a left-out list.
+
+The member's live access still bounds the result (§7.1). The left-out list never adds a project. Each step of the walk filters by the organization of the connection, and the walk uses `UNION`, so a cycle ends. The cap of the list is the cap of the pins, `_MAX_PINS`.
+
+Two checks keep their test of the pins alone: `_refuse_pinned_space` (`gateway/routes/projects/tree.py`) and the pinned branch of the edge (`agent_edge/tools.py`, near the read of `pinned_projects`). A connection with only a left-out list reaches wide, so neither one applies to it.
+
+**D-EA-13: Change access.** A member changes the grant of their own connection, with no reconnect.
+
+1. The member can change the pins, the left-out list and the personal switch in both directions.
+2. The member can turn a scope off. The member can turn a scope back on when the live token of the connection carries it. The EA-17c audit (2026-11-06) set this ceiling, and EA-17c-3 (2026-11-11) changed the mint:
+   - Since EA-17c-3, `approve` mints the token at every resource scope that the agent asked for (`agent_oauth.mint_scope`). `offline_access` stays the member's choice. A rotation copies the token scope (`_rotate_in`, `acb_auth/agent_tokens.py`).
+   - The connection scopes hold the grant. Every reader of the token scope takes the token scope intersected with the connection scopes (`agent_oauth.effective_scopes`, the one rule). A scope above the token scope can never be live. "The readers of the token scope" below lists each reader.
+   - So the route reads the ceiling from the live tokens of the connection, inside `requested_scopes` (`agent_tokens.ceiling_of`). Two live tokens with different scopes give their intersection.
+   - The ceiling binds a turn-on only. A scope that the connection holds now, or that a held write scope covers, adds no access at the edge. So the route does not test it, and a narrowing or a change of only the marks always passes (EA-17c-1 fix round 1).
+   - On a connection that `approve` made after EA-17c-3, the ceiling is the cover of `requested_scopes`. A scope that the member cleared at the connect turns on with a PATCH, and the next call with the same token uses it.
+   - A connection from before EA-17c-3 has a token at the scopes that the member granted. A cleared scope there still needs a new token, and the view says "Reconnect <agent> to turn this on."
+   - A scope that the agent did not ask for stays off. A connection from before EA-17a has NULL `requested_scopes`, and the route never writes it. A box keeps NULL `requested_scopes`, and Change access refuses a box.
+3. `offline_access` stays as it is. The member cannot add it or remove it here.
+4. The change needs one scope at least, as the consent page does.
+5. Only the member of the connection can change it. A member with `integrations:manage` can still only revoke the connection of another member (EA-4b).
+6. The change applies at the next agent call. The edge and the gateway read the connection row on each call (`lookup_token`, `read_live_connection`), with no cache. The 60 second cache of §7.1 holds the member's own access, not the connection. The token stays. The first-party path of §10.7 still needs the scopes of the connection to cover the request, so a narrower grant sends a first-party client back to the consent screen.
+
+**The connection fields.** One expand-only migration adds two columns to `agent_connection`.
+
+| Field | Meaning |
+|---|---|
+| `left_out_projects` | `UUID[] NOT NULL DEFAULT '{}'`. The left-out list of D-EA-12. The same cap as `pinned_projects` |
+| `requested_scopes` | `TEXT[]`, nullable. The scopes that the agent asked for at the connect, before the member cleared any box. NULL on a connection from before EA-17a |
+
+**The consent page (EA-17b).** The owner approved this design on 2026-11-04.
+
+- The page asks "Connect <verified host> to Metorite?". The verified site, the redirect and the organization show as short labels.
+- Each scope is a switch with one line of help. "Read projects and tasks" says that the other scopes need it.
+- "Which projects" offers two choices: "All my projects" and "Only the ones I pick".
+- The tree lists the team projects that the member sees, with a chevron to fold each parent. A search box shows when the member sees more than 12 projects. "Expand all" and "Clear" sit above the tree.
+- A tick on a project ticks every project beneath it. An untick of a subproject adds it to the left-out list. Its parent then shows a dash and a count such as "5 of 6". The left-out project shows the tag "left out".
+- A line under the tree says: "Ticking a project ticks everything under it. A subproject added later joins on its own, unless you left it out."
+- The tree grows with the page. The page scrolls, not a short box inside it.
+- Above Approve, one line states the grant, for example "Claude Code will read and change tasks in 7 projects and your personal projects."
+- The footer says: "Change or remove this access any time in Integrations → AI agents." Until EA-17c lands, the page says "Remove this access any time in Integrations → AI agents." EA-17c restores "Change or remove".
+- **Personal projects in "Only the ones I pick" (EA-17b fix round 1).** A pinned connection starts its reach at the pins only (`_narrow_for_agent`), so the personal switch alone reaches no personal project. With the switch on, the page adds the member's own personal root projects to `pinned_projects`. It reads them from the `personal` key of `GET /projects/tree`. They count toward the 50 marks. With the switch off, it adds none. "All my projects" sends no pin, so the switch alone works there (D-EA-4). A personal root that the member makes after the connect is not pinned. Migration 297 can leave a team project under a personal one. The page then adds each such team root that the member did not tick to `left_out_projects`, so the personal pin does not reach it. The summary line says "the personal projects you have now" for this reason.
+- **The list is whole or it says it is cut.** The tree holds at most 500 projects, cut at a whole root. A parent never shows without every child. A cut list shows "The list shows N of your M projects. Choose All my projects to cover the rest." A single root over the cap blocks "Only the ones I pick".
+- **Archived subprojects show.** The gateway reach has no archive filter, so a ticked parent covers its archived subtree. The tree draws an archived project muted, with the tag "archived". It counts, and the member can leave it out.
+- The chip of the return address shows `redirect_display`, and adds "an app on this computer" for an app redirect (§10.5).
+- The approve gate of §10.5, the ticket rules and the first-party path of §10.7 do not change.
+
+**The AI agents view (EA-17c-2).** Each of the member's own agents shows its grant as chips: the scopes, the number of projects or "All projects", and "Personal". "Change access" opens the panel of the consent page with the current grant, a Save button and a Cancel button. The summary line says what the agent can do after the save. Each scope switch takes one of three states:
+
+- On or off, when `ceiling_scopes` holds the scope.
+- Off and disabled, with "Reconnect <agent> to turn this on.", when `requested_scopes` holds the scope and `ceiling_scopes` does not. Once EA-17c-2 and EA-17c-3 both merge, this state shows only for a connection from before EA-17c-3. The view reads `ceiling_scopes`, so it needs no change for that.
+- Off and disabled, with "<agent> did not ask for this. It must reconnect to get it.", for every other scope. A connection with NULL `requested_scopes` shows this line for each scope outside `ceiling_scopes`.
+
+The view restores the consent footer "Change or remove this access any time in Integrations → AI agents." "Change access" shows only when `agent_change_access_orgs` holds the organization.
+
+**The route (EA-17c-1).** `PATCH /agent-access/connections/{id}` on the gateway, and the BFF route `PATCH /api/agent-access/connections/[id]` (`connections/relay.ts`).
+
+- The route ships dark. With the organization off `agent_change_access_orgs` (default empty), the gateway answers 404. A `*_orgs` flag reloads with no restart (`docs/flag_reload.md`).
+- The BFF refuses a request that is not `same-origin` (`sameOrigin`, §10.5).
+- The gateway takes the member and the organization from the session. It refuses a connection of another member, a revoked connection and an unknown id with 404. The UPDATE filters by `organization_id` and `member_email`, as `_REVOKE_CONNECTION_SCOPED_SQL` does.
+- The body holds `scopes`, `pinned_projects`, `left_out_projects` and `include_personal`, with `extra="forbid"`. The route needs each of the four fields. A missing list never reads as an empty one, because no pin means every project. `include_personal` must be a JSON boolean, so `"true"` and `1` give 422.
+- The route drops a copy of an id and keeps the order of each list. An id in both lists gives 422 `project_in_both_lists`, because such a grant reaches nothing.
+- A turn-on of a scope outside the ceiling of D-EA-13 rule 2 gives 422. So does a body with no scope, and a change to `offline_access`. The body holds `offline_access` exactly when the connection holds it.
+- Rule 4 counts the scopes that the server knows (`RESOURCE_SCOPES`). A body with no such scope gives 422 `no_scope`. A held scope that the server no longer knows drops out of the row, and the store never writes an empty scope.
+- The ceiling is the set of resource scopes that each live token of the connection covers (`agent_tokens.ceiling_of`). A code, an access token and a refresh token all count. A spent, revoked or expired token does not count. A connection with no live token has an empty ceiling. The member can still narrow it and change its marks, but no scope turns on until the agent connects again.
+- Each id in `pinned_projects` and `left_out_projects` must be a project that `_visible_projects` (`gateway/routes/projects/tree.py`) returns for the member of the session, or a personal root of that member. Otherwise the route answers 422 `project_not_seen`. The check never uses the scopes of the agent. (`approve` keeps an unseen id, and this route refuses a new one.) The route refuses only an unseen id that the row does not hold in the same list. So a mark that the member no longer sees, such as a deleted, sealed or lost project, never blocks a save. The store makes this check under the lock of the row, after the 404. A personal root is a root of the member's own personal tree, as `GET /projects/tree` nests it. `tree.grantable_project_ids` holds the rule.
+- The route writes one row in one transaction and logs `agent_access.connection_changed` with the connection id and the counts. It writes one audit row `agent_connection.change` (`audit_change`). The row holds the scopes, the count of pins, the count of left-out ids and the personal switch, before and after the change, and no project id or name.
+- A body that reaches what the row reaches now writes nothing. The route answers 200 with the row, logs no change and writes no audit row. The order of a list and a copy of an id change no reach.
+- The BFF refuses a PATCH with no `Content-Length` with 411. A declared length over the cap gets 413 before the read, and the cap after the read stays.
+- The route answers 200 with the new row. `ConnectionRow` and `AgentConnectionOut` gain `requested_scopes` and `ceiling_scopes`, and the list route returns both.
+
+**The readers of the token scope (EA-17c-3 audit, 2026-11-11, Metorite task 1815).** EA-17c-3 makes a token scope wider than the grant. So a reader that takes the token scope alone gives an agent a scope that the member cleared. The audit read each reader of `agent_token.scope`.
+
+| Reader | Where | Before EA-17c-3 | After EA-17c-3 |
+|---|---|---|---|
+| The bearer check of `/mcp` and `/mcp/readonly` | `agent_edge/bearer.py`, `authenticate` | The token scope and the connection scopes, through a copy of the rule in `bearer.py` | The same intersection, through the one rule `agent_oauth.effective_scopes` |
+| Check 8, `tools/list`, `whoami`, the prompts, the resources, the instructions, the read-only door | `mcp.py`, `tools.py`, `prompts.py`, `resources.py` | `caller.scopes` only, the result of the bearer check | No change. No other edge module reads a token scope, and a source test counts the reads |
+| The code exchange asks for a refresh token | `token_endpoint._exchange_code` | The code scope alone | The store gives a refresh token only when the connection holds `offline_access` too. The mint carries `offline_access` only when the member granted it |
+| The scope of the token answer | `token_endpoint._token_response`, `IssuedTokens.scope` | The token scope alone. After the mint change, it names a scope that the member cleared | `agent_oauth.granted_scope` of the token scope and the scopes of the locked row |
+| The scope check of a refresh | `token_endpoint._check_refresh_scope` | The token scope alone. After the mint change, a cleared scope passes | `agent_oauth.granted_scope` of the token scope and the connection scopes |
+| The rotation | `agent_tokens._rotate_in` | Copies the token scope to the new pair | No change, on purpose. The answer and the refresh token follow the two rows above |
+| The ceiling of Change access | `agent_tokens.ceiling_of`, `_LIVE_TOKEN_SCOPES_EXPR` | The cover of each live token | Each live token through `effective_scopes` against `requested_scopes` |
+| The first-party path | `agent_access._first_party_redirect` | The connection scopes only. It mints a code at the request | No change. It reads no token scope |
+| Branch 0 and the gateway routes | `deps.py` (`_claim_write`, `_door_gate`), `AgentScope.scopes` in `agent_runs.py`, `agent_requests.py` and `agent_apps.py` | The connection scopes only. A signed request carries no token | No change. A signed write that the grant does not hold gets 401 |
+| Box tokens | `create_box_connection`, `rotate_box_token` | The token scope equals the connection scopes | No change. `requested_scopes` stays NULL |
+| `/oauth/revoke` | `token_endpoint.revoke` | No scope | No change |
+| Token introspection | None | The server has no RFC 7662 endpoint | No change |
+
+Three readers took the token scope alone: the code exchange, the token answer and the scope check of a refresh. After the mint change, each could name or give a scope that the member cleared. EA-17c-3 fixes the three in the same change. ⚠️ Branch 0 checks no scope for a read pair. So check 8 of the edge is the only gate of a read scope, as before EA-17c-3.
+
+**Fences.** EA-17a: `tests/unit/test_agent_left_out_projects.py`, on R8, with the five rules of D-EA-12 as cases. Named mutations: a reach that ignores the list, a left-out list that wins over a pin beneath it, and a list read across organizations. EA-17b: `consent.test.ts` for the tree state, and `e2e/connect-authorize.spec.ts` for the cascade, the dash, the summary and the approve gate.
+
+EA-17c-1: `tests/unit/test_agent_change_access.py`, on R8. It holds a case for each 404 and 422 above, and a case where the edge refuses the next agent call after a narrowing. Named mutations:
+
+- A scope above the token's scope.
+- A change to the connection of another member.
+- A missing `sameOrigin` check.
+- A write that skips the project check.
+- A route that answers with the flag off.
+
+EA-17c-2: a vitest of the view (`AgentsView.test.ts`, a `.ts` file because the vitest config collects `*.test.ts` only) for the three switch states, and `e2e/agent-change-access.spec.ts`, which changes a grant, reads it back, and shows that a real save does not get 411. The member list route adds `change_access` (true when `agent_change_access_orgs` holds the organization), and the view shows "Change access" only then.
+
+EA-17c-3: the class `TestTheMintAtTheRequestedScopes` and the shape tests of `tests/unit/test_agent_change_access.py`, on R8. A real `approve` and a real code exchange make the token. Before the PATCH, each reader of the audit table refuses the cleared scope. After the PATCH, the next call with the same token uses it. A connection from before EA-17c-3 still gets 422 `scope_above_ceiling`. Named mutations:
+
+- A bearer check that reads the token scope alone.
+- A token answer or a refresh check that reads the token scope alone.
+- A refresh token for a connection with no `offline_access`.
+- An `approve` that mints the code at the grant.
+- An `approve` that mints `offline_access` from the request.
+- A ceiling that drops `requested_scopes`, or drops the tokens.
+
+### 10.9 Box tokens: one connection token for a headless agent box (D-EA-5, EA-19, Metorite task 1819)
+
+**The problem.** On 2026-11-06 at 01:23:53 UTC the box `metorite-home` lost its login. Connection `de0d116c` and all its tokens were revoked with one timestamp. The last rotation was 18 minutes 43 seconds before. So a session presented a spent refresh token, most likely from a stale copy in memory. Rule 5 of `agent_tokens.py` then did its job. It revoked the connection for all nine sessions on the box. Six owner answers went unread. A new sign-in took four tries, because Claude Code on a box needs a TTY, a localhost callback, an SSH tunnel and an approval in about five minutes. The PC lost connection `3002c4bd` the same way on 2026-10-30: 2 seconds between the last use and the revoke. `agent_connection` has no column for the reason of a revoke, so the cause rests on timing. EA-19a adds that column.
+
+**The decision (D-EA-5, opened by the owner on 2026-11-06, choice A).** A member makes a **box token** in Integrations, AI agents. It is a named, scoped, revocable access token of one connection. It has no refresh token, so nothing rotates in a race. One box holds one token. A stale session can no longer sign out the others. The owner weighed two other choices and did not take them. **B** is one connection per session. It is a larger build, because Claude Code stores one login per server. **C** is a grace window on rule 5. It does not catch the 18-minute case, and it weakens the reuse check for every client. **Rule 5 stays as it is.** **Owner directive 2026-11-26 (MCP-G17f, Metorite task 4032):** the owner asked for choice C too, as a second guard beside the box token. All sessions of one machine share one OAuth login, and two refreshes at once still revoked it. The setting is `agent_refresh_reuse_grace_s`, default 0, so rule 5 holds until an operator sets it. The box token stays the main fix, and the 18-minute case still needs it. §5.5 gives the rules of the window.
+
+**The device flow (RFC 8628) is not built.** Item 7 of the decision asks for a proof that Claude Code sends a static bearer header. The proof passed (below), so the token needs no device flow.
+
+#### The client proof (run 2026-11-06 on metorite-home, Claude Code 2.1.319)
+
+A throwaway server on `127.0.0.1` answered 401 for any bearer but one. A user-scope entry in an isolated `CLAUDE_CONFIG_DIR` held `{"type":"http","url":...,"headers":{"Authorization":"Bearer ${G17_BOX_TOKEN}"}}`. The live `metorite` entry and `~/.claude/.credentials.json` were not touched. `claude mcp list` gave this.
+
+| Header value | Result | What the server saw |
+|---|---|---|
+| The right token | `✔ Connected` | `Authorization: Bearer <token>` on the probe, `initialize`, `notifications/initialized`, the `GET` and `tools/list`. No request to `/.well-known/*`, `/register`, `/authorize` or `/token`. |
+| A wrong token | `✘ Failed to connect`, "Server rejected the configured Authorization header (HTTP 401) ... OAuth fallback is disabled when headers.Authorization is set" | The bearer on `initialize` only. No OAuth request. |
+
+So a box that sets `headers.Authorization` never starts OAuth, and a revoked token fails loud with a clear line, not with a sign-in loop. `${VAR}` expansion works. `claude mcp get` prints `Bearer ${G17_BOX_TOKEN}` and not the value, and the value is not in `.claude.json`. The documented command must write the entry with the `${...}` form and never a literal token. Fence: `tests/unit/test_box_token_claude_client.py` (EA-19e) repeats the proof. It skips when `claude` is not on the path.
+
+#### The header helper (2026-11-26, Metorite task 1819, EA-19g)
+
+**EA-19g replaces the `${METORITE_BOX_TOKEN}` header.** The entry of EA-19e expands the variable from the environment of the `claude` process. On the box, each lane is a `claude --bg` session that a long-lived `claude daemon` starts. The daemon never loaded `box.env`, so the header can go out with no token. The Claude Code docs also say that a credential-named variable can read as empty in a remote `headers` value.
+
+So `scripts/box_connect.sh` now writes the user entry with `headersHelper` and with no `headers`. Claude Code runs the helper when it connects, when it connects again, and after a 401 or 403. The helper prints `{"Authorization":"Bearer <token>"}`. These facts bind:
+
+- The helper is `scripts/metorite_box_headers.sh`. The script installs a copy as `~/.local/bin/metorite-box-headers`, mode 0700, outside every checkout. A worktree removal does not break the lanes.
+- The entry holds the absolute path of the helper and the absolute path of `box.env`. No environment variable moves the path, because a project settings file can set one and point the lanes at a token of another member.
+- The helper refuses a file that does not exist, a symlink, a file that is not regular, a file with a second hard link, a mode other than 0600, or another owner. It also refuses a token of the wrong shape. It opens the file once, and checks and reads that open descriptor. A refusal prints one line on stderr and never the token.
+- **A refusal keeps an `Authorization` header** (review of 2026-11-26). The helper prints the bearer `box-token-helper-refused` and exits 0. Claude Code 2.1.332 ignores the stdout of a helper that exits nonzero. With no `Authorization` header, it ran OAuth discovery and `POST /register` against the test server. With the sentinel, the server answers 401, and the client starts no OAuth. The old `${METORITE_BOX_TOKEN}` entry failed closed the same way.
+- The token shape `^mbt_[A-Za-z0-9_-]{43}$` has one definition, `TOKEN_RE` in the helper. `box_connect.sh` sources the helper to read it.
+- `claude mcp get` of Claude Code 2.1.332 does not print a `headersHelper`. So the verify step reads the entry from `.claude.json`, and it runs the helper once with its output discarded.
+- A revoked token, and a refused `box.env`, give "Server rejected the Authorization header minted by the configured headersHelper (HTTP 401) ... OAuth fallback is disabled when the helper supplies Authorization". So neither starts OAuth. `test_a_refused_helper_starts_no_oauth` proves it for a loose mode and for a missing file.
+- The session-start hook `session-handoff.mjs` runs the helper when `METORITE_BOX_TOKEN` is not set. It reads the refusal bearer as no credential.
+
+Fence: `tests/unit/test_box_token_claude_client.py` proves the bearer with the real client and with no token in the environment. `tests/unit/test_box_token_secret_rules.py` holds the helper cases.
+
+#### The org switch (2026-11-26, Metorite task 4034, EA-19h)
+
+Owner directive 2026-11-26: a machine stays signed in, unless an owner switches its organization on the Cloud Dev server. The org switch is the ONE deliberate, logged act that ends a sign-in.
+
+- `scripts/metorite_switch_org.sh` keeps one token file for each organization, `~/.config/metorite/orgs/<label>.env`, mode 0600. `add` reads the token from a hidden prompt or stdin and checks it with `TOKEN_RE` of the helper.
+- `to <label>` runs the helper on the org file and refuses on the sentinel. It refuses when the user entry does not name the helper.
+- It refuses inside a Claude session. It refuses while a session is live, unless the operator adds `--stop-lanes`. Then it stops each live session with `claude stop`.
+- Fix round 1 (2026-11-26): every check of `box.env`, `box.env.prev` and the address runs before a stop. A `flock` lets one switch run at a time. A signal before the proof puts `box.env.prev` back. The address follows the rule of `mcpUrl()` in `session-handoff.mjs`, and the proof follows no redirect. A token in `box.env` that no org file holds stops the switch. The `NOTE` line names each session that started during the switch.
+- It writes the new token into `box.env` and keeps the old file as `box.env.prev`. It calls `whoami` with the header of the helper, and it puts `box.env.prev` back when the call fails.
+- It writes `active-org`, one line to `~/.local/state/metorite/org-switch.log`, and one `NOTE` line to `~/lanes/merge-queue.log` when that file exists.
+- No `claude mcp` command runs, because the helper reads `box.env` on each connect. The runbook is `docs/box_connect.md` §7.
+
+Fence: `tests/unit/test_metorite_switch_org.py`, with a fake `claude` and a throwaway MCP server.
+
+#### The eight questions of the security review
+
+The review of 2026-11-06 had two Opus readers, a spec audit and an adversarial review. Both read the code. Their defects are fixed in the text below.
+
+**1. Actor.**
+- The token acts as the member who made it (`member_email`), under the authority rule of §7.1. It is not its own actor. The visibility seam knows only members, and a second kind of actor would be a second seam (CLAUDE.md §4).
+- Only the member makes a token for themselves. The route takes the member from the session. An admin cannot make one for another member, and can revoke any.
+- ⚠️ **The stamp is `mcp:box:<slug>-<8 hex>`.** It keeps the `mcp:` prefix. Branch 0 starts on that prefix (`deps.py`), and about ten gateway sites need it. They include `_agent_via` in `agent_runs.py` (403 without it), `tasks.py` agent-delete, `agent_worked.py`, `analytics_waiting.py`, `shell/needs.py`, `refs.py` and `knowledge/core.py`. A stamp without `mcp:` would give a box 403 on `claim_task` and on every run route. It would also let a person write a forged box stamp into `meta.via`, because `ACTOR_VIA_PATTERN` admits the text and branch 0 would not start. With `mcp:`, a header from a person starts branch 0 and fails the HMAC.
+- `<slug>` is the box name in lower case, with each run of characters other than `[a-z0-9-]` made one `-`, at most 40 characters. `<8 hex>` is the start of the connection id, so two boxes of one name stay apart. `client_slug` does not apply, because a box has no CIMD URL.
+- `actor_via_for` gains three keyword arguments: `credential`, `connection_id` and `client_name`. For `credential='box'` it returns the stamp above. The callers change together: branch 0 in `deps.py`, `gateway_client.py` in the edge, and `agent_runs.py`, whose hand-written `SELECT id, client_origin, client_id` at line 1747 gains `credential` and `client_name`. `client_host()` returns `box` for a box stamp, and the run pill reads the label only. `TokenLookup`, `LiveConnection` and `_CONNECTION_LIVE_SQL` gain `credential` and `client_name`.
+- A box connection stores `client_origin` as the origin of the edge (`agent_oauth.resource()`), so branch 0 does not refuse it for an empty origin. `client_label` and `CLIENT_LABELS` read the box stamp as "Box <slug>". The TypeScript mirrors (`agentRuns.ts`, `notifications.ts`) change in the same slice.
+- A member who loses the seat loses the token on the next call (branch 0, §7.1).
+
+**2. Reach.**
+- The scopes are the ones that consent offers, parsed by `agent_oauth.parse_scope` and held to the same ceiling. `offline_access` is dropped. The default is `projects:read projects:write`. An app scope is on only when the member ticks it. A write scope works only while `agent_oauth.writes_enabled()` is true.
+- The organization is the one that the member's session bound at the mint. `org_allowed` (EA-10p) is checked at the mint and on every call. The mint body may carry `pinned_projects`, `left_out_projects` and `include_personal`, with the validation and caps of §10.8, and the `box-mint` ticket binds them. The dialog of version 1 offers the personal switch (off by default) and no project tree, so a box reaches all the projects the member sees unless an API caller pins it. Change access (EA-17c) does not apply to a box. A member who wants another grant makes another token. `requested_scopes` stays NULL.
+- **A box token reaches what the same member's OAuth connection of the same grant reaches, and no more.** The parity test in `test_agent_box_token_routes.py` runs every scope the mint accepts through the consent validator.
+- An agent cannot mint. `MCP_ROUTES` is an allow list, and the mint routes are not in it. The test asserts the absence, and names the routes (R7). Branch 0 admits only listed pairs.
+- The rate limits are the existing ones: the write cap and the door caps. EA-19 adds none.
+
+**3. Secret handling.**
+- The token is `mbt_` plus 43 URL-safe characters, 256 bits. The prefix lets a scanner and a log filter find it.
+- The mint answers once, with `Cache-Control: no-store`. The page shows the token and the connect command once.
+- The store keeps only `hash_token(raw)` (rule 7). `IssuedTokens` keeps hiding the raw value in its `repr`.
+- **The mint ticket.** A new route `POST /agent-access/box-tokens/check` makes a ticket in its own namespace `box-mint`. The ticket binds the member, the organization, the box name, the scopes, the days and the reach fields. The mint route spends it once and checks every binding. This is a separate purpose from the `agent-consent` ticket of §10.5, which binds an OAuth request. The mint route and the rotate route both spend a `box-mint` ticket and refuse a request whose `Sec-Fetch-Site` is not `same-origin`. A rotate hands out a new secret, so it has every control of a mint. Its ticket also binds the connection id, and the route takes the connection from the member's own rows only.
+- **Residual risk, stated plainly.** A script with a stolen session cookie can set `Sec-Fetch-Site` and call both routes. So the ticket and `sameOrigin` do not stop that thief. The OAuth flow has the same gap today, and it makes a sliding connection. No session in the tree carries a sign-in time, so version 1 cannot ask for a recent sign-in. A sign-in age is later work and needs its own HIGH slice for the session format. The Integrations page also gets `frame-ancestors 'none'`, which `/connect` has today.
+- The box keeps the token in `~/.config/metorite/box.env`, mode 0600, outside every checkout. The user entry reads it through the header helper (2026-11-26, EA-19g), not through `${METORITE_BOX_TOKEN}`. The `metorite` entry of the repo's `.mcp.json` has no header, and it wins over the user entry when the settings approve it (§15, EA-19e).
+- It never reaches a repo, a log or a chat. EA-19e adds a rule for `mbt_[A-Za-z0-9_-]{43}` to `.gitleaks.toml` (it runs in pr-check), and builds a redaction processor in `acb_common/_log.py`, which has none. Tests make both fail on a sample token. The repo has no pre-commit secret hook, so the spec does not claim one.
+- Residual risk: each process of the user can read `box.env`, and so can root. Since EA-19g the token is not in the environment of a lane. A box token is a bearer secret with no proof of possession.
+
+**4. Lifetime.**
+- A token lives 90 days by default, and at most 365. **Use never extends the expiry.** `agent_connection.expires_at` of a box equals the expiry of its newest token, and no issue slides it.
+- **Rotate** is the one act that moves the expiry. It makes a new token that lives `days` days, set in the body of the route (default 90, at most 365), and sets `expires_at` of the connection to it. `now` is a boolean in the same body. The connection stays, so the stamp and the history stay.
+- There are two kinds of rotate. **Rotate** keeps the old token for 24 hours, so a box can swap its secret and restart its sessions. **Rotate now** kills the old token at once. The new-address mark on the row of Integrations, AI agents points the member to Rotate now and Revoke, not Rotate.
+- A rotation first revokes every token of the connection except the newest. So a connection holds at most two live tokens.
+- **No bell in version 1.** `pm_notifications` needs a task and has a closed kind list (`152_projects_notifications.sql`), so it cannot carry a notice about a token. A notice store is later work. The row in Integrations, AI agents shows "Expires in N days" in amber from 14 days out and in red from 3 days out. It also shows the new-address mark. The member sees them when they open the page.
+- A member holds at most 20 live box connections, and an organization at most 100. The mint takes `pg_advisory_xact_lock` for the member and for the organization before it counts, so two mints at once cannot pass the cap.
+
+**5. Revoke and detect.**
+- Revoke is the existing `DELETE /agent-access/connections/{id}`. It takes effect on the next call, because the edge reads the row on every request and keeps no cache. `/oauth/revoke` (RFC 7009) also works, because the token row has `client_id` `urn:metorite:box`, which its client match needs.
+- **`last_used_at` for a box.** The edge stamps it after a successful bearer check, in a new store function `touch_box_use`, with `UPDATE ... WHERE last_used_at IS NULL OR last_used_at < now() - interval '60 seconds'`. The NULL branch matters, because a new connection has no stamp. Only the bearer path calls it. `/oauth/revoke` and the refresh scope check do not. Only box connections are stamped. So EA3-7 and the sentence at §7 stay true for an OAuth connection, and §7 gains a line for a box. The label "Last token refresh" in `AgentsView.tsx` reads "Last used" for a box.
+- **The address.** The edge passes `request.client.host` to `authenticate`. Caddy writes the real client address into `X-Forwarded-For`, and uvicorn applies it. The edge never reads `X-Real-IP`, because the `mcp.metorite.com` block of the Caddyfile does not set it and a client could. `touch_box_use` stores `last_seen_addr`. A change sets `addr_changed_at`, and the edge writes no audit row, because the audit writer opens a sync engine that the edge must not hold and it has no tenant there (review of 2026-11-07). The gateway list route (EA-19c) reads a fresh mark and writes the audit row with the action `box_token.new_address`. The compare runs only inside the 60-second touch, so a thief's calls between two touches are not seen. This is a residual risk. The address that set a mark stays in `last_seen_addr` for that hour. It fires at most once an hour for a connection, so a thief who alternates with the box, or an IPv6 privacy address, does not flood the member.
+- **A leak costs** whatever the member's grant reaches, with writes when the write scope is on, until a person revokes. The controls are the fixed expiry, the scope ceiling, the existing rate limits, and the new-address mark.
+- **The flag is a pause, not a kill.** `agent_box_tokens_enabled` is read in `bearer.authenticate` and in `read_live_connection` (branch 0), the same places as `org_allowed`. It is not read in `lookup_token`, because `/oauth/revoke` needs `lookup_token` to find a token (rule 8). With the flag off, a box token gets 401, and the check, mint and rotate routes answer 404. **The list, `DELETE /agent-access/connections/{id}` and "Revoke all box tokens" stay live**, so an admin can revoke while the flag is off. A case in `test_agent_box_token_routes.py` proves it. Two facts bind. The flag is a `Settings` value, so it needs a restart of `acb-agent-edge` and of the gateway. And a flip back to on revives every box token that no one revoked. So before an operator turns it on again after an incident, an admin presses "Revoke all box tokens" in Integrations, AI agents. That act revokes every box connection of the organization with the reason `flag_off`. It is EA-19d.
+
+**6. The seam.** There is no new table and no new token store.
+- **Migration (EA-19a, expand-only, R6).** The number is taken at build time and re-checked at merge (R1). `agent_connection` gains `credential TEXT NOT NULL DEFAULT 'oauth'` with a named CHECK for `oauth` and `box`, `revoked_reason TEXT NULL`, `last_seen_addr TEXT NULL` and `addr_changed_at TIMESTAMPTZ NULL`. The migration sets `lock_timeout`, because the ACCESS EXCLUSIVE lock waits in line in front of the edge lookups. The column default is metadata only on PG 11 and later.
+- **`revoked_reason` has no CHECK.** A CHECK would make one wrong string roll back a revoke, and a reuse revoke must never fail. The reasons are constants in `agent_tokens.REVOKE_REASONS`, and a test fails when a revoke path passes a value outside the set. The set comes from the real paths: `member` and `admin` (the two routes), `replaced` (D-EA-11), `refresh_reuse` (both reuse sites of `_rotate_in`), `code_replay` (`revoke_replayed_code`), `oauth_revoke` (`/oauth/revoke`), `approve_rollback` (a failed `mint_code` in `approve`) and `flag_off` (the bulk revoke). The four writers of EA-19a take the reason: `_revoke_in`, `revoke_connection`, `revoke_connection_scoped` and `_REPLACE_SAME_CLIENT_SQL`. The reasons `seat_lost` and `box_rotated` do not exist, because no path writes a connection revoke for them. Old rows keep NULL.
+- A box connection has `client_id` `urn:metorite:box` and `client_name` set to the box name. A box token is one `agent_token` row of kind `access`. Its `client_id` is `urn:metorite:box`, its `resource` is `agent_oauth.resource()`, and its `expires_at` is the expiry. No refresh row exists, and the `kind` CHECK does not change.
+- New store functions in `agent_tokens.py`: `create_box_connection`, `rotate_box_token` (locks the connection first, rule 3) and `touch_box_use`. `lookup_token` reads `credential` in the same transaction.
+- `/oauth/token` reads kind `refresh` only, so a box token is no refresh token.
+
+**7. Client proof.** Done 2026-11-06. See the table above.
+
+**8. One box, many sessions.**
+- The token gives one connection and one stamp for the box, not one for each session. The 11 lanes of `metorite-home` share the stamp `mcp:box:metorite-home-<8 hex>`.
+- **SW-7 is not affected.** The session key of §12.5 comes from the `Mcp-Session-Id` that the edge mints at each `initialize`. The id binds the connection, and it does not depend on how the bearer was made. So with `agent_mcp_sessions_enabled` on, each Claude Code process still gets its own key, and `yours` in `my_work` still tells the lanes apart. With the flag off, the lanes of one box share a stamp, as today.
+- **What is lost.** The token does not say which lane acted. The run row, the session key and the `external_link` do. A member who wants a trail for each lane makes one token for each lane. The cap of 20 allows it.
+- **What is gained.** No lane refreshes anything, so no lane can sign out the others.
+- The owner should turn `agent_mcp_sessions_enabled` on for the box with `agent_box_tokens_enabled`.
+
+**The threats this section adds to §10.2.**
+
+| Threat | Control |
+|---|---|
+| A box token leaks from the env or a backup | Fixed expiry, scope ceiling, the new-address mark, revoke on the next call, `.gitleaks.toml` rule and log redactor on the `mbt_` prefix |
+| A stolen member session makes a long-lived token | The `box-mint` ticket, `sameOrigin` and a person-only route. Residual risk as in question 3 |
+| A person forges a box stamp | The stamp keeps the `mcp:` prefix, so branch 0 starts and the HMAC fails |
+| A box token is replayed against `/oauth/token` | The token has kind `access`. `/oauth/token` reads kind `refresh` only |
+| A box token outlives the member's seat | Branch 0 checks the seat on every call (§7.1) |
+| An agent makes itself a box token | The mint routes are not in `MCP_ROUTES` |
+| The flag goes off and on with live tokens | It is a pause. The admin revokes all box tokens first (question 5) |
+| Two mints pass the cap together | An advisory lock for the member and the organization |
+
+**Fences.** EA-19a: `tests/unit/test_agent_revoke_reason.py` (R8). Named mutations: a revoke path that stores no reason, a reason outside `REVOKE_REASONS`, and a `_rotate_in` reuse site that stays silent. EA-19b: `tests/unit/test_agent_box_token_store.py` (R8, as a non-privileged role). Named mutations: a bearer check that ignores the flag, an expiry that slides on use, a rotation that skips the connection lock, a third live token, a token found across organizations, and a stamp query with no NULL branch. It also holds a case where an R8 box connection calls `claim_task` and gets 2xx, and a case where a header from a person with `X-Actor-Via: mcp:box:x` and no HMAC gets 401. EA-19c: `tests/unit/test_agent_box_token_routes.py`. Named mutations: a mint without the ticket, a mint without `sameOrigin`, a mint route inside `MCP_ROUTES`, a scope outside the ceiling, a mint for another member, a rotate without the ticket, a rotate without `sameOrigin`, a rotate of another member's box, and a revoke-all that 404s with the flag off. EA-19e: `tests/unit/test_box_token_claude_client.py`.
 
 ## 11. Schema addition: task references
 
@@ -1292,6 +1869,7 @@ The answer stays in the database, so the same session or a later session reads i
 | The agent writes any activity on a `stopping` run | `stopping` | `stopped` |
 | No activity for 5 minutes | `in_progress` | `stale`, computed on read only |
 | The member approves a typed archive request (SW-10a, §12.6) | `in_progress`, right after the answer | `completed` |
+| The agent records a decision that its member made outside Metorite (MCP-G15) | `awaiting` | `in_progress` |
 
 `completed`, `stopped` and `failed` are terminal for the agent. A member `prompt` on a `completed` run opens it again, as a reply does in Plane. An `awaiting` run never goes `stale`, because it waits for a person and not for the agent.
 
@@ -1371,6 +1949,7 @@ EA-6g adds two routes (EA3-40). `POST /projects/tasks/{task_id}/archive-request`
 | `get_agent_run` | A | `run_id`, `after?`, `wait_seconds?` (0 to 20) | The run, its derived state, and the activities after the cursor. The member's answer carries `selected` and the option labels |
 | `list_agent_runs` | A | `status?`, `needs_agent?`, `task_id?`, `cursor?` | The member's runs. A new session calls it with `needs_agent=true` first |
 | `finish_agent_run` | B | `run_id`, `summary?`, `idempotency_key` | The run with `completed` |
+| `record_outside_decision` (MCP-G15) | B | `run_id`, `decision`, `where`, `selected?`, `idempotency_key` | The agent's response, and the run with `in_progress` |
 
 The tool descriptions tell the agent three things. Send a `thought` at least once a minute while it works. After an `elicitation`, call `get_agent_run` with `wait_seconds` until an answer arrives, or end the session. At the start of each session, call `list_agent_runs` with `needs_agent=true`.
 
@@ -1425,7 +2004,7 @@ The member's agent session finds it with `list_agent_runs(needs_agent=true)`. Th
 **EA-12b, as built.** These are the choices that the build made.
 
 - **The flag at the edge.** The edge reads `agent_runs_enabled` through `acb_auth.agent_oauth.runs_enabled`, the one reader. The gateway reads the same function. While the flag is off, `tools/list` leaves out the six tools, and a call of one answers "Agent runs are turned off in this organization." with no gateway request. Both units need the same value. When only the gateway has the flag off, its 404 gives `get_task` an empty `agent_runs`.
-- **A prior write.** `ask_on_task` sends two writes: the start of the run, then the question. Its `task_id` fills a parameter of the start, so the tool record names the start in `prior_writes`. Rule 4 of §9.5 reads the parameters of that route too. `ask_on_task` is the only tool with a prior write, and `test_mcp_edge_coverage.py` holds that.
+- **A prior write.** `ask_on_task` sends two writes: the start of the run, then the question. When the gateway refuses the question, the tool sends a third write. That write releases the run that the tool started (CIV-14b, §12.9). A busy answer from the gateway and a 429 of the write cap send no release. A question that never left the edge sends the release, because the gateway wrote nothing. Its `task_id` fills a parameter of the start, so the tool record names the start in `prior_writes`. Rule 4 of §9.5 reads the parameters of that route too. The release takes no input of the tool, so rule 4 does not read it. `ask_on_task` and `move_tasks` (MCP-G1) are the only tools with a prior write, and `test_mcp_edge_coverage.py` holds that.
 - **The shapes.** A run has the keys of `RUN_KEYS`, and an activity has the keys of `RUN_ACTIVITY_KEYS` in `tools.py`. Each body, label and option description is `untrusted_text`, because a person or another agent wrote it. Option ids, client stamps and links leave as plain strings only in their shape. The `author` of an activity is `agent` or `person`.
 - **The finish replay.** A finish with no summary writes no activity. Since fix round 1, the gateway answers a second finish with 200 and the run when the run is `completed` or `stopped`. The edge keeps its fallback: on a 409 it reads the run, and a run that is `completed` or `stopped` is the result.
 - **The input check.** `check_input` now reads an array of objects and an object of strings. The edge refuses an option set with a repeated id or two recommended options before it sends a request.
@@ -1442,6 +2021,24 @@ The member's agent session finds it with `list_agent_runs(needs_agent=true)`. Th
 - **The indexes.** Migration 267 indexes `in_reply_to`, `pm_activity_id` and `task_id` of `pm_agent_run_activities`.
 - **The bell.** The shell bell names the client as the Projects UI does ("Claude Code"), and both say "asked you about".
 - **The instructions.** While the flag is on, the `initialize` instructions of the edge tell the agent how to use a run.
+
+**A decision made outside Metorite (MCP-G15, Metorite task 1567).** The owner reported the gap on 2026-11-04. An agent asks with `ask_on_task`, and the member then decides in another place, such as the Claude Code chat. Before MCP-G15, nothing recorded that decision, so the task kept waiting on the member.
+
+- **The route.** `POST /projects/agent-runs/{run_id}/outside-decision`, for an agent only. The body is `decision`, `where`, `selected?` and `idempotency_key`, with `extra="forbid"`. The pair joins `MCP_WRITE_ROUTES`. The manifest holds it as class B, with a `PLANNED` chat tool.
+- **An agent act, never a prompt.** The route writes one agent `response` through `_write_activity`, the one write path. The server sets its `in_reply_to` to the open question. The server also sets `content_metadata.decided_elsewhere` to `where`, `question_id` and `decision`. The refusal of a `prompt` from an agent stays.
+- **The move.** The new event `agent_outside_decision` moves `awaiting` to `in_progress`, and no other status. The response is the newest agent activity, so the derived state reads `working`.
+- **The question closes for every read.** Each open-question read looks for a row whose `in_reply_to` names the question: `_OPEN_ELICITATIONS_SQL`, `_newest_open_question` and `_has_answered_select`. So no read changes. A member who answers the same question on the card later gets the 409 of a second answer. A free reply still reaches the agent.
+- **The comment.** The timeline reads "Decided outside Metorite (Claude Code chat): Approve. Ship it on Friday." The labels of `selected` come first, unless the decision already starts with them.
+- **The refusals.** Each one changes nothing, and the edge maps each code to a fixed text.
+  - Another member's run, or a run of another client stamp, gets 403 `run_not_yours`. The rule is `may_end_run`, the rule of Release. A person gets 403.
+  - A run of the same member and the same client is the agent's own, from any connection. So a second machine of that client can record the decision too, as it can release the run or post an activity. The instructions tell the agent to write only on the run that it works on.
+  - A run that is not `awaiting` gets 409 `run_not_awaiting`. A run with no open question gets 409 `no_open_question`.
+  - A typed request gets 409 `typed_request`. Only the member answers it, in Metorite. Any elicitation with `content_metadata` counts as typed, so a later request kind is safe too.
+  - An option id that the question does not hold gets 422 `selected_refused`, by the rule of a member's answer (`option_labels`).
+- **The waiting lists.** The pill, "Waiting on me", the agent strip, the chat's `waiting_agent_requests` and the Questions panel of the report read the derived state `awaiting`. The run wire reads `open_elicitation`. After the act, none of them lists the run. The Needs attention route never lists an awaiting run (§12.7), and the act adds none. The run panel shows the question card only while the run is `awaiting`.
+- **The tool.** `record_outside_decision`, class B, with `projects:write`. It shows only while the runs flag is on. The server instructions, the prompt `work_on_task` and the description of `ask_on_task` name it.
+- **The bell (fix round 1).** In the same transaction, the act marks the member's `agent_question` bell row of the question read. The one writer of `read_at`, `notifications.mark_rows_read`, does it, and `mark_read` calls the same function. So the bell and the My Day card stop asking. After the commit, `personal.bump_my_day` moves My Day. The bell row of an assignee or a watcher stays theirs to read.
+- **Not built.** The answer time of the report (`analytics_waiting.answered_at_sql`) counts only a member's `prompt`. So a question that closed outside Metorite counts as a question with no answer. The run panel shows no line for the outside decision. The timeline comment is the record.
 
 **Later work, named so it is not built by accident.** The in-product dispatch of WS-27f (`agent_dispatch.py`) writes its own `agent_run` timeline row. Moving it onto `pm_agent_runs` is a later slice. `auth_request` is later. A webhook push to an agent that can receive one is later.
 
@@ -1483,14 +2080,16 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **4. Oversight (EA-13e, EA3-43, EA3-49).**
 
-- **The "Agent work" filter.** A toggle in `FilterBar.tsx`, beside "Waiting on me". The list rows gain `agent_worked`, read through `agent_worked.AGENT_WORKED_SQL` (`github_integration.md` §12.2) at the time of the read. The toggle filters the loaded rows, as "Waiting on me" does.
+- **The "Agent work" filter.** A toggle in `FilterBar.tsx`, beside "Waiting on me". The list rows gain `agent_worked`, read through `agent_worked.AGENT_WORKED_SQL` (`github_integration.md` §12.2) at the time of the read. The toggle sends `agent_worked=true` to `GET /projects/tasks`, so the server filters every page, not only the loaded rows (task 986).
 - **The group-by.** `GroupBy` (`app/projects/lib/grouping.ts:25`) and the gateway's `filters.GROUP_BY` (`filters.py:495`) gain `agent`. The lanes are Needs you, Answered, Working, Queued, Idle, Stopping, Failed and No agent. A drop between agent lanes writes nothing, because a person does not set a run state.
 - **The summary strip.** `GET /projects/{project_id}/agent-summary` returns five counts over the visible tasks of the project and its subprojects:
   - `queued`: an open run reads `queued`.
   - `working`: an open run reads `working`, `answered` or `stale`.
   - `waiting_on_you`: the "Waiting on me" rule of §12.1.
   - `in_review`: an open task with an `open` or `draft` pull request reference.
-  - `merged_this_week`: pull request references with `merged_at` in the last 7 days.
+  - `merged_this_week`: tasks with a pull request reference whose `merged_at` is in the last 7 days. It counts tasks, not references, so it equals the list's `total`.
+
+  **One text for the count and the list (task 986).** `filters.agent_focus_clause` gives the SQL of each focus. The strip counts through it, and `GET /projects/tasks?agent_focus=<focus>` filters through it, with "waiting" bound to the session's member. So a count is the `total` of the list behind its button. The board sends the focus on page 1, on "Load more" and on each column read. Fence: `tests/unit/test_projects_agent_focus_r8.py`.
 
   The route is class A in `skill_projects/manifest.py`, with a `PLANNED` read tool, or `test_projects_chat_coverage.py` fails. `AgentWorkStrip.tsx` draws the counts above the board when any count is not zero. Each count is a button that sets the matching filter.
 - **"Ask an agent" on the card.** `TaskCardActions.tsx` gains the item, and it opens `AskAgentDialog.tsx` for the task. `BulkBar.tsx` gains it for the selected tasks, at most 20. The dialog takes one instruction and one connection, and sends one `agentRunsApi.start` for each task with its own key. It shows the result of each task, and a 409 shows the server's text on that row. No new route.
@@ -1511,6 +2110,20 @@ The PR and CI data come from `github_integration.md` (WS-54). This section draws
 
 **What EA-13 does not build.** A server filter for "Agent work" (the toggle filters loaded rows). A dismiss of a failed run (EA12-12). A new run state. A status move on a pull request event, which `github_integration.md` §12 owns.
 
+**7. The agent card (EA-13g, BUILT 2026-10-29 on the board card, Metorite 842; staging look check owed).** Owner ask: the card of a task that an agent holds looks different from a human's card. The look comes from `AGENT_STATES`, and it adds no palette.
+
+| Run state | The card |
+|---|---|
+| `working`, `answered` | A 2 px accent edge with a light that travels round it, and a live line at the foot: the client glyph, a live dot and `agent_note` |
+| `queued` | A still, thin, solid accent edge (EA-13h, 2026-10-30: no dashed edge) |
+| `awaiting` | A still amber edge, and "Needs you" with the first line of the question |
+| `stale` | An accent glow that breathes slowly (EA-13h). The pill says "idle", so the line shows only the agent's last note |
+| `failed` | A still red edge |
+
+- The edge is a status loop (`DESIGN_SYSTEM.md` §4), and it moves `transform` only. With reduced motion it stays lit and still.
+- Only cards on screen move, and at most 12 at once.
+- `working` moves from gray to the theme accent for the card edge. That amends the "neutral" tone of §12.1 for the edge only. The pill keeps its glyph.
+
 ### 12.3 One AI for each task (EA-14a)
 
 Owner directive, 2026-10-20. If one AI session holds a task, no other AI session may claim it or start work on it.
@@ -1522,7 +2135,7 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
 - The edge maps `task_held` to one fixed text. The text tells the agent to pick another task and not to retry. The agent reads the holder in `held_by`.
 - **The lease.** A run keeps its task while its last activity is newer than two hours. The environment variable `AGENT_RUN_LEASE_SECONDS` changes the lease. Any activity, and any update of the run, is a heartbeat. A run that waits on a question (`awaiting`) keeps the task for three leases.
 - **The takeover.** The next claim takes a task from a run whose lease ended. The old run moves to `abandoned`, and it gets the line "Taken over by <member>/<client>". An agent that writes to an `abandoned` run gets 409 and stops.
-- **The release.** `release_task` (edge) and `POST /projects/agent-runs/{run_id}/release` (gateway) end a run without finishing the task. The run moves to `released`. The task keeps its status and its assignees. An agent releases its own run only. A person releases a run when they are its member, an assignee of the task, or an org admin. The card shows a Release button with a confirm.
+- **The release.** `release_task` (edge) and `POST /projects/agent-runs/{run_id}/release` (gateway) end a run without finishing the task. The run moves to `released`. The assignees stay. **The task moves to its lane in the same transaction (MCP-L1, Metorite task 3648).** The owner's stages: Backlog holds a task that nobody started and that is not planned soon. To Do holds a task planned to run soon, and a started task that is paused or given back. In progress holds work that moves now: a live run, or an open pull request that waits for review or merge. Done holds work that is merged or delivered. **A release undoes what the claim of this agent did (owner default, 2026-11-17).** It acts only when the last status move of the task is the claim's own move into a started lane (the same member, the same client stamp, no older than the run). A task that was already In progress before the claim is the live work of a person, and the release leaves it alone, whatever refs it holds. For a task that the claim moved, in this order: an open pull request keeps it in progress, in a lane named like Review when the board has one. Started work (a handoff `done`, or a branch, a commit or a pull request on the task) puts it in the To Do lane, and a board with no To Do lane keeps it where it is. A task that nobody started goes back to the lane that this agent's claim left. **A started task never goes to Backlog.** A task in another stage never moves. The lane inside a stage is `core.pick_lane`: the category first, then the name (To do, Ready or Next for To Do, Review for review), else the first lane by position. The answer of `release_task` holds `task_status`: `name`, `category`, `moved` and `reason`. An agent releases its own run only. A person releases a run when they are its member, an assignee of the task, or an org admin. The org admin holds `admin:members:manage` (H-409 item 2). The card shows a Release button with a confirm.
 - **The reads.** `list_tasks` and `get_task` carry `held_by` (member, client, since, last activity, `stale`). `list_tasks` takes `unheld`. A task whose holder is stale counts as unheld. `stale` in `held_by` means the lease ended. It is not the idle state of five minutes.
 - A member prompt on a `completed` run opens it again. That move also needs a free task. If another run holds the task, the prompt answers 409 `task_held`.
 
@@ -1543,7 +2156,30 @@ Owner directive, 2026-10-20. If one AI session holds a task, no other AI session
 - **No migration.** The per-task index `pm_agent_runs_one_open_per_task` already refuses a second open run beside the run of another machine.
 - **Not changed.** A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too, not the connection. An agent move stamps its own connection on the run. SW-7 (§12.5) closes two terminals on one connection.
 
-**Fence.** `tests/unit/test_agent_run_exclusive.py`.
+**H-409: the close, the release rule and the org arm (BUILT 2026-11-11, Metorite task 748).**
+
+- **A task close ends its open run (item 1).** A PATCH that moves a task into `done` or `cancelled`, and an archive, end the task's open run in the same transaction. `agent_runs.end_runs_of_closed_task` is the one writer. `core.apply_status_transition` calls it on the crossing into a closing category when its caller passes `closer`. `tasks.archive_task_in` calls it with `end_runs`.
+  - The run moves to `completed` by the move `task_close`, from any open status. It gets one server-close line: "Closed: the task is done.", "... cancelled." or "... archived.". So the agent may still leave one late summary, and the run analytics read the run as `server_closed`.
+  - **The run of the agent that closes the task stays open.** An agent that moves its own task to done makes its own disposition. It finishes the run itself, and the sweep closes the run after its lease (§12.6 step 2). Its own run is the same member and the same stamp, as for a release. The lock never reads that run, so a parallel write of the agent gives it no 409 (fix round 1).
+  - **Exactly once.** The close locks the open runs first, and only an open run moves. A second close of the task finds none.
+  - **No wait on a run lock.** An agent write takes the run first and the task row second (EA-13c). The close already holds the task row, so it locks the runs with `NOWAIT`. A run that an agent write holds refuses at once (SQLSTATE 55P03). `core.transient_as_409` on the PATCH and the archive route answers 409, and the route writes nothing.
+  - While `agent_runs_enabled` is off, the close reads no run.
+  - **A put-back reopens the run (fix round 1).** The close line carries the marker `task_close`: the status that the run had, its last activity, its wait and the closing status. The Undo of the board, a move out of that closing status and an unarchive are a put-back. `agent_runs.reopen_run_of_reopened_task` reopens the run when all of these hold:
+    1. The newest line of the run that is not ephemeral is the close line. The put-back undoes that close. It leaves the closing status of the close, or it is the unarchive of an archive close. The match uses the marker, never the text.
+    2. The run is still the newest run of the task.
+    3. No other run is open on the task. The unique index decides a race.
+    4. The put-back comes inside the undo window: 15 minutes, or the lease when the lease is shorter (`task_close_undo_s`).
+  - The reopened run goes back to the status that it had, with its last activity and its wait. So its lease is the lease that it had, and a question stays open. The bell rows of that question that the close marked read are unread again (`notifications.mark_rows_unread`, fix round 2). The close line keeps its text, and its marker becomes `server_close_undone`, so the run analytics read the end that follows. The run gets the line "Reopened: the task was put back.". The session key stays clear, and the next write of the agent's connection adopts the run (SW-7).
+  - A put-back that fails rule 2, 3 or 4 leaves the run closed. The run gets one line that says why, such as "Not reopened: the task was put back after the undo window.". That line keeps `server_close`, so the agent may still leave one late summary, and no later put-back matches.
+  - **Fix round 2.** The marker decides in any lane. An agent that moves its own task to done keeps its run. If Eve then archives the task and puts it back inside the window, the run comes back, and the task stays in Done.
+  - A put-back that undoes another close spends the marker when the task comes back open. The run then gets one line, "Not reopened: this put-back does not undo the close of this run.". So done, cancelled and then to do spends it, and a later done and to do reopens nothing. A status put-back of a task that stays archived waits, and it spends nothing.
+  - A finish with no summary on a run that a close ended writes one line, "Finished: the agent ended its run after the close.". It keeps `server_close` and spends the marker, so no put-back reopens a run that its agent finished.
+  - **The case that stays open.** A write that the closed run refuses (409) leaves no line. If the agent then stops, a put-back inside the window can still reopen the run. The lease limits that case. The run keeps only the lease that it had, and the next claim takes the task over when that lease ends.
+  - **Not covered.** Some doors that close a task pass no closer. They are the bulk edit, the subtask cascade, an automation rule and a GitHub merge. They are also the complete of the Tasks app and My Day (`personal.complete_for_member`, which `item_lens` calls too) and the archive of a subtree (`cascade.archive_subtree`). The Check result, intake, the merge and a remap of a status set are the last ones. The sweep closes such a run after its lease (§12.6 step 2). These doors put back no run either.
+- **The release rule (item 2).** The owner decided Q5 of `agent_coordination.md` §8 on 2026-11-06 (task 1874). Ending another member's run is a write. So `agent_runs.RELEASE_ADMIN_PERMISSION` is `admin:members:manage`, and `admin:members:read` (the `manager` role) does not give it. Release, Resume and `can_act` of Needs attention read the one constant. The run panel reads the same slug through `hasCapability` (`agentRuns.ts` `RELEASE_ADMIN_PERMISSION`), and a Python fence holds the two equal.
+- **The org arm (item 3).** The holder reads name the org, as defence in depth beside FORCE RLS. `unheld_clause` and `holder_sql` hold `h.organization_id = t.organization_id`. `_HOLDER_SQL`, every `_RUN_SELECT` read and the pill of `held_by` (`filters.agent_state_sql`) hold the org of the bound session, `filters.BOUND_ORG_SQL`. The seam sets that org in each transaction, so it never comes from the request. An unbound session reads no run.
+
+**Fence.** `tests/unit/test_agent_run_exclusive.py`. H-409: `tests/unit/test_agent_run_task_close_r8.py` (R8), `tests/unit/test_task_write_race_409.py` and `agentHold.test.ts`.
 
 ### 12.4 One call for the context, one call for the queue (EA-15)
 
@@ -1555,10 +2191,11 @@ Owner go-ahead, 2026-10-25, for the agent swarm plan (Metorite epic #321, phase 
 2. The task route again for each parent, from the task up to the root, at most five levels. A parent that the member cannot see answers 404. The edge then stops and returns one stub `{"hidden": true}` for that level. It never shows a title that the member cannot read.
 3. The project node route, for the name and the description.
 4. The timeline route with `kind=comments` and `page_size=20`, for the newest comments.
+5. The attachments route, for the metadata of the files on the task (MCP-G18). It is a read pair in `MCP_ROUTES`.
 
-The result holds `task` (the shape of `get_task`), `ancestors` (root first, each with id, number, title, status name and the first 500 characters of the description), `project` (id, name, description), `blocked_by` and `blocks` (from the `blocks` links, each with its status category), `subtasks`, `agent_runs`, `held_by`, `refs`, and `recent_comments` (oldest first). Each ancestor carries the name of its status, so the edge reads the statuses of the task's project once, as `get_task` does, and uses them for each ancestor in that project. An ancestor in another project shows its status category only. Every value that a person wrote is `untrusted_text` (§9.4). A task that the member cannot see answers the fixed not-found text, as `get_task` does.
+The result holds `task` (the shape of `get_task`), `ancestors` (root first, each with id, number, title, status name and the first 500 characters of the description), `project` (id, name, description), `blocked_by` and `blocks` (from the `blocks` links, each with its status category), `subtasks`, `agent_runs`, `held_by`, `refs`, `recent_comments` (oldest first) and `attachments` (MCP-G18: the oldest 100, with `attachments_truncated` when more exist). Each ancestor carries the name of its status, so the edge reads the statuses of the task's project once, as `get_task` does, and uses them for each ancestor in that project. An ancestor in another project shows its status category only. Every value that a person wrote is `untrusted_text` (§9.4). A task that the member cannot see answers the fixed not-found text, as `get_task` does.
 
-**The call ceiling is twelve.** `get_task` makes five calls (the task, the relations, the references, the open runs and the project statuses). Five ancestors make five more. The project node and the timeline make two more.
+**The call ceiling is fourteen.** `get_task` makes five calls (the task, the relations, the references, the open runs and the project statuses). Five ancestors make five more. The project node and the timeline make two more. The guidance read (SW-31a) and the attachments read (MCP-G18) make two more. With `comments: "all"` the ceiling is 18.
 
 **EA-15b. `my_work`.** A read (class A, `projects:read`). Its one input is `limit` (1 to 25, default 10). The edge applies it, so `limit` is a named edge input under rule 4 of §9.5. The edge calls, in this order:
 
@@ -1584,13 +2221,15 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **When the runs flag is off.** `agent_runs_enabled` gates the agent-runs list (`_ENABLED`). With the flag off, `my_work` makes no runs call, and it returns the third group only. It is not a `runs=True` tool, because the queue of assigned tasks is useful without runs.
 
+**The plan order (SW-68a).** The edge sends the ids of its whole assigned list to `GET /projects/plan/order` (class A, in `MCP_ROUTES`). The edge reads no flag. The gateway route reads `MY_WORK_PLAN_ORDER_ORGS`, and it answers the input order with no plan while the org is off. The edge keeps the order that it gets, then hides the rows that it never offers. The read has a 2 second limit, and any failure keeps the old order. A task under an epic is ranked by the plan, and it has an optional `plan` key: `epic_id`, `ready`, `slack_mins`, `blocked_by` (ids) and `blocked_by_hidden` (a count, no names).
+
 **What `my_work` does not do.** It never lists a task that the member is not assigned to and that this connection does not hold. An agent takes new work only by assignment or by an explicit claim. One residual stays while SW-7 is dark: two terminals that share ONE connection are not told apart. SW-7 (§12.5) is built behind `agent_mcp_sessions_enabled`. With the flag on, each terminal is its own MCP session, and `my_work` keeps the runs of this session and the runs with no key.
 
 **EA-15c. The protocol.** The server instructions (`mcp.py`) and the prompt `work_on_task` (`prompts.py`) give one order of steps:
 
 1. At the start of a session, call `my_work`. It replaces "call `list_agent_runs` with `needs_agent`, and continue each run".
 2. Take the top row. For `run_stopping`, call `finish_agent_run` at once, with no activity before it. For another waiting run, read it with `get_agent_run`. For a task, call `claim_task`.
-3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. With the flag of SW-7 on (§12.5), each terminal is its own session. Then a run of another terminal on your connection is not yours either. The refusal names `release_task` for a session that ended. With the flag off, two terminals on one connection are not told apart. The agent takes only a row that `my_work` lists.
+3. A 409 `task_held` means another session holds the task. Do not retry it. Take the next row. A run of another connection, such as one on another machine, is never yours. The gateway still takes a write on any run of the same member and the same client, from any connection (`may_end_run` and the member check of `_write_activity`). So the agent keeps this rule itself, and the instructions say so (MCP-G15 fix round 1). With the flag of SW-7 on (§12.5), each terminal is its own session. Then a run of another terminal on your connection is not yours either. The refusal names `release_task` for a session that ended. With the flag off, two terminals on one connection are not told apart. The agent takes only a row that `my_work` lists.
 4. Call `get_task_context`, then `start_agent_run` when the claim opened no run.
 5. Post a thought at least once a minute.
 6. End with exactly one disposition: the task moves to review or done, or a question waits on a named member (`ask_on_task`), or `release_task` gives it back. A comment is evidence, never a disposition.
@@ -1608,6 +2247,22 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 ### 12.5 One key for each agent session (SW-7)
 
 **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
+
+**MCP-G4 step 2 is BUILT 2026-11-05 on branch `l6s-mine-only`, not merged (Metorite task 358).** Incident of 2026-11-05: an answer to an ended session showed as `run_answered` for every session of the connection.
+
+Each `my_work` row now has `yours`. It is true only when the run has a session key and the key is the caller's session.
+
+The instructions, the prompt and the `my_work` text give one rule. Act on an answer only when `yours` is true. Also act only when you asked that question yourself in this session. Also act only when no later activity withdrew the answer.
+
+A claim does not make an answer yours, because a claim writes the key on a run with no key. A Resume prompt is a hand-off to continue the work, never an answer. The edge marks it with `resume` true on the activity, and only the gateway sets that mark. The task prompt and the `list_agent_runs` text carry the same rule. The server instructions carry one pointer sentence only, because the client cuts them at 4096 characters. A run with no key after a Resume is not left alone.
+
+**One exception: the watcher hand-off (CIV-14g, owner decision A, task 1731, 2026-11-07).** The answer watcher starts a fresh session, and that session did not ask. Its first prompt starts with `ANSWER WATCHER HAND-OFF for run` and a run id. For that named run only, the session may act on the newest person prompt. Its member must be the member of the run, and no later activity may have withdrawn it. The exception never allows a restart, an erase or a stop.
+
+`prompts.WATCHER_EXCEPTION` holds the text. Fence: `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
+
+`list_agent_runs` takes `mine_only`. It reads on past a page of sibling runs. A call with no session gets an empty list with no gateway read. A gateway fix for the adopt case is still open.
+
+While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_context.py` `TestYoursAndMineOnly` and `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
 
 **Ships dark behind `agent_mcp_sessions_enabled` (default off).** Turn it on on staging, and check it with a real Claude Code: two terminals, a resume, and a 404 after a key change. Then turn it on in production.
 
@@ -1650,7 +2305,7 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **What stays.**
 
-- `agent_label`, a display name for a session, is not built. It is display only.
+- `agent_label`, a display name for a session, is built (SW-7b, task 2858, migration 418). It is display only: `claim_task` and `start_agent_run` take it, and no gate, slot or session key reads it (`agent_coordination.md` SW-7b).
 - A write by run id (an activity, a finish, a release) checks the member, and the release checks the stamp too. It does not check the session.
 - A client that sends no `Mcp-Session-Id`, and the 2026-07-28 revision when EA-3c accepts it, run with no session. Such a call keeps the transition rule only.
 - **The deploy order.** The deploy restarts the gateway before the edge (`vps_apply.sh`). The new gateway accepts an old edge, because a call with no session signs the old string. The edge starts to send `X-Agent-Session` only after its own restart.
@@ -1703,6 +2358,7 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 1. Close each open run of the old archive shape (item 2).
 2. **Close each run of a closed task whose lease ended (fix round).** The task is done, cancelled or archived (`filters.task_closed_sql`), and the run is `in_progress`. The bar is the LEASE of the gate, not the stale band: `filters.holder_free_sql`, the one SQL twin of `holder_free`, which the `unheld` filter and the stranded rule read too. So an agent that moves its own task to done and then waits in a long call, for a deploy for example, keeps its run for the whole lease. Any activity renews the lease, a member's answer too. A revoked or expired connection frees the run at once, as at the gate. The run moves to `completed` (the move `task_close`) with one system line: "Closed: the task is done.", "... cancelled." or "... archived.". The sweep never touches the task. Nobody can claim a closed task, so a bell that says "start a session" would be false. This covers HANDOFF H-409 item 1 for runs. The task-side guard, an end of the run at the moment the task closes, stays open there.
+   - H-409 item 1 (task 748) adds the task-side guard for a PATCH and an archive (§12.3, "H-409"). The other doors still wait for this step.
 3. Clear each open fingerprint that no longer fits its run. A newer activity on the run clears it with `new_activity`. A run that left `in_progress` clears it with `run_moved`, so a strand of a run that step 2 closed clears in the same tick.
 4. Read the stranded runs, at most `MAX_PER_ORG` (200), the oldest first. A run of a closed task is never stranded. A run whose open strand is already a recovery record is left out, so recovered runs can never fill the window and starve a new strand (fix round).
    - **First miss.** No open fingerprint exists for `(run_id, reason)`. The sweep writes one, and it sends ONE bell notification to the run's member through `notify()`. The kind is `nudge`, so no CHECK changes. The actor is the client stamp, as EA12-8 does for a question, so `notifiable()` keeps the member. The excerpt says how long the run was quiet and what the member can do.
@@ -1744,11 +2400,13 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 - SW-9, a named path for a run that waits on another person or on a system, is not built. Today only `awaiting` is a live path.
 - A `created` run that no agent picks up, and a `stopping` run that no agent stops, are not stranded by this rule.
 - The Projects bell has no verb for `nudge` (`notifications.ts`), so it reads "updated". The shell bell reads "nudged you about".
-- HANDOFF H-409 item 1, the task side: the end of a run at the moment a member moves its task to done, cancels it or archives it. The sweep closes such a run once its lease ended (step 2), and only while its flag is on.
+- The task side of H-409 item 1 for the doors that pass no closer (§12.3, "H-409"). The sweep closes such a run once its lease ended (step 2), and only while its flag is on.
 
 **Fence.** `tests/unit/test_agent_run_sweep_r8.py`, with an R8 test for each rule and hermetic tests for the flag, the loop and the edge. The fix round adds `TestTheFixRound` (s9 to s13) and `TestTheLoopSurvives`. Part 1 changed two fences on purpose: `test_r4_answered_and_stale_are_derived` in `test_agent_runs_r8.py`, and G3 and G14 in `test_mcp_edge_archive.py`.
 
 ### 12.7 Needs attention (SW-11a)
+
+**AP-Q11 (owner, 2026-11-08).** This list folds into "For you" of the Waiting list, as one "Needs you" (`waiting_on_me.md` §5.8). Its three kinds become kinds of the Waiting seam (AP-17), and one Projects control takes the place of its view (AP-18). The route and its rules below stay. The AP-17 providers read them.
 
 **BUILT 2026-10-25, not merged (Metorite task #342, branch `sw11-attention-mt-eb3949d0`).** It is live at the merge and has no flag of its own. The list only reads, and its two actions use member writes that exist. The supervisor's audit gave GO-NARROWED, with the product decisions below.
 
@@ -1762,9 +2420,14 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 
 1. **Stalled.** An open recovery record of SW-10a (§12.6) that still fits its run. The record has `recovered_at` and no `cleared_at`. `filters.strand_fits_sql` holds: the run is `in_progress`, and no activity came after the record. `filters.open_recovery_sql` is the one text of this rule, and the Resume route reads it too. The task is not closed (`filters.task_closed_sql`), so a run of a closed task shows only as dangling. The owner is the run's member. The age counts from the last activity of the run. The action is Resume, and Close the run is the second action. A run can lose its agent connection: a member revoked it, or it expired (`filters.connection_gone_sql`). Then the row offers Close the run only. No session of that client can come back.
 2. **Blocked by parked work.** An open task that an open `blocks` link blocks, where the blocker is parked. The link rule is `filters.open_block_sql`, the one text that `blocked_by_count` reads too: a finished blocker blocks nothing. A parked blocker has a status in the `backlog` category. RA-1's holder rule (`analytics.holder_label_sql`) gives nobody for it: no assignee, and no open run that keeps it. Both tasks pass the open-work predicate of Load (`analytics.load_open_where`), as the handoffs of RA-3 do. The owner is the earliest assignee of the blocked task (`assigned_at`, then the address), or nobody. The age counts from the link. The action is "Open the blocker", a link.
+   - **One row for each blocked task (tasks 2545 and 2817, owner approval 2026-11-10 and 2026-11-11).** A plan of 100 links from 20 parked blockers once raised 100 rows. Task 2545 grouped them by blocker. That showed one blocked task several times, once for each of its blockers. Now the list groups by the blocked task. The row names that task. `blockers` lists every counted parked blocker (`id`, `number`, `title`), the oldest link first, and `blocker_count` is its length. `blocker_id`, `blocker_number` and `blocker_title` stay and name the first blocker. The UI shows "Blocked by N tasks" and the list when N is more than 1. `blocked_count` is gone, because a row now names one blocked task. The row age counts from its oldest link. The row is yours when the reader is an assignee of the blocked task. The header count equals the rows, because both read the grouped rows.
+   - **A link counts only when it matters.** The blocked task is active (`todo` or `in_progress`), or the blocker's epic has a slice in progress. A slice in progress is another child of the blocker's parent in `in_progress`. A done slice does not count (task 2817). A plan that waits wholly in the Backlog, or whose slices are all done, raises no row. A blocked `in_progress` task always raises its row. When a member starts a blocker, it has a holder and leaves the list of its blocked tasks.
+   - **Fence.** `tests/unit/test_needs_attention_r8.py`, class `TestTheBlockedGrouping`.
 3. **Dangling run.** An open run (`created`, `in_progress`, `awaiting` or `stopping`) of a closed task. `filters.task_closed_sql` decides: the task is archived, or its status is `done` or `cancelled`. The owner is the run's member. The age counts from the last activity of the run. The action is Close the run. SW-10a's sweep closes an `in_progress` one of these after its lease, and only while `agent_run_sweep_enabled` is on. It never closes the other three statuses. So this list is how a person sees and closes them.
 
 **"Waiting on no one" moves to SW-9.** It needs the named waiting path of SW-9, a run that waits on another person or on a system. SW-9 is not built (§12.6). SW-11a builds the three kinds above only.
+
+**Proposed, build in task 2545: a plan floods the blocked kind.** The blocked kind raises one row for each link whose blocker is parked and held by nobody. A plan raises hundreds of such rows. Tasks 2545 and 2817 built the fix, described above.
 
 **The route.** `GET /projects/needs-attention`, in `routes/projects/needs_attention.py`.
 
@@ -1778,7 +2441,7 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 - `kind`, and the task: `task_id`, `task_number`, `title`, `project_id`, `project_name`, `category`, `archived` and `parent_task_id`.
 - `owner`, `owner_name`, `since` and `age_hours`.
 - The run: `run_id`, `run_status`, `client_via`, `client_name` and `reason`. On a stalled row, `reason` is the strand reason (`agent_quiet` or `answer_unread`). On a dangling row, it says why the task is closed (`archived`, `done` or `cancelled`).
-- The blocker: `blocker_id`, `blocker_number` and `blocker_title`.
+- The blocker: `blocker_id`, `blocker_number` and `blocker_title` (the first blocker), `blockers` (all of them) and `blocker_count`. All are null on a run row.
 - `action`, `actions`, `can_act` and `yours`.
 - `connection_gone` and `can_resume` on a run row. `can_resume` is true for a stalled row whose caller may act and whose connection is live.
 
@@ -1787,9 +2450,9 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
 1. **§7 rule 1.** A reader sees only the rows of tasks they can open. Each query carries `task_visibility_clause`, the blocker too. A blocked row prints the blocker's title, so a hidden blocker gives no row.
 2. **The tenant and the caller come from the session.** The caller's tenant session runs each query. Nothing that names a tenant or a person comes from the request (R5, R11).
 3. **The runs flag.** While `agent_runs_enabled` is off, the stalled and dangling kinds read nothing, as `agent_summary.py` does. The routes of their two actions answer 404 then. The blocked kind still reads.
-4. **`can_act` is the rule of Release (EA-14a).** A person may end a run when they are its member, an assignee of its task, or hold `admin:members:read`. `agent_runs.person_may_end_sql` is the SQL of the first two, and the release route reads it too. So the list and the route cannot disagree. A blocked row needs no right, because its action only opens a task.
+4. **`can_act` is the rule of Release (EA-14a).** A person may end a run as its member, an assignee of its task, or a holder of `admin:members:manage`. `agent_runs.person_may_end_sql` is the SQL of the first two, and the release route reads it too. So the list and the route cannot disagree. A blocked row needs no right, because its action only opens a task.
 
-**H-409 item 2 is still open.** The Release button of the run panel reads `access.is_admin`, and the server reads `admin:members:read`. This list reads the server's answer through `can_act`, so it adds no third rule. The owner still decides whether a read permission may end the run of another member.
+**H-409 item 2 is BUILT (task 748).** The owner decided Q5: a read permission does not end the run of another member. The server and the Release button of the run panel read `admin:members:manage`. This list reads the server's answer through `can_act`, so it adds no third rule.
 
 **The two actions.** Both are member writes on a run that the member can see, with the rule of Release. An agent caller gets 403. Neither changes the task.
 
@@ -1800,7 +2463,7 @@ Each run gets its own savepoint in every step, so one failure does not undo the 
    - The strand stops fitting at once, so the row leaves the list and `needs_agent` stops reading `stranded`. At its next tick the sweep clears the strand with `new_activity`, which is SW-10a's clear path. The sweep stays the only writer of `pm_agent_run_strands`.
    - It refuses with 404 when the reader cannot see the task, and with 403 for an agent or a person with no right. It refuses with 409 when no open recovery record fits the run, and with 409 when the task is closed. It refuses with 409 when the run's agent connection is revoked or expired, and the text says to close the run. A replay of the key returns 200 and writes nothing.
    - It sends no bell and no `pm.task.comment_added` event. It is a note to the agent, not a comment to people. The task timeline keeps the comment row as the record.
-2. **Close the run** (stalled and dangling rows): `POST /projects/agent-runs/{run_id}/release`, the route of EA-14a, with no change. The run moves to `released`, with the system line "Released by <name>/the app". The task keeps its status and its assignees. A stalled strand stops fitting, because the run left `in_progress`, and the sweep clears it with `run_moved`.
+2. **Close the run** (stalled and dangling rows): `POST /projects/agent-runs/{run_id}/release`, the route of EA-14a, with no change. The run moves to `released`, with the system line "Released by <name>/the app". The assignees stay, and the task moves to its lane by the rule of the release in §9 (MCP-L1). A stalled strand stops fitting, because the run left `in_progress`, and the sweep clears it with `run_moved`.
 
 **A recorded deviation: Resume writes a prompt, and it does not clear the record.** The audit asked for a clear (`cleared_at` with a reason such as `resumed_by_member`), so that the run returns to `needs_agent=true`. The code says otherwise. An open strand IS the `stranded` reason of `needs_agent` (`agent_runs._NEEDS_AGENT_REASON_SQL`). A bare clear removes the run from `needs_agent=true` until the next tick writes a new fingerprint and sends a new bell.
 
@@ -1833,19 +2496,243 @@ A clear also needs a change to the CHECK of `cleared_reason` and a second writer
 - The fix of H-409 item 2.
 - The lens chip in the compact chrome (`ViewSheet.tsx`). The header badge opens the lens there.
 
+### 12.8 Questions for me (EA-18, D-EA-14)
+
+**DECIDED 2026-11-06 (owner, in Metorite, task 1788).** The owner approved the design, the five points of D-EA-14 and the three answers under "Settled with the approval". EA-18a, EA-18b and EA-18c are BUILT 2026-11-11, dark and not merged. EA-18c is on branch `mt-537a693d-question-doors` (Metorite task 1808). EA-18a has no migration. The mock is `questions-mock.png`, attached to the task. The EA-18a audit checked the anchors against origin/main `1847758a9` on 2026-11-06.
+
+**The owner's ask (2026-11-05).** "In the projects app, I need to open an individual project or the main project to see what the agent questions waiting on me are. Wouldn't it be nice to have one surface where I can see all the questions that are waiting for me? It might be nice if, along with settings and reports, I also have that section for questions waiting for me. I have a nice UI where all the questions waiting for me show up, and I know which projects or subprojects they belong to so that I can easily see what I need to answer. Ideally, the person who created the task should be able to answer, but depending on admin privileges, anybody higher up also should be able to answer that particular question of the AI. And we can also access this from multiple places, from approvals or my day, so that we are all clear and it is easy."
+
+**What is wrong today.**
+
+1. A question shows only inside its own project. A member opens each project to find it.
+2. `GET /projects/agent-runs` (`list_my_agent_runs`) lists the caller's own runs only (`r.member_email = :me`). Its `needs_agent` filter is the AGENT's queue, and not "a person must answer".
+3. `filters.agent_focus_clause("waiting")` reads "awaiting, and the run's member or an assignee is me". It never reads the creator of the task. `pm_tasks.created_by` exists (`146_projects.sql`, set in `routes/projects/tasks.py`), and no agent-run rule reads it.
+4. `analytics_waiting.py` `questions_sql` feeds a capped report panel, "Waiting on people" (`projects_reports.md` §6.8 C). It counts and explains. It cannot answer.
+5. `GET /projects/needs-attention` never lists an `awaiting` run (§12.7).
+6. The only answer UI is the run panel (`AgentRunPanel.tsx`), inside one task.
+7. A question notifies `run.member_email` and `task_audience()` as kind `agent_question` (`_write_activity` in `agent_runs.py`). The creator hears of it only as an assignee or a watcher (`task_audience()`). Migration 165 made the author of each older task a watcher.
+8. The answer route lets any member who sees the task answer (D-EA-10 point 1). So more people may answer than the people who get the bell, and "higher up" has no named rule.
+
+**The design: one list, three doors.** The list is one read (see "The route"). Each door shows it. No door keeps a copy, and no door builds a second list (D87 to D89, D52 and D53).
+
+1. **Projects.** A "Questions for me" item joins the workspace section of the sidebar, beside Reports and Settings. It has a count badge. `?app=questions` opens it.
+2. **My Day.** One card shows the top questions and the count N. In EA-18c the card holds an "Answer" link that opens door 1, where the answer runs the list's write (D100, D101). The in-card answer is a later slice. It needs an `expand` act in FeedCard. The owner decided on task 1808: ship the link now. The in-card answer is the next slice, EA-18e (task 2964).
+3. **Approvals.** An "Agent questions · N" tab sits beside "Actions · N". It shows the same list. "Open the full list in Projects" opens door 1.
+
+**The row.** Rows group under the project path, from space to subproject, as "Metorite › Metorite Application › AI Studio · 2 questions". Each name in the path links to its project. A row holds:
+
+- The task title, with "Open task".
+- The agent name and the age ("asked 3 h ago"). A second line reads the run: "Run started 3 h ago · waiting 2 h 41 m".
+- A tag that says why the reader sees it: "You created this task", "Assigned to you" or "Your agent asked". A reader with two reasons sees the first in this order: created, assigned, own agent.
+- The question text. Then one button for each option, in the order that the agent sent. A "recommended" mark shows when the agent set one. A question with `allow_multiple` shows check boxes and one Send button.
+- A free-text field, "Or write an answer...", with Send. A question with no options shows the field only.
+- After Send, the row shows "Answered by <name>" for a moment and then leaves the list. The agent goes on at once.
+
+**The answer card is shared.** The answer part of `AgentRunPanel.tsx` moves into one component, `AgentQuestionCard`. The run panel and the list both render it. EA-18b must not copy it. The chat's own questions (`lib/pendingAsks.ts`, `askPin.ts`, WS-51) are a different thing, so do not reuse them.
+
+**Tabs, filters, sort and count.**
+
+- Tabs: "For me · N" and "Everyone · M". The "Everyone" tab shows only to a reader in the review set (D-EA-14 point 3). Other readers see no tab.
+- Filter: a project picker, "All projects" by default. A pick keeps that project and its subprojects (`analytics.scope_clause`).
+- Sort: "Oldest first" by default. "Newest first" is the other choice.
+- The count is exact. The "For me" count feeds the sidebar badge, the My Day card and the Approvals tab. A page holds at most 200 rows. `capped` is true when more exist, and the page says "Showing the oldest 200".
+- Empty state: "No question waits on you. When an agent asks, it shows here." The "Everyone" tab says "No agent waits on anyone."
+- The list reads again after each answer, and every 60 seconds while the page is open.
+
+**D-EA-14: who sees a question and who may answer. DECIDED 2026-11-06 (owner, Metorite task 1788).**
+
+1. **"For me" lists an open question** in three cases. The reader created the task (`pm_tasks.created_by`). Or the reader is an assignee. Or the reader is the member of the run, so the reader's own agent asked.
+2. **Who may answer** is the same three groups, plus a reader who holds the organization role `owner`, `admin` or `manager`. This AMENDS D-EA-10 point (1). The role test reads `UserContext.roles` (`roles.py`, with `SYSTEM_ROLES` in `permissions.py`). The reader must also see the task (`task_visibility_clause`, D87 rule 4). Any other member sees the question in the run panel as read-only, with "<name> or an admin can answer this".
+3. **The "Everyone" tab shows only to a reader with the role `owner`, `admin` or `manager`.** It lists every open question that the reader can see. So the reader can free an agent whose person is away. A reader without the role gets 403 on `scope=everyone`.
+4. **The task creator also gets the `agent_question` notification**, once. The audience is the run's member, `task_audience()` and the creator. Two roles in one person give one notification.
+5. **Each answer names who gave it.** `pm_agent_run_activities.actor` already holds the member email of a `prompt` (`267_pm_agent_runs.sql`). The answer comment in the task timeline has the same author. The list and the run panel show "Answered by <name>". EA-18b adds that name to the answered state of the card. No migration is needed.
+
+**Amendment of D-EA-10.** Point (1) of D-EA-10 read "Any member who can see the task may answer". D-EA-14 point 2 narrows it, and the §6 row says so. The typed archive approval (§12.1) stays narrower still: only the run's member answers it. D-EA-14 does not touch it.
+
+**The role mapping.** "Higher up" means an organization role, and not a permission. The role slugs are `owner`, `admin` and `manager`. `data:org:read` and `admin:members:read` are read permissions. The owner decided in Q5 that a read permission does not end the run of another member (H-409 item 2). The answer set keeps its role test.
+
+The role test adds no third rule to `may_end_run`. "Manager" means the organization role `manager`, not the manager of the project's space (settled 2026-11-06).
+
+**The route.** `GET /projects/agent-questions`, in a new file `routes/projects/agent_questions.py`, beside `needs_attention.py`.
+
+- Query: `scope=mine|everyone` (default `mine`), `project=<id>` (optional), `sort=oldest|newest`, `offset` and `limit` (0 to 200, default 100).
+- The answer holds `rows`, `counts` (`mine` and `everyone`, the second null for a reader outside the review set), `total`, `offset`, `limit` and `capped`.
+- A row holds `run_id`, `activity_id` (the open elicitation), `task_id`, `task_number`, `task_title`, `agent_name`, `client_via`, `asked_at` and `run_started_at`. It also holds `project_path`, a list of `{id, name}` from the root to the leaf. The path holds only the projects that the reader can see, and it stops at the first hidden parent, so a hidden name never shows. It reuses an ancestor walk of `routes/projects/core.py`, and it adds no third walk. It holds `question` (`kind`, `body`, `options`, `allow_multiple`) and `can_answer`. It holds `why`: `created`, `assigned` or `my_agent`. On the "Everyone" tab, `why` is null for a reader with none of the three.
+- `scope=everyone` gives 403 to a reader without the role. The text is "Only an owner, an admin or a manager can see every question. Open For me to see yours."
+- A `project` that the reader cannot see gives 404, as `needs-attention` does.
+- The route reads the open elicitation with the SQL that the run list uses (`open_elicitation` in `agent_runs.py`, and the awaiting rule of `filters.agent_focus_clause`). It reads the path with the project parent walk. It adds `task_visibility_clause`. It writes nothing.
+- With `agent_runs_enabled` off, the list is empty. With the new flag off, the route answers 404.
+- A question on a closed task does not show. It is a `dangling` row of Needs attention, and the sweep closes it.
+- A typed archive request on an open task shows to the run's member only, with `why` `my_agent` and `can_answer` true. `why` stays `my_agent` when that member also created the task or is an assignee (`question_reason_sql`). A free question keeps the order created, assigned, own agent. Only that member approves it, through `archive-approval` (§12.1). The creator, an assignee and an owner, admin or manager do not see it, in "For me" or in "Everyone".
+- `question.kind` is `archive_request` for a typed archive request, and `question` for any other question. The server takes it from `archive_request_of`, so the browser never derives it. EA-18b sends Approve and Decline of an `archive_request` row to `archive-approval`, and not to `/activities`.
+- `listed_question_sql` in `agent_runs.py` is the one text of these two rules. With the flag on, "Waiting on me" reads it too, so both count the same questions.
+
+**ONE text for "who may answer".** A function `person_may_answer_sql(run)` sits in `agent_runs.py` beside `person_may_end_sql`. It holds the created, assigned and run-member tests. A second function, `may_answer_run(db, run, user)`, adds the role test from the context. The list calls the SQL for `why` and `can_answer`. `POST /projects/agent-runs/{id}/activities` calls `may_answer_run`.
+
+So the list never offers a button that the route refuses. `person_may_end_sql` set this rule for Release. The fence of EA-18a holds it.
+
+Each address test compares with `lower()`, because `created_by` holds the actor as written. The role test stays in Python: `may_answer_run` reads `user.roles & {"owner", "admin", "manager"}`, and the list folds that one result into `can_answer`. The role test never goes into the SQL text.
+
+`why` takes the first true test in the order created, assigned, own agent.
+
+`filters.agent_focus_clause("waiting")` holds an older copy of "the run's member or an assignee is me". With the flag on, it reads `person_may_answer_sql`, so "Waiting on me" and "For me" agree. With the flag off, it stays as it is.
+
+**The write rule.** `POST /projects/agent-runs/{run_id}/activities` with `type: prompt` from a person runs `may_answer_run` after `_load_visible_run`. The rule binds only an answer: a person's `prompt` while the run is `awaiting` on an open question that is not a typed archive request. D-EA-14 decided who may answer, and it decided nothing else. So a Stop (`signal: stop`), and a reply to a run that is not awaiting, stay open to every member who sees the task, as D-EA-10 point (1) says. A person outside the set who tries to answer gets 403. The message reads: "Only <member name>, the creator of the task, its assignees, or an owner, admin or manager can answer this question. Ask one of them, or open the task and add a comment."
+
+A comment through the task route stays open to every member who sees the task. A comment does not answer a question.
+
+The agent paths do not change. The "no person present" 403 (`_refuse_a_marked_prompt`) and the archive approval rule stay as they are. This rule is a behaviour change, so it sits behind the same flag (see Flag).
+
+**The notification.** `_write_activity` builds the audience of `agent_question` as the run's member, `task_audience()` and the `created_by` of the task, with no duplicate. A task with no creator address adds nobody. The notification stays prospective: no backfill, and no bell for a question that is already open when the flag turns on. The audience removes duplicates with no regard to case. `notify()` still drops the actor and each person who cannot see the task, so a creator who lost the grant gets no bell. My Day reads `ASKING_NOTIFICATIONS` (`gateway/routes/shell/needs.py`), which already holds `agent_question`.
+
+**My Day (EA-18c).** A new card kind, `agent_questions`, joins the catalogue of `my_day_feed.md`. A provider in the feed route (`gateway/routes/shell/feed.py`) and a type in `lib/shell/feed.ts` carry it. It reads the "mine" list, the 3 oldest. It shows the project path, the question and the options. An answer runs the same write as the list (D100, D101).
+
+**Built (2026-11-11).** The source is `agent_questions`. It gives ONE card, keyed `questions:mine`, with the 3 oldest questions and the whole "mine" count. It is gated like the other feed-only sources, so `MY_DAY_PROVIDERS` must list it and `AGENT_QUESTIONS_ORGS` must hold the org. The provider calls `agent_questions.read_mine`, which writes no SQL. The one act, "Answer", opens the list in Projects (`?app=questions`), and an answer there runs the same write (D100, D101). The in-card answer is the next slice, EA-18e (task 2964), and it needs an `expand` act in FeedCard. The card needs both `AGENT_QUESTIONS_ORGS` and `MY_DAY_PROVIDERS` to show.
+
+The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you". It gets a weight in `feed_rank.BASE`. A member with no open question sees no card. `lib/shell/AiWaitingCard.tsx` is the chat's card, and it is not this one.
+
+**Approvals (EA-18c).** `src/app/approvals/page.tsx` gains two tabs: "Actions" (the Action Broker queue, unchanged) and "Agent questions". The second tab renders the list component with `scope=mine`. The tab needs no new feature grant. The route reads the Projects visibility of the reader, so a reader sees nothing that they could not open (D87 rule 4).
+
+**One list, not two (2026-11-06).** CIV-14k (Metorite task 1750, merged as `c4c17132f`) added a "Waiting for you" section to `approvals/page.tsx` and `approvals/lib/waitingForYou.ts`. It reads `GET /projects/agent-runs?order=oldest&with_task=true`, which lists only the runs whose member is the reader. That list is narrower than this route, because it leaves out the task creator and the assignees. EA-18c replaces that section with this route (`scope=mine`), so the product keeps one list of the questions that wait on a person. EA-18c must not add a second tab beside it.
+
+**The app and the shell (R9).** The Projects item is a destination inside one app. So it joins `projectApps.ts` (`ProjectAppId`, `PROJECT_APP_SECTIONS`, `resolveAppLink`), and not `PANES` in `nav.ts`.
+
+The app plugs into the shell. It builds no palette, bell or assistant rail, and it adds nothing to `SEAM_DEBT`. The My Day provider is registered as the gateway `Provider` `agent_questions` in `gateway/routes/shell/feed.py`. The client has no manifest field for it.
+
+**Flag.** `AGENT_QUESTIONS_ORGS`, an `*_ORGS` setting. It reloads by SIGHUP (`docs/flag_reload.md`), and it is empty by default, so it ships dark. The check follows `routes/projects/authorities.py` and `decisions.py`: true when the setting holds the organization of the session or `*`. `tests/unit/test_flag_reload.py` fails when the reload list does not hold the key.
+
+While it is off for an organization, these stay as today. The route answers 404. The sidebar item, the card and the tab are absent. The audience of `agent_question` has no creator. The write rule is D-EA-10 point (1).
+
+While it is on, all five points of D-EA-14 apply. The write narrowing sits behind the same flag on purpose. A second flag could let the list offer a button that the route refuses. The flip is OWNER-GATE (`enforcement-flip`).
+
+**Tenancy (R5).** The route takes its session from `get_db()` under FORCE RLS. It adds no connection site and no Redis key. The address and the roles of the reader come from the session, and never from the request. A question of another organization never shows. The route has no parameter that names an organization.
+
+**Scope and non-goals.**
+
+- It does not change how an agent asks (`ask_on_task`), the run state machine or the lease rules.
+- It adds no table and no column.
+- It adds no browser push. The bell stays the alert (WS-51 S7).
+- It does not list the pending actions of the Action Broker. They stay in "Actions".
+- It does not change the typed archive request.
+- It adds no chat tool. EA-18a records this gap, and EA-18d closes it (see "The chat tools (EA-18d)" below).
+
+**The chat tools (EA-18d).** **BUILT 2026-11-11, not merged (branch `mt-2b6a7bb7-chat-questions-tool`, Metorite task 1832).** It adds no route, no table and no migration. The chat's own pending asks (`lib/pendingAsks.ts`, `askPin.ts`) are a different thing, and this slice does not touch them.
+
+- **`agent_questions` (class A, a read).** It reads `GET /projects/agent-questions` with `scope`, `project_id`, `sort` and `offset`. A page holds 25 rows. Each row shows the project path, the question, the options as `id = label`, `why`, and the `run_id`. The agent text is fenced as data. A request to archive a task shows a link to the task card and no next step. While the flag is off the route answers 404, and the tool says in one sentence that the list is not on. With a `project_id` the 404 has two causes, and the sentence names both.
+- **`answer_agent_question` (class B, one card).** It is a composite of `post_agent_activity` (`manifest.COMPOSITE`), so `POST /projects/agent-runs/{id}/activities` stays the route of the planned EA-12e tool. It refuses a run with no person present before any call. It reads the run, shows one card with the question and the answer, and posts ONE `prompt` after the member confirms. The key is `chat-answer-<activity id>`, so a retry writes nothing twice (R5). The route runs `may_answer_run`, and a 403 comes back as a sentence. The tool holds no copy of the rule.
+- **A typed archive request.** The tool refuses it before any card. Its approval route, `archive-approval`, is class X (EA3-40, D-OP-13), and the chat never reaches it. The member approves on the task card. The read shows the link.
+- **The fences.** `tests/unit/test_agent_questions_tools.py` holds both tools. `test_projects_agent_requests_tools.py` allows the activities route in `question_answers.py` only, and never the approval route. `test_no_person_present.py` names the tool in its exemptions. `test_held_card_writes.py` lists it as a kept write, and `egress.HELD_CARD_WRITE_TOOLS` pins its parameters.
+
+**Acceptance (done when).**
+
+1. With the flag on, the creator of a task sees its open question in "For me". `why` is `created`, and the project path shows.
+2. A member who is none of the groups, and holds no role of the review set, sees `can_answer` false. The same member gets 403 on a `prompt` that answers an open question. The same member may still send a Stop, and may still reply to a run that is not awaiting.
+3. An `owner`, `admin` or `manager` sees the "Everyone" tab, and answers any question that they can see.
+4. A reader without the role gets 403 on `scope=everyone`, and sees no tab.
+5. The creator gets one `agent_question` notification, and not two when the creator is an assignee too.
+6. An answer names its author in the list, the run panel and the task timeline.
+7. With the flag off, nothing changes: the route answers 404, and any member who sees the task may still answer.
+8. The same question shows in Projects, My Day and Approvals, with the same count.
+
+**Fences.**
+
+- EA-18a: `tests/unit/test_agent_questions_r8.py`, on R8, each class marked `@_DB_GATE`. Named mutations, each one turning a test red: (M1) a reader outside the set sees `can_answer` true. (M2) the write route accepts an answer to an open question from a viewer who is not in the set. (M3) `scope=everyone` answers a reader without the role. (M4) a question of another organization shows. (M5) the creator is notified twice when the creator is also an assignee. (M6) the list and the route use two different texts for the answer set. (M7) the rule also refuses a Stop from a viewer. (M8) `project_path` shows the name of a hidden parent. The same file holds "a read writes nothing" and the flag-off cases (404 and the old audience).
+- The fix rounds of EA-18a add M9 to M20, in the same file. (M9) "Waiting on me" drops `listed_question_sql`. (M10) a typed request shows to the creator. (M11) a question on a closed task shows. (M12) the list loses `r.status = 'awaiting'`.
+- (M13) a typed request hides from its member. (M14) `kind` is always `question`. (M15) `kind` is always `archive_request`. (M16) a typed request reads `created` or `assigned`.
+- (M17) an explicit `signal: continue` skips the write rule. (M18) a closed task skips the write rule. (M19) `kind` comes from the option ids. (M20) the flag reads the org from a request header.
+- EA-18a also edits `test_agent_runs_r8.py`. The old "any viewer may answer" case becomes a flag-off case. If the digest of `test_tenant_request_binding.py` changes, the §10.1 review applies.
+- EA-18b: `app/projects/lib/agentQuestions.test.ts`, `projectApps.test.ts` (the new id and its link), `compactChrome.test.ts`, and a component test of `AgentQuestionCard`. An e2e, `e2e/agent-questions.spec.ts`.
+- EA-18c: `lib/shell/feed.test.ts` for the card kind, a test of the approvals page, and `e2e/agent-questions-doors.spec.ts`. `src/lib/shell/seams.test.ts` stays green.
+
+**Verify.** Run these with the dev database exported (`bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`), and confirm that no R8 test skips.
+
+```
+uv run pytest tests/unit/test_agent_questions_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_needs_attention_r8.py tests/unit/test_tenant_request_binding.py
+uv run ruff check
+uv run python scripts/affected_tests.py --run
+cd workbench/control_plane && npx tsc --noEmit
+cd workbench/control_plane && npx vitest run src/app/projects/lib/agentQuestions.test.ts src/app/projects/lib/projectApps.test.ts src/app/projects/compactChrome.test.ts src/lib/shell/seams.test.ts
+cd workbench/control_plane && npx playwright test e2e/agent-questions.spec.ts e2e/agent-questions-doors.spec.ts
+```
+
+**UI check (UI-1).** EA-18b and EA-18c capture the list in light mode, dark mode, compact density, a changed accent and 390 px. They also capture it beside the Reports pane. The owner previews it on `bash scripts/dev_up.sh` before the merge.
+
+**Settled with the approval (owner, 2026-11-06).**
+
+1. "Manager" means the organization role `manager`. The space has no manager field that a role test can read.
+2. A member who is in none of the groups may still write a comment on the task. A comment does not answer the question, and the agent reads it as a note.
+3. "Answered by" shows the name only, not the role.
+
+### 12.9 Images on a question (CIV-14b, Metorite task 1727)
+
+**Status: BUILT (2026-11-12), fix round 1 done (2026-11-12), fix round 2 done (2026-11-14), fix round 3 done (2026-11-15), not merged, dark behind `MCP_IMAGE_UPLOAD_ORGS` (Metorite task 1727, branch `mt-952e91e6-civ14b-images`).** The owner asked in chat on 2026-11-12: an agent sends small images to Metorite, so that the owner approves a UI change in Metorite. This works even when the owner cannot reach the machine that made the image. Metorite's attachment store is the one central place. This decision lifts the wait of MCP-G18 for a base64 transport, for images only.
+
+**What exists today.** `get_task_context` returns `attachments` and the image counts (MCP-G18, IMG-3, `agent_edge/tools.py`). `get_attachment` reads the bytes of an image up to 3.75 MB. The gateway upload route is `POST /projects/tasks/{task_id}/attachments` (`gateway/routes/projects/attachments.py`, multipart). It holds the visibility check, the advisory lock and the budget of 10 MB for each task.
+
+**Scope (AGENT-SAFE, HIGH tier).**
+1. **The upload tool.** `upload_task_image(task_id, filename, content_base64, idempotency_key)`. It accepts png, jpeg, gif and webp only, at most 3.75 MB after the decode. The edge decodes the bytes and reads the type from the magic bytes. It refuses an empty file, bad base64, a type outside the list, and any SVG. A file name never decides the type. The tool calls the gateway upload route, which runs its own visibility check, lock and budget. The route pair joins `MCP_WRITE_ROUTES` (D136). It is a class B write: the author can delete the image.
+2. **The question takes images.** `ask_on_task` and `post_agent_activity` gain `attachment_ids`, at most 4. The gateway checks that each id belongs to the same task. An id of another task is a 422.
+3. **The card shows them.** `AgentQuestionCard.tsx` and the activity line draw each image as a small picture from the cookie serve route of the gateway. A click opens the image at full size. The card never reads the bytes path of `get_attachment`.
+4. **The gateway closes two gaps for every caller.** The upload route checks the magic bytes against the declared type, and it refuses SVG. Today the route trusts the client's type, and it stores SVG.
+5. **Ship dark.** `MCP_IMAGE_UPLOAD_ORGS`, default empty.
+
+**Non-goals.** A signed link in `get_task_context` (OWNER-GATE: the owner decides it later, because the decision of 2026-11-06 says "no link"). A file that is not an image. The evidence panel (SW-87, task 1933).
+
+**Done when.** An agent uploads a capture with `upload_task_image`, asks with `ask_on_task` and its `attachment_ids`, and a card test shows an `img` for each id. Org B can neither attach to nor read a task of org A.
+
+**Fences.**
+- R8 on a real database: `test_mcp_upload_image_tenant_r8` covers org B, a hidden task and an id of another task in the ask. `test_mcp_upload_image_budget_r8` covers the 10 MB budget under parallel uploads.
+- Unit: `test_mcp_upload_image_limits` (size, empty, bad base64) and `test_mcp_upload_image_types` (SVG, an exe with a png name, a jpeg body labelled png).
+- `test_mcp_write_routes_fence` lists the new pair with its class. The pinned tool lists of a new MCP tool (`test_mcp_edge_protocol.py` ALL_TOOLS and the write counts) change with it.
+- Vitest: the card draws the images, and a click opens one at full size.
+
+**Verify.** `uv run pytest tests/unit/test_mcp_upload_image_limits.py tests/unit/test_mcp_upload_image_types.py tests/unit/test_mcp_upload_image_tenant_r8.py tests/unit/test_mcp_upload_image_budget_r8.py tests/unit/test_mcp_edge_protocol.py tests/unit/test_mcp_edge_writes.py`, then `uv run ruff check` on the changed files, then `npx tsc --noEmit && npx vitest run src/app/projects/components/agentQuestionCard.test.ts` in `workbench/control_plane`. The card fence is the existing `agentQuestionCard.test.ts`, because the vitest runner has no DOM and that file already holds the states of the card.
+
+**Built as (2026-11-12).** The parts that the scope above did not name:
+
+- **Branch 0 and a form.** FastAPI parses a multipart body before any dependency, so branch 0 found no bytes to check against the signature. The gateway wrapper `routes/projects/agent_upload_body.py` keeps a copy of the body of a signed POST to the upload path in the ASGI scope, under the server key `acb.agent_signed_body` (`agent_signing.SIGNED_BODY_SCOPE_KEY`). The new scanned helper `deps._signed_body` is the one body reader of branch 0: it reads that copy, else `await request.body()`. A signed body over 3.75 MB and 64 KB gets 413 before the route. The scan, the tripwire and the digest of `test_tenant_request_binding.py` take the new key and the new helper, so this part needs the adversarial review and the independent verification of a branch-0 change.
+- **The body cap of `/mcp`.** The base64 of 3.75 MB is 5 MB, more than the cap of 1 MiB. The edge reads up to 6 MiB for ONE `tools/call` of `upload_task_image`, and keeps 1 MiB for every other call. Fix round 1: such a body must declare its `Content-Length`, and its token check comes before the read. Then it takes one of 4 slots, and one of 2 for its connection, or gets 503. The read has 30 seconds (408), and a count of the shape bytes comes before the parse (413). §9.6 "The body size" holds the order. Caddy's `max_size` of `mcp.metorite.com` is 6MiB (grant `deploy-write`). The auth hash of the Caddyfile does not change.
+- **The bytes decide the type.** The gateway refuses an SVG by its type, its file ending or its first bytes. A file that says it is a PNG, JPEG, GIF or WebP image must hold one of the four, and the stored type is the one that its bytes hold. The gateway stores a JPEG labelled PNG as `image/jpeg`, and it refuses HTML labelled PNG with 415. Any other type stays as it came.
+- **For a signed agent only**, the route takes a raster image of 3.75 MB at most, and the flag. A person in the app never meets the flag. A deadlock or a lock timeout of the upload is a 409 "try again" (`core.transient_as_409`).
+- **The store of the images.** No migration. `content.attachments` of the activity holds each id, name, type and size, read after the replay check. The run read and the Questions list add the `url` of the cookie serve route at each read (`agent_runs.with_image_urls`, `attachments.served_url`). So no path sits in the database. The card draws only a path of this origin that names the same id. An id of another task is 422 `attachment_not_on_task`, and a file that is not an image is 422 `attachment_not_image`. The Questions list row carries `question.attachments`.
+- **The class.** The chat manifest keeps the upload as class C, because the chat attaches a file of its own chat with a card. The MCP fence names the pair in `CLASS_C_WRITES` with the reason that, for an outside agent, it is a class B write. The author removes an image in the Files tab of the task (`DELETE /projects/tasks/{task_id}/attachments/{attachment_id}`). That DELETE stays off the MCP.
+- **The card and the line.** `AgentImageStrip.tsx` draws each image as a 64 px picture from the cookie serve route, and a click opens `AttachmentViewer`. The question card draws it above the card, and the read-only question too. The run panel draws it under the line of the newest thought or action.
+
+**Fix round 1 (2026-11-12).** An independent verifier and an adversarial review found these gaps. Each fix has a test that fails without it.
+
+- **The types that take images.** Only a `thought`, an `action` or an `elicitation` takes `attachment_ids` (`agent_oauth.IMAGE_ACTIVITY_TYPES`), because the card draws no image of a `response`, an `error` or a `prompt`. The gateway refuses any other type with 422 `attachments_not_on_type`, and the edge refuses it before it sends the call.
+- **The flag at the edge.** The edge reads `MCP_IMAGE_UPLOAD_ORGS` too. For an organization off the flag, `tools/list` holds no `upload_task_image`, no `attachment_ids` input and no image sentence (`tools.IMAGE_TEXTS`). A call of the upload answers `TEXT_IMAGES_OFF` with no request. The gateway refusal stays the second wall. The edge reads its flags at start, so a flip sets the flag in the env file of both units (`docs/flag_reload.md`).
+- **A question checks its images first.** `ask_on_task` checks the flag and reads the list of the files of the task before it starts a run. So a question that the gateway would refuse for its images leaves no empty run open.
+- **The 413 of the agent cap.** The upload route and the body wrapper answer a signed upload over 3.75 MB with the detail `agent_oauth.AGENT_IMAGE_TOO_LARGE`. The edge gives it its own text, and every other 413 is the budget of 10 MB for each task.
+- **A removed image.** A member can remove an image in the Files tab after the question names it. The serve route then answers 404, and `AgentImageStrip` draws a 64 px "Removed" tile in its place, with an inactive button. The other images still open.
+
+**Fix round 2 (2026-11-14).** An independent verifier passed the work of fix round 1, and found three more gaps. Each fix has a test that fails without it.
+
+- **A large body checks the flag before its slot.** Before, an organization off the flag could hold every slot of the edge with bodies that declare 2 MiB and send one byte. An upload of an organization on the flag then got 503. Now the flag check comes right after the token check (§9.6 "The body size", step 3). An organization off the flag gets the 413 of the cap before CIV-14b, with no slot and no read. Fence: `TestAnOrgOffTheFlagKeepsTheOldCap`.
+- **A refused question releases its run.** The gateway can still refuse a question after the run starts: its flag is off, or a member removed the image after the list read. The call then releases the run that it started, through the release route of `release_task`. A run that the start found open stays as it is. A run after a busy answer stays too, because the question can have landed. Fix round 3 changes one case: a question that never left the edge releases its run. Fences: `TestARefusedQuestionLeavesNoOpenRun` and the R8 test `test_r9_a_question_that_the_gateway_refuses_leaves_no_open_run`.
+- **The flag reader says who reads it.** The docstring of `agent_oauth.image_upload_allowed` names the gateway and the edge, and the edge restart of a flip. Fence: `TestTheFlagReaderSaysWhoReadsIt`.
+
+**Fix round 3 (2026-11-15).** The verifier passed the work of fix round 2, with notes. Each fix has a test that fails without it.
+
+- **A cap answer keeps the run.** The write cap counts each write, and the release is a write. So after a 429 of the cap, the gateway refuses the release too. Now the call keeps the run, as for a busy answer. After the wait, a retry with the same key asks on that run. Fence: `test_b6_a_cap_answer_keeps_the_run`, whose fake gateway answers the release with 429.
+- **A question that never left the edge releases its run.** A connect error means that no byte went out, so the gateway wrote nothing. The call answers the busy text and releases the run. Fence: `test_b7_a_question_that_never_left_the_edge_releases_the_run`.
+- **The key of an ended run asks for a new key.** A retry with the key of a released run replays that run, and the gateway refuses the question with 409. The answer is now `TEXT_KEY_RUN_ENDED`, "This idempotency_key started a run that has ended. Send a new key." A 409 on an open run keeps its text. Fences: `test_b8`, `test_b9` and the R8 test `test_r9_a_question_that_the_gateway_refuses_leaves_no_open_run`.
+- **Two lines of the spec.** §9.6 step 3 says that only a client with a valid token sees no change. The prior-write note of §12 names the release and `move_tasks`.
+
+
 ## 13. The landing-page scenario
 
 The member connects Claude with `context:read` only. Claude calls `get_company_context` and reads the resource `metorite://company/context`. Claude writes the page in its own window. Metorite stores nothing and holds no Claude key. A second connection with `projects:read` is needed to let Claude read the product backlog. The consent page makes that second grant a separate choice.
 
-D-EA-6 limits what this returns today. The tree has no company profile route. Until a profile exists, Claude gets the name, the domain, the logo and the shared memory. The org profile backlog (H-15) is the real fix.
+D-EA-6 limits what this returns today. The tree has no company profile route. Until a profile exists, Claude gets the name and the slug (D-EA-6, amended 2026-11-25). It gets no domain, no logo, no brand field and no memory. The org profile backlog (H-15) is the real fix.
 
 ## 14. Later work, named so it is not built by accident
 
 - ~~A GitHub App that links pull requests to a task key by webhook, with no agent call.~~ Planned since 2026-10-18 in `github_integration.md` (WS-54). EA-13 draws its data (§12.2).
 - An outbound webhook when a task changes, so an agent can wait for work.
-- A personal access token and a device flow (D-EA-5).
-- A class C tool with a human confirmation step. EA-6g builds the first such path, the archive with an approval (EA3-40). It is a class B request and a class C approval that only the member makes. Each other class C act stays later work.
-- Email and CRM tools through each module's own agent (D91.4), and never as a direct read.
+- ~~A personal access token and a device flow (D-EA-5).~~ The box token is EA-19. A personal token for CI, an allowed address list (`allowed_cidrs`) for a box token, and the device flow stay later work.
+- A class C tool with a human confirmation step. EA-6g builds the first such path, the archive with an approval (EA3-40). It is a class B request and a class C approval that only the member makes. MCP-G9 adds two class C tools with no confirmation step, `update_comment` and `delete_comment`. They reach only a comment of the agent's own client, and `destructiveHint` lets the client ask the person. Each other class C act stays later work.
+- ~~Email and CRM tools through each module's own agent (D91.4), and never as a direct read.~~ D124 and D136 replace this line. §19 holds the design.
 - Metering a connection against a quota that an admin sets.
 - The outbound twin: Metorite starts a Copilot, Jules or GitHub-based session for a task. `external_agent_dispatch.md` (WS-56) owns it. A run can report back through a run-scoped connection of this spec (DX-10).
 
@@ -1867,7 +2754,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-4a | **MERGED 2026-10-13, dark, after fix rounds 1 and 2** (branch `ws55-ea4-consent`). **The consent page (§10.5).** The page `/connect/authorize`, the two BFF routes, the consent ticket, the CSRF and frame rules, `redirect_display` and the RFC 8252 redirect forms. It ships dark | `test_agent_oauth_server.py`: approve with no ticket, a spent ticket or a tampered ticket gives 400. A test checks each binding field. A Redis outage gives 503. The display cases hold, `x-evil://claude.ai/cb` included. Each RFC 8252 form passes or fails as §10.5 says. vitest: each BFF route refuses `Sec-Fetch-Site: cross-site` and a missing header with 403, and never answers a 3xx. A test asserts the `SameSite=Lax` session cookie. Playwright `e2e/connect-authorize.spec.ts`, with the BFF mocked through `page.route`: the page renders, narrowing works, approve navigates, deny navigates, and the frame headers are present | AGENT-SAFE |
 | EA-4b | **MERGED 2026-10-14, live.** **Connections and revoke, in the Integrations app (§5.4, D-EA-9).** It is not a go-live gate for a pilot (EA3-25). **The store** (`agent_tokens.py`): `list_connections(org, *, member_email=None)` gives the live rows with `id`, `client_name`, `client_origin`, `scopes`, `pinned_projects`, `include_personal`, `created_at`, `last_used_at`, `expires_at` and `member_email`. `revoke_connection_scoped(org, connection_id, *, member_email=None)` revokes with `AND organization_id`, and with `AND member_email` for a member, and it revokes the tokens only when the `UPDATE` returns a row. `revoke_connection` and branch 0 do not change. **The four routes.** `GET /agent-access/connections` and `DELETE /agent-access/connections/{connection_id}` for the member, in `routes/agent_access.py`. The member is `_member(user)` and the organization is `current_tenant()`. They do not check the organization allowlist, so an organization off the list can still list and revoke. `GET /integrations/agent-connections` and `DELETE /integrations/agent-connections/{connection_id}` for an admin, in the new `routes/integrations_agents.py`, behind `feature:integrations` and `integrations:manage`. Each route answers 404 while `agent_access_enabled` is off. Each revoke writes one `acb_audit` row with the action `agent_connection.revoke`. **The BFF** relays the four routes, and each DELETE refuses a `Sec-Fetch-Site` that is not `same-origin`. **The view** is "AI agents" in the Integrations rail: the connect card, the member's agents and, for `integrations:manage`, every agent connection of the organization. `last_used_at` is stamped on a token issue and a refresh only, so the view labels it "Last token refresh" | **A1** a member lists only their own live rows (R8, two members, two organizations). **A2** a member's DELETE of the id of another member or of another organization gives 404 and changes nothing. **A3** an admin lists each row of the organization and no row of organization B. **A4** a member gets 403 on the admin routes, and so does a holder of `feature:integrations` without `integrations:manage`. **A5** after a revoke, the next `/mcp` call gets 401 and a refresh gets `invalid_grant`, through `ASGITransport` on the real gateway and edge apps. **A6** a suspended member gets 401. **A7** no answer holds a token or a hash (a sentinel test). The flag off gives 404. An organization off the allowlist can still list and revoke. **A8** each revoke writes one audit row. **A9** vitest: a member with no grants sees `/integrations` and the agents view only, the org views stay hidden, and a cross-site BFF DELETE gets 403. **A10** Playwright `e2e/integrations-agents.spec.ts`, with `page.route` mocks: the card renders, copy writes the URL, the tabs switch, revoke confirms and removes the row, an admin sees the org table and a member does not. Each item goes red first under a named mutation | AGENT-SAFE |
 | EA-4c | **The organization switch and the client allow list (D-EA-8).** It is not a go-live gate for a pilot (EA3-25) | With the switch off, `check` and `approve` refuse. They also refuse a client outside the allow list | AGENT-SAFE |
-| EA-5 | **Company context.** `get_company_context` and the three resources, after D-EA-6 is answered | The result holds no data that the member could not read in the app | AGENT-SAFE |
+| EA-5 | **BUILT 2026-11-25, not merged, dark (task 1051).** **Company context.** `get_company_context` and the resource `metorite://company/context`. The tool reads `GET /auth/me`, which is already in `MCP_ROUTES`, so the allowlist gets no new pair. The output keys are `name` and `slug`, and no email appears. Scope `context:read`, which exists already. Dark behind `agent_resources_orgs`. Risk HIGH (the first tool on a scope that granted nothing before, on the shared MCP edge). Done when: a `context:read` token lists the tool and the resource, a `projects:read` token sees neither, the read is `-32002` while the flag is dark, organization B never sees the context of organization A (R8), and the output holds exactly the pinned keys | The result holds no data that the member could not read in the app | AGENT-SAFE |
 | EA-6a | **MERGED 2026-10-14, dark, after fix round 1.** **The first write tools (EA3-28 to EA3-31).** The nonce line in `agent_signing.py`. In branch 0: the write method for a pair in `MCP_WRITE_ROUTES`, the `projects:write` check, the nonce `SET NX` through the tenant Redis wrapper, the flag `agent_access_writes_enabled` (default false) and the cap. Three pairs join `MCP_ROUTES`. The edge client sends a write with the nonce, `If-Match` and a JSON body. The tools `set_task_status` and `add_task_reference`, and the references in `get_task` (§9.2). Coverage rules 1 to 4 accept a listed write pair. No migration. It ships dark | `tests/unit/test_mcp_edge_writes.py`, each check red first under a named mutation, on a real database (R8) through the real gateway app: **W1** a `projects:read` connection gets 401 at the gateway on the PATCH. **W2** a replayed nonce gets 401. **W3** (fix round 1) with the writes flag off, `tools/list` leaves out both write tools, a call of one gives "Changes are turned off for agents in this organization." with no gateway request, a signed write gets 403 with the detail `agent_writes_disabled`, an unsigned one still gets 401, the edge maps the coded 403 to the same tool error and never to the MCP 401, and the token keeps its reads. **W4** a stale `expected_version` gets 412, and the edge gives "The task changed. Read it again." **W5** a task that a pin hides gets 404, and the edge gives `Task not found.` **W6** a second add of one reference returns `created: false`, and the task holds one `link` activity row for it. **W7** `meta.via` of the status change and `via` of the reference equal `mcp:<slug>`. **W8** the signed string of a GET is byte-identical to the string before EA-6a, by a golden test. Also: the edge refuses a move into `done` or `cancelled`, the 121st write in the window gets 429, and a Redis outage or a Redis client that cannot be built gets 503 | AGENT-SAFE |
 | EA-6b | **MERGED and live (#1046, `d46dc5e40`, 2026-10-15), after fix rounds 1 to 3.** **`claim_task` (EA3-34).** The route `POST /projects/tasks/{task_id}/claim` in `routes/projects/tasks.py`, with `If-Match` and no body, in one transaction (§9.2). The write pair joins `MCP_WRITE_ROUTES`. The manifest row of §9.5. The edge tool with the re-read and one fixed text for each coded 422. No migration. Branch 0 does not change. It went live at the merge under `agent_access_writes_enabled` (EA3-36) | `tests/unit/test_mcp_edge_claim.py`, R8 through the real gateway app, each red first under a named mutation. **C1** the member is added, and every other assignee stays. **C2** a `todo` task of a subproject that owns its statuses moves to the lowest `in_progress` lane of that subproject, not of the root. **C3** an `in_progress` task does not move. **C4** `done`, `cancelled`, `triage` and archived each refuse, and the database holds no new row. **C5** a set with no `in_progress` lane refuses, and the assignee rolls back. **C6** a stale `expected_version` gives "The task changed. Read it again." **C7** a second claim writes no activity row. **C8** the `assignment` row and the `status_change` row each carry `meta.via = mcp:<slug>`. **C9** the member gets no `pm_notifications` row, and no internal agent run starts. **C10** the four fences of the manifest row pass: coverage, chat coverage, field parity and UI actions. **Fix round 1:** two claims at once with one version give one 200 and one 412, with one `assignment` row and one `status_change` row. A claim that races a move to done leaves a done row with `completed_at` or an open row without it. **Fix round 3:** each race runs ten times with no barrier and gives no deadlock: two claims, a claim against a PATCH to done, and a claim against a PUT, a bulk add or a merge that brings the same member. Each run ends with one assignee row and a consistent row. A task in the personal project of another person gives 422 and writes nothing. A task outside the pins, in a personal project with `include_personal` off, or in another organization gives the not-found text | AGENT-SAFE |
 | EA-6c | **MERGED and live (#1036, `af55e8fb6`, 2026-10-15), after fix round 1.** **`add_comment`**, with a required `idempotency_key` (EA3-31, EA3-35). `POST /projects/tasks/{task_id}/comments` joins `MCP_WRITE_ROUTES`. The slot key of `agent_edge/idempotency.py` gains the tool name, and the slot keeps a result id. `tools._claim_slot` and `tools._keyed_write` hold the slot rules for `create_task` and `add_comment`. The route refuses a body of more than 20,000 characters for a signed agent request. No migration. Branch 0 does not change, so its digest does not change. The writes flag is on, so the tool goes live at merge | `tests/unit/test_mcp_edge_comments.py`, R8 through the real gateway app: **K1** one key makes one row, also for two calls at once, and the replay returns the same id with `created: false`. **K2** one key with other inputs gets the reused-key text. **K3** a key that `create_task` used does not collide with `add_comment`. **K4** `created_by` is the member and `meta.via` is `mcp:<slug>`. **K5** each `parent_id` refusal has its fixed text and frees the key. **K6** a hidden task gives `Task not found.` and frees the key. **K7** a mention of a member who can see the task writes one `pm_notifications` row with the member as `actor`. **K8** a body over the cap gets no request, and the gateway refuses it for an agent and not for a member. **K9** with the writes flag off, `tools/list` leaves out the tool and a call sends nothing. Thirteen named mutations each went red, and one more for the branch-0 fence of `test_mcp_edge_signing.py`. **Fix round 1:** `create_task`, `update_task`, `add_task_reference` and `add_comment` refuse a NUL before any claim or request (`test_mcp_edge_task_writes.py::TestANulNeverReachesTheGateway`). Four more named mutations each went red | AGENT-SAFE |
@@ -1875,7 +2762,8 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-6e | **MERGED and live (#1062, `49344cfe1`, 2026-10-16), after fix round 1.** `tests/unit/test_mcp_edge_prompts.py` proves P1 to P12, and 29 named mutations went red. The Inspector CLI ran P13 against a local edge. **Open for the owner:** P13 with Claude Code against production. Fix round 1 finishes a `stopping` run before any step, so the agent never claims a task against a Stop. It posts one thought on a `created` run before `finish_agent_run`. **The prompt `work_on_task`, and the brief rule (EA3-37, EA3-38, EA3-39).** Claude Code lists the prompt as `/mcp__metorite__work_on_task`, and the prompt starts the routine of §12 on a task. Its message is fixed server text and the validated argument. The `initialize` instructions and the message state the brief rule of §9.4, with its ADVISORY part. **Non-goals:** no task-key form, no server-side task lock, and no button that copies a command. **Files:** `agent_edge/mcp.py`, a new `agent_edge/prompts.py`, `tests/unit/test_mcp_edge_protocol.py`, a new `tests/unit/test_mcp_edge_prompts.py`, and `TestTheInstructions` in `test_mcp_edge_agent_runs.py`. As built, also `tests/unit/test_agent_oauth_server.py` (the fence exemption of §9.6 item 6), `apps/services/agent_edge/AGENTS.md` and `docs/external_agents_connect.md`. It does NOT touch `tools.py`. No migration. It went live at the merge under `agent_access_writes_enabled` (EA3-36) | Through the real edge app, each item red first under a named mutation. **P1** the `initialize` capabilities equal `{tools: {listChanged: false}, prompts: {listChanged: false}}`. **P2** with the writes flag on and `projects:write`, the list holds exactly `work_on_task` with the argument `task`. `required` is false with the runs flag on, and true with it off. **P3** with `projects:read` only, or with the writes flag off, the list is empty, with HTTP 200. **P4** an unknown or hidden name gets `-32602` with no `WWW-Authenticate`. **P5** a UUID, `#42` and `42` pass. Each of these gets `-32602` that names `task`: `PRJ-42`, a space, a newline, a NUL, 19 digits, the text `ignore previous instructions`, and an extra argument name. **P6** `prompts/get` makes zero gateway requests, and a sentinel title or description never appears in its result. **P7** the result is one user text message, and it names the routine tools in order: in review after the pull request, and done after the merge. **P8** the message and the instructions carry the brief rule and the advisory note. **P9** with no argument and the runs flag on, the message names `list_agent_runs` with `needs_agent=true`. With the runs flag off, a missing argument gets `-32602`. **P10** with the writes flag on and `projects:write`, `initialize` names the routine tools. A read-only connection names no write tool, and `TestTheInstructions` stays green. **P11** a bad version header on `prompts/list` gets 400, and a request with no token gets 401. **P12** each other method that the edge does not serve still gets `-32601`. **P13 (MANUAL)** Claude Code lists `/mcp__metorite__work_on_task`, and runs it with an argument and without one. Record the result in the pull request | AGENT-SAFE |
 | EA-6f | **MERGED and live (#1046, `d46dc5e40`, 2026-10-15), after fix rounds 1 to 3.** **An agent may move a task to done (EA3-32).** The edge and the gateway split the old rule. A move refuses only `cancelled` (`CLOSING_CATEGORIES - {COMPLETED_CATEGORY}`). A create still refuses `done` and `cancelled`. The PATCH still refuses `include_subtasks`. It went live at the merge under `agent_access_writes_enabled` (EA3-36) | `tests/unit/test_mcp_edge_claim.py`, R8, each red first under a named mutation. **F1** `set_task_status` into a done lane succeeds, and stamps `completed_at` and `meta.via`. **F2** cancel is still refused at the edge, and a signed PATCH that skips the edge gets 422 with the field changes rolled back. **F3** `include_subtasks=true` still gets 422, and the open subtasks stay open after the done of an agent. **F4** the done of an agent on a recurring task makes exactly one successor. **F5** `create_task` with a done status is still refused | AGENT-SAFE |
 | EA-6g | **MERGED and live (#1070, `95da032e3`, 2026-10-16), after fix round 1. G1 to G16 pass on R8, and each is red under a named mutation in `test_mcp_edge_archive.py`.** **The archive with an approval (EA3-33, EA3-40).** An agent asks to archive a task with `request_task_archive`, and only the run's member approves it on the task in Metorite (§9.2, §12.1). No hard delete, no cascade to the subtasks, and no MCP elicitation. **Files:** `routes/projects/agent_runs.py`, `routes/projects/tasks.py` (`archive_task` stays the single core), `agent_oauth.py`, `manifest.py`, `agent_edge/tools.py`, `test_mcp_edge_coverage.py`, the UI (`AgentRunPanel.tsx`, `ElicitationCard.tsx`, `lib/agentRuns.ts` and `e2e/agent-runs.spec.ts`), and a new `tests/unit/test_mcp_edge_archive.py`. It does NOT touch `mcp.py`. No migration. It went live at the merge under `agent_runs_enabled`, which is on. It changes an authorization path, so it passed the full review loop | R8 through the real gateway and edge apps, each item red first under a named mutation. **G1** the request writes one typed elicitation. `archived_at` stays NULL, and the run reads `awaiting`. Neither the archive route nor the approval route is in `MCP_ROUTES`, and a signed request to either gets 401. **G2** a free elicitation with an option id `approve` never archives. A signed body that names `request` gets 422. **G3** another member who can see the task gets 403. The run's member approves, and the result is one `archived_at`, one `system` activity row and one `pm.task.archived` event. **G4** the answer and the archive commit together, or roll back together. **G5** open subtasks keep `archived_at` NULL. **G6** a decline archives nothing. **G7** an approve after the expiry gets 409. **G8** a second approve gives one archive. **G9** a task that is already archived gets no second activity row. **G10** a member who lost access gets 404. **G11** the `agent_question` notification reaches the run's member only. **G12** with the runs flag off, the routes give 404 and `tools/list` leaves out the tool. With the writes flag off, `tools/list` leaves out the tool too. A read-only connection cannot send the request. **G13** organization B gets 404. **G14** `get_agent_run` shows the approve and `archived: true`. **G15** in the UI, Approve and Decline show only to the run's member, and other members see "Waiting for <name>". Do a visual review in light mode, at compact density and under a changed accent. **G16** the manifest fences pass: coverage, chat coverage, field parity and UI actions | AGENT-SAFE |
-| EA-6h | **BUILT 2026-10-23, not merged (branch `ea6h-delete-mt-709eaf47`). H1 to H14 pass on R8, and each is red under a named mutation (D1 to D29) in `test_mcp_edge_delete.py`. Migration 295. Fix round 1: a delete removes only the subtasks the caller can see, through `cascade.load_subtree` and the connection's pins. A hidden one is kept and moves up, and `subtasks_kept_hidden` counts it. A hidden id gets 422 `subtask_not_below`. `all` has no cap. One `pm.task.deleted` goes out for each removed id.** SPECIFIED 2026-10-23 (EA3-51), audited GO-NARROWED the same day. **The delete with the member's yes.** **The subtasks (D-OP-10, the owner, 2026-10-23).** The member picks each subtask to delete or keep. `delete_task_in` takes `delete_ids`, a set of descendants at any depth. Only the listed ids go. A kept subtask whose parent goes moves up to its nearest surviving ancestor, or to the task's own parent. An id that is not a descendant is 422 `subtask_not_below`, and nothing changes. The empty set is D-PM-38. `DELETE /projects/tasks/{task_id}` takes `?delete_subtask_ids=`, once for each id. The agent sends `subtasks_to_delete`, which is required: `none`, `all` or a list of ids. The app dialog and the chat card get the choice in OP-7. A new route `POST /projects/tasks/{task_id}/agent-delete` takes `expected_version` and `confirm_title`, checks the switch, and calls `delete_task_in`, the one core. It joins `MCP_ROUTES` and `MCP_WRITE_ROUTES`. The plain `DELETE /projects/tasks/{task_id}` stays OUT of `MCP_ROUTES`. The MCP tool is `delete_task`, with a new `DELETE_ANNOTATIONS` (`readOnlyHint` false, `destructiveHint` true, `idempotentHint` false, `openWorldHint` false). **The switch** is a new column `user_settings.agent_delete_enabled boolean NOT NULL DEFAULT false`, in one expand-only migration (the next free number at build time, R1). The member reads and writes it through `GET/PUT /auth/me/agent-access`, beside `routes/admin/assistant_profile.py`, with a BFF under `src/app/api/auth/me/`. The toggle is a member card above `AgentList` in `src/app/integrations/components/AgentsView.tsx`, with the `Switch` primitive. **How the edge knows it.** The edge reads the switch through a GET route in `MCP_ROUTES` at `tools/list` time. When the switch is off, `tools/list`, `instructions()` and the prompts say nothing about a delete. **Files:** `packages/acb_auth/acb_auth/agent_oauth.py` (`MCP_ROUTES`, `MCP_WRITE_ROUTES`), `packages/acb_auth/acb_auth/deps.py`, `apps/services/agent_edge/agent_edge/tools.py` and `mcp.py`, `routes/projects/tasks.py`, `skill_projects/manifest.py`, the migration, the route, the BFF, `AgentsView.tsx`, `test_mcp_edge_coverage.py`, and a new `tests/unit/test_mcp_edge_delete.py`. HIGH tier: it changes an authorization path and destroys data, so it takes the full review loop. **Verify:** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`, `uv run pytest tests/unit/test_mcp_edge_delete.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_archive.py tests/unit/test_tenant_coverage.py -q`, `uv run ruff check apps packages`, and in `workbench/control_plane` `npx tsc --noEmit && npx vitest run src/app/integrations` | R8 through the real gateway and edge apps, each item red first under a named mutation. **H1** with the switch off, `tools/list` leaves out `delete_task` and a signed call gets 403. **H2** with it on, a wrong `confirm_title` or a stale `expected_version` gets 409 and deletes nothing. **H3** a good call deletes the task, its subtasks move up one level, and one tombstone row exists. **H4** a read-only connection cannot call it. **H5** a task outside the member's visibility gets 404. **H6** organization B gets 404. **H7** the switch of member A does not open the tool for member B. **H8** the tool carries all four values of `DELETE_ANNOTATIONS`, and its description says to get an explicit yes first. **H9** the manifest fences pass, and a signed plain `DELETE /projects/tasks/{id}` gets 401. **H10** a mixed set deletes only the listed ids, and a kept grandchild under a deleted child moves up to the nearest surviving ancestor. **H11** `none` or an empty list keeps D-PM-38. **H12** an id that is not a descendant gets 422, and nothing is deleted. **H13** a missing `subtasks_to_delete` gets 422. **H14** `all` deletes the whole visible subtree. **H15** a hidden descendant, by the assignee arm or outside the pins, is kept and moves up, and a hidden id gets 422 | AGENT-SAFE (owner directive EA3-51) |
+| EA-6h | **MERGED (#1254, `3b8e412cb`, 2026-10-23). EA-6i amends the default of the switch to ON (2026-10-30). H1 to H14 pass on R8, and each is red under a named mutation (D1 to D29) in `test_mcp_edge_delete.py`. Migration 295. Fix round 1: a delete removes only the subtasks the caller can see, through `cascade.load_subtree` and the connection's pins. A hidden one is kept and moves up, and `subtasks_kept_hidden` counts it. A hidden id gets 422 `subtask_not_below`. `all` has no cap. One `pm.task.deleted` goes out for each removed id.** SPECIFIED 2026-10-23 (EA3-51), audited GO-NARROWED the same day. **The delete with the member's yes.** **The subtasks (D-OP-10, the owner, 2026-10-23).** The member picks each subtask to delete or keep. `delete_task_in` takes `delete_ids`, a set of descendants at any depth. Only the listed ids go. A kept subtask whose parent goes moves up to its nearest surviving ancestor, or to the task's own parent. An id that is not a descendant is 422 `subtask_not_below`, and nothing changes. The empty set is D-PM-38. `DELETE /projects/tasks/{task_id}` takes `?delete_subtask_ids=`, once for each id. The agent sends `subtasks_to_delete`, which is required: `none`, `all` or a list of ids. The app dialog and the chat card get the choice in OP-7. A new route `POST /projects/tasks/{task_id}/agent-delete` takes `expected_version` and `confirm_title`, checks the switch, and calls `delete_task_in`, the one core. It joins `MCP_ROUTES` and `MCP_WRITE_ROUTES`. The plain `DELETE /projects/tasks/{task_id}` stays OUT of `MCP_ROUTES`. The MCP tool is `delete_task`, with a new `DELETE_ANNOTATIONS` (`readOnlyHint` false, `destructiveHint` true, `idempotentHint` false, `openWorldHint` false). **The switch** is a new column `user_settings.agent_delete_enabled boolean NOT NULL DEFAULT false`, in one expand-only migration (the next free number at build time, R1). EA-6i amends it: migration 316 makes the column nullable with no default, and NULL reads as on. The member reads and writes it through `GET/PUT /auth/me/agent-access`, beside `routes/admin/assistant_profile.py`, with a BFF under `src/app/api/auth/me/`. The toggle is a member card above `AgentList` in `src/app/integrations/components/AgentsView.tsx`, with the `Switch` primitive. **How the edge knows it.** The edge reads the switch through a GET route in `MCP_ROUTES` at `tools/list` time. When the switch is off, `tools/list`, `instructions()` and the prompts say nothing about a delete. **Files:** `packages/acb_auth/acb_auth/agent_oauth.py` (`MCP_ROUTES`, `MCP_WRITE_ROUTES`), `packages/acb_auth/acb_auth/deps.py`, `apps/services/agent_edge/agent_edge/tools.py` and `mcp.py`, `routes/projects/tasks.py`, `skill_projects/manifest.py`, the migration, the route, the BFF, `AgentsView.tsx`, `test_mcp_edge_coverage.py`, and a new `tests/unit/test_mcp_edge_delete.py`. HIGH tier: it changes an authorization path and destroys data, so it takes the full review loop. **Verify:** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`, `uv run pytest tests/unit/test_mcp_edge_delete.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_archive.py tests/unit/test_tenant_coverage.py -q`, `uv run ruff check apps packages`, and in `workbench/control_plane` `npx tsc --noEmit && npx vitest run src/app/integrations` | R8 through the real gateway and edge apps, each item red first under a named mutation. **H1** with the switch off, `tools/list` leaves out `delete_task` and a signed call gets 403. **H2** with it on, a wrong `confirm_title` or a stale `expected_version` gets 409 and deletes nothing. **H3** a good call deletes the task, its subtasks move up one level, and one tombstone row exists. **H4** a read-only connection cannot call it. **H5** a task outside the member's visibility gets 404. **H6** organization B gets 404. **H7** the switch of member A does not open the tool for member B. **H8** the tool carries all four values of `DELETE_ANNOTATIONS`, and its description says to get an explicit yes first. **H9** the manifest fences pass, and a signed plain `DELETE /projects/tasks/{id}` gets 401. **H10** a mixed set deletes only the listed ids, and a kept grandchild under a deleted child moves up to the nearest surviving ancestor. **H11** `none` or an empty list keeps D-PM-38. **H12** an id that is not a descendant gets 422, and nothing is deleted. **H13** a missing `subtasks_to_delete` gets 422. **H14** `all` deletes the whole visible subtree. **H15** a hidden descendant, by the assignee arm or outside the pins, is kept and moves up, and a hidden id gets 422 | AGENT-SAFE (owner directive EA3-51) |
+| EA-6i | **BUILT 2026-10-30, not merged (branch `mt-b0247f83-delete-default-on`, Metorite task 1102).** **The delete switch is ON by default (EA3-51, amended).** The owner said on 2026-10-30: "Agents delete switch should default to on." Migration 316 drops NOT NULL and the default of `user_settings.agent_delete_enabled`. NULL means "the member has not chosen", and it reads as on. In the transaction of the ALTER, the file turns each old `false` into NULL and keeps each `true`. The old default and an explicit off were the same value, so every existing member reads on until they turn it off. A run-once guard keeps each explicit off when the file runs again. During the deploy window, old code reads NULL as off, so it fails closed. `delete_enabled()` reads no row and NULL as on, and only `false` as off. The PUT still writes an explicit value, and an agent still gets 403. **Fix round 1 (the review, P1).** A web session keys the row on the spelling of the sign-in, and an agent reads in lower case. So the read is `bool_and` over every spelling of the address, and one `false` is off. The PUT writes every spelling, so the last choice wins. The edge and the UI read the GET, so their logic does not change. HIGH tier: a migration, and a default on an act that cannot be undone. **Verify:** `bash scripts/dev_db.sh`, `eval "$(bash scripts/dev_db.sh --export)"`, `uv run pytest tests/unit/test_agent_delete_default_r8.py tests/unit/test_mcp_edge_delete.py -v -rs` | `tests/unit/test_agent_delete_default_r8.py`, R8, each item red first under a named mutation (E1 to E6). **I1** `delete_enabled()` and the GET read no row, NULL and `true` as on, and `false` as off. **I2** the PUT writes an explicit `true` or `false`, never NULL. **I3** as the table owner under FORCE RLS, 316 turns each `false` into NULL in two organizations, and keeps each `true`. **I4** a second run, as each role, keeps an explicit off that the member set after the first run. **I5** a session address with a capital letter turns the switch off, and the agent's lower-case read gets off. A new choice in one spelling wins over a stale value in another | AGENT-SAFE (owner directive, 2026-10-30) |
 | EA-7 | **Limits.** A per-connection and per-member limiter on the tenant-prefixed Redis wrapper. A 100-row cap | A test shows the 429 and the `Retry-After` value | AGENT-SAFE |
 | EA-8 | **Audit.** One `acb_audit.record` row per call, with `organization_id` set on the event. An admin read route and view | A denied call writes a row. The admin view lists calls by connection | AGENT-SAFE |
 | EA-9 | **Fences.** A tenant fence, a "no client header reaches the gateway" fence, a "no token forwarded" fence. `test_mcp_edge_coverage.py` lands earlier, in EA-3 (D15) | Each fence fails when a mutation breaks its rule (verified red first) | AGENT-SAFE |
@@ -1892,7 +2780,7 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-13d | **BUILT 2026-10-18 on `ea13-batch-b2`, not merged. It goes live at merge (the owner's EA-13 decisions of 2026-10-17, the pattern of EA3-36).** **The card (§12.2 item 2, EA3-41, EA3-48, EA3-50).** `agent_note` and `pr` on the list rows, the PR chip, the "Needs you" text and the hover line. **Files:** `routes/projects/filters.py` (`attach_agent_state` and a new `attach_pr_chip`), `routes/projects/core.py` (`TaskModel` fields only, `core.py:671`), `lib/taskCard.ts`, `components/TaskMeta.tsx`, `lib/statusAccent.ts`, `app/projects/components/AgentPill.tsx`, `app/projects/lib/agentRuns.ts`, `app/projects/lib/shownFields.ts`, `app/projects/components/TaskBoard.tsx`, `app/projects/components/TaskList.tsx`, a new `tests/unit/test_projects_pr_chip_r8.py`. **Built with these files too:** `routes/projects/agent_runs.py` and `acb_auth/agent_oauth.py` (`client_name` and `client_host` on the run wire), `app/projects/components/AgentRunPanel.tsx`, `TaskPanel.tsx`, `TaskList.tsx`, `CalendarView.tsx` and `TableView.tsx`, `routes/projects/filters.py` (`SHOWN_FIELDS`) and `export.py` (the `pr` column), `lib/card.ts`, and `e2e/agent-runs.spec.ts`. The `pr` object also holds `title` (for the hover) and `merged_at`. Needs GH-2 merged (`github_integration.md` §16) | R8: **P1** a task with an open and a merged pull request gets the open one, with `more = 1`. **P2** a task with no reference gets no `pr`. **P3** a reference of another org never reaches the row. **P4** `agent_note` holds the first line of the newest thought, at most 140 characters. **P5** one list read makes one query for the chips, not one for each row. **P6** the list route and the task route both carry `pr`. **P7** the run wire names the client: `client_name` and `client_host`. vitest: the chip text for each state and each `checks_state`, the "Needs you" rule for the run's member and for another member, and no chip class outside `TaskMeta`. The conformance suite passes. Visual review of the Board and the List in light mode, at compact density, under a changed accent and at 390 px | AGENT-SAFE |
 | EA-13e | **BUILT 2026-10-18 on `ea13-batch-b2`, not merged. It goes live at merge (the owner's EA-13 decisions of 2026-10-17, the pattern of EA3-36).** **Oversight (§12.2 item 4, EA3-43, EA3-49).** The "Agent work" toggle, the group-by `agent`, the summary route and strip, and "Ask an agent" on the hover menu and the bulk bar. **Files:** `routes/projects/filters.py` (`GROUP_BY` and `agent_worked` on the rows), `routes/projects/core.py` (the `agent_worked` field of `TaskModel`), a new `routes/projects/agent_summary.py`, `routes/projects/__init__.py`, `skill_projects/manifest.py`, `app/projects/lib/grouping.ts`, `app/projects/components/FilterBar.tsx`, `app/projects/components/TaskBoard.tsx`, a new `app/projects/components/AgentWorkStrip.tsx`, `app/projects/components/TaskCardActions.tsx`, `app/projects/components/BulkBar.tsx`, `app/projects/components/AskAgentDialog.tsx`, `app/projects/lib/askAgent.ts`, a new `tests/unit/test_projects_agent_summary_r8.py`. **Built with these files too:** `routes/projects/agent_worked.py` (`worked_among`, the list form of the one predicate), `app/projects/lib/taskMenu.ts` (the menu entry, because the card menu is a registry), `lib/board.ts` (the refusal of a drop), `app/projects/page.tsx`, `skill_projects/manifest.py` (the UI action of the client method) and `e2e/agent-runs.spec.ts`. "Ask an agent" is the last entry of the menu, because an act that only Projects offers follows every shared act (`PROJECTS_ONLY_ACTS`). It is not a button of the hover strip. Needs GH-2 and GH-6 merged | R8: **S1** each of the five counts holds on a planted project, and a task in a subproject counts. **S2** a task that the caller cannot see counts nowhere. **S3** organization B reads none of A's counts. **S4** `agent_worked` on the rows equals `agent_worked.reason` for each planted task. **S5** the manifest, chat coverage and field parity fences pass. **S6** with the runs flag off, the three state counts read 0 and the two pull request counts do not. vitest and Playwright with `page.route` mocks: the toggle keeps only agent-worked rows, the agent lanes take no drop, a count button sets its filter, and the bulk ask sends one start for each task, shows a 409 on its own row and refuses a 21st task. Visual review as for EA-13d | AGENT-SAFE |
 | EA-13f | **BUILT 2026-10-18 on `ea13-batch-b2`, not merged. It goes live at merge (the owner's EA-13 decisions of 2026-10-17, the pattern of EA3-36).** **The routine and the feed (§12.2 item 6, EA3-46).** `url` and `short_id` in `get_task` (built in `tools._task`, so the task of `create_task`, `update_task` and `claim_task` holds them too), the step in the instructions and the prompt, and the feed line. **Files:** `apps/services/agent_edge/agent_edge/tools.py` (`get_task` only), `agent_edge/mcp.py`, `agent_edge/prompts.py`, `routes/shell/feed.py`, `tests/unit/test_mcp_edge_prompts.py`, `tests/unit/test_mcp_edge_protocol.py`, `TestTheInstructions` in `test_mcp_edge_agent_runs.py`, a feed test. Needs GH-1 (`app_public_url`) and GH-4 (the cases file) merged | **F1** `get_task` returns `url` with the host of `app_public_url` and `short_id` of 11 characters. **F2** the `short_id` of each case in `tests/fixtures/github_autolink_cases.json` is the form that `github_autolink` parses. **F3** P7 of EA-6e holds the new step, in order after the branch. **F4** `TestTheInstructions` names the step. **F4b** the message tells the agent to skip the move to done when the task is already done after the merge. **F5** an `agent_question` notification reads "Claude Code asked you a question on this task." in the feed. P6 of EA-6e holds: the prompt makes no gateway request | AGENT-SAFE |
-| EA-14a | **MERGED 2026-10-25 (#1192, `ffc09bb68`). Live at the merge, under `agent_runs_enabled`, which is ON.** **One AI for each task (§12.3).** Migration 289, `_gate_task`, the lease, the takeover, `release_task`, `held_by` and `unheld`. Follow-ups are HANDOFF H-409 | `tests/unit/test_agent_run_exclusive.py` passes on R8 | AGENT-SAFE |
+| EA-14a | **MERGED 2026-10-25 (#1192, `ffc09bb68`). Live at the merge, under `agent_runs_enabled`, which is ON.** **One AI for each task (§12.3).** Migration 289, `_gate_task`, the lease, the takeover, `release_task`, `held_by` and `unheld`. Follow-ups are HANDOFF H-409. Items 1 to 3 are BUILT 2026-11-11 (task 748) | `tests/unit/test_agent_run_exclusive.py` passes on R8 | AGENT-SAFE |
 | EA-15a | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **`get_task_context` (§12.4).** An edge-only read. No route, no `MCP_ROUTES` pair, no migration | One call returns the task, its ancestors (a hidden one as a stub), the project, the blockers and the newest 20 comments. Each rule of §12.4 fails under a named mutation in `test_mcp_edge_context.py` | AGENT-SAFE |
 | EA-15b | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **`my_work` (§12.4).** An edge-only read. `limit` is a named edge input | The rows come in the order of §12.4. A waiting run of another client and a task with an open blocker are not listed | AGENT-SAFE |
 | EA-15c | **MERGED (#1295, `90e4d702e`, 2026-10-25).** **The protocol (§12.4).** The server instructions, the prompt `work_on_task` and `docs/external_agents_connect.md` | `test_mcp_edge_prompts.py` pins `my_work`, `get_task_context` and the 409 rule | AGENT-SAFE |
@@ -1902,6 +2790,44 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | SW-10a | **BUILT 2026-10-25 on `sw10-stranded-mt-c6156bf6`, not merged, dark (Metorite task #341).** **Stranded runs (§12.6).** Part 1 goes live at the merge: `stale` before `answered` in `AGENT_RUN_STATE_SQL`, the reason `needs_agent` on the runs wire, and an approved archive that closes its run. Part 2 is the sweep `gateway/agent_run_sweep.py` behind `agent_run_sweep_enabled`, and the table `pm_agent_run_strands` (migration 305) | An answer that no agent reads reads `stale` after five minutes, and `my_work` still offers it as `run_answered`. An approve closes its run with a system line. With the flag on, a stranded run gets ONE bell and a fingerprint, `needs_agent=true` returns it, and one lease later ONE recovery record with a line on the run and on the task. A third tick adds nothing. A new activity starts over. A live lease, an `awaiting` run and a `created` run are never swept. A tick binds one org for each session. With the flag off, the loop starts no task. Each rule has an R8 test in `test_agent_run_sweep_r8.py` that a named mutation turns red | AGENT-SAFE. The flip of `agent_run_sweep_enabled` is gate `enforcement-flip` |
 | SW-11a | **BUILT 2026-10-25 on `sw11-attention-mt-eb3949d0`, not merged (Metorite task #342).** **Needs attention (§12.7).** `GET /projects/needs-attention`, `POST /projects/agent-runs/{run_id}/resume`, the lens of the board, the header badge and the read `needs_attention`. Live at the merge. No migration | Each kind lists its fixture and none of its near misses. A restricted member sees only what they can open, and organization B sees nothing. Resume hands the run back with `needs_agent` `answered`, and Close ends it with the task unchanged. A member with no right gets 403. `test_needs_attention_r8.py` (R8), each rule red under a named mutation. The manifest, UI-action and paging fences pass, and vitest `needsAttention.test.ts` passes. A visual review at four widths, in light mode, at compact density and under a changed accent | AGENT-SAFE |
 | MCP-G2 | **BUILT 2026-10-25, not merged (branch `g2-agent-fields-mt-61131dc3`, task #356). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **More fields, and `set_assignees` (§9.2, EA3-52).** `create_task` and `update_task` take `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` takes `assignees`. `update_task` takes `parent_task_id` for a move inside the project. The new tool `set_assignees` replaces the set. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and both routes take `If-Match`. **Files:** `routes/projects/tasks.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (three `FIELD_EXEMPT` entries), `agent_edge/tools.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_assignees.py`, R8 through the real gateway app, each red under a named mutation (A1 to A29). **R1** a create with an assignee, `importance` and `estimate_mins` stores them, and the assignee gets one bell that names the client. **R2** a swap of one person gives one bell to the added person only. **R3** a hidden member, a suspended member and a made-up address get one text, and nothing changes. **R4** and **R5** the PUT and the move refuse a stale version. **R6** the move refuses a parent in another project. **R7** the move refuses a cycle. **R9** the edge and branch 0 refuse a connection without `projects:write` **Fix round 1:** **R13** an agent cannot assign a member with no grant. Its text is the text of a made-up address. **R14** the PUT of an agent refuses any change after its read. **R15** holds the gateway cap, and **R16** the estimate ceiling. **R17** holds a person who stays, and **R18** the text of a personal project. **R19** holds the seam `notifications.grant_holders`. **Fix round 2:** **R20** holds each way in, through a grant or the admin read right. **R21** holds a stored row in another case. | AGENT-SAFE |
+| MCP-G1 | **BUILT 2026-10-29, not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **Projects and moves over MCP (§9.2, EA3-53).** `create_project`, `update_project`, `preview_move_tasks` and `move_tasks`. **Files:** `routes/projects/tree.py`, `routes/projects/move.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (one `FIELD_EXEMPT` entry), `agent_edge/tools.py` and `agent_edge/mcp.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_projects.py`: 82 database-free tests, and 10 R8 tests through the real gateway app. **R1** a new subproject has no grant, and a second member sees it only when that member sees its parent. **R2** a new space has the one `org` grant of a space that the app makes. A member with no grant sees it, and a member of another organization and a pinned connection do not. **R3** a pinned connection makes no space (the edge text, and the gateway 403). It makes a node under a pinned project only. **R4** the version rule, the status of a space, the narrowing of a lead, and a PATCH of a member that does not change. **R5** an epic moves with its two subtasks, and a second call moves nothing. **R6** a made-up preview id moves nothing, and a signed move with no `accepted_drops` gets 422. **R7** D-OP-14 holds. **R8** another organization gets "Project not found." **R9** a task or a destination outside the pins is not found. **R10** a read connection writes nothing. **Fix round 1:** **R11** a move from a `group:` project to an `org` project gets 403 `audience_widens`, and the member's own move lands. **R12** an epic moves into a child of the same grants, and the gateway lets a narrower move through. **R13** a personal task into a team project gets 403. **R14** a connection pinned to a folder makes a project in it. The mutations P1 to P5 are each red | AGENT-SAFE |
+| EA-16 | **BUILT 2026-10-30, not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark: `agent_first_party_client_ids` is empty by default.** **First-party clients (§10.7, D-EA-11).** The Setting and `agent_oauth.is_first_party`, `agent_oauth.first_party_redirect_allowed`, `agent_tokens.live_connections_of_client`, `replace_same_client` on `agent_tokens.create_connection`, rule 13 of `gateway/routes/agent_access.py`, and `isContinueView` on the consent page. No migration and no new route | `tests/unit/test_agent_first_party.py` passes on R8, and ten named mutations each turn it red (§10.7). The suites `test_agent_oauth_server.py` and `test_agent_connection_tokens.py` stay green. `consent.test.ts` and `e2e/connect-authorize.spec.ts` hold the page | AGENT-SAFE. The flip on a box is OWNER-GATE (`enforcement-flip`). It changes an authorization path, so it needs the full review loop: an independent verification and an adversarial review before it merges |
+| EA-17a | **MERGED 2026-11-05 (PR 1707, `9c18983a1`), dark (migration 344).** The R8 file passes, and the named mutations M1 to M4 each turn it red. `whoami` returns `left_out_projects` too (§9.1). A tree with a cycle or a parent in another organization narrows the reach of a connection with marks, and never widens it. **The left-out list (§10.8, D-EA-12, Metorite task 1586).** One expand-only migration adds `left_out_projects` and `requested_scopes` to `agent_connection`. `approve` stores the requested scopes and takes `left_out_projects`. The store, `TokenLookup`, `AgentScope`, branch 0 and the edge carry the list. `_AGENT_PINS_SQL` and `_narrow_for_agent` follow the nearest mark (D-EA-12 rules 1 to 8). It ships dark: no client sends the list until EA-17b | `tests/unit/test_agent_left_out_projects.py` passes on R8, with a case for each rule of D-EA-12 and a foreign-organization id. Named mutations turn it red: the list ignored, a left-out mark that wins over a pin beneath it, a walk with no organization filter, and a guard that still runs only for pins. Run `uv run pytest tests/unit/test_agent_left_out_projects.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_connection_tokens.py tests/unit/test_agent_first_party.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_connections_r8.py` with the dev database exported, and confirm that no R8 test skips. Then `uv run ruff check` and `uv run python scripts/affected_tests.py --run`. The migration number is re-checked at merge (R1) | AGENT-SAFE. HIGH tier: a migration and the reach of an agent token. Full review loop |
+| EA-17b | **MERGED 2026-11-06 (`0dbb760d6`, Metorite task 1587).** The tree is one component, `src/components/AccessTree.tsx`, over the pure model `src/lib/accessTree.ts`. EA-17c reuses both. The page sends `left_out_projects` next to `pinned_projects`. "Only the ones I pick" with nothing ticked blocks Approve, because the gateway reads no pin as every project. The connections list carries `left_out_projects` too (the P3 of the EA-17a review). Fix round 1 adds the personal-root pins, the cut list notice, archived rows and the return address (§10.8). **The consent page (§10.8).** The design of §10.8: the switches, the two project choices, the tree that ticks down with a dash and a count, the search, the summary line and the new footer. One tree component, which EA-17c reuses. Needs EA-17a | `consent.test.ts` holds the tree state: a tick cascades, an untick adds to the left-out list, a pin under a left-out parent wins, and the counts. `e2e/connect-authorize.spec.ts` holds the cascade, the dash, the summary and the approve gate. Captures in light, dark, compact, violet and 390 px | AGENT-SAFE. The approve gate of §10.5 must not change |
+| EA-17c-1 | **MERGED 2026-11-06 (`21955b350`), dark behind `agent_change_access_orgs`.** The R8 file passes with no skip, and the five named mutations each turn a fence red. **The Change access route (§10.8, D-EA-13, Metorite task 1813, under task 1588).** `PATCH /agent-access/connections/{id}` on the gateway and its BFF route. The ceiling of a scope is the scope of the live token (D-EA-13 rule 2). `ConnectionRow` and `AgentConnectionOut` gain `requested_scopes` and `ceiling_scopes`. Dark behind `agent_change_access_orgs`. No migration: both columns exist from 344. Needs EA-17a | `tests/unit/test_agent_change_access.py` on R8, with the named mutations of §10.8. Verify with: `uv run pytest tests/unit/test_agent_change_access.py tests/unit/test_agent_left_out_projects.py tests/unit/test_agent_connections_r8.py -q` with a database (0 skips), and `npx vitest run src/app/api/agent-access` in `workbench/control_plane` | AGENT-SAFE. HIGH tier: a write to an agent grant. Full review loop |
+| EA-17c-2 | **BUILT 2026-11-11, not merged (branch `mt-b2464a98-ea17c2-change-access`). Dark behind `agent_change_access_orgs`.** **The Change access view (§10.8, Metorite task 1814, under task 1588).** The grant chips, "Change access" and the panel over `AccessTree.tsx`, with the three switch states. The consent footer says "Change or remove" again. ⚠️ An empty `pinned_projects` means every project. So the view never sends `[]` after "Only the ones I pick", also when the member drops the last pin. It sends `[]` only when the member chooses "All my projects". The view warns when a stored mark is a project that the member no longer sees. Needs EA-17c-1, and EA-17b merged | `AgentsView.test.tsx` for the three switch states. `e2e/agent-change-access.spec.ts` changes a grant and reads it back. Verify with: `npx tsc --noEmit && npx vitest run src/app/integrations src/lib/accessTree src/app/connect/authorize`. Captures in light, dark, compact, violet and 390 px | AGENT-SAFE. STANDARD tier. Owner preview before the merge |
+| EA-17c-3 | **BUILT 2026-11-11 on `mt-326c1ec5-ea17c3-mint-requested`, not merged. No migration and no new flag. Change access, the one route that turns a scope on, stays dark behind `agent_change_access_orgs`.** The audit table of §10.8 lists each reader, and three readers now take the intersection. **Mint the token at the requested scopes (D-EA-13 rule 2, Metorite task 1815, under task 1588).** `approve` mints the token scope from `requested_scopes`, so the connection scopes alone narrow it. Then a scope that the member cleared at the connect can turn on with no reconnect. The "Reconnect" state of EA-17c-2 then shows only for a connection from before EA-17c-3. Audit first: list each reader of `agent_token.scope` that does not take the intersection with the connection scopes. Needs EA-17c-1 | An R8 case: a scope that the member cleared at the connect turns on with a PATCH and is live on the next call. The same case on a connection from before EA-17c-3 still needs a reconnect. Verify with `eval "$(bash scripts/dev_db.sh --export)"`, then `uv run pytest tests/unit/test_agent_change_access.py tests/unit/test_agent_connection_tokens.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_first_party.py tests/unit/test_agent_left_out_projects.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_connections_r8.py tests/unit/test_agent_box_token_routes.py`, and confirm that no R8 test skips | AGENT-SAFE. HIGH tier: `acb_auth` token code. Full review loop |
+| EA-18a | **BUILT 2026-11-06, dark and not merged (branch `mt-181a56e0-questions-for-me`, Metorite task 1806).** **The read route, the answer rule and the notification (§12.8, D-EA-14).** `GET /projects/agent-questions` with `scope`, `project`, `sort` and paging. `person_may_answer_sql` and `may_answer_run`, one text that the list and `POST /projects/agent-runs/{id}/activities` both read. The creator joins the audience of `agent_question`, once. The flag `AGENT_QUESTIONS_ORGS`, default empty. No migration | `tests/unit/test_agent_questions_r8.py` on R8, with eight named mutations (M1 to M8 of §12.8) that each turn it red. `test_agent_runs_r8.py` and `test_needs_attention_r8.py` stay green, and no R8 test skips. Run `uv run pytest` on those files with the dev database exported, then `uv run ruff check` and `uv run python scripts/affected_tests.py --run` | AGENT-SAFE. HIGH tier: it changes who may answer, which is an authorization change. Full review loop. The flag flip is OWNER-GATE (`enforcement-flip`) |
+| EA-18b | **BUILT 2026-11-11, dark and not merged (branch `mt-553aa348-questions-section`, Metorite task 1807). The pane and the sidebar entry draw only while `AGENT_QUESTIONS_ORGS` holds the org.** **The Projects section (§12.8).** "Questions for me" in `projectApps.ts` (`?app=questions`), the count badge, the list with tabs, the project filter and the sort, `AgentQuestionCard` extracted from `AgentRunPanel.tsx`, `can_answer` on the run wire, from `may_answer_run`, and "Answered by" on the card. A row with `question.kind` `archive_request` sends Approve and Decline to `archive-approval`, and not to `/activities`. Needs EA-18a | `agentQuestions.test.ts`, `projectApps.test.ts`, `compactChrome.test.ts` and the card test pass with `npx vitest run`. `e2e/agent-questions.spec.ts` answers a question in place. Captures in light, dark, compact, a changed accent and 390 px | AGENT-SAFE. UI-1 applies: state the interaction, then look at each state |
+| EA-18c | **BUILT 2026-11-11, not merged (branch `mt-537a693d-question-doors`, Metorite task 1808). Ships dark behind `AGENT_QUESTIONS_ORGS` and `MY_DAY_PROVIDERS` (the My Day card needs both).** **The My Day card and the Approvals tab (§12.8).** The `agent_questions` card kind, its provider and `feed_rank.BASE` weight, a row in `my_day_feed.md`, the "Agent questions" tab of `approvals/page.tsx`, and the gateway `Provider` `agent_questions` in `shell/feed.py`. The card links to the list. The in-card answer is the next slice, EA-18e (task 2964). Needs EA-18a and EA-18b | `feed.test.ts` holds the card kind. A test of the approvals page holds the tab. `e2e/agent-questions-doors.spec.ts` shows one question in all three doors with one count. `seams.test.ts` stays green, with no `SEAM_DEBT` change (R9) | AGENT-SAFE |
+| EA-18d | **BUILT 2026-11-11, not merged (branch `mt-2b6a7bb7-chat-questions-tool`, Metorite task 1832).** **The chat tools (§12.8).** The read `agent_questions` (paged, class A) and the write `answer_agent_question` (class B, one card, a composite of `post_agent_activity`). A typed archive request is refused and linked to the task card. No route, table or migration. Needs EA-18a | `test_agent_questions_tools.py` passes. `test_projects_chat_coverage.py`, `test_projects_ui_actions.py`, `test_read_tool_paging.py`, `test_chat_placement_classes.py`, `test_held_card_writes.py`, `test_no_person_present.py` and `test_projects_agent_requests_tools.py` stay green. `test_projects_field_parity.py` keeps its two failures that main already has | AGENT-SAFE. HIGH tier: a chat tool answers for a member. The flag flip stays OWNER-GATE (`enforcement-flip`) |
+| EA-19a | **BUILT 2026-11-06 on `mt-0dd62e49-ea18a-revoke-reason`, not merged (migration 348).** The R8 file passes, and each named mutation turns it red. **The revoke reason and the box columns (§10.9 question 6).** One expand-only migration adds `credential`, `revoked_reason`, `last_seen_addr` and `addr_changed_at` to `agent_connection`, with `lock_timeout`. `REVOKE_REASONS` in `agent_tokens.py`, and a reason on every writer that revokes a connection: `_revoke_in` (both reuse sites of `_rotate_in`, and the replay), `revoke_connection` (`/oauth/revoke` and the approve rollback), `revoke_connection_scoped` (the member and admin routes), and `_REPLACE_SAME_CLIENT_SQL` (the replace). No behaviour change for an OAuth connection. Task: 1838 | `tests/unit/test_agent_revoke_reason.py` on R8 with the named mutations of §10.9. The suites `test_agent_connection_tokens.py` and `test_agent_oauth_server.py` stay green. Run `eval "$(bash scripts/dev_db.sh --export)"` first, then `uv run pytest tests/unit/test_agent_revoke_reason.py tests/unit/test_agent_connection_tokens.py tests/unit/test_agent_oauth_server.py` and confirm that no R8 test skips. Then `uv run ruff check` and `uv run python scripts/affected_tests.py --run`. | AGENT-SAFE. HIGH tier: a migration and the revoke path. Full review loop. The number is taken at build time (R1) |
+| EA-19b | **BUILT 2026-11-06 on `mt-109299c5-ea19b-box-token-store`, not merged, dark behind `agent_box_tokens_enabled`.** The R8 file passes, and each named mutation turns it red. **The box token store and the stamp (§10.9 questions 1, 4, 5, 6).** `create_box_connection`, `rotate_box_token`, `touch_box_use`, the `credential` and `client_name` fields of `TokenLookup`, `LiveConnection` and `_CONNECTION_LIVE_SQL`, the stamp `mcp:box:<slug>-<8 hex>` in `actor_via_for` and its three callers, the label rule and the TypeScript mirrors, the flag check in `bearer.authenticate` and `read_live_connection`, the address argument of `authenticate`. The Setting `agent_box_tokens_enabled`, default false. The digest of branch 0 in `test_tenant_request_binding.py` changes, and the PR says why. Needs EA-19a. Task: 1839 | `tests/unit/test_agent_box_token_store.py` on R8 as a non-privileged role, with the named mutations of §10.9, the `claim_task` case and the forged-stamp case. Run `eval "$(bash scripts/dev_db.sh --export)"` first, then `uv run pytest tests/unit/test_agent_box_token_store.py tests/unit/test_tenant_request_binding.py tests/unit/test_mcp_edge_authority.py` and confirm that no R8 test skips. Then `uv run ruff check` and `uv run python scripts/affected_tests.py --run`. | AGENT-SAFE. HIGH tier: a token and an identity stamp. Full review loop. The flip is OWNER-GATE (`enforcement-flip`) |
+| EA-19c | **BUILT 2026-11-07 on `mt-2112998d-ea19c-box-token-routes`, stacked on EA-19b, not merged, dark behind `agent_box_tokens_enabled`.** The R8 file passes, and each named mutation turns it red. The two `sameOrigin` mutations are red in `box-tokens/relay.test.ts`. **The mint, check, rotate and bulk-revoke routes (§10.9 questions 3, 4, 5).** `POST /agent-access/box-tokens/check`, `POST /agent-access/box-tokens`, `POST /agent-access/box-tokens/{id}/rotate` (with `now`), `POST /agent-access/box-tokens/revoke-all` for an admin, and the BFF routes. Person-only, ticket namespace `box-mint` on mint and rotate, `sameOrigin`, the advisory locks, `Cache-Control: no-store`. The list route also writes the audit row `box_token.new_address` when it reads a fresh `addr_changed_at` (the edge cannot, review of 2026-11-07), once for each mark. The list read and the list answer (`_LIST_CONNECTIONS_SQL`, `ConnectionRow`, `AgentConnectionOut`) gain `credential`, `last_seen_addr` and `addr_changed_at`. Needs EA-19b. Task: 1840 | `tests/unit/test_agent_box_token_routes.py` on R8, with the named mutations of §10.9 and the scope parity case. Run `eval "$(bash scripts/dev_db.sh --export)"` first, then `uv run pytest tests/unit/test_agent_box_token_routes.py tests/unit/test_no_person_present.py` and confirm that no R8 test skips. Then `uv run ruff check` and `uv run python scripts/affected_tests.py --run`. | AGENT-SAFE. HIGH tier. Full review loop. A live mint is OWNER-GATE |
+| EA-19d | **BUILT 2026-11-07, dark, not merged (branch `mt-26ebb79f-ea19d-connect-a-box`, stacked on EA-19c).** **Integrations, AI agents: Connect a box (§10.9).** The dialog with the name, the scopes and the days, the one-time token and the command. A Box badge, "Last used", the expiry colour, the new-address mark, Rotate, Rotate now, Revoke, and "Revoke all box tokens" for an admin. `frame-ancestors 'none'` on the page. Needs EA-19c. Task: 1841 | A vitest of the dialog and the row, in the new file `src/app/integrations/components/BoxConnect.test.tsx` (`npx vitest run BoxConnect`, in `workbench/control_plane`, with `npx tsc --noEmit`). An e2e that makes, rotates and revokes a token on the local stack. The visual review of the shell: light mode, compact density, a changed accent, and the neighbour pane | AGENT-SAFE. STANDARD tier. The D145 preview comes before the merge |
+| EA-19e | **BUILT 2026-11-07 on `mt-19d828d7-ea19e-box-connect`, based on EA-19c, not merged, dark.** Both test files pass, and each named mutation turns them red. The runbook is `docs/box_connect.md`. **Fix round 1 (2026-11-07, Opus review): a project entry can win.** When `enabledMcpjsonServers` holds `metorite`, the header-free entry of `.mcp.json` wins over the user entry in a checkout. A local-scope entry wins too. Then the token does NOTHING, and Claude Code starts OAuth. The script now runs `claude mcp get` in the project folder (`--project`), and stops with exit 7 unless the scope is `User config`. **OWNER step:** close the project route. Move `metorite` to `disabledMcpjsonServers` in the user settings, or change `.mcp.json`. **One command and the runbook (§10.9 question 3).** `scripts/box_connect.sh` writes `~/.config/metorite/box.env` (mode 0600) and the `${METORITE_BOX_TOKEN}` entry, then runs `claude mcp list`. A runbook in `docs/`. The `mbt_` rule in `.gitleaks.toml` and the redaction processor in `acb_common/_log.py`. The client proof as a test. Needs EA-19c. Task: 1842 | `uv run pytest tests/unit/test_box_token_claude_client.py` (skips with no `claude`). `uv run pytest tests/unit/test_box_token_secret_rules.py`: the gitleaks rule and the redactor both catch a sample token, and the script never prints the token. Then `uv run ruff check` | AGENT-SAFE. STANDARD tier. Running it with a live token is OWNER-GATE |
+| EA-19f | **BUILT 2026-11-26 on `devx-refresh-grace`, not merged, dark (MCP-G17f).** **The grace window on rule 5 (owner directive 2026-11-26).** The setting `agent_refresh_reuse_grace_s`, default 0, with the one reader `agent_oauth.refresh_reuse_grace_s` and a cap of 60 s. In `_rotate_in`, a spent refresh token of the same client and resource, spent inside the window by the database clock, gets a sibling pair under the connection lock, and the idle window slides. It revokes nothing, and it logs the warning `agent_tokens.refresh_reuse_in_grace` with the connection id. An expired token gets no pair. A dead connection answers `connection_dead`. An organization off the list answers `org_not_allowed` with no pair. A token spent longer ago revokes with the reason `refresh_reuse`. Task: 4032 | `uv run pytest tests/unit/test_agent_connection_tokens.py tests/unit/test_agent_revoke_reason.py` on a real database (R8, `TestTheGraceWindow`). `uv run pytest tests/unit/test_agent_oauth_server.py -k RefreshReuseGrace` for the cap. Named mutations, each red on 2026-11-26: drop the time bound of `_GRACE_REFRESH_SQL`, drop its `revoked_at` clause, and drop the `revoked_at` check of `_LOCK_LIVE_CONNECTION_SQL`. Fix round 1: drop the `expires_at` clause of `_GRACE_REFRESH_SQL`, or the guard of a window of 0 in `_in_grace` (hermetic, `test_a_window_of_zero_runs_no_sql`) | AGENT-SAFE. HIGH tier. Setting the value on a box is gate `enforcement-flip` |
+| EA-19g | **BUILT 2026-11-26 on `devx-box-headers-helper`, not merged.** **The header helper (§10.9, "The header helper").** `scripts/metorite_box_headers.sh` reads `box.env`, checks the mode, the owner and the shape, and prints the `Authorization` header. `scripts/box_connect.sh` installs it as `~/.local/bin/metorite-box-headers` (mode 0700) and writes the user entry with `headersHelper` and no `headers`. The verify step reads the entry from `.claude.json`. A lane does not load `box.env`. Task: 1819 | `uv run pytest tests/unit/test_box_token_secret_rules.py tests/unit/test_box_token_claude_client.py` (the second skips with no `claude`). A helper with no mode check turns `test_the_helper_refuses_a_loose_mode` red. `node .claude/hooks/session-handoff.test.mjs`: a hook that takes the refusal bearer turns the refusal case red. Then `uv run ruff check` | AGENT-SAFE. HIGH tier: a secret on the box. Running it with a live token is OWNER-GATE |
+| EA-19h | **BUILT 2026-11-26 on `devx-org-switch`, not merged.** **The org switch (§10.9, "The org switch").** `scripts/metorite_switch_org.sh` with `add`, `list` and `to`. One 0600 token file for each organization. The switch checks the org file, `box.env`, `box.env.prev` and the address before it stops a session. It holds a `flock`. It refuses inside a Claude session and while a session is live (`--stop-lanes` stops them). It writes `box.env` and `box.env.prev`, proves the identity with `whoami`, and puts the old file back on a failure or a signal. It writes `active-org`, a state log line and a `NOTE` line. Runbook: `docs/box_connect.md` §7. Task: 4034 | `uv run pytest tests/unit/test_metorite_switch_org.py`. A switch with no restore of `box.env.prev` turns `test_a_failed_whoami_puts_the_old_box_env_back` red. A switch with no signal trap turns `test_a_sigterm_during_the_proof_puts_the_old_box_env_back` red. Then `uv run ruff check` | AGENT-SAFE. HIGH tier: a secret and the identity of a machine. A switch with a live token is OWNER-GATE |
+| MCP-G15 | **BUILT 2026-11-04, not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567). It goes live at the merge under `agent_runs_enabled`, which is ON.** **A decision made outside Metorite (§12.1).** An agent records a decision that its member made in another place, on its own awaiting run. The gateway writes an agent `response` that closes the open question, and the run moves `awaiting` to `in_progress`. **Files:** `routes/projects/agent_runs.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py`, `agent_edge/tools.py`, `agent_edge/mcp.py`, `agent_edge/prompts.py`, root `CLAUDE.md` and `.claude/commands/next-ticket.md`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_outside_decision.py`: 33 database-free tests and 15 R8 tests through the real gateway app. **D1** the act writes an agent response whose `in_reply_to` is the question, with the marker, and no prompt. **D2** the task leaves each waiting list: the pill, Waiting on me, `status=awaiting`, the open question, `needs_agent`, the bell and the My Day reason. **D2b** (fix round 1) the act reads the member's bell row and no other, and My Day moves once. **D3** the member's own answer works as before. **D4** a run that does not wait. **D5** a run with no open question. **D6** a typed archive request. **D7** another member's run. **D8** a person. **D9** an option id that the question does not hold. **D10** a replay, and a key of another activity. `test_agent_runs_r8.py` R1 holds the new move. `test_mcp_edge_coverage.py` holds the new pair. `test_task_routine.py` holds the rule of an answer in chat | AGENT-SAFE |
+| MCP-G18 | **BUILT 2026-11-06, merged (Metorite task 1727, first slice). IMG-3 (task 1999, `projects_ai_chat.md` §30.4) adds `get_attachment`, the read of the bytes.** **Attachments read (§12.4).** Owner decision 2026-11-06: metadata only, names as `untrusted_text`, no link, no upload. `get_task_context` gains the key `attachments`, at most 100 rows, with `attachments_truncated` when more exist. Each row has `attachment_id`, `name`, `mime`, `size`, `kind` (`image` or `file`), `added_by` and `created_at`. It has no `url` and no bytes, so the cookie path of the gateway row never leaves the edge. The tool reads the existing `GET /projects/tasks/{task_id}/attachments` and its one visibility read. `MCP_ROUTES` gains that GET pair, and `MCP_WRITE_ROUTES` does not. `CONTEXT_CALL_CEILING` goes from 13 to 14, and `CONTEXT_ALL_CALL_CEILING` from 17 to 18. A refused read (4xx) gives `attachments: []`, and a busy gateway ends the call, as the project read does. Upload and the image on the card wait for two owner decisions: the base64 transport and a signed-link seam. No migration, no flag. **Files:** `agent_edge/tools.py`, `acb_auth/agent_oauth.py` | `test_mcp_edge_context.py` (`TestTheAttachments`), `test_personal_privacy_r8.py` (`TestTheAttachmentListOfMcpG17`, R8: another organization and a hidden task get the 404) | AGENT-SAFE |
+| MCP-G19c | **BUILT 2026-11-08, not merged (branch `mcp-g19c`, Metorite task 2315).** **The type, the tags and the number of a task.** A compact row of `list_tasks` holds `type`, `tags` and `created_at`. `list_tasks` takes `type_id`, `type_name` and `task_number`. `get_project` with `compact` true leaves out the fields and the tags. The header lines of MCP-G19c give the reasons, and no migration is necessary | `uv run pytest tests/unit/test_mcp_g19c_r8.py -v -rs` on a real Postgres. Two members, a hidden project, a private project and organization B each hold a task that matches every filter. Mutations C1 to C7 each turn it red |
+| MCP-G9 | **BUILT 2026-11-08, branch `mt-45010748-g9-comment-edit` (Metorite task 843, Linear parity P8), not merged. It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36). HIGH tier: it adds two pairs to `MCP_WRITE_ROUTES`, so an adversarial review and an independent verification come first.** **An agent changes its own comment (§9.2).** On 2026-10-27 a copy agent left four comments with no end after a rate-limit stop, and no agent could repair them. `update_comment` and `delete_comment` call `PATCH` and `DELETE /projects/comments/{activity_id}`. For a signed agent the route takes only a comment that the member wrote AND whose `meta.via` is the stamp of this client (`activities._load_agent_comment`). Any other comment gets 403 "Only its author can change this comment in Metorite." A missing comment, a comment of another tenant and a comment on a task outside the pins get 404. Fix round 1: the same 403 refuses a comment that a person edited (rule 1) and a comment of an agent run (rule 2). Fix rounds 2 and 3: it also refuses a comment after which someone else wrote on the task (rule 3, the last word). Each change writes one `system` row with the actor, the stamp, the action and the comment id, and with no text of the comment. A person's delete does not change. A person's edit also sets `meta.person_edited`. No migration, no new flag, no manifest row. **Files:** `routes/projects/activities.py`, `acb_auth/agent_oauth.py`, `agent_edge/tools.py` | `tests/unit/test_mcp_edge_comment_edit_r8.py` (R8 through the real gateway app): C1 and C2 an edit and a delete of its own comment, each with one audit row and no old text. R1 a comment of another member, with no stamp and with the agent's own stamp. R2 a comment that the member typed, in the app and through the chat. R3 a comment of another client of the same member. P1 a comment outside the pin. T1 a comment of another tenant. A person's edit and delete write no row. Fix round 1: E1 the agent writes, the member edits in the app or through the chat, and both tools get 403. E2 a person edits a person's comment again and again, and the merge keeps `via`. Q1 the question and the outside decision of a run refuse both tools. Fix round 2: Y1 a reply of the member in the app or the chat, of another member or of another client refuses both tools. Y2 an own reply that a person edited, and a deleted reply of the member, refuse them too. Y3 a comment with only its own replies stays open. O1 to O4 a marked comment and a run comment answer 404 after a delete or outside the pin. Fix round 3: L1 a reply of a peer beside the agent's own reply refuses both tools. L2 a new top-level comment of a peer refuses them. L3 only later comments of this client, after an earlier comment of a peer, keep the comment open. L4 a later comment of the member in the app refuses. L5 a later comment of a peer that the peer deleted refuses. L6 holds the order of the task lock and the check. Fix round 4: L7 an outside decision of a run of this client after the comment refuses both tools. `test_projects_comments.py` holds the race guard of the agent path for each transient SQLSTATE. `test_mcp_edge_coverage.py` holds the two pairs, the class C pair, the hints and the edge inputs | AGENT-SAFE |
+| IMG-3 | **BUILT 2026-11-07, branch `mt-2d62220d-img3` (Metorite task 1999), not merged.** **The read of an attachment's bytes.** Owner decision 2026-11-07, in chat, recorded on task 1999: an agent may read the images and the text files of a task that it can see. An image (png, jpeg, gif or webp, at most 3.75 MB) comes back as MCP image content. A text file comes back as `untrusted_text`, cut at 64 KB. This answers the READ half of the base64 transport of MCP-G18. Upload over the MCP (task 413), a link that works with no sign-in, SVG and every other kind of file stay closed. The tool checks that the file belongs to THAT task, because the bytes route does not. Spec: `projects_ai_chat.md` §30.4 IMG-3. | `test_mcp_edge_attachment.py`, `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`, `test_mcp_edge_coverage.py` (the class X read), R8 cases in `test_mcp_edge_attachment_r8.py` | AGENT-SAFE |
+| CIV-14b | **BUILT 2026-11-12 on branch `mt-952e91e6-civ14b-images` (Metorite task 1727), fix round 1 done 2026-11-12, fix round 2 done 2026-11-14, fix round 3 done 2026-11-15, not merged, dark behind `MCP_IMAGE_UPLOAD_ORGS`. No migration.** **Images on a question (§12.9).** `upload_task_image` uploads a png, jpeg, gif or webp image of at most 3.75 MB as base64, with a magic-byte check and SVG refused. `ask_on_task` and `post_agent_activity` take up to 4 `attachment_ids` of the same task. The card of the question draws them, and a click opens one at full size. The gateway upload route also checks the magic bytes and refuses SVG for every caller. Flag `MCP_IMAGE_UPLOAD_ORGS`, default empty. HIGH tier: a new write route in `MCP_WRITE_ROUTES`. The "Built as" note of §12.9 holds the body tee of branch 0 and the body cap of `/mcp`. | `test_mcp_upload_image_limits.py`, `test_mcp_upload_image_types.py`, `test_mcp_upload_image_tenant_r8.py`, `test_mcp_upload_image_budget_r8.py`, `test_mcp_edge_coverage.py` (the write pairs, `CLASS_C_WRITES`, rule 4), `agentQuestionCard.test.ts` | AGENT-SAFE |
+| Task 2427 | **SPECIFIED 2026-11-09, not built. It comes first, and MCP-G28 folds it in.** **A lost deadlock is a retry.** A write that loses a deadlock gets a retry and not a 500 | `tests/unit/test_write_deadlock_retry_r8.py` (new), on R8. Two sessions lock two tasks in opposite order. Both writes land and no call answers 500 | AGENT-SAFE. HIGH tier |
+| MCP-G28 | **SPECIFIED 2026-11-09, not built (Metorite task 2541).** **One shared batch path (§9.2).** (1) One transaction for a call, bound once to the tenant. (2) One visibility check for the whole set. (3) Set-based SQL, with no query inside a loop. (4) Locks in id order. (5) Two counters: calls, 120 in 600 seconds, and rows, 5,000 in 600 seconds, with the new setting `AGENT_WRITE_ROW_CAP`. (6) A member-approved bulk job does not count its rows. (7) A batch over the limit gets a queued answer with `retry_after`. (8) An idempotency key for the call. `update_tasks` moves onto the path | `tests/unit/test_mcp_batch_path_r8.py` (new), on R8. One tenant bind for a call. The query count stays equal for 10 and 100 items. **Speed budget:** 100 items in one call, p95 under 2 seconds on production-sized data. The test fails when the budget is missed. The counters, the replay of a key and the lock order each have a test. `test_mcp_write_limit_r8.py` (new) holds the limit | AGENT-SAFE. HIGH tier. The adversarial review and an independent verification come first |
+| MCP-G26 | **SPECIFIED 2026-11-09, not built (Metorite task 2539). It needs MCP-G28.** **Links in bulk.** `add_task_links` and `remove_task_links` take up to 100 pairs. One cycle check covers the added graph. Each pair has a result: `created`, `existed`, or `refused` with the reason `cycle`, `parent and child`, or `not found`. One bad pair never stops the others | `tests/unit/test_mcp_task_links_bulk_r8.py` (new), on R8. Each result and each refusal reason has a test. A cycle that two added pairs make together is refused. The call stops at 100 pairs | AGENT-SAFE. HIGH tier, because it adds pairs to `MCP_WRITE_ROUTES` |
+| MCP-G27 | **SPECIFIED 2026-11-09, not built (Metorite task 2540). It needs MCP-G28.** **More bulk writes.** `update_tasks` also takes `status_id` and `assignees`. It never sets a cancelled status, because that stays a human step. A bulk archive request files one approve card that lists all the tasks. The call also takes a bulk comment. A bulk move uses the existing `preview_move_tasks` and `move_tasks` | `tests/unit/test_mcp_bulk_writes_r8.py` (new), on R8. A cancelled `status_id` is refused. The archive card lists each task. A bulk move keeps the preview step | AGENT-SAFE. HIGH tier |
+| MCP-G29 | **SPECIFIED 2026-11-09, not built (Metorite task 2542). It needs MCP-G28.** **`apply_plan` and `plan_export` (§9.2).** One plan document holds epics, tasks, `blocks` links and moves. A dry run writes nothing. One approve card shows the exact counts. One transaction applies all or nothing. A plan holds at most 2,000 rows. `plan_export` reads an epic tree back into the same document | `tests/unit/test_mcp_plan_r8.py` (new), on R8. A dry run changes no row. A refused row stops the whole apply and rolls it back. An export then an apply of the same epic gives the same tree. A plan of 2,001 rows is refused | AGENT-SAFE. HIGH tier |
+| MCP-G3 | **Metorite task 357. It stays the bulk tree create, and it is a case of `apply_plan` (MCP-G29).** It shares the batch path of MCP-G28 and builds after MCP-G29 | The tests of MCP-G28 and MCP-G29 cover it. It adds no second path | AGENT-SAFE. HIGH tier |
+| MCP-G22 | **SPECIFIED 2026-11-09, not built (Metorite task 2522).** **Reads that page.** `list_tasks` takes a keyset cursor, an `updated_since` filter and a choice of fields | `tests/unit/test_mcp_list_tasks_keyset.py` (new). A page walk misses no row and repeats none when a task changes between two pages | AGENT-SAFE. STANDARD tier |
+| MCP-G23 | **BUILT (hermetic profiles, and the real-gateway R8 run, MCP-G23b, Metorite task 2963) 2026-11-11, LIVE RUNS NOT DONE (Metorite task 2523).** **The conformance run for Claude Code and Codex.** `tests/unit/test_mcp_client_conformance.py` runs two scripted sessions for each client profile against the real edge app, a main session and a park session. It pins both ordered tool logs, the negotiated revision and the 4,096-character instructions budget, and it scores the log with KIT-6. MCP-G23b adds `tests/unit/test_mcp_client_conformance_r8.py`. It imports the profiles, the client and the scorer, and it runs both profiles against the real gateway app on a real database under row level security, with two tenants. It pins that a release path and a finish path each end with one disposition on the board, that org B sees and moves nothing of org A, and that every safety sentence of the instructions ends before character 4,096. It also pins a finding: the real gateway answers `finish_agent_run` on a released run with 409, so the log "release, then finish" of the hermetic run cannot be made on a real board, and the KIT-6 step `finishes_run` cannot pass after a release. The profiles come from the public MCP text, not from a real client. To run a live client, connect it as `docs/external_agents_connect.md` says, to the stack that `scripts/dev_up.sh` starts in your worktree. Each client runs one scripted session against the local stack. KIT-6 (Metorite task 2556, `orchestration_playbook.md`) extends the run to Copilot, Antigravity and Gemini CLI | The run passes for both clients and its log names each tool that it called | AGENT-SAFE. STANDARD tier |
+| MCP-G24 | **BUILT 2026-11-11, not merged (branch `mcp-g24-door`, Metorite task 2520, D208). Dark: the table is not in `APPS`.** **The Projects door table (§19.16).** `app_manifests/projects.py` gives each of the 215 routes of the chat manifest its class and a door op or an `off_door` reason. Cycles and saved views get 11 ops. The fence and D208 come with it | Each route has a row with the class and the tool of the chat manifest. No op is on a pair of `MCP_ROUTES`, on a route of §19.11, or on a delete of a record. The table is not in `APPS`. `test_projects_door_coverage.py` passes | AGENT-SAFE. HIGH tier, because it defines a write surface |
+| MCP-G25 | **SPECIFIED 2026-11-09, not built (Metorite task 2521).** **The parity fence (§19.16).** A Projects route that is in the chat manifest, and has no MCP tool and no stated off-door reason, fails the test | `tests/unit/test_mcp_projects_parity.py` (new). Add a route with no tool and no reason, and the test goes red | AGENT-SAFE. STANDARD tier |
+| MCP-G24b | **SPECIFIED 2026-11-11, not built. No Metorite task yet.** **Register the Projects door table (§19.16).** It needs MCP-P1b-2. The header of `door = "tools"` and the door ops show as one app in `list_apps`. The Studio catalog gets a gate, so the ops do not show in each org. `projects:read` and `projects:write` do not show twice in the scopes. Each route of an op passes the pin audit of D-EA-12. The door flag is `agent_door_apps` with `projects`. The slice also moves the chat guards of status editing to the routes: the PST-4 guard of a shared status set, the counts of the status-set preview, the visibility check of `copy_from`, and a status-set read that names no hidden project. A template apply gets a preview and a confirm step (EA3-53). Then those rows get their ops | A member reaches the acts through the door, and each change waits for the card. A pinned connection reads nothing outside its pin. Each status guard holds on the route, so the door and the chat give the same refusal | `tests/unit/test_mcp_edge_app_door_r8.py` gains the Projects cases, with `_DB_GATE`. `tests/unit/test_projects_door_coverage.py` changes on purpose | AGENT-SAFE to build. HIGH tier |
+| MCP-G24c | **SPECIFIED 2026-11-11, not built. No Metorite task yet.** **One Projects manifest.** The chat manifest moves into `app_manifests/projects.py`, and `skill_projects/manifest.py` re-exports it, as Knowledge did (AD-1). This ends the exception of D208.2 | The two tables are one tuple, and both coverage fences stay green | `tests/unit/test_projects_chat_coverage.py` and `tests/unit/test_projects_door_coverage.py` | AGENT-SAFE. STANDARD tier |
+| MCP-L1 | **BUILT 2026-11-17 (Metorite task 3648, owner ask). Dark: no flag, it changes the release of a run that the agent runs flag already gates.** **A released task goes to the right lane.** The board showed 409 tasks In progress with nobody on them, because `release_task` kept the status. The release now settles the lane (`agent_runs._settle_task_lane`, `core.pick_lane`, `core.lane_for_stage`, `core.lane_like`) as the release above says. The answer holds `task_status`. The server instructions (`prompts.LANE_RULE`, at the tail, after the safety rules and the 4,096 cut) say what each stage means. A started task never goes to Backlog. They also name the classes where the agent asks the member once with `ask_on_task` and does not guess: a task of a paused project, an umbrella whose first slice merged and whose next slices did not start, a task with only its spec merged, a task that waits for a production proof or an owner flip, and a board whose lanes do not map to the stages. **Not built:** a status change in `update_tasks` (the optional point 6 of the task), and the one-time clean-up of the board | `tests/unit/test_agent_release_lane_r8.py` (R8: an open pull request, a review lane, a branch, a handoff, no To Do lane, nothing started, a lane of the same name, two To Do lanes, a second release, a done task) and `tests/unit/test_release_lane_pins.py` (the pure lane rule, the stages and the ask classes in the instructions, the reasons of the answer equal on both sides) | AGENT-SAFE. STANDARD tier |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
@@ -1915,9 +2841,23 @@ Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2
 
 ### 15.1 Verification commands
 
+**EA-5 (task 1051).** `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_resources.py tests/unit/test_mcp_edge_protocol.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_readonly.py`, and the new R8 file `tests/unit/test_mcp_edge_company_context_r8.py`. Export the R8 database first.
+
 The EA-3 slices create four test files: `tests/unit/test_mcp_edge_protocol.py`, `test_mcp_edge_signing.py`, `test_mcp_edge_coverage.py` and `test_mcp_edge_authority.py`.
 
 **The R8 database.** Run `eval "$(bash scripts/dev_db.sh --export)"`, or export the DSN of a private container. The shared scratch database holds rows from other branches. Use one private pgvector container for each R8 run, and never run two R8 runs at once.
+
+**MCP-G15 (§12.1).** The new suite, with the suites whose tables, texts and lists MCP-G15 changes. Export the R8 database first:
+
+```
+uv run pytest tests/unit/test_mcp_edge_outside_decision.py tests/unit/test_agent_runs_r8.py tests/unit/test_mcp_edge_archive.py tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_task_routine.py tests/unit/test_projects_chat_coverage.py -v -rs
+```
+
+**MCP-G1 (§9.2).** The new suite, with the edge suites whose texts and lists MCP-G1 changes. Export the R8 database first:
+
+```
+uv run pytest tests/unit/test_mcp_edge_projects.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_mcp_edge_writes.py tests/unit/test_mcp_edge_assignees.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_projects_field_parity.py tests/unit/test_projects_chat_coverage.py -v -rs
+```
 
 **MCP-G2 (§9.2).** The new suite, with the edge suites whose texts and lists MCP-G2 changes. Export the R8 database first:
 
@@ -2266,6 +3206,8 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 
 **The consent page (EA-4a).** The page follows rules 1 to 3 and rule 8 of `workbench/control_plane/AGENTS.md`. It writes no colour, it uses `<Icon>`, it uses the primitives of `src/components/ui/`, and it imports no headless library. The builder checks it by eye in light mode, at compact density and with a changed accent.
 
+**Questions for me (EA-18b, EA-18c).** These slices add no app and no nav pane. The section joins the Projects app through `projectApps.ts`. The gateway registers the My Day provider of the `agent_questions` card in `gateway/routes/shell/feed.py` (EA-18c). The Approvals tab renders the same list component and adds no shell element. `SEAM_DEBT` does not change, and `src/lib/shell/seams.test.ts` fences it.
+
 ## 17. Open risks
 
 - The MCP specification moves. EA-3 accepts only `2025-06-18` and `2025-11-25` (§5.3). A client that speaks only `2026-07-28` cannot connect until EA-3c. EA-11 must test with real clients.
@@ -2301,6 +3243,7 @@ Both jobs use `ManagerFrame` and the shared primitives. They add no palette, bel
 - D-EA-2 says the edge unit has a smaller blast radius. That is true only after the EA-10 sandbox. The edge holds the database DSN, and EA-3 adds the signing key, not the internal bearer. A thief with the key can act as any member who holds a live connection, on the GET routes of `MCP_ROUTES` (§10.2). A thief with the DSN reaches the database directly.
 - **Open follow-up: the PATCH has the race that the claim had (EA-6b fix round 1).** `PATCH /projects/tasks/{task_id}` reads the task with no row lock. Two PATCHes with one `If-Match` can both pass the check. The verifier saw two `status_change` rows in 5 of 5 runs. Lock it as `claim_task` does: `SELECT ... FOR NO KEY UPDATE` on the task row before `require_precondition`, then read the row again from the lock. EA-6b does not change the PATCH.
 - **Open follow-up: the member writers of assignee rows take the row and the key in different orders (EA-6b fix round 3, HANDOFF H-316).** The claim does not change this, and these orders already disagree on main. A PUT of the assignees writes the key and then bumps the row. A move with assignees writes the row and the destination counter first, then the key. A merge moves the assignee and watcher keys onto the target, then writes the target row. A bulk edit locks the selected rows in request order, not in a sorted order. So a PUT against a move that assigns the same member, a merge against a PUT on the watcher keys, and two bulk edits with the same ids in another order can each deadlock. Also, a merge against a PUT of the same member fails with a unique violation of `pm_task_assignees_pkey`, 10 times in 10 (fix round 3). The `NOT EXISTS` of the merge cannot see a key that another transaction holds. Suggested fix: sort the ids of every bulk write, and one helper that writes the assignee key and then the row for every member writer.
+- **Open question for the owner: how the repo's `.mcp.json` and a box live together (EA-19e, Metorite task 1842).** `.mcp.json` names `metorite` with no header, so a checkout that approves it uses OAuth. A box with a box token needs the user entry to win. The choices include these: drop `metorite` from `.mcp.json`, give it the `${METORITE_BOX_TOKEN}` header, or have each box disable it in its user settings. The choice changes every checkout, so the owner decides. Until then, each box needs the owner step of §15, EA-19e.
 - **Test hazard: the first gateway request of an in-process R8 edge test (EA-6e review).** On a loaded box, the first request of `TestTheSameTasksOverMcp` can take more than the 10 s `REQUEST_TIMEOUT_S`, and the test fails. It fails the same way on main, and CI is green. Give that fixture a warm-up request, as `test_mcp_edge_task_writes.py` does.
 
 ### 17.1 The clients (2026-10-14)
@@ -2541,3 +3484,892 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   1. P3-1. Test r20 holds each way in. These are a `group:<slug>` grant, an `org` grant, `data:org:read` with no grant, and a grant on a parent project. The mutation that drops the groups of `grant_holders` is red now (A27).
   2. P3-2. The writer compares the wanted set and the stored rows in lower case. A legacy row in another case is the same person, and test r21 holds it (A29).
   3. P3-3 to P3-6. The texts say "a project grant or the admin read right", and the long sentences are split.
+- 2026-10-29 — MCP-G1 is built on `mt-003e8384-mcp-projects`, and it is not merged (task 355). The audit gave GO-NARROWED, after the owner directive of the same day. Five choices of the build follow.
+  1. Each tool calls the route of the app. No new SQL path decides who sees a node.
+  2. A move needs a preview id that the edge signs and checks again. So no move commits without a preview of the same selection.
+  3. A pinned connection makes no space. The gateway refuses it with 403, and the edge refuses first.
+  4. `update_project` takes no date, because a node has no date column.
+  5. The chat door is there already. The chat tools `create_project`, `update_project` and `move_task` reach the same routes, each with one card. MCP-G1 adds no chat tool.
+- 2026-10-30 — EA-6i (Metorite task 1102). The owner amended EA3-51: "Agents delete switch should default to on." Migration 316 makes `user_settings.agent_delete_enabled` nullable with no default, and NULL reads as on. The file turns each old `false` into NULL once, because the old default and an explicit off were the same value. So every existing member reads on until they turn it off. The status line, EA3-51, the EA-6h row and the new EA-6i row say so. Fence: `tests/unit/test_agent_delete_default_r8.py`.
+- 2026-10-30 — EA-6i fix round 1, after the adversarial review (HIGH tier).
+  1. P1. A missing row reads as on, so a case mismatch failed open. A web session keys the row on the spelling of the sign-in, and an agent reads in lower case. The read is now `bool_and` over every spelling, and the PUT writes every spelling. Mutations E5 and E6 are red.
+  2. The card and the member guide promised that the agent asks first. Metorite cannot make an agent app ask. They now say that most agent apps ask, and they promise only what the gateway enforces.
+- 2026-10-30 — §19.10a, the assistant's view of Email (tasks 1092 to 1095). An outside assistant triages, reads a thread with its context, polls the changes and turns a mail into a task, each in one or two calls, with no model run. Four class A rows of §19.10 changed state or called a model. MCP-P2a now pins each one. The owner answered MCP-Q7 to MCP-Q12 on 2026-10-30, as recommended.
+- 2026-10-30 — EA-4b (Metorite task 1057). The owner amended D-EA-4: personal access is on by default. The consent page ticks "Include my personal projects", and the member can untick it. An existing connection keeps the value its member chose. The server reads a body without the field as false. This answers MCP-Q6, and task 1056 builds it. Fence: `workbench/control_plane/e2e/connect-authorize.spec.ts`.
+- 2026-10-30 — MCP-G1 fix round 1, after the adversarial review (HIGH tier).
+  1. P1. An agent never widens who sees a task. The gateway compares the audience of each moved task through `notifications.project_grant_holders`, and a wider move gets 403 `audience_widens`. The preview gives `audience`. A personal task into a team project is wider.
+  2. P2. `create_project` does not refuse on a node above a folder that it cannot read. The grammar of the gateway decides the level.
+- 2026-10-29 — MCP-P0 (Metorite task #864). §19 specifies D136: one manifest, two doors. It covers the manifest contract, the four tools, the approval path of a write, the scopes per app and the admin switch. It also covers the CRM and Email classes and the slices MCP-P1a to MCP-P5. The owner moved MCP-P0 to MCP-P2 forward on 2026-10-29. No code changed.
+- 2026-10-30 — MCP-P1a (Metorite task #865) is built, dark behind `agent_door_apps`.
+  1. `acb_common/app_manifests/` holds `base.py` and `knowledge.py`, and `acb_skills/knowledge_manifest.py` re-exports the rows. The Knowledge door has eleven reads and the proposal `propose`. The search is `off_door` (AD-11). Each other write waits for MCP-P1b.
+  2. The edge has the four tools. The gateway has the two list routes in `routes/agent_apps.py`.
+  3. Branch 0 admits a door pair and checks the door flag, AD-18, the app scope and the caps in `deps._door_gate`. Each door call writes one audit row.
+  4. Two choices that this section did not record. The metadata documents name the scope of an app only while the door flag names the app. An authorize request with no `scope` follows the same rule. So an app that ships dark adds no line to the consent page. A dict key of a door answer that is not of the key shape leaves no answer (AD-10).
+- 2026-10-30 — MCP-P1a fix round 1, after the adversarial review (HIGH tier).
+  1. P1. The Knowledge seam reads the personal opt-in (D-EA-4). A connection with `include_personal` false sees no `me` space and no page of one (§19.8).
+  2. P2. The edge clamps `limit` for each op to 50, and it cuts each list of an answer to 50 rows (AD-12). `describe_app` shows the bound of the edge.
+  3. A refusal at the stamp, and a door write while the writes flag is off, each write their audit row (§19.7).
+- 2026-10-30 — MCP-P0 fix round 1, after the spec audit (MCP-P1a GO-NARROWED, MCP-P2a NO-GO). MCP-P1a fails closed for each write that needs an approval (AD-18). MCP-P2a opens no B or C op except `save_draft`. Each op that can cause mail to leave is `sends` (AD-19). §19.13 gains the gates, the verify commands and the dependencies. §19.1 gains the non-goals. A read that calls a model is off the door. This round also fixes the stale anchors.
+- 2026-10-30 — D-EA-11 and slice EA-16 (Metorite task 1109). The owner asked for a sign-in to Aroh with no hiccups.
+  1. §10.7 holds the rules and the threat analysis. §6 holds D-EA-11, and §10.2 holds one more row.
+  2. A first-party client on `agent_first_party_client_ids` signs a member in again with no click, on a live connection whose scopes cover the request. A new approval of it replaces the old connection and revokes its tokens.
+  3. Every other client keeps the screen, the ticket and the approve gate. The list is empty by default.
+  4. Scope change, owner, 2026-10-30: no Aroh link in the Metorite app. Only a person who has the Aroh address uses Aroh.
+- 2026-11-04 — §10.8, D-EA-12, D-EA-13 and slices EA-17a to EA-17c (Metorite task 1585). The owner asked for a better consent page, a project tree that ticks down, and a way to change access after the connect. The owner approved the design and both recommendations: a subproject added later joins on its own unless the member left it out, and a scope comes back only if the agent asked for it at the connect.
+- 2026-11-04 — EA-17a is BUILT, dark (Metorite task 1586, migration 344).
+  1. `agent_connection` gains `left_out_projects` and `requested_scopes`. `approve` stores the list and the requested scopes, and the cap of the list is 50.
+  2. The reach follows the nearest mark. It starts at each pin, or at each root with no pin, and stops at a left-out project. Each step filters by the organization.
+  3. `approve` treats a left-out id that the member cannot see as it treats such a pin, and stores it. Such an id can only narrow the reach. The 422 of an unseen id belongs to the route of EA-17c.
+  4. Branch 0 copies the list into `AgentScope`, so the digest of `test_tenant_request_binding.py` changes. The change needs the review of §10.1 before the merge.
+- 2026-11-05 — EA-17b is BUILT (Metorite task 1587, branch `mt-b2850be2-consent-tree`). The consent page follows §10.8. It has switches, two project choices, a tree with a dash and a count, a search, a summary line and a new footer. The headline reads "Connect <verified host> to Metorite?". `AgentConnectionOut` and the connections list carry `left_out_projects`. No new flag: the page ships behind the existing consent flow. The gateway checks the type and the cap of each list, and stores ids that the member cannot see. The member's live access still bounds the reach.
+- 2026-11-06 — The EA-17c audit returned GO-NARROWED (Metorite task 1588). Four fixes and a split follow.
+  1. D-EA-13 rule 2: the ceiling of a turn-on is the scope of the live token, because the edge intersects the token scope with the connection scopes. A scope that the member cleared at the connect needs a reconnect until EA-17c-3.
+  2. D-EA-13 rule 6: the connection row is read on each call, with no cache, so a change applies at the next call. The 60 second cache of §7.1 holds the member's access only.
+  3. The route names `_visible_projects` as the source of the 422, answers with the new row, and ships dark behind `agent_change_access_orgs`.
+  4. The view has three switch states, and the fences name their files and the verify commands.
+  5. EA-17c becomes EA-17c-1 (the route, task 1813), EA-17c-2 (the view, task 1814) and EA-17c-3 (the token mint, task 1815).
+- 2026-11-06 — EA-17c-1 is BUILT (Metorite task 1813, branch `mt-0d132c31-change-access`), dark behind `agent_change_access_orgs`. No migration.
+  1. `PATCH /agent-access/connections/{id}` and its BFF route change the grant of the member's own connection. An org off the flag gets 404 for each request.
+  2. `agent_tokens.update_connection_grant` locks the row of the member and the org, reads the live tokens and writes in one transaction.
+  3. `tree.grantable_project_ids` is the member's own sight, so an agent scope never decides the 422 of an unseen project.
+  4. `ConnectionRow` and `AgentConnectionOut` carry `requested_scopes` and `ceiling_scopes`, and the list returns both.
+  5. The route records each body field as required, and the ceiling of a connection with no live token as empty.
+- 2026-11-06 — EA-17c-1 fix round 1, after the review (REQUEST-CHANGES) and the verification (FAIL on fence gaps). Metorite task 1813.
+  1. The ceiling binds a turn-on only (D-EA-13 rule 2). A narrowing and a change of only the marks pass with no live token.
+  2. An unseen mark that the row holds stays. Only a new unseen id gives 422, and the store checks it under the lock.
+  3. A change writes one audit row with the grant before and after. A body that equals the row writes nothing.
+  4. A copy of an id drops out, an id in both lists gives 422, and the personal switch takes a JSON boolean only.
+  5. The BFF checks the declared length before the read. The fence adds the dead tokens, the cap on the model and the 404 of another member by behaviour.
+  6. Re-review N1: rule 4 counts the known scopes only. A held scope that the server no longer knows cannot empty the grant.
+- 2026-11-11 — EA-17c-2 is BUILT (Metorite task 1814, branch `mt-b2464a98-ea17c2-change-access`), dark behind `agent_change_access_orgs`. No migration.
+  1. The view shows the grant chips and "Change access" on the member's own agents. The panel reuses `AccessTree.tsx` and has the three switch states.
+  2. The save sends one string body, so the BFF sees a `Content-Length`. The panel never sends an empty pin list after "Only the ones I pick".
+  3. The member list adds `change_access`. The consent footer says "Change or remove" again. The PATCH is a P-8 row in `chat_parity.py`.
+  4. The R8 file adds the case of a held unknown write scope that must not cover its known read.
+- 2026-11-04 — MCP-G15 is built on `mt-c4fee5e7-decided-elsewhere`, and it is not merged (Metorite task 1567). The owner reported that a decision made in the Claude Code chat left the task waiting. An agent now records such a decision with `record_outside_decision`, as an agent `response` that closes the open question (§12.1).
+- 2026-11-04 — MCP-G15 fix round 1, after the review (SHIP-WITH-FIXES). The act marks the member's bell row of the question read, through the one writer of `read_at`, and My Day moves. The approval-route scan of `test_no_person_present.py` names the route. The instructions and §12.4 say that the gateway takes a write of the same member and the same client from any connection.
+- 2026-11-06 — MCP-G18 is built (Metorite task 1727). Owner decision: the first slice reads attachment metadata only. `get_task_context` gains `attachments`, with the names as `untrusted_text`. Upload and the card image wait for the base64 transport and a signed-link seam.
+- 2026-11-15 — CIV-14b fix round 3 (Metorite task 1727). A 429 of the write cap keeps the run of the question. A question that never left the edge releases its run. A retry with the key of an ended run gets a text that says to send a new key. Two spec lines now say what the code does (§12.9, "Fix round 3").
+- 2026-11-14 — CIV-14b fix round 2 (Metorite task 1727). A large body of an organization off the flag gets the old 413 before any slot or read (§9.6 "The body size", step 3). A question that the gateway refuses releases the run that the call started. The docstring of the flag reader names the edge (§12.9, "Fix round 2").
+- 2026-11-12 — CIV-14b fix round 1 (Metorite task 1727). A body over 1 MiB declares its length, and its token check comes before the read (§9.6 "The body size"). Only a thought, an action or an elicitation takes images. The edge hides the images for an organization off the flag, and `ask_on_task` checks them before the run starts. A removed image draws a "Removed" tile (§12.9, "Fix round 1").
+- 2026-11-12 — CIV-14b is BUILT (Metorite task 1727, branch `mt-952e91e6-civ14b-images`), dark behind `MCP_IMAGE_UPLOAD_ORGS`. No migration. The edge reads 6 MiB for one upload, and the gateway keeps the signed form for branch 0 (§12.9, "Built as").
+- 2026-11-12 — The owner lifts the wait for images (§12.9, CIV-14b). An agent uploads a png, jpeg, gif or webp image of at most 3.75 MB as base64. The edge checks the magic bytes and refuses SVG. A question card shows up to 4 images. The signed link stays an owner question.
+- 2026-11-07 — Owner decision on task 1999 (IMG-3): an agent may read the images and the text files of a task that it can see. Read half only. `projects_ai_chat.md` §30.4 holds the slice.
+- 2026-11-06 — §12.8, D-EA-14 and slices EA-18a to EA-18c, PROPOSED (Metorite task 1788). The owner asked for one surface for the agent questions that wait on the owner, in Projects, My Day and Approvals, with the project path of each. No code.
+  1. The design holds one read route, one shared answer rule and one flag, `AGENT_QUESTIONS_ORGS`.
+  2. D-EA-14 amends D-EA-10 point (1). The task creator and a reader with the role owner, admin or manager may answer. The creator also gets the bell.
+  3. The spec waits on the owner's approval and on three open questions.
+- 2026-11-06 — D-EA-14 is DECIDED (owner, in Metorite, task 1788). The owner approved the design and the five points. The three open questions are settled: "Manager" is the organization role, a member outside the groups may still comment, and "Answered by" shows the name only. EA-18a to EA-18c are ready to build.
+- 2026-11-06 — The EA-18a audit returned GO-NARROWED (Metorite task 1806). The spec now answers the six gaps of the audit.
+  1. The write rule binds only an answer to an open question. A Stop, and a reply to a run that is not awaiting, stay open (D-EA-10 point 1). Narrowing those would be a new decision.
+  2. Address tests use `lower()`, and the role test stays in Python.
+  3. `why` takes the first true test in the order created, assigned, own agent.
+  4. `project_path` stops at the first hidden parent.
+  5. The flag follows `authorities.py`, and `test_flag_reload.py` fences the key.
+  6. With the flag on, `agent_focus_clause("waiting")` reads the one text.
+- 2026-11-06 — EA-18a is BUILT, dark and not merged (Metorite task 1806). `GET /projects/agent-questions`, `person_may_answer_sql`, `may_answer_run`, the narrowed write and the creator's bell all sit behind `AGENT_QUESTIONS_ORGS`, which is empty by default. No migration. The build records four facts.
+  1. The list leaves out a typed archive request and a question on a closed task (§12.8, "The route").
+  2. A reader outside the set gets no row: "For me" leaves them out, and "Everyone" answers 403. So acceptance 2 shows `can_answer` false in the read under the route (`read_questions`), and not on the wire.
+  3. The run wire has no `can_answer`. The read-only card of EA-18b needs it, and that slice adds it.
+  4. The chat has no read tool yet (D109). The manifest holds `agent_questions` in `PLANNED`, and a board task holds the gap.
+- 2026-11-11 — EA-18d is BUILT, not merged (Metorite task 1832). The chat reads the questions through `agent_questions` and answers one through `answer_agent_question`. The answer posts to the activities route, so `may_answer_run` decides. A typed archive request goes to the task card, because `archive-approval` is class X.
+- 2026-11-06 — Fix round 1 of the EA-18a review (Metorite task 1806). The review approved the build.
+  1. With the flag on, "Waiting on me" and "For me" read one text, `listed_question_sql`. A question on a closed task counts in neither. Fix round 2 sets the rule of a typed archive request (see item 4).
+  2. The list tests `r.status = 'awaiting'` first, so the partial index `pm_agent_runs_one_open_per_task` serves it.
+  3. The EA-18b row now names `can_answer` on the run wire. Without it, the run panel would need a second text of who may answer.
+  4. Fix round 2 (the coordinator's rule). A typed archive request on an open task waits on the run's member only, in "For me" and in "Waiting on me". Only that member approves it. Every other reader does not see it, and "Everyone" leaves it out. This replaces item 1 of the build entry. The write rule does not change.
+  5. Fix round 3. Each row's `question` holds `kind`: `question` or `archive_request`. The server takes it from `archive_request_of`. So EA-18b sends the answer to a typed request to `archive-approval`, and the browser holds no second text of the rule.
+  6. Fix round 4, after the independent verify. A typed request reads `why` `my_agent`, also when the run's member created the task or is an assignee. The verify found four test gaps, and each now has a fence (M17 to M20). An outside answer to an open question on a closed task gets 403, because the rule reads no task status.
+- 2026-11-06 — D-EA-5 opened, §10.9 and slices EA-19a to EA-19e (Metorite task 1819). The owner chose a per-box token (choice A) after the sign-out of 2026-11-06 01:23 UTC.
+  1. Root cause: a spent refresh token was presented 18 minutes 43 seconds after the last rotation, and rule 5 of `agent_tokens.py` revoked the connection for all nine sessions. The row has no revoke reason, so the cause rests on timing. EA-19a adds the column.
+  2. The box token is a connection of `credential` `box` with one `access` token and no refresh token. It acts as the member. It ships dark behind `agent_box_tokens_enabled`.
+  3. The client proof passed on metorite-home with Claude Code 2.1.319: a static `Authorization` header is sent on every request and no OAuth starts.
+  4. The review of two Opus readers changed the design: the stamp keeps the `mcp:` prefix, the flag is a pause that `/oauth/revoke` survives, and there is no bell in version 1.
+  5. Rule 5 is unchanged. The grace window (choice C) and one connection for each session (choice B) are not built. Owner directive 2026-11-26: a grace window, setting `agent_refresh_reuse_grace_s`, default 0 (MCP-G17f, Metorite task 4032). Choice B stays not built.
+- 2026-11-06 — EA-19a is BUILT on `mt-0dd62e49-ea18a-revoke-reason`, and it is not merged (Metorite task 1838).
+  1. Migration 348 adds `credential`, `revoked_reason`, `last_seen_addr` and `addr_changed_at` to `agent_connection`. Only `credential` has a CHECK. The file sets `lock_timeout`.
+  2. `agent_tokens.REVOKE_REASONS` holds eight reasons. Each writer that revokes a connection takes a required keyword `reason` and stores it. An unknown reason raises `ValueError` before any SQL runs.
+  3. `flag_off` has no writer until EA-19d. A row that an old writer revoked keeps NULL.
+  4. `tests/unit/test_agent_revoke_reason.py` (R8) drives each real caller. A path with no reason, a reason outside the set and a silent reuse site each turn it red.
+- 2026-11-06 — EA-19b is BUILT on `mt-109299c5-ea19b-box-token-store`, and it is not merged (Metorite task 1839). It ships dark behind `agent_box_tokens_enabled`.
+  1. `agent_tokens.py` adds `create_box_connection`, `rotate_box_token` and `touch_box_use`. A box token is `mbt_` and 43 characters, and the store keeps only its hash.
+  2. A rotation locks the connection first. It keeps two live tokens at most. `_SLIDE_SQL` skips a box, so use never moves the expiry.
+  3. The stamp is `mcp:box:<slug>-<8 hex>`. Branch 0, the edge client and the run start pass `credential`, `connection_id` and `client_name` to `actor_via_for`. The digest of branch 0 changed for that reason.
+  4. An OAuth origin whose host is `box` gets the hash stamp, so it never reads as a box. The spec did not name this case.
+  5. The edge reads the flag in `bearer.authenticate`, and the store reads it in `read_live_connection`. The edge stores `request.client.host` and never `X-Real-IP`.
+  6. The store also refuses a mint or a rotation while the flag is off, with the reason `box_tokens_off`. The routes of EA-19c answer 404 first.
+  7. `tests/unit/test_agent_box_token_store.py` (R8) holds the six named mutations of §10.9. B7 and B8 fence the lock and branch 0.
+- 2026-11-08 — MCP-G19c is BUILT, and it is not merged (Metorite task 2315).
+  1. A compact row of `list_tasks` holds `type`, `tags` and `created_at`.
+  2. `list_tasks` filters by `type_id`, `type_name` and `task_number`, beside `tag` and the filters of MCP-G19a.
+  3. A task by its number is a `list_tasks` filter, and not a second input of `get_task`. A number is unique only in one root project, so the answer can hold more than one task. §15 row MCP-G19c gives the reason.
+  4. `get_project` with `compact` true leaves out the fields and the tags.
+  5. `tests/unit/test_mcp_g19c_r8.py` (R8) proves each filter with two members and a hidden task. The calendar, the export, the dataset and the chat manifest name the three new filters as excluded.
+- 2026-11-08 — MCP-G20 is built (Metorite task 2212). It is not merged.
+  1. `update_tasks` changes up to 50 tasks in one call. Each item is one call of `update_task`. So the scope check, the cap and the visibility rule hold for each item. `updates` is a new edge input of §9.5 rule 4.
+  2. The write cap is two settings, `AGENT_WRITE_CAP` and `AGENT_WRITE_WINDOW_S`. The defaults stay 120 and 600. The owner sets `AGENT_WRITE_CAP=300` on the box (gate `enforcement-flip`), and then a 300-write sweep fits one window.
+  3. Gap 2 of the task: a plan epic could not sit under a workstream epic. The cause is not the edge. Two rules of the gateway refuse it. A task of the Epic type is always the top level (§3.4 of `project_management_app.md`). An agent moves a task under a parent of the same project only (MCP-G2). Both rules stay, and each refusal now says why and names the next step.
+  4. `type_id` of `update_task` was already built by SP-6. `update_tasks` takes it too.
+  5. An agent's subtask with no `status_id` now starts in the default status. It took the lane of its parent before, against the text of `create_task`. A member's subtask keeps the parent lane (D-PM-38).
+- 2026-11-07 — EA-19c is BUILT on `mt-2112998d-ea19c-box-token-routes`, and it is not merged (Metorite task 1840). It is stacked on EA-19b, and it ships dark behind `agent_box_tokens_enabled`.
+  1. `POST /agent-access/box-tokens/check` gives a ticket in the namespace `box-mint`. The mint and the rotate spend it with one `GETDEL` before each other check of the body.
+  2. The ticket binds the member, the organization and each field of the body. For a rotation it also binds the connection id, `days` and `now`.
+  3. The check, the mint and the rotate answer 404 with the flag off. The list, the revoke of one connection and `POST /agent-access/box-tokens/revoke-all` stay live.
+  4. Revoke all is for an admin, with the gates of `integrations_agents.py`. It writes the reason `flag_off`, so EA-19c writes that reason and not EA-19d. EA-19d adds the button.
+  5. A scope that the server does not know gives 422, not a silent drop. A write scope with the writes flag off gives 422.
+  6. The `sameOrigin` check is in the BFF (`box-tokens/relay.ts`). The gateway sees only the server call of the BFF (§10.5), so it cannot read `Sec-Fetch-Site`. The two `sameOrigin` mutations are red in the vitest.
+  7. Both list routes write `box_token.new_address` for the newest mark of each live box, once. A mark that a later mark replaces before any list read gets no row, and neither does a mark on a box that is revoked or expires first. The address that set a mark stays in `last_seen_addr` for the hour, so the row names the address that raised the alarm (review of 2026-11-07). The row id comes from the connection id and `addr_changed_at`. So the primary key of `audit_event` keeps one row when two reads race. No migration was needed.
+  8. Change access refuses a box with 404, because the lock and the update read `credential <> 'box'`.
+  9. Branch 0 refuses a box route with 401 (reason `method`), because no box route is in `MCP_ROUTES`. `test_no_person_present.py` refuses a tool that names `/agent-access/box-tokens`.
+  10. The routes write the audit rows `box_token.create`, `box_token.rotate` and `box_token.revoke_all`, with ids and counts only. The spec did not name them.
+  11. `tests/unit/test_agent_box_token_routes.py` (R8) holds the named mutations of §10.9 and R10 to R12.
+- 2026-11-07 — EA-19d is BUILT on `mt-26ebb79f-ea19d-connect-a-box`, and it is not merged (Metorite task 1841). It is stacked on EA-19c, and it ships dark. With the flag off, the dialog shows "Box tokens are not turned on for your organization."
+  1. The decisions and the four requests are in `lib/box.ts`. The parts that draw are in `components/BoxConnect.tsx`, and `AgentsView.tsx` places them.
+  2. The raw token lives in the state of the dialog only. The dialog unmounts its form on close, so the token leaves state. A test scans the source for storage, log and URL use.
+  3. A box row shows the Box badge, "Last used", the expiry colour, the new-address mark, Rotate, Rotate now and Revoke. It has no Change access button. A box row is headed by the box name, because a box has no client host.
+  4. Rotate shows only on the member's own rows, because the route takes the connection from the member's own rows. "Revoke all box tokens" shows to an admin, and only when the organization list holds a box.
+  5. `next.config.ts` gives `/integrations/:path*` the same `frame-ancestors 'none'` and `X-Frame-Options: DENY` as `/connect`. `src/lib/frameHeaders.test.ts` fences both.
+  6. The vitest config took `*.test.tsx` files, because the spec names `BoxConnect.test.tsx` and the old pattern would not run it. The runner has no DOM, so the test renders each part to a string.
+  7. Not built: the e2e that makes, rotates and revokes a real token. The box flag is off, so no real token was made. EA-19e builds `scripts/box_connect.sh`.
+- 2026-11-07 — EA-19e is BUILT on `mt-19d828d7-ea19e-box-connect`, and it is not merged (Metorite task 1842). It is based on EA-19c, and it ships dark.
+  1. `scripts/box_connect.sh` reads the token from a hidden prompt or from stdin, and never from argv. It checks the shape before it writes a file.
+  2. It writes `~/.config/metorite/box.env` with mode 0600 and the user entry with `Bearer ${METORITE_BOX_TOKEN}`. It refuses to replace an entry without `--replace`.
+  3. `.gitleaks.toml` has the rule `metorite-box-token`. The global allowlist skips `tests/`, so the tests scan a temp folder and build each sample at run time.
+  4. `acb_common/_log.py` has the processor `redact_box_tokens` before the renderer, and a filter on each root handler. `configure_logging` is the one structlog config in the tree.
+  5. `acb-agent-edge` does not call `configure_logging`, so the redactor does not cover the edge logs. The uvicorn loggers do not reach the root handler either.
+  6. With the variable unset, Claude Code 2.1.319 sends `Bearer ${METORITE_BOX_TOKEN}` as it is, and the server refuses it. **Corrected in fix round 1.** In a checkout, the user entry wins only when no setting approves the `metorite` entry of `.mcp.json`. Claude Code 2.1.319 picks a local-scope entry, then an approved project entry, then the user entry. On `metorite-home`, `~/.claude/settings.json` approves `metorite`, so the project entry wins there. That entry has no header, so the box token does NOTHING until an owner closes the project route. This is an OWNER step, with two ways. Move `metorite` from `enabledMcpjsonServers` to `disabledMcpjsonServers` in the user settings, or change the repo's `.mcp.json`.
+- 2026-11-07 — EA-19e fix round 1 (Opus review, Metorite task 1842).
+  1. `scripts/box_connect.sh --project DIR` runs `claude mcp get metorite` and `claude mcp list` in the project folder. A `Project config` or `Local config` scope stops it with exit 7, and it does not print Connected. The default folder is the current one when its `.mcp.json` names `metorite`.
+  2. The script also refuses a local-scope entry without `--replace`. It checks the entry JSON before it removes an entry. It refuses a URL with a character that is not printable ASCII, and it moves `box.env` with `mv -fT`.
+  3. `acb_common/_log.py` walks bytes and sets, and `BoxTokenMaskingRenderer` masks the rendered line.
+  4. The tests use a fake `claude mcp get` for each scope, and the real client for the project case.
+- 2026-11-08 — MCP-G9 is BUILT on `mt-45010748-g9-comment-edit`, and it is not merged (Metorite task 843). An agent changes or deletes a comment of its own client (§9.2). The build records seven choices.
+  1. Own client means the `client_via` stamp of `meta.via`, not the client id, because the comment row holds only the stamp.
+  2. The audit row is an existing type, `system`, so no migration touches the CHECK of `pm_activities.type`.
+  3. Each tool requires an `idempotency_key`, as `add_comment` does. So both tools are idempotent, and a replay writes no second audit row.
+  4. Fix round 1 of the review adds rules 1 and 2 of §9.2. A person's edit sets `meta.person_edited`, and the agent then gets 403 on that comment. A comment with `meta.agent_run_id` gets the same 403.
+  5. Fix round 2 added rule 3 of §9.2 as a reply check, and fix round 3 replaced it with the last word. The direct reply check missed a reply beside the agent's own reply and a new top-level comment. A deleted comment counts, so the check fails closed. The 403 text of the edge names the three rules in one sentence. Production held no comment that a person edited before the mark existed, so no backfill runs.
+  6. The last-word check runs under `core.lock_task`, and the comment lock is `FOR NO KEY UPDATE`. Without the task lock, a new comment could commit between the check and the change.
+  7. Fix round 4 closes two residuals of fix round 3. A comment of an agent run is never the client's own for the last word, so an outside decision blocks the earlier question. A deadlock with a task delete answers 409 on the agent path, not 500.
+- 2026-11-11 — EA-17c-3 is BUILT on `mt-326c1ec5-ea17c3-mint-requested`, and it is not merged (Metorite task 1815). No migration.
+  1. `approve` mints the code at `agent_oauth.mint_scope`: every requested resource scope, and `offline_access` only when the member granted it.
+  2. `agent_oauth.effective_scopes` is the one rule of the intersection. The edge bearer check calls it, and `bearer.py` keeps no copy.
+  3. The audit of §10.8 found three readers that took the token scope alone. The token answer and the scope check of a refresh now read `agent_oauth.granted_scope`. The store gives a refresh token only when the connection holds `offline_access`.
+  4. `ceiling_of` takes `requested_scopes` as a bound. A connection from before EA-17c-3 keeps its ceiling at the grant, so a cleared scope still needs a reconnect.
+  5. One fixture of `test_agent_connection_tokens.py` now grants `offline_access` on its connection, because a refresh token needs it there.
+- 2026-11-17 — MCP-L1 (Metorite task 3648): `release_task` moves the task to its lane. An open pull request keeps it in progress, started work puts it in To Do, nothing started returns it to the lane before the claim, and a started task never goes to Backlog. The instructions name each stage and the classes where the agent asks. §9 and §12.7 changed, and the row MCP-L1 is new.
+- 2026-11-26 — EA-19g is BUILT on `devx-box-headers-helper`, and it is not merged (Metorite task 1819).
+  1. A lane on the box is a `claude --bg` session of a long-lived `claude daemon`. The `${METORITE_BOX_TOKEN}` header expanded from the environment of the daemon, which never loaded `box.env`.
+  2. The user entry now has a `headersHelper` and no `headers`. The helper reads `box.env` and prints the header, so a lane needs no environment variable.
+  3. The helper takes its path from the entry, never from an environment variable.
+  4. Review fix (2026-11-26). A refusal printed no header, so Claude Code started OAuth discovery and `POST /register`. A refusal now prints the bearer `box-token-helper-refused` and exits 0. The helper reads one open descriptor and refuses a hard link. The session hook runs the helper when the env var is unset.
+- 2026-11-26 — MCP-G17f (EA-19f) is BUILT on `devx-refresh-grace`, and it is not merged (Metorite task 4032). Owner directive 2026-11-26: a grace window, setting `agent_refresh_reuse_grace_s`, default 0. This amends choice C of D-EA-5 and does not delete it.
+  1. The window is off by default. Rule 5 holds with no change until an operator sets the value and restarts `acb-agent-edge`.
+  2. A reuse inside the window gets a sibling pair. The store keeps only hashes, so it cannot give the first pair again, and both pairs stay live.
+  3. Rule 8 holds. An organization off the list gets `org_not_allowed` inside the window, with no pair and no revoke. Outside the window, a reuse still revokes, list or no list.
+  4. The scope check of a refresh in `token_endpoint.py` finds no spent token, so the rotation decides. The new pair keeps the scope of the token row, so it cannot widen the grant.
+  5. Fix round 1 (the verify and the Opus review). The cap is 60 s, not 300 s. The window log is a warning. An expired token gets no pair. A hermetic test now fences the guard of a window of 0. A gather of two refreshes did not catch its removal. §5.5 names the residual risk and the difference from RFC 6749 §6.
+- 2026-11-26 — EA-19h is BUILT on `devx-org-switch`, and it is not merged (Metorite task 4034).
+  1. Owner directive: a machine stays signed in, unless an owner switches its organization. The org switch is the one act that ends a sign-in.
+  2. `scripts/metorite_switch_org.sh` swaps the token in `box.env`, proves it with `whoami`, and logs the switch. It runs no `claude mcp` command.
+  3. Fix round 1 (verifier and review, 2026-11-26). The checks of `box.env` run before a stop. The fix adds a `flock`, a signal trap, the address rule of `session-handoff.mjs` and no redirect. It also refuses a token that no org file holds, and it names the late sessions.
+
+## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
+
+**Status: MCP-P1a BUILT 2026-10-30 (Metorite task #865), dark behind `agent_door_apps`, with fix round 1 of the adversarial review. MCP-P1b to MCP-P5 are SPECIFIED and not built.** D124 and D136 set the shape (`work_plan.md` §3). On 2026-10-29 the owner moved MCP-P0 to MCP-P2 forward, so CRM and Email come now (the D136 amendment). The anchors below were read at `43c82a75f`. Read them again at dispatch, because specs go stale.
+
+**Status of MCP-P1b: MCP-P1b-1 is BUILT 2026-11-04 and MERGED 2026-11-05 (commit `1605cb966`, task 1056), dark. MCP-P1b-2 is BUILT 2026-11-11 (task 1722), dark, and not merged.** MCP-P1b-3 is SPECIFIED and not built (§19.13).
+
+### 19.1 The answer
+
+Each app keeps ONE route manifest. Mira's chat tools read it, and the MCP door reads it. So an app with a manifest reaches outside agents with no new MCP tool.
+
+- **Four fixed tools.** `list_apps`, `describe_app`, `app_read` and `app_write` serve every app. The tool count does not grow with each app.
+- **Four classes.** A is a read. B is a write that the app can undo. C is a write that is hard to undo. X is on neither door.
+- **Each write waits for the member.** A proposal files a draft that the member finishes in the app. Each other B or C call opens a typed request on an agent run. The member approves it on a card in Metorite, and the agent then sends the same call once (§19.5).
+- **One scope per app**, read and write apart, drawn from the manifests. An admin can switch an app off for the organization (§19.6).
+- **Safety.** Every string that returns is `untrusted_text`. Every call writes an audit row. Limits cap the reads, the writes and the open requests (§19.7).
+- **The order.** Knowledge first, because its manifest exists. Then CRM and Email. Then each new app, in its first release (§19.13).
+- **The Projects tools stay.** The typed tools of §9 stay the Projects door. `list_apps` shows Projects with the door `tools`.
+
+**Non-goals of §19.**
+
+- No typed tool for each app. Only the four tools serve the apps.
+- No change to the Projects tools, to `MCP_ROUTES` or to the rules of §9.5.
+- No model call through the door, and no AI credits (AD-11, D-EA-7).
+- No push to the agent: no webhook and no MCP elicitation (EA3-33).
+- No card for many calls, and no timed approval. Each B or C call asks once. The trust ladder of D131 is later work.
+- No raw send, no HTML body and no file download over the door (§19.10).
+- No door for WhatsApp, Calendar, Meetings, People or Studio here. Each joins with its own manifest (MCP-P4, MCP-P5).
+- No change to the cards of Mira in the chat.
+
+### 19.2 What exists today
+
+| Fact | Anchor |
+|---|---|
+| The Projects manifest is the chat allowlist and its coverage record. The chat client refuses a route that it does not carry | `apps/skills/skill-projects/skill_projects/manifest.py:66` (`Route`), `:122` (`MANIFEST`), `:1672` (`allowed`), and `skill_projects/client.py:164` |
+| The Knowledge manifest has the same shape, with `planned` and `also` | `packages/acb_skills/acb_skills/knowledge_manifest.py:49`, `:130` and `:230`. Its client calls `allowed` at `knowledge_tools.py:215` and `:239` |
+| Each coverage test walks the real router in both directions | `tests/unit/test_projects_chat_coverage.py:59` and `:69`, `tests/unit/test_knowledge_chat_coverage.py:57` and `:67` |
+| CRM and Email have no manifest. On 2026-10-29 the CRM router serves 136 method and path pairs from 136 decorators. The Email router serves 136 pairs from 135 decorators, because one `api_route` serves GET and POST | `gateway.routes.crm.router` and `gateway.routes.email.router`, counted from the live routers. The `api_route` is `routes/email/transport/sync.py:376` |
+| The edge reads no manifest. Its allowlist is the hand-written `MCP_ROUTES`, and a fence holds each pair to the Projects class | `MCP_WRITE_ROUTES` at `packages/acb_auth/acb_auth/agent_oauth.py:567`, `MCP_ROUTES` at `:593`, and rule 2 of `tests/unit/test_mcp_edge_coverage.py` (§9.5) |
+| The scopes are one fixed tuple | `agent_oauth.py:56` to `:67` |
+| Branch 0 checks `projects:write` for each write and no scope for a read | `packages/acb_auth/acb_auth/deps.py:620`, and the risk line of §17 |
+| The edge refuses a path parameter that is not a UUID | `apps/services/agent_edge/agent_edge/gateway_client.py:58` and `:102` |
+| The consent page names each scope from a hand map. An unknown scope shows its bare name | `workbench/control_plane/src/app/connect/authorize/consent.ts:106` |
+| The one MCP approval path is a typed request on an agent run. Only the run's member answers it, on a route outside `MCP_ROUTES`. It lives 24 hours | `apps/services/gateway/gateway/routes/projects/agent_runs.py:183`, `:2262` and `:2330` (EA3-40) |
+| A run belongs to a task | `infra/postgres/267_pm_agent_runs.sql:52` and `:108`, `task_id UUID NOT NULL` |
+
+**Three approval paths that the door does not use, and why.**
+
+- **Mira's card** (`packages/acb_skills/acb_skills/ask_tools.py:1372`) holds a chat run until the member answers in that chat. An MCP call has no chat run. With nobody to answer, the card fails closed (`skill_projects/writes.py:12`).
+- **The Approvals queue** (`routes/actions.py`, the table `pending_actions`) serves an org admin only, and it has no approver column (`routes/shell/needs.py`). A member's own write must not wait for an admin.
+- **The WhatsApp park** (`acb_skills/whatsapp_acts.py`) settles on the member's next message in one WhatsApp thread. The door has no thread.
+
+So the door extends the run of EA-12 and the typed request of EA3-40 (AD-5). It adds no second approval store.
+
+### 19.3 The manifest contract
+
+**Where it lives (AD-1).** Each app manifest is one module of pure data in `packages/acb_common/acb_common/app_manifests/`. It imports the standard library only. So the edge, branch 0, the gateway and the chat tools can all import it.
+
+- `base.py` holds the shared types `App`, `Route` and `Page`, and the readers `route_for`, `allowed`, `door_ops`, `door_routes` and `build_call`.
+- `knowledge.py` holds the Knowledge rows. `acb_skills/knowledge_manifest.py` stays as a re-export, so its readers do not change.
+- `crm.py` is new, and WS-CRM CRM-M2a builds it (`crm_conversational.md` §8). It holds one row for each route of the CRM router, and every row is `off_door`. MCP-P2a does not build it again. MCP-P2a sets the door op of each row. `email.py` is new in MCP-P2a.
+- The Projects manifest stays in `skill_projects`. Its door stays the typed tools of §9, and `MCP_ROUTES` stays its allowlist. MCP-G24 adds a second path for the routes that have no typed tool (§19.16). That path is `projects.py`, the door table of Projects (D208). It is not in `APPS` until MCP-G24b.
+
+Why a new home: `acb_auth` and the edge cannot import `acb_skills`, because its `__init__` imports the chat tools. They cannot import a skill package either.
+
+**The app header.**
+
+| Field | Holds |
+|---|---|
+| `id` | The app id and the scope prefix, for example `crm`. It matches `[a-z]+` |
+| `name` | The name on the consent page and in `list_apps`, for example "CRM" |
+| `reach` | One line that says what the app holds, for the consent page |
+| `pane` | The `NavPane` id of the app in `src/lib/nav.ts`. MCP-P4 reads it |
+| `feature` | The feature that the router of the app demands, for example `crm` |
+| `router` | The import path of the router, for the coverage fence |
+| `finish_in` | Where a member finishes a proposal, for example "Email, Drafts" |
+
+**The row.** One `Route` for each pair that the router of the app serves, as today.
+
+| Field | Holds | Rule |
+|---|---|---|
+| `method`, `path` | The method, and the template as FastAPI reports it | One row for each served pair |
+| `cls` | `A`, `B`, `C` or `X` | §19.1 |
+| `reason` | Why the row is X | Required for X |
+| `tool`, `also`, `planned` | Mira's chat tools, or the slice that plans one | As the Knowledge manifest does today |
+| `op` | The door op name. It matches `[a-z][a-z0-9_]{0,47}` and is unique in the app | An A, B or C row names `op` or `off_door` (AD-2) |
+| `off_door` | Why the MCP door does not serve this row | Required on an A, B or C row with no `op` |
+| `title` | One line for `describe_app` | Required with `op` |
+| `proposal` | True when the op only files a pending object that the member finishes in the app | Class B only (AD-8) |
+| `sends` | True when the op can cause mail or a message to leave Metorite | Class C only, behind the sends flag. Any op that can cause mail to leave is `sends` (AD-19) |
+| `plain` | The keys of the answer that may leave as plain strings | The shapes of AD-10 only |
+| `query` | The query keys of a write route | Optional |
+| `path_shapes` | A pattern for each path parameter that is not a UUID, for example `{module}` | Optional |
+| `page` | The paging arguments of the route, and the key of its next cursor | Optional |
+
+**Who reads it.**
+
+1. Mira's chat client for the app, through `allowed(method, path, tool)`.
+2. The coverage fence of the app, which walks the real router.
+3. The edge, which maps an app, an op and its args to one route with `build_call`.
+4. Branch 0, which admits a door pair and checks its app scope (AD-3, AD-4).
+5. The gateway door routes, which list the apps, describe the ops and open a request (§19.4, §19.5).
+6. The scope list and the consent page (§19.6).
+7. The fence of MCP-P4, which holds that each live app names a manifest.
+
+**`build_call`, the one builder.** `app_manifests.build_call(app, op, args)` gives the method, the template, the path, the sorted query and the body bytes. The edge and the request route both call it, so the two cannot drift.
+
+- A key with the name of a path parameter fills that parameter. The value must match the UUID shape of `gateway_client.py:58`, or the pattern of `path_shapes`.
+- For a GET, each other key is a query parameter.
+- For a write, each other key goes into the JSON body. The query keys that the row names are the exception.
+- `expected_version` becomes the header `If-Match`, as rule 4 of §9.5 maps it.
+- The body is compact JSON with sorted keys, so its bytes are stable for the digest of AD-6.
+- The fence fails on an op whose body field has the name of a path or query parameter.
+
+### 19.4 The four tools
+
+The four tools are in `tools/list` while the door flag names at least one app (AD-15). `app_write` also needs the writes flag of EA3-29, and path 2 of §19.5 needs the runs flag of §12.1. SW-34b: `app_write` also needs a write scope on the connection, so a read-only connection lists no write tool (`agent_coordination.md` SW-34b). Each record follows §9.5: a name, a title, the annotations, an `inputSchema` and an `outputSchema`.
+
+| Tool | Scope | Input | Gateway route | Returns |
+|---|---|---|---|---|
+| `list_apps` | `None`, any live token | none | `GET /agent-access/apps` | `apps`, one row for each app that the door serves |
+| `describe_app` | `None` | `app` | `GET /agent-access/apps/{app}` | The app header and its `ops` |
+| `app_read` | `<app>:read` | `app`, `op`, `args?`, `cursor?`, `limit?` | The route of the op: a GET, or a read-only POST | `result`, `next_cursor` and `truncated` |
+| `app_write` | `<app>:write` | To ask: `app`, `op`, `args?` and `idempotency_key`. To wait and finish: `app`, `request_id` and `wait_seconds?` (0 to 20) | A proposal goes to the route of the op. Each other op goes to `POST /agent-access/apps/{app}/requests`. A wait reads `GET /agent-access/requests/{request_id}`, then sends the stored call (§19.5) | `state`, then `result` or the request |
+
+**Annotations.** `list_apps`, `describe_app` and `app_read` are reads, with `readOnlyHint: true`. `app_write` has `readOnlyHint: false`, `destructiveHint: true` and `idempotentHint: false`. One tool covers class C, so a client may ask the person first.
+
+**The scope of a call.** Check 8 of §9.6 reads `arguments.app` for `app_read` and `app_write`. When the effective scopes do not hold `<app>:read` or `<app>:write`, the call gets the 403 `insufficient_scope` with that exact scope (§8). An app name that no manifest holds gets a tool error, and no 403.
+
+**What `list_apps` returns.** Each row has these keys:
+
+- `id`, `name` and `reach`, from the manifest.
+- `door`: `ops`, or `tools` for Projects.
+- `read` and `write`: true when the connection holds that scope.
+- `available` and `why_not`.
+- `waiting`: the open requests of this connection for the app, each with `request_id`, `op`, `state` and `expires_at`.
+
+The gateway route builds the list. It leaves out three kinds of app. The door flag does not name the first. The admin switched off the second. The member does not hold the feature of the third.
+
+**What `describe_app` returns.** The app header, then one row for each door op:
+
+- `op`, `title` and `class`.
+- `kind`: `read`, `proposal` or `write`.
+- `asks`: `never` for a read or a proposal, and `each_call` for each other write.
+- `sends`: true for an op that sends to a person.
+- `args`: a JSON Schema object, which the gateway builds from the live route (AD-9).
+- `paged`: true when the row has a `page`.
+- `available` and `why_not`. A CRM in Mirror mode marks each record write `available: false`.
+
+The answer holds no data of the app, so the route needs a live token only.
+
+**The args schema (AD-9).** The gateway reads the parameters of each door op from `route.dependant`, as `tests/unit/test_projects_field_parity.py` does. The schema holds the path parameters, the query parameters and the fields of the body model, with their types, limits and defaults. `If-Match` shows as `expected_version`. The identity headers of `skill_projects/manifest.py:658` never show. A schema over 16 KiB keeps its top-level fields only, and it says so. The edge shows the `maximum` and the `default` of a `limit` field as 50 at most, the bound of AD-12, and not the larger bound of the route.
+
+**What `app_read` returns.** `result` is the JSON answer of the route, mapped by AD-10 and cut by AD-12. `next_cursor` is an opaque cursor of `agent_edge/cursor.py` with the tool `app_read:<app>.<op>`, or null. The edge refuses a cursor of another op, another filter or another connection, as §9.1 says. `limit` is at most 50, and a cursor fixes the page size.
+
+**What `app_write` returns.**
+
+- A proposal: `state: "done"`, `result`, and `finish_in`, the place where the member finishes it.
+- Each other op: `state: "awaiting"`, `request_id`, `run_id` and `expires_at`. Nothing has changed yet.
+- A wait while the member has not decided: `state: "awaiting"` again.
+- A wait after an approve: the edge sends the stored call once, and it returns `state: "done"` and `result`.
+- A wait after a decline or an expiry: `state: "declined"` or `state: "expired"`. Nothing changes.
+- The edge refuses a `request_id` whose request names another app.
+
+**Errors.** Each text is a fixed edge text. The edge never copies the text of a gateway error (EA3-16). §9.6 maps the shared statuses, and the door adds these cases.
+
+| Case | Answer |
+|---|---|
+| No manifest holds the app | `isError: true`, "Metorite has no app with that name. Call list_apps." |
+| The door flag does not name the app, or the admin switched it off | `isError: true`, "Agents cannot use this app in this organization." |
+| The connection holds no scope for the app | The MCP 403 `insufficient_scope`, with `scope="<app>:read"` or `scope="<app>:write"` |
+| The app has no door op of that name | `isError: true`, "This app has no operation with that name. Call describe_app." |
+| `app_read` of a write op, or `app_write` of a read op | `isError: true`, "Use app_write for a change." or "Use app_read for a read." |
+| The op is not available, for example in Mirror mode | `isError: true`, with the `why_not` of `describe_app`. The edge sends no request |
+| A 409 of `assert_writable`: `mirrored_record`, `mirror_mode_create` or `mirror_mode_settings` | `isError: true`, "This CRM mirrors Zoho. Change the record in Zoho." |
+| A 422 | `isError: true`, "Metorite could not use that input. Check: <names>." The names are the `loc` keys of the answer, never its message |
+| A 404 | `isError: true`, "<App> has nothing at that id." |
+| A 403 with `approval_required` | `isError: true`, "Metorite refused this change, because the member has not approved it." |
+| The spend does not match the approval, a 409 with `approval_mismatch` | `isError: true`, "This change is not the change that the member approved. Ask again." |
+| The request is spent or expired, a 409 | `isError: true`, "That approval is used or expired. Ask again." |
+| Too many open requests, a 429 with `too_many_requests` | `isError: true`, "Too many changes wait for the member. Wait for an answer first." |
+
+### 19.5 How a write waits for the member
+
+The manifest row picks one of two paths. Neither path runs a write before the member decides.
+
+**Path 1, a proposal (AD-8).** The op files a pending object, and the app holds it for the member. The member decides in the app, on the screen that shows the exact content.
+
+- Knowledge `POST /knowledge/proposals` files a proposed page or edit. Only a person accepts it, from the web, and the accept route refuses `mcp` (`routes/knowledge/proposals.py`, F2).
+- Email `PUT /email/drafts` stores a draft in the member's mailbox (`apps/services/gateway/gateway/routes/email/automation/drafting.py:3550`). It sends nothing. A send is its own class C op.
+- The call answers at once, with `state: "done"` and `finish_in`. No run opens.
+- While `KNOWLEDGE_PROPOSALS` is off, the proposal route answers 404, and the door gives its 404 text.
+
+**Path 2, an app request (AD-5 to AD-7).** Each other class B or C op takes these steps.
+
+1. The agent calls `app_write` with `app`, `op`, `args` and `idempotency_key`.
+2. The edge sends `POST /agent-access/apps/{app}/requests` with `{op, args, idempotency_key}`. The gateway keeps the idempotency key with the request (MCP-P1b-1). The edge claims no slot of its own for the ask (§19.13).
+3. The request route checks the op, the write scope, the door flag, the admin switch and the availability. It builds the call with `build_call`, and it sets the fields that the server owns.
+4. In one transaction, it opens an app run with `app` set and no task. It writes one elicitation that holds `content_metadata.request = {kind: "app_write", app, op, call, digest, card, expires_at}`.
+5. It writes no notification, because `pm_notifications.task_id` is NOT NULL. The member finds the request in the list "Waiting for you" (MCP-Q3). A bell needs its own slice.
+6. It answers `request_id`, `run_id` and `expires_at`. The edge returns `state: "awaiting"`. The request id is the id of the elicitation. `run_id` is for display only.
+7. The member opens the card in Metorite and presses Approve or Decline.
+8. The agent calls `app_write` with `app`, `request_id` and `wait_seconds` 20, again and again, while the state is `awaiting`.
+9. The edge reads `GET /agent-access/requests/{request_id}`, which holds the answer for up to `wait_s` seconds, as EA12-4 does.
+10. After an approve, the edge sends the stored call once, with the approval line of AD-6. It does so in the same tool call.
+11. Branch 0 spends the request, and in the same transaction it writes one `action` activity and closes the run. Then the route runs the write as the member, under the stamp of the connection.
+
+**The member routes.** `GET /agent-access/requests` lists the open requests of the member, and the card reads one with `GET /agent-access/requests/{request_id}`. `POST /agent-access/requests/{request_id}/decision` takes `{decision, idempotency_key}`. The decision route is OUT of `MCP_ROUTES` and of each door set, so branch 0 refuses a signed call to it. Only `run.member_email` decides, from a member session, as item 3 of EA3-40 says. A second decision gets 409.
+
+**The new pairs.** `MCP_ROUTES` gains `GET /agent-access/apps`, `GET /agent-access/apps/{app}` and `GET /agent-access/requests/{request_id}`. `MCP_WRITE_ROUTES` gains `POST /agent-access/apps/{app}/requests`. The list `GET /agent-access/requests` serves the member only, and it stays out. Rule 2 of `test_mcp_edge_coverage.py` names the four new pairs as exceptions, as it names `GET /auth/me`.
+
+**Before MCP-P1b lands, the door fails closed (AD-18).** MCP-P1b-2 puts the spend in place of the blanket refusal, and a call with no approval still gets the 403. The door then serves reads and proposals only. Branch 0 refuses each other B or C door call with 403 `approval_required`, because no request can exist yet. The edge refuses such an op before any request, with `available: false` in `describe_app`. So no merge order of the slices can open a write with no approval.
+
+**The timeout.** A request lives 24 hours, the `ARCHIVE_REQUEST_TTL` of `agent_runs.py:183`. Each read and the spend check `expires_at`, and no sweeper runs. An approval that no agent spends expires with its request, and nothing changes.
+
+**How the agent learns the result.** The agent polls with `app_write`, because the edge keeps no state and Claude Code takes no push (§12.1, EA3-33). A later session finds its open requests in the `waiting` key of `list_apps`. The answer of the member is a row, so no session can lose it.
+
+**Why the door does not wait with `get_agent_run`.** That tool needs `projects:read` (`agent_edge/tools.py:4883`), and the Projects router demands `feature:projects`. A connection that holds only `crm:write` must still wait. So the door reads the request through its own route, and the runs routes of §12.1 keep their task runs.
+
+**The fields that the server owns.** These fields come from the server, never from the args.
+
+- A send of a draft (`POST /email/drafts/send`, `routes/email/automation/drafting.py:3931`) gets `expect`. The route reads the recipients and the seal of the draft (`draft_text_seal`, `automation/drafting.py:3802`). So an edit of the draft after the card sends nothing (`DraftExpect`, `automation/drafting.py:3680`).
+- A PATCH with no `expected_version` gets `If-Match` from the row that the request route read.
+
+**The card.** It shows the stored request only, never words of the agent.
+
+- The client: the curated label and the verified host (EA-13d).
+- The app, the op title and one class line. B reads "You can undo this in <App>." C reads "This is hard to undo."
+- The target, which the display hook of the app names, and the exact payload as fields and values. A PATCH shows the old value beside the new one when the hook reads it.
+- For a send: each recipient with its class from `classify_addresses` (`apps/services/gateway/gateway/routes/email/automation/held_card.py:272`). A new address carries the new mark and the lookalike warning. The card also shows the subject and the text of the seal.
+- The expiry, and the buttons Approve and Decline.
+
+MCP-Q3 asks the owner where the card shows (§19.14).
+
+**Why the agent sends the call, and not the decision route.** Then the write runs on the one path of each agent write. That path is branch 0, the route, row level security, the stamp, the nonce and the cap. A decision route that ran the write needs a second identity path inside the gateway. Also, branch 0 reads the live access of the member at the spend. So a revoked connection or a lost grant stops the write there.
+
+### 19.6 Scopes per app and the admin switch
+
+**The scopes.** Each app with a door op has `<id>:read`. An app with a B or C door op also has `<id>:write`, which covers `<id>:read`.
+
+- `SUPPORTED_SCOPES` and `RESOURCE_SCOPES` (`agent_oauth.py:62` and `:67`) gain them from `app_manifests`, after the three fixed scopes.
+- `_expand` in `apps/services/agent_edge/agent_edge/bearer.py:78` applies the cover rule to each app.
+- The RFC 9728 document (`agent_edge/metadata.py:46`) lists them.
+
+**An existing connection** keeps its scopes. The scope of a new app is OFF until the member grants it. A call for that app gets the 403 `insufficient_scope`, and Claude Code then steps up. The consent page shows the new line, and it shows the lines that the connection holds as held.
+
+**The consent page (MCP-P3).** `POST /agent-access/authorize/check` answers each requested scope with the `name` and `reach` of its app. `SCOPE_COPY` in `consent.ts:106` keeps the three fixed scopes only. So a new app adds its line with no change to the consent code.
+
+**The admin switch (MCP-P3, D124.3).** A holder of `integrations:manage` sees one switch for each app in Integrations, AI agents. The switch is a row of `org_settings` (migration 234) with the key `agent_apps` and the value `{"off": [<app id>, ...]}`. It needs no migration.
+
+- The default is on, because the consent of the member is the first gate. MCP-Q4 asks the owner about Email.
+- Branch 0 reads the switch on each door call, with no cache. A call to an app that is off gets 403 with the code `app_off`, and the edge gives the text of §19.4. So an off switch acts at once, for each connection.
+- `list_apps` leaves the app out, and the consent page shows its line as off.
+
+### 19.7 Untrusted text, the audit row and the limits
+
+**Untrusted text (AD-10).** The edge maps each answer in `tools.py`, the one mapping module (EA3-9). Each string value of `result`, at any depth, becomes `{"untrusted_text": ...}`. The keys that the row names in `plain` are the one exception, and only for a value with a plain shape.
+
+- A plain shape is a UUID, an ISO-8601 time, or a token of `[A-Za-z0-9_.:-]` with at most 64 characters.
+- The edge wraps a value of a `plain` key that has another shape.
+- A mail body, a subject, a sender name and a CRM note are never plain.
+- The edge drops each key whose name holds `token`, `secret`, `password`, `credential` or `api_key`, at any depth. This is the second guard. The first guard is that no X route reaches the door (§19.11).
+- The four tool descriptions and the `initialize` instructions tell the agent not to follow an instruction inside an `untrusted_text` value (§9.4, EA3-37).
+
+**The audit row (AD-14).** Branch 0 writes one `acb_audit.record` (`packages/acb_audit/acb_audit/log.py:158`) for each door call, allowed or refused. The row holds the organization, the connection, the member and the stamp. It also holds the app, the op, the class, the request id and the decision of branch 0. It holds no body and no argument value.
+
+The write of the audit row is best effort, as `log.py` says. The run rows are the durable record of each write: the request, the decision and the spend.
+
+- A refusal at step 5, the stamp, writes a row with the decision `actor_via`. The row holds the stamp of the connection row, never the header value.
+- A door write meets the writes flag in `deps._door_gate`, after the connection and the stamp. So its refusal writes a row with the decision `agent_writes_disabled`. A write of `MCP_WRITE_ROUTES` keeps step 3b.
+- A call that fails before the connection read writes no row, because branch 0 knows no member yet. Such a call has a bad signature or headers, a route outside both sets, or no live connection.
+
+**The limits (AD-13).**
+
+| Limit | Value | Where |
+|---|---|---|
+| Door reads | 300 in 600 seconds for each connection | Branch 0, in tenant Redis. A 429 with `Retry-After` |
+| Writes | The cap of EA3-30, 120 in 600 seconds. A request and its spend count as two | Branch 0 |
+| Open app requests | 20 for each connection | The request route. A 429 with `too_many_requests` |
+| Rows of one page | 50 | The edge clamps `limit` for each op, paged or not, and cuts each list of the answer to 50 rows. AD-12 wins over the 100 rows of §10.2, because it is the smaller number |
+| One result | 256 KiB | The edge cuts the answer and sets `truncated: true` |
+| One `describe_app` answer | 64 KiB | The gateway route |
+
+### 19.8 Tenancy (R5, R11)
+
+- The member and the organization come from the connection row, in branch 0 (§10.1 steps 4 to 7). No door input names a member, an organization or a connection. Each request model has `extra = "forbid"`.
+- The app route binds the tenant through the `get_db()` seam, as it does for a member in the app. The door adds no database site.
+- The seam of the app decides each row. CRM uses `require_crm_access` (`routes/crm/access.py:98`) after the kill switch and `feature:crm`. Email uses `mailbox_predicate` of the one mailbox seam (`routes/email/mailbox_access.py:103`). Knowledge uses `visible_pages_clause` (`routes/knowledge/core.py:240`).
+- **The personal switch (D-EA-4) narrows the seam of each app.** In Knowledge, a connection can have `include_personal` false (`_hides_personal`, `routes/knowledge/core.py:225`). Then `visible_pages_clause` and `readable_spaces_clause` drop each `me` space, and each page in one. They read `user.agent` as `_narrow_for_agent` of Projects does, so a member's own request does not change. A hidden `me` page answers the 404 of any hidden page. A page proposal that names no space gets 422 on `space_id` from such a connection, because the draft would land in a `me` space that the connection cannot read (`writable_space`, `routes/knowledge/pages.py`). Fence: `tests/unit/test_mcp_edge_app_door_r8.py`.
+- Pins do not apply to Knowledge. A pin holds a project id, and Knowledge holds no project.
+- An app run is a row of `pm_agent_runs`, under FORCE ROW LEVEL SECURITY. The request route takes `organization_id` from the session, never from the body.
+- The admin switch is a row of `org_settings`, which is tenant-scoped (migration 234). The limits use the tenant Redis wrapper.
+- The member of an app run and its own connection read it. Only its own connection spends it (AD-16).
+
+### 19.9 CRM: the classes (MCP-P2)
+
+The router is `gateway.routes.crm`, with 136 method and path pairs on 2026-10-29. The kinds are `leads`, `deals`, `contacts` and `organizations`. In Mirror mode (Zoho), `assert_writable` (`routes/crm/core.py:1907`) refuses each native write to mirrored data, and the door adds no rule of its own. A native note on a mirrored record passes there, as it does in the app (`core.py:1924`).
+
+| Family | Routes, and the module | Class | Door |
+|---|---|---|---|
+| Records, read | `GET /crm/<kind>`, `GET /crm/<kind>/{record_id}` and `GET /crm/owners` (`records.py`) | A | `list_<kind>`, `get_<kind>` and `list_owners` |
+| Records, create and edit | `POST /crm/<kind>` and `PATCH /crm/<kind>/{record_id}` (`records.py`) | B | `create_<kind>` and `update_<kind>` |
+| Records, delete | `DELETE /crm/<kind>/{record_id}` (`records.py`) | C | `delete_<kind>` |
+| Custom modules | `GET /crm/modules`, and `GET /crm/modules/{module}/records`, one record and its timeline, A. `PATCH /crm/modules/{module}/records/{record_id}`, B (`modules.py`) | A, B | One op for each row. `{module}` has a `path_shapes` pattern |
+| Timeline, notes and activities | `GET /crm/<kind>/{record_id}/timeline` and `GET /crm/notes/search`, A. `POST /crm/<kind>/{record_id}/activities` and `PATCH /crm/activities/{activity_id}`, B. `DELETE /crm/activities/{activity_id}`, C (`activities.py`, `note_search.py`) | A, B, C | One op for each row |
+| Deal contacts | `GET /crm/deals/{deal_id}/contacts`, A. Its POST and its DELETE, B, because a link undoes an unlink (`deal_contacts.py`) | A, B | One op for each row |
+| Lead conversion | `POST /crm/leads/{lead_id}/convert` (`pipeline.py`). It makes a deal and a contact, and it closes the lead | C | `convert_lead` |
+| Merge and bulk change | No route today | C | When a route comes, its row is C |
+| Pipeline, reports and digests | `GET /crm/pipeline`, `/crm/reports/*`, `/crm/aggregate` and its stage dwell, `/crm/digests` | A | One op for each row |
+| The vocabulary | `GET` of the statuses, the lost reasons, the pipelines, the fields, the catalogue, the settings, the mode, the source profile, the terms, the conversion mapping, the field rules and the rules | A | One op for each row. The agent needs the labels and the mode |
+| Setup | Each write of `admin.py`, `pipelines.py`, `field_studio.py`, `field_rules.py`, `catalogue.py`, `convert_mapping.py`, `settings.py` and `rules.py` | X | "An admin sets up the CRM in CRM settings (D134)." |
+| The questions and suggestions of the AI | `questions.py`, `suggestions.py`, `mapping_plans.py` | X | "A person answers the questions of the AI in CRM (D134.2)." |
+| AI runs | `POST /crm/analysis/rerun` and `POST /crm/rules/propose` | X | AD-11 |
+| Saved views | `views.py` | X | "A saved view is the member's own screen." |
+| Connection, sync, import, cutover, reset and export | `connection.py`, `sync.py`, `import_zoho.py`, `stage_metadata.py`, `cutover.py`, `POST /crm/reset` and `export.py` | X | §19.11 |
+
+**CRM-M2a, 2026-11-08.** `app_manifests/crm.py` gives class B or C to the writes of Setup, the questions, the AI runs and the saved views. This table gives class X to them. The chat-parity ratchet then counts each one as chat debt, because each UI action must also work from chat. Each of those rows stays `off_door`, with the reason that this table gives. MCP-P2a keeps them off the door, unless the owner opens one.
+
+On 2026-11-08 the CRM router had 144 method and path pairs.
+
+### 19.10 Email: the classes (MCP-P2)
+
+The router is `gateway.routes.email`, with 136 method and path pairs from 135 decorators on 2026-10-29. Every send is class C and asks for each act, so a send to an outside person always asks (D124.2, D131.7). The door sends a stored draft only, so the card can seal its text. Labels take the classes of the app.
+
+**The sends rule (AD-19).** Any op that can cause mail to leave is `sends`, and it is class C. `AGENT_DOOR_SENDS` gates each one. The rule covers an op whose own route sends, and an op that stores an action that sends later. So each write of the rules family is `sends`, because a rule can reply or forward by itself. A published workflow that a change starts stays the residual of §9.2, as it is for a member's own change.
+
+| Family | Routes, and the module | Class | Door |
+|---|---|---|---|
+| Mailboxes, folders and labels, read | `GET /email/accounts`, and `GET /email/accounts/{account_id}/folders` and `/labels` | A | One op for each row |
+| Messages and threads | `GET /email/messages` (a thread through `thread_id`), `/facets`, `/priority`, and `GET /email/messages/{message_id}`, its `/full-body` and its `/timeline` | A | One op for each row |
+| Search | `GET /email/search` | A | `search` |
+| Attachments and contacts | `GET /email/attachments/{attachment_id}/text` and `GET /email/contacts/*` | A | One op for each row |
+| Digests and insights | `GET` of the digest, the insights, Reply Zero, the analytics, the senders, the newsletters, the cold senders and the scheduled drafts | A | One op for each row |
+| Rules, read | `GET` of the rules, the policies, the guidance, the patterns and the history | A | One op for each row |
+| Rule tests | `POST /email/rules/test` and `/test/recent` write nothing, but they run the AI classifier (`routes/email/automation/runner.py:100`, `:120`) | A in the app | `off_door`: AD-11 |
+| Drafts | `PUT /email/drafts` (`routes/email/automation/drafting.py:3550`) | B | `save_draft`, a proposal. The draft waits in Email |
+| Sends | `POST /email/drafts/send`, `POST /email/drafts/schedule` and `POST /email/forward` | C | `send_draft`, `schedule_draft` and `forward`, each with `sends` |
+| A raw send | `POST /email/send` | B in the app | `off_door`: "The door sends a stored draft only, so the card can seal its text." |
+| Scheduled sends, cancel | `POST /email/drafts/scheduled/{schedule_id}/cancel` | B | `cancel_scheduled` |
+| Message state | `PATCH /email/messages/{message_id}`, its `/snooze`, and `POST /email/reply-zero/resolve` | B | One op for each row |
+| Message removal and bulk change | `DELETE /email/messages/{message_id}` and `POST /email/messages/bulk` | C | One op for each row |
+| Labels and folders, write | `POST /email/accounts/{account_id}/folders` and `PATCH /email/accounts/{account_id}/labels` | B | One op for each row |
+| Rules, write | `POST /email/rules`, `PATCH /email/rules/{rule_id}`, `POST /email/rules/copy`, `/batch` and `/install-presets`, the guidance POST, the feedback and the pattern review | C | One op for each row, each with `sends` (AD-19). A rule can reply or forward by itself, and the feedback and the guidance change which rule fires. The card says "This rule can send mail by itself." |
+| Rules, delete and reset | Each rule DELETE and `POST /email/rules/reset` | C | One op for each row. A delete sends nothing, so it has no `sends` |
+| Rule runs | `POST /email/rules/run`, `/run-message`, `/process-past` and `/history/retry-failed` | C | One op for each row, each with `sends`. A run can act on many mails and send |
+| Rule decisions | `POST /email/rules/history/{exec_id}/approve`, `/reject` and `/undo` | X | "The member reviews what the rules did, in Email." |
+| Senders | `POST /email/newsletters` and `POST /email/cold-senders`, B. `POST /email/unsubscribe`, C, because it reaches the sender | B, C | One op for each row. `unsubscribe` has `sends` |
+| Settings of Mira for mail | The writes of the assistant settings, the always-copy list, the voice profile, the email knowledge and the learned patterns | B or C in the app | `off_door`: "These writes change how Mira works on every later mail. An always-copy entry copies each later send to an address." |
+| AI runs | `POST /email/draft-reply`, `/compose-assist`, `/rules/generate`, `/assistant/writing-style/generate`, `/voice-profile/build`, `/cleanup/auto-categorize`, `/senders/categorize`, `/reply-zero/reclassify` and `/follow-ups/scan` | A or B in the app | `off_door`: AD-11 |
+| The cards of Mira | `/email/held-card`, `/email/reply-card`, `POST /email/drafts/save` (the draft card of the chat), `GET /email/reply-recipients`, `GET /email/recent-reply` and `GET /email/drafts/seal` | As in the app | `off_door`: "The door has its own card. The request route reads the seal itself." |
+| Content the door does not carry | `GET /email/messages/{message_id}/html`, `/inline`, `GET /email/image-proxy` and `GET /email/attachments/{attachment_id}/download` | A in the app | `off_door`: "HTML, images and files stay in the app. The door gives the text." |
+| Accounts, OAuth, sync, webhooks, storage, cleanup and the digest send | `accounts.py`, `oauth.py`, `sync.py`, `storage.py`, `cleanup.py` and `POST /email/digest/send` | X | §19.11 |
+
+The classes "B in the app" and "A or B in the app" are a first reading. MCP-P2a sets each row from the router and from the email agent of Mira (`apps/agents/agent-email-assistant/agents.py`), and the fence then holds it.
+
+**The Door column of §19.9 and §19.10 is the state after MCP-P2b.** In MCP-P2a, each B and C row except `save_draft` carries `off_door`: "Waits for the approval path of MCP-P1b." MCP-P2b replaces each such reason with its `op`.
+
+### 19.10a The assistant's view of Email (MCP-P2e to MCP-P2g)
+
+**The answer.** §19.10 maps each Email route to one op. That serves a person who clicks. It does not serve an outside assistant that must triage, understand and act. That assistant needs few calls, not one call for each row. So §19.10a adds three composite reads, two small reads, one cross-app write and four pins. Every read reuses data that Email already stores. No new op calls a model (AD-11).
+
+**The principle.** Metorite stores the facts and the member's state. The outside agent brings its own model for the judgement. So Metorite returns signals, not verdicts. Metorite stores no urgency flag and no thread summary today. The agent reads the signals and the trimmed text. It decides what is urgent and writes its own summary.
+
+#### 19.10a.1 What Email stores today
+
+| Fact for the agent | Where it lives | Written by | Model call? |
+|---|---|---|---|
+| Read, starred, flagged, importance (from the provider), labels, categories, folder, snooze | `email_messages` (`is_read`, `is_starred`, `is_flagged`, `importance`, `labels`, `categories`, `folder`, `snoozed_until`) | Sync, and the state routes | No |
+| Reply state of a thread: `NEEDS_REPLY`, `AWAITING`, `FYI`, `DONE`, with `reason` and `classified_at` | `email_thread_status` (migration 27) | The rules pipeline, and `POST /email/reply-zero/resolve` | Yes, when written. A read costs none |
+| Sender category (Newsletter, Marketing, Receipt, Calendar, Notification, Cold Email, Personal, Support) | `email_senders` (migration 22) | The sender categorizer | Yes, when written |
+| Cold sender verdict | `email_cold_senders` | The cold-email gate | Yes, when written |
+| Fact with a quote, an amount and a due date | `email_insights` (migration 231), behind `insights_enabled` | The Insights job | Yes, when written |
+| Rule outcome for each mail | `email_executed_rules`, read by `GET /email/messages/{id}/timeline` and `/rules/history` | The rules engine | Yes, when written |
+| Task that came from a mail | `pm_tasks.origin` with `kind`, `account_id`, `thread_id`, `email_id` (migration 211, index on `email_id`) | `POST /tasks/capture/from-email` | That route calls a model |
+| Closing the task marks the thread Done, and the reverse | `routes/tasks/email_link.py` | Task close, thread resolve | No |
+| CRM link of a mail | None stored. The CRM timeline derives it from the address (`routes/crm/activities.py`, `_record_addresses` and `_email_entries`) | Read time | No |
+| Follow-up windows | `email_assistant_settings` (`follow_up_days`, `follow_up_awaiting_days`) | The member | No |
+| Attachment text, OCR included | A cache, read by `GET /email/attachments/{id}/text` | First read | No model. OCR is a local child process |
+| Thread summary | **Not stored anywhere** | n/a | n/a |
+| Shared mailbox grant and level | `email_mailbox_grants`, read by `mailbox_predicate` (`mailbox_access.py:103`) | The mailbox manager | No |
+
+#### 19.10a.2 Four pins on the ops of §19.10
+
+Each pin is a defect in a class A row. A fence in MCP-P2a (task 866) must hold each one, because MCP-P2a is not built yet. The fence is `test_no_door_read_calls_a_model`, and `get_message` must leave `is_read` unchanged.
+
+| Pin | Route | The trap | The pin |
+|---|---|---|---|
+| P-1 | `GET /email/messages/{message_id}` | `mark_read` defaults to true. A read by an agent marks the mail read and destroys the unread signal. | The manifest fixes `mark_read=false`. It also fixes `trim=true` as the default. `trim` cuts the quoted chain, the signature and the footer. |
+| P-2 | `GET /email/search` | `hybrid=true` embeds the query. That is a model call. | The manifest fixes `hybrid=false`. |
+| P-3 | `GET /email/digest` | `_generate_digest` calls `_digest_brief`. That function asks a model for one sentence (`digest.py:821`). The answer is cached for one day. | The route gains a `brief` switch. The door sends `brief=false`. |
+| P-4 | `GET /email/reply-zero` | On a mailbox with no status, the GET starts `_maybe_classify_threads` in the background. That is a model run (`replyzero.py:3129`). | The route gains `classify=false`. The door sends it. A mailbox with no status returns an empty list and `classified: false`. |
+
+Two more corrections to the table of §19.10.
+
+- `POST /email/messages/summaries` sits in the row "AI runs". It is **not** an AI run. It resolves ids to sender, subject, date and thread in one query (`transport/messages.py:679`). Move it to class A. The door op is `get_message_headers`.
+- `GET /email/contacts/card` writes the contact directory as a side effect (`_remember_contact`). It stays class A, because the write only caches what a signature teaches. The fence says so.
+
+#### 19.10a.3 The composite reads (class A, MCP-P2e)
+
+A composite read is ONE new gateway route in a new module, `routes/email/agent_view.py`. It joins stored rows in SQL. The edge does not chain calls, because each call counts against the 300 reads of AD-13. Each route uses `mailbox_predicate(level="read")` and the one tenant session. Each route is a manifest row with an `op`. None calls a model.
+
+**`triage_now`** answers: what needs me now?
+
+- Route: `GET /email/triage`. Arguments: `mailbox?` (one id, else every mailbox the member reads and keeps in All inboxes), `window_days` (1 to 90, default 14) and `limit` (1 to 50).
+- Source: the SQL of `GET /email/priority` (`transport/messages.py:499`). A refactor lifts it into one shared function that takes a list of mailbox ids. The score stays: Reply Zero `NEEDS_REPLY` 100, unread 40, high importance 30, starred 20, human sender 15. Newsletter, marketing, cold and notification senders stay out. This is one seam, not a copy.
+- Groups in the result, each capped at `limit`: `needs_reply` (ranked), `awaiting_reply` (older than the follow-up window, oldest first), `due_soon` (open `email_insights` facts with `due_on` in the next 7 days, only when `insights_enabled`) and `snoozed_back` (the snooze ended in the last day).
+- Each row: `mailbox`, `thread_id`, `message_id`, `subject`, `from` (name and address), `received_at`, `reply_status`, `reason`, `is_read`, `importance`, `starred`, `sender_category`, `score`, `reasons[]`, `thread_count` and `has_attachments`.
+- No `urgent` field. The row holds the signals, and the agent judges. See MCP-Q8.
+- New route: yes. It refactors `priority_inbox` and adds no table.
+
+**`get_thread_context`** answers: what is this thread, and what do we know about it?
+
+- Route: `GET /email/threads/context`. Arguments: `account_id` and `thread_id`, or `message_id` alone. A `thread_id` can repeat in two mailboxes, so the mailbox is part of the key. The `read_thread` tool of Mira has the same rule (`agent-email-assistant/agents.py:1377`).
+- Messages: the newest 25, oldest first. Each has `id`, `from`, `to`, `cc`, `date`, `folder`, `is_read` and a `body` trimmed by `quoting.strip_for_reading`. Each attachment has `id`, `filename`, `mime_type`, `size` and a pointer to `get_attachment_text`. A `next_cursor` pages older messages.
+- State: `reply_status`, `reason`, `classified_at`, `snoozed_until`, `labels`, `starred`, `importance`, the draft ids of the thread, and the last five rule outcomes from `email_executed_rules`.
+- People: each participant with `internal` or `external` (by the own-address rule in `automation/identity.py`), `sender_category`, the cold-sender status and the counts of the contact card.
+- Facts: the `email_insights` rows of the thread, when the feature is on.
+- Tasks: the `pm_tasks` rows whose `origin.email_id` is a message of the thread. Only tasks that the member sees under the Projects seam (`resolve_visibility`). Each has `id`, `short_id`, `title`, `status`, `due_at` and the assignees. This block needs `projects:read` on the connection.
+- CRM: the contacts, leads, organizations and deals that match a participant address. The match is the inverse of `_record_addresses`. It needs a new CRM function, `match_by_email(addresses)`, that applies `require_crm_access`. This block needs `crm:read` on the connection and the member's CRM access. Without either, the block is `null` and the answer says `crm: "not granted"`.
+- No `summary` key. The answer says "Metorite stores no thread summary. Write your own." The thread text is enough for an outside model.
+- Bound: 256 KiB (AD-12). The route cuts the oldest bodies first and sets `truncated`.
+- New route: yes. New CRM function: yes. New table: no.
+
+**`changes_since`** answers: what changed since my last check? It serves an agent that polls (D140.4, pull first).
+
+- Route: `GET /email/changes`. Arguments: `cursor?`, `mailbox?` and `limit` (1 to 50).
+- The first call has no cursor. It returns `rows: []` and a `cursor` that means "now". The argument `since?` (an ISO time) starts from a past time instead.
+- Row kinds: `message_new`, `message_state` (read, star, folder, labels or snooze changed) and `thread_status` (the reply state changed). Each row has the ids, the new values and `changed_at`. No row holds a body.
+- The cursor is opaque. It holds `(updated_at, id)` of `email_messages` and `classified_at` of `email_thread_status`. The route reads in keyset order, so a page never repeats a row.
+- **Gaps that the answer states.** A deleted message and a purged mailbox give no row. An agent that needs them reads again with `triage_now`. A change that the provider makes shows after the next sync.
+- New route: yes. New migration (R6, expand only): `idx_email_messages_account_updated` on `email_messages (account_id, updated_at, id)`. Take the number at build time (R1). The R8 suite must prove that each writer of state bumps `updated_at`: the PATCH, the snooze, the bulk route, the resolve route and the sync. A writer that does not bump it is a defect, and the slice fixes it.
+- Cost: one call for each poll. A poll every 10 minutes is 1 read in 10 minutes, far under the 300 reads of AD-13.
+
+**Two small reads.**
+
+| Op | Route | Why |
+|---|---|---|
+| `get_message_headers` | `POST /email/messages/summaries` (a POST that only reads) | 50 ids become 50 rows in one call. Class A. The edge needs a read-only POST, which §19.4 already allows |
+| `get_writing_context` | `GET /email/voice-profile`, `GET /email/knowledge` and `GET /email/learned-patterns` | An agent that drafts for the member needs the member's voice and the company facts that Mira uses. Class A. Every string is untrusted text (AD-10). The writes stay `off_door` |
+
+#### 19.10a.4 The cross-app writes (MCP-P2f)
+
+| Job | Op | Route | Class | Notes |
+|---|---|---|---|---|
+| An email becomes a task | `create_task_from_email` | New: `POST /email/messages/{message_id}/task` | B | Takes `project_id?` (default: the personal project of the member), `title`, `description?` and `due_at?`. It calls `item_source().insert_capture` with the `origin` link, as `capture_from_email` does, but with **no model call**. It is idempotent on `origin.email_id`. The approval card shows the title, the project and the subject of the mail |
+| An email links to a CRM record | None new. The agent uses the CRM door: `create_contact`, `create_lead` or a logged activity (B), with the sender address | The CRM routes of §19.9 | B | Metorite stores no email-to-CRM link table. The tie is the address. The CRM timeline shows the thread from the address. A record that carries the address shows the thread at once |
+| Mark a thread done | `resolve_reply_zero` | `POST /email/reply-zero/resolve` | B | Already in §19.10. It closes linked tasks (`email_link.py`). The card says so |
+| Archive, mark read, label, snooze | The `PATCH` ops of §19.10 | | B | One card for each call |
+| Triage many | `bulk_message_state` | `POST /email/messages/bulk` | C | Already in §19.10. **One card lists up to 50 ids** and the action. A delete in a bulk call asks a second time. Without this op, an agent that archives 30 newsletters opens 30 cards |
+
+Why the existing task tools do not serve the first job.
+
+- `create_task` of the Projects door cannot set `origin`.
+- `POST /tasks/capture/from-email` calls a model (`routes/tasks/capture_email.py`, `_llm_capture`), so AD-11 keeps it off the door.
+- A task that `create_task` makes with `source_ref` has no thread link. Closing it does not mark the mail Done, and the thread context does not list it.
+
+⚠️ The reverse effect already exists. A Projects door write `set_task_status` to a done status marks the linked thread Done and takes it off the reply queue (`email_link.py`, `propagate_task_done_to_thread`). The Projects door asks no card (MCP-Q5). So the task result must carry `linked_email: {account_id, thread_id}`, and the tool text must say so. Fence: a unit test that a task with an email origin returns the link.
+
+#### 19.10a.5 What stays off, and why
+
+| What | Reason |
+|---|---|
+| `POST /email/send` (a raw send), the AI draft routes (`/draft-reply`, `/compose-assist`), `/rules/test`, `/senders/categorize`, `/cleanup/auto-categorize`, `/reply-zero/reclassify`, `/follow-ups/scan` | AD-11. The outside agent writes its own text. It saves a draft with `save_draft`, and the member sends |
+| Every `sends` op | AD-19. Each asks the member each time. A send to an outside person always asks (D124.2, D131.7). `AGENT_DOOR_SENDS` stays off until the owner turns it on |
+| The writes of Mira's settings, the always-copy list, the voice profile and the learned patterns | They change how Mira acts on every later mail. §19.10 keeps them `off_door` |
+| Rule writes, rule runs and rule decisions | No change from §19.10 |
+| Semantic search (`hybrid=true`) | It embeds the query. The agent re-ranks the rows of `search` with its own model |
+| The HTML of a mail, the inline images and the file download | The door gives text. A file stays in the app |
+| A thread summary | None is stored. A stored summary needs a model run for each thread. See MCP-Q8 |
+
+#### 19.10a.6 Shared mailboxes and visibility
+
+- Every new route calls `mailbox_predicate(level="read")`. A mailbox that the member cannot read gives a 404, as in the app. A shared mailbox reads at the grant level of the member. A send from a shared mailbox needs the `send` level, and a shared draft row names `drafted_by`.
+- `triage_now` and `changes_since` follow the All inboxes rule of the app. A mailbox that the member keeps separate (`keep_separate`) stays out unless the call names it.
+- **A known split.** The CRM timeline holds a copy of the owner scope, `_email_account_scope` (`routes/crm/activities.py:322`). It uses `user_id = :uid`, not the seam. So a shared-mailbox thread does not show on a CRM record. The CRM block of `get_thread_context` must not claim to be complete. Fence: the R8 suite makes a shared thread and checks that the block says `private mailboxes only`.
+- `create_task_from_email` is for a private mailbox only in v1. `capture_from_email` also checks `a.user_id`. A shared-mailbox thread gets 422 `shared_mailbox_unsupported`. MCP-Q10 asks the owner.
+- Thread assignment (`email_thread_assignments`) has no read route today. An agent cannot ask who owns a shared thread. WS-65 owns that route. When it ships, its row joins the manifest.
+- The personal opt-in of D-EA-4 does not apply to Email (MCP-Q9).
+
+#### 19.10a.7 The owner questions and the slices
+
+MCP-Q7 to MCP-Q12 are in §19.14. MCP-P2e, MCP-P2f and MCP-P2g are in §19.13, with their verify commands. The four pins of 19.10a.2 belong to MCP-P2a (task 866), because MCP-P2a is not built yet.
+
+### 19.11 What stays X on every app
+
+No manifest may give a door op to these routes. The fence of MCP-P2a and MCP-P4 holds this list by route pattern.
+
+- **Credentials and tokens.** Each OAuth start, callback and disconnect. Each route that takes, stores or returns a provider token or a key. The consent and token routes of this spec.
+- **Members, roles, grants and seats.** D-PM-40 and §7.2. An agent writes no grant, no role, no seat and no setting of a member.
+- **Admin routes.** Each `admin:*` route, each `/admin` route, and the Approvals queue.
+- **Money.** Billing, credits, plans and invoices.
+- **A person's decision in an app.** A Knowledge accept or reject, an email rule decision, a CRM answer or suggestion, the archive approval, and the decision route of §19.5.
+- **Provider callbacks and webhooks.** A provider calls them, not a member.
+- **A bulk export or a reset.** A file of all the data leaves through the app, and a reset destroys data.
+
+### 19.12 The engineering decisions (AD-1 to AD-19)
+
+The orchestrator took these on 2026-10-29. None is a product or pricing call, and none reopens D124 or D136.
+
+| # | Decision | Where |
+|---|---|---|
+| AD-1 | Each app manifest is pure data in `acb_common/app_manifests/`. Knowledge moves there with a re-export. Projects stays where it is | §19.3 |
+| AD-2 | Each A, B or C row names a door `op`, or an `off_door` reason. The coverage fence fails on a row with neither | §19.3 |
+| AD-3 | `door_routes()` derives the door pairs from the manifests. Branch 0 admits a pair of `MCP_ROUTES` or of `door_routes()`. No pair is in both | §19.3, §19.13 |
+| AD-4 | Branch 0 checks the app scope of each door pair: `<app>:read` for class A and `<app>:write` for class B or C. `_claim_write` (`deps.py:602`) checks the write scope of the pair's app. For the request route it takes any `<app>:write`, and the route checks the app of its path. `gateway_client._path` (`:102`) admits a door pair too | §19.6 |
+| AD-5 | A run gains an app subject. One expand-only migration drops `NOT NULL` from `task_id` on `pm_agent_runs` and `pm_agent_run_activities`. It adds `app TEXT` and a CHECK that a run has exactly one subject. One run holds one request. The CHECK of `client_via` and of `actor_via` accepts `studio:` too, because a Studio request has no MCP client | §19.5 |
+| AD-6 | **The spend.** A door write of class B or C that is not a proposal needs `X-Agent-Approval: <request id>`. The signed string gains a last line, `approval:<request id>`. Branch 0 spends the request in one `UPDATE ... RETURNING`. The member must have approved it. It must be unspent, live and of this connection, with the digest of this call | §19.5 |
+| AD-7 | The request route builds the call with `build_call`, and it sets the fields that the server owns. It never runs the write | §19.5 |
+| AD-8 | A proposal op runs at once with no card, because the app holds the result for the member. The fence holds that a proposal is class B and that its route publishes and sends nothing | §19.5, MCP-Q1 |
+| AD-9 | `describe_app` builds each args schema from `route.dependant`, never from a hand list | §19.4 |
+| AD-10 | Each string of a door answer is `untrusted_text`, except a `plain` key with a plain shape | §19.7 |
+| AD-11 | A route that calls a model or spends AI credits is `off_door`, a read included. The door never meters a model call. The outside agent brings its own model, and a door call costs no credits (D-EA-7) | §19.9, §19.10 |
+| AD-12 | A page holds at most 50 rows, and a result at most 256 KiB | §19.7 |
+| AD-13 | Door reads: 300 in 600 seconds. Open requests: 20. Writes keep the cap of EA3-30 | §19.7 |
+| AD-14 | Branch 0 writes one audit row for each door call. The run rows are the durable record of each write | §19.7 |
+| AD-15 | **The flags.** `AGENT_DOOR_APPS` lists the apps that the door serves, and empty serves none. `AGENT_DOOR_SENDS` (default off) lets a `sends` op run. Both units read each one through one reader in `agent_oauth`, as `AGENT_ACCESS_ORGS` does. §19.13 gives the gate of each flip | §19.4, §19.13 |
+| AD-16 | The door routes serve an app run. Its member reads and decides it, and only its own connection reads and spends it as an agent. The routes of §12.1, the pill, the board, `my_work`, Needs attention and the stranded sweep serve task runs only | §19.5, §19.8 |
+| AD-17 | The digest of a call is the SHA-256 of `v1`, the method, the template, the path, the sorted query, the body hash, `if-match` and the binding, one on each line. The binding is `conn:<connection id>` for the MCP door, and `session:<member>:<app>:<subject>` for a Studio request (amended by the MCP-P1b audit, 2026-11-03) | §19.5 |
+| AD-18 | **Fail closed before the spend.** From MCP-P1a, branch 0 refuses each B or C door call that is not a proposal with 403 `approval_required`, unless it carries a spent approval. Before MCP-P1b no approval can exist, so each such call fails | §19.5, §19.13 |
+| AD-19 | **The sends rule.** Any op that can cause mail to leave is `sends` and class C, and `AGENT_DOOR_SENDS` gates it. Its own route sends, or it stores an action that sends later | §19.10 |
+
+**The digest of a call (AD-17).** `agent_signing.py` builds it beside the signed string, from the same canonical parts. It leaves out the time, the nonce and the session, so an approved call keeps its digest across a retry.
+
+**What AD-6 changes in branch 0.** Branch 0 gains the door pairs, the app scope, the read limit, the admin switch, the approval line and the spend. So the digest test of §10.1 changes on purpose. The change needs an adversarial review and an independent verification (§10.1, "Process control").
+
+- A door write with no approval line gets 403 with the code `approval_required`, never 401, so the client keeps its token. MCP-P1a builds this refusal first (AD-18), and MCP-P1b adds the spend.
+- A spend that does not match gets 409 with the code `approval_mismatch`. The request stays approved, so the right call can still spend it.
+- A spend of a spent, declined or expired request gets 409.
+- After the spend, a route that refuses the call changes nothing, and the request stays spent. The agent asks again with a new request.
+
+**The migration of AD-5 (R6).** Take its number at build time (R1).
+
+- `ALTER COLUMN task_id DROP NOT NULL` on both tables. Old code always writes a task, so it meets the new schema.
+- `ADD COLUMN app TEXT`, nullable, with no default.
+- `ADD CONSTRAINT ... CHECK ((task_id IS NULL) <> (app IS NULL)) NOT VALID`, then `VALIDATE CONSTRAINT`. Each existing row holds a task and no app.
+- An index on `(organization_id, member_email, created_at DESC) WHERE app IS NOT NULL`.
+- The partial unique index of EA12-6 needs no change, because Postgres treats each NULL `task_id` as distinct.
+- The CHECK of `client_via` on the runs and of `actor_via` on the activities accepts `studio:` and `mcp:`.
+- Each reader of task runs adds `task_id IS NOT NULL`. `test_every_pm_agent_runs_query_names_its_subject` holds it, and the R8 suite of MCP-P1b-1 proves it. Migration 342 is the file (MCP-P1b-1).
+
+### 19.13 The slices, in order
+
+Each slice is HIGH tier unless it names another tier, so it runs the full loop. Each code slice ships dark behind the door flag of AD-15. The gates table below names who may turn on each flag.
+
+| # | Slice | Done when | Fence |
+|---|---|---|---|
+| MCP-P1a ✅ BUILT 2026-10-30 (dark) | **The generic door, with reads and proposals. Knowledge first.** `acb_common/app_manifests/` with `base.py` and `knowledge.py`, and the re-export. The four tools in `agent_edge/tools.py`. `GET /agent-access/apps` and `GET /agent-access/apps/{app}`. In branch 0: the door pairs, the app scope, the read limit, the audit row and the refusal of AD-18. The scopes `knowledge:read` and `knowledge:write` | An agent lists its apps, describes Knowledge, reads a page and files a proposed edit. The edit waits in the Knowledge Review view. A call with no Knowledge scope gets the 403 `insufficient_scope` and reveals no data. The member's visibility decides each row on R8. A B or C door op that is not a proposal gets 403 `approval_required` at branch 0, and the edge sends no request for it | `tests/unit/test_app_door_coverage.py` (AD-2, AD-3, the builder and the schema). `tests/unit/test_mcp_edge_app_door.py` pins the four tools, the texts, AD-10 and AD-12. `tests/unit/test_mcp_edge_app_door_r8.py` with `pytestmark = _DB_GATE`. `test_knowledge_chat_coverage.py` stays green with no edit. `test_branch_zero_digest_is_pinned` changes on purpose. `test_a_write_with_no_approval_fails_closed` registers a test manifest with one B op, and it is red under the mutation that drops AD-18 |
+| MCP-P1b-1 ✅ BUILT 2026-11-04 (dark, merged 2026-11-05) | **The shared approval store and card, no spend on branch 0.** Tier HIGH. AGENT-SAFE. The migration of AD-5 (342), with the two CHECK changes of the audit (`client_via` and `actor_via` accept studio). `acb_auth/app_requests.py` (`digest_of`, `spend`, `classify_refusal`). `gateway/app_requests.py` (`open_request`, `decide`, `read_request`, `list_open`) and the app variant of `_write_activity` that writes no task comment and no bell. `POST /agent-access/apps/{app}/requests`, `GET /agent-access/requests`, `GET /agent-access/requests/{id}` and `POST /agent-access/requests/{id}/decision`, with the BFF relays. `AppRequestCard` and the list "Waiting for you" in Integrations, AI agents. The `task_id IS NOT NULL` patch of each task-run reader. Fix round 1 (2026-11-04): the per-org flag `APP_REQUESTS_ORGS` (empty by default, an owner flip under a dated `enforcement-flip` grant, set on no box before MCP-P1b-2 or STU-B2c-2) makes each request route 404 and hides the list. The spend holds the whole binding of the request. An integer past 2^53 - 1, a number that is not finite, U+0000 and a character with no glyph (round 2: `is_invisible` less ZWJ and ZWNJ) are 422 `bad_args`. A replay gives the real state. The list gives `more`, and it draws no section when no request waits. The card drops the bidi controls, keeps the Target and Version rows for the frame, and reads its field words through own keys only (round 2). The list is the last part of the view. Non-goals: the spend on branch 0, the edge flow, the bell, a card for a proposal, the cards of Mira in the chat | The 15 R8 cases of the audit pass, and cases 18 to 24 of fix round 1. Another Studio package now reads `not_found`, not `mismatch`. A request opens, a member approves, and `spend` returns the stored call once. A decline, an expiry, a second spend, a changed digest, another connection, another member and org B each change nothing. A payload over 32 KiB, or with a secret key, is refused. No app run shows in the runs list, the pill, the board, `my_work`, Needs attention, the analytics or the sweep | `tests/unit/test_app_requests_r8.py` with `_DB_GATE` and in --must-run, each rule red under M1 to M13 (the docstring names each red test). `test_every_pm_agent_runs_query_names_its_subject`. `test_mcp_edge_coverage.py::test_decision_route_not_in_door_sets`. `test_digest_lines_are_pinned`. Vitest `src/components/AppRequestCard.test.ts` (no inner HTML, the mark, Approve and Decline). It is a `.ts` file, because `vitest.config.ts` includes `src/**/*.test.ts` only. Visual review in four contexts |
+| MCP-P1b-2 ✅ BUILT 2026-11-11 (dark, not merged) | **The spend on branch 0 and the edge flow.** Tier HIGH. AGENT-SAFE. Needs P1b-1 merged, and main merged first. It merges alone. `X-Agent-Approval`, the signed line `approval:ID`, the spend in `_door_gate` in place of the blanket AD-18 refusal, the edge ask and wait and send in `_app_write`, `list_apps.waiting`, the availability in `describe_app`, the three new `MCP_ROUTES` pairs and the one `MCP_WRITE_ROUTES` pair | An agent asks for a class B write. The member approves on the card, and the agent sends it once. A decline, an expiry, a second spend, a changed body and a spend by another connection each change nothing. A call with no approval still gets 403 `approval_required` | `test_app_requests_r8.py` gains the branch 0 cases. `test_mcp_edge_app_door.py` gains ask, wait and send. `test_a_write_with_no_approval_fails_closed` stays red under the AD-18 mutation. `test_branch_zero_digest_is_pinned` changes on purpose |
+| MCP-P1b-3 | **The Knowledge switch-on gates.** Tier HIGH (Q6 is a visibility rule). AGENT-SAFE to build. The flip is AGENT-SAFE under a dated grant. Independent of P1b-1 and P1b-2. MCP-Q6 in `routes/knowledge/sources.py`. AD-20 in `door_cut`. The edit of the gate table | A connection with `include_personal` false sees no personal Drive source and no tree of one. A page body over 256 KiB returns a cut body and `truncated: true`, never null. The local preview of the edge shows `list_apps`, `describe_app`, `app_read` and `propose` for Knowledge | `test_mcp_edge_app_door_r8.py` (Q6, as the app role) and `test_mcp_edge_app_door.py` (AD-20). Mutations: drop the `include_personal` check, and return None for a big string |
+| MCP-P2a | **The CRM and Email manifests, with reads and drafts.** It needs MCP-P1a only. `app_manifests/crm.py` is built by WS-CRM CRM-M2a with every row `off_door`. MCP-P2a sets the classes and the door ops of its rows from §19.9, and it adds `crm` to `APPS`. It builds `email.py` from §19.10. Door coverage is a second test on the one manifest, as it is for Knowledge. `test_crm_door_coverage.py` holds the door fences, and `test_crm_ui_actions.py` (CRM-M2a) keeps the router walk and the chat ratchet. `test_email_door_coverage.py` is the same for Email. The `save_draft` proposal. Each other B and C row carries the `off_door` reason of §19.10. **It also holds the four pins and the two corrections of §19.10a.2 (2026-10-30)** | An agent reads a deal, its contact and the contact's last mail. It saves a reply draft that waits in Email, and nothing is sent. A member with no CRM access gets nothing from CRM. A mailbox that the member cannot open gives nothing. Each CRM and Email row that Mira's tools reach names the tool, or `planned` names MCP-P2c. No B or C row has an `op`, except `save_draft`. No class A door op calls a model | `tests/unit/test_crm_door_coverage.py` and `tests/unit/test_email_door_coverage.py`, each red on an unclassed route, on a route of §19.11 with an op, and on a B or C `op` other than `save_draft`. `test_no_door_read_calls_a_model` calls each class A door op once on R8, with a tripwire on `acompletion` (`packages/acb_llm/acb_llm/client.py:20`). A call that reaches it fails and names the op. `tests/unit/test_mcp_edge_crm_email_r8.py` with `_DB_GATE` |
+| MCP-P2b | **CRM writes and Email sends, through MCP-P1b.** It replaces each `off_door` reason of MCP-P2a with its `op`. The display hooks of CRM and Email. The `expect` of a send. `AGENT_DOOR_SENDS` | A CRM edit and a CRM delete each wait for the card. In Mirror mode, the edge refuses a record write before any request, and no card opens. A send waits for the card, and an edit of the draft after the card sends nothing. The card marks an outside address. With `AGENT_DOOR_SENDS` off, `describe_app` marks each `sends` op unavailable, and branch 0 refuses it. That covers a rule write, an unsubscribe and a rule run too | `tests/unit/test_app_requests_crm_email_r8.py` with `_DB_GATE`. `test_every_op_that_can_send_is_sends` holds AD-19 by route list |
+| MCP-P2c | **Tier MEDIUM. Mira's CRM and Email tools read the manifests.** The CRM agent and the email agent of Mira call `allowed` before each request, as `skill_projects/client.py:164` does | Each route that Mira's CRM or Email tools send is a row that names the tool. The client refuses a route that the manifest does not give to the tool | `tests/unit/test_mira_crm_email_manifest_client.py`, a recording fake gateway, as `test_projects_agent_writes.py` does. It does not gate the door |
+| MCP-P2e | **The composite reads.** `routes/email/agent_view.py` with `triage_now`, `get_thread_context` and `changes_since`. The shared priority function. `match_by_email` in CRM. The index migration. `get_writing_context`. It needs MCP-P2a | An agent lists what needs a reply across three mailboxes in one call. It reads a thread with its tasks and CRM records in one call. It polls changes with one call. A member with no CRM access gets `crm: null`. A mailbox that the member cannot read gives no row. A shared thread says `private mailboxes only` for CRM | `tests/unit/test_email_agent_view.py`. `tests/unit/test_email_agent_view_r8.py` with `_DB_GATE`, each rule red under a named mutation: the mailbox predicate, the CRM access check, the keyset order and the bump of `updated_at`. `test_no_door_read_calls_a_model` covers the three ops |
+| MCP-P2f | **The cross-app writes.** `POST /email/messages/{id}/task`, its op `create_task_from_email`, the card text, and `linked_email` on the task result. It needs MCP-P1b and MCP-P2a | An agent proposes a task from a mail. The member approves the card. The task carries `origin`, shows in `get_thread_context`, and closes the thread when the member closes it. A second call makes no second task. A shared mailbox gets 422 | `tests/unit/test_email_task_from_email_r8.py` with `_DB_GATE`. `test_email_task_route_calls_no_model` with the tripwire |
+| MCP-P2g | **Person and company context.** One read, `get_contact_context`, in the Email app. Input: an address. Output: the contact card, the CRM records that match the address and its domain, the open tasks that name the person, and the last five threads. It needs MCP-P2e | An agent asks for the history with one person in one call. The CRM and task blocks follow the scopes of MCP-Q7. Calendar joins when it has a manifest | `tests/unit/test_email_contact_context_r8.py` with `_DB_GATE` |
+| MCP-P3 | **Scopes per app on the consent page, and the admin switch.** The `check` answer with the app lines. The switch in Integrations, AI agents, and its read in branch 0 | A connection made before CRM had a manifest does not reach CRM until the member grants the new line. The test records what Claude Code does when the member clears that line. An admin switch turned off refuses the app at once, for each connection. The visual review passes on the consent page and on Integrations, AI agents | `consent.test.ts`, `e2e/connect-authorize.spec.ts`, and `tests/unit/test_agent_app_switch_r8.py` with `_DB_GATE` |
+| MCP-P4 | **LOW tier. No live app without a manifest.** `tests/unit/test_app_manifest_coverage.py` reads the live set of `src/lib/nav.ts` (`launch_surface.md` §2). Each live pane names a manifest through `App.pane`, or it has a `PLANNED` row that names a Metorite task | A new live pane with no manifest fails, and the failure names the pane. The test starts green, because Calendar, People, Meetings, WhatsApp and the others hold `PLANNED` rows | The test itself, red under a named mutation that adds a live pane |
+| MCP-P5 | Studio over the MCP, after STU-0, the sandbox slices and MCP-P1b. Its manifest joins the door. A publish stays a person's act on a card (D127.2) | Its own spec | Its own spec |
+
+**MCP-P1b-2, the build notes (2026-11-11, task 1722).** The build took these choices inside AD-6 and AD-17. None reopens a decision.
+
+- **The signed line.** `X-Agent-Approval` holds the request id as a lower-case UUID, on a write only. The line `approval:<id>` follows the session line. The optional lines keep one fixed order: the session, then the approval, then the batch line of MCP-G28a. A request with no approval signs the string of before, byte for byte.
+- **The digest.** Branch 0 forms it from the signed path, query and body, the matched template, the ONE `If-Match`, and the binding of the connection row (`deps._approval_of`). `If-Match` is not signed, and the digest binds it. Two `If-Match` headers are a refusal.
+- **The place of the spend.** `_door_gate` spends last, after the writes flag, the door flag, the app scope, the nonce and the write cap. So a refused call spends nothing. The spend runs before the member resolve. A member who loses the seat after the approve gets 401, and the request is spent with no change.
+- **The answers.** A changed call is 409 `approval_mismatch`, and the request stays approved. A spent, declined or expired request is 409 `approval_used`. A request with no decision, or one of another connection, member or org, is 403 `approval_required`. A failed spend session is the one 503 of branch 0.
+- **The ask.** It is the one new pair of `MCP_WRITE_ROUTES`. Branch 0 takes any `<app>:write` of an app that the door serves (`agent_oauth.request_write_scope`). `MCP_ROUTES` already held the two list pairs of MCP-P1a, so the read of one request is the one new read pair.
+- **The wait.** `GET /agent-access/requests/{request_id}` takes `wait_s`, 0 to 20, as EA12-4 does. A wait on a spent request is a tool error, because only the send that spent it holds the result.
+- **The availability.** `door_available` needs the runs flag of §12.1 for a write that asks, and it keeps a `sends` op off until MCP-P2b. The gateway also reads `APP_REQUESTS_ORGS`. Both give the code `requests_off`.
+- **The waiting key.** `list_apps.waiting` holds the live requests of THIS connection only, with no call and no card.
+- **A route refusal after the spend.** Branch 0 spends before the route runs. So a route 422, 409 or 412 after the spend still uses the approval. The agent asks again.
+- **The org flag at the spend.** `_door_gate` does not read `APP_REQUESTS_ORGS` again at the spend. The flag stops the ask and the wait. An approved request of an org that leaves the flag can still spend.
+- **No dead ask (review P2, 2026-11-16).** The ask refuses a call that no send can deliver, with 422 `bad_args`. One case is a float that JSONB changes: a float with an exponent, or `-0.0`. The other case is an `If-Match` outside `app_manifests.IF_MATCH_PATTERN`. The edge refuses the same version before the ask.
+- **A lost race (review P2, 2026-11-16).** Two waits can send one approved request together. The send that gets 409 `approval_used` reads the request again. When the request is done, the edge says that the change already ran.
+
+**The order and the dependencies.**
+
+- MCP-P1a comes first, because each later slice reads `app_manifests`. It fails closed for each write that needs an approval (AD-18).
+- MCP-P1b needs MCP-P1a. MCP-P2a needs MCP-P1a only. The two can build in parallel, in either merge order, because MCP-P2a opens no B or C op except `save_draft`. MCP-P1b touches branch 0 and `agent_runs.py`. MCP-P2a touches the two new manifest modules and their tests.
+- MCP-P2b needs MCP-P1b and MCP-P2a. MCP-P2c needs MCP-P2a only.
+- MCP-P3 needs MCP-P1a. CRM and Email go live on production only after MCP-P3, by the owner's flip (the gates below).
+- MCP-P4 can land at any time after MCP-P1a.
+- A slice that edits branch 0 merges alone. MCP-P1a and MCP-P1b both edit it, so MCP-P1b merges main after MCP-P1a lands.
+
+**The gates (contract point 7).**
+
+| Act | Gate | Why |
+|---|---|---|
+| Build and merge each slice | AGENT-SAFE | Each slice ships dark. A merge moves staging only (WS-38) |
+| Each door flag on staging | AGENT-SAFE | Staging sends no mail and calls no CRM (CLAUDE.md §4) |
+| `AGENT_DOOR_APPS` with `knowledge` on production | AGENT-SAFE under a dated `enforcement-flip` grant (CLAUDE.md §3a). Name the flag and the box in the same message | Reads and proposals change nothing outside the app |
+| `AGENT_DOOR_APPS` with `crm` or `email` on production | OWNER-GATE until MCP-P3 is live | The admin switch of D124.3 does not exist before MCP-P3 |
+| `APP_REQUESTS_ORGS` on any box | OWNER-GATE. Only the owner flips it, under a dated `enforcement-flip` grant, after MCP-P1b-2 or STU-B2c-2 can ask. Set it on no box before then | It shows the list "Waiting for you" to each member of the org, and a request then waits to run |
+| `AGENT_DOOR_SENDS` on production | OWNER-GATE, always | It lets an agent send real mail to a real person (CLAUDE.md §3a rule 3) |
+| A production deploy | The daily release moves production (WS-38). A manual dispatch of `deploy.yml` is OWNER-GATE | One path to production |
+| The migration of AD-5 on production | The daily release applies it, after the backup check | R6, CLAUDE.md §3a rule 1 |
+
+**The verify commands.** Export the R8 database first: run `bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`. With `-rs`, the run lists each skipped test, so a run with no database cannot read green.
+
+| Slice | Command |
+|---|---|
+| MCP-P1a | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_door_coverage.py tests/unit/test_mcp_edge_app_door.py tests/unit/test_mcp_edge_app_door_r8.py tests/unit/test_knowledge_chat_coverage.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_tenant_request_binding.py -rs` |
+| MCP-P1b-1 | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_tenant_request_binding.py tests/unit/test_mcp_edge_coverage.py -rs`, one R8 file in each process. Then in `workbench/control_plane`: `npx vitest run src/components/AppRequestCard.test.ts src/app/api/agent-access/requests/relay.test.ts src/app/integrations`, and `npx tsc --noEmit` in WSL |
+| MCP-P1b-2 | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_r8.py tests/unit/test_mcp_edge_app_door.py tests/unit/test_mcp_edge_app_door_r8.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_tenant_request_binding.py tests/unit/test_agent_runs_r8.py -rs` |
+| MCP-P1b-3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_app_door.py tests/unit/test_mcp_edge_app_door_r8.py tests/unit/test_knowledge_chat_coverage.py -rs` |
+| MCP-P2a | `uv run pytest -q -p no:cacheprovider tests/unit/test_crm_door_coverage.py tests/unit/test_email_door_coverage.py tests/unit/test_mcp_edge_crm_email_r8.py -rs` |
+| MCP-P2b | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_requests_crm_email_r8.py tests/unit/test_email_door_coverage.py -rs` |
+| MCP-P2c | `uv run pytest -q -p no:cacheprovider tests/unit/test_mira_crm_email_manifest_client.py -rs` |
+| MCP-P2e | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_agent_view.py tests/unit/test_email_agent_view_r8.py tests/unit/test_email_door_coverage.py -rs` |
+| MCP-P2f | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_task_from_email_r8.py tests/unit/test_app_requests_crm_email_r8.py -rs` |
+| MCP-P2g | `uv run pytest -q -p no:cacheprovider tests/unit/test_email_contact_context_r8.py -rs` |
+| MCP-P3 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_app_switch_r8.py tests/unit/test_agent_oauth_server.py -rs`. In `workbench/control_plane`: `npx vitest run src/app/connect/authorize/consent.test.ts` and `npx playwright test e2e/connect-authorize.spec.ts` |
+| MCP-P4 | `uv run pytest -q -p no:cacheprovider tests/unit/test_app_manifest_coverage.py -rs` |
+
+### 19.14 Open questions for the owner
+
+| # | Question | Recommendation |
+|---|---|---|
+| MCP-Q1 | Is a proposal its own card? A Knowledge proposal or an Email draft then files at once, and the member decides in the app (AD-8) | **Yes.** The app shows the exact content, and nothing leaves until the member acts. A card on top asks twice for one act |
+| MCP-Q2 | Does the admin switch of MCP-P3 go live with MCP-P2, before M3? | **Yes.** D124.3 makes the switch a safety rule, and mail is the widest reach. Build the switch first, and the consent lines after it |
+| MCP-Q3 | Where does the member answer the card of an app request? | **One list in Integrations, AI agents, "Waiting for you".** Each member reaches it (§5.4). The bell and the asking rows of My Day link to it. An app can draw the card on its own screen later |
+| MCP-Q4 | Is the Email door on or off by default for an organization? | **On for reads and drafts,** once the member grants the scope and MCP-P3 is live. Each `sends` op stays off until the owner turns on `AGENT_DOOR_SENDS`. After that, every such op still asks |
+| MCP-Q5 | Do the existing Projects write tools join the card rule of D124.2? | **No.** They keep the rules of EA-6. A Projects write is undoable and the timeline names its client. A card for each status move stops the coding routine. A class C act keeps its approval |
+| MCP-Q6 | Does the personal opt-in (D-EA-4) also cover the member's own Drive sources in Knowledge (`list_sources`, `get_source_tree`)? They follow their own owner rule, and they ignore `include_personal` | **ANSWERED 2026-10-30: yes.** The owner made personal access on by default (D-EA-4, amended), and it stays the member's switch. A member who unticks it expects no private file names to reach the agent. So the Drive sources respect the switch before the Knowledge door goes on in production (task 1056). A source that a member shares with a team space stays readable |
+| MCP-Q7 | A composite read carries CRM and task data. Does it need `crm:read` and `projects:read` too? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Yes.** A block without its scope is `null` and says so. One scope per app stays true (D124.1). The agent asks for the CRM line on the consent page |
+| MCP-Q8 | Should Metorite store an urgency flag or a thread summary that its own model makes? | **ANSWERED 2026-10-30 by the owner: as recommended.** **No, not in v1.** The outside agent brings its own model (D-EA-7), and it reads the signals of `triage_now`. A stored flag spends AI credits for each mail and can differ from the view of the member. Revisit when a real agent shows that the signals are not enough |
+| MCP-Q9 | Email is always personal. Does `include_personal=false` (D-EA-4) hide the mailboxes of the member from a connection? | **ANSWERED 2026-10-30 by the owner: as recommended.** **No.** The scope `email:read` on the consent page is the opt-in for mail. The consent line must say "your mail, including private mailboxes" |
+| MCP-Q10 | May the door read shared mailboxes? May it create a task from a shared thread? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Read: yes, at the level of the member. A task from a shared thread: no, until WS-65 settles who owns the task.** No send from a shared mailbox in v1 |
+| MCP-Q11 | A bulk triage opens one card for up to 50 messages. Is one approval enough? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Yes** for archive, mark read, label and snooze. A bulk delete asks a second time, as D131.7 requires |
+| MCP-Q12 | Is polling enough, or does the owner want a push to the agent? | **ANSWERED 2026-10-30 by the owner: as recommended.** **Polling now (D140.4).** Push waits for WS-56. `changes_since` keeps its shape when push arrives |
+
+### 19.15 What this section changes in the rest of this spec
+
+- §1 says "No email, no WhatsApp, no CRM". D124 and D136 widen it, and §19 brings CRM and Email in first.
+- §3 lists Email and CRM as non-goals of version 1. D124 amends D91.4 for this door.
+- §14 lists "Email and CRM tools through each module's own agent". §19 replaces that line.
+- §8 gains the scopes of the apps. Each new scope still needs a spec change, and its manifest is that change.
+- §9.5 does not change. `MCP_ROUTES` and its fence keep the Projects door. `door_routes()` and its own fence hold the app door.
+
+### 19.16 Projects acts through the app door (MCP-G24, MCP-G25, 2026-11-09)
+
+**Status: MCP-G24 is BUILT 2026-11-11 and not merged (branch `mcp-g24-door`, Metorite task 2520). It ships dark. Nobody has built MCP-G24b, MCP-G24c or MCP-G25 (task 2521) yet.** The owner decided this in chat on 2026-11-09 (Metorite tasks 2520 and 2521). D208 records it.
+
+**The rule.** A Projects act that has no typed tool reaches the MCP through the app-door manifest of §19.3. CRM and Email use the same path. Nobody builds a typed tool for each act. The typed tools of §9 stay.
+
+**The classes.** Each Projects route of the chat manifest gets a route class in the manifest. The classes are the ones of §19.1.
+
+- **A:** a read.
+- **B:** an undoable write.
+- **C:** a hard-to-undo write.
+- **X:** off the door. The row states the `reason`. §19.11 lists the routes that stay X.
+
+**Why.** About 45 of the 193 chat-manifest routes of Projects reach the MCP today. A member can do the rest in chat and not through the MCP.
+
+**Which acts come first.** MCP-G24 sets the classes of these acts first:
+
+1. Cycles.
+2. Saved views.
+3. Import.
+4. Status editing.
+5. Template apply.
+6. Goals.
+7. Teams.
+
+**What MCP-G24 built (2026-11-11).** The door table, the classes, the fence and D208. The table ships dark.
+
+- **The table.** `packages/acb_common/acb_common/app_manifests/projects.py` holds `PROJECTS_DOOR`. It has one row for each of the 215 routes of the chat manifest, with the class and the chat tool of that row. The chat manifest has 73 rows of class A, 69 of class B, 44 of class C and 29 of class X.
+- **A second list, for now.** The table repeats the 215 pairs, so D208.2 amends AD-1 and D136.1 for Projects. MCP-G24c moves the chat manifest into `acb_common` and ends the exception. Until then, the fence holds the pairs, the class and the tool equal.
+- **11 door ops, for cycles and saved views.** Cycles: `list_cycles`, `get_cycle`, `create_cycle`, `update_cycle`, `add_cycle_task`, `remove_cycle_task`, `start_cycle` and `close_cycle`. Saved views: `list_views`, `create_view` and `update_view`. Three are class A, six are class B and two are class C.
+- **Each change asks.** Each B or C op asks the member for each call (§19.5). No op is a proposal, and no op sends. Until MCP-P1b-2, AD-18 refuses each change.
+- **No op deletes a record for good.** `remove_cycle_task`, and `close_cycle` with the choice `backlog`, delete the link row of a task in an open cycle. The task stays. The fence reads the source of each op's route, so a POST that deletes is caught too.
+- **Plain keys (AD-10).** Only ids, times, the task number and the cycle state leave plain. No key of a saved view's `config` is plain, because a member writes its values.
+- **The typed tools keep their routes.** 46 rows name the reason `TYPED`, because their route is in `MCP_ROUTES` (AD-3). Two more rows of `MCP_ROUTES` are class X: the bytes of a file and the agent delete.
+- **Off the door.** Ten rows delete a record for good. Seven rows are a grant or an authority pin. Four rows reach another person. One row is the answer of a decision, and one is the bulk export. Two rows are the task delete, which the typed tool `delete_task` serves through the agent-delete route. One row is the count of a delete card, and one is the preview of a write. Four status rows and the template apply wait for MCP-G24b. 94 rows wait for a later slice, with the reason `LATER`.
+- **Dark.** `PROJECTS_DOOR` is not in `app_manifests.APPS`. So `list_apps`, `describe_app`, branch 0 and the Studio catalog serve none of its ops. The header `PROJECTS` keeps `door = "tools"`.
+
+**What the first acts got.**
+
+| Act | State after MCP-G24 | Next |
+|---|---|---|
+| Cycles | Eight ops, in the table | MCP-G24b registers them |
+| Saved views | Three ops, in the table. A delete stays off | MCP-G24b registers them |
+| Status editing | Off the door. The chat client holds the PST-4 guard of a shared set (`skill_projects/writes.py`, `status_edit_refusal`), the counts of the preview and the check of `copy_from` (`skill_projects/guarded.py`). The routes hold none of them. The status-set read names the owner project and the project to inherit from with no visibility check (`admin.py`, `_inherit_target`), so a pinned connection could learn a name outside its pin | MCP-G24b moves each guard to the route |
+| Template apply | Off the door. EA3-53 asks an MCP write of a template for a preview and a confirm step, and the apply adds task types, fields and tags to the whole space | MCP-G24b builds the preview |
+| Import | Class X. Each of its six routes needs `admin:access:manage` (§19.11), and its upload is a file | None. §19.11 keeps it off |
+| Goals | No route in the Projects router on 2026-11-11 | Task 977 makes a goal object (`research/linear_parity_2026-11.md` P2) |
+| Teams | No route. A team is a filter (D87) | None |
+
+The fence fails when a route with `/goal` or `/team` in its path comes, so that its author decides its door op.
+
+**The later slices (§15).**
+
+- **MCP-G24b, the registration slice,** registers the table, after MCP-P1b-2 builds the spend. It decides how the header of `door = "tools"` and the door ops show as one app in `list_apps`. It gates the Studio catalog, which reads each door op of `every_app()`. It keeps `projects:read` and `projects:write` from showing twice in the scopes. It runs the pin audit of D-EA-12 on each route of an op.
+- **MCP-G24b** also moves the guards of status editing to the routes: the PST-4 guard, the preview counts and the `copy_from` check. It fixes the names of the status-set read, and it builds the preview of a template apply. Then those rows get their ops. Then a member reaches the acts through the door, and the door flag is `agent_door_apps` with `projects` (AD-15).
+- **MCP-G24c** makes one Projects manifest in `acb_common`, with a re-export in `skill_projects`.
+- **MCP-G25** (task 2521) adds the parity fence on the same table.
+
+**The fence of MCP-G24.** `tests/unit/test_projects_door_coverage.py` walks the real Projects router. It fails on a route with no row, and on a row with no route. It fails on a row whose class or tool differs from the chat manifest. It fails on an op on a pair of `MCP_ROUTES`, on a route of §19.11, or on a delete of a record. It fails on a plain key that a member can write, and when the table joins `APPS`.
+
+**The fence (MCP-G25).** A Projects route that is in the chat manifest, and has no MCP tool and no stated off-door reason, fails `tests/unit/test_mcp_projects_parity.py` (new). §9.5 and its fence still hold the typed tools.

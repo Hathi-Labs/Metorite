@@ -44,6 +44,8 @@ import {
   serviceHeaders,
   requireIdentity,
   NoIdentityError,
+  signStudioDirect,
+  studioDirectHeaders,
 } from "@/lib/gateway";
 
 beforeEach(() => {
@@ -479,5 +481,92 @@ describe("the route surface", () => {
         expect(reason.length, `${r.rel} gives no reason`).toBeGreaterThan(10);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. The direct proof of a Studio write (STU-B2c-1)
+// ---------------------------------------------------------------------------
+
+describe("the direct proof", () => {
+  const VECTOR = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../../../../tests/fixtures/studio_direct_proof_vector.json", import.meta.url)),
+      "utf-8"
+    )
+  ) as { key: string; email: string; method: string; path: string; now: number; header: string };
+  const APP = "6f1f7a3e-2b0f-4f43-a3a5-0d3f8f6f9c11";
+
+  it("signs the string that the Python signer signs (shared vector)", () => {
+    expect(signStudioDirect(VECTOR.key, VECTOR.email, VECTOR.method, VECTOR.path, VECTOR.now)).toBe(
+      VECTOR.header
+    );
+  });
+
+  it("signs a POST to the action route, and no other path or method", () => {
+    process.env.STUDIO_DIRECT_KEY = VECTOR.key;
+    const action = ["apps", APP, "actions", "add"];
+    expect(studioDirectHeaders("Ana@Example.test", "POST", action, 1790000000)).toEqual({
+      "X-Studio-Direct": signStudioDirect(VECTOR.key, "ana@example.test", "POST", `/studio/apps/${APP}/actions/add`, 1790000000),
+    });
+    for (const method of ["GET", "PATCH", "PUT", "DELETE"]) {
+      expect(studioDirectHeaders("a@example.test", method, action)).toEqual({});
+    }
+    for (const path of [["skills"], ["apps", APP], ["apps", APP, "actions"], ["apps", "x", "actions", "add"],
+      ["apps", APP, "actions", "Add"], ["apps", APP, "actions", "add", "x"], ["x", APP, "actions", "add"]]) {
+      expect(studioDirectHeaders("a@example.test", "POST", path)).toEqual({});
+    }
+    expect(studioDirectHeaders("", "POST", action)).toEqual({});
+    delete process.env.STUDIO_DIRECT_KEY;
+  });
+
+  it("signs the CSV import of an object, and nothing else under packages (STU-C11b)", () => {
+    process.env.STUDIO_DIRECT_KEY = VECTOR.key;
+    const imp = ["packages", APP, "objects", "ledger", "import"];
+    expect(studioDirectHeaders("Ana@Example.test", "POST", imp, 1790000000)).toEqual({
+      "X-Studio-Direct": signStudioDirect(
+        VECTOR.key, "ana@example.test", "POST", `/studio/packages/${APP}/objects/ledger/import`, 1790000000
+      ),
+    });
+    expect(studioDirectHeaders("a@example.test", "GET", imp)).toEqual({});
+    for (const path of [
+      ["packages", APP, "objects", "ledger", "import", "preview"],
+      ["packages", APP, "objects", "ledger", "preview"],
+      ["packages", APP, "objects", "ledger", "import", "x"],
+      ["packages", "x", "objects", "ledger", "import"],
+      ["packages", APP, "objects", "Ledger", "import"],
+      ["packages", APP, "objects", "led ger", "import"],
+      ["packages", APP, "objects", "..", "import"],
+      ["packages", APP, "object", "ledger", "import"],
+      ["package", APP, "objects", "ledger", "import"],
+      ["packages", APP, "objects", "ledger"],
+    ]) {
+      expect(studioDirectHeaders("a@example.test", "POST", path)).toEqual({});
+    }
+    delete process.env.STUDIO_DIRECT_KEY;
+  });
+
+  it("signs nothing with a short key or no key", () => {
+    const action = ["apps", APP, "actions", "add"];
+    process.env.STUDIO_DIRECT_KEY = "short";
+    expect(studioDirectHeaders("a@example.test", "POST", action)).toEqual({});
+    delete process.env.STUDIO_DIRECT_KEY;
+    expect(studioDirectHeaders("a@example.test", "POST", action)).toEqual({});
+  });
+
+  it("is read by lib/gateway.ts and by no other file of src", () => {
+    const SRC_DIR = fileURLToPath(new URL("..", import.meta.url));
+    const readers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const p = join(dir, entry);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
+          if (readFileSync(p, "utf-8").includes("STUDIO_DIRECT_KEY")) readers.push(p.slice(SRC_DIR.length).split("\\").join("/"));
+        }
+      }
+    };
+    walk(SRC_DIR);
+    expect(readers).toEqual(["lib/gateway.ts"]);
   });
 });

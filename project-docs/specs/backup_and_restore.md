@@ -4,6 +4,40 @@
 run proved the timer. **The off-box copy is BUILT (2026-10-08).** It stays
 OFF until the owner does the four steps in §4.2 (H-123).
 
+**2026-11-21, H-170 (task 507):** the deploy backs up the Console database
+before the Console ladder, and a failed backup stops the deploy. It is BUILT,
+and nobody has measured it on the box yet. The proof is the deploy log line
+`Console backup complete:` and a `<stamp>-console` dir under
+`/opt/acb/backups`. §2, "H-170 Console backup gate", holds the acceptance.
+
+**2026-10-31, LD-8c:** the deep verify failed on the night of 2026-10-31.
+The restore of a vector index needed 65 MB, and the verify container gave it
+64 MB. The container now starts with `-c maintenance_work_mem=256MB`, under
+its 1g cap. The fence is `tests/unit/test_backup_deploy_wiring.py`. Nobody has
+measured the fix on the box yet. The proof is the first nightly run after the
+deploy, with "restore verified" in the journal.
+
+**The rule since LD-8c: every restore of these dumps gives the index build
+256 MB.** The rule is in §2 under the design decisions. `restore_db.sh` and
+`staging_refresh.sh` obey it now. H-441 holds two open checks. The first is
+the production pooler. The second is the `|| true` of `restore_db.sh`.
+
+**2026-10-29, H-259 / WS-25d:** a failed nightly backup now reaches a person.
+The job `backup-timer` in `vps-health.yml` reads `acb-backup.service` and
+`acb-backup.timer` each hour. It opens one issue, "Nightly backup failed", in
+three cases. The unit failed, the timer is off, or the newest backup is older
+than 26 h.
+
+The proof of a backup is the `taken_utc` line of the newest `MANIFEST.txt`.
+The job does not use the unit run time. Systemd keeps no run state over a
+reboot. The journal line "Backup complete" is the fallback. It closes the issue when the state is clean.
+
+The rule is
+`scripts/backup_alert_state.sh`. The fence is
+`tests/unit/test_backup_alert_wiring.py`. The dispatch input
+`simulate_backup_failure` proves the path with a fake state. The live proof
+waits for a dispatch after merge. The box has no alert unit, and `deploy/` has no change.
+
 **2026-10-08, owner decision:** the off-box copy goes to a private Supabase
 Storage bucket, through its S3 endpoint. The box encrypts each night to the
 owner's PUBLIC key before the upload. Only the nightly unit uploads
@@ -109,6 +143,54 @@ it is not built. `box_hardening.md` §5 BH-6 owns the change.
   touches nothing live. Overwriting live needs `--target acb --force`, takes an
   unconditional pre-restore dump first, and stops the gateway so users are not
   served half-restored state.
+- **🔴 Every restore of these dumps runs with `maintenance_work_mem=256MB`
+  (LD-8c, 2026-10-31).** The dump holds an IVFFlat vector index. Its build
+  needs more than the 64 MB server default, so a restore at the default
+  stops with "memory required is 65 MB". This rule binds each script that
+  restores a dump, and each new one.
+  - The verify container starts with `-c maintenance_work_mem=256MB`.
+  - A restore into a server that you do not start sets it for its own
+    session. Use `env "PGOPTIONS=-c maintenance_work_mem=256MB" pg_restore`
+    inside the `pg`/`pgi` seam or the `docker exec`. In `restore_db.sh`,
+    `restore_256` is the one way to restore.
+  - The setting is a limit for one session. It changes no server setting.
+  - ⚠️ **Measured 2026-10-31: the production pooler ignores it.** Production
+    restores through the Supabase session pooler. That pooler takes the
+    connection, and `show maintenance_work_mem` still reads 64MB. So a
+    disaster restore of production does not meet this rule yet. H-441
+    holds the fix.
+  - Fences: `tests/unit/test_backup_deploy_wiring.py` (the verify container
+    and `restore_db.sh`, in both modes) and `tests/unit/test_staging_box.py`
+    (`staging_refresh.sh`).
+  - ⚠️ A pooler must pass the `options` startup parameter on to the server.
+    Nobody has checked the production pooler yet (H-441).
+  - ⚠️ `restore_db.sh` still hides the exit code of `pg_restore` behind
+    `| tail -20 || true`. A failed index build prints an error, and the
+    script goes on. That is a known gap (H-441).
+
+### H-170 Console backup gate (2026-11-21)
+
+The deploy applies the Console ladder to the Console's own database. Before
+H-170, no backup of that database came first. Task 507 closes the gap. The
+fence is `tests/unit/test_console_backup_gate.py`.
+
+Acceptance:
+
+1. `scripts/backup_db.sh --console-only` dumps only the Console database. It
+   checks the dump with `pg_restore --list`, and it asks the app cluster
+   nothing.
+2. The deploy log shows `Console backup complete: <dir>` before the first
+   `applying 0NN` line of the Console ladder.
+3. A failed Console backup stops the deploy before the applier runs. An
+   unset DSN, or a DSN that the checks refuse, also exits 1.
+4. With no Console DSN, the deploy skips the backup and the ladder, and it
+   says so in the log. The other cases of the DSN check stay as they were.
+5. Each Console dump goes into `<stamp>-console`. The nightly glob `[0-9]*Z`
+   does not count those dirs, so they do not shrink the 14 nights. The
+   console-only run keeps the newest 5.
+
+`restore_db.sh` does not list the `<stamp>-console` dirs. To restore one,
+use `pg_restore` on its `customer_console.dump` into a scratch database.
 
 ## 3. Runbook
 

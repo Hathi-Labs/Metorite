@@ -38,12 +38,13 @@ email      ``feature:email``     ``email.transport.accounts.feed_mailboxes``,
 =========  ====================  ==========================================
 
 ⚠️ **Only an org admin gets approval rows** (owner decision, 2026-10-10).
-The router of ``routes/actions.py`` demands ``feature:approvals``, and that
-gate alone is too wide: migration 207 grants ``feature:*`` to ``member`` and
-``manager`` in every org. So the provider ALSO demands ``ADMIN_PERMISSION``,
-the admin test of ``routes/shell/intent.py``. ``GET /auth/me`` reports the
-same test as ``is_admin``. Any other member keeps the Approvals app if they
-hold it, and their feed holds only their own work. ``pending_actions`` has
+The router of ``routes/actions.py`` demands ``feature:approvals`` and
+``ADMIN_PERMISSION`` (AP-BUG-2). The feature gate alone was too wide:
+migration 207 grants ``feature:*`` to ``member`` and ``manager`` in every
+org. ``ADMIN_PERMISSION`` is the admin test of ``routes/shell/intent.py``,
+and ``GET /auth/me`` reports it as ``is_admin``. The provider asks for it too.
+Any other member keeps the nav row of the Approvals app, and sees no queue.
+Their feed holds only their own work. ``pending_actions`` has
 no approver column. A finer Approver role is a later option.
 
 ``GET /actions/pending`` also demands ``require_internal_auth``. That check is
@@ -201,14 +202,29 @@ HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 
 #: The order of the feed, by kind (§7.2 contract). An approval comes right
 #: after an overdue task, because an agent's work waits on it.
-KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
-              "needs_reply": 4}
+KIND_ORDER = {
+    # WS-66 RX-7: a reminder that fired and waits on the member sorts FIRST,
+    # as the bell draws it (`myDay.ts` `FIRED_FIRST`). The cut to `size` keeps
+    # the first rows, so a fired reminder must not sit behind 30 other rows.
+    "reminder_due": 0, "reminder_check": 1,
+    # AO-2 (customer_console.md §6A.17b): an AI vendor that runs out stops the
+    # chat for every member, so its alert comes before the admin's own work.
+    # The source gives one row for each vendor at most, so it cannot fill the
+    # cut. Only the admins of the operator org ever get it.
+    "provider_alert": 2,
+    "overdue": 3, "approval": 4, "due_today": 5, "notification": 6,
+    "needs_reply": 7,
+    # WS-66 RM-2b (calendar_events_reminders.md §5.6): a reminder that Metorite
+    # stopped checking is the last of the needs kinds.
+    "reminder_unconfirmed": 8}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
 #: Within a kind: True is newest first, False is oldest first.
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
-                "notification": True, "needs_reply": False}
+                "notification": True, "needs_reply": False,
+                "reminder_due": False, "reminder_check": False,
+                "reminder_unconfirmed": False, "provider_alert": True}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -341,35 +357,57 @@ def _item(*, id: str, app: str, kind: str, title: Any, detail: Any, href: str,
 # ── My Tasks: due today and overdue, through the lens ───────────────────────
 
 
+def local_today(answer: dict[str, Any]) -> date:
+    """The member's own date of a due read (``personal.my_due_rows``). A read
+    with no date reads the clock in its zone."""
+    from gateway.routes.projects.due_day import local_date
+
+    try:
+        return date.fromisoformat(str(answer.get("today")))
+    except ValueError:
+        return local_date(answer.get("timezone"), _now())
+
+
+def due_kind(task: dict[str, Any], zone: Any, today: date) -> str | None:
+    """The kind of one row of the due read: ``overdue``, ``due_today``, or
+    None for a row that makes no card. ``due_day.is_overdue`` is the one rule,
+    so My Day, the WhatsApp views and the morning push split the rows in one
+    way. A task due today stays ``due_today`` until that day ends in the
+    member's zone, whatever hour the row holds."""
+    from gateway.routes.projects.due_day import is_overdue
+
+    due = _instant(task.get("due_at"))
+    if due is None or task.get("completed_at"):
+        return None
+    if task.get("disposition") in HIDDEN_DISPOSITIONS:
+        return None  # Someday is "not now", see HIDDEN_DISPOSITIONS
+    # The read holds nothing due after the member's today.
+    return "overdue" if is_overdue(due, zone, today) else "due_today"
+
+
 async def _tasks(user: UserContext) -> Found:
     from gateway.routes.projects.personal import my_due_tasks
 
     # One bounded read: due before the member's tomorrow, in the member's
     # zone, the oldest deadline first, at most PER_APP rows.
     answer = await my_due_tasks(user, limit=PER_APP)
-    now = _now()
     found = answer.get("rows") or []
+    today = local_today(answer)
 
     overdue: list[Item] = []
     due_today: list[Item] = []
     kept: list[tuple[str, dict[str, Any]]] = []
     for task in found:
-        due = _instant(task.get("due_at"))
-        if due is None or task.get("completed_at"):
+        kind = due_kind(task, answer.get("timezone"), today)
+        if kind is None:
             continue
-        if task.get("disposition") in HIDDEN_DISPOSITIONS:
-            continue  # Someday is "not now", see HIDDEN_DISPOSITIONS
-        if due < now:
-            kind, bucket = "overdue", overdue
-        else:
-            # The read holds nothing due after the member's today.
-            kind, bucket = "due_today", due_today
+        bucket = overdue if kind == "overdue" else due_today
         task_id = str(task["id"])
         kept.append((kind, task))
         bucket.append(_item(
             id=f"tasks:{task_id}", app="tasks", kind=kind,
             title=task.get("title"), detail=task.get("project_name"),
-            href=f"/projects?task={quote(task_id)}", at=due,
+            href=f"/projects?task={quote(task_id)}", at=_instant(task.get("due_at")),
             act="done", act_ref=task_id,
         ))
     rows = (_sort(overdue) + _sort(due_today))[:PER_APP]
@@ -456,8 +494,11 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
             signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
             entity=task_entity(task_id, task.get("title")),
             title=task_entity(task_id, task.get("title"))["label"],
+            # A date has no hour, so a task due today has no urgent time: no
+            # lift into Now, and no points by the clock. An overdue task has
+            # passed by definition (RX-5).
             facts=facts, href=task_href(task_id), acts=tuple(acts),
-            at=_iso(due), urgent_at=_iso(due),
+            at=_iso(due), urgent_at=_iso(due) if kind == "overdue" else None,
         ))
     return out
 
@@ -488,7 +529,11 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 #: `NOTIFICATION_KINDS` has a verb (`tests/unit/test_agent_runs_r8.py`).
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
          "comment": "commented on", "nudge": "nudged you about",
-         "agent_question": "asked you about"}
+         "agent_question": "asked you about",
+         # WS-ALN ALN-2a. A decision is not in KIND_ORDER: that registry is
+         # for the needs kinds. ALN-2b gives it to My Day as a feed-only kind
+         # (`_decisions` below), and the bell shows this verb for its row.
+         "decision": "asked you to decide on"}
 
 
 def _who(actor: Any) -> str:
@@ -566,7 +611,7 @@ def _sentence(row: dict[str, Any]) -> str:
     title = str(row.get("task_title") or "").strip() or "a task"
     task = f"#{row['task_number']} {title}" if row.get("task_number") else title
     verb = _VERB.get(str(row.get("kind") or ""), "updated")
-    return f"{_who(row.get('actor'))} {verb} {task}"
+    return f"{row.get('actor_name') or _who(row.get('actor'))} {verb} {task}"
 
 
 async def _projects(user: UserContext) -> Found:
@@ -603,7 +648,9 @@ async def _projects(user: UserContext) -> Found:
 #: The notification kinds that ask the member for something. One of them
 #: sets the card's reason over a ``comment`` (§4.3, §14.1a).
 #: `agent_question` asks the member to answer an agent (EA-12a, §12.1).
-ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question"})
+#: `decision` asks the member to decide (WS-ALN ALN-2b, project_alignment.md
+#: §3.2): the card needs an answer, so it is a "needs you" card.
+ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question", "decision"})
 
 
 def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
@@ -636,7 +683,9 @@ def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
             signal_id=f"tasks:{task_id}", app="projects", kind="notification",
             entity=entity, title=entity["label"],
             facts={"notification": str(reason.get("kind") or ""),
-                   "who": _who(reason.get("actor")), "excerpt": reason.get("excerpt"),
+                   # Task 1574: the directory name, as the task panel shows it.
+                   "who": reason.get("actor_name") or _who(reason.get("actor")),
+                   "excerpt": reason.get("excerpt"),
                    "at": _iso(reason.get("created_at")), "note_ids": ids,
                    "unread": len(ids),
                    # The newest note, which may not be the reason. The state
@@ -903,6 +952,118 @@ async def _approvals_handled(user: UserContext, since: datetime) -> list[Closed]
     ) for row in rows]
 
 
+# ── Reminders: the member's own, once fired (WS-66 RM-2b) ───────────────────
+#
+# Spec: ``calendar_events_reminders.md`` §5.6 "Settled 2026-10-30 (RM-2b)".
+# ONE source serves the bell and My Day (D87 to D89). It is a needs provider,
+# so it has no gate. With CALENDAR_REMINDERS off it raises ``SourceAbsent``,
+# and ``sources.reminders`` reads ``absent``. One card for each reminder that
+# fired and is still open, computed on read from the row. The card keys on
+# ``reminders:<id>``, so it changes its kind in place: ``reminder_due`` after
+# the fire, ``reminder_check`` after the check-back, ``reminder_unconfirmed``
+# after the loop gave up. A ``scheduled`` row has no card. The row is a link
+# only (``reminder_href``). The acts in place wait for the client (D101).
+# ``reminders.my_open_cards`` opens ONE tenant session, and this file opens
+# none. Fence: ``tests/unit/test_reminder_loop.py``, ``test_shell_needs.py``.
+
+#: The kinds of the source (§5.6).
+REMINDER_KINDS = frozenset({"reminder_due", "reminder_check", "reminder_unconfirmed"})
+
+
+def reminder_href(reminder_id: str) -> str:
+    """The link of a reminder card (§5.7 item 1).
+
+    ``do=new-chat`` is the chat's own door to a fresh chat
+    (``app/chat/page.tsx`` ``ChatFullView``). Since RM-4 the page also reads
+    ``reminder``: it opens a fresh chat with or without ``do``, and the
+    server writes the first message (``routes/chat_reminder.py``)."""
+    return f"/chat?do=new-chat&reminder={quote(reminder_id, safe='')}"
+
+
+def _reminder_kind(row: dict[str, Any]) -> str:
+    """The card kind of one row: its state, then its last ladder step."""
+    if row.get("state") == "unconfirmed":
+        return "reminder_unconfirmed"
+    if row.get("step") == "check_back":
+        return "reminder_check"
+    return "reminder_due"
+
+
+def _reminder_signal(row: dict[str, Any]) -> Signal:
+    """One reminder card. The facts are times and counts only. The title is
+    the member's own line of text."""
+    rid = str(row["id"])
+    kind = _reminder_kind(row)
+    title = str(row.get("title") or "").strip() or "(untitled)"
+    fire_at = _iso(row.get("fire_at"))
+    href = reminder_href(rid)
+    return Signal(
+        signal_id=f"reminders:{rid}", app="calendar", kind=kind,
+        entity={"type": "reminder", "id": rid, "label": title}, title=title,
+        # `waiting_since` is the instant of the last step, so a dismissed
+        # card comes back at the check-back and after a new fire (§6.8 item 1).
+        facts={"fire_at": fire_at,
+               "waiting_since": _iso(row.get("step_at")) or fire_at,
+               "cycles": int(row.get("cycles") or 0),
+               "notice": row.get("kind") == "notice",
+               # RX-3: the linked object, so My Day's band can name it.
+               "subject_kind": row.get("subject_kind"),
+               "subject_id": row.get("subject_id")},
+        href=href, acts=(link("open-reminder", "Open", href),),
+        at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
+    )
+
+
+async def _reminders(user: UserContext) -> Found:
+    from gateway.routes.projects.reminders import my_open_cards, reminders_enabled
+
+    if not reminders_enabled():
+        raise SourceAbsent("CALENDAR_REMINDERS is off")
+    rows, edge = await my_open_cards(user, now=_now(), limit=PER_APP + 1)
+    items = _sort([
+        _item(id=f"reminders:{r['id']}", app="calendar", kind=_reminder_kind(r),
+              title=r.get("title"), detail=None, href=reminder_href(str(r["id"])),
+              at=r.get("fire_at"))
+        for r in rows
+    ])
+    signals = [_reminder_signal(r) for r in rows]
+    # The next fire or step of the loop is when the card set changes next,
+    # so the read cache keeps the answer until then (§8.4 item 2).
+    return Found(items[:PER_APP], min(len(items), PER_APP), capped=len(items) > PER_APP,
+                 signals=lambda: signals[:PER_APP], next_edge=_iso(edge))
+
+
+# ── AI vendor alerts (AO-2, ``customer_console.md`` §6A.17b) ────────────────
+#
+# One row for each AI vendor that is out of credit or low, and one "serves
+# again" row for a day after it recovers. Only an admin of an org that
+# PROVIDER_ALERT_ORGS lists gets a row: `admin=True` applies the admin test,
+# and the flag lives inside (SourceAbsent). The rows come from the last alert
+# that `gateway.provider_alerts` sent, in the tenant Redis of the org. So the
+# provider writes no SQL and opens no session. Each row links to the provider
+# page of the Operator Console. It has no act and no feed signal: the bell and
+# the Needs you card show it, and no My Day card does.
+
+PROVIDER_ALERT_KINDS = frozenset({"provider_alert"})
+
+
+async def _provider_alerts(user: UserContext) -> Found:
+    from gateway import provider_alerts
+
+    org = str(user.organization_id or "")
+    if not provider_alerts.alert_allowed(org):
+        raise SourceAbsent("PROVIDER_ALERT_ORGS does not list the org")
+    items: list[Item] = []
+    for alert in await provider_alerts.bell_rows(org, _now()):
+        title, detail = provider_alerts.words(alert.state, alert.label, alert.days_left,
+                                              alert.was)
+        items.append(_item(id=f"providers:{alert.provider}", app="providers",
+                           kind="provider_alert", title=title, detail=detail,
+                           href=provider_alerts.PROVIDER_PAGE, at=alert.at))
+    shown = _sort(items)[:PER_APP]
+    return Found(shown, len(shown), capped=len(items) > PER_APP)
+
+
 # ── The one registry (``my_day_feed.md`` §4.4) ─────────────────────────────
 
 
@@ -987,6 +1148,169 @@ def register(provider: Provider) -> Provider:
     return provider
 
 
+# ── Decisions: one named person decides (WS-ALN ALN-2b) ─────────────────────
+#
+# project_alignment.md §3.2. The provider calls the decisions app's OWN list
+# (`decisions.list_decisions`, the decider's open decisions), so it writes no
+# SQL. It is feed-only: the bell already shows the decision as a notification
+# row (verb "asked you to decide on"), so a needs row would show it twice. The
+# card keys on the TASK (`tasks:<id>`), so it folds into the task's one card
+# with that notification (`my_day_feed.md` §4.1). Its one act is a link: the
+# task panel holds the answer, through the one answer route, until MD-8.
+# The flag `DECISIONS_ORGS` gates the source: off, it reads `absent`. The source
+# is gated too (`MY_DAY_PROVIDERS` must list `decisions`).
+# Fence: `tests/unit/test_decisions_my_day.py`.
+
+#: The one kind of the source.
+DECISION_KINDS = frozenset({"decision"})
+
+
+async def _decisions(user: UserContext) -> Found:
+    from gateway.routes.projects import decisions
+
+    if not decisions.decisions_allowed(getattr(user, "organization_id", None)):
+        raise SourceAbsent("DECISIONS_ORGS does not hold the org")
+    answer = await decisions.list_decisions(task_id=None, user=user)
+    rows = list(answer.get("decisions") or [])
+    # The decider's own list, newest first. One signal for each task: the
+    # decision that closes first, with the number that wait.
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_task.setdefault(str(row["subject_id"]), []).append(row)
+
+    def signals() -> list[Signal]:
+        out: list[Signal] = []
+        for task_id, group in by_task.items():
+            first = min(group, key=lambda r: str(r.get("expires_at") or ""))
+            entity = task_entity(task_id, first.get("task_title"))
+            out.append(Signal(
+                signal_id=f"tasks:{task_id}", app="projects", kind="decision",
+                entity=entity, title=entity["label"],
+                facts={"question": str(first.get("question") or ""),
+                       # The directory name, as the task panel shows it.
+                       "who": first.get("asked_by_name") or _who(first.get("asked_by")),
+                       # Not `waiting_since`: that is a state fact, and the
+                       # card's fingerprint must not move for a decision.
+                       "asked_at": _iso(first.get("created_at")),
+                       "expires_at": _iso(first.get("expires_at")),
+                       "open": len(group)},
+                href=task_href(task_id),
+                acts=(link("answer", "Answer", task_href(task_id)),),
+                at=_iso(first.get("created_at")),
+                expires_at=_iso(first.get("expires_at")),
+            ))
+        return out[:PER_APP]
+
+    edges = sorted(str(r["expires_at"]) for r in rows if r.get("expires_at"))
+    return Found([], len(by_task), capped=len(rows) >= decisions.LIST_LIMIT,
+                 signals=signals, next_edge=edges[0] if edges else None)
+
+
+# ── Studio: a share that waits for the member's approval (WS-STU J2b-4a) ────
+#
+# ai_studio.md §14 J2b-4. ONE needs source, for a holder of `studio:publish`.
+# It reuses the kind `approval` with app `studio` (owner answer 29514d69,
+# 2026-11-13), so KIND_ORDER and the frontend do not change. The provider
+# calls the route's OWN list (`packages.list_approvals`), so it writes no SQL.
+# The flags and the right are read here, because a bare 404 from the route
+# would read as `failed`. The list is org-wide, so the provider drops each row
+# that the store would refuse the member to approve: the owner's and the
+# publisher's. The row names no manifest. It opens the Studio library
+# (`STUDIO_HREF`). It has no feed signal, so My Day shows no card for it.
+# Fence: `tests/unit/test_shell_needs.py`, `test_shell_needs_r8.py`.
+
+STUDIO_HREF = "/studio"
+STUDIO_APPROVAL_RIGHT = "studio:publish"
+
+# WS-STU J2d (TOF-4b, ``ai_studio_rows/J2d.md``): the same source gives one
+# row for each pending ask to share a SKILL with the org. The provider calls
+# the route's own list (``skills.list_skill_shares``), so it writes no SQL. It
+# drops each ask of the member, because the store refuses that approve. The
+# row holds no body and no hash. A skill share needs no install (J2c), so
+# ``PACKAGE_HOST_ORGS`` gates the app rows only. The row has no act: the
+# holder reads the whole text on a card in the chat, and decides there. It
+# opens a new chat with a drafted message (``skill_share_href``). The member
+# reads the words, then sends them. The words hold ids only, no member text.
+
+
+def skill_share_href(skill_id: str, version: Any) -> str:
+    """The link of a skill share row: a new chat, with the ask in the box.
+
+    ``q`` puts words in the message box with no typed mark, and nothing
+    sends by itself (``app/chat/page.tsx``). The words load the pack
+    ``studio-share`` by its words ("skill share"). They name the act
+    (approve or reject) and the skill id and the version only, so the model
+    calls ``act=approve``, which shows the card with the whole text."""
+    words = (f"Review the skill share ask of skill {skill_id}, version {version}: "
+             "approve or reject.")
+    return f"/chat?{urlencode({'do': 'new-chat', 'q': words})}"
+
+
+def _same_person(a: Any, b: Any) -> bool:
+    return str(a or "").strip().lower() == str(b or "").strip().lower() != ""
+
+
+async def _studio_app_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The app rows of J2b-4a, and whether the route cut its list."""
+    from gateway.routes.studio import packages
+
+    answer = await packages.list_approvals(user=user, state=None)
+    me = user.email
+    out = []
+    for row in answer.get("approvals") or []:
+        if _same_person(row.get("owner_email"), me) or _same_person(row.get("published_by"), me):
+            continue
+        name = str(row.get("name") or "").strip() or "An app"
+        version = row.get("version")
+        out.append(_item(
+            id=f"studio-approval:{row.get('package_id')}:{version}", app="studio",
+            kind="approval", title="A share waits for your approval",
+            detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
+            href=STUDIO_HREF, at=row.get("requested_at"),
+        ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_skill_rows(user: UserContext) -> tuple[list[Item], bool]:
+    """The skill share rows of J2d, and whether the route cut its list."""
+    from gateway.routes.studio import skills
+
+    answer = await skills.list_skill_shares(user=user, state=None)
+    me = user.email
+    out = []
+    for row in answer.get("shares") or []:
+        if _same_person(row.get("owner_email"), me):
+            continue
+        sid = str(row.get("skill_id") or "")
+        name = str(row.get("name") or "").strip() or "A skill"
+        version = row.get("version")
+        out.append(_item(
+            id=f"studio-skill-share:{sid}:{version}", app="studio",
+            kind="approval", title="A skill share waits for your approval",
+            detail=f"{name}, version {version}. Asked by {_who(row.get('requested_by'))}.",
+            href=skill_share_href(sid, version), at=row.get("requested_at"),
+        ))
+    return out, bool(answer.get("truncated"))
+
+
+async def _studio_approvals(user: UserContext) -> Found:
+    from gateway.package_host import flags as host_flags
+    from gateway.routes.studio import flags as studio_flags
+
+    org = getattr(user, "organization_id", None)
+    if not studio_flags.studio_allowed(org):
+        raise SourceAbsent("STUDIO_ORGS does not hold the org")
+    out: list[Item] = []
+    cut = False
+    if host_flags.package_host_allowed(org):
+        rows, cut = await _studio_app_rows(user)
+        out += rows
+    rows, skills_cut = await _studio_skill_rows(user)
+    out += rows
+    shown = _sort(out)[:PER_APP]
+    return Found(shown, len(shown), capped=cut or skills_cut or len(out) > PER_APP)
+
+
 # Approvals runs LAST of the needs providers (the module note). Three of them
 # also carry a Handled read (MD-2c). Projects has none: a closed task is
 # My Tasks' row, and a read notification closed nothing.
@@ -995,8 +1319,30 @@ register(Provider("tasks", ("projects",), _tasks, frozenset({"overdue", "due_tod
 register(Provider("projects", ("projects",), _projects, frozenset({"notification"})))
 register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
                   handled=_email_handled))
+# WS-STU J2b-4a: Studio registers before the reminders, so approvals stays last and the reminders stay beside it. The
+# right `studio:publish` gates it (`permission`), and the flags live inside.
+register(Provider("studio", ("studio",), _studio_approvals, frozenset({"approval"}),
+                  permission=STUDIO_APPROVAL_RIGHT, app="studio"))
+# AO-2: the AI vendor alerts of the operator org, for its admins only. It
+# registers before the reminders, so approvals stays last and the reminders
+# stay beside it. The gate is `feature:chat`: the alert says the chat fell
+# over. PROVIDER_ALERT_ORGS gates it inside (SourceAbsent).
+register(Provider("providers", ("chat",), _provider_alerts, PROVIDER_ALERT_KINDS,
+                  admin=True))
+# WS-66 RM-2b: the reminders register before approvals, which stays last. The
+# gate is `feature:projects`, the gate of the reminder routes. It has no
+# Handled read, and the flag lives inside the provider (SourceAbsent).
+register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, app="calendar"))
 register(Provider("approvals", ("approvals",), _approvals, frozenset({"approval"}),
                   admin=True, handled=_approvals_handled))
+# WS-ALN ALN-2b: feed-only, so it registers after every needs provider. The
+# gate is `feature:projects`, the gate of the decisions routes. It is gated
+# like the other feed-only sources (MD-3b): it runs only while MY_DAY_PROVIDERS
+# lists `decisions`, so an org with no decision costs no read on a poll. The
+# flag DECISIONS_ORGS still gates it inside (SourceAbsent), and gates every
+# route. Turn on both to show the card.
+register(Provider("decisions", ("projects",), _decisions, DECISION_KINDS,
+                  needs=False, gated=True, app="projects"))
 
 
 def needs_providers() -> list[Provider]:

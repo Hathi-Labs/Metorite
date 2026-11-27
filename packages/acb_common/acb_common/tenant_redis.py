@@ -132,6 +132,14 @@ KEY_ROOT = "cc"
 #: answers 503 for it.
 OUTAGE_ERRORS: tuple[type[BaseException], ...] = (RedisError, OSError, TimeoutError)
 
+#: The one script of :meth:`TenantRedis.delete_unless`: delete ``KEYS[1]``
+#: unless it holds ``ARGV[1]``. Redis runs a script as one step. It names no
+#: key of its own, so the key discipline of the wrapper holds.
+_DELETE_UNLESS_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return 0 end "
+    "return redis.call('DEL', KEYS[1])"
+)
+
 
 # ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -508,6 +516,18 @@ class TenantRedis:
         """
         return await self._client.getdel(self._raw(k))
 
+    async def delete_unless(self, k: TenantKey, value: str) -> Any:
+        """Delete *k* unless it holds *value*, in ONE atomic step.
+
+        The step is the fixed Lua script :data:`_DELETE_UNLESS_LUA`. It
+        touches ``KEYS[1]`` only, and a caller gives no script, so it can
+        reach no key of another tenant. Gives 1 when it deleted the key, and
+        0 when the key held *value* or did not exist. A GET and then a DELETE
+        can remove a value that another writer set between the two
+        (``acb_skills.late_approve.drop_offer``, the SPENT mark of RESUME-2a).
+        """
+        return await self._client.eval(_DELETE_UNLESS_LUA, 1, self._raw(k), value)
+
     async def mget(self, keys: Sequence[TenantKey]) -> list[Any]:
         """Read many keys in ONE round trip. Each key goes through
         :meth:`_raw`, so one ``str`` or one key of another tenant refuses the
@@ -722,6 +742,17 @@ class TenantPipeline:
         self._pipe.expire(TenantRedis._raw(k), seconds)
         return self
 
+    def incr(self, k: TenantKey, amount: int = 1) -> TenantPipeline:
+        self._pipe.incr(TenantRedis._raw(k), amount)
+        return self
+
+    def expireat(self, k: TenantKey, when: int) -> TenantPipeline:
+        """Set the key to end at the Unix time *when*. A counter of a fixed
+        period (API-3, the daily budget) sets one end each time, in the
+        same MULTI block as its INCR, so no key lives without an end."""
+        self._pipe.expireat(TenantRedis._raw(k), when)
+        return self
+
     async def execute(self) -> Any:
         return await self._pipe.execute()
 
@@ -746,8 +777,18 @@ _BINARY_POOL: Any = None
 #: Connection ceiling of the binary pool. One caller, short-lived commands.
 BINARY_POOL_MAX_CONNECTIONS = 4
 
+#: The third pool, for long blocking reads (H-201c). The live activity feed
+#: holds an ``XREAD BLOCK 15000`` open for each viewer. On the main pool of
+#: 16, a few open feeds take every connection, and each other caller then
+#: gets "Too many connections". This pool keeps those reads apart. It is the
+#: SAME wrapper over it, so the key discipline is identical.
+_BLOCKING_POOL: Any = None
 
-def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
+#: Connection ceiling of the blocking pool. One connection for each open feed.
+BLOCKING_POOL_MAX_CONNECTIONS = 16
+
+
+def get_tenant_redis(*, binary: bool = False, blocking: bool = False) -> TenantRedis:
     """The shared tenant-aware client for this process.
 
     Does **not** require a tenant to be bound — the client is tenant-agnostic;
@@ -757,8 +798,23 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
     ``binary=True`` returns the same wrapper over a second, small pool with
     ``decode_responses=False``: replies come back as ``bytes``, unchanged.
     Use it only for values that are not text.
+
+    ``blocking=True`` returns the same wrapper over the third pool, for a
+    command that waits on the server (``XREAD BLOCK``). Use it only for such a
+    read, so a long wait never takes a connection of the main pool.
     """
-    global _POOL, _BINARY_POOL
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
+    if binary and blocking:
+        raise ValueError("binary and blocking pools are separate: pick one")
+    if blocking:
+        if _BLOCKING_POOL is None:
+            _BLOCKING_POOL = aioredis.from_url(
+                get_settings().redis_url,
+                decode_responses=True,
+                max_connections=BLOCKING_POOL_MAX_CONNECTIONS,
+                health_check_interval=30,
+            )
+        return TenantRedis(_BLOCKING_POOL)
     if binary:
         if _BINARY_POOL is None:
             _BINARY_POOL = aioredis.from_url(
@@ -779,7 +835,8 @@ def get_tenant_redis(*, binary: bool = False) -> TenantRedis:
 
 
 def reset_pool_for_tests() -> None:
-    """Drop both cached pools. Tests only — there is no runtime reason to call it."""
-    global _POOL, _BINARY_POOL
+    """Drop the cached pools. Tests only — there is no runtime reason to call it."""
+    global _POOL, _BINARY_POOL, _BLOCKING_POOL
     _POOL = None
     _BINARY_POOL = None
+    _BLOCKING_POOL = None

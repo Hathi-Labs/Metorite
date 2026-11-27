@@ -31,6 +31,7 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
+import { displayRowProject } from "../lib/personalTree";
 import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 
 import { ControlLink } from "@/components/ControlLink";
@@ -1311,7 +1312,7 @@ export function HygienePanel({ data }: { data: HygieneReport }) {
                           key={r.id}
                           // `pr-px`: the Load panel's italic-clip lesson.
                           className="truncate pr-px text-[10px] text-muted-foreground"
-                          title={`${r.title} · ${r.project_name}`}
+                          title={`${r.title} · ${displayRowProject(r)}`}
                         >
                           {r.title}
                         </li>
@@ -2041,7 +2042,7 @@ export function PulsePanel({
                         <li
                           key={task.id}
                           className="flex min-w-0 items-baseline gap-1 text-[10px] text-muted-foreground"
-                          title={`${task.title}${task.project_name ? ` · ${task.project_name}` : ""}: ${focusWhy(task)}`}
+                          title={`${task.title}${task.project_name ? ` · ${displayRowProject(task)}` : ""}: ${focusWhy(task)}`}
                         >
                           <span className="min-w-0 truncate pr-px text-foreground">
                             {task.title}

@@ -47,6 +47,7 @@ import {
   turnThenArrival,
 } from "@/lib/cardRollup";
 import { EMPTY_CONFIRMATIONS, confirmationReducer } from "@/lib/confirmationQueue";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 /** `createElement` with children passed the way JSX passes them. */
 const createElement = rawElement as unknown as (type: unknown, props: unknown, ...children: unknown[]) => ReactElement;
@@ -273,7 +274,7 @@ describe("one toggle, one place, inside the card", () => {
     );
     expect(count(html, "data-rollup-toggle")).toBe(1);
     expect(count(html, ">Pipeline<")).toBe(1);
-    expect(html).toMatch(/<div class="rounded-lg border border-border\/60 bg-card\/50 p-3"><button[^>]*data-rollup-toggle/);
+    expect(classicMarkup(html)).toMatch(/<div class="rounded-lg border border-border\/60 bg-card\/50 p-3"><button[^>]*data-rollup-toggle/);
   });
 
   it("MessageBubble hands the toggle to a root that owns its head, and only to one", () => {
@@ -298,7 +299,7 @@ describe("one toggle, one place, inside the card", () => {
       createElement(RollupCard, { id: "genui:m-1:1", title: "Table", rows: 9 }, createElement("table", null)),
     );
     expect(count(html, "data-rollup-toggle")).toBe(1);
-    expect(html).toContain(`<div data-rollup-frame="" class="${CARD_FRAME_CLASS}"><button`);
+    expect(classicMarkup(html)).toContain(`<div data-rollup-frame="" class="${CARD_FRAME_CLASS}"><button`);
   });
 
   it("a generative-UI card in the side panel (no chat card) keeps its title", () => {
@@ -428,5 +429,30 @@ describe("a manual open beats the automatic rule", () => {
     );
     expect(html).toContain('data-rollup="open"');
     expect(html).toContain('aria-expanded="true"');
+  });
+});
+
+describe("a receipt opens folded (owner, 2026-10-29)", () => {
+  // "show the notes closed by default, unless you actually want the user to
+  // read a particular AGUI card or note." Mutation: drop the receipt rule
+  // and the first test goes red.
+  it("is closed even when it is the newest", () => {
+    expect(rollupOpen({ pending: false, receipt: true, newest: true, long: false })).toBe(false);
+  });
+
+  it("a card that waits beats the receipt", () => {
+    expect(rollupOpen({ pending: true, receipt: true, newest: true, long: false })).toBe(true);
+  });
+
+  it("a manual open beats the receipt", () => {
+    expect(rollupOpen({ pending: false, receipt: true, manual: "open", newest: false, long: false })).toBe(true);
+  });
+
+  it("a held card keeps its state over the receipt", () => {
+    expect(rollupOpen({ pending: false, receipt: true, held: true, newest: true, long: false })).toBe(true);
+  });
+
+  it("a card that is not a receipt still opens when it is newest", () => {
+    expect(rollupOpen({ pending: false, newest: true, long: false })).toBe(true);
   });
 });

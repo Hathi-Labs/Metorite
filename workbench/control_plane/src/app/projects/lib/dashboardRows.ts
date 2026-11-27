@@ -58,7 +58,11 @@ export type DashboardRow =
  * exactly that reason. So this reads defensively throughout.
  */
 export function dashboardRows(summary: NodeSummary): DashboardRow[] {
-  const children = Array.isArray(summary.children) ? summary.children : [];
+  // WS-64: a filed child is not a row. The server leaves it out now, and an
+  // older gateway still sends it.
+  const children = Array.isArray(summary.children)
+    ? summary.children.filter((child) => !child.archived)
+    : [];
   const rows: DashboardRow[] = children.map((child) => ({
     kind: "child" as const,
     child,
@@ -118,6 +122,8 @@ export const EMPTY_COPY: Record<NodeSummary["level"], string> = {
     "No subprojects. The task views hold everything this project owns.",
   subproject:
     "Nothing sits below a subproject — the tree stops here by design.",
+  // WS-64 OP-11 — My tasks. Its rows are the spaces that hold my tasks.
+  mine: "Nothing is assigned to you yet. Capture a task, or ask a colleague to assign one.",
 };
 
 /**
@@ -134,14 +140,29 @@ export const EMPTY_COPY: Record<NodeSummary["level"], string> = {
  * A project and a subproject need no special case: their copy already says
  * the task views hold the work, which is exactly where it is.
  */
-export function emptyCopy(summary: NodeSummary): string {
+export function emptyCopy(
+  summary: NodeSummary,
+  opts: { personal?: boolean } = {},
+): string {
   const level = summary.level;
   const tasks = summary.tasks ?? 0;
+  // OP-12b — the private space holds folders, not "projects". The count names
+  // what it counts: all tasks, then the open ones.
+  if (opts.personal && level === "space") {
+    if (tasks === 0) return "Nothing here yet. Add a folder or a project to group your private tasks.";
+    const by = summary.by_category ?? {};
+    const open = Math.max(0, tasks - (by.done ?? 0) - (by.cancelled ?? 0));
+    return `${tasks} ${tasks === 1 ? "task" : "tasks"} (${open} open), in no folder. Add a folder or a project to group them.`;
+  }
   if (tasks > 0 && (level === "space" || level === "folder")) {
     const noun = level === "space" ? "space" : "folder";
     return `No projects here yet. ${tasks} ${
       tasks === 1 ? "task sits" : "tasks sit"
     } directly in this ${noun}.`;
+  }
+  // WS-64 OP-11 — work that is mine and sits in no project I may open.
+  if (tasks > 0 && level === "mine") {
+    return `${tasks} ${tasks === 1 ? "task sits" : "tasks sit"} in no project you can open.`;
   }
   // ⚠️ A level this map does not know rendered an EMPTY dashed box — a
   // container with nothing in it, which reads as a half-built feature. The

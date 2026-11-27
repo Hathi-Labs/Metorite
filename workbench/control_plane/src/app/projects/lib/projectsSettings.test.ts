@@ -93,3 +93,90 @@ describe("the review's findings stay fixed", () => {
     expect(page).not.toContain("onApp={setApp}");
   });
 });
+
+describe("Space default statuses (PST-1, D185, §9.5)", () => {
+  it("names the section in the section list and the heading", () => {
+    const statuses = SPACE_SECTIONS.find((s) => s.id === "statuses");
+    expect(statuses?.label).toBe("Space default statuses");
+    // The heading is `{current.label} · {space}`, so it reads the same label.
+    expect(read("ProjectsSettings.tsx")).toContain("{current.label}");
+  });
+  it("names the palette entry the same, and it opens that section", async () => {
+    const { COMMANDS } = await import("./commands");
+    const cmd = COMMANDS.find((c) => c.id === "project.statuses");
+    expect(cmd?.label).toBe("Space default statuses");
+    const calls: unknown[] = [];
+    cmd?.run(
+      {
+        navigate: () => undefined,
+        setMode: () => undefined,
+        setPanelMode: () => undefined,
+        clearFilters: () => undefined,
+        toggleRail: () => undefined,
+        manage: (what) => calls.push(["manage", what]),
+        openSettings: (section) => calls.push(["openSettings", section]),
+        showShortcuts: () => undefined,
+      },
+      {
+        mode: "board",
+        hasProject: true,
+        isRoot: false,
+        filtered: false,
+        panelOpen: false,
+        panelMode: "side",
+        canToggleRail: true,
+      },
+    );
+    expect(calls).toEqual([["openSettings", "statuses"]]);
+  });
+  it("keeps the row menu at Statuses, because it opens that node's own editor", () => {
+    const menu = readFileSync(join(__dirname, "projectMenu.ts"), "utf-8");
+    expect(menu).toMatch(/label: "Statuses",\s+icon: "Columns3",\s+onSelect: ui\.onManageStatuses/);
+  });
+  it("lets no status component build a scope sentence itself", () => {
+    // Every sentence of §9.5 comes from `lib/statusSetCopy.ts`.
+    const words = [
+      "use these statuses",
+      "uses these statuses",
+      "Uses the statuses of",
+      "Uses its own statuses",
+      "keep their own statuses",
+      "keeps its own statuses",
+      "that you cannot see",
+      "Statuses come from",
+      "Space default statuses",
+      "'s set",
+    ];
+    for (const file of ["StatusSetControl.tsx", "StatusManager.tsx", "ProjectsSettings.tsx"]) {
+      const src = read(file);
+      for (const phrase of words) expect(src, `${file}: ${phrase}`).not.toContain(phrase);
+    }
+    const control = read("StatusSetControl.tsx");
+    expect(control).toContain('from "../lib/statusSetCopy"');
+    expect(control).toMatch(/\{scopeLine\(info\)\}/);
+  });
+});
+
+describe("each run of the palette entry opens the section (PST-1 fix round)", () => {
+  it("gives the same place a new key on each open", async () => {
+    const { nextSettingsSeed, plainSettingsSeed, settingsSeedKey } = await import("./settingsSeed");
+    // The member runs "Space default statuses": the pane opens at Statuses of A.
+    const first = nextSettingsSeed({}, "statuses", "space-a");
+    // The member clicks General or picks space B inside the pane. The seed does
+    // not change. The member runs the entry again.
+    const second = nextSettingsSeed(first, "statuses", "space-a");
+    expect(settingsSeedKey(second)).not.toBe(settingsSeedKey(first));
+    expect(second.section).toBe("statuses");
+    expect(second.spaceId).toBe("space-a");
+    // A plain open from the sidebar keeps the pane that is there.
+    const plain = plainSettingsSeed(second);
+    expect(settingsSeedKey(plainSettingsSeed(plain))).toBe(settingsSeedKey(plain));
+    expect(plain.section).toBeUndefined();
+  });
+  it("is how the page keys the pane and opens a place", () => {
+    const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
+    expect(page).toContain("key={settingsSeedKey(settingsSeed)}");
+    expect(page).toContain("setSettingsSeed((prev) => nextSettingsSeed(prev, section, spaceId ?? null))");
+    expect(page).not.toMatch(/key=\{`\$\{settingsSeed\.section/);
+  });
+});

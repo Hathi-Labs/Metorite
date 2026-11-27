@@ -89,8 +89,13 @@ test.describe("Knowledge page chrome", () => {
 
     await outline.getByRole("button", { name: "How to ask" }).click();
     await expect(outline.getByRole("button", { name: "How to ask" })).toHaveAttribute("aria-current", "location");
+    // The jump is a smooth scroll. Wait until the page has moved: on a slow
+    // runner it has not started yet, a scroll to the top then changes nothing,
+    // no scroll event fires, and the mark stays on "How to ask".
+    const scroller = page.locator("[data-page-scroller]");
+    await expect.poll(() => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
     // Scroll back to the top by hand: the mark follows.
-    await page.locator("[data-page-scroller]").evaluate((el) => el.scrollTo({ top: 0 }));
+    await scroller.evaluate((el) => el.scrollTo({ top: 0 }));
     await expect(outline.getByRole("button", { name: "Scope" })).toHaveAttribute("aria-current", "location");
 
     await outline.getByRole("button", { name: "Who may ask" }).click();
@@ -150,7 +155,10 @@ test.describe("Knowledge page chrome", () => {
 
     await pick(page, "Copy as Markdown");
     await expect(page.getByText("Markdown copied")).toBeVisible();
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("# Short note\n\n# Only heading\n\nOne line.\n");
+    // Windows returns the clipboard text with CRLF line ends, so compare with LF.
+    // The poll also covers a read that lands before the clipboard holds the text.
+    const clipboardLf = () => page.evaluate(() => navigator.clipboard.readText()).then((t) => t.replace(/\r\n/g, "\n"));
+    await expect.poll(clipboardLf).toBe("# Short note\n\n# Only heading\n\nOne line.\n");
 
     const download = page.waitForEvent("download");
     await pick(page, "Download as .md");

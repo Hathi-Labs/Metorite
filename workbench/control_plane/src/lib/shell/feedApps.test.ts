@@ -125,12 +125,20 @@ describe("the source map of MD-3b (source_apps, §14.1a)", () => {
     expect(sourceApp(undefined, "email")).toBe("email");
     expect(sourceApp({}, "calendar")).toBe("calendar");
     expect(sourceApp(MAP, "constructor")).toBe("constructor");
+    // WS-66 RM-2b repair: a failed reminders source says reminders, under the app Calendar.
+    expect(feedFailedLines({ reminders: "failed" }, { reminders: "calendar" })).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+    ]);
+    expect(feedFailedLines({ reminders: "failed", calendar: "failed" }, { reminders: "calendar" })).toEqual([
+      "Calendar did not answer, so its reminders may be missing.",
+      "Calendar did not answer, so its time blocks may be missing.",
+    ]);
     expect(feedFailedLines({ calendar: "failed", email: "failed" })).toEqual([
       "Email did not answer, so its replies may be missing.",
       "Calendar did not answer, so its time blocks may be missing.",
     ]);
     expect(cappedLinks(group, ["tasks"])).toEqual([
-      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-today" },
+      { app: "tasks", label: "Show all in My work", href: "/projects?app=my-tasks&chip=today" },
     ]);
     // WS-64: the nav badge still keys on the pane href, so it is not touched.
     expect(NEEDS_APP_HREF.tasks).toBe("/projects");

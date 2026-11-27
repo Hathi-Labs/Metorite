@@ -24,13 +24,17 @@
 // spec that drives the real frame, and Playwright transpiles without the
 // app's path alias.
 import { appTokenCss } from "./app-tokens";
+import type { Look } from "./look";
 import type { Theme, ThemeMode } from "./types";
 
 // A nonce-free but locked CSP: allow inline style/script (the generated code
 // IS inline), forbid every remote fetch surface. 'unsafe-inline'/'unsafe-eval'
 // are scoped to this opaque-origin frame only — they grant the generated code
 // nothing outside its own sandbox.
-const FRAME_CSP = [
+//
+// Exported for `e2e/react-artifact.spec.ts` (task 2432, F4), which runs a
+// React bundle under THIS policy rather than under a copy of it.
+export const FRAME_CSP = [
   "default-src 'none'",
   "style-src 'unsafe-inline'",
   "script-src 'unsafe-inline' 'unsafe-eval'",
@@ -174,6 +178,7 @@ export function buildSrcDoc(
   theme: Theme,
   mode: ThemeMode,
   icons: Record<string, string>,
+  look: Look = "classic",
 ): string {
   // Base styling gives generated code the REAL Metorite design system —
   // the ACTIVE theme's tokens, not a frozen copy of one — so generated HTML is
@@ -190,7 +195,7 @@ export function buildSrcDoc(
 <style>
   :root {
     color-scheme: ${mode};
-${appTokenCss(theme, mode)}
+${appTokenCss(theme, mode, "    ", look)}
   }
   html, body { margin: 0; padding: 0; }
   body {

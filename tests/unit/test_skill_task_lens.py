@@ -62,6 +62,21 @@ LANES = {"rows": [
 ]}
 
 
+#: The one day rule that the Recorder answers for ``GET /tasks/settings``, and the
+#: version that a proposal of it shows (CAL-3). A confirmed write names it.
+STORED_RULES = [{"days": [0, 1, 2, 3, 4], "start_hour": 8, "end_hour": 11,
+                 "kind": "focus", "label": "", "theme": ""}]
+
+
+def _rules_version() -> str:
+    from skill_my_tasks import core
+
+    return core.day_rules_token(STORED_RULES)
+
+
+RULES_VERSION = _rules_version()
+
+
 class Recorder:
     """A fake `_request` that records `(method, path)` and answers in the
     shape each route answers with. Query params are kept for inspection."""
@@ -130,6 +145,9 @@ class Recorder:
     @staticmethod
     def _answer_projects(method: str, path: str, kw: dict[str, Any]) -> Any:
         """`/projects/tasks/*` and `/projects/nodes*` — the board's doors."""
+        if (method, path) == ("GET", "/tasks/settings"):
+            # CAL-3: one day rule, so the edit and the delete have a number 1.
+            return {"day_templates": [dict(r) for r in STORED_RULES]}
         if path == "/projects/nodes":
             return {"rows": [{"id": PID, "name": "Alpha", "kind": "project"}], "total": 1}
         if path.endswith("/statuses"):
@@ -232,12 +250,56 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_list_schedule",
      {"from_iso": "2026-09-24T00:00:00+05:30", "to_iso": "2026-09-25T00:00:00+05:30"},
      [("GET", "/projects/my/calendar")]),
+    # CE-15 (task 3463): the same read, the `entries` key only.
+    ("my_tasks_list_events",
+     {"from_iso": "2026-09-24T00:00:00+05:30", "to_iso": "2026-09-25T00:00:00+05:30"},
+     [("GET", "/projects/my/calendar")]),
+    # P-1a (task 3112): the connected calendars and the two task proposals.
+    ("my_tasks_list_calendar_connections", {}, [("GET", "/tasks/calendar/connections")]),
+    ("my_tasks_suggest_title", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/suggest-title")]),
+    ("my_tasks_enrich", {"item_id": TID}, [("POST", f"/tasks/items/{TID}/enrich")]),
+    # P-1b (task 3922): the draft of a task from a mail, three ways. The write
+    # shows a card first, and a run with no card channel sends nothing. Its
+    # three routes are checked in test_my_tasks_p1b_tools.py.
+    ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID},
+     [("POST", "/tasks/capture/from-email/preview")]),
+    ("my_tasks_draft_from_mail", {"account_id": PID, "email_id": CID, "ai": True},
+     [("POST", "/tasks/capture/from-email/enhance")]),
+    ("my_tasks_draft_from_mail", {"account_id": PID, "thread_id": "t-1",
+                                  "reply_body": "I will send the deck by Friday."},
+     [("POST", "/tasks/capture/from-reply/detect")]),
+    ("my_tasks_capture_from_mail", {"account_id": PID, "email_id": CID,
+                                    "title": "Send the deck"}, []),
+    # P-1c (task 3923): the list read comes first. This recorder answers no
+    # connection, so no card shows and no write goes. The writes and the cards
+    # are fenced in test_my_tasks_p1c_tools.py.
+    ("my_tasks_calendar_connection", {"provider": "google", "action": "sync"},
+     [("GET", "/tasks/calendar/connections")]),
     ("my_tasks_plan_day", {}, [("POST", "/tasks/calendar/plan-today")]),
     ("my_tasks_replan_day", {}, [("POST", "/tasks/calendar/replan-today")]),
     ("my_tasks_rollover", {}, [("POST", "/tasks/calendar/rollover-today")]),
     ("my_tasks_day_digest", {}, [("GET", "/tasks/calendar/day-summary")]),
     ("my_tasks_estimate_stats", {}, [("GET", "/projects/my/calendar/estimate-stats")]),
     ("my_tasks_set_one_thing", {"item_id": TID}, [("PUT", "/tasks/calendar/day-state")]),
+    ("my_tasks_get_calendar_settings", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_update_calendar_settings", {"day_start_hour": 8, "confirmed": True},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_list_day_rules", {}, [("GET", "/tasks/settings")]),
+    ("my_tasks_add_day_rule",
+     {"days": [0, 1], "start_hour": 8, "end_hour": 11, "confirmed": True,
+      "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_edit_day_rule", {"number": 1, "start_hour": 9, "confirmed": True, "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    ("my_tasks_delete_day_rule", {"number": 1, "confirmed": True, "version": RULES_VERSION},
+     [("GET", "/tasks/settings"), ("PUT", "/tasks/settings")]),
+    # CAL-4 (task 1678): the two day flows. Reads and apply=False proposals only.
+    ("my_tasks_start_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox"), ("POST", "/tasks/calendar/plan-today")]),
+    ("my_tasks_close_my_day", {},
+     [("GET", "/tasks/calendar/day-summary"), ("POST", "/tasks/calendar/rollover-today"),
+      ("GET", "/projects/my/inbox")]),
 ]
 
 
@@ -259,8 +321,11 @@ def test_each_tool_calls_exactly_the_lens_routes(gw: Recorder, tool, kwargs, exp
 
 # ── 2. The retired doors are named nowhere ──────────────────────────────────
 
+#: ``/tasks/settings`` left this list in CAL-2 (task 1676). That route reads
+#: ``user_settings``, not ``gtd_items``, and it is live. The calendar settings
+#: tools call it. The mounted-router test above still checks that it exists.
 RETIRED = (
-    "/tasks/items", "/tasks/projects", "/tasks/hierarchy", "/tasks/settings",
+    "/tasks/items", "/tasks/projects", "/tasks/hierarchy",
     "/tasks/accounts", "/tasks/sync", "/tasks/spaces", "/tasks/folders",
     "/tasks/local-projects", "/tasks/calendar/estimate-stats",
 )
@@ -269,6 +334,9 @@ RETIRED = (
 #: store at call time, so this one `/tasks/items/...` path is live under the
 #: lens. It is spelled here in full so nothing broader slips past.
 AI_DOOR = "/tasks/items/{item_id}/clarify"
+#: P-1a (task 3112): the two proposal doors of `ai.py`. They read through
+#: `item_source()` too, and the seam test above checks it.
+AI_DOORS = (AI_DOOR, "/tasks/items/{item_id}/suggest-title", "/tasks/items/{item_id}/enrich")
 
 
 def _string_constants() -> list[str]:
@@ -302,10 +370,16 @@ def _string_constants() -> list[str]:
     return out
 
 
+def _without_ai_doors(s: str) -> str:
+    for door in AI_DOORS:
+        s = s.replace(door, "")
+    return s
+
+
 def test_no_tool_source_names_a_retired_door():
     hits = sorted({
         d for s in _string_constants() for d in RETIRED
-        if d in s.replace(AI_DOOR, "")
+        if d in _without_ai_doors(s)
     })
     assert not hits, (
         f"skill_my_tasks.core still names {hits}. Those routes read gtd_items, "
@@ -315,7 +389,7 @@ def test_no_tool_source_names_a_retired_door():
 
 def test_the_ai_door_is_the_only_items_path_left():
     items = [s for s in _string_constants() if "/tasks/items" in s]
-    assert items == [AI_DOOR], items
+    assert sorted(items) == sorted(AI_DOORS), items
 
 
 def test_the_two_connector_tools_call_nothing(gw: Recorder):
@@ -379,6 +453,11 @@ def test_every_path_the_skill_calls_is_served_with_that_method():
 STORE_NEUTRAL: dict[str, str] = {
     "/tasks/calendar/day-state": "calendar_day_state — the member's day, not a task (D53.6)",
     "/tasks/people": "people — slice 1 of the rename (2026-09-21)",
+    "/tasks/settings": "user_settings — the calendar fields of the member, no task (CAL-2, task 1676)",
+    "/tasks/calendar/connections": "the member's calendar connections, no task (P-1a, task 3112)",
+    "/tasks/capture/from-email/enhance": (
+        "email_messages and people only. It drafts a task and reads or writes none "
+        "(P-1b, task 3922)"),
 }
 
 SEAMS = ("item_source(", "agent_source(")
@@ -454,6 +533,18 @@ def test_the_list_pages_to_exhaustion(gw: Recorder):
     assert gw.kwargs[1]["params"]["page"] == 2
     assert gw.kwargs[0]["params"]["page_size"] == 100
     assert out.startswith("150 item(s) in all")
+
+
+def test_the_inbox_view_is_the_captures_only(gw: Recorder):
+    """D170 (INB-1). The inbox view asks `disposition=INBOX` and never `untriaged`.
+    `my_work(view="inbox")` asks the same filter. They differ on deferred
+    captures: `my_tasks_list` asks `include_deferred=true` and prints the
+    tickler date, `my_work` leaves tickled rows out, as the app inbox does
+    (`test_projects_project_fields.py`)."""
+    run(core.my_tasks_list(view="inbox"))
+    p = gw.kwargs[0]["params"]
+    assert p["disposition"] == "INBOX"
+    assert "untriaged" not in p
 
 
 def test_the_list_asks_for_the_view_the_way_the_browser_does(gw: Recorder):
@@ -602,13 +693,13 @@ BOARD_TASK: dict[str, Any] = {
     "created_by": "bob@fracktal.in", "status_id": "b1",
     "workflow_stage": "Building", "status_category": "in_progress",
 }
-#: Its set: TWO In progress statuses, and position order that differs from
-#: the order the route happens to answer in.
+#: Its set: TWO In progress statuses. The route answers in the one lane order
+#: (stage, position, name), and the skill keeps that order (task 1792).
 BOARD_LANES = {"rows": [
-    {"id": "b2", "name": "In review", "category": "in_progress", "position": 3},
     {"id": "b0", "name": "Backlog", "category": "backlog", "position": 0},
-    {"id": "b1", "name": "Building", "category": "in_progress", "position": 2},
     {"id": "bt", "name": "Ready", "category": "todo", "position": 1},
+    {"id": "b1", "name": "Building", "category": "in_progress", "position": 2},
+    {"id": "b2", "name": "In review", "category": "in_progress", "position": 3},
     {"id": "bd", "name": "Shipped", "category": "done", "position": 4},
 ]}
 

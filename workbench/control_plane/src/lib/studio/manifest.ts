@@ -1,0 +1,416 @@
+// The Studio package manifest, schema v1 (STU-A2). Types only: no runtime code.
+// The twin of packages/acb_common/acb_common/studio_manifest.py.
+// tests/unit/test_studio_manifest_ts_parity.py holds the two equal.
+
+export type StudioVersion = 1;
+
+export type ClassLetter = "A" | "B" | "C" | "X";
+
+export type FieldType =
+  | "text"
+  | "longText"
+  | "number"
+  | "money"
+  | "date"
+  | "datetime"
+  | "checkbox"
+  | "select"
+  | "multiSelect"
+  | "person"
+  | "relation"
+  | "file"
+  | "url"
+  | "email"
+  | "phone"
+  | "geo"
+  | "richText"
+  | "rating"
+  | "duration"
+  | "quantity"
+  | "percent"
+  | "barcode"
+  | "autonumber";
+
+export type BlockName =
+  | "table"
+  | "form"
+  | "detail"
+  | "board"
+  | "chart"
+  | "stat"
+  | "calendar"
+  | "timeline"
+  | "mindMap"
+  | "processFlow"
+  | "checklist"
+  | "map"
+  | "markdown"
+  | "tree";
+
+export type NavIcon =
+  | "Home"
+  | "LayoutDashboard"
+  | "LayoutGrid"
+  | "List"
+  | "ListChecks"
+  | "Table"
+  | "Kanban"
+  | "Calendar"
+  | "CalendarDays"
+  | "Clock"
+  | "Users"
+  | "User"
+  | "Briefcase"
+  | "Handshake"
+  | "Inbox"
+  | "Mail"
+  | "Phone"
+  | "MessageCircle"
+  | "FileText"
+  | "Files"
+  | "FolderOpen"
+  | "Tag"
+  | "Star"
+  | "Flag"
+  | "Bell"
+  | "Bookmark"
+  | "Wallet"
+  | "Receipt"
+  | "Package"
+  | "Truck"
+  | "MapPin"
+  | "Wrench"
+  | "Settings"
+  | "ClipboardList"
+  | "CheckSquare"
+  | "Target"
+  | "Trophy"
+  | "Lightbulb"
+  | "BookOpen"
+  | "Layers"
+  | "Activity"
+  | "Sparkles";
+
+/** The icon list of a rail row. `NAV_ICONS` of `studio_manifest.py` is the twin, and a parity test holds them equal. */
+export const NAV_ICONS: readonly NavIcon[] = [
+  "Home",
+  "LayoutDashboard",
+  "LayoutGrid",
+  "List",
+  "ListChecks",
+  "Table",
+  "Kanban",
+  "Calendar",
+  "CalendarDays",
+  "Clock",
+  "Users",
+  "User",
+  "Briefcase",
+  "Handshake",
+  "Inbox",
+  "Mail",
+  "Phone",
+  "MessageCircle",
+  "FileText",
+  "Files",
+  "FolderOpen",
+  "Tag",
+  "Star",
+  "Flag",
+  "Bell",
+  "Bookmark",
+  "Wallet",
+  "Receipt",
+  "Package",
+  "Truck",
+  "MapPin",
+  "Wrench",
+  "Settings",
+  "ClipboardList",
+  "CheckSquare",
+  "Target",
+  "Trophy",
+  "Lightbulb",
+  "BookOpen",
+  "Layers",
+  "Activity",
+  "Sparkles",
+];
+
+/** The caps of the rail (STU-AF2a). `navCaps.test.ts` holds them equal to the schema. */
+export const MAX_NAV_SECTIONS = 4;
+export const MAX_NAV_ROWS = 12;
+/** A rail shows at most this many counts (STU-AF3a). `test_studio_manifest_ts_parity.py` holds it equal to the Python twin. */
+export const MAX_NAV_COUNTS = 8;
+
+/** The tab ids of a record page. `recordPageModel.ts` draws them. */
+export type RecordTabName = "details" | "lines" | "related" | "files";
+
+/** The cap of the tabs of a record page (STU-AF5b). `recordCaps.test.ts` holds it equal to the schema. */
+export const MAX_RECORD_TABS = 6;
+
+export interface FieldDef {
+  key: string;
+  type: FieldType;
+  label?: string | null;
+  required?: boolean;
+  many?: boolean;
+  options?: string[] | null;
+  to?: string | null;
+  // The field gets a row in the index side table of C1 (studio_record_hot).
+  hot?: boolean;
+  // C14. The bounds of a rating, the units of a quantity and the format of a barcode.
+  min?: number | null;
+  max?: number | null;
+  units?: string[] | null;
+  // C24a. The ranges of a quantity in its base unit, and the conversions to it.
+  normal?: { low?: string | null; high?: string | null } | null;
+  critical?: { low?: string | null; high?: string | null } | null;
+  conversions?: Array<{ from: string; to: string; factor: string }> | null;
+  format?: string | null;
+  // C13. A lines relation: the field of the object `to` that names this one.
+  lines?: string | null;
+  // C15a. The parts of an autonumber: the text before the number, the pad width and `never` or `day`.
+  prefix?: string | null;
+  pad?: number | null;
+  reset?: string | null;
+}
+
+export interface RecordDef {
+  tabs: RecordTabName[];
+}
+
+export interface ObjectDef {
+  name: string;
+  label?: string | null;
+  fields?: FieldDef[];
+  // The constraints and state machines of the object (C6).
+  rules?: Record<string, unknown>[];
+  // C8a. The grant of each role: read "all" or { where: "<person field> = $me" },
+  // write "all", and hide. No access means an open object.
+  access?: Record<string, unknown>[] | null;
+  // The tabs of the record page of this object (STU-AF5b). No `record` means the defaults of §5.5 rule 3.
+  record?: RecordDef | null;
+}
+
+export interface ActionDef {
+  id: string;
+  uses: string;
+  title?: string | null;
+  set?: Record<string, unknown> | null;
+}
+
+export interface Source {
+  object?: string | null;
+  action?: string | null;
+  args?: Record<string, unknown> | null;
+}
+
+export interface Card {
+  title?: string | null;
+  meta?: string[];
+}
+
+export interface ViewDef {
+  id: string;
+  block: BlockName;
+  title?: string | null;
+  source?: Source | null;
+  object?: string | null;
+  fields?: string[];
+  submit?: string | null;
+  group_by?: string | null;
+  card?: Card | null;
+  start?: string | null;
+  end?: string | null;
+  columns?: string[];
+  sort?: string | null;
+  actions?: string[];
+  text?: string | null;
+}
+
+// STU-D11a: how the views sit on a page. A view stays one block.
+export interface CellDef {
+  view: string;
+  // Columns the cell spans, 1 to 4, and never more than the page `cols`.
+  span?: number | null;
+}
+
+export interface SideDef {
+  view: string;
+}
+
+export interface TabDef {
+  id: string;
+  title: string;
+  cells: CellDef[];
+}
+
+// STU-LY-0: the page presets. The enum is closed, and `studio_manifest.py` holds the twin of
+// `LAYOUTS` and `PRESET_REGIONS`. A page with a `layout` has `regions` and no tabs, cells or side.
+export const LAYOUTS = [
+  "table_workspace", "list_detail", "board", "dashboard", "work_queue", "approval_queue",
+] as const;
+export type LayoutName = (typeof LAYOUTS)[number];
+
+export type RegionRule = {
+  /** The block type that the region takes. */
+  block: string;
+  /** The most views in the region. */
+  cap: number;
+  required: boolean;
+};
+
+const LIST_DETAIL: Record<string, RegionRule> = {
+  list: { block: "table", cap: 1, required: true },
+  detail: { block: "detail", cap: 1, required: true },
+};
+
+export const PRESET_REGIONS: Record<LayoutName, Record<string, RegionRule>> = {
+  table_workspace: { main: { block: "table", cap: 1, required: true } },
+  list_detail: LIST_DETAIL,
+  board: { main: { block: "board", cap: 1, required: true } },
+  dashboard: {
+    kpis: { block: "stat", cap: 6, required: true },
+    charts: { block: "chart", cap: 4, required: false },
+    worklist: { block: "table", cap: 1, required: false },
+  },
+  work_queue: LIST_DETAIL,
+  approval_queue: LIST_DETAIL,
+};
+
+export const REGION_NAMES = ["list", "main", "detail", "kpis", "charts", "worklist"] as const;
+
+export interface PageDef {
+  id: string;
+  title?: string | null;
+  cols?: number;
+  tabs?: TabDef[];
+  cells?: CellDef[];
+  side?: SideDef | null;
+  layout?: LayoutName | null;
+  regions?: Record<string, string[]>;
+}
+
+export interface NavRow {
+  page: string;
+  icon?: NavIcon | null;
+  label?: string | null;
+  count?: boolean | null;
+}
+
+export interface NavSection {
+  title: string;
+  rows: NavRow[];
+}
+
+export interface Trigger {
+  record?: string | null;
+  when?: Record<string, unknown> | null;
+  schedule?: string | null;
+}
+
+export interface WorkflowDef {
+  id: string;
+  trigger?: Trigger | null;
+  graph?: string | null;
+}
+
+export interface SkillExample {
+  prompt: string;
+  action?: string | null;
+  args?: Record<string, unknown> | null;
+}
+
+export interface Skill {
+  description: string;
+  instructions?: string;
+  actions?: string[];
+  cards?: string[];
+  knowledge?: string[];
+  examples?: SkillExample[];
+}
+
+export interface ShellJob {
+  verb: string;
+  view: string;
+}
+
+export interface ShellNeed {
+  object: string;
+  where?: Record<string, unknown> | null;
+}
+
+export interface Shell {
+  jobs?: ShellJob[];
+  needs?: ShellNeed[];
+  search?: string[];
+}
+
+// PKG-5a (package_host.md sections 3.1, 4, 5.4, 8). The shapes are loose on purpose.
+// PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+export type ManifestKind = "studio" | "system";
+
+export type ContributionEntry = Record<string, unknown>;
+
+// A contribution point (section 4, or a P0-only key) to its entries.
+export type Contributes = Record<string, ContributionEntry[]>;
+
+export type SlotDecl = Record<string, unknown>;
+
+export type NeedDecl = Record<string, unknown>;
+
+export type OverrideDecl = Record<string, unknown>;
+
+// STU-B7a (ai_studio.md 19.3). Where member code runs. It has no `hosts` key.
+export type RuntimeKind = "none" | "browser" | "sandbox" | "packages";
+
+export interface RuntimeDef {
+  kind?: RuntimeKind;
+  packages?: Record<string, string>;
+}
+
+// STU-I9a. One connection that the app needs. `as` is `org` or `member`. With
+// none, the connector list gives the default. `scopes` are a declaration only.
+export interface ConnectionNeed {
+  name: string;
+  as?: "org" | "member" | null;
+  scopes?: string[] | null;
+}
+
+export interface StudioManifest {
+  studio: StudioVersion;
+  kind?: ManifestKind;
+  id: string;
+  // Required for `studio`. A `system` file holds neither.
+  name?: string | null;
+  purpose?: string | null;
+  team?: string | null;
+  // STU-I1a. Each name is `mcp:<server>` or a provider id, once, at most 32.
+  // The server holds the check (`_check_connections`), and a missing one
+  // makes the install `needs_setup`. STU-I9a: an item is a name, or an object
+  // that adds the account (`as`) and the scopes.
+  connections?: Array<string | ConnectionNeed>;
+  // C8a. The roles of the app. An install maps each one to members (C8b).
+  roles?: string[];
+  objects?: ObjectDef[];
+  actions?: ActionDef[];
+  views?: ViewDef[];
+  pages?: PageDef[];
+  nav?: NavSection[];
+  workflows?: WorkflowDef[];
+  skill?: Skill | null;
+  shell?: Shell | null;
+  contributes?: Contributes;
+  extends?: string | null;
+  slots?: SlotDecl[];
+  needs?: NeedDecl[];
+  overrides?: OverrideDecl[];
+  runtime?: RuntimeDef | null;
+}
+
+// One refusal of the validator: a JSON path and one sentence.
+export interface ManifestError {
+  path: string;
+  message: string;
+}

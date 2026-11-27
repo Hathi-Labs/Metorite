@@ -143,6 +143,7 @@ async def _call_llm(sample: str, labels: list[str]) -> dict[str, str]:
             temperature=0.0,
             max_tokens=400,
             response_format={"type": "json_object"},
+            job="structured",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")

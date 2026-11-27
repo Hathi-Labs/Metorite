@@ -39,7 +39,8 @@ import { mergeFileEntry } from "@/lib/shell/chatHistory";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useActiveSessions, useUnreadIds } from "@/hooks/useActiveSessions";
+import { usePhoneBar, useSheetTab } from "@/lib/shell/phoneBarEvent";
+import { useActiveSessions, useNeedsInputIds, useUnreadIds } from "@/hooks/useActiveSessions";
 import SessionRunDot from "@/components/SessionRunDot";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useTierRouted } from "@/hooks/useTierRouted";
@@ -57,6 +58,7 @@ import type { IntegrationStatus } from "@/app/api/integrations/status/route";
 import { filterWord, shellBarOn } from "@/lib/shell/registry";
 import { ShellJob, jobFields } from "@/lib/shell/doJob";
 import { openAssistant, useAssistant } from "@/lib/shell/assistant";
+import { reminderParam } from "@/lib/shell/reminderOpen";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 
 // Agent names that receive the Metorite persona (general-purpose brain).
@@ -207,7 +209,7 @@ function AgentPickerModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-lg rounded-xl border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
+        className="w-full max-w-lg rounded-xl glass:rounded-[16px] border border-border bg-card p-5 shadow-2xl tech-glass-subtle flex flex-col max-h-[85vh]"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between shrink-0">
@@ -223,7 +225,7 @@ function AgentPickerModal({
         <div className="overflow-y-auto flex-1 min-h-0 -mr-2 pr-2">
         {/* Default — Metorite */}
         <div className="mb-2">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Default
           </div>
           <AgentPickerCard
@@ -237,7 +239,7 @@ function AgentPickerModal({
 
         {/* Copilot SDK Agents — talk directly to GitHub Copilot SDK */} 
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             Copilot SDK agents
           </div>
           {loading ? (
@@ -269,7 +271,7 @@ function AgentPickerModal({
 
         {/* MAF Agents — run through Microsoft Agent Framework */}
         <div className="mt-4">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70 mb-1.5 glass:normal-case glass:tracking-normal glass:text-footnote glass:text-muted-foreground">
             MAF agents
           </div>
           {loading ? (
@@ -323,6 +325,7 @@ function SessionList({
   activeId,
   activeRunIds,
   unreadIds,
+  needsInputIds,
   onSelect,
   onNew,
   onDelete,
@@ -333,6 +336,7 @@ function SessionList({
   activeRunIds: Set<string>;
   /** Chats with a reply the member has not read (WS-51 S5). */
   unreadIds: ReadonlySet<string>;
+  needsInputIds: ReadonlySet<string>;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -503,7 +507,7 @@ function SessionList({
                       )}
                       <div className="min-w-0 flex-1 space-y-0.5">
                         <div className="flex items-center gap-1.5 text-xs leading-snug">
-                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} />
+                          <SessionRunDot running={activeRunIds.has(s.id)} unread={unreadIds.has(s.id)} needsInput={needsInputIds.has(s.id)} />
                           {/* A cut title shows whole in a tip (owner, 2026-10-10). The
                               row stays a two-line card, so only this line gets it. */}
                           <OverflowTip
@@ -578,11 +582,17 @@ function ChatPageInner() {
 
   const { isMobile } = useViewMode();
   const {
-    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen,
+    open: openDrawer, close: closeDrawer, isOpen: drawerIsOpen, shows: drawerShows,
   } = useMobileDrawer();
+  // The place tab whose sheet shows is selected in the bar (MOB-12).
+  const [sheetTab, markSheetTab] = useSheetTab(drawerIsOpen, drawerShows);
+  usePhoneBar({ active: sheetTab });
+  // The bar's "New chat" tab starts a chat as the page's own button does.
+  const newChatRef = useRef<() => void>(() => {});
   const activeRunIds = useActiveSessions();
   // WS-51 S5: a chat whose run ended while the member looked away.
   const unreadIds = useUnreadIds();
+  const needsInputIds = useNeedsInputIds();
 
   // Refs to hold drawer content (defined later in render).
   const conversationsRef = useRef<React.ReactNode>(null);
@@ -598,15 +608,19 @@ function ChatPageInner() {
       const tab = (e as CustomEvent<string>).detail;
       if (tab === "chats" && conversationsRef.current) {
         drawerTabRef.current = "chats";
+        markSheetTab("chats");
         openDrawer(conversationsRef.current);
       } else if (tab === "files" && filesRef.current) {
         drawerTabRef.current = "files";
+        markSheetTab("files");
         openDrawer(filesRef.current);
+      } else if (tab === "chat-new") {
+        newChatRef.current();
       }
     };
     window.addEventListener("cc-mobile-nav", handler);
     return () => window.removeEventListener("cc-mobile-nav", handler);
-  }, [openDrawer]);
+  }, [openDrawer, markSheetTab]);
 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>("");
@@ -618,13 +632,15 @@ function ChatPageInner() {
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
   // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
   // land in the message box for the member to check and send. Nothing sends
-  // by itself (§6.4 rule 2). `q` then leaves the address, so a reload does
-  // not type it again.
+  // by itself (§6.4 rule 2). WS-63 D-PZ-37: a link carries no typed mark,
+  // because anybody can write one, so `askInput` waits in the box unmarked.
+  // `q` then leaves the address, so a reload does not type it again.
   //
   // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
   // `recoveredInput` on mount, in the same flush, and the question vanished
-  // (review, 2026-10-08). Gated on the flag, so a flag-off build reads no `q`.
-  const askParam = shellBarOn() ? searchParams?.get("q") ?? null : null;
+  // (review, 2026-10-08). It reads `q` with the bar off too (BETA-1): the Studio
+  // fallback link `/chat?q=` is the only way in when the shell chat is off.
+  const askParam = searchParams?.get("q") ?? null;
   const [askInput, setAskInput] = useState<string | undefined>();
   useEffect(() => {
     if (!askParam?.trim()) return;
@@ -727,6 +743,15 @@ function ChatPageInner() {
       setSessionPanelOpen(true);
     }
   }, [isMobile]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // H-332 (task 757): the panes do not all fit on a narrow desktop. When the
+  // Files pane opens below 1400 px, the conversations list folds (its header
+  // toggle brings it back), so the message column keeps its room.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!isMobile && artifactPanelOpen && window.innerWidth < 1400) setSessionPanelOpen(false);
+  }, [artifactPanelOpen, isMobile]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Auto-reveal the artifact sidebar the first time an agent writes a file
@@ -915,6 +940,7 @@ function ChatPageInner() {
     newChatWaitingRef.current = action === "wait";
     setShowPicker(true);
   }, [agentChoice, startOrchestratorChat]);
+  newChatRef.current = handleNewSession;
 
   // The list answered: a waiting press starts the orchestrator chat, or the
   // picker that it asked for now draws (`agentPickerShows`).
@@ -1072,6 +1098,7 @@ function ChatPageInner() {
           activeId={activeSessionId}
           activeRunIds={activeRunIds}
           unreadIds={unreadIds}
+          needsInputIds={needsInputIds}
           onSelect={(id) => { handleSelectSession(id); closeDrawer(); }}
           onNew={() => { handleNewSession(); closeDrawer(); }}
           onDelete={handleDeleteSession}
@@ -1202,16 +1229,17 @@ function ChatPageInner() {
               <SessionRunDot
                 running={sessions.some((s) => activeRunIds.has(s.id))}
                 unread={sessions.some((s) => unreadIds.has(s.id))}
+                needsInput={sessions.some((s) => needsInputIds.has(s.id))}
               />
             )
           }
         />
       )}
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-x-auto overflow-y-hidden" data-chat-row="">
       {/* ── Desktop: conversations sidebar ────────────────────────────── */}
       {!isMobile && sessionPanelOpen && (
-        <aside className="w-72 shrink-0 border-r border-border bg-sidebar flex flex-col overflow-hidden">
+        <aside className="w-72 min-w-44 shrink border-r border-border bg-sidebar flex flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-border px-4 py-3">
             <div className="text-sm font-semibold text-sidebar-foreground">Conversations</div>
           </div>
@@ -1222,6 +1250,7 @@ function ChatPageInner() {
               activeId={activeSessionId}
               activeRunIds={activeRunIds}
               unreadIds={unreadIds}
+              needsInputIds={needsInputIds}
               onSelect={handleSelectSession}
               onNew={handleNewSession}
               onDelete={handleDeleteSession}
@@ -1255,7 +1284,9 @@ function ChatPageInner() {
       {!isMobile && <SidePanelEditor />}
 
       {/* ── Chat area ──────────────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden min-w-0">
+      {/* H-332 (task 757): the message column keeps a floor. With the panes open
+          the row scrolls sideways before the column is crushed under a card. */}
+      <div data-chat-column="" className="flex flex-1 overflow-hidden min-w-[min(100%,26rem)]">
         <div className="flex flex-1 flex-col overflow-hidden min-w-0">
 
           {activeSession ? (
@@ -1363,10 +1394,13 @@ function ChatPageInner() {
 /**
  * D99: with the chat bar on, `/chat` is the address of the one assistant's
  * full view (`navigation_shell.md` §7.1). The page opens it and takes the
- * job out of the address. It reads three doors: `?do=open-chat` (an activity
- * row or a toast), `?do=new-chat` (the command bar's job) and `?q=` (words
- * for the member to check and send). Closing the full view here goes home,
- * because the page under it is empty.
+ * job out of the address. It reads four doors: `?do=open-chat` (an activity
+ * row or a toast), `?do=new-chat` (the command bar's job), `?q=` (words
+ * for the member to check and send) and `?reminder=` (a tap on a reminder,
+ * WS-66 RM-4, `calendar_events_reminders.md` §5.7). A reminder always opens
+ * a fresh chat, with or without `do=new-chat`, and the dock asks the server
+ * for its first message. Closing the full view here goes home, because the
+ * page under it is empty.
  */
 function ChatFullView() {
   const params = useSearchParams();
@@ -1376,11 +1410,16 @@ function ChatFullView() {
   useEffect(() => {
     const job = params.get("do");
     const fields = jobFields(params);
+    const reminder = reminderParam(params);
     openAssistant({
       mode: "full",
-      sessionId: job === OPEN_CHAT_JOB && fields.session ? fields.session : undefined,
+      sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
+      // WS-63 D-PZ-37: `q` comes from a link, and anybody can write a link,
+      // a reply of Mira included. So its words wait in the box with no typed
+      // mark, and a send of them counts for nothing (`lib/typedMark.ts`).
       draft: params.get("q") ?? undefined,
-      fresh: job === "new-chat",
+      fresh: job === "new-chat" || Boolean(reminder),
+      reminder,
     });
     router.replace("/chat");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on arrival

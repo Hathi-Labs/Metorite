@@ -54,6 +54,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     load_visible_project,
+    reader_day_start,
     resolve_visibility,
     router,
     row_to_dict,
@@ -68,6 +69,7 @@ from gateway.routes.projects.filters import (
     build_task_filters,
     window_links,
 )
+from gateway.routes.projects.mine import attach_my_overlay, check_scope, mine_scope
 from sqlalchemy import text
 
 #: The widest window that may be asked for, in days.
@@ -230,6 +232,11 @@ async def get_calendar(
     # D-PM-38. The Projects calendar offers Separate and Hidden. Hidden sends
     # this, as the list does, so the two views agree on the SET.
     top_level: bool = False,
+    # WS-64 OP-11. Declared here as on the list, for the reason `watching`
+    # gives: the Calendar and Timeline tabs of My tasks read this endpoint.
+    # A word, never an address (R11).
+    scope: str | None = None,
+    with_overlay: bool = False,
 ) -> dict:
     """Every visible task whose schedule overlaps ``[from, to)``.
 
@@ -246,11 +253,18 @@ async def get_calendar(
     somebody switched to the calendar.
     """
     window_from, window_to = window_bounds(date_from, date_to)
+    mine = check_scope(scope)
 
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         clauses: list[str] = [task_visibility_clause(vis)]
         params: dict[str, Any] = dict(vis.params)
+        if mine:
+            # The list's clause and binds (`mine.mine_scope`), so the two
+            # views agree on the SET of my tasks.
+            mine_sql, mine_params = await mine_scope(db, vis)
+            clauses.append(mine_sql)
+            params.update(mine_params)
 
         if project_id:
             # Seeing the project is required to filter by it (R5): an
@@ -266,7 +280,9 @@ async def get_calendar(
         extra_clauses, extra_params = build_task_filters(
             status_id=status_id, status_category=status_category,
             assignee=assignee, assignees=assignees, unassigned=unassigned,
-            overdue=overdue, importance_gte=importance_gte, q=q, tags=tags,
+            overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
+            importance_gte=importance_gte, q=q, tags=tags,
             tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
@@ -303,6 +319,8 @@ async def get_calendar(
         await attach_parent_context(db, vis, window_rows)
         # WS-55 EA-12c — the agent pill on the Calendar (EA12-10).
         await attach_agent_state(db, window_rows)
+        if with_overlay:
+            await attach_my_overlay(db, vis, window_rows)
 
         # Counted with the SAME filters, so "12 unscheduled" means twelve of the
         # tasks you are looking at — not twelve somewhere in the workspace.
@@ -332,6 +350,8 @@ async def get_calendar(
             await attach_relation_counts(db, unscheduled, vis)
             await attach_parent_context(db, vis, unscheduled)
             await attach_agent_state(db, unscheduled)
+            if with_overlay:
+                await attach_my_overlay(db, vis, unscheduled)
 
         return {
             "from": window_from.date().isoformat(),

@@ -3,6 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  ASK_BOX_SELECTOR,
+  ASK_MORPH_CLASS,
+  ASK_MORPH_NAME,
+  ASK_MORPH_PANEL_NAME,
+  ASK_MORPH_WAY_ATTR,
+  COMPOSER_SELECTOR,
   PANEL_MOTION,
   PANEL_SWAP_CLASS,
   PANEL_SWAP_NAME,
@@ -10,6 +16,7 @@ import {
   formDurationMs,
   isMoving,
   isShown,
+  morphAskBox,
   nextPhase,
   pickFocusReturn,
   prefersReducedMotion,
@@ -276,5 +283,132 @@ describe("the full-view switch", () => {
     await Promise.resolve();
     expect(dom.props.has("view-transition-name")).toBe(false);
     expect(dom.classes.has(PANEL_SWAP_CLASS)).toBe(false);
+  });
+});
+
+describe("the Ask bar and the composer are one box (owner, 2026-11-01)", () => {
+  const g = globalThis as Record<string, unknown>;
+  const saved = { window: g.window, document: g.document };
+  afterEach(() => {
+    g.window = saved.window;
+    g.document = saved.document;
+  });
+
+  /** An element with a style and, for the composer, the panel round it. */
+  function fakeEl(panel?: unknown) {
+    const props = new Map<string, string>();
+    return {
+      props,
+      style: {
+        setProperty: (k: string, v: string) => props.set(k, v),
+        removeProperty: (k: string) => props.delete(k),
+      },
+      closest: () => panel ?? null,
+    };
+  }
+
+  /**
+   * The bar shows before an open and the composer after it, as the page
+   * does. `arrives: false` is a page where no box comes (no bar, a strip).
+   */
+  function fakeDom(way: "into-chat" | "into-bar", { reduced = false, withApi = true, arrives = true } = {}) {
+    const classes = new Set<string>();
+    const attrs = new Map<string, string>();
+    const panel = fakeEl();
+    const bar = fakeEl();
+    const composer = fakeEl(panel);
+    let changed = false;
+    const skip = vi.fn();
+    let finish: () => void = () => {};
+    const start = vi.fn((update: () => void | Promise<void>) => {
+      const finished = new Promise<void>((r) => (finish = r));
+      // The browser takes its "before" picture first, then runs the change.
+      return { finished, skipTransition: skip, updated: Promise.resolve().then(() => update()) };
+    });
+    g.window = { matchMedia: () => ({ matches: reduced }) };
+    g.document = {
+      documentElement: {
+        classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
+        setAttribute: (k: string, v: string) => attrs.set(k, v),
+        removeAttribute: (k: string) => attrs.delete(k),
+      },
+      querySelector: (sel: string) => {
+        const leaving = way === "into-chat" ? sel === ASK_BOX_SELECTOR : sel === COMPOSER_SELECTOR;
+        if (leaving) return changed ? (way === "into-chat" ? null : composer) : way === "into-chat" ? bar : composer;
+        return changed && arrives ? (way === "into-chat" ? composer : bar) : null;
+      },
+      ...(withApi ? { startViewTransition: start } : {}),
+    };
+    const update = vi.fn(() => {
+      changed = true;
+    });
+    const updated = async () => (start.mock.results[0]?.value as { updated: Promise<void> }).updated;
+    return { start, skip, classes, attrs, panel, bar, composer, update, updated, finish: () => finish() };
+  }
+
+  it("into the chat: the bar carries the name before, the composer and its panel after, and all is clean at the end", async () => {
+    const dom = fakeDom("into-chat");
+    expect(morphAskBox("into-chat", dom.update)).toBe(true);
+    expect(dom.bar.props.get("view-transition-name")).toBe(ASK_MORPH_NAME);
+    expect(dom.classes.has(ASK_MORPH_CLASS)).toBe(true);
+    expect(dom.attrs.get(ASK_MORPH_WAY_ATTR)).toBe("into-chat");
+    await dom.updated();
+    expect(dom.update).toHaveBeenCalledTimes(1);
+    // Two boxes with one name would stop the transition.
+    expect(dom.bar.props.has("view-transition-name")).toBe(false);
+    expect(dom.composer.props.get("view-transition-name")).toBe(ASK_MORPH_NAME);
+    expect(dom.panel.props.get("view-transition-name")).toBe(ASK_MORPH_PANEL_NAME);
+    dom.finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(dom.composer.props.size + dom.panel.props.size + dom.bar.props.size).toBe(0);
+    expect(dom.classes.has(ASK_MORPH_CLASS)).toBe(false);
+    expect(dom.attrs.has(ASK_MORPH_WAY_ATTR)).toBe(false);
+  });
+
+  it("back into the bar: the composer drops the name at the change, the bar takes it, and the panel slides as it always does", async () => {
+    const dom = fakeDom("into-bar");
+    expect(morphAskBox("into-bar", dom.update)).toBe(true);
+    expect(dom.composer.props.get("view-transition-name")).toBe(ASK_MORPH_NAME);
+    await dom.updated();
+    expect(dom.composer.props.has("view-transition-name")).toBe(false);
+    expect(dom.bar.props.get("view-transition-name")).toBe(ASK_MORPH_NAME);
+    expect(dom.panel.props.size).toBe(0);
+  });
+
+  it("skips the transition when no box arrives, after waiting for a panel that mounts late", async () => {
+    const dom = fakeDom("into-bar", { arrives: false });
+    morphAskBox("into-bar", dom.update);
+    await dom.updated();
+    expect(dom.update).toHaveBeenCalledTimes(1);
+    expect(dom.skip).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a plain change with reduced motion, with no view transitions, and with no box to leave", () => {
+    for (const opts of [{ reduced: true }, { withApi: false }]) {
+      const dom = fakeDom("into-chat", opts);
+      expect(morphAskBox("into-chat", dom.update)).toBe(false);
+      expect(dom.update).toHaveBeenCalledTimes(1);
+      expect(dom.classes.size).toBe(0);
+    }
+    const dom = fakeDom("into-chat");
+    (g.document as { querySelector: () => null }).querySelector = () => null;
+    expect(morphAskBox("into-chat", dom.update)).toBe(false);
+    expect(dom.start).not.toHaveBeenCalled();
+    expect(dom.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("the CSS, the bar and the dock name the same things as the script", () => {
+    expect(GLOBALS).toContain(`html.${ASK_MORPH_CLASS}::view-transition-group(${ASK_MORPH_NAME})`);
+    expect(GLOBALS).toContain(`html.${ASK_MORPH_CLASS}::view-transition-new(${ASK_MORPH_PANEL_NAME})`);
+    expect(GLOBALS).toContain(`html.${ASK_MORPH_CLASS}[${ASK_MORPH_WAY_ATTR}="into-chat"] .assistant-panel`);
+    // The box moves on the panel's own tokens.
+    expect(rule(GLOBALS, `html.${ASK_MORPH_CLASS}::view-transition-group(${ASK_MORPH_NAME})`)).toContain(
+      "animation-timing-function: var(--panel-easing);",
+    );
+    const bar = read("lib/shell/ChatBar.tsx");
+    expect(bar).toContain("data-ask-surface=");
+    expect(bar).toContain('morphAskBox("into-chat", open)');
+    expect(read("components/AgentChat.tsx")).toContain("data-chat-composer");
+    expect(DOCK).toContain('onClick={() => morphAskBox("into-bar", closeAssistant)}');
   });
 });

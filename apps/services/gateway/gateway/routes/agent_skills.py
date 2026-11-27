@@ -34,9 +34,17 @@ from typing import Any
 from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException
+from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel
 from sqlalchemy import text
 
+# H2 (task 566): `agent_skill_setting` is a tenant table. Both handlers run in a
+# member's request, where `get_current_user` bound the tenant from the identity,
+# so the ambient `tenant_session()` is the right seam. The block is ONE
+# transaction and COMMITS ON EXIT: a `commit()` inside it ends the transaction and
+# drops the bind (`SET LOCAL`), and the next read then fails (the unset setting
+# reads as an empty string, which is not a uuid). So each handler reads its answer
+# INSIDE the block. Fence: `tests/unit/test_agent_skills_per_org_r8.py`.
 _log = get_logger("gateway.agent_skills")
 
 router = APIRouter(prefix="/agent", tags=["agents"])
@@ -68,12 +76,6 @@ class SkillSettingsRequest(BaseModel):
 
 # ── Seams (module-level so tests patch the SUT submodule, hermetically) ─────
 
-async def _get_db() -> Any:
-    """Async session from the shared pooled engine (admin kernel recipe)."""
-    from gateway.routes.admin._common import get_db  # noqa: PLC0415
-    return await get_db()
-
-
 def _known_agent_names() -> set[str] | None:
     """Registered agent names, or ``None`` when the registry is unavailable
     (best-effort — a registry hiccup must not 404 every settings read)."""
@@ -92,16 +94,17 @@ def _known_agent_names() -> set[str] | None:
 
 def _record_change(actor: str | None, action: str, target: str,
                    **payload: Any) -> None:
-    """Append to the audit log, best-effort (admin/_common convention)."""
-    try:
-        from acb_audit import AuditEvent, record  # noqa: PLC0415
-        record(AuditEvent(
-            actor=f"user:{actor}" if actor else "system:internal",
-            action=action, target=target, payload=payload,
-        ))
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("agent_skills_audit_failed", action=action,
-                     error=str(exc))
+    """Append to the audit log, best-effort, through the ONE admin writer.
+
+    ``admin._common.record_admin_change`` stamps the bound tenant and skips
+    a tenant-less event with ``ACB_GRAPH_TENANT_BIND`` on (task 2221). So the
+    row lands in the admin's org, never under the operator org. A failed
+    audit still never fails the toggle. Fence:
+    ``tests/unit/test_agent_skills_audit_org_r8.py`` (R8).
+    """
+    from gateway.routes.admin._common import record_admin_change
+
+    record_admin_change(actor, action, target, **payload)
 
 
 def _iso(value: Any) -> str:
@@ -162,8 +165,7 @@ async def get_agent_skills(
 ) -> dict[str, Any]:
     """Stored skill settings for one agent (agent-wide instance)."""
     _require_known_agent(name)
-    db = await _get_db()
-    async with db:
+    async with _tenant_session() as db:
         return await _settings_payload(db, name)
 
 
@@ -211,8 +213,7 @@ async def set_agent_skills(
         seen.add(family)
         cleaned.append((family, bool(entry.enabled), entry.reason or ""))
 
-    db = await _get_db()
-    async with db:
+    async with _tenant_session() as db:
         await db.execute(
             text(
                 "DELETE FROM agent_skill_setting "
@@ -230,7 +231,8 @@ async def set_agent_skills(
                 {"name": name, "family": family, "enabled": enabled,
                  "reason": reason, "by": admin.email},
             )
-        await db.commit()
+        # No `commit()` here: the block commits on exit, and the read below
+        # must run in the same bound transaction.
         payload = await _settings_payload(db, name)
 
     _log.info("agent_skills_set", agent=name, by=admin.email,

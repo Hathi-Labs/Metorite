@@ -100,6 +100,12 @@ export type NavPane = {
    */
   adminOnly?: boolean;
   /**
+   * The href of the host pane. Only an install pane with `extends` sets it
+   * (`package_host.md` §8.2, PKG-15b). The sidebar draws the pane indented
+   * under its host. Optional, so a pane without it draws as before.
+   */
+  parent?: string;
+  /**
    * Launch status — REQUIRED, so adding a pane forces the decision rather than
    * defaulting into the customer's sidebar. `nav.test.ts` pins the live set
    * against `launch_surface.md` §2, so promoting an app is a one-line edit
@@ -442,32 +448,15 @@ export const NAV_SECTIONS: NavSection[] = [
         launch: "live",
       },
       {
-        href: "/workflows",
+        href: "/studio",
         team: "studio",
-        label: "Workflows",
-        icon: "Workflow",
-        note: "Visual automation across agents · tools · integrations",
-        feature: "workflows",
-        launch: "preview", // WS-11 incomplete
-      },
-      {
-        href: "/build/apps",
-        team: "studio",
-        label: "App Workshop",
-        icon: "PlusSquare",
-        note: "User-created applications",
-        feature: "build.apps",
-        launch: "preview",
-        agent: "app-builder",
-      },
-      {
-        href: "/build/agents",
-        team: "studio",
-        label: "Agent Workshop",
-        icon: "Wrench",
-        note: "MAF agents & skills",
-        feature: "build.agents",
-        launch: "preview",
+        blurb: "Build apps, workflows and skills for your company",
+        label: "Studio",
+        icon: "Hammer",
+        note: "Apps · workflows · skills in one library",
+        feature: "studio", // ai_studio.md §14 J1: the gate of every /studio route
+        launch: "live", // ai_studio.md §14 A1: the one library pane. Live for the beta (D179)
+        agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
     ],
   },
@@ -510,10 +499,12 @@ export const NAV_SECTIONS: NavSection[] = [
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
-        team: "personal",
+        // A sidebar app in Admin, beside Organisation and Integrations, and a
+        // member stars it on or off in All apps like any app (owner,
+        // 2026-11-01: "keep it on the sidebar ... add or remove them in the
+        // favorites"). It left the account menu.
+        team: "admin",
         blurb: "Light or dark, spacing and accent colour",
-        door: "account",
-        setting: true,
         label: "Appearance",
         icon: "Palette",
         // "Themes ·" led this line until 2026-08-31. The theming engine is

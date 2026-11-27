@@ -831,7 +831,7 @@ describe("email-storage-mailbox (A5, A6, D3)", () => {
     expect(notice).toBeGreaterThan(page.indexOf("<SyncBanner"));
     expect(notice).toBeLessThan(page.indexOf("<OnboardingPanel"));
     // An open dialog stops the page shortcuts, so "#" cannot delete the mail behind it.
-    expect(page).toContain("editingMailbox || removingAccount || paletteOpen) return;");
+    expect(page).toContain("editingMailbox || removingAccount) return;");
   });
 });
 
@@ -863,10 +863,10 @@ describe("email-storage-dialog-leaves (review round 1)", () => {
     const page = codeOnly(read("page.tsx"));
     expect(page).toContain("if (removingId !== null && removingAccount === null) setRemovingId(null);");
     // The keydown effect reads the mailbox, never the raw id, in its guard and in its deps.
-    const keys = page.slice(page.indexOf("const onKey = (e: KeyboardEvent)"), page.indexOf("const commands = useMemo<Command[]>("));
+    const keys = page.slice(page.indexOf("const onKey = (e: KeyboardEvent)"), page.indexOf("// ── Render ──"));
     expect(keys.length).toBeGreaterThan(500);
-    expect(keys).toMatch(/\|\| removingAccount \|\|/);
-    expect(keys).toMatch(/disconnecting, editingMailbox, removingAccount, paletteOpen/);
+    expect(keys).toMatch(/\|\| removingAccount\)/);
+    expect(keys).toMatch(/disconnecting, editingMailbox, removingAccount/);
     expect(keys).not.toMatch(/\bremovingId\b/);
   });
 });

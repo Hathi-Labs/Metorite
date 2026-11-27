@@ -52,14 +52,27 @@ export const CRM_SETTINGS_VIEW: CrmRailView = {
 /** Every row the rail draws, settings last. */
 export const CRM_RAIL: readonly CrmRailView[] = [...CRM_VIEWS, CRM_SETTINGS_VIEW];
 
+/**
+ * The CRM's own name of one record of each core entity. The record page says
+ * it under its title, and "Record names" shows it as a placeholder (CRM-Z10g).
+ */
+export const ENTITY_NOUN: Record<EntitySlug, string> = {
+  deals: "Deal",
+  leads: "Lead",
+  contacts: "Contact",
+  organizations: "Company",
+};
+
 /** One core entity as the source names it (`EntityLabel` in `fill_rank.py`). */
 export type SourceLabel = { label: string; singular_label?: string | null };
 
 /**
  * The source's names of the core entities, by API slug (CRM-Q17a-2 item 7).
  * `GET /crm/mode` sends them as `labels` in Mirror mode, for an org on
- * `CRM_FILL_RANK_ORGS`. Each other case has none, and the CRM keeps its own
- * names. ⚠️ Only the label changes. The id of a view stays the URL.
+ * `CRM_FILL_RANK_ORGS`. In Native mode it sends the names that an admin
+ * stored, in the same shape (CRM-Z10g). Each other case has none, and the CRM
+ * keeps its own names. ⚠️ Only the label changes. The id of a view stays the
+ * URL.
  */
 export type SourceLabels = Partial<Record<EntitySlug, SourceLabel>>;
 

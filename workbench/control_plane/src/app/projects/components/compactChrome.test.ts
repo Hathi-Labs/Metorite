@@ -71,6 +71,9 @@ function barProps(over: Partial<CompactFilterBarProps> = {}): CompactFilterBarPr
     onExport: async () => {},
     waitingOnMe: false,
     onWaitingOnMe: noop,
+    epic: "",
+    epics: [{ value: "e1", label: "#7 Launch" }],
+    onEpic: noop,
     agentWork: false,
     onAgentWork: noop,
     phone: false,
@@ -205,6 +208,27 @@ describe("done-when 4: every control of the old FilterBar is reachable by role a
     })
   );
 
+  it("OP-11 fix round 11: My tasks puts its lenses beside the tabs, and no empty Saved views", () => {
+    const onPick = noop;
+    const mine = renderToStaticMarkup(
+      createElement(ViewSheetBody, {
+        ...barProps({ views: [], canSave: false }),
+        savedViews: false,
+        lenses: [
+          { id: "attention", label: "Needs attention", icon: "TriangleAlert", count: 3, onPick },
+          { id: "reports", label: "Reports", icon: "FileText", onPick },
+        ],
+      })
+    );
+    expect(mine).toContain('data-sheet-lens="attention"');
+    expect(mine).toContain('data-sheet-lens="reports"');
+    expect(mine).toMatch(/Needs attention<span[^>]*>3<\/span>/);
+    expect(mine).not.toContain("Saved views");
+    // A project's sheet is unchanged: no lens row, and its Saved views stay.
+    expect(viewSheet).not.toContain("data-sheet-lenses");
+    expect(viewSheet).toContain("Saved views");
+  });
+
   it("the filter controls are in the Filters sheet", () => {
     // [role, name] — a SelectButton is a button named by its label, a toggle is a
     // button with aria-pressed, and a tag is a button named by its tag.
@@ -282,5 +306,35 @@ describe("the phone board and the touch card", () => {
       { id: "task.select" },
     ];
     expect(touchQuickActions(items)).toEqual([{ id: "task.markDone" }]);
+  });
+});
+
+// WS-55 EA-18b — Questions is an app page, so the project chrome stays away.
+describe("EA-18b: the Questions pane takes none of the project chrome", () => {
+  const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf8");
+
+  it("leaves the filter bar, the archive bar and the project header actions off", () => {
+    const chrome = page.match(/const noProjectChrome =([\s\S]*?);/)?.[1] ?? "";
+    expect(chrome).toContain('app === "questions"');
+    const onApp = page.match(/const onAppPage =([\s\S]*?);/)?.[1] ?? "";
+    expect(onApp).toContain('app === "questions"');
+  });
+
+  it("an app page never draws the tool row", () => {
+    // `chromeKind` is the tool row's rule. The pane sits in the app branch of
+    // the page, before the FilterChrome branch.
+    const at = page.indexOf('app === "questions" ? (');
+    const chromeAt = page.indexOf("chromeKind({ overview");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(chromeAt);
+  });
+
+  it("both sidebars, the rail and the phone drawer, get the same entry", () => {
+    expect(page.match(/questionsOn=\{questions\.on === true\}/g)?.length).toBe(2);
+  });
+
+  it("the phone's view sheet is unchanged by the new entry", () => {
+    const sheet = renderToStaticMarkup(createElement(ViewSheetBody, { ...barProps() }));
+    expect(sheet).not.toContain("Questions");
   });
 });

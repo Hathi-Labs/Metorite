@@ -92,12 +92,13 @@ export const AGENT_CLIENTS: AgentClient[] = [
 export const AGENT_CAN = [
   "Read your projects and tasks",
   "Search your tasks",
-  "Move a task to another status, but never to done or cancelled",
+  "Move a task to another status, done included, but never to cancelled",
   "Link pull requests, commits and branches to a task",
+  "Delete a task that you can delete, while the delete switch below is on",
 ];
 
 export const AGENT_CANNOT = [
-  "Close or cancel a task",
+  "Cancel a task",
   "See anything that you cannot see",
   "Act after you revoke it",
 ];
@@ -112,17 +113,34 @@ export interface AgentConnection {
   client_origin: string;
   scopes: string[];
   pinned_projects: string[];
+  /** The left-out list of D-EA-12. Absent on a gateway from before EA-17a. */
+  left_out_projects?: string[];
   include_personal: boolean;
+  /** What the agent asked for at the connect. `null` before EA-17a (EA-17c-2). */
+  requested_scopes?: string[] | null;
+  /** The scopes that Change access may turn on (EA-17c-1, D-EA-13). */
+  ceiling_scopes?: string[];
   created_at: string;
   last_used_at: string | null;
   expires_at: string;
+  /** `box` for a box token (EA-19d). Absent or `oauth` for an OAuth connection. */
+  credential?: "oauth" | "box" | string;
+  /** The address of the newest box call. Box only. */
+  last_seen_addr?: string | null;
+  /** When that address changed. The new-address mark reads it. Box only. */
+  addr_changed_at?: string | null;
 }
 
 /**
  * The headline: the VERIFIED host the client document came from, as the
  * consent page names it (spec §10.5). The scheme goes, a port stays.
  */
-export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
+export function agentHost(
+  row: Pick<AgentConnection, "client_origin"> & Partial<Pick<AgentConnection, "credential" | "client_name">>,
+): string {
+  // A box has no client document and no host. Its name is the box name that
+  // the member chose (EA-19d), so the row is headed by it.
+  if (row.credential === "box" && row.client_name?.trim()) return row.client_name.trim();
   const origin = (row.client_origin || "").trim();
   const host = origin.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
   return host || "Unknown agent";
@@ -133,7 +151,10 @@ export function agentHost(row: Pick<AgentConnection, "client_origin">): string {
  * when it says nothing the host does not already say: approve stores the
  * host as the name when the document gives none.
  */
-export function agentClaim(row: Pick<AgentConnection, "client_name" | "client_origin">): string | null {
+export function agentClaim(
+  row: Pick<AgentConnection, "client_name" | "client_origin"> & Partial<Pick<AgentConnection, "credential">>,
+): string | null {
+  if (row.credential === "box") return null;
   const name = (row.client_name || "").trim();
   if (!name) return null;
   const host = agentHost(row);
@@ -194,17 +215,38 @@ export class AgentsError extends Error {
   }
 }
 
-async function readList(res: Response): Promise<AgentConnection[] | null> {
+/** The member's list: the rows, and whether Change access is on (EA-17c-2). */
+export interface MyAgents {
+  connections: AgentConnection[];
+  changeAccess: boolean;
+}
+
+async function readBody(res: Response): Promise<MyAgents | null> {
   // 404: the agent flag is off for this deployment. Not an error to show.
   if (res.status === 404) return null;
   if (!res.ok) throw new AgentsError(`The list did not load (${res.status}).`, res.status);
-  const body = (await res.json().catch(() => ({}))) as { connections?: AgentConnection[] };
-  return Array.isArray(body.connections) ? body.connections : [];
+  const body = (await res.json().catch(() => ({}))) as {
+    connections?: AgentConnection[];
+    change_access?: unknown;
+  };
+  return {
+    connections: Array.isArray(body.connections) ? body.connections : [],
+    changeAccess: body.change_access === true,
+  };
+}
+
+async function readList(res: Response): Promise<AgentConnection[] | null> {
+  return (await readBody(res))?.connections ?? null;
+}
+
+/** The member's own agents and the Change access flag. `null` when agent connections are off. */
+export async function listMyAgents(): Promise<MyAgents | null> {
+  return readBody(await fetch("/api/agent-access/connections", { cache: "no-store" }));
 }
 
 /** The member's own agents. `null` when agent connections are off. */
 export async function listMine(): Promise<AgentConnection[] | null> {
-  return readList(await fetch("/api/agent-access/connections", { cache: "no-store" }));
+  return (await listMyAgents())?.connections ?? null;
 }
 
 /** Every agent connection of the org. Needs `integrations:manage`. */
@@ -229,8 +271,10 @@ export async function revoke(id: string, admin: boolean): Promise<"revoked" | "g
 //     GET /api/auth/me/agent-access   the member's switch
 //     PUT /api/auth/me/agent-access   set it, body {delete_enabled}
 //
-// One switch, default off. With it on, a connected agent may delete a task
-// after the member says yes in the agent. The gateway checks it on each delete.
+// One switch, on by default (EA-6i, the owner, 2026-10-30). The gateway
+// answers `delete_enabled: true` for a member who has not chosen, so the card
+// draws it on. With it on, a connected agent may delete a task that the
+// member can delete. The gateway checks it on each delete.
 
 /** The cache key of the switch. It shares the prefix, so a revoke wakes it too. */
 export const AGENT_ACCESS_KEY = "agents:access";
@@ -242,10 +286,13 @@ export interface AgentAccess {
 /** The words of the card. They must be true of what the gateway does. */
 export const DELETE_SWITCH_COPY = {
   title: "Let my AI agents delete tasks",
+  // Metorite cannot make an agent app ask first. The app's own prompt asks,
+  // and an app that allows the tool with no prompt asks nothing. So the card
+  // says "most", and promises only what the gateway enforces.
   body:
-    "A connected agent asks you first, in the agent, and names the task. " +
-    "A delete cannot be undone. You choose which subtasks are deleted and which stay.",
-  on: "Your agents can delete a task after you say yes.",
+    "A delete cannot be undone. Most agent apps ask you before each one. " +
+    "The agent must name the exact task and say which subtasks go. The other subtasks stay.",
+  on: "Your agents can delete tasks that you can delete.",
   off: "Your agents cannot delete tasks.",
   /** The error state of the card (DESIGN_SYSTEM §9): what, and what next. */
   loadError: "This setting did not load.",

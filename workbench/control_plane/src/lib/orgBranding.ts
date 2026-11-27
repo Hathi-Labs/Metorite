@@ -43,6 +43,12 @@ export interface OrgBranding {
    * which reads as "same".
    */
   darkStyle?: "same" | "white" | "plate" | "own";
+  /**
+   * The square mark, for the folded sidebar (owner, 2026-11-01). The admin's
+   * own, or the one the editor made. Absent on a logo saved before it
+   * existed: the shell then draws one from the logo (`logoMark.ts`).
+   */
+  logoMark?: OrgLogo | null;
   updatedBy: string;
   updatedAt: string;
 }
@@ -178,6 +184,21 @@ const BRANDING_CACHE_KEY = "cc-org-branding-v1";
  */
 export function isRenderableLogoUri(uri: unknown): uri is string {
   return typeof uri === "string" && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(uri);
+}
+
+/**
+ * The browser's local storage, or `undefined` when there is none. H-206.
+ * Reading `window.localStorage` itself throws a SecurityError when the browser
+ * blocks site data (a private window, a policy). That throw happened outside
+ * the try/catch of the two helpers below, so the sidebar failed. This getter
+ * catches it, and the helpers already accept `undefined`.
+ */
+export function safeLocalStorage(): Storage | undefined {
+  try {
+    return typeof window === "undefined" ? undefined : window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 export function readCachedBranding(store: Pick<Storage, "getItem"> | undefined): OrgBranding | null {

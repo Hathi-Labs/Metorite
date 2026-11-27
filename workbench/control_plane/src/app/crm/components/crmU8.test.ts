@@ -74,15 +74,15 @@ describe("the + Filter field list", () => {
     true,
   );
 
-  it("groups the fields in the order Dates, Picklists, Numbers, Other", () => {
+  it("groups the fields in the order Dates, Choices, Numbers, Other", () => {
     const fields = filterFields("deals", custom);
-    expect(groupFields(fields).map((g) => g.group)).toEqual(["Dates", "Picklists", "Numbers", "Other"]);
+    expect(groupFields(fields).map((g) => g.group)).toEqual(["Dates", "Choices", "Numbers", "Other"]);
     const dates = groupFields(fields)[0].items.map((f) => f.label);
     expect(dates).toEqual(["Created", "Updated", "Closing"]);
   });
 
   it("puts the fullest picklist first and shows its fill", () => {
-    const picklists = groupFields(filterFields("deals", custom)).find((g) => g.group === "Picklists")!;
+    const picklists = groupFields(filterFields("deals", custom)).find((g) => g.group === "Choices")!;
     expect(picklists.items.map((f) => f.label)).toEqual(["Tier", "Region"]);
     expect(picklists.items[0].fill).toBe(0.9);
   });
@@ -103,7 +103,7 @@ describe("the + Filter field list", () => {
 
   it("finds a field by the words in its label and drops an empty group", () => {
     const groups = groupFields(filterFields("deals", custom), "ti");
-    expect(groups.map((g) => g.group)).toEqual(["Picklists"]);
+    expect(groups.map((g) => g.group)).toEqual(["Choices"]);
     expect(groups[0].items.map((f) => f.label)).toEqual(["Tier"]);
     expect(groupFields(filterFields("deals", custom), "zzz")).toEqual([]);
   });

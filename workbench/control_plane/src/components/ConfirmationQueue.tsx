@@ -1,50 +1,79 @@
 "use client";
 
 /**
- * ConfirmationQueue — every pending confirmation card, one at a time.
+ * ConfirmationQueue — every pending confirmation card, as ONE card.
  *
- * A turn can park many gated tools at once (2026-10-06: ten). One card shows,
- * with "1 of N" and arrows to reach the rest. One at a time, and not a
- * stack, because the Projects rail is narrow: ten stacked cards push the
- * turn that asked for them out of view. Answering a card removes it, and the
- * next card takes its place.
+ * A turn can park many gated tools at once (2026-10-06: ten). One card
+ * shows. With two cards or more, the cards that wait together are TABS inside
+ * that card (owner, 2026-11-03, D173): "Instead of having, say, a stacked
+ * cards animation, we just have one card. When there are multiple cards that
+ * need to be approved, it shows up as one single card with tabs." A count
+ * leads the row, and a dot marks a card the member has not opened. No stacked
+ * edges, no swipe and no swap animation. Answering a card removes it, and the
+ * next tab to the right opens, else the one to the left.
  *
  * No "Approve all". Each card is one consent, and a card the member did not
- * page to is a card nobody read (the Projects writes rule, MAX_BATCH). A
- * batch tool with ONE card is the answer to many cards of one kind.
+ * open is a card nobody read (the Projects writes rule, MAX_BATCH). A batch
+ * tool with ONE card is the answer to many cards of one kind.
  *
- * The stack (owner, 2026-10-24): with two cards or more, a banner counts
- * them, the edges of the cards behind peek out under the shown one, a
- * sideways swipe on a touch screen moves between them, and the first stack
- * of a page nudges once to show the swipe. The member could miss "1 of 2" in
- * the corner. The nudge stops for a member who asked for less motion.
+ * The queue itself is `lib/confirmationQueue.ts`. The tab rules are
+ * `lib/cardTabs.ts`, and the row is `components/ui/CardTabs.tsx`.
  *
- * The queue itself is `lib/confirmationQueue.ts`.
+ * §18.11: a new-mail card that a chat message closed keeps its tab as a slot
+ * with no buttons ("Updating the draft…"), and the new draft takes that tab.
+ * The rules are `lib/redraftCard.ts`.
  */
 
-import { useReducer, useState } from "react";
+import { useId, useReducer, useState } from "react";
 
-import ConfirmationCard from "@/components/ConfirmationCard";
-import CardStack from "@/components/ui/CardStack";
+import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
+import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
 import {
   NO_TICKS,
+  earlierOf,
+  asNewMailEdits,
+  asTaskEdits,
   rowTicksReducer,
   rowsView,
+  type FormEdit,
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
-import type { ReplyApproval } from "@/lib/replyCard";
+import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
+import { unfenced } from "@/lib/fencedText";
+import type { CardDraft } from "@/lib/redraftCard";
+import { DELETE_EARLIER_ANSWER, isNewMail, type EarlierDraft, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
+import type { TaskCardEdits, TaskEditApproval } from "@/lib/taskEditCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
- *  Each goes in ONE respond-input. */
-export type ConfirmationAnswer = "APPROVE" | "REJECT" | RowsApproval | ReplyApproval;
+ *  Each goes in ONE respond-input. Task 3978: the Discard of a new-mail card
+ *  that also deletes the earlier draft of the chat is a REJECT too. */
+export type ConfirmationAnswer =
+  | "APPROVE" | "REJECT" | typeof DELETE_EARLIER_ANSWER | RowsApproval | ReplyApproval | TaskEditApproval;
 
 interface ConfirmationQueueProps {
   cards: PendingConfirmation[];
+  /** Why the last answer of a card failed, by key (UXD-3). */
+  errors?: ReadonlyMap<string, string>;
   onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void;
   /** The card to show first. Tests and the visual rig set it. */
   initialIndex?: number;
+  /** Put words in the chat box, and send nothing (a new-mail card's chips, §18.10). */
+  onSuggest?: (text: string) => void;
+  /** §18.11: a new-mail card's version after each edit, by the card's key. */
+  onDraftChange?: (key: string, draft: CardDraft | null) => void;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
+  /**
+   * The member's edits of a form, by key: a new mail or a task card (EAC-2).
+   * The CHAT holds them (fix round 5), because this queue mounts again on each
+   * new message, and when its last card leaves. Each card reads its own kind
+   * through a guard (`asNewMailEdits`, `asTaskEdits`).
+   */
+  savedEdits?: (key: string) => FormEdit | undefined;
+  /** A form reports the member's edits, by key. */
+  onEdits?: (key: string, edits: FormEdit) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -72,12 +101,58 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
 
-export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
+/**
+ * What the queue holds after its cards changed: the keys it saw, and the
+ * card it shows. A card that came back first opens (`restoredFirst`), and any
+ * other change keeps the member's card. Pure and idempotent, so a render that
+ * React runs twice reaches the same state. The component calls it, and
+ * `confirmationQueue.test.ts` runs it over a real Undo.
+ *
+ * One change does move the view (§18.11). The member looks at a slot, which
+ * has no button, and the queue changes: a card arrives, or the shown card
+ * turns into a slot. The view then goes to the FIRST live card, new or not
+ * (fix round 5), because the run waits on the member there. A slot counts
+ * apart from a card in `keys`, so a card that turns into a slot is a change.
+ */
+/** The mark of a slot in the keys of `reconcileShown`. No card id holds it. */
+const SLOT_MARK = "\u0000slot";
+
+export function reconcileShown(
+  prevKeys: readonly string[],
+  cards: PendingConfirmation[],
+  shown: Shown,
+): { keys: readonly string[]; shown: Shown } {
+  const keys = cards.map((c) => (c.redraft ? `${c.key}${SLOT_MARK}` : c.key));
+  if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
+  const plain = (list: readonly string[]) => list.map((k) => k.replace(SLOT_MARK, ""));
+  const opened = restoredFirst(plain(prevKeys), plain(keys));
+  if (opened !== null) return { keys, shown: { key: opened, index: 0 } };
+  const showing = cards.find((c) => c.key === shown.key);
+  const live = showing?.redraft ? cards.findIndex((c) => !c.redraft) : -1;
+  return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
+}
+
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
   // `rowTicksReducer` and `rowsView`, and this component holds none.
   const [ticks, tick] = useReducer(rowTicksReducer, NO_TICKS);
+  const uid = useId();
+  // The cards the member has opened, by key: a tab not in it wears a dot.
+  const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
+  // The keys of the last render, in state and not in a ref: a render that
+  // React runs twice (StrictMode) must see the same change both times.
+  const [prevKeys, setPrevKeys] = useState<readonly string[]>([]);
+  // The queue pins the shown card in `shown`, so opening a tab marks it seen.
+  const shownKey = shown.key;
+  if (shownKey !== null && !seen.has(shownKey)) setSeen(new Set(seen).add(shownKey));
+  // A card that comes back first (Undo of a Reject) opens, so the member
+  // sees what they tried to answer. Any other change keeps the member's card.
+  // (React's adjust-state-during-render pattern, as for `shown` below.)
+  const next = reconcileShown(prevKeys, cards, shown);
+  if (next.keys !== prevKeys) setPrevKeys(next.keys);
+  if (next.shown !== shown) setShown(next.shown);
   if (cards.length === 0) return null;
   const at = pickShown(cards, shown);
   const card = cards[at];
@@ -87,6 +162,7 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
   const view = rowsView(card, ticks);
+  const tabbed = cards.length > 1;
   const shownCard = (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -97,14 +173,16 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       detail={card.detail}
       context={card.context}
       fenced={card.fenced}
+      error={errors?.get(card.key)}
       rows={view.rows}
       onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
-      position={{
-        index: at,
-        total: cards.length,
-        onPrev: () => go(Math.max(0, at - 1)),
-        onNext: () => go(Math.min(cards.length - 1, at + 1)),
-      }}
+      // With tabs, they are the one switcher (D173), so the card draws no
+      // "1 of N" pager of its own.
+      position={
+        tabbed
+          ? undefined
+          : { index: at, total: cards.length, onPrev: () => go(Math.max(0, at - 1)), onNext: () => go(Math.min(cards.length - 1, at + 1)) }
+      }
       onApprove={() => {
         // One respond-input: the Approve and the ticked ids together. The
         // answered card carries the ticks, so a restore shows them again.
@@ -112,14 +190,64 @@ export default function ConfirmationQueue({ cards, onAnswer, initialIndex = 0 }:
       }}
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
-      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
+      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
+      // Task 3978: Discard or Reject, then "Delete it", on a card that names a draft of the chat.
+      {...earlierProps(card, onAnswer)}
+      // §18.11: the slot of a redraft answers nothing. A new-mail card
+      // reports each edit, and a redrafted card knows the member's last version.
+      {...(card.redraft ? { slot: card.redraft } : {})}
+      {...(onDraftChange ? { onDraftChange: (d: CardDraft | null) => onDraftChange(card.key, d) } : {})}
+      {...(isNewMail(card.reply)
+        ? { carriesEdits, savedEdits: asNewMailEdits(savedEdits?.(card.key)), onEdits: (value: NewMailEdits) => onEdits?.(card.key, value) }
+        : {})}
+      // EAC-2: a task card that carries a form. Approve sends the edit answer, or a plain APPROVE.
+      {...(card.edit
+        ? {
+            edit: card.edit,
+            savedTaskEdits: asTaskEdits(savedEdits?.(card.key)),
+            onTaskEdits: (value: TaskCardEdits) => onEdits?.(card.key, value),
+            onEditAnswer: (answer: "APPROVE" | TaskEditApproval) => onAnswer(card, answer),
+          }
+        : {})}
+      {...(card.before ? { before: card.before } : {})}
+      // The tab row sits inside the card's frame, and the card is its panel.
+      {...(tabbed
+        ? {
+            tabs: <CardTabs uid={uid} index={at} onGo={go} tabs={cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) }))} />,
+            tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) },
+          }
+        : {})}
     />
   );
-  // The stack's banner, deck edges, swipe and spring (owner, 2026-10-24)
-  // are the shared `CardStack`; a single card draws as it is.
-  return (
-    <CardStack total={cards.length} index={at} onGo={go} keys={cards.map((c) => c.key)}>
-      {shownCard}
-    </CardStack>
-  );
+  return shownCard;
+}
+
+/**
+ * Task 3978 (§18.13.1): the props that let a card ask "Keep the earlier
+ * draft, or delete it?". A new-mail card with an `earlier` draft gets the
+ * answer only, because its form holds the line. A plain card gets the line
+ * too. Any other card gets nothing, so its Discard or Reject is as before.
+ */
+export function earlierProps(
+  card: PendingConfirmation,
+  onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void,
+): { onDiscardEarlier?: () => void; earlier?: EarlierDraft } {
+  const earlier = earlierOf(card);
+  if (!earlier) return {};
+  const onDiscardEarlier = () => onAnswer(card, DELETE_EARLIER_ANSWER);
+  return isNewMail(card.reply) ? { onDiscardEarlier } : { onDiscardEarlier, earlier };
+}
+
+/** A card's tab: its kind, a short label (`tabLabel`), and the card's full
+ *  summary for the tooltip. */
+export function cardTab(card: PendingConfirmation): CardTab {
+  const { summary } = cardSummary(card.title, card.detail);
+  return {
+    key: card.key,
+    label: tabLabel(card),
+    title: card.fenced ? unfenced(summary) : summary,
+    icon: KIND_ICON[cardKind(card)],
+    // A slot of a redraft is a tab, and no card waits on the member in it.
+    ...(card.redraft ? { updating: true } : {}),
+  };
 }

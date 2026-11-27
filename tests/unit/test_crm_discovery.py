@@ -211,6 +211,28 @@ def test_a_stage_the_same_in_two_pipelines_keeps_one_name() -> None:
     assert rows[0]["stages"][0]["forecast_category"] == "Pipeline"
 
 
+def test_a_pipeline_stage_is_named_by_its_zoho_label() -> None:
+    """Task #1096: a Zoho rename changes ``display_value`` only, and a deal
+    carries that label. ``actual_value`` is the fallback. The map entry's
+    ``id`` rides along, and the order stays ``sequence_number``."""
+    stages = zm.pipeline_stages({"maps": [
+        {"id": "S3", "actual_value": "Closed Won", "display_value": "Delivered & Installed",
+         "sequence_number": 3, "forecast_type": "Closed Won"},
+        {"id": "S1", "actual_value": "Re-Evaluate", "display_value": "Re-Evaluate",
+         "sequence_number": 1},
+        {"id": "S2", "actual_value": "Confirmation and Advance",
+         "display_value": "New Lead", "sequence_number": 2},
+        {"actual_value": "No Label", "sequence_number": 4},
+        {"actual_value": "Blank Label", "display_value": "  ", "sequence_number": 5},
+        {"id": "S6", "display_value": "-None-", "sequence_number": 6},
+    ]})
+    assert [(s["name"], s["ext_id"], s["sequence"]) for s in stages] == [
+        ("Re-Evaluate", "S1", 1), ("New Lead", "S2", 2),
+        ("Delivered & Installed", "S3", 3), ("No Label", None, 4),
+        ("Blank Label", None, 5)]
+    assert stages[2]["type"] == "won"
+
+
 # ── a deal names its pipeline ────────────────────────────────────────────────
 
 

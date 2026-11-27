@@ -332,7 +332,7 @@ describe("a card answer to a run that restarted", () => {
     const res = await sendRespondInputResult(
       { request_id: "r1", answer: "yes", was_freeform: true, thread_id: "t" }, fetchFn,
     );
-    expect(res).toEqual({ outcome: "drop", resend: null });
+    expect(res).toEqual({ outcome: "drop", resend: null, reason: "Nothing waits on this answer now. The run ended, or someone answered it." });
     expect(restartedCardMessage("not json")).toBeNull();
   });
 });

@@ -293,7 +293,7 @@ export function StartupRitual({
               </p>
               {candidates.length === 0 ? (
                 <p className="py-4 text-center text-xs text-muted-foreground">
-                  No unscheduled next actions — plan or capture first.
+                  No unscheduled tasks — plan or capture first.
                 </p>
               ) : (
                 candidates.map((c) => {

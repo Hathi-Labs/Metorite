@@ -1,10 +1,30 @@
 // The Assistant pane's pure rules (WS-63 PZ-7).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CAPS,
+  LANGUAGES,
+  addLanguage,
+  focusAfterRemove,
+  pickLanguageButton,
+  languageName,
+  languagesToAdd,
+  moveLanguage,
+  removeLanguage,
+  styleLanguages,
   EMPTY_PROFILE,
   ProfileError,
+  chatHref,
+  DELETE_ONE_BODY,
+  deleteAllBody,
+  deleteAllSummaries,
+  deleteSummary,
+  fetchSummaries,
+  saveKeepSummaries,
+  summaryCount,
+  summaryGate,
   errorText,
   exportPath,
+  fetchBlock,
   fetchExport,
   fetchProfile,
   forgetAll,
@@ -50,6 +70,33 @@ describe("mergeStyle", () => {
   });
   it("drops an emptied notes list and a cleared language", () => {
     expect(mergeStyle({ notes: ["a"], language: "en", length: "short" }, { notes: [], language: "" })).toEqual({
+      length: "short",
+    });
+  });
+});
+
+describe("mergeStyle language_fixed", () => {
+  it("keeps the mark when the language changes", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true }, { language: "hi" })).toEqual({
+      language: "hi",
+      languages: ["hi"],
+      language_fixed: true,
+    });
+  });
+  it("moves the mark to the new first language of a reorder (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en", "hi"], language_fixed: true };
+    expect(mergeStyle(fixed, { languages: ["hi", "en"] })).toEqual({
+      language: "hi",
+      languages: ["hi", "en"],
+      language_fixed: true,
+    });
+  });
+  it("drops the mark when the list is emptied (PZ-52)", () => {
+    const fixed = { language: "en", languages: ["en"], language_fixed: true, length: "short" as const };
+    expect(mergeStyle(fixed, { languages: [] })).toEqual({ length: "short" });
+  });
+  it("drops the mark when the language is cleared", () => {
+    expect(mergeStyle({ language: "en", language_fixed: true, length: "short" }, { language: "" })).toEqual({
       length: "short",
     });
   });
@@ -209,5 +256,195 @@ describe("the interview (PZ-27)", () => {
       { url: "/api/auth/me/assistant-profile/interview/good_day", method: "DELETE", body: undefined },
       { url: "/api/auth/me/assistant-profile/interview", method: "DELETE", body: undefined },
     ]);
+  });
+});
+
+// PZ-20a: "Read as text". Mutation: let a 503 resolve with "", and the 503
+// case fails. Drop the shape check, and the bad-shape case fails.
+describe("fetchBlock", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the proxy with no query and returns the text as sent", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify({ enabled: true, text: "## About line" }), { status: 200 });
+    }));
+    expect(await fetchBlock()).toEqual({ enabled: true, text: "## About line" });
+    expect(seen).toEqual(["/api/auth/me/assistant-profile/block"]);
+  });
+
+  it("passes an off org through", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ enabled: false, text: "" }), { status: 200 })));
+    expect(await fetchBlock()).toEqual({ enabled: false, text: "" });
+  });
+
+  it("throws a ProfileError on a 503, never an empty text", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("offline"); }));
+    await expect(fetchBlock()).rejects.toMatchObject({ status: 0 });
+  });
+
+  it("throws on a body of the wrong shape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ text: 1 }), { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
+    await expect(fetchBlock()).rejects.toBeInstanceOf(ProfileError);
+  });
+});
+
+describe("Recent chats (PZ-35)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const reply = (status: number, body?: unknown) =>
+    vi.fn(async () => new Response(body === undefined ? null : JSON.stringify(body), { status }));
+
+  it("reads the gate: the flag of the org, and the switch of the member (on by default)", () => {
+    expect(summaryGate({ summaries_enabled: true, apps: { chat: { summaries: false } } })).toEqual({
+      enabled: true,
+      keep: false,
+    });
+    expect(summaryGate({ summaries_enabled: true, apps: { brief: { enabled: true } } })).toEqual({
+      enabled: true,
+      keep: true,
+    });
+    expect(summaryGate({ enabled: true })).toEqual({ enabled: false, keep: true });
+    expect(summaryGate(null)).toEqual({ enabled: false, keep: true });
+  });
+
+  it("lists, and a fault throws, never an empty list", async () => {
+    const page = { summaries: [{ id: "s1", title: "Q3", date: null, text: "t", follow_ups: [] }], more: false };
+    vi.stubGlobal("fetch", reply(200, page));
+    expect(await fetchSummaries()).toEqual(page);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/auth/me/assistant-profile/summaries");
+    vi.stubGlobal("fetch", reply(503, { detail: "unavailable" }));
+    await expect(fetchSummaries()).rejects.toBeInstanceOf(ProfileError);
+    vi.stubGlobal("fetch", reply(200, { nope: 1 }));
+    await expect(fetchSummaries()).rejects.toBeInstanceOf(ProfileError);
+  });
+
+  it("deletes one, deletes all, and writes the switch through the apps key", async () => {
+    vi.stubGlobal("fetch", reply(204));
+    await deleteSummary("a b");
+    await deleteAllSummaries();
+    await saveKeepSummaries(false);
+    const calls = vi.mocked(fetch).mock.calls as unknown as [string, RequestInit][];
+    expect(calls[0][0]).toBe("/api/auth/me/assistant-profile/summaries/a%20b");
+    expect(calls[0][1].method).toBe("DELETE");
+    expect(calls[1][0]).toBe("/api/auth/me/assistant-profile/summaries");
+    expect(calls[1][1].method).toBe("DELETE");
+    expect(calls[2][1].method).toBe("PUT");
+    expect(JSON.parse(String(calls[2][1].body))).toEqual({ key: "apps", value: { chat: { summaries: false } } });
+  });
+
+  it("links to the chat and counts for the confirm", () => {
+    expect(chatHref("s 1")).toBe("/chat?do=open-chat&fill.session=s%201");
+    expect(summaryCount({ summaries: [], more: false })).toBe("0");
+    const one = { id: "s1", title: "", date: null, text: "", follow_ups: [] };
+    expect(summaryCount({ summaries: [one, one], more: false })).toBe("2");
+    expect(summaryCount({ summaries: [one, one], more: true })).toBe("2 or more");
+    expect(deleteAllBody({ summaries: [one, one], more: false })).toContain("This deletes all 2 chat summaries.");
+    expect(deleteAllBody({ summaries: [one], more: false })).toContain(
+      "If you keep chatting, new summaries can appear. To stop them, turn off Keep chat summaries. You cannot undo this.",
+    );
+    expect(DELETE_ONE_BODY).toBe("If you keep chatting in this chat, a new one can appear. You cannot undo this.");
+    expect(deleteAllBody({ summaries: [one, one], more: true })).toContain("This deletes all 2 or more chat summaries.");
+  });
+});
+
+describe("languages I speak (PZ-52, PZ-53)", () => {
+  it("keeps the nine languages of the picker, and a cap of six", () => {
+    expect(Object.keys(LANGUAGES)).toHaveLength(9);
+    expect(CAPS.languages).toBe(6);
+  });
+  it("sets language to the first tag when the list changes", () => {
+    expect(mergeStyle({ length: "short" }, { languages: ["hi", "en"] })).toEqual({
+      length: "short",
+      language: "hi",
+      languages: ["hi", "en"],
+    });
+  });
+  it("clears both keys with an empty list", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"], length: "short" }, { languages: [] })).toEqual({
+      length: "short",
+    });
+  });
+  it("a lone language replaces the list", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { language: "kn" })).toEqual({
+      language: "kn",
+      languages: ["kn"],
+    });
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { language: "" })).toEqual({});
+  });
+  it("keeps the pair when only the length changes", () => {
+    expect(mergeStyle({ language: "en", languages: ["en", "hi"] }, { length: "short" })).toEqual({
+      length: "short",
+      language: "en",
+      languages: ["en", "hi"],
+    });
+  });
+  it("reads an old style as a list of one", () => {
+    expect(styleLanguages({ language: "kn" })).toEqual(["kn"]);
+    expect(styleLanguages({ language: "kn", languages: ["kn", "en"] })).toEqual(["kn", "en"]);
+    expect(styleLanguages({})).toEqual([]);
+  });
+  it("names a tag, and shows an unknown tag bare", () => {
+    expect(languageName("kn")).toBe("Kannada");
+    expect(languageName("or-IN")).toBe("or-IN");
+  });
+  it("moves one row and leaves the input alone", () => {
+    const list = ["en", "hi", "kn"];
+    expect(moveLanguage(list, 2, 0)).toEqual(["kn", "en", "hi"]);
+    expect(moveLanguage(list, 0, 1)).toEqual(["hi", "en", "kn"]);
+    expect(moveLanguage(list, 0, 3)).toEqual(list);
+    expect(moveLanguage(list, 1, 1)).toEqual(list);
+    expect(list).toEqual(["en", "hi", "kn"]);
+  });
+  it("adds only a known language, once, up to the cap", () => {
+    expect(addLanguage(["en"], "hi")).toEqual(["en", "hi"]);
+    expect(addLanguage(["en"], "en")).toEqual(["en"]);
+    expect(addLanguage(["en"], "xx")).toEqual(["en"]);
+    const six = ["en", "hi", "kn", "ta", "te", "mr"];
+    expect(addLanguage(six, "bn")).toEqual(six);
+  });
+  it("removes one row", () => {
+    expect(removeLanguage(["en", "hi", "kn"], 1)).toEqual(["en", "kn"]);
+  });
+  it("offers the languages that the list lacks, in picker order", () => {
+    expect(languagesToAdd(["hi", "en"])).toEqual(["kn", "ta", "te", "mr", "bn", "gu", "ml"]);
+    expect(languagesToAdd(Object.keys(LANGUAGES))).toEqual([]);
+  });
+});
+
+describe("the focus after a change of the language list (PZ-53)", () => {
+  const button = (tag: string, act: string, disabled = false) => ({ dataset: { tag, act }, disabled });
+  const rows = [
+    button("en", "up", true), button("en", "down"), button("en", "remove"),
+    button("hi", "up"), button("hi", "down", true), button("hi", "remove"),
+  ];
+
+  it("wants the removed row (a failed save), then the next row, else the one before", () => {
+    expect(focusAfterRemove(["en", "hi", "kn"], 1).map((w) => w.tag)).toEqual(["hi", "kn"]);
+    expect(focusAfterRemove(["en", "hi"], 1)).toEqual([
+      { tag: "hi", act: "remove" },
+      { tag: "en", act: "remove" },
+    ]);
+    expect(focusAfterRemove(["en"], 0).map((w) => w.tag)).toEqual(["en"]);
+  });
+
+  it("takes the wanted button of the first wanted row that the list holds", () => {
+    expect(pickLanguageButton(rows, [{ tag: "hi", act: "up" }])).toBe(rows[3]);
+    expect(pickLanguageButton(rows, [{ tag: "kn", act: "remove" }, { tag: "en", act: "remove" }])).toBe(rows[2]);
+  });
+
+  it("takes another button of the row when the wanted one is disabled", () => {
+    expect(pickLanguageButton(rows, [{ tag: "en", act: "up" }])).toBe(rows[1]);
+  });
+
+  it("answers null when the list holds no wanted row", () => {
+    expect(pickLanguageButton(rows, [{ tag: "ta", act: "up" }])).toBeNull();
+    expect(pickLanguageButton([], focusAfterRemove(["en"], 0))).toBeNull();
   });
 });

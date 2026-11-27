@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { TEMPLATE_REGISTRY } from "./genUITemplates";
 import { RowEditor } from "./PlanCardBody";
 import { planRowsFrom, planSubmit } from "@/app/projects/lib/planCard";
+import { classicMarkup } from "@/lib/theme/classicMarkup";
 
 const TASKS = [
   { key: "t1", title: "Build the memory store", owner: "ayush@x.io", effort_mins: 240,
@@ -132,7 +133,7 @@ describe("the plan card at rest", () => {
 
   it("draws in the chat card's frame, with a container for the narrow layout (change 9)", () => {
     const html = plan();
-    expect(html.startsWith('<div data-plan-card="" class="@container min-w-0"')).toBe(true);
+    expect(classicMarkup(html).startsWith('<div data-plan-card="" class="@container min-w-0"')).toBe(true);
     expect(html).toContain("@[34rem]:flex-row");
   });
 
@@ -233,7 +234,7 @@ describe("a form that is not a plan", () => {
   for (const [name, data] of NON_PLAN_SAMPLES) {
     it(`${name} renders unchanged`, () => {
       const html = renderToStaticMarkup(createElement(() => TEMPLATE_REGISTRY[name](data, { onAction: () => {} })));
-      expect(createHash("sha256").update(html).digest("hex")).toBe(HASHES[name]);
+      expect(createHash("sha256").update(classicMarkup(html)).digest("hex")).toBe(HASHES[name]);
       expect(html).not.toContain("data-plan");
     });
   }

@@ -360,7 +360,7 @@ layer, not by reading the answers.
    > That covers "these two instances really are one brain" deliberately and reversibly, without an
    > aggregate-derivation pipeline. It does **not** answer the cross-instance *learning* case above
    > (it merges, it does not generalise), so the two are complementary rather than alternatives.
-   > [`multiplayer_prior_art_qm_2026-08.md` §QM-7](../../project-docs/specs/multiplayer_prior_art_qm_2026-08.md).
+   > `multiplayer_prior_art_qm_2026-08.md` §QM-7.
 2. **Team membership source.** ~~`team_ref` needs a real team object; the org research doc's
    `module` is the natural home, but it isn't built yet.~~ **Answered** —
    [`groups_sessions_authority.md`](../../project-docs/specs/groups_sessions_authority.md) §1:

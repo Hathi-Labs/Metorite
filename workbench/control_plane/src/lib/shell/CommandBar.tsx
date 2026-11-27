@@ -37,7 +37,8 @@ import Button from "@/components/ui/Button";
 import { openAssistant } from "./assistant";
 import { shellChatOn } from "./chatFlag";
 import { fillPageFilter, pageFilterName } from "./pageFilter";
-import { buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
+import { installJobs, usePackageManifest } from "./packageManifest";
+import { addInstallJobs, buildItems, rank, readRecent, rememberRecent, type BarItem } from "./registry";
 
 interface FindItem {
   kind: string;
@@ -171,7 +172,13 @@ export function useBarResults({
   // member's features as well as the pane.
   const { access } = useAccess();
   const features = access.features;
-  const items = useMemo(() => buildItems(panes, undefined, features), [panes, features]);
+  // PKG-6: the jobs an install gives. Empty with the package host off.
+  const manifest = usePackageManifest();
+  const installJobList = useMemo(() => installJobs(manifest, features), [manifest, features]);
+  const items = useMemo(
+    () => addInstallJobs(buildItems(panes, undefined, features), installJobList),
+    [panes, features, installJobList],
+  );
 
   // Tier 1: ask the apps, once the member pauses. A late answer for words the
   // member has since changed is dropped, never shown.
@@ -331,7 +338,10 @@ export function useBarResults({
           onDone();
           // D99: the one assistant opens where the member is, so the page
           // and its context stay. Off, the words go to Chat as before.
-          if (shellChatOn()) openAssistant({ draft: words });
+          // D-PZ-37: the member typed the words here, and sends them from
+          // the composer. A prefilled Ask counts as typed (a known limit).
+          // The `/chat?q=` fallback is a link, so it carries no mark.
+          if (shellChatOn()) openAssistant({ draft: words, typed: true });
           else router.push(`/chat?q=${encodeURIComponent(words)}`);
         },
       });

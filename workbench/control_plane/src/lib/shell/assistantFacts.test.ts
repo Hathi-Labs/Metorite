@@ -101,7 +101,7 @@ describe("My Tasks", () => {
     const text = f.facts.join("\n");
     expect(text).toContain('"next" view');
     expect(text).toContain("«Ship v2» open (item_id: i-2, disposition: NEXT)");
-    expect(text).toContain("inbox holds 1, next actions 1, waiting-for 0");
+    expect(text).toContain("task inbox holds 1 and their tasks 1, waiting-for 0");
     expect(f.label).toBe("Ship v2");
   });
 
@@ -127,5 +127,13 @@ describe("My Email", () => {
   it("all inboxes, and no message open", () => {
     const f = emailAssistantFacts({ viewAll: true, account: null, email: null });
     expect(f.facts).toEqual(["They are looking at all their inboxes together."]);
+  });
+});
+
+describe("My Tasks, TC-1", () => {
+  it("names the focused card, which the page passes in place of the pane selection", () => {
+    const items = [{ id: "i-3", title: "Call Dr Dadi", disposition: "NEXT" as const }];
+    const f = tasksAssistantFacts({ items, openItemId: "i-3" });
+    expect(f.facts.join("\n")).toContain("item_id: i-3");
   });
 });

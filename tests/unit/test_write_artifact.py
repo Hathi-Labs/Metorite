@@ -40,7 +40,7 @@ def test_second_write_does_not_clobber(tmp_path, monkeypatch) -> None:
     assert res["path"] == "outputs/report (1).md"
     assert (tmp_path / "outputs" / "report.md").read_text(encoding="utf-8") == "original"
     assert (tmp_path / "outputs" / "report (1).md").read_text(encoding="utf-8") == "new"
-    assert res["download_url"].endswith("path=outputs/report (1).md")
+    assert res["download_url"].endswith("path=outputs/report%20%281%29.md")
 
 
 def test_overwrite_true_replaces_in_place(tmp_path, monkeypatch) -> None:
@@ -62,3 +62,16 @@ def test_does_not_overwrite_user_upload_in_inputs(tmp_path, monkeypatch) -> None
     # The user's original upload is untouched.
     assert (tmp_path / "inputs" / "data.csv").read_text(encoding="utf-8") == "user-uploaded"
     assert res["path"] == "inputs/data (1).csv"
+
+
+def test_workspace_file_url_encodes_the_path_so_the_viewer_finds_the_file():
+    """A name with `#`, `&`, `+`, `%` or a space must survive the query string (#120)."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from acb_skills.write_artifact import workspace_file_url
+
+    for rel in ("outputs/Q3 plan & notes.md", "outputs/c++ #1 100%.md", "outputs/été/résumé.md"):
+        url = workspace_file_url("s1", rel)
+        assert " " not in url and "#" not in url and "&" not in url.split("path=", 1)[1]
+        assert parse_qs(urlsplit(url).query)["path"] == [rel]
+    assert workspace_file_url("s1", "outputs/a.md") == "/api/agent/workspace/s1/file?path=outputs/a.md"

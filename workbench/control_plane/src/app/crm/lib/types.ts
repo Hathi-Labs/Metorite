@@ -138,19 +138,35 @@ export type StageMetadataReport = {
 // rather than one bundled payload: they answer four different questions, and a
 // single endpoint would make the slowest one decide when any of them renders.
 
-export type StageTotals = {
-  status: Status;
-  count: number;
+/**
+ * The figures of ONE currency. The report routes never add two currencies
+ * (HANDOFF H-333): a scalar is in the `currency` beside it, and the rest sit
+ * in `others`, each with its own code. `others` is empty for one currency.
+ */
+export type MoneyTotals = {
+  currency: string;
   amount: number;
   weighted: number;
+};
+
+export type StageTotals = {
+  status: Status;
+  /** Deals of every currency. */
+  count: number;
+  currency: string;
+  amount: number;
+  weighted: number;
+  others: MoneyTotals[];
 };
 
 /** Only open/ongoing stages appear — won is booked, lost is nothing. */
 export type PipelineReport = {
   stages: StageTotals[];
   count: number;
+  currency: string;
   amount: number;
   weighted: number;
+  others: MoneyTotals[];
 };
 
 export type FunnelStage = {
@@ -189,7 +205,9 @@ export type FunnelReport = {
 export type LostReasonShare = {
   label: string;
   deals: number;
+  currency: string;
   amount: number;
+  others: { currency: string; amount: number }[];
   /** False for the unattributed bucket — missing data, not a chosen reason. */
   attributed: boolean;
 };
@@ -200,8 +218,10 @@ export type WinLossReport = {
   won: number;
   lost: number;
   win_rate: number;
+  currency: string;
   won_amount: number;
   lost_amount: number;
+  others: { currency: string; won_amount: number; lost_amount: number }[];
   average_cycle_days: number | null;
   /**
    * Deals in a won/lost lane with NO `closed_at` — every imported closed deal,
@@ -216,8 +236,10 @@ export type OwnerRow = {
   /** `null` (or blank) is the unassigned bucket — see `ownerLabel`. */
   owner_email: string | null;
   open_deals: number;
+  currency: string;
   weighted: number;
   won_amount: number;
+  others: { currency: string; weighted: number; won_amount: number }[];
 };
 
 export type OwnerLeaderboard = {
@@ -405,6 +427,15 @@ export type PipelineLane = {
    */
   weighted: number;
   /**
+   * `amount` and `weighted` are in this currency ONLY: the primary one of the
+   * lane (INR first, then code order). The lane's other currencies sit in
+   * `others`, which is empty for a lane of one currency (HANDOFF H-333, task
+   * 887). `count` is of every currency. Optional for the R6 window, when a new
+   * bundle meets an older gateway: absent reads as INR and no others.
+   */
+  currency?: string;
+  others?: MoneyTotals[];
+  /**
    * The stage's place in the chosen pipeline. Null with no pipeline chosen,
    * and for a stage the pipeline does not list that still holds its deals.
    * Optional for the R6 window, when a new bundle meets an older gateway.
@@ -436,6 +467,14 @@ export type DealPipeline = {
   position: number;
   ext_url?: string | null;
   stages: PipelineStage[];
+  /**
+   * WS-CRM CRM-M4a: `deal` or `lead`. A lead pipeline's stages are lead
+   * statuses. `GET /crm/pipelines` serves the deal ones, and `?kind=lead`
+   * the lead ones. Left out by a gateway from before CRM-M4a.
+   */
+  kind?: "deal" | "lead";
+  /** CRM-M4a: the deal pipeline that a lead pipeline feeds. Absent: the default one. */
+  feeds_pipeline_id?: string | null;
 };
 
 export type Activity = {

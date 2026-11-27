@@ -1,0 +1,10 @@
+# Add this block to ~/.codex/config.toml,
+# or to .codex/config.toml of a trusted project.
+# Then run: codex mcp login metorite
+#
+# Replace the url with the MCP address of your Metorite host.
+[mcp_servers.metorite]
+url = "https://mcp.metorite.com/mcp"
+
+# Headless box: connect with a box token instead of OAuth.
+# Follow the box connect guide of the Metorite docs. Never write the token in this file.
