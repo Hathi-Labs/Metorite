@@ -44,6 +44,11 @@ Mutations (R7). ``G`` is ``apps/services/gateway/gateway/routes/projects``.
 * C11. ``G/claim_gate.py`` ``_counted_sql`` drops the ``ended_at`` test from
   the owner read.
   ``test_case4_a_reference_with_no_owner_run_counts_for_nobody[github_between_runs]``.
+* C12. ``G/claim_gate.py`` ``_counted_sql`` orders the owner read by
+  ``n.created_at ASC``: the tie-break test turns red.
+  ``test_when_two_runs_qualify_the_later_start_owns_the_pr``.
+* C13. ``G/claim_gate.py`` ``_counted_sql`` orders the owner read by
+  ``n.id ASC``. ``test_on_an_equal_start_the_highest_id_owns_the_pr``.
 * C3. ``G/claim_gate.py`` ``_counted_sql`` drops the ``awaiting`` test.
   ``test_a_task_that_waits_on_a_person_is_not_counted``.
 * C4. ``G/claim_gate.py`` ``_counted_sql`` drops the queued expiry.
@@ -645,6 +650,42 @@ class TestTheOwnerRun:
         assert mine["pr_number"] == 905
         [theirs] = _refused(await _claim(clean, _task(clean, "merger work"), merger))
         assert theirs["pr_number"] == 906
+
+    async def test_when_two_runs_qualify_the_later_start_owns_the_pr(self, clean, flags):
+        # The tie-break of §7b.8: the highest created_at wins. Run A is open
+        # with no label (the shape of a reopen), and run B ended after the PR.
+        # Both qualify, and B started later, so B owns the PR.
+        flags(refuse=True)
+        label = _label()
+        task = _task(clean, "two qualify", status="doing")
+        _run(clean, task, label=None, status="in_progress", days_ago=5)
+        _run(clean, task, label=label, status="released", days_ago=4, ended_hours=50)
+        _pr(clean, task, 907, hours=60)
+        [pr] = _refused(await _claim(clean, _task(clean, "labelled work"), label))
+        assert pr["pr_number"] == 907
+        r = await _claim(clean, _task(clean, "bare work"), None)
+        assert r.status_code == 200, r.text
+
+    async def test_on_an_equal_start_the_highest_id_owns_the_pr(self, clean, flags):
+        # The second tie-break of §7b.8: on an equal created_at, the highest id.
+        flags(refuse=True)
+        first, second = _label(), _label()
+        task = _task(clean, "equal start", status="doing")
+        a = _run(clean, task, label=first, status="released", days_ago=4)
+        b = _run(clean, task, label=second, status="released", days_ago=4)
+        with clean.admin.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_runs SET created_at = (SELECT created_at FROM pm_agent_runs"
+                " WHERE id = CAST(:a AS uuid)) WHERE id = CAST(:b AS uuid)"), {"a": a, "b": b})
+            top = str(c.execute(text(
+                "SELECT id FROM pm_agent_runs WHERE id IN (CAST(:a AS uuid), CAST(:b AS uuid))"
+                " ORDER BY id DESC LIMIT 1"), {"a": a, "b": b}).scalar())
+        owner, other = (first, second) if top == a else (second, first)
+        _pr(clean, task, 908, hours=60)
+        [pr] = _refused(await _claim(clean, _task(clean, "owner work"), owner))
+        assert pr["pr_number"] == 908
+        r = await _claim(clean, _task(clean, "other work"), other)
+        assert r.status_code == 200, r.text
 
 
 # ═══════════════════════════════════════════════════════════════════════════
