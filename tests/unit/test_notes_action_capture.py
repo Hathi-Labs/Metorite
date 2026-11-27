@@ -216,7 +216,7 @@ async def test_task_dispatch_never_writes_resulting_task_id(
     _install(monkeypatch, dispatch, db)
     marks: list[dict] = []
 
-    async def _mark(action_id, *, ref, task_id, error):
+    async def _mark(action_id, *, ref, task_id, error, **_kw):
         marks.append({"ref": ref, "task_id": task_id, "error": error})
 
     async def _audit(*a, **k):

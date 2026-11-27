@@ -27,10 +27,23 @@ standalone: run it on the upsized VPS or a dedicated box.
 | POST | `/bots/{id}/leave` | leave now → `202` |
 | POST | `/bots/{id}/say` | `{text}` → speak into the call → `202` |
 | GET | `/bots/{id}/recording` | audio bytes (when `status == "done"`) |
-| GET | `/health` | `{ok: true, active: N}` |
+| GET | `/health` | `{ok: true, active: N, profile: bool}`. No token. |
 
 Statuses: `joining → waiting_room → in_call → processing → done` (or `failed` /
-`not_admitted`). Optional `Authorization: Bearer <MEETING_BOT_TOKEN>`.
+`not_admitted`).
+
+Each route except `/health` needs `Authorization: Bearer <MEETING_BOT_TOKEN>`
+(task 4120). The token is required:
+
+- With `MEETING_BOT_TOKEN` unset or blank, each route answers 503
+  `MEETING_BOT_TOKEN is not configured`. The gateway then cannot send a bot.
+- A missing or wrong bearer answers 401. The compare is constant-time.
+- `/health` stays open, because `scripts/vps_apply.sh` reads it with a bare
+  `curl`. It returns two counts and no meeting data.
+- The worker serves no `/docs`, `/redoc` or `/openapi.json`.
+
+The noVNC view on 6080 (with `MEET_VNC=1`) has no password. Both compose files
+bind it to `127.0.0.1` only. Reach it through an SSH tunnel.
 
 `POST /bots` returns **409 when the worker is already in a meeting**. That is
 normal, not an error: a bot is a whole Chrome, and a signed-in profile can only
@@ -122,7 +135,7 @@ MEETING_BOT_TOKEN=<same secret as above>
 
 | Var | Default | Meaning |
 |---|---|---|
-| `MEETING_BOT_TOKEN` | _(none)_ | Bearer secret the gateway must send. Set it. |
+| `MEETING_BOT_TOKEN` | _(none)_ | Bearer secret the gateway must send. Required: with no value each route except `/health` answers 503. |
 | `MEETING_BOT_DATA` | `/data` | Where recordings are written. |
 | `MEET_JOIN_TIMEOUT` | `150` | Seconds to wait in the waiting room before giving up. |
 | `MEET_MAX_DURATION` | `14400` | Hard cap (s) on a single recording (4 h). |

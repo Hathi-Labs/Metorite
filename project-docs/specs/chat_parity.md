@@ -678,6 +678,14 @@ bot and write rows. They are `/note`, `/actions`, `/agenda`, `/agenda/progress`,
 The thirteenth route is `/bot/identity`. Its status check starts a browser on
 the profile of the bot, and a bot join at the same time can fail.
 
+**Task 3966 is BUILT (2026-11-27).** Each meeting route of `/notes` now checks
+the owner with `core.load_owned_meeting`, the rule of the meetings list and
+detail. `/bots/active` and `/live/sessions` list only the meetings of the
+member. The 13 held-back read rows may now be built. Task 3966 did not change
+`/bot/identity`. Its check of the status still starts a browser on the
+profile of the bot.
+This change does not build a chat tool and does not change `DEBT`.
+
 **Later than this reading (2026-11-25).** The table does not change after its
 date. For the debt of today, read `DEBT_CEILING`.
 

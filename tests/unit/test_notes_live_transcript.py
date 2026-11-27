@@ -7,6 +7,7 @@ network: publish → ring history + live subscribers, with a bounded backlog.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from gateway.routes.notes import live_transcript as lt
 
@@ -71,18 +72,20 @@ def test_unsubscribe_removes_subscriber() -> None:
     assert q not in bus.subs
 
 
-def test_ingest_resolves_speaker_and_strips_embedding() -> None:
+def test_ingest_resolves_speaker_and_strips_embedding(monkeypatch) -> None:
     """The ingest endpoint runs each segment through the speaker registry:
     a stable id + a live-bound name land on the fanned-out segment, and the raw
     embedding never leaves the gateway."""
     from gateway.routes.notes import live_speakers as ls
+
+    monkeypatch.setenv("MEETING_BOT_TOKEN", "s3cret")
 
     async def scenario() -> dict:
         mid = "m-ingest"
         lt._BUSES.pop(mid, None)
         ls.reset(mid)
         seg = lt.LiveSegment(text="Hi, I'm Priya", embedding=[1.0, 0.0, 0.0])
-        await lt.ingest_live_segment(mid, seg, authorization=None)
+        await lt.ingest_live_segment(mid, seg, authorization="Bearer s3cret")
         return list(lt._bus(mid).ring)[-1]
 
     out = asyncio.run(scenario())
@@ -99,7 +102,17 @@ def test_browser_segments_feed_the_same_bus() -> None:
     binding from self-intros still applies."""
     from gateway.routes.notes import live_speakers as ls
 
+    async def owner(_meeting_id: str, _email: str | None) -> None:
+        return None  # task 3966: the owner check passes for the owner
+
     async def scenario() -> list[dict]:
+        lt.require_owned_meeting, saved = owner, lt.require_owned_meeting
+        try:
+            return await _scenario()
+        finally:
+            lt.require_owned_meeting = saved
+
+    async def _scenario() -> list[dict]:
         mid = "m-browser"
         lt._BUSES.pop(mid, None)
         ls.reset(mid)
@@ -111,7 +124,7 @@ def test_browser_segments_feed_the_same_bus() -> None:
             await lt.ingest_browser_segment(
                 mid,
                 lt.LiveSegment(text=text, speaker_label=label, start_s=0.0, end_s=1.0),
-                _user=None,
+                user=SimpleNamespace(email="owner@example.com"),
             )
         return list(lt._bus(mid).ring)
 

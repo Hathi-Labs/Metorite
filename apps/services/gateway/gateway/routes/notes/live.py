@@ -206,14 +206,24 @@ async def _issue_live_token() -> LiveToken:
     )
 
 
-async def live_wanted(meeting_id: str) -> tuple[bool, str]:
+_LIVE_COPILOT_SQL = (
+    "SELECT copilot_enabled FROM live_session "
+    "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live' "
+    "ORDER BY started_at DESC LIMIT 1"
+)
+
+
+async def live_wanted(meeting_id: str, db=None) -> tuple[bool, str]:
     """Should this meeting be streaming right now, and why/why not.
 
     Streaming ASR is billed per minute for the whole meeting; the archival
     recording produces the same transcript afterwards at batch prices. So with
     nothing reading the stream in real time, it is pure spend. Never raises —
     if we can't tell, allow it, because breaking live captions is worse than an
-    unexpected bill on one meeting."""
+    unexpected bill on one meeting.
+
+    The member route passes its tenant-bound session ``db`` (task 3966). The
+    bot-token route passes none."""
     try:
         from gateway.routes.notes.core import _get_db
         from gateway.routes.notes.settings import (
@@ -222,21 +232,20 @@ async def live_wanted(meeting_id: str) -> tuple[bool, str]:
         )
         from sqlalchemy import text as _text
 
-        settings, _ = await load_for_meeting(meeting_id)
-        # H4/H6: service-identity route — `read_live_wanted` is called by the
-        # meeting-bot worker (MEETING_BOT_TOKEN, `system`-shaped identity, no
-        # ambient tenant); derive the tenant from the live_session/meeting row.
-        async with await _get_db() as db:
+        settings, _ = await load_for_meeting(meeting_id, db)
+        if db is not None:
             row = (
-                await db.execute(
-                    _text(
-                        "SELECT copilot_enabled FROM live_session "
-                        "WHERE meeting_id = CAST(:m AS UUID) AND status = 'live' "
-                        "ORDER BY started_at DESC LIMIT 1"
-                    ),
-                    {"m": meeting_id},
-                )
+                await db.execute(_text(_LIVE_COPILOT_SQL), {"m": meeting_id})
             ).fetchone()
+        else:
+            # H4/H6: service-identity route — `read_live_wanted` is called by
+            # the meeting-bot worker (MEETING_BOT_TOKEN, `system`-shaped
+            # identity, no ambient tenant); derive the tenant from the
+            # live_session/meeting row.
+            async with await _get_db() as unbound:
+                row = (
+                    await unbound.execute(_text(_LIVE_COPILOT_SQL), {"m": meeting_id})
+                ).fetchone()
         copilot_on = bool(row.copilot_enabled) if row is not None else False
         if wants_live_transcription(settings.live_transcription, copilot_on):
             return True, "wanted"
@@ -261,24 +270,30 @@ async def read_live_wanted(
     meeting_id: str,
     authorization: str | None = Header(default=None),
 ) -> LiveWanted:
-    """Cheap poll for the producers, so turning the copilot on mid-meeting
-    starts streaming and turning it off stops it. Bot-token authed because the
-    worker is the main caller.
+    """Should the meeting-bot worker stream this meeting. One boolean and a
+    settings-derived sentence, behind the bot token.
 
-    **Deliberately NOT member-owner-scoped** (N1, 2026-08-04). This is a
-    machine entrypoint: the caller is the meeting-bot worker in its own
-    container, holding ``MEETING_BOT_TOKEN`` and no member identity at all —
-    which is why the route is in ``core.router``'s ``exempt`` list and in
-    ``test_org_access_enforcement.GATED_ROUTERS``. Bolting a member owner
-    predicate onto it would need an owner it does not have, and the honest
-    implementations of that (trust a client-supplied email, or fall back to
-    the meeting's own owner) would each turn the bot token into a way to
-    assert an identity. The bot token IS the authority here, exactly as it is
-    for ``/live/segment`` — which posts the transcript this route only decides
-    whether to keep paying for. What leaks without a member check is one
-    boolean plus a settings-derived sentence; no meeting content, no title,
-    and the same answer for a meeting id that does not exist (``live_wanted``
-    never raises and defaults to ``True``)."""
+    ⚠️ **No caller reaches this route today** (task 4120). It is in neither
+    ``main.PUBLIC_ROUTES`` nor ``core.router``'s ``exempt`` list. So
+    ``require_authenticated`` and then the feature gate answer 401 to the
+    worker before ``_check_bot_auth`` runs. The worker stopped calling it in
+    task 4120, because its fail-open default turned each 401 into "wanted".
+
+    The route stays gated on purpose. With no member there is no bound
+    tenant, so ``live_wanted`` reads with no ``db``, in an unbound session.
+    FORCE row level security then hides ``meeting``, ``copilot_config`` and
+    ``live_session``. On a fresh connection the read sees zero rows, and the
+    answer is the defaults ("auto", copilot off). On a pooled connection the
+    tenant setting is ``''``, the uuid cast fails, and the answer is
+    ``(True, "unknown")``. Neither is the setting of the meeting (R8 case in
+    ``test_notes_meeting_owner_r8.py``). To open the route, first resolve the
+    tenant of the meeting through a SECURITY DEFINER read, then read in
+    ``tenant_session(org)``.
+
+    **Not member-owner-scoped** (N1, 2026-08-04). The caller is a machine
+    with ``MEETING_BOT_TOKEN`` and no member identity. An owner predicate
+    would need an owner it does not have. ``live_wanted`` never raises, and
+    gives the same answer for a meeting id that does not exist."""
     from gateway.routes.notes.live_transcript import _check_bot_auth
 
     _check_bot_auth(authorization)
@@ -307,7 +322,7 @@ async def live_token(
             await load_owned_meeting(
                 db, meeting_id, user.email, columns="m.id"
             )
-        wanted, reason = await live_wanted(meeting_id)
+            wanted, reason = await live_wanted(meeting_id, db)
         if not wanted:
             raise HTTPException(status_code=409, detail=reason)
     return await _issue_live_token()

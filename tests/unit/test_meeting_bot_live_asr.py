@@ -253,66 +253,61 @@ def test_worker_sends_the_model_the_gateway_chose() -> None:
     assert "speaker_labels=true" in url
 
 
-# ── paying only while something reads the stream ─────────────────────────────
+# ── the supervisor streams with no wanted poll (task 4120) ──────────────────
 
-def test_wanted_url_derives_from_the_callback() -> None:
-    """No new field in the join contract — the per-meeting callback the gateway
-    already sends carries the meeting id."""
-    cb = "http://gw:8080/notes/meetings/abc-123/live/segment"
-    assert live._wanted_url(cb) == "http://gw:8080/notes/meetings/abc-123/live/wanted"
+def test_the_worker_no_longer_polls_live_wanted() -> None:
+    """The poll of ``GET .../live/wanted`` got 401 from the gateway gate on
+    every call, and its fail-open default said "wanted". Task 4120 removed it.
+    A new poll must come with a route that the worker can reach and that
+    reads in the tenant of the meeting (note_taker_app.md)."""
+    src = _MOD_PATH.read_text(encoding="utf-8")
+    assert "/live/wanted\"" not in src and "+ \"/live/wanted" not in src
+    for name in ("_live_wanted", "_watch_wanted", "_wanted_url"):
+        assert not hasattr(live, name), name
 
 
-def test_live_check_fails_open() -> None:
-    """If the gateway can't be reached we keep streaming. Losing captions on a
-    real meeting is worse than one meeting's spend, and the gateway's own check
-    fails open the same way."""
+def test_the_supervisor_streams_and_reopens_after_a_drop(monkeypatch) -> None:
+    """With live configured, the worker opens the stream at once. When the
+    stream closes before the call ends, it waits and opens it again. It makes
+    no HTTP call of its own."""
     import asyncio
-
-    import pytest
-
-    monkey = pytest.MonkeyPatch()
-
-    class _Boom:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def get(self, *a, **k): raise RuntimeError("gateway down")
 
     import httpx
-    monkey.setattr(httpx, "AsyncClient", lambda **kw: _Boom())
-    try:
-        cb = "http://gw/notes/meetings/m1/live/segment"
-        assert asyncio.run(live._live_wanted(cb)) is True
-    finally:
-        monkey.undo()
+
+    def _no_http(**_kw):
+        raise AssertionError("the supervisor made an HTTP call")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _no_http)
+    monkeypatch.setattr(live, "live_enabled", lambda: True)
+    monkeypatch.setattr(live, "_LIVE_RETRY_S", 0.01)
+    opened: list[str] = []
+
+    async def run() -> None:
+        stop = asyncio.Event()
+
+        async def once(cb: str, ev: asyncio.Event) -> None:
+            assert ev is stop
+            opened.append(cb)
+            if len(opened) == 3:
+                stop.set()
+
+        monkeypatch.setattr(live, "_stream_once", once)
+        await asyncio.wait_for(
+            live.stream_transcription("http://gw/notes/meetings/m1/live/segment", stop),
+            timeout=5,
+        )
+
+    asyncio.run(run())
+    assert opened == ["http://gw/notes/meetings/m1/live/segment"] * 3
 
 
-def test_live_check_honours_a_refusal() -> None:
+def test_the_supervisor_does_nothing_when_live_is_off(monkeypatch) -> None:
     import asyncio
 
-    import pytest
+    monkeypatch.setattr(live, "live_enabled", lambda: False)
 
-    monkey = pytest.MonkeyPatch()
+    async def once(*_a) -> None:
+        raise AssertionError("streamed with live off")
 
-    class _Resp:
-        def raise_for_status(self): pass
-        def json(self): return {"wanted": False, "reason": "the copilot is off"}
-
-    class _Client:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def get(self, *a, **k): return _Resp()
-
-    import httpx
-    monkey.setattr(httpx, "AsyncClient", lambda **kw: _Client())
-    try:
-        cb = "http://gw/notes/meetings/m1/live/segment"
-        assert asyncio.run(live._live_wanted(cb)) is False
-    finally:
-        monkey.undo()
-
-
-def test_no_callback_means_no_gate() -> None:
-    """A worker with nowhere to post segments isn't in a gated flow at all."""
-    import asyncio
-
-    assert asyncio.run(live._live_wanted("")) is True
+    monkeypatch.setattr(live, "_stream_once", once)
+    asyncio.run(live.stream_transcription("http://gw/x/live/segment", asyncio.Event()))

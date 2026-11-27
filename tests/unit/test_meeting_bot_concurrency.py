@@ -57,6 +57,17 @@ def _load(profile_dir: str = "", max_concurrent: str = "1"):
     return mod
 
 
+#: The worker refuses a call with no token since task 4120. These cases test
+#: the capacity guard, so each one carries the right bearer.
+_TOKEN = "concurrency-test-token"
+_AUTH = f"Bearer {_TOKEN}"
+
+
+@pytest.fixture(autouse=True)
+def _bot_token(monkeypatch) -> None:
+    monkeypatch.setenv("MEETING_BOT_TOKEN", _TOKEN)
+
+
 def _busy_job(mod, status: str = "in_call"):
     job = mod._Job("busyid", "https://meet.google.com/aaa-bbbb-ccc", "Bot", None)
     job.status = status
@@ -71,7 +82,7 @@ async def test_a_second_meeting_is_refused_while_one_is_live() -> None:
     with pytest.raises(HTTPException) as caught:
         await mod.create_bot(
             mod.JoinRequest(meeting_url="https://meet.google.com/xyz-abcd-efg"),
-            authorization=None,
+            authorization=_AUTH,
         )
     assert caught.value.status_code == 409
     # One-at-a-time is the normal state here, not a fault, so the message has to
@@ -91,7 +102,7 @@ async def test_the_profile_lock_is_refused_even_if_capacity_was_raised() -> None
     with pytest.raises(HTTPException) as caught:
         await mod.create_bot(
             mod.JoinRequest(meeting_url="https://meet.google.com/xyz-abcd-efg"),
-            authorization=None,
+            authorization=_AUTH,
         )
     assert caught.value.status_code == 409
     assert "profile" in str(caught.value.detail).lower()
@@ -122,7 +133,7 @@ async def test_an_idle_worker_accepts_a_meeting(monkeypatch) -> None:
     monkeypatch.setattr(mod, "_run", _noop)
     out = await mod.create_bot(
         mod.JoinRequest(meeting_url="https://meet.google.com/xyz-abcd-efg"),
-        authorization=None,
+        authorization=_AUTH,
     )
     assert out["status"] == "joining"
     assert out["id"]
