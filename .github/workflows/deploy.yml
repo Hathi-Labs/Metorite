@@ -484,11 +484,14 @@ jobs:
   # `cancel-in-progress: false`: a merge must not kill a RUNNING batch. With
   # `true`, a busy day would start a batch at each merge and finish none.
   #
-  # `timeout-minutes: 90`: without it, GitHub stops a hung job after 360 min,
-  # and a hung batch holds the push group that long. The last four batches
-  # took 35 to 37 min (2026-11-04).
+  # `timeout-minutes: 120`: without it, GitHub stops a hung job after 360 min,
+  # and a hung batch holds the push group that long. The batches took 35 to
+  # 37 min on 2026-11-04, and 55 to 83 min on 2026-11-27 (task 4065: the
+  # runner is about 27% slower, and the premerge tests sleep to real caps).
+  # 90 min left under 8 min of margin, so the limit is 120 until the batch
+  # runs in shards (task 4065).
   # ⚠️ GitHub gives a job that it stops at the timeout the conclusion
-  # `cancelled`, the same as a fold. The job ran for 90 min, and it carries
+  # `cancelled`, the same as a fold. The job ran for 120 min, and it carries
   # the annotation "The job has exceeded the maximum execution time". That is
   # a HUNG batch, and it is red. On a release, `publish-release` then reads
   # `cancelled` and skips, so production stays on its current release.
@@ -508,7 +511,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, release-commit]
     if: ${{ !inputs.skip_tests }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     concurrency:
       group: ${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}
       cancel-in-progress: false

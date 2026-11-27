@@ -424,14 +424,16 @@ def test_a_hung_batch_cannot_hold_the_group_for_six_hours(parsed: dict) -> None:
     """Without a limit, GitHub stops a job after 360 minutes.
 
     A hung push batch would hold `main-full-suite` that long, and every later
-    merge would wait. The last four batches took 35 to 37 minutes (measured
-    2026-11-04). 90 minutes is about 2.4 times that. On a release, the same
-    limit ends a hung gate, and a red gate holds that day's release. A lower
-    limit can stop a slow but sound release, so change it only after a new
-    measurement.
+    merge would wait. The batches took 35 to 37 minutes on 2026-11-04, and 55
+    to 83 minutes on 2026-11-27 (task 4065, measured from the JUnit reports:
+    a slower runner, and the premerge tests that sleep to real caps). 120
+    minutes is about 1.5 times the slowest. On a release, the same limit ends
+    a hung gate, and a red gate holds that day's release. A lower limit can
+    stop a slow but sound release, so change it only after a new measurement.
+    The release window of each slot is 5 hours, so 120 minutes still ships.
     """
-    assert parsed["jobs"]["test"].get("timeout-minutes") == 90, (
-        "the `test` job needs `timeout-minutes: 90`. Read this test's "
+    assert parsed["jobs"]["test"].get("timeout-minutes") == 120, (
+        "the `test` job needs `timeout-minutes: 120`. Read this test's "
         "docstring before you change the number."
     )
 

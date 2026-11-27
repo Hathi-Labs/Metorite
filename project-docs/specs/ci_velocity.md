@@ -286,7 +286,8 @@ The live evidence comes after the merge. Two review rounds added the three
 - **A rerun is not batched.** The group is
   `${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}`.
   A person's rerun of an old push run gets its own group, so it cannot cancel
-  a newer batch. `test` has `timeout-minutes: 90`.
+  a newer batch. `test` has `timeout-minutes: 120` (90 until 2026-11-27,
+  task 4065: the batches took 55 to 83 min that day).
 - **A batch tests the tip of `main`.** GitHub does not keep pending jobs in
   order ("ordering is not guaranteed"), so the job that survives can belong to
   an OLDER merge. On a first-attempt push, the step "Test the tip of main"
@@ -298,7 +299,7 @@ The live evidence comes after the merge. Two review rounds added the three
   `checks: read`) to the tested tip. CIV-5's bisect reads that notice, not
   `head_sha`.
 - **A timeout also shows as `cancelled`.** A fold is "cancelled and never
-  started". A hung batch ran 90 minutes and carries the annotation "The job
+  started". A hung batch ran 120 minutes and carries the annotation "The job
   has exceeded the maximum execution time". Treat a hung batch as red.
   next-ticket.md and AGENTS.md say so, and they tell a session to find the
   push run whose `test` job started after its merge and whose summary names
@@ -354,7 +355,8 @@ nowhere before production.
 - With both databases set, the full suite needs 127.7 and 131.7 min of test
   time. These are the JUnit sums of two green pr-check runs. The R8 files
   take 102.5 to 104.4 min of that.
-- The `test` job of deploy.yml stops at 90 minutes. With two services on
+- The `test` job of deploy.yml stopped at 90 minutes then (120 since
+  2026-11-27). With two services on
   `test`, each batch and each release would end as `cancelled`. Then
   `publish-release` would skip.
 - A higher `timeout-minutes` also fails. The schedule run starts 1.9 to 3.6
@@ -594,7 +596,7 @@ AGENT-SAFE. STANDARD tier.
 - `.test_durations` is refreshed.
 - The full suite's wall time is under 15 minutes.
 - **R8 moves into the push batch** (the follow-up of CIV-4b). The R8 files
-  must fit in the 90 minutes of `test` on one runner, with a margin. Then
+  must fit in the 120 minutes of `test` on one runner, with a margin. Then
   `test` gets pr-check's two services, the two variables and the guard. The
   push batch then finds an R8 break within one run, not at the release.
 
