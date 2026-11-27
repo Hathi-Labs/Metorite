@@ -2342,7 +2342,7 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
 /** The words of an unconfirmed trash. The result holds counts and words for
  *  the model, so the member reads these. */
 export const UNCONFIRMED_NOTE =
-  "The mailbox did not confirm the trash. A message can be in Drafts or in Trash. Check your mailbox.";
+  "The mailbox did not confirm the trash. A message can still be in its folder, or in Trash. Check your mailbox.";
 
 /** The words of a closed card that a chat message revised. The result itself
  *  is the model's instruction, so the member never reads it. Fix round 6:

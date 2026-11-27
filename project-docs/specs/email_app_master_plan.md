@@ -21736,8 +21736,8 @@ Drafts. The chat trashed its own draft only, and answered "The draft is deleted"
 7. Each card names each other message by its sender and subject. It names the mailbox of
    each message, and each id that names no message. No two rows or lines read the same, also
    after a cut. A named message already in Trash is listed, and nothing happens to it. The
-   plain card ends with a line that says what stays in Drafts (§18.13.2). So the chat never
-   draws it as a grid of rows.
+   plain card with no staying draft, or with a full Drafts page, ends with a line that says
+   so (§18.13.2). So the chat never draws it as a grid of rows.
 8. Each message moves through `DELETE /email/messages/{id}?report=true`, one call each. That
    route discards a Gmail draft and keeps the new id of an Outlook draft. The card says which
    of the two happens.
@@ -21932,7 +21932,7 @@ writes nothing into the record.
 4. **No two lines read the same after a cut.** The tool cuts each line of a message in Trash,
    and each row of the rows card. Then `draft_choice.unique` runs on the cut text.
 5. **The visual review.** A rig drew the plain card, the rows card, both receipts, the question
-   card and the held card. It drew them dark, light, compact, comfortable, with a changed accent
+   card and the held card. A later run drew the "Not confirmed" receipt. It drew them dark, light, compact, comfortable, with a changed accent
    and at 390 px. Two findings stay open. At 390 px, a long line of the plain card wraps
    under its "-" mark. At 390 px, the status line of the held card cuts "Waiting for your answer".
 6. **A sender name that holds ": " keeps the subject.** `draft_choice.draft_parts` and
