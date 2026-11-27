@@ -2,8 +2,19 @@
 
 **Status: ACTIVE. Built: BR-2a-1, BR-2c-1, BR-2c-2, BR-4b, BR-2d, BR-7a,
 BR-5 slices 1, 2a, 2b-1 and 2b-2, BR-2a-2 slice 1, BR-2b-1, BR-7b-1 and
-BR-7b-2 (dark), 2026-10-29 to 2026-11-07.** Verified against code on
+BR-7b-2 and BR-4c (dark), 2026-10-29 to 2026-11-23.** Verified against code on
 2026-11-07, on a branch from `495c2f29c`.
+
+**BR-4c BUILT 2026-11-23, dark** behind `BRIEF_ENABLED` and `BRIEF_ORGS`
+(Metorite #588): the section `numbers` of the brief (§4.3).
+`gather.number_claims` counts the open `needs_reply` cards and the open
+`promise_due` cards of the snapshot. Each count is one claim with
+`source_kind` `count`, a `value`, and the `value_path` `count`. The claim
+holds the counted ids in `source_ids`, at most 50. Its `source_id` and `href`
+are those of the first counted card, so a count opens a record and no list
+page. A count with no usable card makes no claim. No migration, no new flag.
+`GET /brief/today` returns the claims as before. The count of tasks due today
+is not built.
 
 **BR-5 slices 2b-1 and 2b-2 BUILT 2026-11-06, dark** behind
 `BRIEF_EXCEPTIONS` (OFF). Migration 350 adds `rule_id`, `feedback` and
