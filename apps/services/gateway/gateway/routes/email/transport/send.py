@@ -421,8 +421,10 @@ async def send_email(
         # §21.15 review P1: the recipients that the mail server refused. Only
         # the SMTP path can tell. A caller reports a person as sent only when
         # the server did not refuse that person.
+        refused = sorted(getattr(sess.provider, "last_refused", None) or ())
         # WS-PZ MM-1: one row in the act record, with the recipients and no text.
-        # Dark behind MEMBER_ACTIONS_ORGS, and it never fails the send.
+        # A refused recipient is no target. Dark behind MEMBER_ACTIONS_ORGS,
+        # and it never fails the send.
         await member_actions.record_act(
             db, org=member_actions.org_of(user), member=user.email or "",
             app="email", act="reply" if req.reply_to_message_id else "send",
@@ -430,8 +432,7 @@ async def send_email(
             mailbox_id=req.account_id,
             features={"is_reply": bool(req.reply_to_message_id),
                       "new_thread": not req.reply_to_message_id},
-            targets=[a for a in req.to if a and "@" in a])
-        refused = sorted(getattr(sess.provider, "last_refused", None) or ())
+            targets=member_actions.sent_to(req.to, refused))
         return {"id": msg_id, "ok": True, **({"refused": refused} if refused else {})}
 
 

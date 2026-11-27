@@ -41,6 +41,11 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
+**§19 MM-1 BUILT 2026-11-27, dark, not merged** (task 2878, PR 2498). The
+act record of §19.4 is in: the table `member_action`, the one writer, the
+purge, the prune and the email seams. It writes no row until
+`MEMBER_ACTIONS_ORGS` holds the org. No other slice of §19 is built.
+
 **§18 ACCEPTED 2026-11-08 (D196). No slice is built.** It adds the epic "Setup health" (Metorite task 940, slice SH-0 task 945). Each live app lists its setup items. The chat raises one missing item at a time, on the seam of the interview, inside the limits of D-PZ-13.
 
 A later phase adds measures and a score. Questions: §18.12.
@@ -4202,7 +4207,8 @@ merge confirms the number (R1).
 
 ## 19. How I work: the member model of how the member acts (ACCEPTED, 2026-11-11)
 
-**Status: ACCEPTED, 2026-11-11 (D212). Nothing is built.** Owner ask of
+**Status: ACCEPTED, 2026-11-11 (D212). Only MM-1 is built, dark behind
+`MEMBER_ACTIONS_ORGS`, and not merged (task 2878, PR 2498).** Owner ask of
 2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
 changes no rule of them. The owner accepted the decisions D-PZ-47 to
 D-PZ-52 of §19.12 the same day.
@@ -4277,9 +4283,20 @@ like a sent mail. It is not a profile fact, so D-PZ-1 and D-PZ-2 stand.
 | `at` | The time of the act |
 
 **The writer.** One function in `acb_common` writes a row. Each act seam
-calls it: the send, reply and forward routes, the Reply Zero resolve route,
-archive, snooze, label, and the card answer in `ask_tools`. A fence fails on
-a second writer.
+of MM-1 calls it: `POST /email/send`, `POST /email/drafts/send`,
+`POST /email/forward`, the Reply Zero resolve route, and the archive, snooze
+and label of one mail. A fence fails on a second writer.
+
+- The in-app reply and compose paths (`EmailDetail.tsx`, `ComposePanel.tsx`
+  and `ConversationView.tsx`) send through `POST /email/drafts/send`.
+- That seam reads a reply from the thread id of the draft row. A synced new
+  draft that has a thread id then reads as a reply.
+- A send seam writes the row after the provider takes the mail. The row
+  holds only the recipients that the mail server did not refuse.
+- The send-later sweep sends as a job, inside `member_actions.job_acts`. The
+  writer records no row for it, because the member pressed nothing then.
+- A bulk archive (`POST /email/messages/bulk`) records nothing.
+- The card answer in `ask_tools` is MM-1b (task 3614), not MM-1.
 
 **The limits:**
 
@@ -4289,7 +4306,10 @@ a second writer.
 - With `learning` off (D-PZ-7), the writer records nothing.
 - An org switch can turn it off for each member (D-PZ-17).
 - A shared mailbox (WS-65) records no act until its spec says how.
-- It ships dark behind `MEMBER_ACTIONS_ORGS`.
+- It ships dark behind `MEMBER_ACTIONS_ORGS`. Before an org goes on, turn
+  on `JOB_QUEUE`, because the prune job deletes the old rows. Also put the
+  org in `ASSISTANT_PROFILE_ORGS`, with `ASSISTANT_PROFILE_ENABLED` on.
+  Without the profile, the member cannot see or turn off `learning`.
 
 ### 19.5 Habits (MM-2)
 
