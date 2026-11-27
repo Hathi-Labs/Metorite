@@ -620,7 +620,7 @@ def test_the_org_flag_has_one_reader_and_ships_empty() -> None:
                if "tests" not in p.parts and ".venv" not in p.parts
                and "app_requests_orgs" in p.read_text(encoding="utf-8")]
     assert sorted(readers) == ["apps/services/gateway/gateway/app_requests.py",
-                               "packages/acb_common/acb_common/settings.py"], readers
+                               "packages/acb_common/acb_common/flag_registry.py"], readers
     assert app_requests.requests_allowed(None) is False
 
 

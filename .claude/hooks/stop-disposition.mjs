@@ -17,6 +17,8 @@
  * BACKGROUND ONLY. The marker is the env var CLAUDE_JOB_DIR, which Claude
  * Code sets in a background job. STOP_DISPOSITION_ENV names another variable.
  * OFF SWITCH. Set STOP_DISPOSITION=off in the session's environment.
+ * PRs (LBB-4, task 4042): STOP_DISPOSITION_PRS=warn|block checks open PRs.
+ * Off by default. See engineering_practice.md section 7b.4.
  *
  * ⚠️ FAILS OPEN. No transcript, a parse error or a crash all pass. The hook
  * blocks once: `stop_hook_active` true passes.
@@ -124,18 +126,154 @@ export function message(open) {
   )
 }
 
-/** One check. Returns null to pass, or the block message. Never throws. */
+const PR_URL = /github\.com\/[^\s/"]+\/[^\s/"]+\/pull\/(\d+)/
+const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const inputText = (v) => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v))
+
+/**
+ * LBB-1 (PR 2898, `claim_gate.py`) adds the `landing` field on
+ * `add_task_reference`. Until that PR is on main, no session can send it, so
+ * disposition 3 stays off. Flip this to true in the PR that finds
+ * `claim_gate.py` on main. The test covers both values (LBB-4, task 4042).
+ */
+export const LANDING_ENABLED = false
+
+/**
+ * LBB-4 (engineering_practice.md section 7b.4): the PRs of this session that
+ * have no later disposition. Returns `[{ pr, branch }]`. It reads `tool_use`
+ * blocks and the `tool_result` blocks that answer them. It never reads an exit
+ * code. It orders events by the `tool_use` index, as `openClaims` does.
+ */
+export function openPrs(entries, opts = {}) {
+  const landingOn = opts.landing ?? LANDING_ENABLED
+  const uses = []
+  const results = new Map()
+  let idx = 0
+  for (const e of entries) {
+    const c = e && e.message && e.message.content
+    if (!Array.isArray(c)) continue
+    for (const b of c) {
+      if (!b) continue
+      if (b.type === 'tool_use') uses.push({ name: b.name, input: b.input || {}, idx: idx++, id: b.id })
+      else if (b.type === 'tool_result') results.set(b.tool_use_id, { isError: !!b.is_error, text: textOf(b.content) })
+    }
+  }
+  const okResult = (u) => {
+    const r = results.get(u.id)
+    return r && !r.isError ? r.text : null
+  }
+  const bash = uses
+    .filter((u) => u.name === 'Bash' && typeof u.input.command === 'string')
+    .map((u) => ({ ...u, cmd: u.input.command, out: okResult(u) }))
+
+  const prs = new Map() // N -> { first, branch }
+  const seen = (n, at, branch) => {
+    const p = prs.get(n) || { first: at, branch: null }
+    if (at < p.first) p.first = at
+    if (branch && !p.branch) p.branch = branch
+    prs.set(n, p)
+  }
+  for (const u of bash) {
+    if (/\bgh\s+pr\s+create\b/.test(u.cmd) && u.out !== null) {
+      const m = PR_URL.exec(u.out)
+      if (m) {
+        const h = /(?:--head|-H)[\s=]+["']?([^\s"']+)/.exec(u.cmd)
+        seen(m[1], u.idx, h && h[1])
+      }
+    }
+  }
+  for (const u of uses) {
+    if (!suffix(u.name, 'add_task_reference')) continue
+    const m = PR_URL.exec(inputText(u.input.url))
+    const r = results.get(u.id)
+    if (m && !(r && r.isError)) seen(m[1], u.idx, null)
+  }
+  for (const u of bash) {
+    const m = /\bgh\s+pr\s+view\s+(\d+)/.exec(u.cmd)
+    if (!m || u.out === null || !prs.has(m[1])) continue
+    const h = /"headRefName"\s*:\s*"([^"]+)"/.exec(u.out) || /headRefName:\s*(\S+)/.exec(u.out)
+    if (h) seen(m[1], prs.get(m[1]).first, h[1])
+  }
+
+  const open = []
+  for (const [n, p] of prs) {
+    let from = p.first
+    if (p.branch) {
+      const re = new RegExp(`(?:^|[^\\w./-])${esc(p.branch)}(?![\\w./-])`)
+      for (const u of bash) {
+        if (u.out === null || !/\bgit\s+push\b/.test(u.cmd)) continue
+        if (re.test(u.cmd) || re.test(u.out)) from = Math.max(from, u.idx)
+      }
+    }
+    const wordN = new RegExp(`(?:^|\\D)${n}(?!\\d)`)
+    let done = false
+    for (const u of bash) {
+      if (u.idx <= from || u.out === null) continue
+      if (new RegExp(`hand_over\\.sh\\s+${n}\\b`).test(u.cmd) && new RegExp(`handed over: PR ${n} \\(task`).test(u.out)) done = true
+      else if (u.cmd.includes('REQUEUE') && u.cmd.includes('merge-queue.tsv') && wordN.test(u.cmd)) done = true
+      else if (
+        new RegExp(`\\bgh\\s+pr\\s+view\\s+${n}\\b`).test(u.cmd) &&
+        /(?:"state"\s*:\s*"|\bstate:?\s*|^\s*)(?:MERGED|CLOSED)\b/im.test(u.out)
+      ) done = true
+      if (done) break
+    }
+    for (const u of done ? [] : uses) {
+      if (u.idx <= from) continue
+      if (landingOn && suffix(u.name, 'add_task_reference')) {
+        const m = PR_URL.exec(inputText(u.input.url))
+        if (m && m[1] === n && ['queued', 'parked', 'gone'].includes(u.input.landing)) done = true
+      } else if (suffix(u.name, 'release_task')) {
+        const h = u.input.handoff
+        const next = h && typeof h === 'object' ? inputText(h.next) : inputText(h)
+        if (new RegExp(`\\bPR\\s*#?${n}\\b`).test(next) && /\b(?:lane|pc)-[A-Za-z0-9-]+/.test(next)) done = true
+      }
+      if (done) break
+    }
+    if (!done) open.push({ pr: n, branch: p.branch })
+  }
+  return open
+}
+
+export function prMessage(open) {
+  const list = open.map((p) => `  PR ${p.pr}${p.branch ? `  (branch ${p.branch})` : ''}`).join('\n')
+  return (
+    `You opened or pushed ${open.length} PR(s) and gave no disposition:\n${list}\n` +
+    'End each one with one of these two choices:\n' +
+    '  - queue it with a live merger: run hand_over.sh, or append a REQUEUE line to ~/lanes/merge-queue.tsv\n' +
+    '  - hand it to a named landing lane: put "PR N" and the lane name in the next field of the release_task handoff\n' +
+    'A push to the branch after a disposition brings the PR back. Do this now, then end the turn.\n' +
+    'To turn this check off: STOP_DISPOSITION_PRS=off'
+  )
+}
+
+/**
+ * One check. Returns `{ block, warn }`, each a message or null. Never throws.
+ * `STOP_DISPOSITION_PRS`: off or unset checks no PR, `warn` reports and goes
+ * on, `block` blocks once.
+ */
 export function checkDisposition(input, env = process.env) {
+  const none = { block: null, warn: null }
   try {
-    if (input.stop_hook_active) return null
-    if (env.STOP_DISPOSITION === 'off') return null // the kill switch
+    if (input.stop_hook_active) return none
+    if (env.STOP_DISPOSITION === 'off') return none // the kill switch
     const marker = env.STOP_DISPOSITION_ENV || 'CLAUDE_JOB_DIR'
-    if (!env[marker]) return null
+    if (!env[marker]) return none
     const file = input.transcript_path
-    if (!file || fs.statSync(file).size > MAX_BYTES) return null
-    const open = openClaims(parseTranscript(fs.readFileSync(file, 'utf8')))
-    return open.length ? message(open) : null
+    if (!file || fs.statSync(file).size > MAX_BYTES) return none
+    const entries = parseTranscript(fs.readFileSync(file, 'utf8'))
+    const open = openClaims(entries)
+    let block = open.length ? message(open) : null
+    let warn = null
+    const mode = env.STOP_DISPOSITION_PRS
+    if (mode === 'warn' || mode === 'block') {
+      const prs = openPrs(entries)
+      if (prs.length) {
+        if (mode === 'block') block = block ? `${block}\n${prMessage(prs)}` : prMessage(prs)
+        else warn = prMessage(prs)
+      }
+    }
+    return { block, warn }
   } catch {
-    return null
+    return none
   }
 }

@@ -370,7 +370,7 @@ authority: the route still checks the member's own access.
 `tests/unit/test_projects_chat_x_pin.py` pins the whole list. It names the 29
 routes that stay class X. OP-11 added `GET /projects/my/summary` to the
 plumbing group, because `my_work` and `list_tasks` read the same tasks. Its
-list of pending OP-6 routes is empty since OP-6d. A second list names a route whose chat tool a later slice builds. PJP-6a (2026-11-08) put `GET /projects/plan/analysis`, the read route of the one plan engine, on it. SP-12 gave that route the chat tool `get_plan` and moved it to class A, so the second list is empty again.
+list of pending OP-6 routes is empty since OP-6d. A second list names a route whose chat tool a later slice builds. PJP-6a (2026-11-08) put `GET /projects/plan/analysis`, the read route of the one plan engine, on it. SP-12 gave that route the chat tool `get_plan` and moved it to class A, so the second list was empty again. Since PKG-14a (2026-11-08) the second list holds `GET` and `PUT` on `/projects/tasks/{task_id}/package-fields`. These routes are the door of the package extension values (`package_host.md` §8.3). PKG-14b gives them a chat tool.
 
 ---
 

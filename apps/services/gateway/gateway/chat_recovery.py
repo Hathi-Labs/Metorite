@@ -380,6 +380,12 @@ _ROWS_ANSWER_CHARS = 8 + 12 + _DISPLAY_ROWS_MAX * 68
 
 #: A confirmation card's answer: ``APPROVE``, ``REJECT`` or ``APPROVE {...}``.
 _CONFIRMATION_ANSWER = re.compile(r"^(?:APPROVE|REJECT)(?:\s*$|\s+\{)", re.IGNORECASE)
+#: Task 3978 (``email_app_master_plan.md`` §18.13.1): the answer of Reject or
+#: Discard, then "Delete it", on a card that names an earlier draft. It is a
+#: decline. A late one goes as a new message, which no tool takes, so it
+#: deletes nothing. ``ask_tools.DELETE_EARLIER_ANSWER`` holds the same text,
+#: and ``test_email_draft_decline.py`` holds the two equal.
+DELETE_EARLIER_ANSWER = 'REJECT {"earlier":"delete"}'
 
 #: The words the card-answer envelope starts with (``compose_card_answer``).
 _ENVELOPE_STARTS = (
@@ -578,7 +584,9 @@ def card_answer_agrees(content: str, display: dict[str, Any]) -> bool:
     if display.get("kind") != "confirmation":
         shown = display.get("answer") or ""
         return shown == answer[:_DISPLAY_ANSWER_CHARS] or (shown == "" and answer == "(no answer)")
-    if re.fullmatch(r"REJECT", answer, re.IGNORECASE):
+    if re.fullmatch(r"REJECT", answer, re.IGNORECASE) or answer == DELETE_EARLIER_ANSWER:
+        # Task 3978: a late "Delete it" is a decline. No run takes it, so it
+        # deleted nothing, and the chat draws it as "Rejected".
         decision = "reject"
     elif answer.upper().startswith("APPROVE"):
         decision = "approve"

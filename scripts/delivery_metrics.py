@@ -254,7 +254,8 @@ def _slowest(path):
     return [{"file": f, "seconds": round(s, 2)} for f, s in top]
 
 
-def _old_prs(gh, now):
+def _open_prs(gh, now):
+    """Open, non-draft PRs with their age in days. One paging loop serves both keys."""
     out, page = [], 1
     while page <= 5:
         batch = gh(f"repos/{REPO}/pulls?state=open&per_page=100&page={page}")
@@ -262,10 +263,25 @@ def _old_prs(gh, now):
             break
         for p in batch:
             age = (now - _t(p["created_at"])).total_seconds() / 86400
-            if age > 2:
-                out.append({"number": p["number"], "title": p["title"], "age_days": round(age, 2)})
+            out.append({"number": p["number"], "title": p["title"], "age": age,
+                        "draft": bool(p.get("draft"))})
         page += 1
+    return out
+
+
+def _old_prs(gh, now):
+    out = [{"number": p["number"], "title": p["title"], "age_days": round(p["age"], 2)}
+           for p in _open_prs(gh, now) if p["age"] > 2]
     return sorted(out, key=lambda p: -p["age_days"])
+
+
+def _built_not_live(gh, now):
+    prs = [p for p in _open_prs(gh, now) if not p["draft"]]
+    over = [{"number": p["number"], "title": p["title"], "age_days": round(p["age"], 2)}
+            for p in prs if p["age"] > 1]
+    over.sort(key=lambda p: -p["age_days"])
+    oldest = round(max((p["age"] for p in prs), default=0.0), 2)
+    return {"open_prs": len(prs), "over_24h": over, "oldest_days": oldest}
 
 
 def collect(gh, days=7, max_runs=200, now=None, durations=None):
@@ -317,6 +333,7 @@ def collect(gh, days=7, max_runs=200, now=None, durations=None):
 
     guard("slowest_tests", lambda: _slowest(durations or DURATIONS))
     guard("open_prs_older_than_2d", lambda: _old_prs(gh, now))
+    guard("built_not_live", lambda: _built_not_live(gh, now))
     if batch is not None and pr_runs is not None:
         guard("selection_misses", lambda: _selection_misses(gh, batch, pr_runs))
     else:

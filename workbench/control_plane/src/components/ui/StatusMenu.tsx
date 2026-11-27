@@ -46,6 +46,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import AnchoredPanel, { type PanelAnchor } from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import { rootRemPx } from "@/lib/rootRem";
 import { statusAccent } from "@/lib/statusAccent";
 import { CATEGORY_LABEL, groupByCategory } from "@/lib/statusCategory";
 
@@ -167,16 +168,7 @@ export function menuHeight(rowCount: number, hasHeader: boolean, remPx = 16): nu
   return Math.ceil(Math.min(MENU_MAX_REM, rem) * remPx);
 }
 
-/** The root font size in px: the density the member chose, applied. 16 on
- *  the server and wherever it cannot be read. */
-export function rootRemPx(
-  doc: Pick<Document, "documentElement"> | undefined = globalThis.document,
-  style: (el: Element) => Pick<CSSStyleDeclaration, "fontSize"> = (el) => getComputedStyle(el),
-): number {
-  if (!doc?.documentElement) return 16;
-  const px = parseFloat(style(doc.documentElement).fontSize);
-  return px > 0 ? px : 16;
-}
+export { rootRemPx };
 
 /** How long typed letters stay one query. */
 const TYPE_AHEAD_MS = 600;

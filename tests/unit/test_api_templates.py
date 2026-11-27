@@ -630,5 +630,5 @@ def test_the_flag_has_one_reader():
                 readers.append(path.relative_to(ROOT).as_posix())
     assert sorted(readers) == [
         "packages/acb_common/acb_common/api_connections_flag.py",
-        "packages/acb_common/acb_common/settings.py",
+        "packages/acb_common/acb_common/flag_registry.py",
     ]
