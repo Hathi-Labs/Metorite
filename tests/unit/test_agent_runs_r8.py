@@ -1634,15 +1634,15 @@ class TestWithdrawAnAnswer:
 
 
 def test_sw48_the_end_rule_embeds_the_lead_walk_and_the_answer_rule_does_not() -> None:
-    """Hermetic. ``person_may_end_sql`` embeds ``authority.led_subtree_sql``,
+    """Hermetic. ``person_may_end_sql`` embeds ``authority.LED_SUBTREE_SQL``,
     the one walk, behind ``:lead_runs``. The answer set reads no lead (SW-46
     owns that change), so the lead gains Release and Resume only."""
-    from gateway.routes.projects.authority import led_subtree_sql
+    from gateway.routes.projects.authority import LED_SUBTREE_SQL
 
     end = agent_runs.person_may_end_sql("r")
-    assert led_subtree_sql() in end
+    assert LED_SUBTREE_SQL in end
     assert "CAST(:lead_runs AS boolean)" in end
-    assert led_subtree_sql() not in agent_runs.person_may_answer_sql("r")
+    assert LED_SUBTREE_SQL not in agent_runs.person_may_answer_sql("r")
     assert "lead" not in agent_runs.person_may_answer_sql("r")
 
 

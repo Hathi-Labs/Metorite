@@ -125,7 +125,7 @@ from acb_common.image_probe import RASTER_MIMES
 from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.attachments import served_url
-from gateway.routes.projects.authority import led_subtree_sql
+from gateway.routes.projects.authority import LED_SUBTREE_SQL
 from gateway.routes.projects.claim_gate import check_claim_gate
 from gateway.routes.projects.claim_scope import (
     apply_warning,
@@ -3506,23 +3506,26 @@ def person_may_end_sql(run: str) -> str:
 
     SW-48 (``agent_coordination.md`` §3.10.2, Q9): a lead of the project of
     the run's task, or of any ancestor project, may end the run too. The walk
-    is ``authority.led_subtree_sql``, embedded and not copied. The arm binds
-    ``:lead_runs``, the answer of ``filters.app_lead_runs_allowed`` for the
-    session's org. Off, the arm is false and the rule is EA-14a's exactly.
-    The lead gains Release and Resume only. The answer set
-    (:func:`person_may_answer_sql`) does not read this text.
+    is ``authority.LED_SUBTREE_SQL``, embedded and not copied. It binds the
+    same ``:me``. The arm binds ``:lead_runs``, the answer of
+    ``filters.app_lead_runs_allowed`` for the session's org. Off, the arm is
+    false and the rule is EA-14a's exactly. The lead gains Release and Resume
+    only. The answer set (:func:`person_may_answer_sql`) does not read this
+    text.
 
     ONE text. The release route and the resume route read it through
     :func:`may_end_run`. Needs attention (``needs_attention.py``, WS-55 SW-11a,
     spec §12.7) reads it for ``can_act`` on each row, so the list never
     offers a button that the route refuses. Each reader binds ``:lead_runs``
-    with :func:`lead_runs_param`.
+    with :func:`lead_runs_param`. ``record_outside_decision`` and
+    ``set_run_plan`` call :func:`may_end_run` for a signed agent only, so this
+    text never decides them.
     """
     return (
         f"({run}.member_email = :me OR EXISTS (SELECT 1 FROM pm_task_assignees ra"
         f" WHERE ra.task_id = {run}.task_id AND lower(ra.assignee) = :me)"
         f" OR (CAST(:lead_runs AS boolean) AND EXISTS (SELECT 1 FROM pm_tasks lt"
-        f" WHERE lt.id = {run}.task_id AND lt.project_id IN ({led_subtree_sql()}))))"
+        f" WHERE lt.id = {run}.task_id AND lt.project_id IN ({LED_SUBTREE_SQL}))))"
     )
 
 

@@ -983,7 +983,7 @@ def _lead_runs(monkeypatch: Any, value: str) -> None:
 @_DB_GATE
 class TestTheAppLead:
     """SW-48. Dave leads the root, so he leads the subproject too (the walk of
-    ``authority.led_subtree_sql``). Erin leads another app. Alice is the run's
+    ``authority.LED_SUBTREE_SQL``). Erin leads another app. Alice is the run's
     member. With ``APP_LEAD_RUNS_ORGS`` on, the lead may Resume and Close, and
     ``can_act`` agrees with the route. Off, nothing changes."""
 
