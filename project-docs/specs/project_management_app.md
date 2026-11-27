@@ -9501,7 +9501,7 @@ Jira rolls links up to the epic, as one dotted line with a count. Nx and Dagster
 
 **Rule 14. The phone gets a list.** On a phone, Order is a list grouped by step: "Now (12)", "Step 2 (8)", and on. A critical row has its mark. A tap opens the task card. SP-10 already gives its graph the same rule.
 
-**Rule 15. The same order in chat and the MCP.** `get_plan` takes `project_id`. The chat can answer "what can run in parallel in this project", and `lib/chatView.ts` can open Order.
+**Rule 15. The same order in chat and the MCP.** `get_plan` takes `project_id`. The chat can answer "what can run in parallel in this project", and `src/app/projects/lib/chatView.ts` can open Order.
 
 **Rule 16. Order computes nothing.** The read calls the one engine of PJP-6 (§13.4). The canvas only counts and draws. A chain for focus (rule 7) follows the links of the answer, and it is not an order of work.
 
@@ -9521,7 +9521,7 @@ So an orchestrator reads the same answer as Order, and follows this plan loop:
 5. Start one lane on each free slice of the Now column, critical first, then by the least slack. Stop at the lane cap.
 6. After each merge, call `get_plan` again. The next step then opens.
 
-The Order card of a held slice shows the agent pill of its session (`AgentPill.tsx`), from the read of SW-112. So the owner sees which agent works on the critical path.
+The Order card of a held slice shows the agent pill of its session (`src/app/projects/components/AgentPill.tsx`), from the read of SW-112. So the owner sees which agent works on the critical path.
 
 **What stays with its owner.**
 
@@ -9536,16 +9536,17 @@ The Order card of a held slice shows the agent pill of its session (`AgentPill.t
 |---|---|---|---|---|---|
 | **ORD-0** | 4069 | This section, §9e of `one_projects_app.md`, the INDEX rows, and a task for each slice and demo. Docs only | The doc tests pass, and each row names its task | LOW | None |
 | **ORD-1** | 4075 | See "ORD-1 in detail" below | See below | HIGH | PJP-6a (built) |
-| **ORD-2** | 4076 | The Dates and Order switch, `OrderMap`, `layoutOrderMap`, rules 2 to 11 and 13 to 15. Dark behind `ORDER_VIEW_ORGS` | The SP-12 fixture (6 slices, 5 links) draws 3 columns with the path in row one. The same answer twice gives the same places. A loop shows its bar. The phone shows the list. `visual-review` passes at four widths, in light mode, at compact density, under a changed accent, and beside Dates | STANDARD UI | ORD-1 |
+| **ORD-2** | 4076 | The Dates and Order switch, `OrderMap`, `layoutOrderMap`, rules 2 to 11 and 13 to 15, and the agent pill of rule 17 from the read of SW-112 (built). Dark behind `ORDER_VIEW_ORGS` | The SP-12 fixture (6 slices, 5 links) draws 3 columns with the path in row one. The same answer twice gives the same places. A loop shows its bar. A held card shows its pill. The phone shows the list. `visual-review` passes at four widths, in light mode, at compact density, under a changed accent, and beside Dates | STANDARD UI | ORD-1 |
 | **ORD-3** | 4077 | The whole project. A Display setting **Level** with Tasks and Epics. An epic is one card with its open slices and its steps, such as "Steps 2 to 5". A link between two epics is one line with a count. A click opens an epic in place. Epics is the default above 150 cards. A Display setting **Group by** with None, Epic, Person and Sub-project, as lanes. In Person lanes, two cards of one person in one column get a mark. "Critical path only" can dim or hide. The search box marks a match and moves to it | Metorite Application opens by epic, and one epic opens in place. A lane by person marks one person twice in a step. A seeded project of 1,500 open tasks draws in under one second after the read | STANDARD UI | ORD-2 |
-| **ORD-5** | 4082 | Rule 17. A playbook prompt `work_in_order` in `playbook_prompts.py`, with the six steps and a `project` argument. `plan_slices` gets a last step: after the member approves, write the `blocks` links and call `get_plan` to check the order. The description of `get_plan` names `project_id`. The Order cards show the agent pill. The edge offers the prompt only where `order_view_allowed` (ORD-1) is true. A tip for a dark read reads as lost access, which is why `MAP_RULE` in `prompts.py` is held back. No new route | An orchestrator on the box runs `work_in_order` on Projects/Tasks App. It names the Now slices, critical first, and drops the held ones. An org with the flag off does not list the prompt. A held card shows its pill | STANDARD | ORD-1, SW-112 (built) |
 | **ORD-4** | 4078 | Change the order on the map. A drag from the handle of a card onto another card writes a `blocks` link through the existing link route. A selected link has Remove, and Delete removes it. `assert_no_block_cycle` refuses a loop, and the map says so at the drop. Undo restores the change. A moved card glides to its new column | A link drawn in Order shows in Dates. A loop is refused in words. Undo restores the link. A card that keeps its step does not move | STANDARD UI | ORD-2 |
+| **ORD-5** | 4082 | Rule 17, steps 1 to 6. A playbook prompt `work_in_order` in `playbook_prompts.py`, with the six steps and a `project` argument. `plan_slices` gets a last step: after the member approves, write the `blocks` links and call `get_plan` to check the order. The description of `get_plan` names `project_id`. The edge offers the prompt only where `order_view_allowed` (ORD-1) is true. A tip for a dark read reads as lost access, which is why `MAP_RULE` in `prompts.py` is held back. No new route. The agent pill on the cards is part of ORD-2 | An orchestrator on the box runs `work_in_order` on Projects/Tasks App. It names the Now slices, critical first, and drops the held ones. An org with the flag off does not list the prompt | STANDARD | ORD-1 |
 
 **ORD-1 in detail (task 4075).**
 
 - **The scope.** `GET /projects/plan/analysis` takes `project_id` as a second kind of root. A call sends exactly one of `root_task_id` and `project_id`, or it gets 422. A project that the caller cannot see answers 404 (`load_visible_project`).
 - **One fetch.** `compute_plan` takes the scope, and no second fetch function is written. For a project, its SQL reads the open tasks of the project and its sub-projects. It also reads each task above an open task. It takes the subtree text of `_SUMMARY_SQL` in `agent_summary.py`.
-- **The cap.** `MAX_PLAN_TASKS` counts the tasks read. Metorite Application had 1,484 open tasks on 2026-11-27, so it fits. A bigger scope answers 422 with "Open a sub-project to see its order."
+- **The cap.** `MAX_PLAN_TASKS` counts the tasks read, and the parents of open tasks count too. Metorite Application had 1,484 open tasks on 2026-11-27, so it should fit. A bigger scope answers 422 with "Open a sub-project to see its order." If the read of Metorite Application gives 422 after the release, the owner decides the cap.
+- **The start date.** The optional `start` keeps its meaning for both kinds of root.
 - **Done tasks.** A link to a done task reads as an outside blocker that is done, and the engine ignores it (PJP-6a). An open parent whose children are all done reads as a slice, because closing it is the work left.
 - **A forest.** Each task with no parent in the scope is a root. If `_build` needs a change for this, `test_planning_module.py` gets a fixture with two roots.
 - **`shape=map`.** It adds four keys to the answer:
@@ -9566,7 +9567,7 @@ The Order card of a held slice shows the agent pill of its session (`AgentPill.t
 | ORD-2 | `npx vitest run src/app/projects/lib/orderMap.test.ts src/app/projects/components/TimelineView.test.ts src/app/projects/lib/chatView.test.ts src/lib/theme/conformance.test.ts` in `workbench/control_plane`, then `visual-review`. `orderMap.test.ts` is new |
 | ORD-3 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_plan_analysis_r8.py`. A rolled-up count never holds a hidden slice |
 | ORD-4 | The ORD-2 command, and `uv run pytest -q -p no:cacheprovider tests/unit/test_projects_relations.py tests/unit/test_chat_parity.py` |
-| ORD-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py tests/unit/test_mcp_edge_coverage.py`, and the ORD-2 vitest command for the pill |
+| ORD-5 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_prompts.py tests/unit/test_playbook_content.py tests/unit/test_playbook_org_neutral.py tests/unit/test_mcp_edge_coverage.py` |
 
 Each fence is advisory until its slice builds (R7).
 
@@ -9582,7 +9583,7 @@ Each fence is advisory until its slice builds (R7).
 | **4. The whole project** (demo task 4080) | Open Metorite Application in Order. It opens by epic, and one epic opens in place | ORD-3 |
 | **5. Change the order** (demo task 4081) | Draw a link on the map, and the task moves one step. A loop is refused in words | ORD-4 |
 
-Rung 1 is the nearest demo, so it goes first. Rung 2 needs the owner's preview before the flag flips (D218). Rung 3 needs only ORD-1 and the prompt, so it can start while ORD-2 waits on its preview.
+Rung 1 is the nearest demo, so it goes first. Rung 2 needs the owner's preview before the flag flips (D218). ORD-5 needs only ORD-1, so a builder can take it while ORD-2 waits on its preview. The demo of rung 3 shows the pills of ORD-2.
 
 #### 13.9.6 Later, not slices
 
