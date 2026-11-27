@@ -1081,9 +1081,9 @@ TLY-2a builds the program's side first, against a fake link (`tests/unit/test_ta
 - An answer that comes back at once with no requests makes the program wait 1 s before the next poll.
 - Each poll carries `copy_at` (TLY-2b). The console can then say "Reads use the copy of 14:05" (§3.8.13 point 7). It is `null` when the copy is off or empty.
 
-### 3.9 Who can use an integration (task 3985, ACC-1 BUILT)
+### 3.9 Who can use an integration (task 3985, ACC-1 and ACC-2 BUILT)
 
-> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix rounds 1 and 2 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. ACC-2 to ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
+> **Status:** 🔨 **ACC-1 BUILT** (2026-11-26, task 3987, branch `mt-e90fb5c0-integration-access`, review fix rounds 1 and 2 done), dark behind `INTEGRATION_ACCESS_ORGS`. The flag flip waits for the owner preview. 🔨 **ACC-2 BUILT** (2026-11-26, task 3988, branch `mt-a65680e5-who-can-use`), the console control of §3.9.5, dark behind the same flag. ACC-3 and ACC-4 are a 📝 PLAN. The owner approved teams on 2026-11-26 (ACC-Q2), and ACC-Q4 in §10 is open.
 
 This section holds the one rule of "who may use a connection". §3.8.8 and rule g of §3.8.7 use it.
 
@@ -1176,7 +1176,7 @@ Each site below reads the resolved access, so the rule reaches it with no change
 | Site | Effect of a refusal |
 |---|---|
 | Chat MCP injection (`_maf_servers`, `is_authorized`) | The server is not attached |
-| Integration credentials of a run (`acb_skills.integrations.build_integrations`) | No credential. The agent gets a warning |
+| Integration credentials of a run (`acb_skills.integrations.build_integrations`). **Stored rules only** (ACC-Q4): it reads the keys of `_REGISTRY`, and the PUT accepts no rule on one | For a rule that a row already holds: no credential, and the agent gets a warning |
 | API connection calls (`routes/api_connections.py`) | 404, as for an unknown name |
 | MCP tool list refresh and live read (`connections/mcp_tools._may_use`) | Refused |
 | A shared session | The fold denies when one member fails the rule. The second limit below names the exception |
@@ -1210,6 +1210,16 @@ Each site below reads the resolved access, so the rule reaches it with no change
 #### 3.9.5 The screens and the chat
 
 - **Console (slice b).** Each row of Connections gets "Who can use", with the three modes, a group picker and a people picker. A row with no rule says "Everyone".
+  - **Built (ACC-2).** The control sits under each MCP row and each API connection of the organization that the `GET` lists. No other row gets one. The screen calls a group a "team".
+  - A `GET` that answers 404 or 403 draws no control and no error. Another failure draws one line with "Try again".
+  - A stored rule that no row control covers sits under the list, in "Other stored rules". This holds when no filter is on. A rule with `listed: false` offers only "Set to Everyone", behind a confirm. A listed one offers "Change".
+  - With `readable: false`, a banner says that only members with `integrations:manage` can use each integration. Each row then shows "Admins only" as text, with no control, because no save can repair the value.
+  - "Chosen" with no team and no person warns before the save, and the button reads "Save as admins only".
+  - A refused save keeps each choice and shows the words of the gateway.
+  - The open editor never replaces a rule that the admin did not see. With no choice yet, it follows a newer rule. After a choice, it shows "This rule changed", and Save stays off until "Reload the rule".
+  - Each save and each "Set to Everyone" reads the rule first, and writes nothing if it changed. The `PUT` has no version check, so a write between that read and the `PUT` is still replaced.
+  - A stopped save moves the focus to "Reload the rule", or to the line that says why.
+  - Fences: `app/integrations/lib/whoCanUse.test.ts`, `app/integrations/lib/accessSave.test.ts`, `app/integrations/components/WhoCanUse.test.tsx` and `app/integrations/components/accessWiring.test.ts`.
 - **My access (slice c).** The People app tab "My access" lists the integrations of the organization for the member, each with "Yes" or "No" and the reason. It never shows another member's name or list.
 - **Chat (slice d).** An admin asks the assistant to change a rule, and a card confirms it. This waits for the owner decision of PAR-6b (task 3932).
 
@@ -1351,7 +1361,7 @@ ACC-1 comes first. ACC-2 and ACC-3 need it.
 | Id | Rung | What | Gate | Done when |
 |---|---|---|---|---|
 | **ACC-1** (task 3987) 🔨 BUILT 2026-11-26, dark | 1 | Backend: the storage, the resolver step, the two routes, the audit line and the flag (§3.9.2 to §3.9.4). Modes: everyone, chosen people, chosen teams and admins only, with the two group-write rules | 🟢 AGENT-SAFE to build dark. HIGH risk. The flag flip waits for the owner preview | Rows ACC-a to ACC-g below |
-| **ACC-2** (task 3988) | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
+| **ACC-2** (task 3988) 🔨 BUILT 2026-11-26, dark | 1 | The "Who can use" control on each connection (§3.9.5) | 🟢 AGENT-SAFE to build. STANDARD: UI, with an owner preview | Visual review passes in four contexts |
 | **ACC-3** (task 3989) | 1 | The integrations list in My access, and `GET /auth/me/integrations` | 🟢 AGENT-SAFE to build. HIGH: it shows access | A member sees their own result only |
 | **ACC-4** (task 3990) | 2 | The chat tool for admins, behind a card | 🔴 Waits for the owner decision of PAR-6b | Chat parity row |
 
@@ -1408,6 +1418,13 @@ timeout 900 uv run pytest tests/unit/test_integration_access_rules.py tests/unit
   tests/unit/test_session_authority.py tests/unit/test_org_access_control.py \
   tests/unit/test_org_access_enforcement.py tests/unit/test_studio_live_preview.py -v -rs
 uv run ruff check packages/acb_auth apps/services/gateway/gateway/routes/admin
+```
+
+**Verify ACC-2 (§3.9.5).**
+
+```bash
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/integrations
+cd ../.. && uv run pytest tests/unit/test_chat_parity.py
 ```
 
 **Verify WS-LNK (§3.8, APPROVED, D232).** Each test file below is new, except `test_pack_guards.py` and `test_tenant_redis.py`. LNK-1 to LNK-3 write the new files.
