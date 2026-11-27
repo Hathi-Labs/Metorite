@@ -704,6 +704,35 @@ async def test_a_round_ends_by_the_build_deadline(
     assert engine.stores.rows[-1]["outcome"] == "timeout"
 
 
+async def test_the_install_alone_ends_by_the_build_deadline(engine: Any) -> None:
+    """Review P3-2, the install step on its own: its timeout is the smaller
+    of 180 s plus the grace and the time left, so it ends by the deadline
+    even with no outer bound. Mutation: give it 30 s past the budget -> red."""
+    import time as _time
+
+    ute = engine.ute
+    passing(engine.broker)
+    plain = engine.broker.on_exec
+
+    async def run(command: str, env_file: Any) -> Any:
+        if "pip install" in command:
+            await asyncio.sleep(3)
+        return plain(command, env_file)
+
+    engine.broker.on_exec = run
+    async with ute.start_build({"crm:read"}) as build:
+        write_package(engine.tool_data / "pkg", package_files())
+        package = ute.check_package(engine.tool_data / "pkg", {"crm:read"})
+        build.deadline = _time.monotonic() + 0.3
+        began = _time.monotonic()
+        failed = await build._install(package)
+        took = _time.monotonic() - began
+        await build._revoke(False)
+    assert failed is not None and (failed.outcome, failed.error_class) == (
+        "timeout", ute.INSTALL_TIMEOUT)
+    assert took < 1.5, f"the install ran {took:.1f} s past a budget of 0.3 s"
+
+
 async def test_a_second_build_in_the_thread_gets_busy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
