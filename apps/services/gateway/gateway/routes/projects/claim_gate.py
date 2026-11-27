@@ -16,12 +16,20 @@ names this module as the ONE decision reader of the label, and
 open (``state`` NULL, ``open`` or ``draft``, and ``merged_at`` NULL), on a
 task that the caller sees, that is not archived, not done or cancelled, in an
 open project. It is older than :data:`GATE_AGE_HOURS` for a claim, and
-:data:`LIST_AGE_HOURS` for ``my_work``. The newest run of its task (the
-highest ``created_at``, then the highest ``id``, in any status) has the
-caller's member and the caller's label. A NULL label binds the PRs to claims
-that send no label. Its landing mark is NULL, or ``queued`` for more than
+:data:`LIST_AGE_HOURS` for ``my_work``. Its owner run has the caller's
+member and the caller's label. A NULL label binds the PRs to claims that send
+no label. Its landing mark is NULL, or ``queued`` for more than
 :data:`QUEUED_TTL_HOURS`, or ``parked`` on a task that is not in backlog or
 todo. No run of its task waits on a person (``awaiting``).
+
+**The owner run** (§7b.8, LBB-2b, task 4056). The owner run of a reference
+``f`` is the run ``n`` on the same task that held the task when the reference
+was added: ``n.created_at <= f.created_at``, and ``n.ended_at`` NULL or
+``>= f.created_at``. When two runs qualify, the highest ``created_at`` wins,
+then the highest ``id``. A run that starts after the reference never owns it,
+so a merger that claims and releases a task after the hand-over never takes
+the PR. A reference with no owner run counts for nobody. ``insert_ref`` never
+moves ``created_at``, so a repeat add of the same URL never moves the owner.
 
 **No deadlock** (trap 2). The gate never refuses a claim of a task that
 holds an open pull request reference, a task with the tag ``landing`` (no
@@ -156,8 +164,9 @@ _EXEMPT_TASK_SQL = (
 def _counted_sql(vis: Any) -> str:
     """The counted PRs of the caller and the label, oldest first (§7b.2).
 
-    The newest run of each task is one LATERAL read on the task index of the
-    runs. ``:me`` is the member in lower case, and ``:label`` the cleaned
+    The owner run of each reference (§7b.8) is one LATERAL read on the task
+    index of the runs. The join is inner, so a reference with no owner run
+    drops out. ``:me`` is the member in lower case, and ``:label`` the cleaned
     label or NULL. Each read of ``pm_agent_runs`` names ``task_id IS NOT
     NULL``, so an app run never counts (AD-16)."""
     return (
@@ -174,6 +183,8 @@ def _counted_sql(vis: Any) -> str:
         " JOIN pm_projects p ON p.id = t.project_id"
         " JOIN LATERAL (SELECT n.member_email, n.agent_label FROM pm_agent_runs n"
         "                WHERE n.task_id IS NOT NULL AND n.task_id = f.task_id"
+        "                  AND n.created_at <= f.created_at"
+        "                  AND (n.ended_at IS NULL OR n.ended_at >= f.created_at)"
         "                ORDER BY n.created_at DESC, n.id DESC LIMIT 1) nr ON true"
         f" WHERE f.organization_id = {BOUND_ORG_SQL}"
         "   AND f.kind = 'pull_request'"
