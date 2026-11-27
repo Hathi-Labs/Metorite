@@ -47,6 +47,18 @@ echo "$n"
 """
 
 
+@pytest.fixture(autouse=True)
+def _git_identity(monkeypatch):
+    # The bot commits in its own workdir with the fake HOME of the test, so no
+    # global git identity exists there. On GitHub that failed with "Committer
+    # identity unknown". The real bot box has an identity.
+    for key, value in (("GIT_AUTHOR_NAME", "merge-bot-test"),
+                       ("GIT_AUTHOR_EMAIL", "merge-bot-test@example.invalid"),
+                       ("GIT_COMMITTER_NAME", "merge-bot-test"),
+                       ("GIT_COMMITTER_EMAIL", "merge-bot-test@example.invalid")):
+        monkeypatch.setenv(key, value)
+
+
 @pytest.fixture
 def env(tmp_path):
     e = Env(tmp_path)
