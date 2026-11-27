@@ -58,8 +58,11 @@ CC_PORT="${METORITE_SCRATCH_CONSOLE_PORT:-$((5433 + OFFSET))}"
 TENANT_PORT="${METORITE_SCRATCH_TENANT_PORT:-$((5434 + OFFSET))}"
 
 # One pair of log files for each slot, so two runs never read the other's log.
-ERR_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_err$SUFFIX"
-TENANT_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_tenant$SUFFIX.log"
+# A slot's log also carries the user id: another user cannot write a file that
+# this user left in /tmp (`fs.protected_regular`). No slot keeps the old names.
+LOG_SUFFIX="${SLOT:+$SUFFIX-u$(id -u)}"
+ERR_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_err$LOG_SUFFIX"
+TENANT_LOG="${METORITE_SCRATCH_LOG_DIR:-/tmp}/dev_db_tenant$LOG_SUFFIX.log"
 
 CC_DSN="postgresql+psycopg://cc:cc@127.0.0.1:${CC_PORT}/cc_platform"
 TENANT_DSN="postgresql+psycopg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant"

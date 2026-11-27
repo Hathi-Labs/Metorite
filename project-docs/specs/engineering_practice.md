@@ -108,9 +108,11 @@ bash scripts/dev_db.sh --down                # removes slot 2 only
 ```
 
 Slot n uses ports 5433+10n and 5434+10n. An explicit `METORITE_SCRATCH_*_PORT`
-variable still wins. Run one command at a time on one slot. The script holds no
-lock, so the caller holds it. Fence: `tests/unit/test_dev_db_script.py`
-(`TestSlots`).
+variable still wins. Fence for the names, ports and logs:
+`tests/unit/test_dev_db_script.py` (`TestSlots`).
+
+Run one command at a time on one slot. The script holds no lock, so the caller
+holds it (advisory).
 
 **Why a command, and not the paragraph above it.** §1 described the
 `mt-scratch` pattern for weeks. A pattern is a thing a person must remember.

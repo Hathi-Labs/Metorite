@@ -178,10 +178,11 @@ class TestSlots:
         ]
         assert proc.stdout.splitlines() == [_DSN.format(5433), _TDSN.format(5434)]
         assert "replay metorite-scratch-tenant" in calls
+        assert (logs / "dev_db_err").is_file()
         assert (logs / "dev_db_tenant.log").is_file()
 
     def test_an_empty_slot_is_no_slot(self, tmp_path):
-        proc, calls, _ = _run(tmp_path, "--export", METORITE_SCRATCH_SLOT="")
+        proc, _, _ = _run(tmp_path, "--export", METORITE_SCRATCH_SLOT="")
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.splitlines() == [_DSN.format(5433), _TDSN.format(5434)]
 
@@ -196,7 +197,9 @@ class TestSlots:
         ]
         assert proc.stdout.splitlines() == [_DSN.format(cc), _TDSN.format(tenant)]
         assert f"replay metorite-scratch-tenant-s{slot}" in calls
-        assert (logs / f"dev_db_tenant-s{slot}.log").is_file()
+        for log in (f"dev_db_err-s{slot}-u{os.getuid()}",
+                    f"dev_db_tenant-s{slot}-u{os.getuid()}.log"):
+            assert (logs / log).is_file(), log
         # No call may reach the default pair, which another run may be using.
         for call in calls:
             words = call.split()
@@ -219,8 +222,10 @@ class TestSlots:
                               METORITE_SCRATCH_TENANT_PORT="6002")
         assert proc.returncode == 0, proc.stderr
         assert proc.stdout.splitlines() == [_DSN.format(6001), _TDSN.format(6002)]
-        assert [port for _, port in _started(calls)] == [
-            "127.0.0.1:6001:5432", "127.0.0.1:6002:5432"]
+        assert _started(calls) == [
+            ("metorite-scratch-console-s2", "127.0.0.1:6001:5432"),
+            ("metorite-scratch-tenant-s2", "127.0.0.1:6002:5432"),
+        ]
 
     @pytest.mark.parametrize("bad", ["0", "10", "01", "a", "1 2", "-1"])
     @pytest.mark.parametrize("arg", ["--export", "--down"])
