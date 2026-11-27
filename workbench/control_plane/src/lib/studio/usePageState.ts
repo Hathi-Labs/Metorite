@@ -24,7 +24,7 @@ import { boundPageState, decodePageState, encodePageState, type PageState, type 
 /** The wait after the last filter edit, in milliseconds. */
 export const FILTER_DEBOUNCE_MS = 300;
 
-const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key === "page" || key === "q" || key === "sort" || key === "layout" || key === "group" || key === "rec" || key === "ro" || key === "rtab" || key === "full" || key.startsWith("f.");
+const OWNED = (key: string): boolean => key === "sel" || key === "tab" || key === "page" || key === "q" || key === "sort" || key === "layout" || key === "group" || key === "rec" || key === "ro" || key === "rtab" || key === "full" || key === "hide" || key.startsWith("f.");
 
 /** The query string that holds `state` and every foreign key of `current`. Pure. */
 export function mergePageQuery(current: string, state: PageState, page?: PageTabs): string {
