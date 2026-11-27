@@ -1474,15 +1474,14 @@ MAIL_THREAD_CHANGED = (
 MAIL_RECIPIENTS_SHOWN = 3
 
 
-def _recipients_text(addresses: list[str]) -> str:
-    """The recipients part of the reply row: the count, the first
-    :data:`MAIL_RECIPIENTS_SHOWN` addresses, and the count of the rest."""
-    if not addresses:
+def _recipients_text(shown: list[str], total: int) -> str:
+    """The recipients part of the reply row: the count of all *total*
+    addresses, the *shown* ones, and the count of the rest."""
+    if not total:
         return "to no address"
-    shown = ", ".join(_data(a) for a in addresses[:MAIL_RECIPIENTS_SHOWN])
-    rest = len(addresses) - MAIL_RECIPIENTS_SHOWN
-    noun = "address" if len(addresses) == 1 else "addresses"
-    return (f"to {len(addresses)} {noun}: {shown}"
+    rest = total - len(shown)
+    noun = "address" if total == 1 else "addresses"
+    return (f"to {total} {noun}: {', '.join(_data(a) for a in shown)}"
             + (f" and {rest} more" if rest > 0 else ""))
 
 
@@ -1512,12 +1511,14 @@ async def _reply_rows(ids: dict[str, str], thread_id: str) -> tuple[str, list[tu
         return MAIL_NO_SENT
     if _uuid_refusal(sent_id, "email_id"):
         return MAIL_NO_THREAD
-    if not all(a and _true_address(a) for a in to[:MAIL_RECIPIENTS_SHOWN]):
+    first = to[:MAIL_RECIPIENTS_SHOWN]
+    if not all(a and _true_address(a) for a in first):
         return MAIL_BAD_RECIPIENT
-    shown = _data(_mail_text(_card_text(subject), MAIL_SOURCE_MAX) or "(none)")
+    title = _data(_mail_text(_card_text(subject), MAIL_SOURCE_MAX) or "(none)")
     return sent_id, [
         ("thread", one_line(f"thread: {_data(thread_id)}")),
-        ("sent", one_line(f"your sent mail: subject {shown}, {_recipients_text(to)}")),
+        ("sent", one_line(f"your sent mail: subject {title}, "
+                          f"{_recipients_text(first, len(to))}")),
     ]
 
 
