@@ -114,7 +114,7 @@ class TypeIn(BaseModel):
     #: about its own vocabulary. `is_system` stays a hard-coded literal below,
     #: because that one grants an exemption rather than accepting a rule.
     is_epic: bool | None = None
-    #: WS-39 WM-5 (migration 405). A task of this type is a Goal. 422 while
+    #: WS-39 WM-5 (migration 514). A task of this type is a Goal. 422 while
     #: ``PROJECTS_GOALS_ORGS`` does not hold the org. A type is never both a
     #: Goal and an epic (:func:`_refuse_goal_and_epic`).
     is_goal: bool | None = None

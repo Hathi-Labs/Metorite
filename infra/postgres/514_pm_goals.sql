@@ -1,14 +1,14 @@
 -- ============================================================================
--- 405_pm_goals.sql - the Goal type, and the link of an epic to its Goal
+-- 514_pm_goals.sql - the Goal type, and the link of an epic to its Goal
 -- (WS-39 WM-5, Metorite task 984)
 -- ============================================================================
 -- Spec: project-docs/specs/project_management_app.md §13.6a row WM-5 · D204.4
 --   · D199.6 · R1 · R5 · R6.
 --
--- R1: on 2026-11-11 origin/main held 402 as its highest file. Open pull
---   requests hold 403 (403_agent_run_waiting.sql) and 404
---   (404_pm_agent_policies.sql). So this file is 405. Check the number again
---   at merge (scripts/premerge.sh).
+-- R1: built as 405 on 2026-11-11. On 2026-11-27 origin/main held 513 as its
+--   highest file, and the box ledger booked 514 for task 984. The file must
+--   sort after 491, which makes `pm_same_org_ref`. Check the number again at
+--   merge (scripts/premerge.sh).
 --
 -- What: two columns.
 --   pm_task_types.is_goal  BOOLEAN NOT NULL DEFAULT false. A task of this

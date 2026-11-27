@@ -5,7 +5,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §13.3 "Roll-ups".
 Two reads. ``epic_rollup``: ``GET /projects/tasks/{id}`` adds its answer under
 ``rollup`` for a task whose type is an epic type. ``goal_rollup`` (WS-39 WM-5,
 task 984): the same key for a Goal, the sum of ``epic_rollup`` over the epics
-that point at the Goal (``pm_tasks.goal_task_id``, migration 405). The web
+that point at the Goal (``pm_tasks.goal_task_id``, migration 514). The web
 app, the chat and the MCP ``get_task`` all read it from that one place. There
 is no route of its own.
 
