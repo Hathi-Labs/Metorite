@@ -943,7 +943,7 @@ EFFECTIVE_STATUS_COLUMNS: dict[str, str] = {
     "crm_lead_statuses": _effective_columns("crm_lead_statuses", deal=False),
 }
 
-#: CRM-M3b (D166, migration 410): the SELECT list of a deal stage ``s`` in one
+#: CRM-M3b (D166, migration 513): the SELECT list of a deal stage ``s`` in one
 #: deal pipeline, over its membership ``ps`` (``crm_pipeline_stages``). The win
 #: chance is ``COALESCE(s.ui_probability, ps.probability, s.probability)``, and
 #: the warning days are ``COALESCE(ps.max_dwell_days, s.max_dwell_days)``. A
@@ -2057,7 +2057,7 @@ async def add_stage_to_default_pipeline(db: Any, status_id: str) -> None:
     if pipeline is None:
         return
     # CRM-M3b: the membership copies the win chance and the warning days of
-    # the stage row (migration 410).
+    # the stage row (migration 513).
     await db.execute(
         text(
             "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position, "
@@ -2148,7 +2148,7 @@ def default_deal_pipeline_sql(org_column: str) -> str:
 # ── The win chance and the warning days of a stage in a pipeline (CRM-M3b) ──
 
 #: The two values of a deal stage that sit on its membership of one deal
-#: pipeline (D166, migration 410). NULL there reads the stage row. The stage
+#: pipeline (D166, migration 513). NULL there reads the stage row. The stage
 #: row keeps both columns: ``GET /crm/statuses/deal`` serves it, and a new
 #: membership copies it.
 MEMBERSHIP_COLUMNS: tuple[str, ...] = ("probability", "max_dwell_days")
@@ -2164,7 +2164,7 @@ def fitted_value_sql(column: str, value: str, stage: str = "s") -> str:
     """*value*, as SQL, when it passes each rule of *column* for the stage row
     *stage* NOW, else NULL (CRM-M3b repair 1).
 
-    The rules are the CHECKs of migration 410, and for the win chance the
+    The rules are the CHECKs of migration 513, and for the win chance the
     clamp of D-CRM-10 for the CURRENT type of the stage. NULL on a membership
     reads the stage row, and the old route keeps that row clamped. So a write
     that copies a value, or puts a stored value back, leaves a state that
@@ -3260,7 +3260,7 @@ async def merge_status_from_source(
         )
         # CRM-M3b: a moved deal membership holds the values of the folded row.
         # It takes NULL, so it reads the kept row, as one value per stage of
-        # Mirror mode needs (migration 410).
+        # Mirror mode needs (migration 513).
         values = (
             ", probability = NULL, max_dwell_days = NULL"
             if stages == "crm_pipeline_stages" else ""
