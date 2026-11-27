@@ -766,6 +766,10 @@ sets `STUDIO_SKILL_TESTS_CAP_CREDITS`. That cap has no default, and it needs a
 restart, because it is no `*_ORGS` key. A reload applies a change to this
 flag. Any value other than empty is OWNER-ONLY, because it spends credits.
 
+`TODAY_RULE_ORGS` moves the Today chip of My work and its count to the one
+Today rule (`my_day_command_centre.md` §9.2). A reload applies it, and the flip
+stays OWNER-GATE (`enforcement-flip`).
+
 `TOOL_FAILURE_LOG_ORGS` turns on the record of tool failures for each listed
 org (`tool_failure_log.md` §6, TOF-2b). A capture site writes one row in the
 org and adds one count to the platform rows of the failure store. `*` lists

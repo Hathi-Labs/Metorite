@@ -419,6 +419,7 @@
       "tests/unit/test_studio_csv_import_r8.py",
       "tests/unit/test_studio_door_op_r8.py",
       "tests/unit/test_studio_expr.py",
+      "tests/unit/test_studio_field_claims_r8.py",
       "tests/unit/test_studio_formula_r8.py",
       "tests/unit/test_studio_hierarchy_r8.py",
       "tests/unit/test_studio_lines_r8.py",
