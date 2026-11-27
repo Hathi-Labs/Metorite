@@ -4380,9 +4380,9 @@ merge confirms the number (R1).
 
 ## 19. How I work: the member model of how the member acts (ACCEPTED, 2026-11-11)
 
-**Status: ACCEPTED, 2026-11-11 (D212). Only MM-1 is built, dark behind
-`MEMBER_ACTIONS_ORGS`, and not merged (task 2878, PR 2498).** Owner ask of
-2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
+**Status: ACCEPTED, 2026-11-11 (D212). MM-1 (task 2878, PR 2498) and MM-2
+(task 2879, PR 2508) are merged. MM-1b (task 3614, PR 2513) is built. All of
+them are dark behind `MEMBER_ACTIONS_ORGS`.** Owner ask of 2026-11-11, in chat. Epic task 2876. It extends §4, §12 and §15, and it
 changes no rule of them. The owner accepted the decisions D-PZ-47 to
 D-PZ-52 of §19.12 the same day.
 

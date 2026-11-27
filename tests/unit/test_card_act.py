@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,23 @@ def test_the_flag_off_reads_no_fact_and_opens_no_session(monkeypatch) -> None:
     written2, _ = _wire(monkeypatch, org=None)
     assert asyncio.run(card_act.record_card_act("t1", "e" * 32, "approved", ANA)) is False
     assert written2 == []
+
+
+def test_a_slow_write_is_cut_at_the_limit(monkeypatch) -> None:
+    """Mutation: await the write without the limit."""
+    _flag(monkeypatch, "*")
+    written, _ = _wire(monkeypatch)
+
+    async def _slow(thread_id):
+        await asyncio.sleep(5)
+        return ORG, ANA
+
+    monkeypatch.setattr(card_act, "_facts", _slow)
+    monkeypatch.setattr(card_act, "_TIMEOUT_S", 0.05)
+    started = time.monotonic()
+    assert asyncio.run(card_act.record_card_act("t1", "f" * 32, "approved", ANA)) is False
+    assert time.monotonic() - started < 3
+    assert written == []
 
 
 def test_a_failure_never_raises(monkeypatch) -> None:

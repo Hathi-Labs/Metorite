@@ -1902,7 +1902,7 @@ async def _record_card_act(outcome: str, request_id: str | None, responder: str 
         tid = resolve_relay_thread_id() or ""
         if tid:
             await record_card_act(tid, request_id, outcome, responder, late=late)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return
 
 
