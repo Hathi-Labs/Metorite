@@ -210,6 +210,26 @@ test.describe("the waiting dock (WD-1)", () => {
     await expect(box(page)).toHaveValue("my own draft words");
   });
 
+  test("the member's own Fold wins after a card field had the focus, by keyboard and by mouse", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await start(page, { cards: "all" });
+    await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open", { timeout: 20_000 });
+    await page.locator('[role="tab"]').nth(2).click();
+    const own = page.getByRole("textbox", { name: "Your own answer" });
+    // Keyboard: from the field to Fold, then Enter.
+    await own.click();
+    await page.locator("[data-dock-fold]").focus();
+    await page.keyboard.press("Enter");
+    await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded");
+    await page.locator("[data-dock-unfold]").click();
+    await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
+    // Mouse: from the field straight to Fold, at once.
+    await own.click();
+    await page.locator("[data-dock-fold]").click();
+    await expect(dock(page)).toHaveAttribute("data-waiting-dock", "folded", { timeout: 300 });
+    expect(await answers(page)).toEqual([]);
+  });
+
   test("the fold row opens the card and approves nothing", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await start(page, { cards: "all" });
@@ -253,6 +273,16 @@ test.describe("the waiting dock (WD-1)", () => {
       await page.evaluate(() => window.__kb(400));
       await expect(dock(page)).toHaveAttribute("data-waiting-dock", "open");
       await own.pressSequentially("via the ring road");
+      // iOS: a tapped button takes no focus, and the field blurs with no
+      // target as the press goes down. Without the press guard of K3 the dock
+      // folds under the finger, and the tap lands on nothing.
+      await page.evaluate(() => {
+        document.addEventListener("mousedown", (e) => {
+          if (!(e.target as HTMLElement | null)?.closest?.("button")) return;
+          e.preventDefault();
+          (document.activeElement as HTMLElement | null)?.blur();
+        }, true);
+      });
       // One tap on Submit sends the answer.
       await page.locator("[data-elicitation-submit]").tap();
       await expect.poll(async () => (await answers(page)).map((a) => a.request_id)).toContain("q".repeat(32));

@@ -3264,7 +3264,7 @@ export default function AgentChat({
           OUTSIDE the form on purpose: a button of a card inside a form is a
           submit button, and Enter in a card field would send the message. */}
       {dockOn && (
-        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} pt-2`}>
+        <div ref={dockHostRef} data-dock-host="" className={`shrink-0 ${phoneChrome ? "px-4" : "px-3 sm:px-4"} ${showDock ? "pt-2" : ""}`}>
           <WaitingDockLive count={dockN} />
           {showDock && (
             <WaitingDock count={dockN} phone={phoneChrome || touchKeyboard()}>

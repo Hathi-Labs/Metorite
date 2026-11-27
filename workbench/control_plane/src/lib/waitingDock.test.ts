@@ -25,6 +25,7 @@ import {
   arrivalBlursBox,
   dockCap,
   dockCount,
+  arrivalUnfolds,
   dockFolded,
   dockShown,
   focusBoxAfterLast,
@@ -110,9 +111,23 @@ describe("the fold (WD-D2, K3, K7)", () => {
     expect(dockFolded({ manual: false, keyboardUp: true, cardFieldFocus: false })).toBe(true);
   });
 
-  it("K3: a field of the card in focus keeps it open, folded by hand or not", () => {
+  it("K3: a field of the card in focus stops the automatic fold, and never the member's own Fold", () => {
     expect(dockFolded({ manual: false, keyboardUp: true, cardFieldFocus: true })).toBe(false);
-    expect(dockFolded({ manual: true, keyboardUp: true, cardFieldFocus: true })).toBe(false);
+    expect(dockFolded({ manual: true, keyboardUp: true, cardFieldFocus: true })).toBe(true);
+    expect(dockFolded({ manual: true, keyboardUp: false, cardFieldFocus: true })).toBe(true);
+  });
+
+  it("K2: a new item unfolds the dock, and a fall or no change does not", () => {
+    expect(arrivalUnfolds(1, 2)).toBe(true);
+    expect(arrivalUnfolds(0, 1)).toBe(true);
+    expect(arrivalUnfolds(2, 1)).toBe(false);
+    expect(arrivalUnfolds(2, 2)).toBe(false);
+  });
+
+  it("the dock wires K2 and the focus test to the rules here", () => {
+    const dock = readFileSync(join(__dirname, "..", "components/WaitingDock.tsx"), "utf-8");
+    expect(dock).toContain("if (arrivalUnfolds(seenCount, count)) setManual(false);");
+    expect(dock).toContain("if (pressingRef.current) return;");
   });
 
   it("the keyboard is up only on a phone, and only past a bar's height", () => {
@@ -185,8 +200,17 @@ describe("the live region (the a11y line)", () => {
     expect(words).toBe("");
     words = liveAfter(0, 1, words);
     expect(words).toBe("1 item waits for you");
-    // A fall that leaves items keeps the words.
-    expect(liveAfter(3, 2, "3 items wait for you")).toBe("3 items wait for you");
+  });
+
+  it("2, then 1, then 2: the second rise speaks again, though its words repeat", () => {
+    let words = liveAfter(0, 2, "");
+    expect(words).toBe("2 items wait for you");
+    words = liveAfter(2, 1, words);
+    expect(words).toBe("");
+    words = liveAfter(1, 2, words);
+    expect(words).toBe("2 items wait for you");
+    // No change keeps the words.
+    expect(liveAfter(2, 2, words)).toBe(words);
   });
 });
 

@@ -33,7 +33,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useVisualViewport } from "@/app/tasks/lib/useVisualViewport";
 import Button from "@/components/ui/Button";
 import { revealWithin } from "@/lib/scrollWithin";
-import { dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
+import { arrivalUnfolds, dockCap, dockFolded, isTextField, keyboardUp, liveAfter } from "@/lib/waitingDock";
 
 export interface WaitingDockProps {
   /** How many items wait on the member (`dockCount`). */
@@ -89,7 +89,7 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
   const [seenCount, setSeenCount] = useState(count);
   if (seenCount !== count) {
     setSeenCount(count);
-    if (count > seenCount) setManual(false);
+    if (arrivalUnfolds(seenCount, count)) setManual(false);
   }
   // K3: a press inside the dock. iOS gives a tapped button no focus, so the
   // field's blur has no related target. While a press runs, and a moment
@@ -155,11 +155,13 @@ export default function WaitingDock({ count, phone, children, initialFolded = fa
     requestAnimationFrame(() => revealWithin(bodyRef.current, target));
   };
   const onFocusOut = (e: React.FocusEvent<HTMLElement>) => {
-    const next = e.relatedTarget as HTMLElement | null;
-    // The focus moves inside the dock, or a press inside it runs: stay open.
-    if (next && rootRef.current?.contains(next)) return;
+    // A press inside the dock runs: iOS gives a tapped button no focus, so
+    // the field's blur names no target. Stay open until the press settles.
     if (pressingRef.current) return;
-    setFieldFocus(false);
+    // Else the focus decides: a text field of the dock keeps it open, any
+    // other place (a button, the box, nowhere) lets the K7 fold act.
+    const next = e.relatedTarget as HTMLElement | null;
+    setFieldFocus(!!next && !!rootRef.current?.contains(next) && isTextField(next));
   };
   // After a press, fold back only when no field of the dock has the focus.
   // The wait lets the click of the press land first.

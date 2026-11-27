@@ -84,14 +84,14 @@ export function liveAnnouncement(prev: number, n: number): string | null {
 
 /**
  * The words of the live region after the count moved from `prev` to `n`. A
- * rise says the new count. A fall to 0 clears the words, so the next arrival
- * is a change that a screen reader reads again (1, 0, 1 speaks twice). Any
- * other fall keeps the words.
+ * rise says the new count. A fall clears the words, so each later rise is a
+ * change that a screen reader reads, also when its words repeat (2, 1, 2 and
+ * 1, 0, 1 each speak twice). No change keeps the words.
  */
 export function liveAfter(prev: number, n: number, words: string): string {
   const said = liveAnnouncement(prev, n);
   if (said) return said;
-  return n === 0 ? "" : words;
+  return n < prev ? "" : words;
 }
 
 /** The label of the fold row's button. It only opens the card (audit rule 2). */
@@ -169,14 +169,18 @@ export function focusBoxAfterLast(st: { touch: boolean }): boolean {
 }
 
 /**
- * Is the dock folded to one row? K3 first: a field of the card that holds
- * the focus keeps the item open. K7 next: with the phone's keyboard up and no
- * field of the card in focus, the dock folds. Else the member's own choice.
+ * Is the dock folded to one row? The member's own Fold always wins. Else K7:
+ * with the phone's keyboard up, the dock folds, except while a field of the
+ * card has the focus (K3). A field in focus only stops the automatic fold.
  */
 export function dockFolded(st: { manual: boolean; keyboardUp: boolean; cardFieldFocus: boolean }): boolean {
-  if (st.cardFieldFocus) return false;
-  if (st.keyboardUp) return true;
-  return st.manual;
+  if (st.manual) return true;
+  return st.keyboardUp && !st.cardFieldFocus;
+}
+
+/** K2: a new item opens the dock to its cap, also after a fold by hand. */
+export function arrivalUnfolds(prev: number, n: number): boolean {
+  return n > prev;
 }
 
 /** True for an element that opens a keyboard: a text field (K3). */
