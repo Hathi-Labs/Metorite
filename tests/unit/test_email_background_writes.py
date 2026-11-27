@@ -598,9 +598,11 @@ def test_a_manual_conversation_rule_writes_no_label() -> None:
     assert replyzero.conversation_match_proposes([reply]) is True
     assert replyzero.conversation_match_proposes([auto, receipt]) is False
     assert replyzero.conversation_match_proposes([]) is False
-    for fn in (runner._run_rules_job, runner._project_thread_status_for_backfill,
+    # Task 3995: the tail of Block W of the rules job is `_project_and_stamp`.
+    for fn in (runner._project_and_stamp, runner._project_thread_status_for_backfill,
                replyzero._maybe_classify_threads):
         assert "conversation_match_proposes(" in inspect.getsource(fn), fn.__name__
+    assert "_project_and_stamp(" in inspect.getsource(runner._run_rules_job)
 
 
 # ── G7: the draft cleanup after a send ──────────────────────────────────────

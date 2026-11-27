@@ -449,6 +449,17 @@ rule of the engine and the drift check ask it on each run. A reload applies a
 change. A full read spends Zoho API credits inside the budget of the sync run,
 so the flip is `enforcement-flip`.
 
+`EMAIL_MARK_DONE_ORGS` turns on "Mark done" in the Email app
+(`email_app_master_plan.md` §6.6, task 3995). For each listed org, a Done by
+hand writes a held status. No automated writer moves a held thread until a new
+inbound message arrives. `*` lists every org, and the default is empty. Empty
+keeps `POST /email/reply-zero/resolve` and each Reply Zero writer as before.
+
+Its one reader is
+`gateway.routes.email.automation.mark_done.mark_done_on`. Each request and
+each job asks it, so a reload applies to the next one. A flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `FIND_CLAIM_CHECK` turns on the "not found" check of a chat answer
 (`find_engine.md` §5.5, FIND-7). Its values are `off`, `shadow` and `on`, and
 the default is `off`. The flag is global, but the check acts only for an org

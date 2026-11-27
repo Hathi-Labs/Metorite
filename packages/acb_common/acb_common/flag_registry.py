@@ -866,6 +866,20 @@ class FlagRegistry(BaseSettings):
 
     email_insights_orgs: str = ""
 
+    # ── Mark done in Email (email_app_master_plan.md §6.6, task 3995) ───────
+    #
+    # `email_mark_done_orgs` lists the organization ids whose Email app shows
+    # "Mark done", or `*` for each one. Empty means off, the default:
+    # `POST /email/reply-zero/resolve` and each Reply Zero writer behave as
+    # before. On, a Done by hand writes a held status that no automated writer
+    # moves until a new inbound message arrives. The one reader is
+    # `gateway.routes.email.automation.mark_done.mark_done_on`, and it fails
+    # closed. The name ends in `_orgs`, so a SIGHUP applies a change with no
+    # restart. A value on a box is an `enforcement-flip`: name the flag and the
+    # box in the same message.
+    # Fence: tests/unit/test_email_mark_done_r8.py.
+    email_mark_done_orgs: str = ""
+
     # ── Email signature layouts (WS-17 SG-2, email_app_master_plan.md §23.5) ─
     #
     # `email_signature_templates_orgs` lists the organization ids whose
