@@ -685,6 +685,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/templates", "list_templates", "A"),
     Route("POST", "/projects/templates", "save_as_template", "C"),
     Route("POST", "/projects/templates/{template_id}/apply", "create_project_from_template", "C"),
+    # ── teams.py (WS-39 T-1, task 2532) ──────────────────────────────────
+    # Dark behind TEAMS_ORGS. The teams of the member and the spaces of each.
+    # A read, so class A. T-6 (task 2537) builds the chat and MCP read.
+    Route("GET", "/projects/teams", "list_teams", "A"),
 )
 
 #: Tools the manifest names that no slice has built yet, with the slice that
@@ -754,6 +758,9 @@ PLANNED: dict[str, str] = {
     # WS-MCP SW-32 (2026-11-11) added the run plan for an outside agent. The
     # chat has no run of its own.
     "set_run_plan": "WS-MCP SW-32, in-product chat parity, after EA-12e",
+    # WS-39 T-1 (2026-11-11) added the read of the teams of a member. The chat
+    # and the MCP get it through the app door in T-6.
+    "list_teams": "Metorite task 2537, T-6 the teams in the chat and over the MCP",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1548,6 +1555,11 @@ _STATUS_PLACE_REASON = (
     "every organization, and the route accepts it at all times. "
     "test_projects_status_chat.py proves the send."
 )
+#: WS-39 T-1 (task 2532). The team scope of the app, dark behind TEAMS_ORGS.
+_TEAM_SCOPE_REASON = (
+    "The team scope of the app (WS-39 T-1, dark behind TEAMS_ORGS). The chat "
+    "and the MCP get it through the app door in T-6, Metorite task 2537."
+)
 
 
 #: WS-MCP SW-7b (``agent_coordination.md`` §3.7 item 2). The name that an
@@ -1575,6 +1587,9 @@ _AGENT_OVERVIEW_REASON = (
 )
 
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-39 T-1: the team scope (`team_scope.py`). T-6 gives it to the chat.
+    ("GET", "/projects/teams"): {"team": _TEAM_SCOPE_REASON},
+    ("GET", "/projects/tree"): {"team": _TEAM_SCOPE_REASON},
     ("GET", "/projects/assignable-members"): {"project_id": _MEMBERS_ROUTE_REASON},
     # LBB-2 (engineering_practice.md section 7b.2): the label of an agent session. A
     # person's chat has no session label and holds no PR of a lane.
@@ -1616,6 +1631,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "unheld": _STATS_ROUTE_REASON,
         "updated_after": _STATS_ROUTE_REASON,
         "updated_before": _STATS_ROUTE_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-42 PST-4: the place of a lane. The tools send them when the model
     # passes a place, and this fence's witnesses pass none.
@@ -1678,6 +1694,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         ),
         "scope": _MINE_SCOPE_REASON,
         "with_overlay": _MINE_OVERLAY_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     # WS-64 OP-6c: the export takes the same subset as list_tasks.
     ("GET", "/projects/export/tasks.csv"): {
@@ -1827,6 +1844,7 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/search"): {
         "exclude_relatives_of": "The link picker's filter in the app. task_detail reads links.",
         "include_triage": _TRIAGE_READ_REASON,
+        "team": _TEAM_SCOPE_REASON,
     },
     ("PATCH", "/projects/comments/{activity_id}"): {
         "parent_id": "Only POST reads it. An edit cannot re-parent a comment (activities.py).",
@@ -1977,11 +1995,22 @@ FIELD_GAPS: dict[str, str] = {
     # WS-39 SP-1: the cycle routes. SP-5a sent the fields of the plan, the
     # start and the close. The edit fields and the capacity wait.
     "G26": "SP-5",
+    # WS-39 WM-5: the Goal of an epic and the Goal type. `get_task` reads the
+    # roll-up of a Goal now. A later slice gives the chat and the MCP a tool
+    # argument for each field.
+    "G27": "WM-5 follow-up",
 }
 
 #: A field that a later slice gives the chat: field -> its gap id. The slice
 #: that closes a gap moves its rows to ``SENDS``, so this table only shrinks.
 FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
+    # G27 (WS-39 WM-5, Metorite task 984): the Goal fields. Dark behind
+    # PROJECTS_GOALS_ORGS. A signed agent cannot send them yet either
+    # (`tasks.AGENT_CREATE_FIELDS` and `AGENT_PATCH_FIELDS` leave them out).
+    ("POST", "/projects/tasks"): {"goal_task_id": "G27"},
+    ("PATCH", "/projects/tasks/{task_id}"): {"goal_task_id": "G27"},
+    ("POST", "/projects/nodes/{project_id}/types"): {"is_goal": "G27"},
+    ("PATCH", "/projects/types/{type_id}"): {"is_goal": "G27"},
     # G26 (WS-39 SP-1): the cycle routes. SP-5a (Metorite task 964) sends the
     # fields of the plan, the add, the start and the close. The edit and the
     # two optional fields of a plan stay planned.

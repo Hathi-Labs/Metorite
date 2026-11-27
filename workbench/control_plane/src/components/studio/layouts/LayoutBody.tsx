@@ -9,12 +9,14 @@
  * no-permission states come from `StudioBlockState` through the caller of `renderView`, and the
  * fence of `StudioBlockState.test.ts` refuses a local copy in this folder.
  *
- * Built: `table_workspace`. The other presets name a block or a bar that a later slice builds
- * (LY-3 to LY-7), and each one says so in a plain sentence until then.
+ * Built: `table_workspace` (LY-2) and `board` (LY-4). Both draw the one view of their `main` region. The
+ * other presets name a block or a bar that a later slice builds (LY-5 to LY-7), and each one says so in a
+ * plain sentence until then.
  */
 
 import type { ReactNode } from "react";
 
+import ScrollCue from "@/components/studio/layouts/ScrollCue";
 import type { LayoutName } from "@/lib/studio/manifest";
 
 export interface LayoutBodyProps {
@@ -28,7 +30,7 @@ export interface LayoutBodyProps {
 }
 
 /** The presets that this file draws. A later slice adds one. */
-export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace"];
+export const DRAWN_LAYOUTS: readonly LayoutName[] = ["table_workspace", "board"];
 
 export default function LayoutBody({ layout, regions, renderView, titleOf, tableHeader }: LayoutBodyProps) {
   if (!DRAWN_LAYOUTS.includes(layout)) {
@@ -45,10 +47,10 @@ export default function LayoutBody({ layout, regions, renderView, titleOf, table
             // With the record panel open the page is narrow. The table keeps a readable width and scrolls
             // inside its own strip, so no column shrinks to one character (capture finding, task 3315).
             <div data-table-strip className="overflow-x-auto"><div className="min-w-[40rem]">{node}</div></div>
-          ) : node}
+          ) : layout === "board" ? <ScrollCue>{node}</ScrollCue> : node}
         </section>
       ) : (
-        <p className="text-sm text-muted-foreground">This page has no table to show.</p>
+        <p className="text-sm text-muted-foreground">{`This page has no ${layout === "board" ? "board" : "table"} to show.`}</p>
       )}
     </div>
   );

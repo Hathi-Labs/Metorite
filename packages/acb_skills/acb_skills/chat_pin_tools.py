@@ -189,12 +189,13 @@ def _transport() -> httpx.AsyncBaseTransport | None:
     return None
 
 
-async def _send(method: str, path: str, member: str) -> tuple[int, Any]:
-    """Send ONE request of the route as *member*, with no body.
+async def _send(method: str, path: str, member: str, body: Any = None) -> tuple[int, Any]:
+    """Send ONE request of the route as *member*. A pin sends no *body*.
 
     The headers are the internal bearer, ``X-User-Email`` and the content
-    type, and nothing else. Returns the status and the JSON body. A fault of
-    the request gives status 0. Never raises."""
+    type, and nothing else. *body* is the JSON body of a chat list write of
+    ``chat_thread_tools`` (PAR-11), and None sends no body. Returns the status
+    and the JSON body. A fault of the request gives status 0. Never raises."""
     headers = {
         **internal_auth_headers(),
         "X-User-Email": member,
@@ -203,7 +204,7 @@ async def _send(method: str, path: str, member: str) -> tuple[int, Any]:
     try:
         async with httpx.AsyncClient(base_url=_gateway_url(), transport=_transport(),
                                      timeout=TIMEOUT_S) as client:
-            resp = await client.request(method, path, headers=headers)
+            resp = await client.request(method, path, headers=headers, json=body)
     except Exception as exc:
         _log.warning("chat_pin_tool.request_failed", error=type(exc).__name__)
         return 0, None

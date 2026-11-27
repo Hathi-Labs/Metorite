@@ -2664,9 +2664,12 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # LBB-2 (engineering_practice.md section 7b.2): an agent reads its own
     # unlanded PRs over MCP. The chat lists them in my_work later.
     lbb_2 = {"land_your_pr"}
+    # WS-39 T-1 (task 2532): the read of the teams of a member, dark behind
+    # TEAMS_ORGS. T-6 (task 2537) gives it to the chat and the MCP.
+    t_6 = {"list_teams"}
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
                               | mcp_g15 | ea_18a | ap_10 | mcp_g19a | mcp_g21 | sp_5
-                              | sw_23 | sw_32 | aga_11 | sw_45 | lbb_2), m.PLANNED
+                              | sw_23 | sw_32 | aga_11 | sw_45 | lbb_2 | t_6), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
     assert "change_agent_answer" in skill_projects.__all__
     assert not {"withdraw_agent_answer", "replace_agent_answer", "change_agent_answer"} & set(

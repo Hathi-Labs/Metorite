@@ -69,6 +69,12 @@ API connection in the chat. Its one reader is
 change. The flip waits for the rung 1 demo, and it stays OWNER-GATE
 (`enforcement-flip`).
 
+`APP_LEAD_RUNS_ORGS` lets the lead of a project, or of a project above it,
+Release and Resume an agent run on that project (`agent_coordination.md`
+§3.10.2, SW-48). Its one reader is
+`gateway.routes.projects.filters.app_lead_runs_allowed`. The flip stays
+OWNER-GATE (`enforcement-flip`).
+
 `CHAT_CARD_PRECONDITION_ORGS` turns on the version check of a card
 (`chat_failure_modes.md` §6 row HRD-10a). For each listed org, `update_task`
 sends the `updated_at` of the read that the card shows as `If-Match`. A task
@@ -649,6 +655,12 @@ the next tick. The owner must treat a change of this list as part of the
 expiry decision. `PACKAGE_EXPIRY_ENABLED` does not reload. Only a restart
 changes it.
 
+`PROJECTS_GOALS_ORGS` opens the Goals of Projects (`project_management_app.md`
+§13.6a row WM-5). Its one reader is
+`gateway.routes.projects.core.goals_allowed`. While the list does not hold the
+org, a write that sends a Goal field gets 422 `goals_off`. A reload applies a
+change, and the flip stays OWNER-GATE (`enforcement-flip`).
+
 `PROJECT_EDIT_CARD_ORGS` turns on the card of a new task that the member
 edits (`projects_ai_chat.md` §32, EAC-1). For each listed org, the card of
 `create_task` carries a form of its values, and the write takes the values
@@ -672,6 +684,15 @@ SBX-2). Empty, each request with a capability gets 401 before any read. `*`
 lists every org, and it is allowed only while self-serve signup is off. Its
 one reader is `acb_auth.sandbox_capabilities.door_orgs`. A reload applies a
 change. The flip stays OWNER-GATE (`enforcement-flip`).
+
+`SECRET_STARTUP_CHECK` sets what a service does at start when a secret that
+it needs is empty or public (task 574, `docs/secrets_drop.md` §6). `shadow`
+is the default, and `enforce` refuses the start. It is not a `*_ORGS` or
+`*_MODES` key, and a service reads it at start only. The gateway and the
+agent edge read it, and each unit reads its own env file. Set the value in
+that file, then restart the unit. A flip to `enforce` is the grant
+`enforcement-flip`, and only after the shadow line of the unit reads
+`unusable=0`.
 
 `SEMANTIC_MODEL_ORGS` turns on the semantic kinds of the CRM plan
 (`semantic_model.md` §3.4, SEM-7). For each listed org, the plan checks the

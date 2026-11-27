@@ -814,6 +814,98 @@ async def publish_card_undo(kind: str, row_id: str, version: str | None) -> bool
     return True
 
 
+#: The event that gives the receipt of a held sandbox card the result of each
+#: row (SBX-3b, ``agent_sandbox.md`` §12.5 decision 8). The value names the
+#: card's ``request_id`` and, for each row, its id, its HTTP status and its
+#: door code. It carries no body. ``src/lib/confirmationQueue.ts`` holds the
+#: same name (``CONFIRMATION_ROW_RESULTS``). Fence:
+#: ``tests/unit/test_confirmation_rows.py::test_row_results_carry_no_body``.
+CONFIRMATION_ROW_RESULTS = "confirmation_row_results"
+#: The id of a row of a held sandbox card (``gateway/sandbox_batch.py``).
+_RESULT_ROW_ID = _re.compile(r"row-[0-9]{1,2}")
+#: A door code of a row result.
+_RESULT_CODE = _re.compile(r"sandbox_[a-z_]{1,48}")
+
+
+def row_results_value(request_id: str, rows: Any) -> dict[str, Any] | None:
+    """The value of a :data:`CONFIRMATION_ROW_RESULTS` event, or None.
+
+    *request_id* is the card id (32 lower-case hex digits). *rows* is a list
+    of ``{id, status, code?}``. Only those three keys go on, so no body, no
+    path and no text of a route reach the stream. A bad value gives None."""
+    rid = str(request_id or "")
+    if not _re.fullmatch(r"[0-9a-f]{32}", rid):
+        return None
+    if not isinstance(rows, list) or not rows or len(rows) > MAX_CARD_ROWS:
+        return None
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        row_id, status, code = row.get("id"), row.get("status"), row.get("code")
+        if not isinstance(row_id, str) or not _RESULT_ROW_ID.fullmatch(row_id):
+            return None
+        if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599:
+            return None
+        entry: dict[str, Any] = {"id": row_id, "status": status}
+        if isinstance(code, str) and _RESULT_CODE.fullmatch(code):
+            entry["code"] = code
+        out.append(entry)
+    return {"request_id": rid, "rows": out}
+
+
+async def _live_publisher() -> Any:
+    """The publisher of the chat stream of this run, or None.
+
+    The same two channels as :func:`request_confirmation`: the queue of a
+    native run, or the relay of the run's thread."""
+    try:
+        from orchestrator.executor import _active_run_queue
+
+        queue = _active_run_queue.get(None)
+    except Exception:
+        queue = None
+    if queue is not None:
+        return queue.put
+    try:
+        from orchestrator.executor import (
+            _push_sse_to_stream,
+            resolve_relay_thread_id,
+        )
+        tid = resolve_relay_thread_id()
+    except Exception:
+        return None
+    if not tid:
+        return None
+
+    async def _publish(ev: dict, _t: str = tid) -> None:
+        await _push_sse_to_stream(_t, f"data: {_json.dumps(ev)}\n\n")
+
+    return _publish
+
+
+async def publish_card_rows(request_id: str, rows: Any) -> bool:
+    """Send the result of each row of one held sandbox card to the chat.
+
+    SBX-3b. The watcher of a held batch (``acb_skills.sandbox_held``) calls
+    it when the gateway gives the results of a card. It sends one
+    :data:`CONFIRMATION_ROW_RESULTS` event, keyed by the card's
+    ``request_id``, on the stream of this run. The client draws the results
+    on the receipt of that card (``receiptText``). True when the event went
+    out. A bad value, no stream, or a fault gives False. It never raises."""
+    value = row_results_value(request_id, rows)
+    if value is None:
+        return False
+    publish = await _live_publisher()
+    if publish is None:
+        return False
+    try:
+        await publish({"type": "CUSTOM", "name": CONFIRMATION_ROW_RESULTS, "value": value})
+    except Exception:  # the receipt then shows no result
+        return False
+    return True
+
+
 #: A confirmation card with ROWS (WS-46 P13 one-card). The member ticks the
 #: rows the act covers, and the answer names them:
 #: ``APPROVE {"rows": ["row-1", "row-3"]}``. A card with no rows keeps the
@@ -2703,6 +2795,28 @@ class RowsAnswer:
 _CARD_ID_RE = _re.compile(r"[0-9a-f]{32}")
 
 
+#: The wait of a card when the caller sets no ``timeout_s``, in seconds.
+CARD_WAIT_S = 3600
+
+
+def card_wait_s(timeout_s: object) -> float:
+    """The wait of one card: :data:`CARD_WAIT_S` for ``None``, else *timeout_s*.
+
+    SBX-3b (``agent_sandbox.md`` §12.5 decision 8). The watcher of a held
+    batch passes the time left to the deadline of its batch. A value of 0 or
+    less gives 0, so the card times out at once. A bool, a value that is not a
+    number, NaN or an infinity raises ``ValueError``: a NaN wait never ends.
+    """
+    if timeout_s is None:
+        return float(CARD_WAIT_S)
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+        raise ValueError("timeout_s is a number of seconds")
+    wait = float(timeout_s)
+    if wait != wait or wait in (float("inf"), float("-inf")):
+        raise ValueError("timeout_s is a finite number of seconds")
+    return max(wait, 0.0)
+
+
 def _check_card_args(request_id: str | None, with_answer: bool, rows: Any) -> bool:
     """Check the two arguments of a held send card (§21), and give
     ``with_answer`` as a bool. A bad one is a programming error of the
@@ -2930,6 +3044,7 @@ async def request_confirmation(
     responder: str | None = None,
     edit: dict | None = None,
     earlier: dict | None = None,
+    timeout_s: float | None = None,
 ) -> bool | frozenset[str] | ReplyAnswer | RowsAnswer | TaskEdit | _Revised | None:
     """Emit a HITL confirmation card and BLOCK until the user approves/rejects.
 
@@ -3003,6 +3118,12 @@ async def request_confirmation(
             :func:`earlier_draft_choice` then says "delete". A card with
             rows, a reply form, an edit form or a held send id drops it.
             ``None`` is the card of before.
+        timeout_s: the wait of the card, in seconds (SBX-3b, ``agent_sandbox.md``
+            §12.5 decision 8). ``None`` keeps :data:`CARD_WAIT_S`. At the end
+            of the wait the card closes, and :func:`last_card_outcome` gives
+            :data:`CARD_TIMED_OUT`. A value of 0 or less closes the card at
+            once. A value that is not a finite number raises ``ValueError``
+            before any card shows.
 
     Returns:
         With no ``rows``: ``True`` if the user approved, ``False`` if they
@@ -3066,6 +3187,8 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    #: SBX-3b: the wait of this card, in seconds.
+    _wait_s = card_wait_s(timeout_s)
     #: EAC-1: the edit form of a new task, or None for the card of before.
     _edit = _task_edit_form(edit, _rows, _reply, _with_answer, request_id,
                             str(responder or "").strip().lower())
@@ -3275,7 +3398,7 @@ async def request_confirmation(
         _waiting = _WAITING_CARD.set((_rid, _card) if _card is not None else None)
         try:
             from orchestrator.executor import wait_user_future  # noqa: PLC0415
-            _result = await wait_user_future(_fut, 3600)
+            _result = await wait_user_future(_fut, _wait_s)
             _answer, _ticked = _verdict(_result, _rid)
         except _asyncio.CancelledError:
             _answer = "CANCELLED"

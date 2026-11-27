@@ -27,6 +27,15 @@ Mutations (R7). Each one turned the named test red.
   ``routes/projects/claim_scope.py``. ``test_no_module_outside_the_seam_reads_the_lead``.
 * S2. Rename ``authority.OWN_APPS_SQL``. ``test_each_allowed_symbol_exists``.
 * S3. Drop rule B from :func:`_hits`. ``test_the_scan_finds_a_lead_comparison``.
+
+SW-48 (§3.10.2). The lead arm of ``agent_runs.person_may_end_sql`` (Release,
+Resume, and ``can_act`` of Needs attention) embeds :data:`LED_SUBTREE_SQL` and
+never copies it.
+
+* S4. Drop the lead arm of ``person_may_end_sql``.
+  ``test_the_end_rule_of_a_run_embeds_the_public_walk``.
+* S5. Paste the text of the walk into ``needs_attention.py``.
+  ``test_the_run_modules_hold_no_copy_of_the_walk``.
 """
 from __future__ import annotations
 
@@ -40,6 +49,8 @@ SKIP_PARTS = frozenset({"tests", "node_modules", ".venv", "__pycache__", "build"
 
 AUTHORITY = "apps/services/gateway/gateway/routes/projects/authority.py"
 PERSONAL = "apps/services/gateway/gateway/routes/projects/personal.py"
+AGENT_RUNS = "apps/services/gateway/gateway/routes/projects/agent_runs.py"
+NEEDS_ATTENTION = "apps/services/gateway/gateway/routes/projects/needs_attention.py"
 
 #: ``(module, top-level symbol) -> reason``. The symbol is the name that the
 #: SQL string sits in: a module constant, a function or a class.
@@ -172,3 +183,23 @@ def test_the_scan_ignores_python_and_other_tables():
     assert not _hits('S = "UPDATE brief_runs SET lead = :lead"\n')
     assert not _hits('def f():\n    """pm_projects.lead is the app lead."""\n')
     assert not _hits('Z = "SELECT lead_id FROM pm_projects"\n')
+
+
+def test_the_end_rule_of_a_run_embeds_the_public_walk():
+    """SW-48. The lead arm of the rule of Release reads the walk of the seam,
+    and the answer set reads no lead."""
+    from gateway.routes.projects import agent_runs
+    from gateway.routes.projects.authority import LED_SUBTREE_SQL
+
+    assert LED_SUBTREE_SQL in agent_runs.person_may_end_sql("r")
+    assert LED_SUBTREE_SQL not in agent_runs.person_may_answer_sql("r")
+    source = (ROOT / AGENT_RUNS).read_text(encoding="utf-8")
+    assert "from gateway.routes.projects.authority import LED_SUBTREE_SQL" in source
+
+
+def test_the_run_modules_hold_no_copy_of_the_walk():
+    """SW-48. A module that decides who may end a run embeds the walk. It
+    does not hold a copy, which could drift from the seam."""
+    for rel in (AGENT_RUNS, NEEDS_ATTENTION):
+        source = (ROOT / rel).read_text(encoding="utf-8")
+        assert "WITH RECURSIVE led" not in source, rel

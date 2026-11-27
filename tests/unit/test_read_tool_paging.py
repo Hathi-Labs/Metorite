@@ -311,6 +311,9 @@ ALLOWED: dict[str, str] = {
     "apps/agents/agent-email-assistant/agents.py::_pick_drafts::plan.ordered[:rule.MAX_DRAFTS]":
         "The card says 'The card lists N of M matching drafts'. A draft that it does not "
         "list has no tick, so it stays in Drafts (task 3977).",
+    "packages/acb_skills/acb_skills/chat_thread_tools.py::edit_chat::' '.join(str(name or '').split())[:TITLE_MAX]":
+        "One string, not rows: the new name of a chat, cut to 120 characters as the dock "
+        "cuts it (SESSION_TITLE_MAX). No row is behind the cut (PAR-11).",
 }
 
 #: The size of :data:`ALLOWED`. Raising it is a deliberate edit of this file.
@@ -343,7 +346,9 @@ ALLOWED: dict[str, str] = {
 #: EAC-1b added two: the note of an edited card names ten people and says 'and N more',
 #: and cuts one text of the member to 120 characters (94).
 #: Task 3977 added two: the shared cut of card lines ends with '+N more', and the
-#: draft pick card counts the drafts that it does not list (96).
+#: draft pick card counts the drafts that it does not list (96). PAR-11 part a
+#: added one: the new name of a chat, cut as the dock cuts it. The real count
+#: of ALLOWED is then 96, so the ceiling stays at 96.
 ALLOWED_CEILING = 96
 
 
@@ -1223,6 +1228,47 @@ def _timeline_route(emails: int, notes: int):
         return {"entries": [e.model_dump() for e in page], "has_more": more}
 
     return answer
+
+
+def test_crm_field_map_pages_its_fields(monkeypatch, crm_agent) -> None:
+    """Task 3953: 70 fields, 30 a page. The last page holds 61 to 70, and the
+    columns show on each page."""
+    fields = [{"key": f"cf_{k:02d}", "label": f"Field {k:02d}", "type": "text",
+               "targets": ["next_step"]} for k in range(70)]
+    body = {"fields": fields, "rules": [], "targets": [
+        {"column": "next_step", "column_type": "text", "kind": "free", "open": True}]}
+    seen = _gw(monkeypatch, crm_agent, lambda p, q: body)
+    first = asyncio.run(crm_agent.crm_field_map("deals"))
+    assert "«Field 29»" in first and "«Field 30»" not in first
+    assert "Showing 1-30 of 70. Call again with offset=30 for the rest." in first
+    last = asyncio.run(crm_agent.crm_field_map("deals", offset=60))
+    assert "«Field 69»" in last and "«Field 59»" not in last
+    assert "Showing 61-70 of 70. This is the last page." in last
+    assert "«next_step» («text») · free · open" in last
+    assert seen[0] == ("/crm/field-rules", {"entity": "deals"})
+
+
+def test_crm_mapping_plans_page_the_versions_and_the_items(monkeypatch, crm_agent) -> None:
+    """Task 3953: 70 versions, 30 a page, and 70 rules of one version."""
+    versions = [{"version": 70 - k, "state": "superseded", "rule_count": 1,
+                 "created_by": "a@x.io"} for k in range(70)]
+    rules = [{"kind": "field", "entity": "deal", "field_api_name": f"cf_{k:02d}",
+              "target_column": "next_step"} for k in range(70)]
+
+    def answer(path, q):
+        if path == "/crm/mapping/plans":
+            return {"approved": 70, "versions": versions}
+        return {"version": 70, "state": "approved", "rules": rules}
+
+    _gw(monkeypatch, crm_agent, answer)
+    first = asyncio.run(crm_agent.crm_list_mapping_plans())
+    assert "has 70 versions" in first and "• version 41 ·" in first
+    assert "• version 40 ·" not in first
+    assert "Showing 1-30 of 70. Call again with offset=30 for the rest." in first
+    assert "• version 1 ·" in asyncio.run(crm_agent.crm_list_mapping_plans(offset=60))
+    one = asyncio.run(crm_agent.crm_list_mapping_plans(version=70, offset=30))
+    assert "«cf_30»" in one and "«cf_29»" not in one and "«cf_60»" not in one
+    assert "Showing 31-60 of 70. Call again with offset=60 for the rest." in one
 
 
 def test_crm_timeline_pages_with_no_repeat_and_no_gap(monkeypatch, crm_agent) -> None:
