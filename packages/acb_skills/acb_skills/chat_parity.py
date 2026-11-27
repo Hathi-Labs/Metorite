@@ -1224,6 +1224,10 @@ DEBT: dict[str, str] = {
     # (chat_parity.md section 7, item 6). pending_actions has no requester column, so a
     # tool cannot tell an action that the chat itself asked for.
     "GET /api/actions/pending": "P-7",
+    # WS-AP AP-2a: the list "For you" of /waiting and the count of its row.
+    # AP-10 (`my_waits`) pays both.
+    "GET /api/shell/waiting": "P-7",
+    "GET /api/shell/waiting/count": "P-7",
     "POST /api/actions/pending/{}/{}": "P-7",
     # PAR-8b: five rows that no kind of EXEMPT_KINDS fits, so they stay debt until the owner
     # rules (chat_parity.md section 2: a new kind needs the owner).
@@ -1347,7 +1351,7 @@ DEBT_CEILING: dict[str, int] = {
     "apps": 2,  # PAR-9: 26 rows paid by task 3950 with the six tools of studio-apps (28 to 2). The model call and the tool call of the cc bridge wait for an owner ruling on their kind.
     "agents": 20,
     "chat": 28,  # CO-11 (task 3510) added Pin and Unpin of a chat (25 to 27). CO-2b (task 3588) added the topic read, the topic create and the move of a chat (27 to 30). CO-11b (task 3563) paid both pin routes with pin_chat (30 to 28). P-7 pays the three topic routes with the chat tool of the chat list, a separate slice. Paid by task 3115.
-    "shell": 7,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2).
+    "shell": 9,  # PKG-17c-1 (task 2969) added the PUT of the org shell layout. PAR-8b (task 3903) paid 9 rows with the Home tools (16 to 7). The two rows of the approval queue wait for the owner (chat_parity.md section 7, item 6). The intent row and the four push rows wait for an owner ruling on their kind (section 2). WS-AP AP-2a added GET /api/shell/waiting and its /count (7 to 9). The chat tool my_waits of AP-10 (task 1860) pays both. Paid by task 1860.
     "settings": 30,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write. SW-31b added the guidance read and save, paid by SW-31c (task 1531). PKG-20 added the appearance read and write. Paid by task 3108.
     "admin": 12,  # ACC-2 (task 3988) added the read and the write of who can use an integration (10 to 12). The chat tool is ACC-4 (task 3990), which waits for the owner decision of PAR-6b (task 3932). Paid by task 3990. PAR-2a (task 3102) paid the member list, the requests, the role list, the status, the roles and the answer of a request (36 to 30). PAR-4a (task 3107) paid the six group rows, the features read, the role create and delete, the access read, the overrides write, the removal preview and the org rename (30 to 17). PAR-4c (task 3935) paid the remove and the purge, and PAR-4d (task 3936) paid the five seat rows with read_seats and set_seat (17 to 10).
     "integrations": 4,  # MCP-P1b-1 added the app-request list and decision (task 1703). EA-17c-2 (task 1814) added the PATCH of Change access. PAR-6a (task 3109) paid 17 rows with the org-admin pack and made the MCP add a secret exemption (22 to 4). The grant change, the decision, the plugin install and the custom API wait for the owner (task 3932).
