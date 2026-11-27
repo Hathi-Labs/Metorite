@@ -559,6 +559,19 @@ class FlagRegistry(BaseSettings):
     # find_engine.md sections 6 and 8.
     chat_search_orgs: str = ""
 
+    # ── One send runs once (HRD-17a, chat_failure_modes.md §6) ─────────────
+    #
+    # CHAT_SEND_ONCE_ORGS: a comma list of organization ids, or `*`. Empty:
+    # off, the default, and the run route makes no Redis call for it. On, a
+    # send that the browser sends again with the same `user_message_id`
+    # starts no second run. It replays the first run, or answers that the
+    # run is final. The same id with other words gets 409 `send_id_reused`.
+    # The key is per org, thread, member and id, in tenant Redis. The one
+    # reader is `orchestrator.send_once.send_once_on`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). It calls no model.
+    # Fence: tests/unit/test_send_once.py.
+    chat_send_once_orgs: str = ""
+
     # ── The topics of the chat list (chat_organization.md §6, WS-CO CO-2a) ─
     #
     # `chat_topics_orgs` lists the organization ids where the routes of
