@@ -6,9 +6,10 @@ goes when an MCP server is attached. Spec: ``project-docs/specs/chat_connected_s
 ``_inject_mcp_servers``, ``attach_mcp_tools``, ``RunScopedMCPTool`` and ``McpPermissionGate``.
 
 A scripted run plays known-good plans, so it proves the PATH and the CHECKS, never the
-model's choice. This file proves four things:
+model's choice. This file proves five things:
 
-* (a) the four chats pass a scripted run, through the real orchestrator run;
+* (a) the four chats pass a scripted run, through the real orchestrator run, and no
+  Redis command of it leaves the process (``evals/routing/memory_redis.py``);
 * (b) each check FAILS on a broken path (a mutation for each case);
 * (c) the words of each chat match the packs that the chat expects, and no more;
 * (d) the set has NO live arm, and the scripted run reads no vendor key.
@@ -39,6 +40,7 @@ from evals.one_assistant_measure import run
 from evals.one_assistant_measure.scenarios import Plan, all_scenarios, scenario
 from evals.one_assistant_measure.scenarios_mcp import MCP_SCENARIOS
 from evals.one_assistant_measure.scenarios_work import WORK_SCENARIOS
+from evals.routing import memory_redis
 
 IDS = ("csy_only_server", "csy_metorite", "csy_miss", "csy_mail")
 EVALS = Path(__file__).resolve().parents[2] / "evals" / "one_assistant_measure"
@@ -114,6 +116,115 @@ def test_the_run_took_the_real_mcp_path(scripted) -> None:
     assert rows["csy_only_server"]["cards"] == 0
     assert "2026-03-02" in rows["csy_only_server"]["answer"]
     assert rows["csy_only_server"]["sent"] == [] and rows["csy_miss"]["sent"] == []
+
+
+# ── (a2) no Redis command leaves the process ────────────────────────────────
+
+
+def _spy_on_the_wire(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record, and refuse, what a REAL redis-py client does under its command methods:
+    a TCP or socket connect, and a send on a connection that is already open."""
+    import redis
+    import redis.asyncio
+
+    reached: list[str] = []
+
+    def spy(owner: type, name: str, is_async: bool) -> None:
+        def note() -> None:
+            reached.append(f"{owner.__module__}.{owner.__name__}.{name}")
+            raise redis.exceptions.ConnectionError("the test refuses a real Redis")
+
+        async def refuse_async(*_a: Any, **_k: Any) -> Any:
+            note()
+
+        def refuse(*_a: Any, **_k: Any) -> Any:
+            note()
+
+        monkeypatch.setattr(owner, name, refuse_async if is_async else refuse)
+
+    for module, is_async in ((redis.asyncio.connection, True), (redis.connection, False)):
+        spy(module.Connection, "_connect", is_async)
+        spy(module.UnixDomainSocketConnection, "_connect", is_async)
+        spy(module.AbstractConnection, "send_packed_command", is_async)
+    return reached
+
+
+def test_no_redis_command_reaches_a_real_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The four chats send no command to the Redis that ``redis_url`` names. The harness
+    holds the relay marks and the activity writes in memory, and the fixture holds the use
+    counters of CSY-8. The mail chat writes the "left out" counter. Mutation: drop
+    ``memory_redis.install`` from the harness → the spy sees a connect → red. Mutation:
+    drop the ``mcp_use._client`` line from the fixture → its counter stays empty → red."""
+    reached = _spy_on_the_wire(monkeypatch)
+    servers: list[mx.FakeServer] = []
+    stores: list[Any] = []
+    real_server, real_store = mx.install, memory_redis.install
+
+    def server(*args: Any) -> mx.FakeServer:
+        servers.append(real_server(*args))
+        return servers[-1]
+
+    def store(mp: Any) -> Any:
+        stores.append(real_store(mp))
+        return stores[-1]
+
+    monkeypatch.setattr(mx, "install", server)
+    monkeypatch.setattr(memory_redis, "install", store)
+    _, problems = run.run_scripted(MCP_SCENARIOS)
+    assert reached == [], sorted(set(reached))
+    assert problems == [], problems
+
+    commands = [c for s in stores for c in s.commands]
+    # Not vacuous: the run did send the active mark, the live-run mark and the activity.
+    assert {"SET", "DEL", "HSET", "XADD"} <= {name for name, _ in commands}
+    assert [r for s in stores for r in s.refused] == []
+    # The use counters went to the fixture's own store, and not past it.
+    assert not [key for _, key in commands if ":mcp-" in key]
+    counted = {key for srv in servers if srv.counter for key in srv.counter.values}
+    assert any(f":mcp-left-out:{mx.SERVER}:mail:" in key for key in counted), counted
+
+
+def test_the_wire_spy_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control of the proof above: with no hold, a command of a real client is seen."""
+    import redis
+
+    reached = _spy_on_the_wire(monkeypatch)
+    with pytest.raises(redis.exceptions.ConnectionError):
+        redis.Redis(host="127.0.0.1", port=1).get("k")
+    assert reached
+
+
+def test_the_memory_redis_holds_each_command_and_refuses_the_rest() -> None:
+    """A client that exists BEFORE the hold is held too. A command with no answer, and a
+    connect, read as "no Redis"."""
+    import asyncio
+
+    import redis.asyncio
+
+    client = redis.asyncio.Redis(host="127.0.0.1", port=1, decode_responses=True)
+
+    async def use() -> None:
+        assert await client.set("a", 1, nx=True) is True
+        assert await client.set("a", 2, nx=True) is None
+        assert await client.get("a") == "1"
+        assert await client.hset("h", "f", "v") == 1
+        assert await client.hget("h", "f") == "v"
+        assert await client.xadd("s", {"k": "v"}) == "1-0"
+        pipe = client.pipeline()
+        pipe.get("a")
+        pipe.delete("a")
+        assert await pipe.execute() == ["1", 1]
+        with pytest.raises(redis.exceptions.ConnectionError):
+            await client.flushall()
+        with pytest.raises(redis.exceptions.ConnectionError):
+            await client.pubsub().subscribe("c")
+        with pytest.raises(redis.exceptions.ConnectionError):
+            await redis.asyncio.Connection(host="127.0.0.1", port=1).connect()
+
+    with pytest.MonkeyPatch.context() as mp:
+        held = memory_redis.install(mp)
+        asyncio.run(use())
+    assert ("GET", "a") in held.commands and "FLUSHALL" in held.refused
 
 
 # ── (b) each check fails on a broken path ────────────────────────────────────

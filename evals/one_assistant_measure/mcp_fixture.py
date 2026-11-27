@@ -10,7 +10,7 @@ each call, all by the real code: ``_tool_injection._inject_mcp_servers``,
 * the URL guard accepts the one local URL of the server (every other URL is checked),
 * a real MCP server answers on ``127.0.0.1`` in a thread, with one read-only tool,
 * the member's grant answers yes for this one server,
-* the daily use counter of CSY-8 writes to memory, never to a Redis of the machine.
+* the daily use counters of CSY-8 write to the fixture's own store.
 
 The server holds one fact, and only the server holds it. No chat reaches the network, no
 real server is named and no key is read. Nothing in this file calls a model.
@@ -48,12 +48,32 @@ def serves(query: str) -> str:
     return FACT if "c-17" in query.lower() or "circuit" in query.lower() else NOTHING
 
 
+class _MemoryCounter:
+    """The three Redis writes of ``mcp_use``, in memory."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    async def incr(self, key: str, amount: int = 1) -> int:
+        self.values[key] = int(self.values.get(key, 0)) + amount
+        return int(self.values[key])
+
+    async def expire(self, key: str, seconds: int) -> bool:
+        return True
+
+    async def set(self, key: str, value: Any, **_kw: Any) -> bool:
+        self.values[key] = value
+        return True
+
+
 @dataclass
 class FakeServer:
     """The state of the running fake: the queries that the SERVER received."""
 
     url: str
     calls: list[str] = field(default_factory=list)
+    #: The store of the daily use counter (CSY-8). :func:`install` sets it.
+    counter: _MemoryCounter | None = None
 
 
 def _free_port() -> int:
@@ -96,24 +116,6 @@ def running() -> Iterator[FakeServer]:
         thread.join(timeout=10)
 
 
-class _MemoryCounter:
-    """The three Redis writes of ``mcp_use``, in memory."""
-
-    def __init__(self) -> None:
-        self.values: dict[str, Any] = {}
-
-    async def incr(self, key: str, amount: int = 1) -> int:
-        self.values[key] = int(self.values.get(key, 0)) + amount
-        return int(self.values[key])
-
-    async def expire(self, key: str, seconds: int) -> bool:
-        return True
-
-    async def set(self, key: str, value: Any, **_kw: Any) -> bool:
-        self.values[key] = value
-        return True
-
-
 def install(mp: Any, org: str, stack: contextlib.ExitStack) -> FakeServer:
     """Wire the fake server into the run of *org*, on the monkeypatch *mp*.
 
@@ -133,7 +135,8 @@ def install(mp: Any, org: str, stack: contextlib.ExitStack) -> FakeServer:
     mp.setattr(settings, "maf_mcp_orgs", org)
     mp.setattr(settings, "connected_systems_orgs", org)
     mp.setattr(settings, "mcp_mail_precedence_orgs", "")
-    counter = TenantRedis(_MemoryCounter())
+    srv.counter = _MemoryCounter()
+    counter = TenantRedis(srv.counter)
     mp.setattr(mcp_use, "_client", lambda: counter)
     RegistrySpy([row(SERVER, org=org, url=srv.url)]).install(mp)
     real = outbound_guard.check_mcp_url

@@ -707,7 +707,7 @@ sets and a run with no packs. Those are not in this phase.
 
 ## CSY-3: the connected-systems chats (scripted only)
 
-**Status.** Built on 2026-11-16. The owning spec is
+**Status.** Built on 2026-11-27. The owning spec is
 `project-docs/specs/chat_connected_systems.md`, §8.2, row CSY-3. The set is
 `mcp`, in `scenarios_mcp.py`. It has NO live arm. A live run costs money, and
 the owner has not opened one.
@@ -731,6 +731,11 @@ still refuses every other `httpx` send.
 **The flags.** The fixture sets `MAF_MCP_ORGS` and `CONNECTED_SYSTEMS_ORGS`
 (CSY-1) for the eval org, in the eval process only. It holds
 `MCP_MAIL_PRECEDENCE_ORGS` (CSY-4) empty. It writes no flag on a box.
+
+**Redis.** A scripted run sends no command to the Redis that `redis_url`
+names. The routing harness holds each command in memory
+(`evals/routing/memory_redis.py`), for every set that uses it. The fixture
+holds the use counter in its own store.
 
 **The checks.** `connected_block`, `mcp_called`, `mcp_not_called`,
 `mcp_offered`, `server_after_metorite`, `no_mail_pack_with_mcp` and
@@ -778,4 +783,4 @@ proves these facts:
 
 ## Known limit of the scripted run
 
-`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database or Redis (`identity_pool`, `stream_relay`). Those tries come from the product imports on `main` and not from this harness. A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).
+`--scripted` makes no model call. Before task 3649 its import of the gateway loaded `litellm`, which fetched its price map from `raw.githubusercontent.com`. The package now sets `LITELLM_LOCAL_MODEL_COST_MAP=True` before that import (`__init__.py`). The scripted run still imports product code that can try a database (`identity_pool`). Those tries come from the product imports on `main` and not from this harness. The harness holds each Redis command in memory (`evals/routing/memory_redis.py`). A box with no database sees a connection timeout there, and it must keep the three database tests of `test_one_assistant_measure_2874.py` on a scratch database (`scripts/dev_db.sh`).
