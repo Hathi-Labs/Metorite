@@ -1,5 +1,7 @@
 # Email App — Master Plan (single source of truth)
 
+> **Dated 2026-11-27, the IMAP trash moves the right mail (task 4025, §18.13.3).** Built, not merged. No flag, because it fixes a data loss.
+>
 > **Dated 2026-11-26, the chat asks which draft (task 3977, §18.13).** Merged in #2878, dark behind `CHAT_DRAFT_CHOICE_ORGS`, and task 4026 closes the gaps before the flip (§18.13.2). A trash of a draft reads Drafts, and the answer names each draft that stays.
 >
 > **Dated 2026-11-26, Discard asks about the earlier draft (task 3978, §18.13.1).** Merged in #2893, dark behind the same flag. The card of `edit_draft` and the new-mail card ask "Keep the earlier draft, or delete it?".
@@ -21756,8 +21758,8 @@ With `?report=true` it answers 200 and `{id, provider, reason, discarded}`. `pro
 loads, when it does not authenticate, or when its trash raises. `reason` is one fixed word.
 
 A failure after the provider accepted (the new id, or the saved tokens) keeps `confirmed`.
-The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a STORE that
-is not OK. So an IMAP draft reads `not_confirmed`.
+The IMAP trash raises for an id that is no UID, such as `draft-Drafts`, and for a trash that
+the server did not confirm (§18.13.3). So an IMAP draft reads `not_confirmed`.
 
 **Known limits.**
 
@@ -21766,8 +21768,8 @@ is not OK. So an IMAP draft reads `not_confirmed`.
   sync. The answer says so, and it does not count it.
 - A call with more than 20 ids is a clean-up of mail, and it keeps the card of before.
 - `bulk_manage_inbox` does not run this check.
-- The IMAP trash copies to Trash with the Trash folder open, so the copy can take the wrong
-  message. That is a defect of before, outside this slice.
+- The IMAP trash copied to Trash with the Trash folder open, so the copy took the wrong
+  message. Task 4025 fixes it (§18.13.3).
 
 **Fences.** `tests/unit/test_email_draft_choice.py` and
 `src/components/email/draftTrashReceipt.test.ts`.
@@ -21956,6 +21958,54 @@ writes nothing into the record.
 `src/components/email/draftTrashReceipt.test.ts`.
 
 **Verify with.** `uv run pytest tests/unit/test_email_draft_choice.py -q`
+
+#### 18.13.3 The IMAP trash moves the right mail (2026-11-27, task 4025)
+
+**Status:** BUILT on branch `imap4025`, not merged. No migration and no flag, because this is a
+fix of a data loss (rung 0).
+
+**The defect.** `IMAPProvider.trash_message` ran UID COPY with the Trash folder selected. A UID
+names a mail in one folder only, so the copy read a Trash mail, not the INBOX mail. Then it
+flagged the INBOX UID `\Deleted` and sent a plain EXPUNGE. So the INBOX mail was lost, and a
+Trash mail could get a second copy.
+
+The plain EXPUNGE also removed each mail that another client had flagged `\Deleted`. The old
+code also deleted when no Trash folder existed or the copy failed.
+
+**The rule now** (`_trash_inbox_uid` in `providers/imap.py`):
+
+1. LIST finds the Trash folder. A folder with the SPECIAL-USE flag `\Trash` wins. Else the first
+   name of `TRASH_FOLDER_NAMES` that LIST shows wins. LIST selects no folder.
+2. The provider selects INBOX for each later command. A UID SEARCH confirms that the UID is in
+   INBOX.
+3. With MOVE, one UID MOVE runs. Without MOVE, UID COPY runs, then a STORE of `\Deleted` on that
+   UID. With UIDPLUS, a UID EXPUNGE of that UID follows.
+4. With neither MOVE nor UIDPLUS, the copy is in Trash and the original stays flagged
+   `\Deleted`. The next expunge of any client removes it. A plain EXPUNGE never runs, because
+   it removes mail that another client flagged.
+5. The name of the Trash folder goes in quotes, so `Deleted Items` works.
+6. The provider raises, and removes and flags nothing, in three cases. No Trash folder exists.
+   The UID is not in INBOX. The copy or the move is not OK.
+7. The trash route reads a raise as `not_confirmed` (§18.13). `bulk_apply` puts the UID in
+   `failed_out`. A rule action keeps its row as it was.
+8. It answers None. The copy in Trash has a new UID, but each IMAP id names a mail of INBOX.
+
+**Known limits.** These are not fixed here.
+
+- A STORE that fails after a good copy raises, and the copy stays in Trash. A retry of the bulk
+  path then puts a second copy in Trash. No mail is lost.
+- A mail that another client expunges between the SEARCH and the MOVE reads as trashed.
+- `modify_message` does not check the answer of its STORE, and the base `move_to_folder` is a
+  no-op for IMAP. Each says success with no change on the server. No mail is lost.
+- Each IMAP draft has the id `draft-<folder>`, so two drafts share one id. The draft clean-up of
+  `drafting.py` deletes its mirror row when the trash raises. The draft stays on the server.
+- A call that `asyncio.wait_for` stops leaves its thread on the shared connection. The next
+  call can then run on the same connection at the same time.
+
+**Fence.** `tests/unit/test_email_imap_trash.py`. Its fake server keeps a UID set for each folder
+and a selected folder. The test failed on the code of before (17 of 18 cases).
+
+**Verify with.** `uv run pytest tests/unit/test_email_imap_trash.py -q`
 
 ## 19. Send later (2026-10-21)
 
