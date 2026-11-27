@@ -510,4 +510,19 @@ describe("Languages I speak (PZ-53)", () => {
     expect(src).toContain('e.key === "ArrowUp"');
     expect(src).toContain("onChange={(languages) => v.onStyle({ languages })}");
   });
+
+  // vitest has no DOM, so this pins the wiring. A browser rig proved the focus.
+  it("keeps the focus through a save, for Alt and arrow, Remove, Add and drag", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    // Each move names the button that takes the focus back.
+    expect(src).not.toMatch(/move\((i|from), (i - 1|i \+ 1|i)\);/);
+    expect(src).toContain('void move(i, i - 1, held ?? "up")');
+    expect(src).toContain('void move(i, i + 1, held ?? "down")');
+    expect(src).toContain('void move(from, i, "up")');
+    expect(src).toContain("refocus.current = focusAfterRemove(languages, i)");
+    expect(src).toContain('refocus.current = [{ tag: x, act: "up" }]');
+    // A disabled button cannot take the focus, so the effect waits for the end of the save.
+    expect(src).toMatch(/if \(busy\) return;\s+const wants = refocus\.current;/);
+    expect(src).toContain("}, [order, busy]);");
+  });
 });

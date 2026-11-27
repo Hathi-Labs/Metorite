@@ -62,6 +62,9 @@ import {
   errorText,
   fallbackAddress,
   fetchBlock,
+  focusAfterRemove,
+  pickLanguageButton,
+  type LanguageFocus,
   fetchExport,
   fetchProfileAndGate,
   fetchSummaries,
@@ -697,24 +700,31 @@ function LanguageList({
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const [said, setSaid] = useState("");
-  const list = useRef<HTMLOListElement>(null);
-  // A moved row is a moved DOM node, and a browser drops its focus. The
-  // button that the member used takes it back once the new order draws.
-  const refocus = useRef<{ tag: string; act: string } | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  // A save disables every button, and a moved or removed row leaves its
+  // place, so a browser drops the focus. Each change names the buttons that
+  // may take it back. They get it when the save ends, worked or not.
+  const refocus = useRef<LanguageFocus[] | null>(null);
   const order = languages.join(",");
   useEffect(() => {
-    const want = refocus.current;
+    if (busy) return;
+    const wants = refocus.current;
     refocus.current = null;
-    if (!want || !list.current) return;
-    const rows = list.current.querySelectorAll<HTMLButtonElement>(`[data-tag="${want.tag}"]`);
-    const same = Array.from(rows).find((b) => b.dataset.act === want.act && !b.disabled);
-    (same ?? Array.from(rows).find((b) => !b.disabled))?.focus();
-  }, [order]);
+    const root = box.current;
+    if (!wants || !root) return;
+    // The member went to another control during the save. Leave them there.
+    const at = document.activeElement;
+    if (at && at !== document.body && !root.contains(at)) return;
+    const rows = Array.from(root.querySelectorAll<HTMLButtonElement>("button[data-tag]"));
+    // No wanted row is left (the list is empty, or an add failed): the Add menu.
+    const add = root.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]');
+    (pickLanguageButton(rows, wants) ?? add)?.focus();
+  }, [order, busy]);
 
-  const move = async (from: number, to: number, act?: string) => {
+  const move = async (from: number, to: number, act: LanguageFocus["act"]) => {
     if (busy || to < 0 || to >= languages.length || from === to) return;
     const tag = languages[from];
-    if (act) refocus.current = { tag, act };
+    refocus.current = [{ tag, act }];
     if (await onChange(moveLanguage(languages, from, to))) {
       setSaid(`${languageName(tag)} is now number ${to + 1}.`);
     }
@@ -722,6 +732,7 @@ function LanguageList({
   const remove = async (i: number) => {
     if (busy) return;
     const name = languageName(languages[i]);
+    refocus.current = focusAfterRemove(languages, i);
     if (await onChange(removeLanguage(languages, i))) setSaid(`${name} removed.`);
   };
   const full = languages.length >= CAPS.languages;
@@ -729,7 +740,7 @@ function LanguageList({
   const menu = choices.map((t) => ({ value: t, label: `${LANGUAGES[t]} (${t})` }));
 
   return (
-    <div className="space-y-2" data-testid="language-list">
+    <div ref={box} className="space-y-2" data-testid="language-list">
       <div className="flex items-center justify-between">
         <span id="assistant-languages-label" className="text-xs font-medium text-foreground">
           Languages I speak
@@ -742,7 +753,7 @@ function LanguageList({
           <span>The assistant follows the language of your message. Add a language to set an order.</span>
         </div>
       ) : (
-        <ol ref={list} aria-labelledby="assistant-languages-label" className="space-y-1.5">
+        <ol aria-labelledby="assistant-languages-label" className="space-y-1.5">
           {languages.map((tag, i) => (
             <li
               key={tag}
@@ -767,16 +778,18 @@ function LanguageList({
                 const from = dragFrom;
                 setDragFrom(null);
                 setOver(null);
-                if (from !== null) void move(from, i);
+                if (from !== null) void move(from, i, "up");
               }}
               onKeyDown={(e) => {
                 if (!e.altKey) return;
+                // The button that has the focus keeps it on the moved row.
+                const held = (e.target as HTMLElement).dataset.act as LanguageFocus["act"] | undefined;
                 if (e.key === "ArrowUp") {
                   e.preventDefault();
-                  void move(i, i - 1);
+                  void move(i, i - 1, held ?? "up");
                 } else if (e.key === "ArrowDown") {
                   e.preventDefault();
-                  void move(i, i + 1);
+                  void move(i, i + 1, held ?? "down");
                 }
               }}
               className={`flex min-h-13 items-center gap-2 rounded-lg border bg-background py-1 pl-2 pr-1 ${
@@ -838,6 +851,7 @@ function LanguageList({
         disabled={busy || full || choices.length === 0}
         onChange={(x) => {
           if (!x) return;
+          refocus.current = [{ tag: x, act: "up" }];
           void onChange(addLanguage(languages, x)).then((ok) => {
             if (ok) setSaid(`${languageName(x)} added as number ${languages.length + 1}.`);
           });

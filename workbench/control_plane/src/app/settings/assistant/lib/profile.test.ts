@@ -4,6 +4,8 @@ import {
   CAPS,
   LANGUAGES,
   addLanguage,
+  focusAfterRemove,
+  pickLanguageButton,
   languageName,
   languagesToAdd,
   moveLanguage,
@@ -413,5 +415,36 @@ describe("languages I speak (PZ-52, PZ-53)", () => {
   it("offers the languages that the list lacks, in picker order", () => {
     expect(languagesToAdd(["hi", "en"])).toEqual(["kn", "ta", "te", "mr", "bn", "gu", "ml"]);
     expect(languagesToAdd(Object.keys(LANGUAGES))).toEqual([]);
+  });
+});
+
+describe("the focus after a change of the language list (PZ-53)", () => {
+  const button = (tag: string, act: string, disabled = false) => ({ dataset: { tag, act }, disabled });
+  const rows = [
+    button("en", "up", true), button("en", "down"), button("en", "remove"),
+    button("hi", "up"), button("hi", "down", true), button("hi", "remove"),
+  ];
+
+  it("wants the removed row (a failed save), then the next row, else the one before", () => {
+    expect(focusAfterRemove(["en", "hi", "kn"], 1).map((w) => w.tag)).toEqual(["hi", "kn"]);
+    expect(focusAfterRemove(["en", "hi"], 1)).toEqual([
+      { tag: "hi", act: "remove" },
+      { tag: "en", act: "remove" },
+    ]);
+    expect(focusAfterRemove(["en"], 0).map((w) => w.tag)).toEqual(["en"]);
+  });
+
+  it("takes the wanted button of the first wanted row that the list holds", () => {
+    expect(pickLanguageButton(rows, [{ tag: "hi", act: "up" }])).toBe(rows[3]);
+    expect(pickLanguageButton(rows, [{ tag: "kn", act: "remove" }, { tag: "en", act: "remove" }])).toBe(rows[2]);
+  });
+
+  it("takes another button of the row when the wanted one is disabled", () => {
+    expect(pickLanguageButton(rows, [{ tag: "en", act: "up" }])).toBe(rows[1]);
+  });
+
+  it("answers null when the list holds no wanted row", () => {
+    expect(pickLanguageButton(rows, [{ tag: "ta", act: "up" }])).toBeNull();
+    expect(pickLanguageButton([], focusAfterRemove(["en"], 0))).toBeNull();
   });
 });

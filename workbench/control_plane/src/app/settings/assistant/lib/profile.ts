@@ -413,6 +413,35 @@ export function removeLanguage(list: readonly string[], index: number): string[]
   return list.filter((_, i) => i !== index);
 }
 
+/** One row button that may take the focus after a change of the list. */
+export interface LanguageFocus {
+  tag: string;
+  act: "up" | "down" | "remove";
+}
+
+/** After a remove: the same row if the save fails, else the next row, else the one before. */
+export function focusAfterRemove(list: readonly string[], index: number): LanguageFocus[] {
+  return [list[index], list[index + 1] ?? list[index - 1]]
+    .filter((tag): tag is string => tag !== undefined)
+    .map((tag) => ({ tag, act: "remove" }));
+}
+
+/**
+ * The button that takes the focus. The first wanted row that the list holds
+ * wins: its wanted button, or its first button that is not disabled. Null
+ * when the list holds no wanted row.
+ */
+export function pickLanguageButton<
+  B extends { dataset: { tag?: string; act?: string }; disabled: boolean },
+>(buttons: readonly B[], wants: readonly LanguageFocus[]): B | null {
+  for (const want of wants) {
+    const row = buttons.filter((b) => b.dataset.tag === want.tag && !b.disabled);
+    const hit = row.find((b) => b.dataset.act === want.act) ?? row[0];
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** The picker languages that the list does not hold yet, in the picker order. */
 export function languagesToAdd(list: readonly string[]): string[] {
   return Object.keys(LANGUAGES).filter((t) => !list.includes(t));
