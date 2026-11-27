@@ -839,6 +839,25 @@ class TestTheSettingOnARealDatabase:
         approved = await _approve(live, REVIEWER, again)
         assert approved.status_code == 200, approved.text
 
+    async def test_an_archived_project_refuses_the_approve(self, live):
+        """ARC-2b: the approve moves the task to done, so an archived project
+        refuses it (409), and the wait stays."""
+        from gateway.routes.projects.core import ARCHIVED_PROJECT_REFUSAL
+
+        p = _fresh(live, "sw18a archived")
+        await _save(live, LEAD, _policy("review_required", "project", p.id, True))
+        task = live.task(p.id, p.doing, "sw18a archived approve")
+        await _agent_done(live, task, p.done)
+        seen = _row(live, task).agent_review_requested_at
+        assert seen is not None
+        live.seeder.one("UPDATE pm_projects SET archived_at = now() WHERE id = CAST(:p AS uuid)"
+                        " RETURNING id", p=p.id)
+        refused = await _approve(live, LEAD, task)
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["detail"] == ARCHIVED_PROJECT_REFUSAL
+        row = _row(live, task)
+        assert row.agent_review_requested_at == seen and str(row.status_id) == p.review
+
     async def test_the_old_setting_route_is_gone(self, live):
         sent = await _person(live, LEAD, "PUT", OLD_SETTING.format(project_id=live.team),
                              body={"needs_review": False})

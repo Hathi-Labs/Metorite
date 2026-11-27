@@ -58,6 +58,8 @@ GUARDED: dict[str, tuple[str, str]] = {
     "DELETE /projects/comments/{activity_id}": ("activities", "delete_comment"),
     "POST /projects/activities/{activity_id}/revert": ("activities", "revert_change"),
     "POST /projects/tasks/{task_id}/check-result": ("checks", "report_check"),
+    # WS-MCP SW-18a: the approve moves the task to done.
+    "POST /projects/tasks/{task_id}/agent-review": ("agent_review", "decide_agent_review"),
     "PUT /projects/tasks/{task_id}/package-fields/{install_id}/{field_key}": (
         "package_fields", "set_task_package_field"),
     "PUT /projects/tasks/{task_id}/epic-contract": ("epic_contract", "put_epic_contract"),

@@ -87,6 +87,12 @@ DECISION = (
     "never answers for that person."
 )
 
+#: WS-MCP SW-18a: a person accepts agent work.
+AGENT_REVIEW = (
+    "SW-18a: a person accepts agent work in Projects. An agent never approves "
+    "agent work, its own or another agent's, so the door has no op for it."
+)
+
 #: The door never deletes a record for good.
 HARD_DELETE = (
     "This route deletes a record for good. The door never does that. A member "
@@ -348,6 +354,8 @@ PROJECTS_DOOR = App(
         Route("POST", "/projects/tasks/{task_id}/claim", "claim_task", "B", off_door=TYPED),
         Route("POST", "/projects/tasks/{task_id}/check-result", "report_check", "B",
               off_door=TYPED),
+        Route("POST", "/projects/tasks/{task_id}/agent-review", "approve_agent_work", "C",
+              off_door=AGENT_REVIEW),
         Route("POST", "/projects/tasks/{task_id}/links", "link_tasks", "B", off_door=TYPED),
         Route("DELETE", "/projects/tasks/{task_id}/links/{link_id}", "unlink_tasks", "B",
               off_door=TYPED),

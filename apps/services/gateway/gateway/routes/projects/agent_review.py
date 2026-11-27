@@ -73,6 +73,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    assert_task_project_open,
     emit,
     load_default_status,
     load_visible_task,
@@ -507,8 +508,8 @@ async def decide_agent_review(
     """A person approves the agent work that waits on a task (SW-18a).
 
     The order: the flag (404), a person (403), the visibility (404, so a task
-    of another tenant or a hidden task is a task that does not exist),
-    ``If-Match`` when sent (412), a wait (409 :data:`NOT_WAITING`), the
+    of another tenant or a hidden task is a task that does not exist), an
+    archived project (409, ARC-2b), ``If-Match`` when sent (412), a wait (409 :data:`NOT_WAITING`), the
     authority (403), then the writes. The approve clears the wait,
     moves the task to done and closes the open agent run, in one
     transaction. A second approve finds no wait: 409, and nothing changes.
@@ -532,6 +533,9 @@ async def decide_agent_review(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
+        # ARC-2b: the approve moves the task to done, so an archived project
+        # refuses it (409), as the PATCH and the Check report do.
+        await assert_task_project_open(db, before)
         if isinstance(if_match, str):
             require_precondition(before, if_match, row_to_dict(before, TaskModel))
         # The wait before the authority: an approve clears the reviewer, so a
