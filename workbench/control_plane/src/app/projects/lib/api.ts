@@ -12,6 +12,7 @@ import {
   type AgentState,
   type AgentPlanSummary,
   type AgentWaiting,
+  type AgentStrandFacts,
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
@@ -19,6 +20,7 @@ import {
   type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
+  stampStrands,
 } from "./agentRuns";
 import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
 import {
@@ -1953,6 +1955,12 @@ export interface TaskRow {
    */
   agent_waiting?: Pick<AgentWaiting, "on" | "until"> | null;
   /**
+   * Task 1045c — the open strand of the run (`stranded` of the runs wire).
+   * The gateway fills it from the open run of the task (task 1045d,
+   * `filters.stranded_of`). Null when the run has no open strand.
+   */
+  agent_stranded?: AgentStrandFacts | null;
+  /**
    * SW-32 (task 1049) — the plan of the open run, as a count and the step in
    * progress. Null while the run has no plan.
    */
@@ -2403,6 +2411,9 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       res.status
     );
   }
+
+  // Task 1045c: fix the time of each strand now, before a cache keeps it.
+  stampStrands(body, Date.now());
 
   /**
    * ⚠️ A WRITE DROPS EVERY CACHED PROJECTS READ.
