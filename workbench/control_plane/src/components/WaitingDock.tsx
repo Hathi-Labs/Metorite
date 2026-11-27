@@ -47,9 +47,10 @@ function cardIn(thread: HTMLElement, row: WaitingRow): HTMLElement | null {
   return el && row.inner ? el.querySelector<HTMLElement>(row.inner) : el;
 }
 
-/** The row's frame, the same in each state, so its height never changes. */
+/** The row's frame, the same in each state, so its height never changes. A
+ *  touch screen in the glass look gives Review 40 px, so the row grows to fit. */
 const FRAME =
-  "max-w-3xl mx-auto mb-2 flex h-8 min-w-0 items-center gap-2 rounded-lg border px-3 text-[11px] glass:rounded-[16px] glass:border-transparent glass:px-4";
+  "max-w-3xl mx-auto mb-2 flex h-8 min-w-0 items-center gap-2 rounded-lg border px-3 text-[11px] glass:rounded-[16px] glass:border-transparent glass:px-4 glass:pointer-coarse:h-11";
 
 export default function WaitingDock({
   row,
