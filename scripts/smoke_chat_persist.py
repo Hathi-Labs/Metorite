@@ -43,12 +43,25 @@ cookie name, and the secret is the workbench ``AUTH_SECRET``. No cookie file
 exists on the box, and the session never leaves the process. Do not put a
 secret or a token in the repo.
 
+The model turn (CIV-SMOKE-TURN, task 4061). Between step 3 and step 4,
+``scripts/smoke_chat_turn.py`` runs one short real turn in the same session,
+when ``SMOKE_CHAT_TURN`` is on. Its lines start with ``T``. It is off by
+default, and then it prints one ``skip T0`` line. On with no
+``SMOKE_CHAT_TURN_CAP_USD`` is ``REFUSED`` and exit 2, before anything is
+written. A spend at or over the cap is a ``WARNING T1`` line and no turn.
+
+``SMOKE_TURN_ONLY=1`` (``deploy/smoke_chat.sh --turn-only``) runs the turn
+alone: step 1, the turn, step 4, and ``PASS chat turn on``. It skips the
+sweep and steps 2 and 3. With the switch off, it writes nothing.
+
 Exit 0 when all four steps pass, 1 when a step fails, 2 when the environment
-is wrong. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 900 s
+is wrong. A turn failure is exit 1. A skipped turn and a switch that is off
+do not change the exit code. Every deploy runs it (S16): ``deploy/smoke_chat.sh`` mints a 900 s
 session in memory on the box, and ``deploy.yml`` goes red when it fails.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -57,6 +70,7 @@ import urllib.error
 import urllib.request
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 TIMEOUT_S = 15
 SWEEP_AGE_S = 3600   # a session older than this is a leftover
@@ -135,11 +149,29 @@ def _sweep(base: str, cookie: str, now: float | None = None) -> None:
     print(f"ok   0 swept {deleted} old session(s)" + (f", {left} left" if left else ""))
 
 
+def _turn_module():
+    """The sibling ``smoke_chat_turn.py``, by its path, so a test that loads
+    this file by path loads the same module."""
+    path = Path(__file__).resolve().with_name("smoke_chat_turn.py")
+    spec = importlib.util.spec_from_file_location("smoke_chat_turn", path)
+    mod = importlib.util.module_from_spec(spec)
+    # A dataclass reads its module from sys.modules.
+    sys.modules["smoke_chat_turn"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main() -> int:
     base = _env("SMOKE_BASE_URL").rstrip("/")
     cookie = _env("SMOKE_COOKIE")
     email = _env("SMOKE_MEMBER_EMAIL").lower()
     org_slug = _env("SMOKE_ORG_SLUG")
+    turn = _turn_module()
+    cfg = turn.read_config(os.environ)
+    turn_only = os.environ.get("SMOKE_TURN_ONLY", "").strip() == "1"
+    if cfg.refusal:
+        print(f"REFUSED T0 turn: {cfg.refusal} Nothing was written.")
+        return 2
 
     status, me = _call(base, cookie, "GET", "/api/auth/me")
     who = str((me or {}).get("email") or "").lower() if isinstance(me, dict) else ""
@@ -149,8 +181,13 @@ def main() -> int:
               f"not {email} in {org_slug}. Nothing was written.")
         return 2
 
-    _sweep(base, cookie)
+    if turn_only and not cfg.on:
+        print("skip T0 turn: SMOKE_CHAT_TURN is off. No model turn ran.")
+        return 0
+    if not turn_only:
+        _sweep(base, cookie)
 
+    turn_rc = 0
     sid = str(uuid.uuid4())
     mid = f"smoke-{uuid.uuid4().hex[:12]}"
     text = f"S15 smoke {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}"
@@ -163,26 +200,36 @@ def main() -> int:
             _fail("1 create session", status, body)
         print("ok   1 create session")
 
-        status, body = _call(base, cookie, "POST", f"/api/chat/sessions/{sid}/messages", [{
-            "id": mid, "role": "user", "content": text,
-            "timestamp": int(time.time() * 1000), "tool_events": [],
-            "progress_lines": [], "agent_state": None, "custom_events": [],
-        }])
-        if status != 200 or not isinstance(body, dict) or body.get("saved") != 1:
-            _fail("2 save one row", status, body)
-        print("ok   2 save one row (saved: 1)")
+        if not turn_only:
+            status, body = _call(base, cookie, "POST", f"/api/chat/sessions/{sid}/messages", [{
+                "id": mid, "role": "user", "content": text,
+                "timestamp": int(time.time() * 1000), "tool_events": [],
+                "progress_lines": [], "agent_state": None, "custom_events": [],
+            }])
+            if status != 200 or not isinstance(body, dict) or body.get("saved") != 1:
+                _fail("2 save one row", status, body)
+            print("ok   2 save one row (saved: 1)")
 
-        status, body = _call(base, cookie, "GET", f"/api/chat/sessions/{sid}/messages")
-        rows = body if isinstance(body, list) else []
-        if status != 200 or [(r.get("id"), r.get("content")) for r in rows] != [(mid, text)]:
-            _fail("3 read it back", status, body)
-        print("ok   3 read it back")
+            status, body = _call(base, cookie, "GET", f"/api/chat/sessions/{sid}/messages")
+            rows = body if isinstance(body, list) else []
+            if status != 200 or [(r.get("id"), r.get("content")) for r in rows] != [(mid, text)]:
+                _fail("3 read it back", status, body)
+            print("ok   3 read it back")
+
+        # The model turn, in this session, so step 4 deletes it too.
+        turn_rc = turn.run(base, cookie, sid, cfg, _call)
     finally:
         status, body = _call(base, cookie, "DELETE", f"/api/chat/sessions/{sid}")
         if status not in (200, 204):
             print(f"WARN 4 delete: HTTP {status} {str(body)[:200]} (session {sid})")
         else:
             print("ok   4 delete session")
+    # No PASS line after a red turn. deploy.yml reads the PASS line as green.
+    if turn_rc:
+        return 1
+    if turn_only:
+        print(f"PASS chat turn on {base} as {email}")
+        return 0
     print(f"PASS chat persistence on {base} as {email}")
     return 0
 

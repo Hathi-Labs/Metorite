@@ -2175,13 +2175,14 @@ jobs:
       && needs.deploy.result == 'success'
       && (needs.pull-delivery.result == 'success' || needs.pull-delivery.result == 'skipped') }}
     # A BACKSTOP, sized from the parts. deploy/smoke_chat.sh bounds itself at
-    # 935 s (its header gives the sum), so one ssh gets 990 s + 10 s grace.
-    #   3 attempts, each dropped just before its timeout      3 x 1000   3000 s
+    # 1175 s (its header gives the sum, with the dark model turn of task
+    # 4061), so one ssh gets 1230 s + 10 s grace.
+    #   3 attempts, each dropped just before its timeout      3 x 1240   3720 s
     #   the H-142 connect budget, and one probe past it       300 + 90    390 s
     #   the naps between attempts                             20 + 40      60 s
-    #   = 3450 s, about 58 min, under 60.
+    #   = 4170 s, about 70 min, under 72.
     # A timeout of one ssh never retries (below), so a real run is far shorter.
-    timeout-minutes: 60
+    timeout-minutes: 72
     steps:
       # CIV-30: the smoke script of the commit that the deploy shipped.
       - uses: actions/checkout@v4
@@ -2209,9 +2210,9 @@ jobs:
 
           # The smoke prints this line only when all four steps passed.
           SMOKE_DONE="PASS chat persistence on"
-          # The script's own bound is 935 s. This is a little more, so the
+          # The script's own bound is 1175 s. This is a little more, so the
           # script always reports first.
-          SMOKE_SSH_TIMEOUT=990
+          SMOKE_SSH_TIMEOUT=1230
 
           # The smoke did not run to an answer. Green with a warning: only a
           # smoke that RAN and failed is red.
@@ -2252,13 +2253,13 @@ jobs:
             # own lines too, so a drop after a FAIL line must not read as a
             # blip. Red at once, before the retry and the no-verdict tests.
             if grep -q '^FAIL ' /tmp/smoke.log; then
-              echo "❌ Chat smoke FAILED: a step failed before ssh dropped (exit $rc). Chat does not save on production."
+              echo "❌ Chat smoke FAILED: a step failed before ssh dropped (exit $rc). Chat does not save on production, or the model turn failed (a T line)."
               echo "   The release is live. Fix forward (R6). Read the step line above."
               exit 1
             fi
             case "$rc" in
               1)
-                echo "❌ Chat smoke FAILED: a step failed. Chat does not save on production."
+                echo "❌ Chat smoke FAILED: a step failed. Chat does not save on production, or the model turn failed (a T line)."
                 echo "   The release is live. Fix forward (R6). Read the step line above."
                 exit 1 ;;
               2)
@@ -2275,7 +2276,7 @@ jobs:
                 echo "❌ Chat smoke FAILED: exit 0 with no PASS line. The smoke did not prove a save."
                 exit 1 ;;
               124|137)
-                # ⏱ A TIMEOUT, not a drop. The script bounds itself at 935 s,
+                # ⏱ A TIMEOUT, not a drop. The script bounds itself at 1175 s,
                 # so the session stalled and nobody knows how far the smoke
                 # got. No retry: it could run beside the first one.
                 no_verdict "the smoke did not report in ${SMOKE_SSH_TIMEOUT}s (timeout, exit $rc)" ;;
