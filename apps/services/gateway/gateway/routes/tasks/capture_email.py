@@ -987,6 +987,25 @@ class CreateCommitmentRequest(BaseModel):
     body: str = ""
     reply_to_message_id: str | None = None
     draft: CaptureDraftModel
+    # Task 4015. The id of the sent mail that the chat card showed
+    # (`/from-reply/preview`). When the thread now resolves to another mail,
+    # the write is a 409 and makes nothing. None: no check (the app popup).
+    expect_email_id: str | None = None
+
+
+class ReplyThreadRequest(BaseModel):
+    account_id: str
+    thread_id: str
+
+
+class ReplyThreadResponse(BaseModel):
+    """The sent mail that ``/from-reply/create`` hangs the task on, for the
+    chat card (task 4015). ``email_id`` is empty when the thread holds no sent
+    mail. ``recipients`` holds each address of To, then Cc, then Bcc, once.
+    It holds no display name, because another person sets that text."""
+    email_id: str = ""
+    subject: str = ""
+    recipients: list[str] = []
 
 
 class _ReplyEmail:
@@ -1006,30 +1025,66 @@ class _ReplyEmail:
             {"name": owner_name or owner_email, "email": owner_email})
 
 
-async def _resolve_sent_email_id(
-    db: Any, account_id: str, thread_id: str, reply_to_message_id: str | None,
-) -> str:
-    """The local id to hang the task's origin on. Prefer the newest SENT message
-    in the thread (the reply, once mirrored); fall back to the message being
-    replied to (always mirrored); last resort a synthetic thread-scoped id so the
-    origin still links back to the conversation. Idempotency uses the thread when
-    the exact reply id isn't known yet, so a placeholder never duplicates."""
-    sent = (await db.execute(text(
-        "SELECT id FROM email_messages "
-        "WHERE account_id = :aid AND thread_id = :tid "
-        "AND LOWER(COALESCE(folder, '')) = 'sent' "
-        "ORDER BY received_at DESC NULLS LAST LIMIT 1"
-    ), {"aid": account_id, "tid": thread_id})).fetchone()
+async def _sent_mail(db: Any, uid: str, account_id: str, thread_id: str) -> Any:
+    """The newest SENT message of one thread, in a mailbox of the member, or
+    None. The card read (``/from-reply/preview``) and the write
+    (``_resolve_sent_mail``) share this one read, so both name the same mail
+    (task 4015). The ``m.id`` tie-break keeps the choice stable."""
+    return (await db.execute(text(
+        "SELECT m.id, m.subject, m.to_addresses, m.cc_addresses, m.bcc_addresses "
+        "FROM email_messages m JOIN email_accounts a ON a.id = m.account_id "
+        "WHERE m.account_id = :aid AND a.user_id = :uid AND m.thread_id = :tid "
+        "AND LOWER(COALESCE(m.folder, '')) = 'sent' "
+        "ORDER BY m.received_at DESC NULLS LAST, m.id DESC LIMIT 1"
+    ), {"aid": account_id, "uid": uid, "tid": thread_id})).fetchone()
+
+
+async def _thread_in_mailbox(db: Any, uid: str, account_id: str, thread_id: str) -> bool:
+    """True when a mailbox of the member holds a message of the thread that
+    is not a draft (the messages that ``_tag_thread_task_category`` labels)."""
+    return (await db.execute(text(
+        "SELECT 1 FROM email_messages m JOIN email_accounts a ON a.id = m.account_id "
+        "WHERE m.account_id = :aid AND a.user_id = :uid AND m.thread_id = :tid "
+        "AND LOWER(COALESCE(m.folder, '')) NOT IN ('drafts', 'draft') LIMIT 1"
+    ), {"aid": account_id, "uid": uid, "tid": thread_id})).fetchone() is not None
+
+
+def _recipient_addresses(row: Any) -> list[str]:
+    """Each address of To, then Cc, then Bcc of a stored mail, once, as it is
+    stored. A recipient with no address is not an address, so it is left out."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (row.to_addresses, row.cc_addresses, row.bcc_addresses):
+        for addr in _parse_addr_list(raw):
+            email = addr.get("email")
+            if isinstance(email, str) and email and email.casefold() not in seen:
+                seen.add(email.casefold())
+                out.append(email)
+    return out
+
+
+async def _resolve_sent_mail(
+    db: Any, uid: str, account_id: str, thread_id: str,
+    reply_to_message_id: str | None,
+) -> tuple[str, str]:
+    """``(email_id, subject)``: the local id to hang the task's origin on, and
+    the stored subject of that mail. Prefer the newest SENT message in the
+    thread (the reply, once mirrored, :func:`_sent_mail`); fall back to the
+    message being replied to (always mirrored); last resort a synthetic
+    thread-scoped id, with no subject, so the origin still links back to the
+    conversation. Idempotency uses the thread when the exact reply id isn't
+    known yet, so a placeholder never duplicates."""
+    sent = await _sent_mail(db, uid, account_id, thread_id)
     if sent is not None:
-        return str(sent.id)
+        return str(sent.id), str(sent.subject or "")
     if reply_to_message_id:
         row = (await db.execute(text(
-            "SELECT id FROM email_messages "
+            "SELECT id, subject FROM email_messages "
             "WHERE account_id = :aid AND provider_message_id = :pmid LIMIT 1"
         ), {"aid": account_id, "pmid": reply_to_message_id})).fetchone()
         if row is not None:
-            return str(row.id)
-    return f"reply:{thread_id}"
+            return str(row.id), str(row.subject or "")
+    return f"reply:{thread_id}", ""
 
 
 async def _find_existing_commitment(db: Any, uid: str, thread_id: str) -> Any:
@@ -1303,6 +1358,30 @@ async def detect_commitment_from_reply(
             is_commitment=True, draft=draft, similar=similar, used_llm=True)
 
 
+@router.post("/capture/from-reply/preview",
+             response_model=ReplyThreadResponse)
+async def preview_commitment_thread(
+    req: ReplyThreadRequest,
+    user: UserContext = Depends(get_current_user),
+):
+    """Task 4015. The sent mail that ``/from-reply/create`` hangs the task on,
+    for the chat card: its id, its stored subject and its recipient
+    addresses. It reads a mailbox of the caller only (404 first, as
+    ``create`` does), and it writes nothing. A thread with no message in that
+    mailbox is a 404. A thread with no sent mail gives an empty ``email_id``."""
+    uid = _uid(user)
+    async with _tenant_session() as db:
+        await _account_owner(db, uid, req.account_id)
+        sent = await _sent_mail(db, uid, req.account_id, req.thread_id)
+        if sent is None:
+            if not await _thread_in_mailbox(db, uid, req.account_id, req.thread_id):
+                raise HTTPException(status_code=404, detail="Thread not found")
+            return ReplyThreadResponse()
+        return ReplyThreadResponse(
+            email_id=str(sent.id), subject=str(sent.subject or ""),
+            recipients=_recipient_addresses(sent))
+
+
 @router.post("/capture/from-reply/create",
              response_model=CaptureFromEmailResponse)
 async def create_commitment_from_reply(
@@ -1325,11 +1404,17 @@ async def create_commitment_from_reply(
                 assignee_name=item.assignee.name if item.assignee else None,
                 due_at=item.due_at)
 
-        email_id = await _resolve_sent_email_id(
-            db, req.account_id, req.thread_id, req.reply_to_message_id)
+        email_id, stored_subject = await _resolve_sent_mail(
+            db, uid, req.account_id, req.thread_id, req.reply_to_message_id)
+        if req.expect_email_id is not None and email_id != req.expect_email_id:
+            raise HTTPException(
+                status_code=409,
+                detail="The thread changed after the card showed. Nothing changed.")
+        # A request with no subject takes the subject of the stored mail. The
+        # chat sends none, so its task keeps what its card showed (task 4015).
         reply = _ReplyEmail(
             account_id=req.account_id, thread_id=req.thread_id,
-            email_id=email_id, subject=req.subject,
+            email_id=email_id, subject=req.subject or stored_subject,
             owner_name=owner_name, owner_email=owner_email)
 
         from gateway.routes.tasks.people import fetch_people_for_clarify

@@ -260,7 +260,9 @@ OUTSIDE_EMAIL_READERS: dict[str, str] = {
     "apps/services/gateway/gateway/routes/tasks/capture_email.py": (
         "Captures a task from a message. _load_email joins email_accounts on "
         "user_id = the caller, and _account_owner checks id AND user_id, each "
-        "a 404 first. _fetch_thread then reads that same owned mailbox."
+        "a 404 first. _fetch_thread then reads that same owned mailbox. "
+        "_sent_mail and _thread_in_mailbox (task 4015) join email_accounts on "
+        "user_id = the caller too. Fence: test_capture_reply_thread_r8.py."
     ),
     "apps/services/gateway/gateway/routes/tasks/email_link.py": (
         "The task-close hop. _closer_owns_mailbox checks that the member who "

@@ -916,9 +916,13 @@ P-1 does not take all 14. The table names the owner of each row.
     subject that `/preview` gives for the ids of the write. A failed read
     writes nothing. The reply path refuses a thread id that a card cannot
     show as it came, or one over 998 characters. The tool refuses
-    `reply_to_message_id`. The reply card says that the assistant gave the
-    subject. The tool shows no card and writes nothing when a card cannot show
+    `reply_to_message_id`. The tool shows no card and writes nothing when a card cannot show
     the sender address as it is.
+  - Task 4015: the reply card reads the sent mail of the thread in the
+    member's own mailbox (`/from-reply/preview`). The write shares that read,
+    so the card shows the stored subject and the first three recipient
+    addresses with their count. The tool refuses `reply_subject`, and the write
+    refuses with a 409 when the thread resolves to another sent mail.
   - Accepted in review: `open_world=True` takes the write out of a covered
     run (H-236), so a covered run makes no task from a mail.
   - The write joins the kind `task.create` of `tool_packs._KIND_TOOLS`, so a
@@ -935,7 +939,7 @@ P-1 does not take all 14. The table names the owner of each row.
 - **Verify P-1b.** Run these commands in the worktree.
 
 ```bash
-timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py tests/unit/test_answer_claims.py -q -p no:cacheprovider
+timeout 900 uv run pytest tests/unit/test_my_tasks_p1b_tools.py tests/unit/test_capture_reply_thread.py tests/unit/test_chat_parity.py tests/unit/test_calendar_day_pack.py tests/unit/test_calendar_day_held.py tests/unit/test_pack_requests.py tests/unit/test_pack_no_double_write.py tests/unit/test_skill_task_lens.py tests/unit/test_studio_split_matrix.py tests/unit/test_projects_packs.py tests/unit/test_park_made_line.py tests/unit/test_held_card_writes.py tests/unit/test_resume_stored_call.py tests/unit/test_tool_packs_registry.py tests/unit/test_answer_claims.py -q -p no:cacheprovider
 uv run ruff check apps/skills/skill-my-tasks packages/acb_skills/acb_skills tests/unit/test_my_tasks_p1b_tools.py
 ```
 
