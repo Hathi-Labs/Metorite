@@ -13,9 +13,16 @@
  *   ● status · 1.2s     node_id   ← live run state and the {{ref}} root
  *
  * A card has to answer "what does this step do?" without opening the inspector;
- * everything below the title exists for that. Status comes from the SSE test
- * run (queued → running → ok/err) or from a recorded run painted onto the
- * canvas; issue badges come from design-time validation.
+ * everything below the title exists for that.
+ *
+ * The height of the card has a limit. A saved workflow can hold two nodes 160 px
+ * apart, and a saved position does not change. So each text row is one line, and
+ * the summary takes two lines only when the card has room (`summaryClamp`). The
+ * browser fence is `e2e/workflow-card-height.spec.ts`.
+ *
+ * Status comes from the SSE test run (queued → running → ok/err) or from a
+ * recorded run painted onto the canvas. Issue badges come from design-time
+ * validation.
  */
 
 import AppIcon from "@/components/Icon";
@@ -84,6 +91,13 @@ function WorkflowNodeInner(props: NodeProps) {
   const status = data.runStatus;
   const tone = status ? STATUS_TONE[status] : null;
   const issues = data.issueCount ?? 0;
+  const badges = data.badges ?? [];
+  // A card with a detail row AND a row below it (badges, or the yes and no
+  // labels) has room for one line of summary. Each other card has room for two.
+  const summaryClamp =
+    data.detail && (badges.length > 0 || type === "condition")
+      ? "line-clamp-1"
+      : "line-clamp-2";
 
   // Selection, live status and validation all want the card's outline. Run
   // state wins while a run is on screen — that is the thing you are watching.
@@ -118,7 +132,7 @@ function WorkflowNodeInner(props: NodeProps) {
         <Handle type="target" position={Position.Top} className={handleCls} />
       )}
 
-      <div className="px-2.5 pt-2 pb-2">
+      <div className="px-2.5 py-1.5">
         <div className="flex items-start gap-2">
           <span
             className={`w-6 h-6 shrink-0 rounded-lg border grid place-items-center ${style.tile}`}
@@ -127,11 +141,11 @@ function WorkflowNodeInner(props: NodeProps) {
           </span>
           <div className="min-w-0 flex-1">
             <div
-              className={`font-mono text-[8.5px] uppercase tracking-[0.12em] leading-tight ${style.text}`}
+              className={`font-mono text-[10px] uppercase tracking-[0.12em] leading-tight truncate ${style.text}`}
             >
               {NODE_KIND_LABEL[type] ?? type}
             </div>
-            <div className="text-[12.5px] font-semibold text-foreground leading-snug truncate">
+            <div className="text-xs font-semibold text-foreground leading-snug truncate">
               {data.label || type}
             </div>
           </div>
@@ -143,7 +157,7 @@ function WorkflowNodeInner(props: NodeProps) {
               >
                 <AppIcon name="AlertTriangle" className="w-3 h-3" />
                 {issues > 1 && (
-                  <span className="text-[9px] font-medium">{issues}</span>
+                  <span className="text-[10px] font-medium">{issues}</span>
                 )}
               </span>
             )}
@@ -154,15 +168,18 @@ function WorkflowNodeInner(props: NodeProps) {
         </div>
 
         {(data.summary || data.detail) && (
-          <div className="mt-1.5 space-y-1">
+          <div className="mt-0.5 space-y-0.5">
             {data.summary && (
-              <p className="text-[10.5px] leading-[1.45] text-muted-foreground line-clamp-2">
+              <p
+                className={`text-[11px] leading-snug text-muted-foreground ${summaryClamp}`}
+                title={data.summary}
+              >
                 {data.summary}
               </p>
             )}
             {data.detail && (
               <p
-                className="font-mono text-[9.5px] leading-tight text-foreground/80 bg-secondary/60 border border-border/60 rounded px-1.5 py-0.5 truncate"
+                className="font-mono text-[10px] leading-tight text-foreground/80 bg-secondary/60 border border-border/60 rounded px-1.5 py-px truncate"
                 title={data.detail}
               >
                 {data.detail}
@@ -171,12 +188,17 @@ function WorkflowNodeInner(props: NodeProps) {
           </div>
         )}
 
-        {(data.badges ?? []).length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {(data.badges ?? []).map((badge) => (
+        {badges.length > 0 && (
+          <div className="mt-0.5 flex gap-1 overflow-hidden">
+            {badges.map((badge) => (
               <span
                 key={badge}
-                className="text-[8.5px] uppercase tracking-wide px-1.5 py-px rounded-full border border-border text-muted-foreground"
+                title={badge}
+                // One row. A long badge gives way, and a short flag such as
+                // "write" stays whole.
+                className={`text-[10px] leading-tight uppercase tracking-wide px-1.5 py-px rounded-full border border-border text-muted-foreground ${
+                  badge.length > 18 ? "min-w-0 truncate" : "shrink-0 whitespace-nowrap"
+                }`}
               >
                 {badge}
               </span>
@@ -186,22 +208,22 @@ function WorkflowNodeInner(props: NodeProps) {
       </div>
 
       {/* Footer: run state on the left, the {{ref}} root on the right */}
-      <div className="flex items-center gap-1.5 px-2.5 py-1 border-t border-border/70 bg-secondary/25">
+      <div className="flex items-center gap-1.5 px-2.5 py-0.5 leading-tight whitespace-nowrap border-t border-border/70 bg-secondary/25">
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${tone ? tone.dot : "bg-muted-foreground/40"}`}
         />
         <span
-          className={`font-mono text-[8.5px] uppercase tracking-[0.1em] ${tone ? tone.text : "text-muted-foreground/70"}`}
+          className={`font-mono text-[10px] uppercase tracking-[0.1em] ${tone ? tone.text : "text-muted-foreground/70"}`}
         >
           {status ? STATUS_LABEL[status] : "idle"}
         </span>
         {typeof data.durationMs === "number" && data.durationMs >= 0 && (
-          <span className="font-mono text-[8.5px] text-muted-foreground/70">
+          <span className="font-mono text-[10px] text-muted-foreground/70">
             · {formatDuration(data.durationMs)}
           </span>
         )}
         <span
-          className="ml-auto font-mono text-[8.5px] text-muted-foreground/60 truncate max-w-[46%]"
+          className="ml-auto font-mono text-[10px] text-muted-foreground/60 truncate max-w-[46%]"
           title={`Reference this block's output as {{${props.id}.field}}`}
         >
           {props.id}
@@ -224,11 +246,11 @@ function WorkflowNodeInner(props: NodeProps) {
             style={{ left: "72%" }}
             className="!w-3 !h-3 !border-2 !bg-card !border-muted-foreground pointer-coarse:!w-5 pointer-coarse:!h-5"
           />
-          <div className="flex justify-between px-4 pb-1 -mt-px">
-            <span className="font-mono text-[8px] uppercase tracking-wider text-success">
+          <div className="flex justify-between px-4 pb-0.5 leading-tight">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-success">
               yes
             </span>
-            <span className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
               no
             </span>
           </div>

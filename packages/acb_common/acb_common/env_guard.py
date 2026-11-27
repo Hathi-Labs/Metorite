@@ -243,6 +243,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # outside API through a connection. It opens an egress path for the org,
     # so only the operator writes it.
     "API_CONNECTIONS_ORGS",
+    # integrations_console.md §3.9 ACC-1: the orgs whose admins may set who
+    # can use each integration. It opens an access-control route for the org,
+    # so only the operator writes it.
+    "INTEGRATION_ACCESS_ORGS",
     # projects_ai_chat.md §32 EAC-1: the orgs whose chat shows the card of a
     # new task as a form that the member edits. It changes what a card writes,
     # so only the operator writes it.

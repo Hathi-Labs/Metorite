@@ -1128,6 +1128,7 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E4** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E4.md) |
 | **E5** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E5.md) |
 | **E6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/E6.md) |
+| **E7c-1** | 🔨 BUILT (2026-11-15, task 3342) | STD | AGENT-SAFE | [row](ai_studio_rows/E7c-1.md) |
 | **E7** | open | STD | AGENT-SAFE | [row](ai_studio_rows/E7.md) |
 | **E7a** | 🔨 BUILT (2026-11-15, task 3341) | STD | AGENT-SAFE | [row](ai_studio_rows/E7a.md) |
 | **E7f** | 🔨 BUILT (2026-11-15, task 3382) | STD | AGENT-SAFE | [row](ai_studio_rows/E7f.md) |
@@ -1143,6 +1144,9 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **E11** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E11.md) |
 | **E12** | 🔨 E12a BUILT, dark (2026-11-13, task 2379), the rest open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12.md) |
 | **E12a** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12a.md) |
+| **E13a** | 🔨 BUILT (2026-11-13, task 3117) | HIGH | AGENT-SAFE | [row](ai_studio_rows/E13a.md) |
+| **E13b** | 🔨 BUILT, dark (2026-11-13, task 3118) | HIGH | OWNER-GATE | [row](ai_studio_rows/E13b.md) |
+| **E13c** | 🔨 Route and Save gate BUILT (task 3119), chat tool open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E13c.md) |
 | **WFC-0** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-0.md) |
 | **WFC-1** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-1.md) |
 | **WFC-2** | open | STD | AGENT-SAFE | [row](ai_studio_rows/WFC-2.md) |
@@ -1156,6 +1160,8 @@ Epic: task 3147. Rung 4 of the ladder (demo task 3148) holds AF-1 to AF-6, AF-8 
 | **WFC-5** | open | STD | AGENT-SAFE | [row](ai_studio_rows/WFC-5.md) |
 | **WFC-6** | open | LOW | AGENT-SAFE | [row](ai_studio_rows/WFC-6.md) |
 | **E12** | open | HIGH | AGENT-SAFE | [row](ai_studio_rows/E12-dup2.md) |
+
+**Open items for E13a to E13c (STB-6, task 2134).** All three are open. (1) The F13 `list_workflows` output is not in an `UntrustedFrame`. This is known debt. No row fixes it yet, and E13a does not touch it. (2) The room fence pins `PROD_BASE` = 56 and has zero slack. Any new floor tool breaks it. No test ties `_pack_base_count` to 56. (3) These rows have no D-number yet. The owner decision of 2026-11-13 (run answer 09bcb706, option `order_a`) gets one when a collision-free number is free. The research row `studio-builders.md` STB-6 is reference and owns no work.
 
 **The owner questions of the WFC rows (2026-11-14, task 3287).** Both are open.
 

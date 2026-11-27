@@ -133,8 +133,17 @@ counts only a trash that the mail provider confirmed, and names each matching dr
 stays. `*` lists every org, and the default is empty. Empty means the card and the answer of
 before.
 
+The same flag turns on the question of task 3978 (§18.13.1). A member declines the card of
+`edit_draft`, or discards a new-mail card, for a draft that the chat saved. The card then asks
+"Keep the earlier draft, or delete it?". The question also needs `CHAT_CARD_REVISE_ORGS` for
+the org, because only its record knows the chat's draft. The new-mail card also needs
+`EMAIL_EDIT_CARD_ORGS`, which draws that card. With this flag on, each decline of the card of
+`edit_draft` says that the draft is still in Drafts.
+
 Its one reader is `acb_skills.draft_choice.draft_choice_on`. The email tool asks it at
-each trash, so a reload applies at once. A flip stays OWNER-GATE (`enforcement-flip`).
+each trash, before each new-mail card, in each `draft_reply` and in each `edit_draft`, so a
+reload applies at once. A flip stays
+OWNER-GATE (`enforcement-flip`).
 
 `CHAT_FOCUS_ORGS` turns on the item in focus of a chat
 (`chat_failure_modes.md` §6 row HRD-11a). For each listed org, the chat keeps
@@ -514,6 +523,18 @@ orchestrator asks it at the start of each run, so a reload applies to the next
 run. Any value other than empty is OWNER-GATE, and only the owner flips it.
 The five tools join each request, so the flip takes the trade of the tool cap
 in `chat_parity.md`, PAR-8b facts for the owner.
+
+`INTEGRATION_ACCESS_ORGS` opens the two admin routes that set who can use each
+integration (`integrations_console.md` §3.9.4, ACC-1). Off,
+`GET /admin/integration-access` and `PUT /admin/integration-access/{service}`
+answer 404, and the console shows no control. `*` lists every org, and the
+default is empty. The flag gates the routes only. The access read applies a
+stored rule whatever the flag says. So when the flag goes off, no member gets
+an integration back.
+
+Its one reader is `gateway.routes.admin._common.integration_access_allowed`.
+Each request asks it, so a reload applies at once. The flip waits for the
+owner preview, and it stays OWNER-GATE (`enforcement-flip`).
 
 `MCP_IMAGE_UPLOAD_ORGS` lets an outside agent upload an image to a task and
 put images on a question (`external_agent_access.md` §12.9, CIV-14b). Off, the
